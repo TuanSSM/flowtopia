@@ -1,0 +1,1933 @@
+{
+ "id": "buugeng",
+ "name": "Buugeng",
+ "about": "Names come from Dai Zaobab's own tutorial titles and notes, the 2010 buugeng forum threads that list his official move names, Colin Peterson's Buugeng Basics lessons on Home of Poi, and the Buugeng-Germany basics pages. I could not read the spoken content of the videos, so many moves are named and placed here but not described. Planes, timing, isolation and antispin use the poi definitions that these teachers borrow.",
+ "careNote": "Buugeng are rigid and the curved tips swing wider than you expect, so learn these moves slowly with a light pair, keep clear space around you, and stop if a blade starts landing on your head, face or hands.",
+ "branches": [
+  {
+   "k": "F",
+   "name": "Foundations",
+   "blurb": "Parts, hold, planes, counting and the first one-hand spins"
+  },
+  {
+   "k": "R",
+   "name": "Finger and wrist motions",
+   "blurb": "Finger spins and the wrist motions that every other move is built from"
+  },
+  {
+   "k": "T",
+   "name": "Two buugeng",
+   "blurb": "Timing, direction and Nitozeng, the parallel spin"
+  },
+  {
+   "k": "N",
+   "name": "Named forms",
+   "blurb": "Dai Zaobab's named moves and the shapes the paired curves make"
+  },
+  {
+   "k": "I",
+   "name": "Isolation and antispin",
+   "blurb": "Fixed circles, antispin and extended arms"
+  },
+  {
+   "k": "B",
+   "name": "Paths around the body",
+   "blurb": "Hand paths, tracing, slides, folds, passes and turns"
+  },
+  {
+   "k": "C",
+   "name": "Contact and toss",
+   "blurb": "Arm and shoulder contact, and throws"
+  }
+ ],
+ "skills": [
+  {
+   "id": "F1",
+   "tier": 1,
+   "name": "Parts and gentle hold",
+   "desc": "A buugeng is two C-shaped blades joined at a centre handle to make an S. Hold the handle loosely so it can turn in the hand.",
+   "needs": [],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "If your pair is collapsible, join two C-shaped blades at the handle so they form an S. Hold one buugeng by the handle in the middle.",
+    "Hold gently. Dai Zaobab gives this as his first tip for beginners.",
+    "Mark one tip with coloured tape. It shows you which end is where while the buugeng turns.",
+    "Before you copy any move, check where the hand sits: in the middle of the handle or nearer a tip, and where the thumb points."
+   ],
+   "watch": [
+    "Squeezing the handle so hard that the buugeng cannot turn",
+    "Losing track of which tip is which once it starts moving"
+   ],
+   "drill": "Hold one buugeng still in front of you. Loosen the grip until it almost slips, then firm up just enough to control it. Repeat ten times with each hand.",
+   "refs": [
+    "vBeg1",
+    "vParts",
+    "squiggle",
+    "bgTips",
+    "wiki",
+    "bgHistory"
+   ]
+  },
+  {
+   "id": "F2",
+   "tier": 1,
+   "name": "Planes",
+   "desc": "The flat surfaces a buugeng spins on: wheel planes at your sides, the wall plane in front or behind, and the horizontal plane.",
+   "needs": [],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Picture yourself in the centre square of a noughts and crosses grid. The lines along your sides are wheel planes.",
+    "The lines in front of you and behind you are wall planes.",
+    "A flat spin, level with the floor, is on the horizontal plane.",
+    "These definitions come from poi. Buugeng teachers use the same words: Dai Zaobab teaches a wall spin, and Rion Fish gives planes a whole beginner lesson."
+   ],
+   "watch": [
+    "Letting the buugeng tilt off its plane, which blurs the shape the audience sees"
+   ],
+   "drill": "Hold one buugeng still and place it flat on each plane in turn, naming the plane out loud. Then do one slow turn on each.",
+   "refs": [
+    "vPlanes",
+    "hopTerms",
+    "poiDef",
+    "vJay3d"
+   ]
+  },
+  {
+   "id": "F3",
+   "tier": 1,
+   "name": "Wrist spin (hand spin)",
+   "desc": "One buugeng turned by the whole hand at the wrist while the arm stays still. Dai Zaobab lists the wrist spin among his three tips for beginners.",
+   "needs": [
+    "F1",
+    "F2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Mark one tip. Stretch the arm forward and grasp the handle loosely with the whole hand, thumb underneath and opposite the index finger.",
+    "Start with the marked tip pointing up and forward, and the other curve lying along the outside of the forearm.",
+    "Turn the hand so the marked tip passes on the inside of the arm and the other curve passes on the outside.",
+    "Keep turning until you see the back of the hand again and the marked tip is in front. That is one turn.",
+    "Keep the arm and wrist in one place and let the buugeng rotate loosely between thumb and index finger."
+   ],
+   "watch": [
+    "The whole arm swinging in a circle instead of the wrist turning",
+    "A blade clipping the forearm because the tip passed on the wrong side"
+   ],
+   "drill": "Ten slow turns with each hand, watching the marked tip pass inside the arm every time.",
+   "refs": [
+    "bgBasics",
+    "vBeg1"
+   ]
+  },
+  {
+   "id": "F4",
+   "tier": 1,
+   "name": "Forward and backward spin",
+   "desc": "The one-hand spin in its two directions. Forward spin and backward spin are the first two moves in Dai Zaobab's lesson series.",
+   "needs": [
+    "F3"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin one buugeng in one hand at your side.",
+    "In poi terms, forward means the top of the circle moves away from you, and backward means it comes toward you.",
+    "Learn one direction first, then the other, then repeat both with the other hand. This is the order the Buugeng-Germany tips suggest.",
+    "Go slowly. Both directions should look equally steady."
+   ],
+   "watch": [
+    "Avoiding the weaker direction",
+    "Speeding up to hide a wobble"
+   ],
+   "drill": "Five forward turns, stop, five backward turns. Repeat on each hand until both directions feel the same.",
+   "refs": [
+    "hopFwd",
+    "hopBack",
+    "vBeg2",
+    "bgTips",
+    "poiDef"
+   ]
+  },
+  {
+   "id": "F5",
+   "tier": 1,
+   "name": "Wall spin",
+   "desc": "The first topic in Dai Zaobab's second beginner tutorial. By the plane's name it should be one buugeng spun on the wall plane, flat in front of the body.",
+   "needs": [
+    "F2",
+    "F3"
+   ],
+   "track": "LR",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "By definition the wall plane is the flat surface in front of you, so the buugeng turns there like the hand of a clock that faces you.",
+    "Practise it clockwise and counterclockwise."
+   ],
+   "watch": [
+    "The buugeng tilting toward you or away from you, off the wall plane"
+   ],
+   "drill": "Stand facing a wall. Turn one buugeng slowly in front of you and keep both tips the same distance from the wall. Do both directions with each hand.",
+   "refs": [
+    "vBeg2",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "F6",
+   "tier": 1,
+   "name": "Curve direction and lead",
+   "desc": "Which part of the S goes first as the buugeng turns. Dai Zaobab lists curve direction as a beginner tip, and Rion Fish uses the word lead for the rotation of each buugeng.",
+   "needs": [
+    "F1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Buugeng-Germany suggests asking of every move: does the tip point up or does the curved side point up, and which way does each buugeng turn?",
+    "Dai Zaobab's second beginner tutorial also has a section on the thumb side and the pinky side.",
+    "Mark one tip so you can answer these questions while the buugeng moves."
+   ],
+   "watch": [
+    "Copying a move with the S flipped, which changes the picture the audience sees",
+    "Learning from a clip filmed in mirror mode, which swaps left and right"
+   ],
+   "drill": "Pause a tutorial on one frame. Copy the still position exactly: tip up or curve up, and where the thumb points. Then check yourself in a mirror.",
+   "refs": [
+    "vBeg1",
+    "vBeg2",
+    "vLead",
+    "bgTips",
+    "vModern"
+   ]
+  },
+  {
+   "id": "F7",
+   "tier": 1,
+   "name": "Beats and counts",
+   "desc": "A beat is one full rotation of a buugeng. Counting beats is how tutorials describe the length and rhythm of a move.",
+   "needs": [
+    "F3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "One beat is one full rotation. This is the poi definition, and Rion Fish's beginner lesson on beats teaches counting rotations inside tricks.",
+    "Count out loud while you spin: one number for each full turn.",
+    "Dai Zaobab uses the same idea when he talks about one count, two count and three beat versions of a move."
+   ],
+   "watch": [
+    "Counting half turns as full ones. An S looks the same after half a turn, so watch the marked tip"
+   ],
+   "drill": "Spin forward for eight beats, counting out loud, then stop exactly on eight with the marked tip where it started.",
+   "refs": [
+    "vBeats",
+    "hopTerms",
+    "v3beat"
+   ]
+  },
+  {
+   "id": "F8",
+   "tier": 2,
+   "name": "Passing between hands",
+   "desc": "One buugeng handed from one hand to the other. It is one of Dai Zaobab's first lessons, taught after the forward and backward spin.",
+   "needs": [
+    "F3!",
+    "F4!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Be able to spin forward and backward with each hand first, so either hand can take over.",
+    "Start with the buugeng still. Hand it across at the handle and keep the same tip on top."
+   ],
+   "watch": [
+    "Grabbing a blade instead of the handle"
+   ],
+   "drill": "Walk the pass with no spin: left hand to right hand and back, twenty times, always taking the handle.",
+   "refs": [
+    "hopPass"
+   ]
+  },
+  {
+   "id": "R1",
+   "tier": 1,
+   "name": "Finger spin",
+   "desc": "One buugeng turned by walking the fingers over the handle while the thumb stays under it.",
+   "needs": [
+    "F1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold the buugeng level in front of your chest. Index and middle finger sit on top of the handle. Ring finger, little finger and thumb sit underneath.",
+    "Bring the ring and little finger up so all four fingers are on top. They turn the buugeng a quarter turn while the thumb stays where it was.",
+    "Move the index and middle finger back to the start position. They turn the buugeng another quarter turn while the thumb moves down at the same time.",
+    "That is half a rotation. Repeat the pattern: two fingers, four fingers, two fingers.",
+    "Finger spins drop more often than wrist spins at first. They also allow more kinds of movement."
+   ],
+   "watch": [
+    "The thumb leaving the handle, which lets the buugeng fall",
+    "Rushing before the two, four, two pattern is automatic"
+   ],
+   "drill": "Twenty slow half turns with the strong hand over a soft floor. Then the same with the other hand.",
+   "refs": [
+    "bgBasics",
+    "cp1",
+    "vDandy",
+    "vFingerRolls"
+   ]
+  },
+  {
+   "id": "R2",
+   "tier": 2,
+   "name": "Finger spin, reverse direction",
+   "desc": "The finger spin turned the opposite way. Learn it once the first direction is steady.",
+   "needs": [
+    "R1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn the finger spin in one direction with your favourite hand first.",
+    "When it is fairly steady, run the same finger pattern backward so the buugeng turns the other way.",
+    "Then teach both directions to the other hand before you spin two buugeng at once."
+   ],
+   "watch": [
+    "Staying on the strong hand and the easy direction"
+   ],
+   "drill": "One minute per hand: ten turns one way, ten turns back, without putting the buugeng down.",
+   "refs": [
+    "bgTips",
+    "bgBasics"
+   ]
+  },
+  {
+   "id": "R3",
+   "tier": 2,
+   "name": "Wrist movement I (figure 8)",
+   "desc": "Colin Peterson's name for a wrist motion very like the staff figure 8, adjusted to keep the buugeng illusion. He calls it the most widely applied buugeng movement.",
+   "needs": [
+    "F3!",
+    "F4!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The lesson says it is very similar to the figure 8 with a staff, with particular pieces changed to keep a clean illusion.",
+    "Have the forward and backward wrist spins steady on both hands first."
+   ],
+   "watch": [
+    "Treating the buugeng like a straight staff and letting the curve face the wrong way"
+   ],
+   "drill": "Watch the lesson at slow speed and trace the hand path with an empty hand. Then repeat it with one buugeng at walking pace.",
+   "refs": [
+    "cp2"
+   ]
+  },
+  {
+   "id": "R4",
+   "tier": 2,
+   "name": "Wrist movement II (one-beat weave)",
+   "desc": "Colin Peterson's second wrist motion, which he compares to the one-beat weave with a staff.",
+   "needs": [
+    "R3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The lesson says some points of the staff weave must be changed to keep a clean illusion with buugeng.",
+    "Learn it after wrist movement I, on each hand separately."
+   ],
+   "watch": [
+    "Crossing the arm too far and striking the forearm with a blade"
+   ],
+   "drill": "Trace the path slowly with one buugeng, ten times per hand, stopping whenever the curve points the wrong way.",
+   "refs": [
+    "cp3"
+   ]
+  },
+  {
+   "id": "R5",
+   "tier": 3,
+   "name": "Combining the three motions",
+   "desc": "Switching between finger motion, wrist movement I and wrist movement II inside one continuous spin.",
+   "needs": [
+    "R1",
+    "R3",
+    "R4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Colin Peterson names three fundamental motions: finger motions, wrist movement I and wrist movement II.",
+    "His fourth lesson joins all three. He lists the benefits as keeping momentum, staying on plane, and connecting to most hand paths.",
+    "Start by changing between two of them, for example finger spin into wrist movement I. Then add the third."
+   ],
+   "watch": [
+    "A visible stop at each change",
+    "The plane tilting when the grip changes"
+   ],
+   "drill": "Four beats of each motion in a loop, with one buugeng, for one minute per hand.",
+   "refs": [
+    "cp4",
+    "vCombine"
+   ]
+  },
+  {
+   "id": "T1",
+   "tier": 2,
+   "name": "Timing and direction",
+   "desc": "Two buugeng can turn in same time or split time, and in the same or opposite directions. Each pairing draws a different picture.",
+   "needs": [
+    "F3!",
+    "F4!",
+    "F7"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Same time: both buugeng reach the top of their circles together.",
+    "Split time: they sit at opposite points, so when one is up the other is down.",
+    "Same direction: both turn the same way. Opposite direction: one turns forward while the other turns backward.",
+    "These are poi definitions. Colin Peterson uses the same terms for buugeng, for example a split time, opposite direction motion in his timing lesson."
+   ],
+   "watch": [
+    "Drifting between same time and split time without noticing",
+    "The two buugeng turning at different speeds"
+   ],
+   "drill": "With both buugeng, spin slowly and call out the pairing you are in. Change one thing at a time: timing first, then direction.",
+   "refs": [
+    "hopTerms",
+    "poiDef",
+    "cp8",
+    "vModern"
+   ]
+  },
+  {
+   "id": "T2",
+   "tier": 2,
+   "name": "Nitozeng (parallel spin)",
+   "desc": "Both buugeng turn the same way with the same timing and speed, each hand doing the same thing. Dai Zaobab calls it the most important basic move.",
+   "needs": [
+    "T1"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold one buugeng in each hand, one at each side.",
+    "Start the same wrist spin with both hands at once.",
+    "Keep the two buugeng parallel and in step: same timing, same speed.",
+    "Learn it forward and backward. Dai Zaobab's first two-hand lessons are both hands forwards and both hands backwards.",
+    "The official name, written Nitouzeng on the forum, means unity. Literally it is two unification."
+   ],
+   "watch": [
+    "One hand running ahead of the other",
+    "The two buugeng no longer parallel"
+   ],
+   "drill": "Thirty seconds forward, then thirty seconds backward, filmed from the front. Check that the two shapes stay matched.",
+   "refs": [
+    "vNito",
+    "names3",
+    "hopBothF",
+    "hopBothB"
+   ]
+  },
+  {
+   "id": "T3",
+   "tier": 2,
+   "name": "Both hands, different directions",
+   "desc": "Two early Dai Zaobab lessons where the hands turn in different directions, taught in a forward and a backward version.",
+   "needs": [
+    "T2"
+   ],
+   "track": "FR",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The lesson titles say only: both hands, different direction, forwards and backwards.",
+    "By the poi definition, opposite direction means one prop turns forward while the other turns backward. I could not confirm that the lessons mean exactly this."
+   ],
+   "watch": [
+    "Assuming it is the same as the butterfly or the alternate spin"
+   ],
+   "drill": "Watch both lessons first. Then copy the starting position of each hand before adding any speed.",
+   "refs": [
+    "hopDiffF",
+    "hopDiffB",
+    "poiDef"
+   ]
+  },
+  {
+   "id": "T4",
+   "tier": 2,
+   "name": "Alternate spin",
+   "desc": "A two-buugeng spin that Dai Zaobab calls a fundamental technique of most flow arts, and an important movement in poi.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "By its name the two buugeng take turns, but the tutorial page gives no written definition.",
+    "Have Nitozeng steady in both directions first."
+   ],
+   "watch": [
+    "Guessing the timing from the name alone"
+   ],
+   "drill": "Watch the tutorial once without props. Then copy its first position and its first beat only.",
+   "refs": [
+    "vAlt"
+   ]
+  },
+  {
+   "id": "T5",
+   "tier": 3,
+   "name": "Cross Hands Nitozeng",
+   "desc": "Nitozeng with the arms crossed over each other. The arms stay crossed whichever way the buugeng turn.",
+   "needs": [
+    "T2"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start a normal Nitozeng: a parallel spin at each side.",
+    "Cross one arm over the other.",
+    "Hold the crossed position while both buugeng keep spinning in step.",
+    "Dai Zaobab notes that the arms stay firmly crossed in every direction you spin."
+   ],
+   "watch": [
+    "The blades clipping each other where the arms cross",
+    "Uncrossing without meaning to when the direction changes"
+   ],
+   "drill": "Eight beats open, eight beats crossed, then swap which arm is on top.",
+   "refs": [
+    "vCrossNito"
+   ]
+  },
+  {
+   "id": "T6",
+   "tier": 3,
+   "name": "Three-beat Nitozeng",
+   "desc": "Nitozeng with an extra half finger spin, so the hands make three beats while it looks almost the same as the two-beat version.",
+   "needs": [
+    "T2",
+    "R1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start a normal two-beat Nitozeng.",
+    "Add an extra half finger spin inside the cycle. Dai Zaobab says this is what makes the three beats work.",
+    "From the front it should look almost the same as the two-beat version."
+   ],
+   "watch": [
+    "The extra finger spin breaking the parallel timing of the two hands"
+   ],
+   "drill": "Count one, two, three out loud with one hand only. Add the second hand when the count is steady.",
+   "refs": [
+    "v3beat"
+   ]
+  },
+  {
+   "id": "T7",
+   "tier": 3,
+   "name": "Nitozeng variations",
+   "desc": "Five variations from Dai Zaobab's Nitozeng drill: one side open forward and backward, over head and bottom in both directions, and around the body.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The drill lists the variations by name only: one side open, over head and bottom, and around the body.",
+    "Dai Zaobab's format is 30 seconds on each move with 10 seconds off, and the set done twice."
+   ],
+   "watch": [
+    "Losing the parallel timing when the hands leave your sides"
+   ],
+   "drill": "Follow the drill video in real time once a day. Note which variation breaks first and give it extra time.",
+   "refs": [
+    "vNitoVar"
+   ]
+  },
+  {
+   "id": "N1",
+   "tier": 2,
+   "name": "Kazaguruma (pinwheel)",
+   "desc": "The two buugeng form a cross and are turned with the wrists, so the shape looks like a windmill. Kazaguruma is Japanese for pinwheel.",
+   "needs": [
+    "T1"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Set the two buugeng in a cross shape.",
+    "Turn with the wrists, not the fingers. Dai Zaobab says the wrist spin is what reaches both sides, the bottom and the top positions.",
+    "Go slowly until you can hold the pinwheel shape on every turn. Then raise the speed in small steps.",
+    "Learn it forward and backward."
+   ],
+   "watch": [
+    "The cross closing up so the pinwheel shape is lost",
+    "Switching to finger spins when the wrists tire"
+   ],
+   "drill": "One minute forward, then one minute backward, as in Dai Zaobab's Kazaguruma drill. Film it from the front.",
+   "refs": [
+    "vKaza",
+    "names4",
+    "vKazaTips",
+    "vKazaDojo"
+   ]
+  },
+  {
+   "id": "N2",
+   "tier": 3,
+   "name": "Kazaguruma: lower, upper and fountain",
+   "desc": "Three further Kazaguruma patterns from Dai Zaobab's drill: lower side, upper side and fountain.",
+   "needs": [
+    "N1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The drill gives one minute to each of five patterns: forward, backward, lower side, upper side and fountain.",
+    "In poi, a fountain is a pattern where the spin direction changes relative to the body as you turn or change hand position. I could not confirm how the Kazaguruma fountain is done."
+   ],
+   "watch": [
+    "Losing the cross shape when the hands move up or down"
+   ],
+   "drill": "Follow the five minute drill video. Stop and reset whenever the pinwheel shape breaks.",
+   "refs": [
+    "vKazaDojo",
+    "poiDef"
+   ]
+  },
+  {
+   "id": "N3",
+   "tier": 3,
+   "name": "Tenzeng (galaxy)",
+   "desc": "One of Dai Zaobab's eight officially named moves. He calls it one of the most popular buugeng moves. The forum writes it Tennzeng and translates it as galaxy.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The forum thread shows it only as a row of pictures. Dai Zaobab's tutorial is the place to learn it.",
+    "His notes on Funzeng say Funzeng is Tenzeng with the hands separated vertically, spinning in different directions on a two count. That tells you what to look for."
+   ],
+   "watch": [
+    "Learning it from a clip filmed in mirror mode, which swaps left and right"
+   ],
+   "drill": "Watch the tutorial and write down for each hand: finger or wrist, which direction, tip up or curve up. Then try the first two beats.",
+   "refs": [
+    "vTen",
+    "names3"
+   ]
+  },
+  {
+   "id": "N4",
+   "tier": 4,
+   "name": "Circle Tenzeng",
+   "desc": "An advanced Tenzeng that draws a continuous circle in front of the body and moves across to each side.",
+   "needs": [
+    "N3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Dai Zaobab describes it as Tenzeng played as a continuous circle in front of the body, with a transition to each side.",
+    "Have Tenzeng steady first. He presents this as the advanced version."
+   ],
+   "watch": [
+    "The circle drifting off the wall plane"
+   ],
+   "drill": "Hold Tenzeng on one side for eight beats, then try one transition to the other side and stop.",
+   "refs": [
+    "vCircleTen"
+   ]
+  },
+  {
+   "id": "N5",
+   "tier": 4,
+   "name": "Funzeng (eruption)",
+   "desc": "Based on Tenzeng. The hands are offset one above the other and keep that vertical line while the buugeng spin in different directions on a two count.",
+   "needs": [
+    "N3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from Tenzeng.",
+    "Shift the hands so one is above the other.",
+    "Keep that vertical line while the buugeng spin in different directions on a two count.",
+    "This is all the written description gives, so take the hand detail from Dai Zaobab's tutorial.",
+    "The official name, written Fuunzeng on the forum, means eruption, as in a volcano."
+   ],
+   "watch": [
+    "The hands sliding back to the same height"
+   ],
+   "drill": "Eight counts of Tenzeng, then eight counts of Funzeng, back and forth.",
+   "refs": [
+    "vFun",
+    "names2"
+   ]
+  },
+  {
+   "id": "N6",
+   "tier": 3,
+   "name": "Mannzeng",
+   "desc": "One of the eight officially named moves. Dai Zaobab took the names Mannzeng and Dalazeng from the word mandala.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The forum thread shows the move as a row of pictures read from left to right, and I could not view them.",
+    "Dai Zaobab's Manzeng Turn tutorial opens with a foundation section and four positions, so it is the best place to see the base move."
+   ],
+   "watch": [
+    "Mixing it up with Dalazeng. They are a named pair"
+   ],
+   "drill": "From the tutorial, copy the four positions as still poses before adding any spin.",
+   "refs": [
+    "names1",
+    "vManTurn"
+   ]
+  },
+  {
+   "id": "N7",
+   "tier": 3,
+   "name": "Dalazeng",
+   "desc": "The partner move to Mannzeng, named from the second half of the word mandala.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Dai Zaobab's Manzeng Turn tutorial includes a Dalazeng turn section. One of his short films shows a single rotation of Dalazeng at several timings.",
+    "Learn it alongside Mannzeng."
+   ],
+   "watch": [
+    "Assuming it is Mannzeng in reverse without checking"
+   ],
+   "drill": "Watch one rotation of Dalazeng frame by frame and copy each quarter turn as a still pose.",
+   "refs": [
+    "names1",
+    "vManTurn",
+    "vMulti"
+   ]
+  },
+  {
+   "id": "N8",
+   "tier": 4,
+   "name": "Kaizeng and Rannzeng",
+   "desc": "Two more of the eight official names. Kaizeng means ocean and Rannzeng means orchid. I found no tutorial or written description for either.",
+   "needs": [
+    "N3",
+    "N6"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The 2010 forum threads list both names with picture sequences only.",
+    "Treat them as names to recognise until you find a demonstration by Dai Zaobab or by a teacher who learned from him."
+   ],
+   "watch": [
+    "Trusting a clip that uses the name without saying where it came from"
+   ],
+   "drill": "Search Dai Zaobab's channel for each name, and ask in a buugeng community before you train either move.",
+   "refs": [
+    "names2",
+    "names4"
+   ]
+  },
+  {
+   "id": "N9",
+   "tier": 3,
+   "name": "Butterfly",
+   "desc": "A Dai Zaobab tutorial move that he calls not difficult but very useful. In poi, butterfly means opposite directions in same time, meeting at the top and bottom.",
+   "needs": [
+    "T1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "In poi, a butterfly has the two props turning in opposite directions in same time, so they meet at the top and bottom. Check the tutorial for how Dai Zaobab sets it up with buugeng.",
+    "Keep the hands close together but leave room for the blades to pass."
+   ],
+   "watch": [
+    "The blades hitting each other, or your knuckles, where they meet"
+   ],
+   "drill": "Start with slow half turns and stop at the top and at the bottom to check the gap between the blades.",
+   "refs": [
+    "vButterfly",
+    "poiDef",
+    "forumFr"
+   ]
+  },
+  {
+   "id": "N10",
+   "tier": 5,
+   "name": "3D Kazaguruma",
+   "desc": "A Kazaguruma in which the two buugeng turn on crossing planes, one vertical and one horizontal. Forum members compare it to a poi hybrid or atomic pattern.",
+   "needs": [
+    "N2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Bri Maneely posted it in 2010 as a 3D windmill. The forum later named it 3D Kazaguruma.",
+    "Forum members describe one buugeng on a vertical plane and the other on a horizontal plane, and say it is difficult."
+   ],
+   "watch": [
+    "The two planes drifting until they become the same plane again"
+   ],
+   "drill": "Spin one buugeng on a wheel plane and hold the other still on the horizontal plane. Then swap roles.",
+   "refs": [
+    "forum3d",
+    "v3dK"
+   ]
+  },
+  {
+   "id": "N11",
+   "tier": 5,
+   "name": "Four buugeng pinwheel",
+   "desc": "Two buugeng held in each hand and turned as a pinwheel. Spinning four at once is often called quads.",
+   "needs": [
+    "N1",
+    "R2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Janusburns has two tutorials: a basic four buugeng pinwheel grip, and a finger spin version.",
+    "Have Kazaguruma and finger spins steady with two buugeng first."
+   ],
+   "watch": [
+    "Fingers pinched between the two handles in one hand"
+   ],
+   "drill": "Practise the grip alone first. Hold two buugeng in one hand and open and close the shape without spinning.",
+   "refs": [
+    "vQuad",
+    "vQuad2",
+    "squiggle"
+   ]
+  },
+  {
+   "id": "I1",
+   "tier": 3,
+   "name": "Isolation",
+   "desc": "A circle held in one place while the hand moves around it. Many buugeng isolations are driven by the finger motion.",
+   "needs": [
+    "R2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "In poi terms, an isolation keeps part of the prop in one place while the hand and the far end travel on the same circle.",
+    "With buugeng, one forum description is to use finger rolls and trace the curve of the buugeng, so a circle stays fixed in front of the body.",
+    "Colin Peterson says many buugeng isolations use the finger motion, so have finger spins steady in both directions first.",
+    "Work one hand at a time. Dai Zaobab's drill goes left side, right side, both sides, then alternate."
+   ],
+   "watch": [
+    "The fixed circle wandering instead of staying put",
+    "Tired fingers. The forum post that describes this move mentions sloppy isolations after long sessions"
+   ],
+   "drill": "45 seconds on the left hand, then 45 on the right, as in Dai Zaobab's isolation drill. Use a mark on a mirror as the fixed centre.",
+   "refs": [
+    "vIso",
+    "cp10",
+    "forumFr",
+    "vIsoDojo",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "I2",
+   "tier": 3,
+   "name": "Wrist-driven isolation",
+   "desc": "An isolation in the wheel plane made with the wrist, without finger rolls.",
+   "needs": [
+    "F3!",
+    "F4!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The tutorial describes it as an isolation in the wheel plane, at your side, made without finger rolls.",
+    "A second tutorial moves on to both hands with two buugeng."
+   ],
+   "watch": [
+    "Turning it into an ordinary wrist spin with the hand standing still"
+   ],
+   "drill": "Film yourself from the side while you try it slowly. Check whether the centre of the circle stays in one place.",
+   "refs": [
+    "vWristIso",
+    "vWristIso2"
+   ]
+  },
+  {
+   "id": "I3",
+   "tier": 4,
+   "name": "Both-side and alternate isolation",
+   "desc": "Isolations with both buugeng at once, then alternating from one side to the other.",
+   "needs": [
+    "I1!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Dai Zaobab's isolation drill has four parts: left side, right side, both sides, and alternate.",
+    "Add the second buugeng only when each hand can isolate alone.",
+    "In the alternate version the two hands take turns. The drill page does not describe the timing, so follow the video."
+   ],
+   "watch": [
+    "One circle staying fixed while the other drifts"
+   ],
+   "drill": "Run the eight minute drill: 45 seconds each on left, right, both and alternate, twice through.",
+   "refs": [
+    "vIsoDojo",
+    "vWristIso2"
+   ]
+  },
+  {
+   "id": "I4",
+   "tier": 4,
+   "name": "Side spin isolation",
+   "desc": "An isolation technique from Dai Zaobab, taught with one hand, both hands, the other direction, and as a flat isolation in front.",
+   "needs": [
+    "I1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The tutorial is ordered: one hand, both hands, other direction, then front flat isolation.",
+    "Dai Zaobab says it is different from his earlier isolation moves, so treat it as a new skill."
+   ],
+   "watch": [
+    "Skipping the one hand stage"
+   ],
+   "drill": "Work through the tutorial one chapter per session, one hand at a time.",
+   "refs": [
+    "vSideIso"
+   ]
+  },
+  {
+   "id": "I5",
+   "tier": 4,
+   "name": "Point isolation",
+   "desc": "By the poi definition, an isolation where the end of the prop stays in one place while the hand circles it. Janusburns has a short buugeng tutorial under this name.",
+   "needs": [
+    "I1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "In poi, a point isolation keeps the head of the prop still while the hand makes the big circle. With a buugeng that would mean one tip stays put, but I could not confirm it.",
+    "The tutorial says the move builds on one shown by Chris Hanke and is easy with a little work."
+   ],
+   "watch": [
+    "Calling any small isolation a point isolation"
+   ],
+   "drill": "Watch the tutorial first. Then hold one tip near a fixed mark, such as a tape cross on a mirror, and move the hand around it slowly.",
+   "refs": [
+    "vPointIso",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "I6",
+   "tier": 3,
+   "name": "Anti spin",
+   "desc": "A move completed with finger spins, which Dai Zaobab calls a different method from his other spinning techniques. In poi, antispin means the hand circles one way while the prop turns the other.",
+   "needs": [
+    "R2",
+    "T1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Dai Zaobab says the move uses the finger spin to complete it.",
+    "In poi, an antispin has the hand travelling around a circle in the opposite direction to the spin of the prop. Check the tutorial for how this looks with a buugeng."
+   ],
+   "watch": [
+    "Letting the hand path and the spin fall into the same direction"
+   ],
+   "drill": "Practise slow finger spins in both directions with the arm held at four positions: up, to the side, down, and across the body.",
+   "refs": [
+    "vAnti",
+    "poiDef"
+   ]
+  },
+  {
+   "id": "I7",
+   "tier": 4,
+   "name": "Front cross anti spin",
+   "desc": "An antispin in front of the body. The fingers keep the buugeng in front of you as it passes through four positions that together make one move.",
+   "needs": [
+    "I6"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Dai Zaobab's notes say the move is four positions in front of the body, joined with finger work. They do not say what the positions are, so take them from his tutorial.",
+    "Copy each position as a still pose.",
+    "Join the poses slowly, using the fingers to keep the buugeng in front of you."
+   ],
+   "watch": [
+    "Spinning before the four positions are memorised",
+    "Crossed arms pulling the buugeng off the wall plane"
+   ],
+   "drill": "Hold each of the four positions for a slow count of three, in order, for ten rounds. Only then join them.",
+   "refs": [
+    "vFrontAnti"
+   ]
+  },
+  {
+   "id": "I8",
+   "tier": 5,
+   "name": "Cross anti behind head",
+   "desc": "A crossed antispin done behind the head. It is finger work based on the anti spin, and Dai Zaobab says to learn the anti spin first.",
+   "needs": [
+    "I7"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "It is one of the finger spinning methods and builds on the anti spin.",
+    "Rehearse the arm position behind the head with empty hands, then with the buugeng held still."
+   ],
+   "watch": [
+    "A blade striking the back of the head or an ear",
+    "Pushing the neck forward to make room"
+   ],
+   "drill": "With the buugeng held still, lift both hands behind the head into the crossed position and back, ten times, before adding any spin.",
+   "refs": [
+    "vAntiHead"
+   ]
+  },
+  {
+   "id": "I9",
+   "tier": 3,
+   "name": "Extensions",
+   "desc": "Spinning with both arms fully extended, so the shapes are drawn far from the body. Colin Peterson builds one from wrist movements I and II alone.",
+   "needs": [
+    "R4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Colin Peterson's extension lesson uses only wrist movement I and wrist movement II.",
+    "Both arms are in full extension while the buugeng are manipulated.",
+    "He calls the result a nice motion that is easy to learn. The page does not list the hand path, so follow the lesson."
+   ],
+   "watch": [
+    "Bent elbows that shrink the shape",
+    "Shoulders creeping up toward the ears"
+   ],
+   "drill": "Stand with the arms out to the sides. Do four beats of wrist movement I with straight arms, rest, and repeat five times.",
+   "refs": [
+    "cp6",
+    "cp9"
+   ]
+  },
+  {
+   "id": "B1",
+   "tier": 2,
+   "name": "Hand paths",
+   "desc": "The path the hand draws through the air during a move. Colin Peterson breaks every move into a hand path plus some mix of the three fundamental motions.",
+   "needs": [
+    "R3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Pick one move you can already do.",
+    "Watch only the hands, not the buugeng, and describe the line each hand draws in the air.",
+    "Colin Peterson's point is that each buugeng motion needs some combination of the three fundamental motions, plus a path drawn through the air.",
+    "Walk the path with empty hands, then add the buugeng."
+   ],
+   "watch": [
+    "Watching the tips and ignoring where the hands go"
+   ],
+   "drill": "Film a move, replay it, and trace the hand path on the screen with a finger. Then repeat the move while saying the path out loud.",
+   "refs": [
+    "cp5"
+   ]
+  },
+  {
+   "id": "B2",
+   "tier": 3,
+   "name": "Tracing",
+   "desc": "Any movement that brings the hand into contact with the body or close to it, so the curve of the buugeng follows the outline of the body.",
+   "needs": [
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Colin Peterson defines tracing as any movement that brings the hand in contact with the body, or in close proximity.",
+    "He notes that the curved blades on both sides can be traced all around the body.",
+    "Dai Zaobab's tracing drill works a circle in front of you: the lower part, the upper part, then up and down combined, each forward and backward.",
+    "Start slowly with the lower forward circle only."
+   ],
+   "watch": [
+    "A tip catching clothing or the face as it passes close",
+    "The hand drifting away from the body so the trace is lost"
+   ],
+   "drill": "One minute each: lower forward, upper forward, up and down forward, then the same three backward, as in Dai Zaobab's tracing circle drill.",
+   "refs": [
+    "cp7",
+    "cp9",
+    "vTraceDojo",
+    "poiDef"
+   ]
+  },
+  {
+   "id": "B3",
+   "tier": 3,
+   "name": "Slides",
+   "desc": "A family of moves where the buugeng slides instead of spinning. Dai Zaobab teaches slide and trace together, and Jay Firecat has a tutorial that runs from basic to advanced slides.",
+   "needs": [
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Dai Zaobab presents slide and trace as other ways to play besides spinning.",
+    "Jay Firecat's tutorial is ordered from basic slides to advanced ones, so start at the beginning of it."
+   ],
+   "watch": [
+    "Gripping so tightly that nothing can slide",
+    "Fingers caught between a blade and the body"
+   ],
+   "drill": "Learn the first slide in Jay Firecat's tutorial on each hand before you watch the next one.",
+   "refs": [
+    "vSlide",
+    "vJaySlides"
+   ]
+  },
+  {
+   "id": "B4",
+   "tier": 4,
+   "name": "Folds",
+   "desc": "Transitions in which the buugeng is lifted or folded from one movement into another. Colin Peterson and Adam Benson both teach folds as links between moves.",
+   "needs": [
+    "B2",
+    "B3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Colin Peterson describes folds as lifting, moulding or transitioning the buugeng between other conventional movements.",
+    "Adam Benson's intermediate tutorial covers fold and slide transitions, and Rion Fish shows a 360 folding reset."
+   ],
+   "watch": [
+    "A fold that stops the flow instead of linking two moves"
+   ],
+   "drill": "Pick two moves you know. Find one fold in a tutorial that joins them and repeat that single link twenty times.",
+   "refs": [
+    "vFolds",
+    "vBenson",
+    "vFoldReset"
+   ]
+  },
+  {
+   "id": "B5",
+   "tier": 3,
+   "name": "Passing behind the back",
+   "desc": "One buugeng passed from hand to hand behind the back. Dai Zaobab teaches it straight after the pass in front.",
+   "needs": [
+    "F8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Learn the pass between hands in front first. Dai Zaobab's lesson order puts it immediately before this one.",
+    "Janusburns has a short video of tips on getting into behind the back with S-staffs."
+   ],
+   "watch": [
+    "A blade hitting the lower back or an elbow",
+    "Twisting the trunk so far that the plane tilts"
+   ],
+   "drill": "With no spin, pass the buugeng behind the back at the handle twenty times in each direction.",
+   "refs": [
+    "hopBtb",
+    "vBtb"
+   ]
+  },
+  {
+   "id": "B6",
+   "tier": 3,
+   "name": "Thread the needle",
+   "desc": "The two buugeng swap which one is in front and which is behind, using finger rolls for the spins. Janus describes it as the same move as thread the needle with poi.",
+   "needs": [
+    "R2",
+    "T1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold both buugeng in front of you, one closer to the body than the other.",
+    "Spin them with finger rolls.",
+    "Switch which buugeng is in front and which is behind, and keep switching.",
+    "This is how Janus describes the move on the buugeng forum. His video shows it from several angles."
+   ],
+   "watch": [
+    "The blades colliding at the moment they swap places",
+    "The hands drifting apart so nothing threads"
+   ],
+   "drill": "Without spinning, pass one buugeng in front of the other and back again ten times to learn the spacing. Then add slow finger rolls.",
+   "refs": [
+    "forumFr",
+    "vNeedle"
+   ]
+  },
+  {
+   "id": "B7",
+   "tier": 4,
+   "name": "Manzeng turn",
+   "desc": "Turning the whole body while the buugeng keep spinning in Mannzeng. Dai Zaobab says it is very important for playing buugeng around the body.",
+   "needs": [
+    "N6",
+    "B8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The tutorial is ordered: foundation, four positions, continuous turn, half crossover, centre crossover, then full turn.",
+    "Its closing tips are to isolate the end and to imagine a figure 8 shape."
+   ],
+   "watch": [
+    "Stopping the spin in order to turn",
+    "Rushing to the full turn before the four positions are clean"
+   ],
+   "drill": "Step through the four positions with the buugeng held still. Then add the spin one position at a time.",
+   "refs": [
+    "vManTurn"
+   ]
+  },
+  {
+   "id": "B8",
+   "tier": 3,
+   "name": "360 turn",
+   "desc": "A full turn of the body with the buugeng in play. Dai Zaobab teaches it as a transition and for impact.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Practise the footwork alone first: a full turn on the spot that ends facing the front.",
+    "Have Nitozeng steady so the hands can keep spinning without your attention."
+   ],
+   "watch": [
+    "Dizziness and drifting across the floor",
+    "The planes tilting as the body turns"
+   ],
+   "drill": "Ten full turns each way with the buugeng held still at your sides, with your eyes fixed on one point on the wall. Then add a slow spin.",
+   "refs": [
+    "v360"
+   ]
+  },
+  {
+   "id": "B9",
+   "tier": 4,
+   "name": "One count at waist and shoulders",
+   "desc": "A way of spinning that uses only one count, worked at the waist and then at the shoulders with both hands. Dai Zaobab calls it basic whole-body movement.",
+   "needs": [
+    "T2",
+    "B2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The tutorial is in Japanese. Its order is: what one count is, how to spin it, how to hold, both hands at the waist, both hands at the shoulders, waist and shoulders together, then the whole body.",
+    "Work the waist and the shoulders separately before joining them, as he advises."
+   ],
+   "watch": [
+    "Blades passing close to the face during the shoulder part"
+   ],
+   "drill": "Practise the waist section alone until it is steady before you add the shoulders.",
+   "refs": [
+    "vOneCount"
+   ]
+  },
+  {
+   "id": "C1",
+   "tier": 3,
+   "name": "Arm contact",
+   "desc": "Dai Zaobab's first contact lesson, where the buugeng moves in contact with the arm. His contact buugeng have a curve made to roll gently over the arm.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Dai Zaobab says the arm is a good place to start contact work.",
+    "Contact buugeng are made with a special curved shape that rolls gently, for example over the arm. A separate article says the rounder, radial shape suits contact moves better than the longer sinusoidal one."
+   ],
+   "watch": [
+    "Bruising the forearm by forcing the roll"
+   ],
+   "drill": "Watch the first section of the tutorial. Then rest the buugeng on the forearm with the other hand ready, and feel how the curve sits before you try any roll.",
+   "refs": [
+    "vArm",
+    "bgDai",
+    "squiggle"
+   ]
+  },
+  {
+   "id": "C2",
+   "tier": 4,
+   "name": "Back shoulder contact",
+   "desc": "A contact move at the back of the shoulder. Dai Zaobab calls it one of his favourites and says to fit it into the overall Nitozeng movement.",
+   "needs": [
+    "C1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Dai Zaobab's note is to match it to the overall Nitozeng movement, so have Nitozeng steady first.",
+    "Rehearse where the buugeng will sit, with it held still, before adding motion."
+   ],
+   "watch": [
+    "A blade meeting the neck or an ear"
+   ],
+   "drill": "With a light buugeng held still, place it at the back of the shoulder and take it away again, ten times per side.",
+   "refs": [
+    "vBackShoulder"
+   ]
+  },
+  {
+   "id": "C3",
+   "tier": 4,
+   "name": "Shoulder rotation",
+   "desc": "A contact buugeng rotated on the shoulder, first with one hand, then with the other, then both at the same time.",
+   "needs": [
+    "C1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Part 1 is ordered: foundation, rotate on the shoulder, change hand position, one hand full rotation, body positions, both hands at the same time.",
+    "Part 2 teaches the other hand, then the two together."
+   ],
+   "watch": [
+    "A tip swinging into the face or neck",
+    "Rushing on to both hands"
+   ],
+   "drill": "Work part 1 of the tutorial on one side until the one hand full rotation is steady. Then start part 2.",
+   "refs": [
+    "vShoulder1",
+    "vShoulder2"
+   ]
+  },
+  {
+   "id": "C4",
+   "tier": 5,
+   "name": "Full contact shoulder rotation",
+   "desc": "The last stage of Dai Zaobab's shoulder series: the rotation with both hands, then in full contact.",
+   "needs": [
+    "C3!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Part 3 is ordered: one hand rotation, both hands rotation, then full contact shoulder rotation.",
+    "Finish parts 1 and 2 on both sides first."
+   ],
+   "watch": [
+    "Losing sight of the buugeng and flinching"
+   ],
+   "drill": "Repeat the both hands rotation from part 3 until you can do it without looking. Then try the full contact version.",
+   "refs": [
+    "vShoulder3"
+   ]
+  },
+  {
+   "id": "C5",
+   "tier": 4,
+   "name": "Tenzeng to contact",
+   "desc": "A transition from Tenzeng into contact play, which Dai Zaobab calls very useful for contact buugeng.",
+   "needs": [
+    "N3",
+    "C1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "You need both ends first: a steady Tenzeng, and at least the arm contact."
+   ],
+   "watch": [
+    "Dropping the buugeng at the moment the grip opens"
+   ],
+   "drill": "Practise over grass or a mat. Do Tenzeng for four beats, try the entry once, and reset.",
+   "refs": [
+    "vTenContact"
+   ]
+  },
+  {
+   "id": "C6",
+   "tier": 4,
+   "name": "Neckbend",
+   "desc": "A contact move that Rion Fish calls an oddball, taught in a short intermediate tutorial.",
+   "needs": [
+    "C1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "By its name the move works around the neck, so use a light buugeng and go slowly.",
+    "Have basic arm contact first."
+   ],
+   "watch": [
+    "Hard contact on the neck or jaw"
+   ],
+   "drill": "Watch the tutorial, then rehearse the path with the buugeng held in both hands, without letting it go.",
+   "refs": [
+    "vNeck"
+   ]
+  },
+  {
+   "id": "C7",
+   "tier": 4,
+   "name": "Tosses",
+   "desc": "Throwing and catching a buugeng. The old buugeng forum had a contact and toss section, and Colin Peterson and Dai Zaobab both show tosses on video.",
+   "needs": [
+    "F8",
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Start low, with one buugeng, over a soft floor.",
+    "Catch at the handle, not at a blade.",
+    "Light beginner buugeng can break. The Buugeng-Germany author reports that a cheap first buugeng broke after three months, following some throwing techniques."
+   ],
+   "watch": [
+    "Throwing high before the catch is reliable",
+    "Reaching for a blade while it is still turning"
+   ],
+   "drill": "Lift and release one buugeng a hand's height with no spin and catch it at the handle. Ten catches in a row on each hand before adding any rotation.",
+   "refs": [
+    "vToss",
+    "vThrow",
+    "bgTips",
+    "forumIndex"
+   ]
+  }
+ ],
+ "refs": {
+  "wiki": [
+   "Wikipedia: Buugeng",
+   "https://en.wikipedia.org/wiki/Buugeng"
+  ],
+  "poiDef": [
+   "Wikipedia: Poi definitions (timing, planes, isolation, antispin)",
+   "https://en.wikipedia.org/wiki/Poi_definitions"
+  ],
+  "hopTerms": [
+   "Home of Poi: Poi terminology (beats, timing, planes, isolation)",
+   "https://www.homeofpoi.com/en/lessons/teach/POI/Poi-terminology"
+  ],
+  "squiggle": [
+   "Article: Hypnotic Squiggle Sticks (PDF, publisher not named)",
+   "https://cdn.shopify.com/s/files/1/0568/7915/3301/files/Hypnotic_Squiggle_Sticks.pdf"
+  ],
+  "bgBasics": [
+   "Buugeng-Germany: Basics (finger spin and hand spin, step by step)",
+   "https://buugeng-germany.com/en/grundlagen/"
+  ],
+  "bgTips": [
+   "Buugeng-Germany: Tips and Tricks",
+   "https://buugeng-germany.com/en/tipps-und-tricks/"
+  ],
+  "bgHistory": [
+   "Buugeng-Germany: Buugeng History",
+   "https://buugeng-germany.com/en/buugeng-geschichte/"
+  ],
+  "bgDai": [
+   "Buugeng-Germany: About Dai Zaobab",
+   "https://buugeng-germany.com/en/ueber-dai-zaobab/"
+  ],
+  "names1": [
+   "Buugeng forum, 2010: Official names for moves, Mannzeng and Dalazeng (archived)",
+   "https://web.archive.org/web/20150613040905/http://buugeng.yuku.com/topic/77/OFFICIAL-NAMES-FOR-MOVES-Mannzeng-Dalazeng"
+  ],
+  "names2": [
+   "Buugeng forum, 2010: Official names for moves, Kaizeng and Fuunzeng (archived)",
+   "https://web.archive.org/web/20151001003229/http://buugeng.yuku.com/topic/78/OFFICIAL-NAMES-FOR-MOVES-Kaizeng-Fuunzeng"
+  ],
+  "names3": [
+   "Buugeng forum, 2010: Official names for moves, Tennzeng and Nitouzeng (archived)",
+   "https://web.archive.org/web/20150718032054/http://buugeng.yuku.com/topic/79/OFFICIAL-NAMES-FOR-MOVES-Tennzeng-Nitouzeng"
+  ],
+  "names4": [
+   "Buugeng forum, 2010: Official names for moves, Kazaguruma and Rannzeng (archived)",
+   "https://web.archive.org/web/20150917151846/http://buugeng.yuku.com/topic/80/OFFICIAL-NAMES-FOR-MOVES-Kazaguruma-Rannzeng"
+  ],
+  "forum3d": [
+   "Buugeng forum, 2010: 3D Windmill, later named 3D Kazaguruma (archived)",
+   "https://web.archive.org/web/20150921042810/http://buugeng.yuku.com/topic/61/New-Move3D-Windmill-Update-Move-called-3D-Kazagaruma"
+  ],
+  "forumFr": [
+   "Buugeng forum, 2010: Butterfly finger rolls and finger roll isolations (archived)",
+   "https://web.archive.org/web/20150925003306/http://buugeng.yuku.com/topic/202/Butterfly-finger-rolls-and-finger-roll-isolations"
+  ],
+  "forumIndex": [
+   "Buugeng forum index with the Contact and Toss section (archived 2018)",
+   "https://web.archive.org/web/20181123084109/https://www.tapatalk.com/groups/buugeng/"
+  ],
+  "hopFwd": [
+   "Home of Poi lesson by Dai Zaobab: Forward Spin",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Forward-Spin"
+  ],
+  "hopBack": [
+   "Home of Poi lesson by Dai Zaobab: Backward Spin",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Backward-Spin"
+  ],
+  "hopPass": [
+   "Home of Poi lesson by Dai Zaobab: Passing between hands",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Passing-between-hands"
+  ],
+  "hopBtb": [
+   "Home of Poi lesson by Dai Zaobab: Passing behind the back",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Passing-behind-back"
+  ],
+  "hopBothF": [
+   "Home of Poi lesson by Dai Zaobab: Both hands forwards",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Both-hands-forwards"
+  ],
+  "hopBothB": [
+   "Home of Poi lesson by Dai Zaobab: Both hands backwards",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Both-hands-backwards"
+  ],
+  "hopDiffF": [
+   "Home of Poi lesson by Dai Zaobab: Both hands different direction, forwards",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Both-hands-different-direction-forwards"
+  ],
+  "hopDiffB": [
+   "Home of Poi lesson by Dai Zaobab: Both hands different direction, backwards",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/S-Staff-Buugeng/Both-hands-different-direction-backwards"
+  ],
+  "cp1": [
+   "Home of Poi, Buugeng Basics I by Colin Peterson: Finger Movements",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/I-%7C-Finger-Movements"
+  ],
+  "cp2": [
+   "Home of Poi, Buugeng Basics II by Colin Peterson: Wrist Movement I",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/II-%7C-Wrist-Movement-I"
+  ],
+  "cp3": [
+   "Home of Poi, Buugeng Basics III by Colin Peterson: Wrist Movement II",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/III-%7C-Wrist-Movement-II"
+  ],
+  "cp4": [
+   "Home of Poi, Buugeng Basics IV by Colin Peterson: Combining the 3 Fundamental Movements",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/IV-%7C-Combining-3-Fundamental-Movements"
+  ],
+  "cp5": [
+   "Home of Poi, Buugeng Basics V by Colin Peterson: Intro to Hand Paths",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/V-%7C-Intro-Hand-Paths"
+  ],
+  "cp6": [
+   "Home of Poi, Buugeng Basics VI by Colin Peterson: Hand Paths II, Extensions",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/VI-%7C-Hand-Paths-II-%7C-Extensions"
+  ],
+  "cp7": [
+   "Home of Poi, Buugeng Basics VII by Colin Peterson: Intro to Tracing",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/VII-%7C-Hand-Paths-III-%7C-Intro-Tracing"
+  ],
+  "cp8": [
+   "Home of Poi, Buugeng Basics VIII by Colin Peterson: Timing",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/VIII-%7C-Hand-Paths-IV-%7C-Timing"
+  ],
+  "cp9": [
+   "Home of Poi, Buugeng Basics IX by Colin Peterson: Physical Awareness",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/IX-%7C-Physical-Awareness"
+  ],
+  "cp10": [
+   "Home of Poi, Buugeng Basics X by Colin Peterson: Isolations",
+   "https://www.homeofpoi.com/us/lessons/teach/S-Staff-Buugeng/Buugeng-Basics/X-%7C-Isolations"
+  ],
+  "vBeg1": [
+   "Video: Buugeng Tutorial \" for Beginner Part 1\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=8bmJFvneaPk"
+  ],
+  "vBeg2": [
+   "Video: Buugeng Tutorial \" for Beginner Part 2\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=uTt4E3AlCaA"
+  ],
+  "vNito": [
+   "Video: Buugeng Tutorial \"Nitozeng\" Parallel spin 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=m2EX18svDIo"
+  ],
+  "vCrossNito": [
+   "Video: Buugeng Tutorial \" Cross Hands Nitozeng\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=vh7bz7nxYUE"
+  ],
+  "v3beat": [
+   "Video: Buugeng 3 beats Nitozeng 武幻 弐統漸 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=Y9bdlXi67Zs"
+  ],
+  "vNitoVar": [
+   "Video: Buugeng DoJo \"Variation of Nitozeng 7min\" 武幻道場 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=ni7tliO1vNw"
+  ],
+  "vAlt": [
+   "Video: Buugeng Tutorial \"Alternate Spin\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=Ui1I3M5e1To"
+  ],
+  "vKaza": [
+   "Video: Buugeng Kazaguruma Tutorial. windmill. 武幻 風車 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=y6IfB7v_rfM"
+  ],
+  "vKazaDojo": [
+   "Video: Buugeng DoJo \"Kazaguruma 5min\" 武幻道場 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=iJgjzkqYf3I"
+  ],
+  "vKazaTips": [
+   "Video: Buugeng Tutorial - Tips for Kazaguruma (Sennyo Senn)",
+   "https://www.youtube.com/watch?v=gRj6gl8JRHM"
+  ],
+  "vTen": [
+   "Video: Buugeng Tutorial \"Tenzeng\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=njJCJMa6L2c"
+  ],
+  "vCircleTen": [
+   "Video: Buugeng Tutorial Circle Tenzeng 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=dNCoO7x1BYQ"
+  ],
+  "vFun": [
+   "Video: Buugeng Tutorial Funzeng!! 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=Do-NMv8frZE"
+  ],
+  "vManTurn": [
+   "Video: Buugeng Tutorial \"Manzeng Turn\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=vS8JzknRjRo"
+  ],
+  "vMulti": [
+   "Video: Multiple Buugeng Graphics 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=mges26-w_5o"
+  ],
+  "vButterfly": [
+   "Video: Buugeng Tutorial Butterfly!! 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=ldcDiktO4vo"
+  ],
+  "vIso": [
+   "Video: Buugeng Tutorial \"Isolation\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=8kFD4xUePJM"
+  ],
+  "vIsoDojo": [
+   "Video: Buugeng DoJo \"Isolation 8min\" 武幻道場 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=VLygQKPy9jI"
+  ],
+  "vSideIso": [
+   "Video: Side Spin Isolation Buugeng (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=7gdBAF2xHEg"
+  ],
+  "vAnti": [
+   "Video: Buugeng Tutorial Anti Spin!! 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=PTVRmGs9g3I"
+  ],
+  "vFrontAnti": [
+   "Video: Buugeng Tutorial \" Front Cross Anti Spin\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=8QN5k0fTNxI"
+  ],
+  "vAntiHead": [
+   "Video: Buugeng Tutorial \"Cross Anti Behind Head\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=DvdOZijA2zs"
+  ],
+  "vSlide": [
+   "Video: Buugeng Tutorial \"Slide & trace\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=oew49DVfk7Q"
+  ],
+  "vTraceDojo": [
+   "Video: Buugeng DoJo \"tracing circle 14min\" 武幻道場 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=SLRCSv3Vjkg"
+  ],
+  "v360": [
+   "Video: Buugeng Tutorial \"360 Turn\" 武幻 ブゲン (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=x_pPcuW6AbQ"
+  ],
+  "vOneCount": [
+   "Video: 武幻 Buugeng 腰と肩での1カウント (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=N3JYY_L4iOI"
+  ],
+  "vArm": [
+   "Video: Buugeng Tutorial \"Contact Arm\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=zLkpV69qfTY"
+  ],
+  "vBackShoulder": [
+   "Video: Buugeng Tutorial \"back shoulder CONTACT\" 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=thDd0ODUF3Y"
+  ],
+  "vShoulder1": [
+   "Video: Contact Buugeng Shoulder Rotation part 1 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=6rUOTorxJkw"
+  ],
+  "vShoulder2": [
+   "Video: Contact Buugeng Shoulder Rotation part 2 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=VDD_cs8-5K8"
+  ],
+  "vShoulder3": [
+   "Video: Full Contact Shoulder Rotation part 3 Buugeng 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=8ct4nH8hWfI"
+  ],
+  "vTenContact": [
+   "Video: Tenzeng to Contact! 天漸からコンタクト (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=5m_B6BuWChc"
+  ],
+  "vThrow": [
+   "Video: Buugeng throw and flow collaboration Dai Zaobab 武幻 (Zaobab BUUGENG)",
+   "https://www.youtube.com/watch?v=UrXAjBz_ZQU"
+  ],
+  "vParts": [
+   "Video: Buugeng 101 - Lesson 1 - Basic Parts (FishShapes - Rion Fish)",
+   "https://www.youtube.com/watch?v=AKhtKUmSQdY"
+  ],
+  "vPlanes": [
+   "Video: Buugeng 101 - Lesson 2: Planes (FishShapes - Rion Fish)",
+   "https://www.youtube.com/watch?v=THdtYg4JISg"
+  ],
+  "vBeats": [
+   "Video: Buugeng 101 - Lesson 3: Beats (FishShapes - Rion Fish)",
+   "https://www.youtube.com/watch?v=laxxAM8siD8"
+  ],
+  "vLead": [
+   "Video: Buugeng 101 - Lesson 4: Lead (FishShapes - Rion Fish)",
+   "https://www.youtube.com/watch?v=6Q20bfkqM10"
+  ],
+  "vNeck": [
+   "Video: Intermediate - Neckbend (FishShapes - Rion Fish)",
+   "https://www.youtube.com/watch?v=Og1wj3FQ204"
+  ],
+  "vFoldReset": [
+   "Video: Intermediate: 360 folding reset. (FishShapes - Rion Fish)",
+   "https://www.youtube.com/watch?v=B4JwcAVYxxM"
+  ],
+  "vDandy": [
+   "Video: Beginner Buugeng Tutorial - Lesson 1: Foundations of Flow (Obsidian Dandy)",
+   "https://www.youtube.com/watch?v=tszr4A-oJf8"
+  ],
+  "vModern": [
+   "Video: Buugeng Basics I Tutorial by Modern Juggling (Modern Juggling)",
+   "https://www.youtube.com/watch?v=kNabOky4iGc"
+  ],
+  "vJaySlides": [
+   "Video: BUUGENG / S STAFFS TUTORIAL, SLIDES, by Jay Firecat (jay firecat)",
+   "https://www.youtube.com/watch?v=IqJfyDkymDw"
+  ],
+  "vJay3d": [
+   "Video: Buugeng tutorial, 3D patterns, by Jay Firecat (kamarati creations)",
+   "https://www.youtube.com/watch?v=wDRV0mThIlA"
+  ],
+  "vWristIso": [
+   "Video: Wrist-driven isolations (Janusburns)",
+   "https://www.youtube.com/watch?v=Cvnc2sfy4vQ"
+  ],
+  "vWristIso2": [
+   "Video: Wrist-driven isolations with both hands (Janusburns)",
+   "https://www.youtube.com/watch?v=Hc-rzQwPXSU"
+  ],
+  "vPointIso": [
+   "Video: Buugeng point isolation tutorial (Janusburns)",
+   "https://www.youtube.com/watch?v=tjs4cslNuy8"
+  ],
+  "vBtb": [
+   "Video: Behind the back with S-staff (Buugeng) (Janusburns)",
+   "https://www.youtube.com/watch?v=0Jgth3QQafM"
+  ],
+  "vNeedle": [
+   "Video: Thread the needle (Janusburns)",
+   "https://www.youtube.com/watch?v=xKm810Lqjzo"
+  ],
+  "vQuad": [
+   "Video: 4 Buugeng grip and pinwheel tutorial (Janusburns)",
+   "https://www.youtube.com/watch?v=RNzd-UWUaN0"
+  ],
+  "vQuad2": [
+   "Video: 4 Buugeng fingerspin pinwheel (Janusburns)",
+   "https://www.youtube.com/watch?v=UgyNJ9IPN0A"
+  ],
+  "vCombine": [
+   "Video: Buugeng Basics IV | Combining the 3 Fundamental Motions (Colin Peterson)",
+   "https://www.youtube.com/watch?v=MFKAJhdApXk"
+  ],
+  "vFolds": [
+   "Video: Buugeng Ideas II | Folds I (Colin Peterson)",
+   "https://www.youtube.com/watch?v=9Yj37tVA3N8"
+  ],
+  "vToss": [
+   "Video: Buugeng Ideas IX | Tossing I | Isolations IV | Tracing IV (Colin Peterson)",
+   "https://www.youtube.com/watch?v=vtJd3HSZpJ0"
+  ],
+  "vBenson": [
+   "Video: Intermediate buugeng tutorial (Adam Benson)",
+   "https://www.youtube.com/watch?v=7OKlyEqoBmg"
+  ],
+  "v3dK": [
+   "Video: Buugeng- 3D kazaguruma (Bri Maneely)",
+   "https://www.youtube.com/watch?v=YY6LH0fFnrA"
+  ],
+  "vFingerRolls": [
+   "Video: beginner Buugeng tutorial - finger rolls and transitions! (bigo)",
+   "https://www.youtube.com/watch?v=UJaGtXV1Tlk"
+  ]
+ },
+ "phases": [
+  {
+   "id": "p1",
+   "name": "One buugeng",
+   "time": "2 to 4 weeks",
+   "skills": "F1 F2 F3 F4 F5 F6 F7 F8 R1 R2",
+   "gate": "Twenty forward and twenty backward wrist spins on each hand with no drop, then ten finger spin turns on each hand.",
+   "req": [
+    "F3!",
+    "F4!",
+    "R1!"
+   ]
+  },
+  {
+   "id": "p2",
+   "name": "Two buugeng in step",
+   "time": "1 to 3 months",
+   "skills": "R3 R4 T1 T2 T3 T4 N1 B1",
+   "gate": "Nitozeng forward and backward, and Kazaguruma forward, 30 seconds each, with the two buugeng staying in step on video.",
+   "req": [
+    "T2!",
+    "N1"
+   ]
+  },
+  {
+   "id": "p3",
+   "name": "Named forms and isolation",
+   "time": "3 to 6 months",
+   "skills": "R5 T5 T6 T7 N2 N3 N6 N7 N9 I1 I2 I6 I9 B2 B3 B5 B6 B8",
+   "gate": "A one minute sequence with no drop that links Nitozeng, Kazaguruma, Tenzeng, one isolation and one traced path.",
+   "req": [
+    "N3",
+    "I1",
+    "B2"
+   ]
+  },
+  {
+   "id": "p4",
+   "name": "Body, contact and release",
+   "time": "6 to 12 months",
+   "skills": "N4 N5 I3 I4 I5 I7 B4 B7 B9 C1 C2 C3 C5 C6 C7",
+   "gate": "A two minute sequence that includes a body turn, one contact move and one caught toss, clean on video within three takes.",
+   "req": [
+    "B7",
+    "C1",
+    "C7"
+   ]
+  },
+  {
+   "id": "p5",
+   "name": "Own piece",
+   "time": "Open-ended",
+   "skills": "N8 N10 N11 I8 C4",
+   "gate": "A three minute piece to music with no drop, including the cross anti behind head and one other tier 5 move.",
+   "req": [
+    "I8"
+   ]
+  }
+ ]
+}

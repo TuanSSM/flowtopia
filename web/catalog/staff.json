@@ -1,0 +1,2983 @@
+{
+ "id": "staff",
+ "name": "Staff",
+ "about": "Names and definitions come from the Home of Poi staff lessons, archived copies of the Inspinerate, MCP and Contact-Staff.com tutorial sites, Wikipedia and tutorial video pages. Many spinning lessons are video only, so those skills say when the mechanics are not written down. Prerequisites, tiers and times are coaching proposals. Fire is not covered.",
+ "careNote": "Learn this slowly with a light or padded practice staff, in clear space away from people, lights and windows, and stop if the staff keeps coming near your head or throat.",
+ "branches": [
+  {
+   "k": "F",
+   "name": "Foundations",
+   "blurb": "Staff choice, planes, grip and the rotor family"
+  },
+  {
+   "k": "E",
+   "name": "Figure-8s",
+   "blurb": "Forward and reverse figure-8s and their variations"
+  },
+  {
+   "k": "P",
+   "name": "Passes",
+   "blurb": "Hand changes in front, behind the back, behind the head and under the leg"
+  },
+  {
+   "k": "T",
+   "name": "Throws",
+   "blurb": "Tosses, catches and kick-ups"
+  },
+  {
+   "k": "M",
+   "name": "Shapes and flow",
+   "blurb": "Turns, isolation, antispin, linking and routines"
+  },
+  {
+   "k": "C",
+   "name": "Contact basics",
+   "blurb": "Wraps, palm spin, conveyor belt and stalls"
+  },
+  {
+   "k": "K",
+   "name": "Fishtails",
+   "blurb": "One-beat figure-8s on the back of the hand, and their family"
+  },
+  {
+   "k": "H",
+   "name": "Halo and angel",
+   "blurb": "Rolls across the upper back, turning halos and arm-to-arm rolls"
+  },
+  {
+   "k": "S",
+   "name": "Steve, SNES and matrix",
+   "blurb": "Arm and neck rolls, shoulder lines and the matrix"
+  }
+ ],
+ "skills": [
+  {
+   "id": "F1",
+   "tier": 1,
+   "name": "Choosing a staff",
+   "desc": "Pick a practice staff. Ground to shoulder height is a good starting length, and a short, light staff bruises less when it hits you.",
+   "needs": [],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start with any straight pole or broomstick between shoulder and chin height. The sources say exact length and weight matter little at first.",
+    "A short, light staff is easier to carry and hurts less. A longer, heavier one keeps its own momentum and suits contact moves.",
+    "Spin it slowly at your side and check it does not hit the ground.",
+    "For contact work later the staff matters more. Weight and a grippy surface help."
+   ],
+   "watch": [
+    "A staff much taller than you, which keeps hitting the ground",
+    "Starting on a heavy staff, which leaves more bruises"
+   ],
+   "drill": "Stand the staff upright beside you and see where the top reaches. Then turn it slowly at each side and listen for the floor.",
+   "refs": [
+    "hopSel",
+    "mcpSpin",
+    "mcpCon"
+   ]
+  },
+  {
+   "id": "F2",
+   "tier": 1,
+   "name": "Five planes",
+   "desc": "The five planes a staff can spin in: front, back, left side, right side and top.",
+   "needs": [],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Front plane: the staff turns flat in front of you, as if against a wall you are facing. Inspinerate calls this wall plane.",
+    "Back plane: the same circle, behind you.",
+    "Left and right planes: the staff turns beside you.",
+    "Top plane: the staff turns flat above your head.",
+    "Know which plane a move is in before you practise it, and try to keep it there."
+   ],
+   "watch": [
+    "The staff tilting out of its plane as the arm tires",
+    "Not knowing which plane a move belongs to"
+   ],
+   "drill": "Hold the staff still in each of the five planes in turn and say the plane out loud. Then turn it one slow circle in each.",
+   "refs": [
+    "w2s",
+    "inConv",
+    "hopB1"
+   ]
+  },
+  {
+   "id": "F3",
+   "tier": 1,
+   "name": "Light centre grip",
+   "desc": "Hold the staff near its centre, where it balances, with a light grip so its momentum does the work.",
+   "needs": [
+    "F1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Find the middle. A staff with equal ends balances at the centre of its length.",
+    "Hold it there in one hand. The end on your thumb side is the thumb end, which sources use to describe the figure-8.",
+    "Keep the grip light and feel the momentum, instead of forcing the staff round.",
+    "Some contact moves start a hand span away from the centre, so learn to find that spot too."
+   ],
+   "watch": [
+    "Squeezing hard, which stiffens the wrist",
+    "Holding off centre without meaning to, so one end swings heavy"
+   ],
+   "drill": "Balance the staff across one open hand to find the centre. Close the hand, turn the staff a half turn each way, then swap hands. Repeat 20 times without looking.",
+   "refs": [
+    "wFire",
+    "mcpSpin",
+    "hopF8",
+    "vHandWrap"
+   ]
+  },
+  {
+   "id": "F4",
+   "tier": 1,
+   "name": "Rotor",
+   "desc": "The staff turns in a circle in front of you, on the front plane. One of the two basic moves of staff spinning.",
+   "needs": [
+    "F2",
+    "F3"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold the centre and turn the staff in a flat circle in front of you, as if on a wall you are facing.",
+    "Keep it turning by changing hands. The sources show hand over hand, and a variation with a full rotation in each hand. Take the hand change from the linked lesson.",
+    "Learn it in both directions. It does not need to be fast or smooth before you move on.",
+    "Keep the circle flat on the front plane."
+   ],
+   "watch": [
+    "The circle tilting toward you, so the ends pass close to your shins or face",
+    "Only learning your comfortable direction"
+   ],
+   "drill": "Thirty seconds of slow rotor one way, stop, thirty seconds the other way. Count the drops and repeat until both directions are equal.",
+   "refs": [
+    "vRotor",
+    "mcpSpin",
+    "hopRotors",
+    "w2s",
+    "mauger"
+   ]
+  },
+  {
+   "id": "F5",
+   "tier": 2,
+   "name": "One-hand rotor",
+   "desc": "The rotor kept spinning in front of you with one hand. Home of Poi lists it as a beginner lesson with no written steps.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Until then, practise the two-hand rotor in both directions so the front plane is steady.",
+    "Hold the staff still in one hand on the front plane and check how far the wrist turns it each way without strain."
+   ],
+   "watch": [
+    "Forcing the wrist past its comfortable range",
+    "The staff drifting off the front plane"
+   ],
+   "drill": "Ten slow two-hand rotors in each direction with the weaker hand doing most of the work and the other hand only guiding.",
+   "refs": [
+    "hopB2",
+    "hopRotors"
+   ]
+  },
+  {
+   "id": "F6",
+   "tier": 1,
+   "name": "Side rotor",
+   "desc": "A rotor on the side plane, with the staff turning beside you instead of in front.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Move the rotor so its circle sits beside you, on the left or the right plane.",
+    "Keep it turning the way you learned in front, with the circle flat at your side.",
+    "Watch the lower end. On this plane it passes near the ground and your legs.",
+    "Learn it on both sides."
+   ],
+   "watch": [
+    "The lower end clipping the ground or your shin",
+    "The circle leaning in toward your body"
+   ],
+   "drill": "Ten slow turns on the right side, ten on the left, then repeat in the other direction.",
+   "refs": [
+    "w2s",
+    "hopB1"
+   ]
+  },
+  {
+   "id": "F7",
+   "tier": 2,
+   "name": "Helicopter rotor",
+   "desc": "A rotor on the top plane: the staff turns flat above your head.",
+   "needs": [
+    "F4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Start a rotor in front, then move it up until the staff turns flat above your head.",
+    "Keep the circle level and well above head height.",
+    "Look forward, not up at the staff.",
+    "Home of Poi shows two variations, titled With behind waist and With added palm spin."
+   ],
+   "watch": [
+    "The circle dipping toward your head or shoulders",
+    "Spinning near lights, ceilings or other people"
+   ],
+   "drill": "Ten level turns above the head in each direction. Lower to a front rotor between sets.",
+   "refs": [
+    "w2s",
+    "mcpSpin",
+    "hopHeli"
+   ]
+  },
+  {
+   "id": "F8",
+   "tier": 2,
+   "name": "Finger spins",
+   "desc": "Spinning the staff between the fingers to get extra beats. Home of Poi shows a three finger and a four finger method.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Two methods are named: three finger and four finger. Pick one video and follow it.",
+    "Warm up the fingers and wrists first, and start with a light staff."
+   ],
+   "watch": [
+    "Using a heavy staff, which strains the fingers",
+    "Looking down at the hand so your posture collapses"
+   ],
+   "drill": "Before training it, hold the centre between fingers and thumb and roll the staff a quarter turn each way, 20 times per hand, to loosen the fingers.",
+   "refs": [
+    "hopFing",
+    "mcpSpin"
+   ]
+  },
+  {
+   "id": "E1",
+   "tier": 1,
+   "name": "Forward figure-8",
+   "desc": "The thumb end traces a circle on each side of the body, with the path crossing in front. With the rotor, one of the two basic moves.",
+   "needs": [
+    "F2",
+    "F3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold the centre in one hand. Trace a circle with the thumb end at one side of your body.",
+    "Cross in front and trace the same circle on the other side. The two circles make the 8.",
+    "Keep the grip light and let the momentum carry the staff.",
+    "Forward and reverse are the two directions of this path. Use the linked video to check which one you are doing.",
+    "Learn it in each hand."
+   ],
+   "watch": [
+    "Forcing the staff round with a tight grip",
+    "Clipping your shins or swinging too wide: slow down and keep each circle beside you"
+   ],
+   "drill": "Twenty continuous forward figure-8s in the right hand, then twenty in the left, at walking pace.",
+   "refs": [
+    "hopF8",
+    "mcpSpin",
+    "vFwd8",
+    "vBasicFlow",
+    "wTwirl"
+   ]
+  },
+  {
+   "id": "E2",
+   "tier": 1,
+   "name": "Reverse figure-8",
+   "desc": "The figure-8 in the other direction. One tutorial calls it slightly more awkward than forward, and essential for later tricks.",
+   "needs": [
+    "E1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Run the same two side circles as the forward figure-8, in the opposite direction.",
+    "Expect it to feel more awkward at first.",
+    "Keep the crossing in front of you and the circles at your sides.",
+    "Learn it in each hand. MCP stresses both directions in both hands."
+   ],
+   "watch": [
+    "Giving up on the weaker hand",
+    "Letting the path drift into one circle in front instead of two at the sides"
+   ],
+   "drill": "Ten forward, stop, ten reverse, in one hand. Then the other hand. Repeat three times.",
+   "refs": [
+    "vRev8",
+    "mcpSpin",
+    "vBasicFlow"
+   ]
+  },
+  {
+   "id": "E3",
+   "tier": 2,
+   "name": "Forward to reverse flow",
+   "desc": "Changing from forward figure-8s to reverse and back without stopping. One teacher calls the full cycle the basic flow.",
+   "needs": [
+    "E1",
+    "E2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "It appears as Figure of Eight Forwards to Reverse on the MCP list, and as forward to reverse and reverse to forward in the Basic Flow video.",
+    "Prepare by making both directions equally steady in each hand."
+   ],
+   "watch": [
+    "Stopping dead between directions",
+    "Only changing direction on your strong side"
+   ],
+   "drill": "Five forward figure-8s, a clean stop, five reverse, a clean stop. Once you have seen how the change is done, shorten the stop each round.",
+   "refs": [
+    "vBasicFlow",
+    "mcpSpinList"
+   ]
+  },
+  {
+   "id": "E4",
+   "tier": 2,
+   "name": "Figure-8 passing",
+   "desc": "Passing a figure-8 between the hands, so the staff changes hand while the pattern continues.",
+   "needs": [
+    "E1",
+    "E2"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "MCP suggests starting once you have, say, a forward figure-8 in one hand and a reverse in the other.",
+    "Start a figure-8 in one hand.",
+    "Hand the staff to the other hand without breaking the path, and continue the 8 there. The videos show where in the pattern to change.",
+    "Home of Poi teaches counted versions, such as the 3 count figure-8.",
+    "Learn it forward and reverse."
+   ],
+   "watch": [
+    "Grabbing at the staff instead of meeting it",
+    "The 8 collapsing into one circle during the pass"
+   ],
+   "drill": "Four figure-8s in the right hand, pass, four in the left, pass. Then three, two and one between passes.",
+   "refs": [
+    "mcpSpin",
+    "hopInt",
+    "mcpCombo"
+   ]
+  },
+  {
+   "id": "E5",
+   "tier": 3,
+   "name": "Shotgun (double spin, snake)",
+   "desc": "A figure-8 with extra beats added. Also called double spin or snake, and listed forwards and reverse.",
+   "needs": [
+    "E4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "What the sources do say: it adds extra beats to the figure-8, and it exists forwards and reverse.",
+    "Prepare with steady figure-8 passing in both directions."
+   ],
+   "watch": [
+    "Rushing the extra beat so the staff leaves its plane",
+    "Training only one direction"
+   ],
+   "drill": "Twenty figure-8 passes forward and twenty reverse without a drop, as the base for adding beats.",
+   "refs": [
+    "mcpSpin",
+    "orb",
+    "mcpSpinList"
+   ]
+  },
+  {
+   "id": "E6",
+   "tier": 2,
+   "name": "One-beat",
+   "desc": "A pattern the MCP tutorial calls even simpler than a figure-8. Fishtails are later defined as one-beat figure-8s on the back of the hand.",
+   "needs": [
+    "E1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "It appears as One Beats on the MCP site, as 1-Beat at Home of Poi and in the Staff Manipulation DVD chapter list.",
+    "Keep your figure-8s slow and even while you look for a demonstration."
+   ],
+   "watch": [
+    "Guessing the pattern from the name alone"
+   ],
+   "drill": "Slow figure-8s, counting each side out loud, ten per hand. A steady count makes any counted pattern easier to follow.",
+   "refs": [
+    "mcpSpin",
+    "hopB1",
+    "orb"
+   ]
+  },
+  {
+   "id": "E7",
+   "tier": 2,
+   "name": "Turning figure-8",
+   "desc": "Turning the body around while the figure-8 keeps going, or moving the 8 to the other side of the body.",
+   "needs": [
+    "E3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin a steady figure-8.",
+    "Turn your body around while the staff keeps its rhythm. Start with small steps.",
+    "Also try moving the whole figure-8 to the other side of your body.",
+    "Turn both ways."
+   ],
+   "watch": [
+    "Stopping the staff in order to turn",
+    "Looking at your feet"
+   ],
+   "drill": "Eight figure-8s facing forward, turn all the way round in as many beats as you need, then eight more. Reduce the beats used for the turn.",
+   "refs": [
+    "mcpSpin",
+    "orb",
+    "hopB1"
+   ]
+  },
+  {
+   "id": "E8",
+   "tier": 3,
+   "name": "Figure-8 behind the back",
+   "desc": "Passing a figure-8 behind the back. Home of Poi teaches it forward and reverse.",
+   "needs": [
+    "E4",
+    "P2"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start figure-8 passing in front.",
+    "Make one of the passes behind your back instead of in front.",
+    "Bring the staff back to the front and continue the 8.",
+    "Learn it forward and reverse. The lessons are video only, so check the timing there."
+   ],
+   "watch": [
+    "Leaning forward to make room",
+    "Losing the 8 and finishing with a plain behind-the-back pass"
+   ],
+   "drill": "Three figure-8 passes in front, one behind the back, repeated for a minute. Then reverse the direction.",
+   "refs": [
+    "hopInt",
+    "mcpSpin",
+    "mcpCombo"
+   ]
+  },
+  {
+   "id": "E9",
+   "tier": 3,
+   "name": "Figure-8 behind the head",
+   "desc": "A figure-8 variation taken behind the head. The MCP site lists it, but its description could not be read.",
+   "needs": [
+    "E8",
+    "P4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare with the pinwheel, which already takes the staff behind the head.",
+    "Use a light or padded staff when you first try it."
+   ],
+   "watch": [
+    "Ducking the head forward into the staff's path",
+    "Trying it at full speed"
+   ],
+   "drill": "Slow pinwheels in both directions, ten each, to get used to the staff passing behind your head.",
+   "refs": [
+    "mcpSpinList"
+   ]
+  },
+  {
+   "id": "E10",
+   "tier": 3,
+   "name": "Between-the-legs figure-8",
+   "desc": "Figure-8 moves where the staff goes between the legs. Home of Poi shows sideways and backwards versions.",
+   "needs": [
+    "E4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Home of Poi shows three clips: between the legs with figure 8, sideways, and backwards.",
+    "Prepare with a wide stance and slow figure-8s close to the legs."
+   ],
+   "watch": [
+    "A narrow stance, which leaves no room for the staff",
+    "A long staff catching the ground"
+   ],
+   "drill": "Stand with feet wide. Do ten slow figure-8s on each side with the lower end passing just in front of your shins.",
+   "refs": [
+    "hopLegs"
+   ]
+  },
+  {
+   "id": "P1",
+   "tier": 1,
+   "name": "Hand-to-hand passing",
+   "desc": "Passing the staff from one hand to the other in front of you. The MCP site builds whole patterns from passes alone.",
+   "needs": [
+    "F4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold the centre in one hand with the staff still.",
+    "Give it to the other hand at the centre, without looking down.",
+    "Add a slow rotor and pass during the turn.",
+    "Pass in both directions."
+   ],
+   "watch": [
+    "Passing off centre, so the staff tips",
+    "Watching your hands"
+   ],
+   "drill": "Fifty passes with the staff still, eyes forward. Then fifty during a slow rotor.",
+   "refs": [
+    "mcpSpin",
+    "mcpCombo",
+    "vSkip"
+   ]
+  },
+  {
+   "id": "P2",
+   "tier": 2,
+   "name": "Behind-the-back pass",
+   "desc": "The staff is passed from one hand to the other behind the back while it turns. MCP suggests it for anyone stuck on the figure-8.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin a rotor in front.",
+    "Take the staff behind your back with one hand.",
+    "Give it to the other hand behind you and bring it back to the front.",
+    "Get the receiving hand in place early.",
+    "Learn it to both sides."
+   ],
+   "watch": [
+    "The staff drifting round toward the side of your stronger arm",
+    "Bending forward instead of reaching back"
+   ],
+   "drill": "Rotor in front, one pass behind the back, rotor in front. Ten times to the left and ten to the right.",
+   "refs": [
+    "mcpSpin",
+    "vBackPass",
+    "hopBtb"
+   ]
+  },
+  {
+   "id": "P3",
+   "tier": 2,
+   "name": "Rotor behind the back",
+   "desc": "Passing continuously behind the back, so the rotor keeps turning on the back plane.",
+   "needs": [
+    "P2"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Do one behind-the-back pass.",
+    "Instead of returning to the front, pass again behind you.",
+    "Keep the circle flat on the back plane.",
+    "Home of Poi says you can do it however you want at first. It tends to creep round toward your good arm, so notice that and correct it."
+   ],
+   "watch": [
+    "The staff creeping round to one side",
+    "Arching the back to reach"
+   ],
+   "drill": "Count continuous passes behind the back, and stop when the staff leaves the back plane. Aim for ten in each direction.",
+   "refs": [
+    "mcpSpin",
+    "hopBtb",
+    "w2s"
+   ]
+  },
+  {
+   "id": "P4",
+   "tier": 3,
+   "name": "Pinwheel",
+   "desc": "A pass behind the back followed by a pass behind the head. The Staff Manipulation DVD also calls it the clock.",
+   "needs": [
+    "P3"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Pass the staff behind your back.",
+    "As it comes round, take it up and pass it behind your head.",
+    "Bring it down and repeat, so the two passes link.",
+    "Learn it slowly with a light staff, in both directions."
+   ],
+   "watch": [
+    "Dropping the head forward into the staff",
+    "Rushing the pass behind the head, where you cannot see the staff"
+   ],
+   "drill": "One pass behind the back, pause, one pass behind the head, pause. Ten rounds, then remove the pauses.",
+   "refs": [
+    "mcpSpin",
+    "orb",
+    "mcpCombo"
+   ]
+  },
+  {
+   "id": "P5",
+   "tier": 2,
+   "name": "Passing around the body",
+   "desc": "Passing the staff around the body. MCP places it after a forward figure-8 in one hand and a reverse in the other.",
+   "needs": [
+    "P2",
+    "E2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "MCP lists it as a next step once you have a forward figure-8 in one hand and a reverse in the other.",
+    "A separate video teaches a move called Around the World. Check whether it is the same pattern before copying it."
+   ],
+   "watch": [
+    "Assuming two videos with similar names teach the same move"
+   ],
+   "drill": "Hand the still staff around your waist, front to back to front, ten times each way, to learn where your hands meet.",
+   "refs": [
+    "mcpSpin",
+    "vAround"
+   ]
+  },
+  {
+   "id": "P6",
+   "tier": 2,
+   "name": "Under-the-leg pass",
+   "desc": "Taking the staff under the leg. Home of Poi shows it as a rotor variation, and MCP and the Staff Manipulation DVD list it too.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Home of Poi shows a rotor with an under leg move and one with a behind leg move.",
+    "Prepare by lifting one knee and passing the still staff under the thigh from hand to hand, keeping your balance."
+   ],
+   "watch": [
+    "Losing balance on the standing leg",
+    "A staff too long to clear the ground under the leg"
+   ],
+   "drill": "Raise one knee, pass the still staff under it from hand to hand, lower the leg. Ten times per leg.",
+   "refs": [
+    "hopRotors",
+    "hopInt",
+    "mcpSpinList",
+    "orb"
+   ]
+  },
+  {
+   "id": "P7",
+   "tier": 3,
+   "name": "Figure-8 switch",
+   "desc": "Rotors combined with figure-8s so the staff switches hands on each side of the body.",
+   "needs": [
+    "F4",
+    "E1",
+    "E2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "You need the rotor and both figure-8 directions first.",
+    "Start a figure-8.",
+    "On each side of your body, change hands as you do in the rotor.",
+    "Keep the 8 shape while the hands alternate. Follow the linked tutorial for the timing."
+   ],
+   "watch": [
+    "Changing hands in front instead of at the sides",
+    "Losing the figure-8 path"
+   ],
+   "drill": "Two plain figure-8s, then one with a switch on each side. Repeat for one minute.",
+   "refs": [
+    "vSwitch",
+    "csSpin"
+   ]
+  },
+  {
+   "id": "P8",
+   "tier": 3,
+   "name": "Varial",
+   "desc": "A front rotor, a forward figure-8, a back rotor and a reverse figure-8 in sequence. The tutorial says it is good for generating speed.",
+   "needs": [
+    "P7",
+    "P3",
+    "E3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Front rotor.",
+    "Into a forward figure-8.",
+    "Into a rotor behind the back.",
+    "Into a reverse figure-8, and back to the start.",
+    "Learn each join on its own before running the whole cycle."
+   ],
+   "watch": [
+    "Speeding up before the joins are clean",
+    "Skipping the back rotor"
+   ],
+   "drill": "Run the four parts with a full stop between each. Remove one stop per session.",
+   "refs": [
+    "vVarial",
+    "csSpin"
+   ]
+  },
+  {
+   "id": "T1",
+   "tier": 2,
+   "name": "Basic throw",
+   "desc": "Releasing the spinning staff into the air and catching it. Home of Poi teaches a basic throw, then throws with a slow and a faster spin.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Home of Poi orders its clips: the basic throw, throwing with a slow spin, then with a faster spin.",
+    "Train outdoors or under a high ceiling, with a light staff and nobody nearby.",
+    "Keep first throws low."
+   ],
+   "watch": [
+    "Throwing near people, windows or lights",
+    "Reaching for a bad throw instead of stepping back and letting it fall"
+   ],
+   "drill": "From a rotor, rehearse the release position without letting go, ten times per hand. Then follow the video for the first low throws.",
+   "refs": [
+    "hopIntro",
+    "hopThr",
+    "vSkip"
+   ]
+  },
+  {
+   "id": "T2",
+   "tier": 2,
+   "name": "Thumb toss",
+   "desc": "A toss from the middle of the staff: it rolls over the thumb and a slight hand movement lifts it. The foundation toss of baton twirling.",
+   "needs": [
+    "T1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Hold the staff at the middle in one hand, at waist height.",
+    "Let it roll over the thumb.",
+    "Add a slight lift of the hand so it leaves upward.",
+    "Catch it at the middle. Keep it low at first.",
+    "Learn it from both hands."
+   ],
+   "watch": [
+    "Throwing with the whole arm instead of a small lift",
+    "Tossing forward, away from you, instead of up"
+   ],
+   "drill": "Ten low thumb tosses per hand, caught in the same hand. Count clean catches out of ten.",
+   "refs": [
+    "wBaton",
+    "hopToss"
+   ]
+  },
+  {
+   "id": "T3",
+   "tier": 3,
+   "name": "Alternating thumb tosses",
+   "desc": "Thumb tosses made by each hand in turn. Home of Poi lists it straight after the single thumb toss.",
+   "needs": [
+    "T2!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The lesson is video only. Check there whether each toss is caught by the same hand or the other one.",
+    "Toss from the right hand, then from the left.",
+    "Keep the height and the spin the same on both sides."
+   ],
+   "watch": [
+    "A lower, flatter toss on the weak side",
+    "Speeding up until the catches get wild"
+   ],
+   "drill": "Twenty tosses, right then left, at one steady height. Restart the count after any drop.",
+   "refs": [
+    "hopToss",
+    "wBaton"
+   ]
+  },
+  {
+   "id": "T4",
+   "tier": 3,
+   "name": "Blind and body catches",
+   "desc": "Catching a toss somewhere other than in front: behind the head, at the side, under a leg or behind the back.",
+   "needs": [
+    "T1",
+    "P2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The baton twirling article lists catches behind the head, at the side, under a kick and under one or both legs. MCP lists behind-the-back catches for staff.",
+    "Copy one catch at a time from a demonstration, starting with the side catch, where you can still see the staff.",
+    "Use low tosses and a light staff."
+   ],
+   "watch": [
+    "Trying a catch you cannot see before the plain throw is reliable",
+    "Turning your face toward a falling staff"
+   ],
+   "drill": "Ten low tosses caught at the side of the body, on each side, before any blind catch.",
+   "refs": [
+    "wBaton",
+    "mcpOther"
+   ]
+  },
+  {
+   "id": "T5",
+   "tier": 4,
+   "name": "Spin under a toss",
+   "desc": "Turning the body once or more under a toss before catching it. Described for baton. No staff source I opened confirms it.",
+   "needs": [
+    "T1",
+    "M1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The baton twirling article says a toss can be made harder with one or more spins done under it.",
+    "Prepare with the rotor 360, and with basic throws that land where you expect."
+   ],
+   "watch": [
+    "Spinning before the throw is consistent",
+    "Losing sight of the staff and guessing the catch"
+   ],
+   "drill": "Throw, clap once, catch. Then throw, touch both shoulders, catch. This checks the throw gives you time before you add a turn.",
+   "refs": [
+    "wBaton"
+   ]
+  },
+  {
+   "id": "T6",
+   "tier": 2,
+   "name": "Kick-up",
+   "desc": "Lifting a dropped staff from the ground back to the hand with the foot. A way to recover from a drop in style.",
+   "needs": [
+    "F3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "A kick-up recovers a dropped staff: the foot sends it up, you catch it and keep spinning.",
+    "MCP describes a spinning kick-up. One foot goes in front, beside the staff's centre line. The back foot scoops the staff around the front foot and onto its toe, which kicks it up.",
+    "The plain kick-up is taught by video only, so watch one first.",
+    "Catch at the centre."
+   ],
+   "watch": [
+    "Kicking hard, so the staff flies at your face",
+    "Lifting the staff off centre, so it tumbles"
+   ],
+   "drill": "Lay the staff on the ground and practise only getting it onto the toe, without kicking, ten times per foot.",
+   "refs": [
+    "vKick",
+    "mcpKick",
+    "mcpCon",
+    "orb"
+   ]
+  },
+  {
+   "id": "M1",
+   "tier": 2,
+   "name": "Rotor 360",
+   "desc": "Turning the body through 360 degrees while the staff keeps spinning in a circle. An easy way to add body movement.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin a steady rotor.",
+    "Turn your body a full circle while the staff keeps turning.",
+    "Keep the staff's speed even through the turn.",
+    "Turn in both directions."
+   ],
+   "watch": [
+    "The rotor stalling as you turn",
+    "Rushing the turn and losing balance"
+   ],
+   "drill": "Four rotor beats facing front, one full turn, four beats. Alternate left and right turns for one minute.",
+   "refs": [
+    "vRotor360",
+    "orb",
+    "hopB1"
+   ]
+  },
+  {
+   "id": "M2",
+   "tier": 2,
+   "name": "Two-move link",
+   "desc": "Joining two moves you know without stopping between them. A coaching step, not a named move.",
+   "needs": [
+    "F4",
+    "E1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Pick two moves, such as the rotor and the forward figure-8.",
+    "Find a moment where the staff is in the same place in both.",
+    "Change there, in both orders: first to second, and second to first."
+   ],
+   "watch": [
+    "A hidden stop between the moves",
+    "Only linking in one order"
+   ],
+   "drill": "First move, second move, first move, ten times without a pause. Then pick a new pair.",
+   "refs": [
+    "mcpSpin",
+    "mcpCombo"
+   ]
+  },
+  {
+   "id": "M3",
+   "tier": 3,
+   "name": "Isolation",
+   "desc": "Listed for staff by Home of Poi and the Staff Manipulation DVD without a definition. In contact juggling, isolation means the prop seems to hang in place while the performer moves around it.",
+   "needs": [
+    "F5"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The staff sources I opened are video only. The general idea of an isolation is that part of the prop seems fixed in space.",
+    "Prepare with slow, even rotors on the front plane."
+   ],
+   "watch": [
+    "Assuming the ball or poi version transfers directly",
+    "Speed: learn it slowly"
+   ],
+   "drill": "Slow two-hand rotors in front of a mirror, checking that the centre of the circle stays in one place, 20 turns each way.",
+   "refs": [
+    "hopIso",
+    "orb",
+    "vIso",
+    "vIsoIntro",
+    "wCJ"
+   ]
+  },
+  {
+   "id": "M4",
+   "tier": 3,
+   "name": "Antispin",
+   "desc": "Named for staff by Home of Poi, the Staff Manipulation DVD and several videos. No page I opened defines it, so the mechanics are unconfirmed here.",
+   "needs": [
+    "F5"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Home of Poi files it under intermediate staff lessons, after the figure-8 and pass variations.",
+    "Prepare with steady rotors in both directions in each hand."
+   ],
+   "watch": [
+    "Copying a poi tutorial without checking a staff one"
+   ],
+   "drill": "Twenty slow rotors each way, then watch one staff antispin tutorial all the way through before trying it.",
+   "refs": [
+    "hopInt",
+    "orb",
+    "vAntiRun",
+    "vAntiTurn",
+    "vIsoIntro"
+   ]
+  },
+  {
+   "id": "M5",
+   "tier": 4,
+   "name": "Antispin flowers",
+   "desc": "Flower patterns built on antispin. The only tutorial I could confirm is for double staff, so treat this entry as unconfirmed for single staff.",
+   "needs": [
+    "M4"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "A DrexFactor video teaches 8-petal antispin flowers for double staff.",
+    "Learn plain antispin first."
+   ],
+   "watch": [
+    "Chasing the pattern before the plain antispin is clean"
+   ],
+   "drill": "Review your antispin on video and check the circle is even before adding any pattern.",
+   "refs": [
+    "vFlowers",
+    "vAntiRun"
+   ]
+  },
+  {
+   "id": "M6",
+   "tier": 4,
+   "name": "Spin-to-contact transitions",
+   "desc": "Moving between gripped spinning and contact moves without a pause. One teacher notes the basic spins help you transition between contact moves.",
+   "needs": [
+    "K2",
+    "C1",
+    "E3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Pick one spin and one contact move, such as a figure-8 into a hand wrap.",
+    "Find where the staff's direction matches in both, and release there.",
+    "Practise the exit as well: from the contact move back to a grip.",
+    "Fishtails are named as the key skill for changing tricks and planes without grabbing the staff."
+   ],
+   "watch": [
+    "Stopping the staff to set up the contact move",
+    "Only practising the entry"
+   ],
+   "drill": "Figure-8, hand wrap, figure-8, ten times per hand without a pause.",
+   "refs": [
+    "csSpin",
+    "vPhiloFish",
+    "mcpFishFam"
+   ]
+  },
+  {
+   "id": "M7",
+   "tier": 4,
+   "name": "Contact chain",
+   "desc": "Several contact moves in a row with no grab between them. MCP suggests playing at keeping the staff in contact for as long as possible.",
+   "needs": [
+    "H5",
+    "C8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Choose moves that end where the next begins, such as a conveyor belt into a halo, which together make the pivot.",
+    "Add one move at a time.",
+    "Some sessions, go for the longest run and ignore planes and speed. Other sessions, make one move very clean.",
+    "Stay aware of where your body and the staff are. MCP says this is what saves your head."
+   ],
+   "watch": [
+    "Grabbing the staff between moves out of habit",
+    "Adding moves before the joins are safe"
+   ],
+   "drill": "Count the contact moves completed before a grab or a drop. Do five runs and note the best.",
+   "refs": [
+    "mcpCon",
+    "vPhilo5",
+    "vHalo360"
+   ]
+  },
+  {
+   "id": "M8",
+   "tier": 5,
+   "name": "Routine",
+   "desc": "A complete piece that mixes rotational and contact staff. Wikipedia notes both techniques can be used in one performance.",
+   "needs": [
+    "M7",
+    "M6",
+    "T1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Choose music and a length you can repeat.",
+    "Plan sections: spinning, a throw, a contact chain.",
+    "Fix the entries and exits, and leave room to improvise inside each section.",
+    "Rehearse full runs, and decide what you do after a drop, such as a kick-up."
+   ],
+   "watch": [
+    "Only rehearsing the hard parts",
+    "No plan for drops"
+   ],
+   "drill": "Film three full runs in one session. Mark every drop and unplanned stop, and fix the most frequent one first.",
+   "refs": [
+    "wFire",
+    "mcpCon"
+   ]
+  },
+  {
+   "id": "C1",
+   "tier": 2,
+   "name": "Hand wrap",
+   "desc": "The staff rolls over the back of the hand and the same hand takes it again. A very simple first contact move.",
+   "needs": [
+    "E1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold the staff a hand span away from the centre.",
+    "Flip it over the hand. The tutorial notes two points: over in front of the thumb, and over the little finger knuckle.",
+    "It rolls across the back of the hand and the same hand catches it.",
+    "Learn it in both directions and on both hands."
+   ],
+   "watch": [
+    "Starting from the centre instead of a hand span off it",
+    "Snatching the catch early"
+   ],
+   "drill": "Ten hand wraps in each direction on each hand, slowly enough to feel the staff on the back of the hand.",
+   "refs": [
+    "vHandWrap",
+    "inElbow",
+    "mcpCon",
+    "hopB2"
+   ]
+  },
+  {
+   "id": "C2",
+   "tier": 2,
+   "name": "Wrist wrap",
+   "desc": "The staff flips over the wrist so its centre lands on the back of the wrist. Inspinerate calls a wrap round the wrist a propeller.",
+   "needs": [
+    "C1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold a hand span away from the centre.",
+    "Hold the free hand above the staff.",
+    "Flip the staff over the wrist. The centre should land on the back of the wrist.",
+    "Push it back for the other direction.",
+    "Try the other hand."
+   ],
+   "watch": [
+    "The centre landing on the hand or forearm instead of the wrist",
+    "Taking the free hand away too soon"
+   ],
+   "drill": "Five wrist wraps one way and five back, on each hand, with the free hand hovering above.",
+   "refs": [
+    "vHandWrap",
+    "inProp"
+   ]
+  },
+  {
+   "id": "C3",
+   "tier": 2,
+   "name": "Palm spin",
+   "desc": "The staff spins horizontally, supported under its centre point by the flat palm.",
+   "needs": [
+    "F7"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Set the staff spinning flat, as in a helicopter rotor.",
+    "Open the hand flat under the centre point.",
+    "Keep the hand above your head and directly under the centre.",
+    "Close the hand to take the staff back."
+   ],
+   "watch": [
+    "The palm off centre, so the staff slides off",
+    "The hand sinking to face height"
+   ],
+   "drill": "From a helicopter rotor, open the palm for one turn, then close. Build to five turns on each hand.",
+   "refs": [
+    "mcpCon",
+    "mcpPalm",
+    "hopHeli",
+    "vPalm"
+   ]
+  },
+  {
+   "id": "C4",
+   "tier": 2,
+   "name": "Neck wrap",
+   "desc": "The staff wraps around the back of the neck and is caught on the other side. Listed among the most basic contact moves.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The staff travels roughly horizontally around the back of the neck.",
+    "The linked videos teach the entry. The pages I read describe only the exit.",
+    "Inspinerate gives one exit: when you see the staff coming round in the corner of your eye, lean to the left, bring the right shoulder up and catch under the arm with the right hand. Mirror it for the other side.",
+    "Go slowly, with a light or padded staff."
+   ],
+   "watch": [
+    "Too much speed, so the staff hits the head or flies off",
+    "Ducking the head forward"
+   ],
+   "drill": "Ten slow neck wraps to each side with a padded staff, catching under the arm each time.",
+   "refs": [
+    "mcpCon",
+    "inNeckCatch",
+    "vPhiloNeck",
+    "vNeckMCS",
+    "hopCon"
+   ]
+  },
+  {
+   "id": "C5",
+   "tier": 3,
+   "name": "Elbow wrap",
+   "desc": "A hand wrap that carries on over the elbow: the staff rolls over the back of the hand, then over the elbow.",
+   "needs": [
+    "C1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Do a hand wrap, rolling the staff over the back of the hand.",
+    "Fairly late in the hand wrap, bring the hand in toward you.",
+    "Let the staff roll over the elbow.",
+    "For any arm wrap, hold the staff off centre by about the width of the body part, and keep that part horizontal."
+   ],
+   "watch": [
+    "Bringing the hand in too early",
+    "A drooping elbow"
+   ],
+   "drill": "Hand wrap, hand wrap, elbow wrap. Ten rounds per arm.",
+   "refs": [
+    "inElbow",
+    "vArmWrap",
+    "mcpCon"
+   ]
+  },
+  {
+   "id": "C6",
+   "tier": 3,
+   "name": "Conveyor belt",
+   "desc": "A reverse elbow wrap followed by a forward elbow wrap on the front plane: elbow, wrist, wrist, elbow. Also called escalator.",
+   "needs": [
+    "C5"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Keep the elbow horizontal and pointing forward, not out to the side.",
+    "Do not let go until your hand touches the contact point, the outside of the elbow.",
+    "Keep the staff's centre in the middle of the triangle made by your arm and body.",
+    "Transfer to the other hand with a simple hand wrap. The second half is harder, and stepping forward helps get the elbow under the staff.",
+    "Do not pull the arm in early and miss a beat."
+   ],
+   "watch": [
+    "A drooping elbow",
+    "Letting go before the hand reaches the elbow",
+    "Pulling the arm in early"
+   ],
+   "drill": "First half only, ten times. Second half only, ten times. Then the whole belt, starting with each hand in turn.",
+   "refs": [
+    "inConv",
+    "mcpConv",
+    "hopConv",
+    "vPhiloConv",
+    "vConvTr"
+   ]
+  },
+  {
+   "id": "C7",
+   "tier": 3,
+   "name": "Shoulder wrap",
+   "desc": "The staff wraps over a shoulder. MCP groups shoulder wraps and carries as mostly simple moves, and one teacher uses them on the way to the matrix.",
+   "needs": [
+    "C4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "MCP lists Shoulder Wraps third among its base contact moves, after hand wraps and neck wraps.",
+    "Prepare with slow neck wraps, which teach how the staff behaves on your upper back."
+   ],
+   "watch": [
+    "Speed near the head",
+    "Shrugging the shoulder into the staff"
+   ],
+   "drill": "Ten slow neck wraps to each side, noticing where the staff crosses each shoulder.",
+   "refs": [
+    "mcpList",
+    "mcpBase",
+    "vShoulder",
+    "orb"
+   ]
+  },
+  {
+   "id": "C8",
+   "tier": 3,
+   "name": "Stalls",
+   "desc": "Stopping the staff's rotation with the body, which changes its direction. This is why moves should be learned both ways.",
+   "needs": [
+    "C4",
+    "H1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "A stall is any point where your body stops the staff's rotation.",
+    "The staff then leaves in the opposite direction.",
+    "The linked tutorial teaches upper body stalls and expects a halo and a neck wrap first.",
+    "Stall gently: let the staff arrive with little speed."
+   ],
+   "watch": [
+    "Meeting the staff at speed with the neck or shoulder",
+    "Knowing the exit in only one direction"
+   ],
+   "drill": "Neck wrap one way, stall, neck wrap back the other way. Ten changes of direction.",
+   "refs": [
+    "vStalls",
+    "vPhiloNeck",
+    "mcpList"
+   ]
+  },
+  {
+   "id": "C9",
+   "tier": 3,
+   "name": "Belly wrap and back wrap",
+   "desc": "Released behind the back, the staff wraps over the belly and the other hand catches it behind the back. MCP pairs it with a back wrap, which it does not describe.",
+   "needs": [
+    "P2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Grip the staff far off centre.",
+    "Cross the arms behind your back, catching arm underneath the releasing arm, and get the catching arm ready well in advance.",
+    "Release slightly upward. The staff wraps across the belly.",
+    "Turn the catching arm, and your body, toward the staff and catch behind the back.",
+    "MCP calls it tricky, but fairly easy with a long staff."
+   ],
+   "watch": [
+    "A grip too near the centre",
+    "Setting the catching arm late"
+   ],
+   "drill": "Without releasing, set both arms in position behind the back ten times. Then ten slow belly wraps.",
+   "refs": [
+    "mcpCon",
+    "mcpBelly"
+   ]
+  },
+  {
+   "id": "C10",
+   "tier": 3,
+   "name": "Continuous neck wrap",
+   "desc": "Neck wraps repeated without stopping. One beginner video teaches it right after the basic neck wrap and stalls.",
+   "needs": [
+    "C4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Do one neck wrap.",
+    "Instead of catching and stopping, send the staff into the next wrap. The video shows how the hands return it to the neck.",
+    "Keep the speed low and even."
+   ],
+   "watch": [
+    "Speed building with each wrap",
+    "The plane tilting toward the head"
+   ],
+   "drill": "Two linked neck wraps, stop. Then three. Add one wrap only when the last set was clean.",
+   "refs": [
+    "vPhiloNeck",
+    "mcpNeck"
+   ]
+  },
+  {
+   "id": "K1",
+   "tier": 2,
+   "name": "Wrist locks",
+   "desc": "With the staff's centre on the wrist, the hand rocks it until it locks against the back of the hand and the forearm. The control point for fishtails.",
+   "needs": [
+    "C2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Put your palms together as if praying, then take one hand away. Keep the other hand bent back like that, so arm and hand make an L.",
+    "Rest the centre of the staff on that wrist, horizontally.",
+    "Push the staff one way with the hand until it locks against the back of the hand and the forearm.",
+    "Push it the other way until it locks again.",
+    "These locks are what speed up, re-plane and rescue a reverse fishtail."
+   ],
+   "watch": [
+    "Letting the hand straighten, which loses the L shape",
+    "The centre sitting on the hand instead of the wrist"
+   ],
+   "drill": "Twenty locks side to side on each wrist with the staff horizontal. Then make them gradually more upright.",
+   "refs": [
+    "mcpRevFish"
+   ]
+  },
+  {
+   "id": "K2",
+   "tier": 3,
+   "name": "Reverse fishtail",
+   "desc": "A one-beat figure-8 on the back of the hand or wrist without holding the staff, in reverse. Sources advise learning reverse first.",
+   "needs": [
+    "K1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Keep the hand bent back in the L shape for the whole fishtail.",
+    "Use the wrist locks, made more upright, to control the staff.",
+    "Practise each side of the fishtail on its own, then link them.",
+    "The arm draws a figure-8 with a bounce: the hand always goes over a small hill, never through it.",
+    "You can hold the staff with the other hand at first to feel the path."
+   ],
+   "watch": [
+    "Losing the L shape of hand and arm",
+    "A flat figure-8 with no bounce",
+    "Grabbing when the staff slides: go into a stall instead"
+   ],
+   "drill": "Ten half fishtails on one side, ten on the other, then five linked. Repeat on the other hand.",
+   "refs": [
+    "mcpRevFish",
+    "mcpFish",
+    "hopFish",
+    "vFish",
+    "vPhiloFish"
+   ]
+  },
+  {
+   "id": "K3",
+   "tier": 3,
+   "name": "Forward fishtail",
+   "desc": "The fishtail in the forward direction. MCP says forward is harder than reverse, with one transition that makes the hand curl around.",
+   "needs": [
+    "K2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn the reverse fishtail first.",
+    "Practise the forward fishtail one half at a time, a lot, then link the halves.",
+    "Expect one transition to be much harder than the other.",
+    "Keep the staff on the back of the hand or wrist, not gripped."
+   ],
+   "watch": [
+    "The hand curling around at the hard transition",
+    "Gripping with the thumb"
+   ],
+   "drill": "Twenty half fishtails on the easy side, twenty on the hard side, then link. Count linked fishtails per hand.",
+   "refs": [
+    "mcpFish",
+    "vFish",
+    "hopFish"
+   ]
+  },
+  {
+   "id": "K4",
+   "tier": 4,
+   "name": "Fishtail transfers and 360 fishtails",
+   "desc": "Going straight from a forward fishtail to reverse, or back, is a transfer. Keep turning the same way through transfers and you get 360 fishtails.",
+   "needs": [
+    "K2",
+    "K3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Fishtail forward, then go straight into reverse without a stop.",
+    "Do the same from reverse to forward.",
+    "Inspinerate says transfers are a good way to get fishtails tight.",
+    "Keep turning the same way through the transfers for a 360 fishtail."
+   ],
+   "watch": [
+    "A pause or a grab at the change",
+    "The staff drifting away from the body as you turn"
+   ],
+   "drill": "Three forward, transfer, three reverse, transfer. Five rounds per hand, then add the turn.",
+   "refs": [
+    "inFish360",
+    "hopFishTurn"
+   ]
+  },
+  {
+   "id": "K5",
+   "tier": 4,
+   "name": "Fishtail carries",
+   "desc": "A 360 fishtail done in one smooth motion, with a straight arm following the staff round in a big circle.",
+   "needs": [
+    "K4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from a 360 fishtail.",
+    "Smooth it into one motion.",
+    "Keep the arm straight and follow the staff round in a big circle."
+   ],
+   "watch": [
+    "A bent arm, which shrinks the circle",
+    "Breaking the carry into separate fishtails"
+   ],
+   "drill": "Half carries, five each way per hand. Then full carries.",
+   "refs": [
+    "inCarry",
+    "hopFishTurn"
+   ]
+  },
+  {
+   "id": "K6",
+   "tier": 4,
+   "name": "Fishtail stalls and throws",
+   "desc": "Stopping a fishtail in a stall, as a way into other moves or to save one that is sliding off. A throw or a halo roll can follow.",
+   "needs": [
+    "K2",
+    "C8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "When the staff starts sliding off the hand, go into a stall instead of grabbing.",
+    "Hold the stall, then carry on.",
+    "From a stall you can throw, or go into a halo roll and its variants."
+   ],
+   "watch": [
+    "Grabbing instead of stalling",
+    "Throwing from a stall before the stall is steady"
+   ],
+   "drill": "Three fishtails, stall, three fishtails. Ten rounds per hand.",
+   "refs": [
+    "inFishStall",
+    "vStalls"
+   ]
+  },
+  {
+   "id": "K7",
+   "tier": 4,
+   "name": "Inside fishtails",
+   "desc": "A fishtail on the inside of the arm, between the thumb and the wrist.",
+   "needs": [
+    "K3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Fishtail on the inside of the thumb, between thumb and arm.",
+    "Keep the thumb crooked toward the wrist as closely as you can.",
+    "It is hard to keep going. Inspinerate adds extra beats to hold the momentum."
+   ],
+   "watch": [
+    "The thumb opening, which lets the staff fall through",
+    "Losing momentum after two or three beats"
+   ],
+   "drill": "Count continuous inside fishtails per hand. Add extra beats when the momentum fades.",
+   "refs": [
+    "inInside",
+    "hopInside"
+   ]
+  },
+  {
+   "id": "K8",
+   "tier": 4,
+   "name": "5-beat and 2-beat fishtails",
+   "desc": "Chains of regular and inside fishtails. In the 5-beat, the hand twists inward and carries the staff across between thumb and wrist.",
+   "needs": [
+    "K7"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Fishtail. As you come back in front, twist the hand inward.",
+    "Carry the staff across, holding it between the thumb and the wrist.",
+    "The 2-beat fishtail chains inside and regular fishtails.",
+    "Home of Poi advises knowing inside fishtails first, and starting in reverse."
+   ],
+   "watch": [
+    "Missing the inward twist",
+    "Gripping during the carry across"
+   ],
+   "drill": "One regular fishtail, one inside fishtail, alternating, ten rounds per hand.",
+   "refs": [
+    "in5beat",
+    "hop2beat"
+   ]
+  },
+  {
+   "id": "K9",
+   "tier": 4,
+   "name": "Fishtail passes",
+   "desc": "Passing a fishtail from one hand to the other.",
+   "needs": [
+    "K2",
+    "K3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "You need forward and reverse fishtails in both hands, or at least forward with one hand and reverse with the other.",
+    "Fishtail on one hand and pass the staff to the other hand without a grip.",
+    "Inspinerate calls the rest self explanatory and shows it on video."
+   ],
+   "watch": [
+    "A grab during the pass",
+    "Passing only one way"
+   ],
+   "drill": "Two fishtails right, pass, two fishtails left, pass. Count passes made without a grab.",
+   "refs": [
+    "inFishPass"
+   ]
+  },
+  {
+   "id": "K10",
+   "tier": 4,
+   "name": "Propeller fishtails",
+   "desc": "A fishtail with one vertical propeller, a wrap round the wrist, at the end of every beat.",
+   "needs": [
+    "K3",
+    "C2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Fishtail to one side.",
+    "At the end of the beat, do one vertical propeller: the staff wraps round the wrist.",
+    "Fishtail back to the other side and repeat."
+   ],
+   "watch": [
+    "The propeller tilting off the vertical",
+    "Losing the fishtail rhythm"
+   ],
+   "drill": "Fishtail, propeller, fishtail, propeller. Ten per hand, slowly.",
+   "refs": [
+    "inProp"
+   ]
+  },
+  {
+   "id": "K11",
+   "tier": 5,
+   "name": "Behind-the-back fishtails",
+   "desc": "Fishtails done behind the back. Inspinerate calls them self explanatory but not easy.",
+   "needs": [
+    "K5"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Take a fishtail behind your back and keep it going there.",
+    "You can cheat a little by pushing the staff around with your body.",
+    "Learn fishtail carries first, so the arm is used to travelling behind you."
+   ],
+   "watch": [
+    "Leaning forward",
+    "The staff sliding off where you cannot see it"
+   ],
+   "drill": "One fishtail in front, one behind, alternating. Count clean pairs per hand.",
+   "refs": [
+    "inBtbFish"
+   ]
+  },
+  {
+   "id": "K12",
+   "tier": 5,
+   "name": "Foot fishtail",
+   "desc": "A fishtail done on the foot, also called a foot tail.",
+   "needs": [
+    "K3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The tutorial says balance is one of the hardest parts, and that practising standing on one leg helps.",
+    "Learn the hand fishtail first."
+   ],
+   "watch": [
+    "Wobbling on the standing leg",
+    "A heavy staff landing on the shin"
+   ],
+   "drill": "Stand on one leg for thirty seconds while tracing a slow figure-8 in the air with the other foot. Swap legs.",
+   "refs": [
+    "vFootFish"
+   ]
+  },
+  {
+   "id": "H1",
+   "tier": 3,
+   "name": "Halo roll",
+   "desc": "The staff rolls across the upper back from one shoulder to the other, on the vertical plane.",
+   "needs": [
+    "C4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Easy version: hold the staff pointing straight out in front, push it slowly up onto the shoulder, duck the head under it and let it fall in front of the other shoulder.",
+    "Rotate the start outward a little each time, until it begins held under the armpit, pointing out to the side.",
+    "Full version: from the armpit, lift the staff toward the head and place it between the shoulder blades.",
+    "Turn with the staff so it rolls over the far shoulder, and catch the falling end under that armpit.",
+    "Too fast and it hits you. Too slow and it falls off."
+   ],
+   "watch": [
+    "Speed: MCP says to do this trick slowly",
+    "Not turning the body, so the staff slides off the back",
+    "Dropping the head out of habit, which is not needed"
+   ],
+   "drill": "Ten easy versions each way, then ten full halos to each shoulder with a padded staff.",
+   "refs": [
+    "mcpHalo",
+    "inHalo",
+    "hopHalo",
+    "vPhiloHalo",
+    "mcpCon"
+   ]
+  },
+  {
+   "id": "H2",
+   "tier": 3,
+   "name": "Halo 180",
+   "desc": "A halo in which the body turns as well as the staff. One of the most basic combination moves, and half of the halo 360.",
+   "needs": [
+    "H1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The prerequisites are the halo and the neck wrap.",
+    "Do a halo while the body turns with it.",
+    "The page I read gives the idea but not the timing. Take the timing from the video."
+   ],
+   "watch": [
+    "Turning late, so the staff leaves the back",
+    "Speed near the head"
+   ],
+   "drill": "Five halos without a turn, then five with the turn, to each side.",
+   "refs": [
+    "vHalo180",
+    "csCon"
+   ]
+  },
+  {
+   "id": "H3",
+   "tier": 3,
+   "name": "Neck wrap 180",
+   "desc": "A neck wrap in which the body turns as well. Joined to the halo 180 it makes the halo 360.",
+   "needs": [
+    "C4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Start from a clean neck wrap.",
+    "Turn the body with the staff during the wrap.",
+    "The page I read gives the idea but not the timing. Take the timing from the video."
+   ],
+   "watch": [
+    "Turning before the staff is settled on the neck",
+    "Speed near the head"
+   ],
+   "drill": "Five neck wraps without a turn, then five with the turn, to each side.",
+   "refs": [
+    "vNeck180",
+    "csCon"
+   ]
+  },
+  {
+   "id": "H4",
+   "tier": 4,
+   "name": "Halo 360",
+   "desc": "A halo roll with a neck roll, done turning: a halo 180 joined to a neck wrap 180. It can be repeated indefinitely.",
+   "needs": [
+    "H2",
+    "H3"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Join a halo 180 to a neck wrap 180.",
+    "Turn at the point where you see the staff coming into the edge of your vision after it has rolled over your neck.",
+    "Picture a triangle on the floor about shoulder width across, and step around its three points in a smooth motion.",
+    "Each point matches a moment when the staff is about to finish rolling over one part of you and start on the next.",
+    "It works in both directions. Place the staff on fairly slowly at first."
+   ],
+   "watch": [
+    "Turning before you can see the staff",
+    "Placing the staff on too fast"
+   ],
+   "drill": "One halo 360, stop. Then two linked. Build to five in each direction.",
+   "refs": [
+    "hop360",
+    "in360",
+    "vHalo360"
+   ]
+  },
+  {
+   "id": "H5",
+   "tier": 4,
+   "name": "Pivot",
+   "desc": "A conveyor belt with a halo roll in it: the staff goes from the hand onto the shoulder, rolls across the back, and rolls out over the back of the hand.",
+   "needs": [
+    "C6",
+    "H1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Start a conveyor belt.",
+    "Instead of letting the staff roll over the second elbow, place it onto your shoulder straight from the hand.",
+    "Turn with the staff to do a halo roll.",
+    "Catch it with the back of the hand so it rolls out.",
+    "It can be done continuously."
+   ],
+   "watch": [
+    "Placing the staff onto the shoulder too fast",
+    "Not turning with the staff"
+   ],
+   "drill": "Conveyor belt first half, shoulder placement, halo, roll out. Five per side, then link two.",
+   "refs": [
+    "inPivot",
+    "mcpBase",
+    "orb"
+   ]
+  },
+  {
+   "id": "H6",
+   "tier": 4,
+   "name": "Angel roll",
+   "desc": "A halo extended along the arms: the staff rolls from one hand down the arm, behind the head and back up the other arm. MCP says it comes from baton twirling.",
+   "needs": [
+    "H1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Release so the staff has more roll than spin. Do not spin it fast on entry.",
+    "It rolls down the arm to the upper back.",
+    "At the neck, turn with the staff as you would for a halo roll.",
+    "Hold the other arm out. The staff rolls down the inside of it to the hand.",
+    "The staff makes only one rotation from hand to hand."
+   ],
+   "watch": [
+    "Too much spin on entry",
+    "Forgetting to turn at the neck"
+   ],
+   "drill": "Entry only: roll from hand to shoulder and catch, ten times. Exit only: from the back down the arm, ten times. Then the whole roll.",
+   "refs": [
+    "inAngel",
+    "hopAngel",
+    "vAngel",
+    "vPhiloAngel",
+    "mcpList"
+   ]
+  },
+  {
+   "id": "H7",
+   "tier": 4,
+   "name": "Jesus",
+   "desc": "A halo roll followed at once by a front side halo roll, so the staff also rolls across the chest while you turn a full circle.",
+   "needs": [
+    "H2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Do a halo roll.",
+    "Turn 180 degrees quickly, so the staff rolls on across the front.",
+    "Arch the back as the staff turns over the chest.",
+    "Look up and keep turning.",
+    "You can also place straight into the front side roll from the opposite shoulder."
+   ],
+   "watch": [
+    "Turning too slowly for the front side",
+    "Chin down in the staff's path"
+   ],
+   "drill": "Halo roll, catch, then a quick half turn on its own, ten times. Then join them with a padded staff.",
+   "refs": [
+    "inJesus",
+    "hopJesus",
+    "vJesus",
+    "vPhiloJesus"
+   ]
+  },
+  {
+   "id": "H8",
+   "tier": 4,
+   "name": "Lucero",
+   "desc": "An intermediate contact move named after its inventor, the baton twirler Annetta Lucero. It needs a halo, and stalls help.",
+   "needs": [
+    "H1",
+    "C8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The tutorial asks for a halo first and recommends upper body stalls.",
+    "MCP files Luceros in the halo family."
+   ],
+   "watch": [
+    "Trying it before the halo and stalls are steady"
+   ],
+   "drill": "Ten halos and ten upper body stalls to each side, as the warm-up for your first Lucero lesson.",
+   "refs": [
+    "vLucero",
+    "mcpHaloFam"
+   ]
+  },
+  {
+   "id": "H9",
+   "tier": 5,
+   "name": "Fishtail angel roll",
+   "desc": "A fishtail that goes straight into an angel roll.",
+   "needs": [
+    "H6",
+    "K3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Fishtail. The change comes just as you would bring the fishtail back behind you.",
+    "Bring the arm up to break the spin of the fishtail.",
+    "Push the staff into the angel roll."
+   ],
+   "watch": [
+    "Raising the arm late",
+    "Too much spin carried into the roll"
+   ],
+   "drill": "Three fishtails, then the arm lift only, catching the staff. Ten times, then add the roll.",
+   "refs": [
+    "inFishAngel"
+   ]
+  },
+  {
+   "id": "H10",
+   "tier": 5,
+   "name": "Holy trinity",
+   "desc": "An angel roll with a Jesus in the middle. The name counts angel, Jesus and halo.",
+   "needs": [
+    "H6",
+    "H7"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Start an angel roll.",
+    "As it comes across the back, turn quite fast to get into the Jesus.",
+    "After the Jesus, hold out the arm as for a normal angel roll exit.",
+    "Inspinerate says the exit is not too hard once the Jesus works."
+   ],
+   "watch": [
+    "A slow turn into the Jesus",
+    "Forgetting to hold the arm out for the exit"
+   ],
+   "drill": "Angel roll entry into Jesus, catch. Jesus into angel exit, catch. Five each, then the whole move.",
+   "refs": [
+    "inTrinity"
+   ]
+  },
+  {
+   "id": "S1",
+   "tier": 3,
+   "name": "Neck roll armpit catch",
+   "desc": "A fairly horizontal neck roll caught under the arm. Inspinerate's author learned it first, to understand how a staff behaves on the back.",
+   "needs": [
+    "C4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Do a neck roll fairly horizontally.",
+    "When you see the staff coming round in the corner of your eye, lean to the left.",
+    "Bring the right shoulder up and catch under the arm with the right hand. Mirror all of this for the other side.",
+    "The author reports a bruised shoulder while learning, so use a padded staff."
+   ],
+   "watch": [
+    "Leaning late",
+    "A steep plane that brings the staff to the head"
+   ],
+   "drill": "Ten catches to each side, slowly.",
+   "refs": [
+    "inNeckCatch"
+   ]
+  },
+  {
+   "id": "S2",
+   "tier": 3,
+   "name": "Quarter steve",
+   "desc": "A neck roll that continues onto the arm and rolls up it into the hand. The suggested step before the Steve.",
+   "needs": [
+    "S1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Do a neck roll.",
+    "As the staff comes round onto the shoulder, drop that shoulder so it rolls onto the arm.",
+    "When the staff reaches the arm, the arm should be just below shoulder height.",
+    "Raise the arm with the staff so it rolls up into the hand, finishing just above head height."
+   ],
+   "watch": [
+    "Not dropping the shoulder",
+    "Raising the arm too early or too late"
+   ],
+   "drill": "Ten quarter steves to each arm with a padded staff.",
+   "refs": [
+    "inQuarter"
+   ]
+  },
+  {
+   "id": "S3",
+   "tier": 4,
+   "name": "The Steve",
+   "desc": "An arm roll, a neck wrap, then an arm roll along the other arm. Named after Mushy Pea Steve, and also called the half steve.",
+   "needs": [
+    "S2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Hold the arm out in front with the staff a little above your head. Spin it toward you and release just before it points straight ahead.",
+    "As it rolls down the arm, straighten the arm a little and raise it.",
+    "At the shoulder, raise that shoulder and drop the other so the staff keeps rolling round the neck.",
+    "As it comes onto the second arm, raise that arm with the staff to carry it back to the hand."
+   ],
+   "watch": [
+    "Releasing late",
+    "Level shoulders, which stop the roll",
+    "Not raising the second arm"
+   ],
+   "drill": "First arm and neck only, catching at the far shoulder, ten times. Then add the second arm.",
+   "refs": [
+    "inSteve",
+    "hopSteve",
+    "mcpCon",
+    "vPhiloSteve"
+   ]
+  },
+  {
+   "id": "S4",
+   "tier": 4,
+   "name": "Continuous steve",
+   "desc": "Steves linked by transferring the staff from one arm to the other.",
+   "needs": [
+    "S3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Do a Steve.",
+    "As the staff comes up the arm, cross your arms so the arm carrying the staff is behind.",
+    "Transfer the staff onto the other arm and go again.",
+    "A variant passes from the forearms."
+   ],
+   "watch": [
+    "Crossing with the wrong arm in front",
+    "Speed building with each repeat"
+   ],
+   "drill": "One Steve plus one transfer, stop. Add one Steve at a time.",
+   "refs": [
+    "inContSteve",
+    "mcpSteveFam"
+   ]
+  },
+  {
+   "id": "S5",
+   "tier": 5,
+   "name": "Full steve",
+   "desc": "A Steve continued by a front side steve, so the staff also passes the throat. Inspinerate calls the front side steve the second half of the full steve.",
+   "needs": [
+    "S3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Do a Steve.",
+    "Continue into the front side steve, where the staff travels round the front of the neck.",
+    "Get the staff as close to the throat as possible before switching arms.",
+    "Use a padded staff: this move passes the throat."
+   ],
+   "watch": [
+    "Switching arms while the staff is still far from the throat",
+    "Speed at the throat"
+   ],
+   "drill": "Front side steve alone, five times each way, then joined to a Steve.",
+   "refs": [
+    "inFsSteve",
+    "inFullTrix",
+    "mcpSteveFam"
+   ]
+  },
+  {
+   "id": "S6",
+   "tier": 5,
+   "name": "Vertical steve",
+   "desc": "The Steve done vertically. Inspinerate says it is basically the same but a bit faster.",
+   "needs": [
+    "S3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Learn the Steve really well first.",
+    "Run the same arm, neck, arm path with the staff turning vertically.",
+    "Expect it to move faster."
+   ],
+   "watch": [
+    "Trying it before the normal Steve is reliable",
+    "The faster roll catching the head"
+   ],
+   "drill": "Five normal Steves, then one vertical attempt. Keep that ratio until the vertical one lands.",
+   "refs": [
+    "inVertSteve",
+    "vPhiloSteve"
+   ]
+  },
+  {
+   "id": "S7",
+   "tier": 4,
+   "name": "SNES",
+   "desc": "Shoulder, neck, shoulder: the staff rolls from one shoulder across the neck to the other. One tutorial calls it a half matrix.",
+   "needs": [
+    "C7"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Go in underarm, leaning away from the hand that holds the staff.",
+    "Do a shoulder roll at a slight angle toward the neck, and lean into the staff.",
+    "As it crosses the neck, keep leaning into it and shift your weight across.",
+    "Catch under the other arm."
+   ],
+   "watch": [
+    "Placing the staff flat instead of angled toward the neck",
+    "Standing upright instead of leaning",
+    "Speed: MCP warns this move can easily hit your head"
+   ],
+   "drill": "Shoulder roll and lean only, catching early, ten times. Then let the staff cross to the far shoulder.",
+   "refs": [
+    "inSnes",
+    "hopSnes",
+    "vSnes",
+    "mcpCon"
+   ]
+  },
+  {
+   "id": "S8",
+   "tier": 4,
+   "name": "Front side SNES",
+   "desc": "The SNES done front side. One tutorial rates it a bit easier than the back side version, and the two combined give the matrix.",
+   "needs": [
+    "C7"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Run the SNES path on the front of the body.",
+    "Inspinerate's author crosses the arms behind the back, which puts the hands in the right place. It is optional.",
+    "Use a padded staff: the roll passes the throat."
+   ],
+   "watch": [
+    "Chin down in the staff's path",
+    "Hands out of place for the catch"
+   ],
+   "drill": "Five front side SNES to each side, slowly, with a padded staff.",
+   "refs": [
+    "inFsSnes",
+    "vFsSnes"
+   ]
+  },
+  {
+   "id": "S9",
+   "tier": 4,
+   "name": "Sweep",
+   "desc": "The arm comes round behind and throws the staff into the front of the opposite shoulder at an angle, to stall there or to wrap the neck.",
+   "needs": [
+    "C7",
+    "C8"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Bring the arm round behind you.",
+    "Throw the staff into the front of the opposite shoulder, at an angle.",
+    "Either stall it with the other shoulder, or let it neck wrap round to behind you.",
+    "A back sweep is the same, done from behind."
+   ],
+   "watch": [
+    "Throwing hard at the shoulder",
+    "An angle that sends the staff toward the face"
+   ],
+   "drill": "Ten gentle sweeps into a stall on each side with a padded staff, before any neck wrap exit.",
+   "refs": [
+    "inSweep",
+    "mcpSnesFam"
+   ]
+  },
+  {
+   "id": "S10",
+   "tier": 4,
+   "name": "Full neck wrap",
+   "desc": "The staff goes all the way round the neck, from the back side to the front side. Also called a neck propeller.",
+   "needs": [
+    "C10"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "With the staff on the neck, lean away from it and let it spin round the back of the neck.",
+    "Do the same in the other direction to bring it round the front.",
+    "Using the shoulders to push the staff round can help.",
+    "Inspinerate enters from a horizontal pivot because it puts the staff nicely in plane.",
+    "The lean and weight shift are like the matrix, but easier."
+   ],
+   "watch": [
+    "Standing straight instead of leaning",
+    "Speed at the throat"
+   ],
+   "drill": "Back half only, ten times each way. Front half only, ten times. Then join them.",
+   "refs": [
+    "vFullNeck",
+    "inNeckProp"
+   ]
+  },
+  {
+   "id": "S11",
+   "tier": 5,
+   "name": "Matrix",
+   "desc": "A hard contact roll that goes under both arms and around the body. Also called the monster roll. It joins the back side and front side half matrices.",
+   "needs": [
+    "S7",
+    "S8",
+    "S3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Master the SNES and the front side SNES first.",
+    "It can start on the neck or on the shoulder.",
+    "Bend right over to get the staff all the way under the arm. Bending the knees helps.",
+    "As you move back, add momentum so the staff makes it round to the next shoulder.",
+    "The secret is to really lean. It takes a while to get, and much longer to make solid."
+   ],
+   "watch": [
+    "Not leaning far enough",
+    "Legs not grounded",
+    "Expecting it quickly"
+   ],
+   "drill": "Each half matrix five times, then one full matrix. Once it lands, count how many you can do in a row.",
+   "refs": [
+    "inMatrix",
+    "hopMatrix",
+    "vMatrix",
+    "vPhiloMatrix",
+    "orb"
+   ]
+  },
+  {
+   "id": "S12",
+   "tier": 5,
+   "name": "Steve matrix and stevetrix",
+   "desc": "Combinations of the Steve and the matrix. The steve matrix enters the matrix from the shoulder. The stevetrix enters it from the arm.",
+   "needs": [
+    "S11"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Steve matrix: do a Steve, go into a matrix from the shoulder, come out and Steve back up the arm.",
+    "Half stevetrix: as the staff comes down the arm, move the arm back when it reaches the elbow, so the staff spins round it into a matrix entry.",
+    "As the staff comes out under the arm, swing the arm in a circle to the front so the staff rolls down it.",
+    "The full stevetrix runs quarter steve, half matrix, half steve, half matrix, quarter steve."
+   ],
+   "watch": [
+    "Attempting it without a solid Steve and matrix",
+    "In the full version, bringing the staff round the arm before it reaches the shoulder"
+   ],
+   "drill": "Steve matrix first, five attempts per session, before any stevetrix.",
+   "refs": [
+    "inSteveMatrix",
+    "inHalfTrix",
+    "inFullTrix"
+   ]
+  }
+ ],
+ "refs": {
+  "wFire": [
+   "Wikipedia: Fire staff",
+   "https://en.wikipedia.org/wiki/Fire_staff"
+  ],
+  "wBaton": [
+   "Wikipedia: Baton twirling",
+   "https://en.wikipedia.org/wiki/Baton_twirling"
+  ],
+  "wCJ": [
+   "Wikipedia: Contact juggling",
+   "https://en.wikipedia.org/wiki/Contact_juggling"
+  ],
+  "wTwirl": [
+   "Wikipedia: Twirling",
+   "https://en.wikipedia.org/wiki/Twirling"
+  ],
+  "hopB1": [
+   "Home of Poi: Staff, Beginners part 1 (lesson list)",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-2"
+  ],
+  "hopB2": [
+   "Home of Poi: Staff, Beginners part 2 (lesson list)",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners3"
+  ],
+  "hopInt": [
+   "Home of Poi: Staff, Intermediate (lesson list)",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Intermediate-1"
+  ],
+  "hopCon": [
+   "Home of Poi: Staff, Contact (lesson list)",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact"
+  ],
+  "hopThr": [
+   "Home of Poi: Staff, Beginners Throws (lesson list)",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-Throws"
+  ],
+  "hopToss": [
+   "Home of Poi: Staff, Toss Tricks (lesson list)",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Toss-Tricks"
+  ],
+  "hopSel": [
+   "Home of Poi: Selecting a staff",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-2/Selecting-staff"
+  ],
+  "hopRotors": [
+   "Home of Poi: Rotors",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-2/Rotors"
+  ],
+  "hopHeli": [
+   "Home of Poi: Helicopter rotor",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-2/Helicopter-rotor"
+  ],
+  "hopF8": [
+   "Home of Poi: Figure 8",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-2/Figure-8"
+  ],
+  "hopBtb": [
+   "Home of Poi: Rotor behind the back (btb)",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-2/Rotor-behind-back-btb"
+  ],
+  "hopLegs": [
+   "Home of Poi: Between the legs with figure 8",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-2/Between-legs-figure-8"
+  ],
+  "hopFing": [
+   "Home of Poi: Finger spins",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners3/Finger-spins"
+  ],
+  "hopIntro": [
+   "Home of Poi: Introduction to throwing",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Beginners-Throws/Introduction-throwing"
+  ],
+  "hopIso": [
+   "Home of Poi: Isolation, Staff iso.",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Isolation"
+  ],
+  "hopConv": [
+   "Home of Poi: Conveyor belt",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/Conveyor-belt"
+  ],
+  "hopHalo": [
+   "Home of Poi: Halo Roll",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/Halo-Roll"
+  ],
+  "hopFish": [
+   "Home of Poi: Fishtails",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/Fishtails"
+  ],
+  "hopSnes": [
+   "Home of Poi: SNES",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/SNES"
+  ],
+  "hopSteve": [
+   "Home of Poi: The Steve",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/The-Steve"
+  ],
+  "hopMatrix": [
+   "Home of Poi: The Matrix",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/The-Matrix"
+  ],
+  "hop360": [
+   "Home of Poi: 360 Halo",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/360-Halo"
+  ],
+  "hopAngel": [
+   "Home of Poi: Angel Roll",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/Angel-Roll"
+  ],
+  "hopJesus": [
+   "Home of Poi: Jesus",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/Jesus"
+  ],
+  "hopInside": [
+   "Home of Poi: Inside Fishtails",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/Inside-Fishtails"
+  ],
+  "hop2beat": [
+   "Home of Poi: 2 Beat Fishtail",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/2-Beat-Fishtail"
+  ],
+  "hopFishTurn": [
+   "Home of Poi: Fishtail Turns",
+   "https://www.homeofpoi.com/us/lessons/teach/Staff/Contact/Fishtail-Turns"
+  ],
+  "mcpSpin": [
+   "MCP fire staff tutorials (archived): Beginner Staff Spinning Tutorial Article",
+   "https://web.archive.org/web/20090116203721/http://mcp.tepookatoys.com/index.php?option=com_content&task=view&id=216&Itemid=11"
+  ],
+  "mcpCon": [
+   "MCP fire staff tutorials (archived): Beginner Contact Staff Tutorial Article",
+   "https://web.archive.org/web/20090116204740/http://mcp.tepookatoys.com/index.php?option=com_content&task=view&id=218&Itemid=30"
+  ],
+  "mcpList": [
+   "MCP fire staff tutorials (archived): contact staff move families",
+   "https://web.archive.org/web/20090116204707/http://mcp.tepookatoys.com/index.php?option=com_content&task=section&id=1&Itemid=30"
+  ],
+  "mcpSpinList": [
+   "MCP fire staff tutorials (archived): single staff spinning list",
+   "https://web.archive.org/web/20080401163113/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=2&id=11&Itemid=31"
+  ],
+  "mcpCombo": [
+   "MCP fire staff tutorials (archived): spinning combinations list",
+   "https://web.archive.org/web/20080401163118/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=2&id=54&Itemid=31"
+  ],
+  "mcpBase": [
+   "MCP fire staff tutorials (archived): Contact Tutorial Videos, base moves",
+   "https://web.archive.org/web/20090116211658/http://mcp.tepookatoys.com/index.php?option=com_content&task=view&id=124&Itemid=26"
+  ],
+  "mcpOther": [
+   "MCP fire staff tutorials (archived): other contact moves list",
+   "https://web.archive.org/web/20090729060149/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=1&id=52&Itemid=30"
+  ],
+  "mcpNeck": [
+   "MCP fire staff tutorials (archived): neck wraps list",
+   "https://web.archive.org/web/20090729060042/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=1&id=32&Itemid=30"
+  ],
+  "mcpFishFam": [
+   "MCP fire staff tutorials (archived): fishtail family list",
+   "https://web.archive.org/web/20090729060103/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=1&id=36&Itemid=30"
+  ],
+  "mcpHaloFam": [
+   "MCP fire staff tutorials (archived): halo family list",
+   "https://web.archive.org/web/20090729060114/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=1&id=38&Itemid=30"
+  ],
+  "mcpSteveFam": [
+   "MCP fire staff tutorials (archived): steve family list",
+   "https://web.archive.org/web/20090729060120/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=1&id=39&Itemid=30"
+  ],
+  "mcpSnesFam": [
+   "MCP fire staff tutorials (archived): SNES family list",
+   "https://web.archive.org/web/20090729060124/http://mcp.tepookatoys.com/index.php?option=com_content&task=category&sectionid=1&id=40&Itemid=30"
+  ],
+  "mcpHalo": [
+   "MCP fire staff tutorials (archived): Halo Roll",
+   "https://web.archive.org/web/20091023214044/http://mcp.tepookatoys.com:80/index.php?option=com_content&task=view&id=23&Itemid=30"
+  ],
+  "mcpFish": [
+   "MCP fire staff tutorials (archived): Fishtails",
+   "https://web.archive.org/web/20080526115050/http://mcp.tepookatoys.com/index.php?option=com_content&task=view&id=52&Itemid=30"
+  ],
+  "mcpRevFish": [
+   "MCP fire staff tutorials (archived): Reverse Fishtail",
+   "https://web.archive.org/web/20080526115106/http://mcp.tepookatoys.com/index.php?option=com_content&task=view&id=83&Itemid=30"
+  ],
+  "mcpConv": [
+   "MCP fire staff tutorials (archived): Conveyor Belt Tutorial",
+   "https://web.archive.org/web/20080526115118/http://mcp.tepookatoys.com/index.php?option=com_content&task=view&id=99&Itemid=30"
+  ],
+  "mcpPalm": [
+   "MCP fire staff tutorials (archived): palm spins",
+   "https://web.archive.org/web/20080526115027/http://mcp.tepookatoys.com/index.php?option=com_content&task=view&id=121&Itemid=30"
+  ],
+  "mcpBelly": [
+   "MCP fire staff tutorials (archived): Belly Wrap, Back Wrap",
+   "https://web.archive.org/web/20071013190055/http://mcp.tepookatoys.com:80/index.php?option=com_content&task=view&id=85&Itemid=30"
+  ],
+  "mcpKick": [
+   "MCP fire staff tutorials (archived): Spinning Kickup",
+   "https://web.archive.org/web/20071013190040/http://mcp.tepookatoys.com:80/index.php?option=com_content&task=view&id=56&Itemid=30"
+  ],
+  "inElbow": [
+   "Inspinerate (archived): Elbow Wraps",
+   "https://web.archive.org/web/20080611152346/http://www.inspinerate.com/video1/tutorials/elbowfamily/elbowwraps.php"
+  ],
+  "inConv": [
+   "Inspinerate (archived): Conveyor Belt",
+   "https://web.archive.org/web/20080918100711/http://www.inspinerate.com/video1/tutorials/elbowfamily/conveyorbelt.php"
+  ],
+  "inPivot": [
+   "Inspinerate (archived): Pivots",
+   "https://web.archive.org/web/20080917151120/http://www.inspinerate.com/video1/tutorials/elbowfamily/pivots.php"
+  ],
+  "inFish360": [
+   "Inspinerate (archived): Fishtail Transfers and 360 Fishtails",
+   "https://web.archive.org/web/20100918072650/http://www.inspinerate.com/video1/tutorials/fishtailfamily/360fish.php"
+  ],
+  "in5beat": [
+   "Inspinerate (archived): 5 Beat Fishtails",
+   "https://web.archive.org/web/20100918072656/http://www.inspinerate.com/video1/tutorials/fishtailfamily/5beatfishtail.php"
+  ],
+  "inBtbFish": [
+   "Inspinerate (archived): Behind the Back Fishtails",
+   "https://web.archive.org/web/20100918072712/http://www.inspinerate.com/video1/tutorials/fishtailfamily/btbfishtail.php"
+  ],
+  "inCarry": [
+   "Inspinerate (archived): Fishtail Carries",
+   "https://web.archive.org/web/20100918072722/http://www.inspinerate.com/video1/tutorials/fishtailfamily/fishtailcarries.php"
+  ],
+  "inFishPass": [
+   "Inspinerate (archived): Fishtail Passes",
+   "https://web.archive.org/web/20100918072732/http://www.inspinerate.com/video1/tutorials/fishtailfamily/fishtailpasses.php"
+  ],
+  "inInside": [
+   "Inspinerate (archived): Inside Fishtails",
+   "https://web.archive.org/web/20100918072747/http://www.inspinerate.com/video1/tutorials/fishtailfamily/insidefish.php"
+  ],
+  "inFishStall": [
+   "Inspinerate (archived): Fishtail Stalls and Throws",
+   "https://web.archive.org/web/20100918072737/http://www.inspinerate.com/video1/tutorials/fishtailfamily/fishtailstalls+throws.php"
+  ],
+  "inProp": [
+   "Inspinerate (archived): Propeller Fishtails",
+   "https://web.archive.org/web/20100918072807/http://www.inspinerate.com/video1/tutorials/fishtailfamily/propellerfishtails.php"
+  ],
+  "inHalo": [
+   "Inspinerate (archived): Halo Roll",
+   "https://web.archive.org/web/20090730025027/http://www.inspinerate.com/video1/tutorials/halofamily/haloroll.php"
+  ],
+  "in360": [
+   "Inspinerate (archived): 360 Halo",
+   "https://web.archive.org/web/20080612074125/http://www.inspinerate.com/video1/tutorials/halofamily/360halo.php"
+  ],
+  "inAngel": [
+   "Inspinerate (archived): Angel Rolls",
+   "https://web.archive.org/web/20100916194722/http://www.inspinerate.com/video1/tutorials/halofamily/angelrolls.php"
+  ],
+  "inFishAngel": [
+   "Inspinerate (archived): Fishtail Angel Roll",
+   "https://web.archive.org/web/20121017001131/http://www.inspinerate.com/video1/tutorials/halofamily/fishtailangelroll.php"
+  ],
+  "inJesus": [
+   "Inspinerate (archived): Jesus",
+   "https://web.archive.org/web/20090730034543/http://www.inspinerate.com/video1/tutorials/halofamily/jesus.php"
+  ],
+  "inTrinity": [
+   "Inspinerate (archived): Holy Trinity",
+   "https://web.archive.org/web/20080611151244/http://www.inspinerate.com/video1/tutorials/halofamily/holytrinity.php"
+  ],
+  "inMatrix": [
+   "Inspinerate (archived): Matrix",
+   "https://web.archive.org/web/20090326062458/http://www.inspinerate.com/video1/tutorials/matrixfamily/matrix.php"
+  ],
+  "inSteveMatrix": [
+   "Inspinerate (archived): Steve Matrix",
+   "https://web.archive.org/web/20090327051651/http://www.inspinerate.com/video1/tutorials/matrixfamily/stevematrix.php"
+  ],
+  "inSweep": [
+   "Inspinerate (archived): Sweep",
+   "https://web.archive.org/web/20080917151130/http://www.inspinerate.com/video1/tutorials/neckfamily/sweep.php"
+  ],
+  "inNeckProp": [
+   "Inspinerate (archived): Neck Propellers",
+   "https://web.archive.org/web/20080630041618/http://www.inspinerate.com/video1/tutorials/neckfamily/neckpropellers.php"
+  ],
+  "inNeckCatch": [
+   "Inspinerate (archived): Neck Roll Armpit Catch",
+   "https://web.archive.org/web/20080611151254/http://www.inspinerate.com/video1/tutorials/neckfamily/neckrollarmpitcatch.php"
+  ],
+  "inSnes": [
+   "Inspinerate (archived): SNES",
+   "https://web.archive.org/web/20090326074005/http://www.inspinerate.com/video1/tutorials/snesfamily/snes.php"
+  ],
+  "inFsSnes": [
+   "Inspinerate (archived): Front Side SNES",
+   "https://web.archive.org/web/20090327071839/http://www.inspinerate.com/video1/tutorials/snesfamily/fssnes.php"
+  ],
+  "inSteve": [
+   "Inspinerate (archived): The Steve",
+   "https://web.archive.org/web/20090326062530/http://www.inspinerate.com/video1/tutorials/stevefamily/thesteve.php"
+  ],
+  "inQuarter": [
+   "Inspinerate (archived): 1/4 Steve",
+   "https://web.archive.org/web/20090326062521/http://www.inspinerate.com/video1/tutorials/stevefamily/quartersteve.php"
+  ],
+  "inContSteve": [
+   "Inspinerate (archived): Continuous Steve",
+   "https://web.archive.org/web/20090326060424/http://www.inspinerate.com/video1/tutorials/stevefamily/continuoussteve.php"
+  ],
+  "inFsSteve": [
+   "Inspinerate (archived): Front Side Steve",
+   "https://web.archive.org/web/20090326062509/http://www.inspinerate.com/video1/tutorials/stevefamily/fssteve.php"
+  ],
+  "inHalfTrix": [
+   "Inspinerate (archived): Half Stevetrix",
+   "https://web.archive.org/web/20090326060450/http://www.inspinerate.com/video1/tutorials/stevefamily/halfstevetrix.php"
+  ],
+  "inFullTrix": [
+   "Inspinerate (archived): Full Stevetrix",
+   "https://web.archive.org/web/20090326060444/http://www.inspinerate.com/video1/tutorials/stevefamily/fullstevetrix.php"
+  ],
+  "inVertSteve": [
+   "Inspinerate (archived): Vertical Steve",
+   "https://web.archive.org/web/20090326074054/http://www.inspinerate.com/video1/tutorials/stevefamily/verticalsteve.php"
+  ],
+  "orb": [
+   "Orbitaris: Staff Manipulation DVD, chapter list",
+   "https://www.orbitaris.de/Staff-Manipulation/en"
+  ],
+  "w2s": [
+   "What to share? blog: Staff spinning, the basics",
+   "https://w2share.blogspot.com/2012/07/staff-spinning-basics.html"
+  ],
+  "mauger": [
+   "Home Spun Adventures blog: Spinning Fire properly is hard!",
+   "https://mauger.opened.ca/?p=195"
+  ],
+  "csSpin": [
+   "Contact-Staff.com (archived): Fire Staff Spinning Tutorials",
+   "https://web.archive.org/web/20181228164939/http://contact-staff.com/staff-spinning-tutorials-beginner-advanced/"
+  ],
+  "csCon": [
+   "Contact-Staff.com (archived): Contact Staff Tutorials",
+   "https://web.archive.org/web/20181231170600/http://contact-staff.com/contact-staff-tutorials-beginner-intermediate"
+  ],
+  "vRotor": [
+   "Video: Fire Staff Spinning Tutorial: Rotor (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=7enaaeNeALo"
+  ],
+  "vRotor360": [
+   "Video: Fire Staff Spinning Tutorial: Rotor 360 (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=-K-GCmCzIOE"
+  ],
+  "vFwd8": [
+   "Video: Fire Staff Spinning Tutorial: Forwards Figure of Eight (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=jEpmm1aX8nk"
+  ],
+  "vRev8": [
+   "Video: Fire Staff Spinning Tutorial: Reverse Figure of Eight (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=HG5kNfQt4UQ"
+  ],
+  "vSwitch": [
+   "Video: Fire Staff Spinning Tutorial: Figure Eight Switch (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=4fzw2IN72fI"
+  ],
+  "vVarial": [
+   "Video: Fire Staff Spinning Tutorial: Varial (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=wFACGo1S1jk"
+  ],
+  "vBasicFlow": [
+   "Video: Basic Flow 2.0 | STAFF SPINNING TUTORIAL FOR BEGINNERS | Michelle C. Smith",
+   "https://www.youtube.com/watch?v=cdz1XCRDBAI"
+  ],
+  "vBackPass": [
+   "Video: \"The Classic\" Back Pass - BEGINNER Staff Spinning Tutorial (Michelle C. Smith)",
+   "https://www.youtube.com/watch?v=ZbE7xK5GE6I"
+  ],
+  "vAround": [
+   "Video: Around the World - STAFF SPINNING TUTORIAL | Michelle C. Smith",
+   "https://www.youtube.com/watch?v=Xvs3vIl2V2g"
+  ],
+  "vNeckMCS": [
+   "Video: Neck Wrap - [EASY] STAFF SPINNING TUTORIAL (Beginner) | Michelle C. Smith",
+   "https://www.youtube.com/watch?v=HczHlssxeC8"
+  ],
+  "vSkip": [
+   "Video: How to Spin a Staff - Skip Catch & Tosses - Beginner Flow Arts Tutorial (Juggling with Jeremiah)",
+   "https://www.youtube.com/watch?v=Y7ccXZThj5Q"
+  ],
+  "vIsoIntro": [
+   "Video: Single Staff Tricks: Intro to Isolations and Anti-Spins (tracerammo)",
+   "https://www.youtube.com/watch?v=GB66vDHyaPM"
+  ],
+  "vIso": [
+   "Video: Single Staff Lessons - Isolations (tracerammo)",
+   "https://www.youtube.com/watch?v=qQMMR9r67m8"
+  ],
+  "vAntiRun": [
+   "Video: Staff Lesson - The 'Anti-Spin Rundown' (tracerammo)",
+   "https://www.youtube.com/watch?v=CKGozmPzY6w"
+  ],
+  "vAntiTurn": [
+   "Video: Staff Tutorial Antispin and Turning Antispin (Corey Fisher)",
+   "https://www.youtube.com/watch?v=d0Y0tS-020I"
+  ],
+  "vFlowers": [
+   "Video: Beginner Double Staff Tutorial: 8-Petal Antispin Flowers (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Kov6EWAWnDc"
+  ],
+  "vKick": [
+   "Video: Contact Staff Tutorial - kick ups (firekydd)",
+   "https://www.youtube.com/watch?v=gKQmZBdk1YA"
+  ],
+  "vPalm": [
+   "Video: Bo Staff | How to do the Palm Spin | Chloe Bruce Academy",
+   "https://www.youtube.com/watch?v=kXjSlAzE0fE"
+  ],
+  "vHandWrap": [
+   "Video: Contact Staff Tutorial - Hand and Wrist Wraps (April Jennifer Choi)",
+   "https://www.youtube.com/watch?v=BkCPkLqf61g"
+  ],
+  "vArmWrap": [
+   "Video: Contact Staff Tutorial - Arm and Elbow Wraps (April Jennifer Choi)",
+   "https://www.youtube.com/watch?v=El0SOC-UtPo"
+  ],
+  "vPhilo5": [
+   "Video: 5 Contact Staff Tricks for Beginners: Basic moves every beginner should know (Philocircus)",
+   "https://www.youtube.com/watch?v=HiNSyIQP-l0"
+  ],
+  "vPhiloNeck": [
+   "Video: Beginner Contact Staff Tutorial : Neck Wraps & Stalls (Philocircus)",
+   "https://www.youtube.com/watch?v=udDKAdXCTJ8"
+  ],
+  "vPhiloHalo": [
+   "Video: Beginner Contact Staff tutorial: The Halo (Philocircus)",
+   "https://www.youtube.com/watch?v=bSl4q_u-8tI"
+  ],
+  "vPhiloConv": [
+   "Video: Beginner Contact Staff Tutorial: Conveyor Belt / Elbow Roll (Philocircus)",
+   "https://www.youtube.com/watch?v=Zx9nWJkA8TU"
+  ],
+  "vPhiloFish": [
+   "Video: Beginner Contact Staff Tutorial : Fishtails (Philocircus)",
+   "https://www.youtube.com/watch?v=2sqIIYIeIoY"
+  ],
+  "vPhiloSteve": [
+   "Video: Beginner Contact Staff Tutorial: Arm Roll aka Steve (Philocircus)",
+   "https://www.youtube.com/watch?v=hpJ4833Tkuo"
+  ],
+  "vPhiloAngel": [
+   "Video: Beginner / Intermediate Contact Staff Tutorial - Angel Roll (Philocircus)",
+   "https://www.youtube.com/watch?v=IyiBmJsp8qs"
+  ],
+  "vPhiloJesus": [
+   "Video: Contact Staff | Jesus Tutorial | Intermediate Flow Tutorial (Philocircus)",
+   "https://www.youtube.com/watch?v=3erYIKv6lLw"
+  ],
+  "vPhiloMatrix": [
+   "Video: Philippe Ducasse | Contact Staff Intermediate / Advanced Tutorial | The Matrix (Philocircus)",
+   "https://www.youtube.com/watch?v=YYSfoEH-JMo"
+  ],
+  "vConvTr": [
+   "Video: Contact Staff Lesson - Conveyor Belt and Variations (tracerammo)",
+   "https://www.youtube.com/watch?v=tFeMXDuU4X0"
+  ],
+  "vShoulder": [
+   "Video: Contact Staff Tutorial / Horizontal Shoulder Wrap / On the way to the Matrix (Mika Hell)",
+   "https://www.youtube.com/watch?v=uRtPZ4WiPcY"
+  ],
+  "vStalls": [
+   "Video: Contact Staff Tutorial: Stalls (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=gKw8nzXrSQ0"
+  ],
+  "vFish": [
+   "Video: Contact Staff Tutorial: Fishtails (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=qpwjAFeLAGU"
+  ],
+  "vFootFish": [
+   "Video: Contact Staff Tutorial: Foot Fishtail (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=jclk0kzDXp4"
+  ],
+  "vNeck180": [
+   "Video: Contact Staff Tutorial: Neck Wrap 180 (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=VJ7fRpOYGms"
+  ],
+  "vHalo180": [
+   "Video: Contact Staff Tutorial: Halo 180 (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=XM3uB6XEoqM"
+  ],
+  "vHalo360": [
+   "Video: Contact Staff Tutorial: Halo 360 (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=Cs7TNzVDzT0"
+  ],
+  "vAngel": [
+   "Video: Contact Staff Tutorial: Angel Roll (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=PlszmtmtKek"
+  ],
+  "vJesus": [
+   "Video: Contact Staff Tutorial: Jesus (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=D4qE5WIYcNE"
+  ],
+  "vLucero": [
+   "Video: Contact Staff Tutorial: Lucero (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=_y4nhUvgYLg"
+  ],
+  "vSnes": [
+   "Video: Contact Staff Tutorial: SNeS (Half Matrix) (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=Z-2JsfSYD14"
+  ],
+  "vFsSnes": [
+   "Video: Contact Staff Tutorial: FS SNeS (Half Matrix) (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=scH41xFPJ70"
+  ],
+  "vFullNeck": [
+   "Video: Contact Staff Tutorial: Full Neck Wrap (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=4VLESVJTS74"
+  ],
+  "vMatrix": [
+   "Video: Contact Staff Tutorial: The Matrix (Staff Spinning Tutorials)",
+   "https://www.youtube.com/watch?v=tcoj55gR4fw"
+  ]
+ },
+ "phases": [
+  {
+   "id": "p1",
+   "name": "First rotations",
+   "time": "2 to 4 weeks",
+   "skills": "F1 F2 F3 F4 F6 E1 E2 P1",
+   "gate": "Thirty seconds of rotor in each direction, then ten forward and ten reverse figure-8s in each hand, without a drop.",
+   "req": [
+    "F4!",
+    "E1!",
+    "E2!"
+   ]
+  },
+  {
+   "id": "p2",
+   "name": "Core spinning",
+   "time": "1 to 3 months",
+   "skills": "F5 F7 F8 E3 E4 E6 E7 P2 P3 P5 P6 M1 M2 T6",
+   "gate": "One minute without a drop, linking rotor, forward and reverse figure-8s and a behind-the-back pass to each side.",
+   "req": [
+    "E3",
+    "P2!",
+    "M2"
+   ]
+  },
+  {
+   "id": "p3",
+   "name": "Passes, throws, first contact",
+   "time": "3 to 6 months",
+   "skills": "E5 E8 E9 E10 P4 P7 P8 T1 T2 C1 C2 C3 C4 M3 M4",
+   "gate": "On demand: a pinwheel, a basic throw caught cleanly from each hand, a hand wrap on each hand and a slow neck wrap.",
+   "req": [
+    "P4",
+    "T1!",
+    "C1!",
+    "C4"
+   ]
+  },
+  {
+   "id": "p4",
+   "name": "Contact foundations",
+   "time": "6 to 12 months",
+   "skills": "C5 C6 C7 C8 C9 C10 K1 K2 K3 H1 H2 H3 S1 S2 T3 T4",
+   "gate": "Ten linked reverse fishtails on each hand, a full conveyor belt, and a halo roll landing on either shoulder.",
+   "req": [
+    "K2!",
+    "C6",
+    "H1!"
+   ]
+  },
+  {
+   "id": "p5",
+   "name": "Contact flow",
+   "time": "Open-ended",
+   "skills": "K4 K5 K6 K7 K8 K9 K10 K11 K12 H4 H5 H6 H7 H8 H9 H10 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 M5 M6 M7 M8 T5",
+   "gate": "A two-minute piece to music with spinning, one throw and a chain of at least three contact moves with no grab between them, including a Steve or an angel roll.",
+   "req": [
+    "M8"
+   ]
+  }
+ ]
+}

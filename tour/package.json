@@ -1,0 +1,16 @@
+{
+  "name": "flowa-tour",
+  "private": true,
+  "description": "Guided tour for Flowa, bundled into web/tour.js",
+  "scripts": {
+    "build": "esbuild src/tour.jsx --bundle --jsx=automatic --minify --format=iife --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\" --legal-comments=eof --outfile=../web/tour.js"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-joyride": "3.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

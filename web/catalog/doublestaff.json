@@ -1,0 +1,2511 @@
+{
+ "id": "doublestaff",
+ "name": "Double staff",
+ "about": "Names and definitions come from the Home of Poi double staff lessons, the DrexFactor double staff tutorial series (titles and written descriptions only; the videos themselves were not watched), and The Kinetic Alphabet guide, which is built around double staff. Shared ideas such as timing and direction, weaves and reels use Wikipedia poi definitions where a staff source applies them. Prerequisites, tiers and drills are coaching proposals.",
+ "careNote": "Learn this with light practice staffs that have soft or padded ends, keep clear space around and above you, and keep throws low and slow until every catch is reliable.",
+ "branches": [
+  {
+   "k": "F",
+   "name": "Foundations",
+   "blurb": "Ends, grip, placements, planes and the one-hand figure 8"
+  },
+  {
+   "k": "T",
+   "name": "Timing and direction",
+   "blurb": "The four modes, two-staff figure 8s and 2-beat weaves"
+  },
+  {
+   "k": "W",
+   "name": "Weaves and reels",
+   "blurb": "Reels, the 3-beat weave, crossers and behind-the-back work"
+  },
+  {
+   "k": "I",
+   "name": "Isolations and extensions",
+   "blurb": "One end fixed in space, long-arm circles, stalls and dashes"
+  },
+  {
+   "k": "A",
+   "name": "Antispin and flowers",
+   "blurb": "Antispin, inspin, flowers, cateyes and box mode"
+  },
+  {
+   "k": "H",
+   "name": "Hybrids and CAPs",
+   "blurb": "Two different moves at once, CAPs, antibrids, snakes and 3D"
+  },
+  {
+   "k": "J",
+   "name": "Throws and exchanges",
+   "blurb": "Throws to the same and the other hand, showers and swaps"
+  },
+  {
+   "k": "C",
+   "name": "Body and contact",
+   "blurb": "Wraps, body tracing, fishtails and staff-on-staff"
+  },
+  {
+   "k": "L",
+   "name": "Flow",
+   "blurb": "Body movement, turns, transitions, sequences and routines"
+  }
+ ],
+ "skills": [
+  {
+   "id": "F1",
+   "tier": 1,
+   "name": "Thumb end and pinky end",
+   "desc": "Each staff has a thumb end and a pinky end, named for the side of the fist they leave. They are the fixed references for every other move.",
+   "needs": [],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold one staff in a fist. The end that leaves the fist on the thumb side is the thumb end. The other is the pinky end.",
+    "Mark the thumb end of each staff with tape or a line, as The Kinetic Alphabet guide suggests.",
+    "Use the mark to check your position at each step of a move, and to count rotations."
+   ],
+   "watch": [
+    "Letting the grip change mid-move, so the mark no longer tells you which end is which",
+    "Marking only one staff"
+   ],
+   "drill": "Hold both staffs still. A partner calls thumb or pinky, left or right. Point that end at a target. Do 20 calls.",
+   "refs": [
+    "tkaProps",
+    "tkaPlacements",
+    "hopIso"
+   ]
+  },
+  {
+   "id": "F2",
+   "tier": 1,
+   "name": "Centre grip",
+   "desc": "Each staff held at its middle, where it balances, with one end either side of the hand. The sources imply this hold but do not name it, so the name is mine.",
+   "needs": [
+    "F1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "Find the balance point: rest the staff across one finger and slide it until it sits level. On an evenly built staff this is the middle.",
+    "Close the hand around that point. The Home of Poi lessons advise holding with the thumb and index finger so the planes stay clean.",
+    "Keep the other fingers relaxed so the wrist can turn freely.",
+    "The first DrexFactor tutorial covers the basic grips. Watch it to check your hold."
+   ],
+   "watch": [
+    "Gripping off centre, so one end feels heavy and the circle wobbles",
+    "Squeezing with the whole fist, which locks the wrist"
+   ],
+   "drill": "With eyes closed, pick each staff up off a table at its balance point. Open your eyes and check. Repeat 10 times per hand.",
+   "refs": [
+    "tkaMotions",
+    "wikiFireStaff",
+    "hopFlower2",
+    "vDrexGrip",
+    "vPlaypoiStart"
+   ]
+  },
+  {
+   "id": "F3",
+   "tier": 1,
+   "name": "Thumbs in and thumbs out",
+   "desc": "The placements of two staffs with one end of each at the centre point: thumbs in, thumbs out, and the two mixed placements.",
+   "needs": [
+    "F1",
+    "F2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Picture a centre point in front of your chest. In these placements one end of each staff always points at it.",
+    "Thumbs in: both thumb ends point at the centre. Thumbs out: both pinky ends point at the centre.",
+    "Mixed: one staff thumb in and the other thumb out, then the other way round.",
+    "Practise each placement with the hands at the sides of the centre point, then above and below it."
+   ],
+   "watch": [
+    "Turning the wrist so the staff no longer points at the centre",
+    "Skipping the mixed placements because they feel uneven"
+   ],
+   "drill": "Call a placement, snap both staffs into it, and hold for two seconds. Cycle through all four placements 10 times.",
+   "refs": [
+    "tkaPlacements",
+    "tkaGrid"
+   ]
+  },
+  {
+   "id": "F4",
+   "tier": 1,
+   "name": "Planes: wall, wheel, inside and outside",
+   "desc": "Wall plane is the flat surface in front of you. Wheel plane runs along your sides. Inside and outside plane say which side of the arm the staff passes.",
+   "needs": [],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "Wall plane: stand facing a wall. A staff spinning flat against that wall is on the wall plane.",
+    "Wheel plane: the planes at your sides, like the wheels of a cart. Wikipedia calls these parallel planes in poi.",
+    "Inside and outside plane are my reading of the Home of Poi lesson tips: inside is the body side of the arm, outside is the far side.",
+    "Keep each circle flat on its plane. The lessons call drifting off it plane breaking."
+   ],
+   "watch": [
+    "Circles tilting off the plane as the arm tires",
+    "Losing track after a turn: the planes are named from where you face"
+   ],
+   "drill": "Spin one slow circle on the wall plane, turn 90 degrees, and spin one on the wheel plane. Film from the front and check both look flat.",
+   "refs": [
+    "hopFlower2",
+    "hopFig8Opp",
+    "hopWeaveSame",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "F5",
+   "tier": 1,
+   "name": "One-hand figure 8",
+   "desc": "One staff turned so its thumb end traces a circle on each side of the body. It keeps turning without any change of grip.",
+   "needs": [
+    "F2",
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold one staff in a centre grip with the arm relaxed in front of you.",
+    "Turn the wrist so the thumb end traces one full circle on one side of your body.",
+    "Carry the staff across and let the thumb end trace one circle on the other side. That is one figure 8.",
+    "In the Home of Poi doubles lesson the staff changes side at the moment it is completely horizontal.",
+    "Keep the speed even and the staff on one plane."
+   ],
+   "watch": [
+    "Changing side while the staff is still upright, which tilts it off the plane",
+    "Driving from the shoulder: the wrist should do most of the work",
+    "Training only the strong hand"
+   ],
+   "drill": "Do 20 slow figure 8s with the right hand, then 20 with the left. Count out loud and restart the count after any wobble.",
+   "refs": [
+    "hopFig8Single",
+    "hopFig8Opp",
+    "vBanyanFig8",
+    "vPlaypoiStart"
+   ]
+  },
+  {
+   "id": "F6",
+   "tier": 1,
+   "name": "Reverse figure 8",
+   "desc": "The same figure 8 with the staff turning the other way. Every later move is learned in both directions.",
+   "needs": [
+    "F5"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Do a figure 8 and note which way the upper end travels: away from you or toward you.",
+    "Wikipedia calls away from you forward and toward you backward in poi. The staff lessons say reverse.",
+    "Stop, then start the figure 8 with the upper end travelling the other way.",
+    "Keep the same change of side and the same plane as before."
+   ],
+   "watch": [
+    "The reverse side drifting closer to the body",
+    "Speeding up to hide an uneven path"
+   ],
+   "drill": "Do 10 figure 8s one way, stop the staff level, then 10 in reverse. Repeat three times on each hand.",
+   "refs": [
+    "hopIso",
+    "hopFlower2",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "F7",
+   "tier": 2,
+   "name": "Finger spinning",
+   "desc": "The staff is passed between the fingers so it keeps turning in front of the hand, without passing behind the body as a standard spin does.",
+   "needs": [
+    "F5!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "DrexFactor describes finger spinning as a way to spin the staff without passing it behind your back. It is used to make an end look fixed in space.",
+    "The Home of Poi lesson gives the rule: each change of finger position equals a quarter spin of the staff.",
+    "The Home of Poi single-staff lesson shows a three-finger and a four-finger method. Pick one and follow the video.",
+    "Go one quarter spin at a time, then join four changes into a full turn."
+   ],
+   "watch": [
+    "Rushing before each finger change is secure, so the staff drops",
+    "Letting the staff tilt off its plane between changes"
+   ],
+   "drill": "Do one full turn as four separate quarter spins, pausing after each. Then two turns without a pause. Ten sets per hand, over a soft floor.",
+   "refs": [
+    "vDrexFinger",
+    "hopFinger",
+    "hopFingerSingle"
+   ]
+  },
+  {
+   "id": "T1",
+   "tier": 1,
+   "name": "The four timing and direction modes",
+   "desc": "The four ways two staffs relate: together or split time, same or opposite direction. Often shortened to tog-same, split-same, tog-opp and split-opp.",
+   "needs": [
+    "F5"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Together time, same direction: both hands circle the same way and reach matching points at the same moment.",
+    "Split time, same direction: both circle the same way, half a cycle apart. When one is at the top the other is at the bottom.",
+    "Together time, opposite direction: the hands circle opposite ways and reach the top and bottom together. This is the butterfly.",
+    "Split time, opposite direction: opposite ways and half a cycle apart.",
+    "Timing is always named first and direction second. The terms apply to hands, staffs and staff ends."
+   ],
+   "watch": [
+    "Naming the mode of the hands when you mean the mode of the staffs",
+    "Learning each new move in one mode only"
+   ],
+   "drill": "With empty hands, trace big circles in each of the four modes for 10 turns. Then repeat with the staffs held still in a centre grip.",
+   "refs": [
+    "tkaTD",
+    "tkaTricks",
+    "wikiPoiDefs",
+    "vtg",
+    "vDrexGrip",
+    "vFaiTD",
+    "vPlaypoiModes"
+   ]
+  },
+  {
+   "id": "T2",
+   "tier": 1,
+   "name": "Butterfly figure 8 (opposite direction)",
+   "desc": "Both staffs do a figure 8 on the wall plane in opposite directions, so left mirrors right. Home of Poi tags this lesson butterfly figure 8.",
+   "needs": [
+    "F5!",
+    "T1"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Face the wall plane with a staff in each hand, both in a centre grip.",
+    "Start both figure 8s at once, turning the staffs in opposite directions so the two sides mirror each other.",
+    "Each staff changes side at the moment it is completely horizontal.",
+    "Keep both staffs on the wall plane the whole time. The rule in the lesson is no plane breaking.",
+    "Home of Poi teaches this version before the same-direction one."
+   ],
+   "watch": [
+    "One staff changing side early, which breaks the mirror",
+    "Staffs tilting toward you and clipping each other"
+   ],
+   "drill": "Do 10 slow butterfly figure 8s, stop, then 10 with both directions reversed. Count a rep only if the staffs did not touch.",
+   "refs": [
+    "hopFig8Opp",
+    "vBanyanFig8"
+   ]
+  },
+  {
+   "id": "T3",
+   "tier": 2,
+   "name": "Same-direction figure 8",
+   "desc": "Both staffs do the figure 8 turning the same way and stay parallel to each other.",
+   "needs": [
+    "T2"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn the opposite-direction figure 8 first, as the Home of Poi lesson asks.",
+    "Start both staffs turning the same way at the same time, so they stay parallel.",
+    "Make each change of side on the wall plane.",
+    "For the double spin variation, the tip in the lesson is to bend the wrists while changing sides."
+   ],
+   "watch": [
+    "Staffs drifting out of parallel",
+    "Changing sides off the wall plane, which brings the staffs together"
+   ],
+   "drill": "Do 10 same-direction figure 8s, stop, then 10 in the other direction. Film from the front and check the staffs stay parallel.",
+   "refs": [
+    "hopFig8Same",
+    "vBanyanFig8"
+   ]
+  },
+  {
+   "id": "T4",
+   "tier": 2,
+   "name": "Same-direction 2-beat weave",
+   "desc": "A figure 8 on the wheel plane with both staffs turning the same way. Each staff alternates between the inside plane and the outside plane.",
+   "needs": [
+    "T3",
+    "F4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Turn the pattern onto the wheel plane.",
+    "Each staff does one beat on the inside plane and one on the outside plane, then repeats.",
+    "Keep the two staffs parallel to each other.",
+    "The Intro to Double Staves class lists same time and split time 2-beat weaves, so learn both timings."
+   ],
+   "watch": [
+    "Both beats landing on the same side of the arm, which makes a plain circle",
+    "Staffs losing parallel"
+   ],
+   "drill": "Do 20 beats one way, stop, then 20 in reverse. Start with one staff alone if the two collide.",
+   "refs": [
+    "hopWeaveSame",
+    "vSpark",
+    "vTracerWeaves"
+   ]
+  },
+  {
+   "id": "T5",
+   "tier": 2,
+   "name": "Butterfly weave (opposite-direction 2-beat)",
+   "desc": "The wheel plane figure 8 with the staffs turning in opposite directions. Home of Poi tags it butterfly weave.",
+   "needs": [
+    "T2",
+    "T4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from the same-direction 2-beat weave, then set one staff turning the other way.",
+    "Keep the hands parallel so the staff ends pass by each other.",
+    "Each staff still alternates between the outside plane and the inside plane.",
+    "Go slowly enough to see the ends pass without touching."
+   ],
+   "watch": [
+    "Hands drifting apart or one ahead of the other, so the ends meet",
+    "One staff staying on one side of the arm"
+   ],
+   "drill": "Do 10 slow butterfly weaves, then swap which staff goes forward and do 10 more.",
+   "refs": [
+    "hopWeaveOpp",
+    "vTracerWeaves",
+    "vSpark"
+   ]
+  },
+  {
+   "id": "T6",
+   "tier": 3,
+   "name": "Quarter time",
+   "desc": "A timing between together and split, with the hands a quarter of a cycle apart.",
+   "needs": [
+    "T1",
+    "T4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Trace circles with empty hands in together time, same direction.",
+    "Delay one hand by a quarter of a circle. On the four-point grid of The Kinetic Alphabet, one hand stays one point ahead of the other.",
+    "Hold that gap for 10 turns without drifting back to together time or on to split time.",
+    "Repeat in opposite directions, then with the staffs in a figure 8."
+   ],
+   "watch": [
+    "The gap creeping to half a cycle, which is split time",
+    "Watching one hand only"
+   ],
+   "drill": "Count 1, 2, 3, 4 around the circle. The lead hand reaches the top on 1 and the other hand reaches it on 2. Keep it for 20 counts.",
+   "refs": [
+    "tkaTD",
+    "tkaType1"
+   ]
+  },
+  {
+   "id": "W1",
+   "tier": 2,
+   "name": "Hip reel",
+   "desc": "A circle at waist height with the thumb end on one side of the body and the pinky end on the other. At the waist the pinky end goes behind you.",
+   "needs": [
+    "F6!",
+    "F4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "A reel is a wall plane move that takes the prop in front of the body and then behind it.",
+    "Hold one staff at hip height. Turn it so the thumb end circles in front of you while the pinky end passes behind your body.",
+    "Learn it with each hand alone, then with both staffs.",
+    "The DrexFactor series goes on to practise reels in every timing and direction mode."
+   ],
+   "watch": [
+    "The staff tilting off the wall plane as it passes the hip",
+    "Twisting the whole torso to make room"
+   ],
+   "drill": "Do 10 hip reels with one staff on each hand, then 10 with both. Change direction and repeat.",
+   "refs": [
+    "vDrexReels",
+    "vBanyanReels",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "W2",
+   "tier": 2,
+   "name": "Shoulder reel",
+   "desc": "The reel done at shoulder height. Here the thumb end is the one that goes behind the body.",
+   "needs": [
+    "W1"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Raise the hand to shoulder height.",
+    "Turn the staff so the thumb end passes behind your shoulder while the pinky end circles in front.",
+    "Keep the head still and upright. The end behind you passes close to it.",
+    "Learn each hand alone before using both staffs."
+   ],
+   "watch": [
+    "Ducking or tilting the head into the path",
+    "The elbow dropping, which pulls the reel down to chest height"
+   ],
+   "drill": "Do 10 slow shoulder reels per hand with soft or padded staffs. Add the second staff once you can do 10 without flinching.",
+   "refs": [
+    "vDrexReels",
+    "vBanyanReels"
+   ]
+  },
+  {
+   "id": "W3",
+   "tier": 3,
+   "name": "Hip and shoulder reels joined",
+   "desc": "Hip reels and shoulder reels strung together, so the move travels back and forth across the body.",
+   "needs": [
+    "W1",
+    "W2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Do one hip reel, then lift the same hand into one shoulder reel.",
+    "Keep the rule from the reels tutorial: pinky end behind at the waist, thumb end behind at the shoulder.",
+    "Alternate hip and shoulder without a stop between them.",
+    "Add the second staff and try each timing and direction mode."
+   ],
+   "watch": [
+    "A pause between the two heights",
+    "The wrong end going behind the body at the change"
+   ],
+   "drill": "Alternate one hip reel and one shoulder reel 10 times on each hand, then 10 times with both staffs.",
+   "refs": [
+    "vDrexReels",
+    "vDrexReelFlowers"
+   ]
+  },
+  {
+   "id": "W4",
+   "tier": 3,
+   "name": "Isolated 3-beat weave",
+   "desc": "A split time, same direction weave with the pinky ends kept isolated. Home of Poi calls it as close as a staff gets to the poi weave.",
+   "needs": [
+    "T4",
+    "I1"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "A weave keeps both props circling in split time with the hands together. Beats count the rotations before the pattern repeats.",
+    "Keep the pinky end of each staff isolated, in one spot, the whole time.",
+    "Forward weave: say over, under, out.",
+    "Reverse weave: say under, over, out.",
+    "Learn the count with one staff, then add the second half a cycle behind."
+   ],
+   "watch": [
+    "The pinky ends wandering, which turns it into a plain figure 8",
+    "Both staffs moving together when they should be half a cycle apart",
+    "Skipping the reverse weave"
+   ],
+   "drill": "Say the three words out loud for 10 forward weaves, then 10 reverse. Stop and restart whenever the words and the staffs disagree.",
+   "refs": [
+    "hop3beat",
+    "tkaTricks",
+    "wikiPoiDefs",
+    "vSpark",
+    "vTracerWeaves"
+   ]
+  },
+  {
+   "id": "W5",
+   "tier": 3,
+   "name": "Crossers",
+   "desc": "A variation on shoulder reels with the hands crossed over the body, each at the opposite shoulder.",
+   "needs": [
+    "W2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Start from shoulder reels with both staffs.",
+    "Cross the arms so each hand reels at the shoulder that is not its own. Wikipedia compares the poi position to a bear hug.",
+    "DrexFactor says this is much easier with double staff than with poi. The tutorial shows two variations and some entries.",
+    "Uncross and return to normal shoulder reels."
+   ],
+   "watch": [
+    "Staff ends close to the face while the arms are crossed",
+    "Shoulders hunching, which shrinks the space for the staffs"
+   ],
+   "drill": "Do four shoulder reels, cross for four crossers, uncross for four more. Repeat 10 times at slow speed.",
+   "refs": [
+    "vDrexCrossers",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "W6",
+   "tier": 4,
+   "name": "Archer weave",
+   "desc": "A weave variation taught in the DrexFactor beginner series. With staffs it is a bit easier in opposite directions than in same direction.",
+   "needs": [
+    "T5",
+    "W4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare with the butterfly weave and the isolated 3-beat weave in both directions.",
+    "Start in opposite directions, which the tutorial description names as the easier version with staffs.",
+    "Break it down one staff at a time, as the tutorial does."
+   ],
+   "watch": [
+    "Guessing the arm path from the name",
+    "Starting with the same-direction version"
+   ],
+   "drill": "Before watching the tutorial, do 20 butterfly weaves one way and 20 the other without a collision.",
+   "refs": [
+    "vDrexArcher",
+    "vStaffDocArcher"
+   ]
+  },
+  {
+   "id": "W7",
+   "tier": 4,
+   "name": "Behind-the-back weave",
+   "desc": "A weave that crosses behind the back while the planes stay the same. With double staff it is easiest in split time, opposite direction.",
+   "needs": [
+    "T5",
+    "A1",
+    "I1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Behind the back means the hand moves from one side of the body to the other by reaching round behind, without changing plane.",
+    "Set up in split time, opposite direction, which the tutorial description names as the easiest arrangement.",
+    "The hard part is the entry. The tutorial offers two: from an antispin, or from an isolation or extension.",
+    "The description gives no more detail than this, so follow the video for the arm path."
+   ],
+   "watch": [
+    "Leaning forward to make room behind you",
+    "Forcing the entry at full speed"
+   ],
+   "drill": "Walk the path with one staff held still: front, round the back, front. Then one slow rep per hand, 10 times.",
+   "refs": [
+    "vDrexBTB",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "W8",
+   "tier": 3,
+   "name": "Windmill",
+   "desc": "In poi, a reel in which the hands pass above the head. No source I could open describes it for double staff.",
+   "needs": [
+    "W2",
+    "W4"
+   ],
+   "track": "one",
+   "star": true,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Wikipedia defines the poi windmill as a reel that passes above the head. The Kinetic Alphabet notes it keeps split time, same direction, like the weave.",
+    "Prepare with shoulder reels and the isolated 3-beat weave in both directions.",
+    "Use soft staffs for anything above the head."
+   ],
+   "watch": [
+    "Looking up at the staffs and losing balance",
+    "Assuming the poi version carries over unchanged to a rigid staff"
+   ],
+   "drill": "Hold a shoulder reel for 20 turns with each hand while keeping the head level and the eyes forward.",
+   "refs": [
+    "wikiPoiDefs",
+    "tkaTricks"
+   ]
+  },
+  {
+   "id": "W9",
+   "tier": 4,
+   "name": "Fountain",
+   "desc": "In poi, a class of moves where the spin carries on while the spinner turns, so its direction flips relative to the body. Not described for double staff in what I could open.",
+   "needs": [
+    "W4",
+    "L2"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The poi definition on Wikipedia: the spinner turns or changes hand position so the spin is kept, but ends up opposite in relation to the starting position.",
+    "Prepare with turns and with the 3-beat weave forward and reverse."
+   ],
+   "watch": [
+    "Treating poi instructions as instructions for a rigid staff"
+   ],
+   "drill": "Do five forward weaves, stop, turn to face the other way, and do five reverse weaves. This trains the two halves separately.",
+   "refs": [
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "W10",
+   "tier": 4,
+   "name": "Hip and shoulder reel flowers",
+   "desc": "The joined hip and shoulder reel turned into inspin and antispin flowers by switching which hand is on top.",
+   "needs": [
+    "W3",
+    "A1",
+    "A3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from hip and shoulder reels joined, with both staffs.",
+    "The key idea in the tutorial is to switch which hand is on top as the move travels across the body.",
+    "That switch turns the pattern into an inspin flower or an antispin flower.",
+    "The description says no more than this, so follow the video for the timing of the switch."
+   ],
+   "watch": [
+    "Trying it before the plain joined reels are steady",
+    "Losing the rule for which end goes behind the body"
+   ],
+   "drill": "Do 20 joined hip and shoulder reels with both staffs in each direction. Then follow the tutorial and add one switch at a time.",
+   "refs": [
+    "vDrexReelFlowers"
+   ]
+  },
+  {
+   "id": "I1",
+   "tier": 2,
+   "name": "One-staff isolation",
+   "desc": "The staff turns so that one end stays fixed in space while the other end traces a circle around it.",
+   "needs": [
+    "F6!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Pick a spot in the air for the thumb end. The hand will circle around that spot.",
+    "Move the hand in a small circle and turn the staff the same way at the same rate, so the thumb end stays on the spot.",
+    "The thumb keeps the same orientation through the whole motion.",
+    "To get all the way round without finger spinning, The Kinetic Alphabet guide turns the torso on the third quarter and back on the fourth.",
+    "Learn it in reverse, then on the other hand."
+   ],
+   "watch": [
+    "The fixed end drawing a small circle of its own",
+    "Changing grip to get round: use a body turn"
+   ],
+   "drill": "Hold the thumb end just in front of a mark on a wall and keep it there for 10 isolations each way, per hand.",
+   "refs": [
+    "hopIso",
+    "vDrexIso",
+    "tkaMotions",
+    "tkaTricks",
+    "tkaNegative"
+   ]
+  },
+  {
+   "id": "I2",
+   "tier": 3,
+   "name": "Double isolations in the four modes",
+   "desc": "Both staffs isolating at once, practised in each timing and direction mode.",
+   "needs": [
+    "I1!",
+    "T1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Wall plane, same time: keep the staffs parallel at all times and both fixed ends still.",
+    "Wheel plane, split time: keep the staffs 180 degrees apart at all times, with the two isolated ends touching.",
+    "Add the opposite-direction versions.",
+    "If the staffs are long enough, try extending the arms fully while isolating."
+   ],
+   "watch": [
+    "Fixed ends drifting apart in the split time version",
+    "One hand isolating cleanly while the other makes a plain circle"
+   ],
+   "drill": "Do 10 isolations in each of the four modes. Film it and check that the fixed ends stay still.",
+   "refs": [
+    "hopIso",
+    "vDrexIso",
+    "vTracerIso"
+   ]
+  },
+  {
+   "id": "I3",
+   "tier": 3,
+   "name": "Pinky-end isolation and end combos",
+   "desc": "The isolation with the pinky end fixed, then pairs with one staff on its thumb end and the other on its pinky end.",
+   "needs": [
+    "I1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start thumbs out, so the pinky end is the one at the centre.",
+    "Isolate around the pinky end, both directions, with each hand.",
+    "With two staffs, try both on the same end, then one on the thumb end and one on the pinky end.",
+    "The Home of Poi lesson calls all of these important to learn."
+   ],
+   "watch": [
+    "Falling back to the thumb end without noticing",
+    "The wrist running out of range: use a body turn"
+   ],
+   "drill": "Do five thumb-end isolations, then five pinky-end, on each hand. Then five with the two hands on different ends.",
+   "refs": [
+    "hopIso",
+    "tkaPlacements",
+    "tkaNegative"
+   ]
+  },
+  {
+   "id": "I4",
+   "tier": 2,
+   "name": "Extension",
+   "desc": "The arm reaches out fully and circles while the staff turns the same way, so the hand and the staff end trace two circles around one centre.",
+   "needs": [
+    "I1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The poi definition on Wikipedia: the arm is fully extended, and the hand and the prop end circle the same way around one centre.",
+    "With a staff, I read that as the staff staying in line with the arm while the arm circles from the shoulder. Check this against the tutorial.",
+    "In The Kinetic Alphabet, the thumb end isolates at the centre while the pinky end extends.",
+    "DrexFactor notes that extensions look like isolations but move differently, and are best understood by the space they take from the body.",
+    "Practise in all four timing and direction modes."
+   ],
+   "watch": [
+    "The elbow bending, which shrinks the circle",
+    "The staff lagging behind the arm"
+   ],
+   "drill": "Do 10 slow extensions each way with one arm, then both arms in together time and in split time.",
+   "refs": [
+    "vDrexExt",
+    "tkaTricks",
+    "tkaProps",
+    "wikiPoiDefs",
+    "hopIso"
+   ]
+  },
+  {
+   "id": "I5",
+   "tier": 3,
+   "name": "Negative space and body turns",
+   "desc": "Two ways to finish moves that seem to tangle the arm: pass an end through the gap beside the body, or turn the torso.",
+   "needs": [
+    "I1",
+    "A1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Negative space lets you keep facing the audience and cuts down body movement.",
+    "Body turns add movement and help with longer staffs.",
+    "Isolation by body turn: turn the torso on the third quarter of the circle, then turn back on the fourth.",
+    "Antispin by negative space: on the second quarter, pass the thumb end through the gap above the shoulder of the working arm.",
+    "The guide treats both as equally important. Learn each in both directions and on both hands."
+   ],
+   "watch": [
+    "Reaching for finger spinning as soon as the wrist runs out",
+    "Learning only one of the two methods"
+   ],
+   "drill": "Do a full isolation with a body turn five times, then a four-petal antispin through negative space five times. Repeat in reverse and on the other hand.",
+   "refs": [
+    "tkaNegative",
+    "tkaPlacements"
+   ]
+  },
+  {
+   "id": "I6",
+   "tier": 3,
+   "name": "Takeouts and translations",
+   "desc": "Isolation variations named in the Home of Poi lessons. DrexFactor describes translations as a way out of tangled arms and a switch from thumb mode to pinky mode.",
+   "needs": [
+    "I2",
+    "I3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "What the descriptions do say: a translation frees the arms when they are tangled, and changes which end leads.",
+    "Prepare with isolations on both the thumb end and the pinky end."
+   ],
+   "watch": [
+    "Inventing a version from the name alone"
+   ],
+   "drill": "Do 10 thumb-end isolations and 10 pinky-end isolations per hand, so both modes are ready before you watch the lessons.",
+   "refs": [
+    "hopIsoVar",
+    "vDrexTranslations"
+   ]
+  },
+  {
+   "id": "I7",
+   "tier": 3,
+   "name": "Stalls",
+   "desc": "A stop in the path of the staff, often used to change direction. A playpoi lesson teaches stalls for double staff.",
+   "needs": [
+    "F6",
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "In the poi definition on Wikipedia, a stall brings the prop to a stop in its path, and stalls can change the direction of one or both props.",
+    "Prepare by slowing a figure 8 to a controlled stop with the staff level, then starting again the other way."
+   ],
+   "watch": [
+    "Stopping the staff by tensing the whole arm",
+    "The two staffs stopping at different moments"
+   ],
+   "drill": "Do four butterfly figure 8s, stop both staffs level at the same moment, hold for one count, and restart in reverse. Ten times.",
+   "refs": [
+    "vPlaypoiStalls",
+    "wikiPoiDefs",
+    "vChadStall"
+   ]
+  },
+  {
+   "id": "I8",
+   "tier": 3,
+   "name": "Static hold and dash",
+   "desc": "Two hand motions from The Kinetic Alphabet. Static: the hand stays at its point. Dash: the hand crosses straight to the opposite point.",
+   "needs": [
+    "F3",
+    "I1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Static: keep one hand at the same point for a beat while the other hand moves.",
+    "Dash: move the hand straight through the centre to the opposite point, for example from below the centre to above it.",
+    "During a base dash the thumb end swaps orientation, from thumb in to thumb out or back.",
+    "Halfway through a dash the middle of the staff sits on the centre point."
+   ],
+   "watch": [
+    "Curving the dash into a half circle",
+    "The static hand drifting while you watch the moving one"
+   ],
+   "drill": "Start thumbs in with one hand low. Dash up, then dash down, 10 times, checking that the thumb end swaps each time. Repeat on the other hand.",
+   "refs": [
+    "tkaHand",
+    "tkaMotions"
+   ]
+  },
+  {
+   "id": "A1",
+   "tier": 2,
+   "name": "Basic antispin",
+   "desc": "The staff turns in the opposite direction to the circle the hand travels. Home of Poi calls the basic version a 1-beat antispin.",
+   "needs": [
+    "F6!",
+    "F3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Move the hand around a circle one way while the staff turns the other way.",
+    "A quarter of the hand circle with a quarter turn of the staff is the base unit. The ends swap, from thumb in to thumb out.",
+    "A picture from DrexFactor: the thumb end, or the pinky end, slides back and forth along one horizontal line.",
+    "Straighten the arm so the staff passes outside the arm, not inside it.",
+    "For a full circle on the wall plane, pass the thumb end through the gap above the shoulder, or use a body turn."
+   ],
+   "watch": [
+    "The staff turning with the hand, which makes it an isolation",
+    "A bent arm, so the staff jams against the forearm",
+    "Skipping the reverse direction"
+   ],
+   "drill": "Put a line of tape on a wall at chest height. Keep one end of the staff travelling along it for 10 antispins each way, per hand.",
+   "refs": [
+    "hopAnti",
+    "vDrexAnti",
+    "tkaMotions",
+    "tkaNegative"
+   ]
+  },
+  {
+   "id": "A2",
+   "tier": 3,
+   "name": "Four-petal antispin with both staffs",
+   "desc": "The antispin flower with four petals, done with both staffs in each timing and direction mode.",
+   "needs": [
+    "A1!",
+    "T1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Get the four-petal antispin steady on each hand first.",
+    "Put the two together in one mode at a time. The Home of Poi tip for doubles is to keep two of the ends together.",
+    "Practise with the thumb ends on the centre line, then with the pinky ends on it.",
+    "DrexFactor made a separate troubleshooting video because many learners get confused here. Use it if you are stuck."
+   ],
+   "watch": [
+    "One staff slipping into an isolation",
+    "Practising one mode only"
+   ],
+   "drill": "Do eight antispins in tog-same, eight in split-same, eight in tog-opp and eight in split-opp, without a stop if you can.",
+   "refs": [
+    "vDrexAnti",
+    "vDrexAntiInt",
+    "hopAnti",
+    "hopFlower4"
+   ]
+  },
+  {
+   "id": "A3",
+   "tier": 3,
+   "name": "Inspin",
+   "desc": "The staff turns in the same direction as the circle the hand travels. DrexFactor lists it as a basic element beside isolation, extension and antispin.",
+   "needs": [
+    "I1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "In the poi definition on Wikipedia, an inspin flower has the hands moving in the same direction as the prop spins.",
+    "The Kinetic Alphabet uses the word prospin for the same thing and treats the isolation as its base unit.",
+    "DrexFactor calls inspin one of the least used basic elements, though moves such as opening and closing the book rely on it.",
+    "The descriptions do not give the hand and staff counts, so follow the tutorial, which shows it in all four modes."
+   ],
+   "watch": [
+    "Letting it collapse into a plain isolation",
+    "Reversing the staff by accident, which makes an antispin"
+   ],
+   "drill": "Alternate four isolations and four antispins on one hand, to feel turning with and against the hand. Then add inspin from the tutorial.",
+   "refs": [
+    "vDrexInspin",
+    "tkaMotions",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "A4",
+   "tier": 3,
+   "name": "Same-direction flower",
+   "desc": "A flower with both staffs turning the same way and the arms straight. Home of Poi tags it a compound spin flower.",
+   "needs": [
+    "A3",
+    "T4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Keep the arms straight and circle them while the staffs turn.",
+    "The staff switches plane as it goes: horizontal positions are on the inside plane, vertical positions on the outside plane.",
+    "The end pointing toward your shoulder changes too: pinky end at the vertical positions, thumb end at the horizontal ones.",
+    "Grip with the thumb and index finger so the flower stays clean."
+   ],
+   "watch": [
+    "Bent arms, which blur the petals",
+    "The wrong end pointing at the shoulder, a sign the staff missed a plane switch"
+   ],
+   "drill": "Walk the arms through the four positions, stopping at each to check which end points at the shoulder. Then do 10 slow flowers each way.",
+   "refs": [
+    "hopFlower1"
+   ]
+  },
+  {
+   "id": "A5",
+   "tier": 3,
+   "name": "Butterfly flower with turns",
+   "desc": "The flower with the staffs turning in opposite directions. Home of Poi tags it butterfly flower and teaches a turn with it.",
+   "needs": [
+    "A4",
+    "T5"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn the reverse flower first, as the lesson advises.",
+    "Keep the arms straight and try to make the staff ends overlap at the vertical positions.",
+    "Turn: as the arms travel from vertical to horizontal, turn 90 degrees to face the wall plane.",
+    "As the arms return to vertical, turn another 90 degrees, so the wheel plane is now on your other side.",
+    "Once both quarter turns work, join them into one smooth turn."
+   ],
+   "watch": [
+    "Ends missing each other at the vertical positions",
+    "Turning the body at the wrong moment, which tilts both planes"
+   ],
+   "drill": "Do four flowers facing front, one turn, four flowers facing back, one turn. Repeat five times.",
+   "refs": [
+    "hopFlower2"
+   ]
+  },
+  {
+   "id": "A6",
+   "tier": 4,
+   "name": "Wall plane flowers",
+   "desc": "Antispin and compound spin flowers on the wall plane, in split time and opposite directions.",
+   "needs": [
+    "A2",
+    "A4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Face the wall plane and set the staffs in split time, opposite direction.",
+    "Do the antispin flower, then the compound spin flower. The lesson teaches both.",
+    "Try to make the ends of the two staffs touch whenever they can.",
+    "Grip with the thumb and index finger to keep it clean."
+   ],
+   "watch": [
+    "Staffs leaving the wall plane",
+    "Ends far apart where they should meet"
+   ],
+   "drill": "Do eight antispin flowers, then eight compound spin flowers, on the wall plane. Film from the front to check the ends meet.",
+   "refs": [
+    "hopFlower3"
+   ]
+  },
+  {
+   "id": "A7",
+   "tier": 4,
+   "name": "Inside plane antispins",
+   "desc": "Antispins on the inside plane, in same time and opposite directions, in 1-beat and 2-beat versions.",
+   "needs": [
+    "A2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Set up in same time, opposite direction.",
+    "The arms cross and uncross during the move.",
+    "Keep one staff and arm slightly in front of the other so they do not hit.",
+    "Learn the 1-beat version before the 2-beat."
+   ],
+   "watch": [
+    "Staffs or forearms colliding at the cross",
+    "Always putting the same arm in front"
+   ],
+   "drill": "Do 10 slow 1-beat reps with the right arm in front at the cross, then 10 with the left in front.",
+   "refs": [
+    "hopInsideAnti"
+   ]
+  },
+  {
+   "id": "A8",
+   "tier": 3,
+   "name": "Cateyes",
+   "desc": "Antispin patterns shaped so that the staff ends draw ellipses where the plain antispin draws straight lines.",
+   "needs": [
+    "A2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from the four-petal antispin.",
+    "DrexFactor describes the cateye as not very different from it: the same kind of pattern, rounded into an ellipse.",
+    "It can bring the staff close to the body, and can change between thumb end in and pinky end in.",
+    "The description stops there, so follow the tutorial for the hand path."
+   ],
+   "watch": [
+    "Flattening it back into a plain antispin",
+    "Letting the ellipse wobble off the plane"
+   ],
+   "drill": "Alternate four plain antispins with four cateye attempts on one hand. Film from the front and compare the shapes.",
+   "refs": [
+    "vDrexCateye"
+   ]
+  },
+  {
+   "id": "A9",
+   "tier": 3,
+   "name": "Box mode",
+   "desc": "Working with the staff pointing away from you at the four corners, where diamond mode uses the top, bottom and sides.",
+   "needs": [
+    "A2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Diamond mode puts the four key points at the top, bottom, left and right. Most antispin work starts there.",
+    "Box mode uses the four corners between those points.",
+    "Do the antispin with the staff pointing away from you at each corner.",
+    "DrexFactor notes this allows right-angled antispins and sliding effects."
+   ],
+   "watch": [
+    "Drifting back to the compass points",
+    "Corners at uneven heights"
+   ],
+   "drill": "Mark the four corners of a square on a wall. Do 10 antispins per hand with the staff pointing out at each corner.",
+   "refs": [
+    "vDrexBox",
+    "tkaGrid"
+   ]
+  },
+  {
+   "id": "A10",
+   "tier": 4,
+   "name": "Eight-petal antispin flower",
+   "desc": "An antispin flower with eight petals, made by changing how many rotations the staff makes during the pattern.",
+   "needs": [
+    "A2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "In the four-petal version, the end pointing in at you alternates between thumb end and pinky end at the four compass points.",
+    "For eight petals, keep the same end pointing in at you at all four points.",
+    "DrexFactor teaches two uses of it in split time, same direction."
+   ],
+   "watch": [
+    "Ends alternating out of habit, which gives the four-petal flower",
+    "Rushing the extra rotation"
+   ],
+   "drill": "Stop at each compass point and check that the same end points at you. Do five slow flowers per hand, then both staffs in split time.",
+   "refs": [
+    "vDrexEight"
+   ]
+  },
+  {
+   "id": "A11",
+   "tier": 4,
+   "name": "Opening and closing the book",
+   "desc": "The staff completes three quarters of a rotation for every quarter of the hand path, alternating between antispin and inspin.",
+   "needs": [
+    "A2",
+    "A3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Divide the circle of the hand into quarters.",
+    "On each quarter the staff makes three quarters of a turn.",
+    "Alternate the direction of that turn: one quarter as antispin, the next as inspin.",
+    "DrexFactor says the effect is like a book opening and closing, and credits the tip to a spinner called Sticky."
+   ],
+   "watch": [
+    "Under-rotating to half a turn",
+    "Losing the alternation and doing antispin throughout"
+   ],
+   "drill": "Do one quarter at a time with one staff, stopping to check the staff has made three quarters of a turn. Then link four quarters.",
+   "refs": [
+    "vDrexBook",
+    "vDrexInspin"
+   ]
+  },
+  {
+   "id": "H1",
+   "tier": 3,
+   "name": "Isolation versus antispin hybrid",
+   "desc": "One staff does an isolation while the other does an antispin. A hybrid is any pattern in which one move is set against another.",
+   "needs": [
+    "I2",
+    "A2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold a steady isolation with one hand.",
+    "Add an antispin with the other hand.",
+    "Home of Poi teaches it with the arms in same time, same direction, and in split time, opposite direction.",
+    "The outside antispin goes behind the arm. The inside antispin goes under the armpit.",
+    "DrexFactor sorts hybrids into clashing, with hands the same way and props opposite, and parallel, with hands opposite and props the same."
+   ],
+   "watch": [
+    "Both hands sliding into the same move",
+    "Always isolating with the strong hand"
+   ],
+   "drill": "Do eight reps with the right hand isolating, then swap roles for eight. Repeat in the second arm timing.",
+   "refs": [
+    "hopHybrid",
+    "vDrexHybrids",
+    "vPeteHybrids"
+   ]
+  },
+  {
+   "id": "H2",
+   "tier": 4,
+   "name": "Hybrid weave",
+   "desc": "A weave built from the isolation and antispin hybrid.",
+   "needs": [
+    "H1",
+    "W4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from the isolation versus antispin hybrid.",
+    "The cross point is where both staffs are horizontal in front of the chest.",
+    "Switch sides at that point.",
+    "That is also the moment to turn, if you turn with the weave."
+   ],
+   "watch": [
+    "Switching sides before the staffs are level",
+    "Losing which hand is isolating after the switch"
+   ],
+   "drill": "Do the hybrid four times on one side, switch at the cross point, and do four on the other side. Ten switches.",
+   "refs": [
+    "hopHybridWeave"
+   ]
+  },
+  {
+   "id": "H3",
+   "tier": 3,
+   "name": "CAPs",
+   "desc": "Continuous Assembly Patterns. With double staff the term most often means switching between antispin and isolation on one side of the body.",
+   "needs": [
+    "I1",
+    "A1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The general definition on Wikipedia: the hand moves in an arc, a half circle, and the prop draws a smaller closed loop.",
+    "On one side of the body, take the hand along the arc as an antispin.",
+    "Switch to an isolation for the way back.",
+    "DrexFactor uses CAPs as transitions between styles of movement, which he calls driving styles."
+   ],
+   "watch": [
+    "A pause at each end of the arc",
+    "Both halves turning the same way"
+   ],
+   "drill": "Do 10 CAPs on the right side with the right hand, then 10 on the left with the left hand. Then both hands at once.",
+   "refs": [
+    "vDrexCaps",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "H4",
+   "tier": 4,
+   "name": "Wall plane CAPs",
+   "desc": "The Home of Poi wall plane CAP lessons: a no-spin version, then vertical halves and horizontal halves.",
+   "needs": [
+    "H3",
+    "F7"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The series starts with finger spins: each change of finger position equals a quarter spin.",
+    "No spin: one half of the move involves no spinning.",
+    "The vertical halves and horizontal halves lessons have no written notes, so follow the videos for those."
+   ],
+   "watch": [
+    "Skipping the finger spin lesson the series builds on",
+    "Staffs leaving the wall plane"
+   ],
+   "drill": "Do the no-spin version 10 times per hand, saying spin and hold for the two halves.",
+   "refs": [
+    "hopFinger",
+    "hopCapNoSpin",
+    "hopCapVert",
+    "hopCapHoriz"
+   ]
+  },
+  {
+   "id": "H5",
+   "tier": 4,
+   "name": "Wheel plane hybrid CAP",
+   "desc": "A CAP on the wheel plane in which one staff antispins on the way down and the other antispins on the way up.",
+   "needs": [
+    "H3",
+    "H1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Set both staffs on the wheel plane.",
+    "One staff does its antispin while travelling down.",
+    "The other does its antispin while travelling up.",
+    "The lesson notes give only this rule, so follow the video for the rest."
+   ],
+   "watch": [
+    "Both staffs antispinning on the same half"
+   ],
+   "drill": "Practise the part of each hand alone 10 times, saying down or up on the antispin, then combine.",
+   "refs": [
+    "hopHybridCap"
+   ]
+  },
+  {
+   "id": "H6",
+   "tier": 4,
+   "name": "Quarter-time hybrids",
+   "desc": "The isolation versus antispin hybrid with the hands always a quarter of a cycle apart.",
+   "needs": [
+    "H1",
+    "T6"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Set the hands in quarter time.",
+    "Variant one: each hand keeps its own move, one isolating and one antispinning.",
+    "Variant two: the hands swap moves each time a quarter is completed.",
+    "DrexFactor calls this an old school technique."
+   ],
+   "watch": [
+    "Hands drifting into together time or split time",
+    "In variant two, swapping late"
+   ],
+   "drill": "Do eight counts of variant one, then eight of variant two, keeping a spoken count of the quarters.",
+   "refs": [
+    "vDrexQuarter"
+   ]
+  },
+  {
+   "id": "H7",
+   "tier": 4,
+   "name": "Basic antibrids",
+   "desc": "One staff is spun so that its hand stays level with one end of the other staff, setting isolations and antispins against reels.",
+   "needs": [
+    "H1",
+    "W1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "DrexFactor takes the idea from poi and says it has an analog with double staff.",
+    "Spin one staff as a reel.",
+    "Spin the other as an isolation or antispin, keeping that hand even with one end of the reeling staff.",
+    "The description gives the idea only, so follow a tutorial for the timings."
+   ],
+   "watch": [
+    "The following hand losing the end it is tracking",
+    "Staffs colliding where the hand and the end meet"
+   ],
+   "drill": "Spin slow hip reels with one hand. Keep the other hand, with its staff held still, level with one end of the reeling staff for 10 turns. Swap hands.",
+   "refs": [
+    "vDrexAntibrid",
+    "vPeteAntibrid"
+   ]
+  },
+  {
+   "id": "H8",
+   "tier": 5,
+   "name": "Book hybrids",
+   "desc": "Opening and closing the book with the hands and the staffs in different timing and direction, so one staff does the antispin version and the other the inspin version.",
+   "needs": [
+    "A11",
+    "H1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn opening and closing the book in all four modes first.",
+    "Set the hands in one mode and the staffs in another.",
+    "One staff then stays on the antispin version and the other on the inspin version.",
+    "The DrexFactor tech blog shows four hybrids made this way."
+   ],
+   "watch": [
+    "Both staffs falling into the same version"
+   ],
+   "drill": "Do eight counts of the plain book, then eight of one hybrid. Work through the four hybrids one per session.",
+   "refs": [
+    "vDrexBookHyb",
+    "vDrexBook"
+   ]
+  },
+  {
+   "id": "H9",
+   "tier": 4,
+   "name": "Snakes",
+   "desc": "A name used for several different moves. In poi it means the head takes a wave-shaped path as the hand moves along or across the body.",
+   "needs": [
+    "W3",
+    "I1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "The Home of Poi lesson calls its snake one of the many moves called a snake, so check which one a teacher means.",
+    "The DrexFactor beginner version uses reels to make the staff ends meet, folding and unfolding like a Jacob's ladder.",
+    "His tech blog version moves the hand sideways across the body, with one petal above the shoulder and one below, isolating around each petal.",
+    "Pick one version and follow its video. The descriptions are too short to train from."
+   ],
+   "watch": [
+    "Mixing two versions of the snake in one attempt",
+    "Ends meeting too hard on the folding version"
+   ],
+   "drill": "Do 10 joined hip and shoulder reels per hand as preparation, then learn one snake version from its tutorial.",
+   "refs": [
+    "hopSnake1",
+    "vDrexSnakesBeg",
+    "vDrexSnakesTech",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "H10",
+   "tier": 4,
+   "name": "Chuu chuu snake",
+   "desc": "A snake variation from the Home of Poi lessons, taught as a same-side version and an opposite version.",
+   "needs": [
+    "H9"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The one written rule: switch between the one-beat positions when both staffs are vertical.",
+    "The same lessons also name the opposite chuu chuu snake and a between the legs snake.",
+    "In the DrexFactor folding chu-chus, one end of a staff traces the other."
+   ],
+   "watch": [
+    "Switching while the staffs are still tilted"
+   ],
+   "drill": "Practise stopping both staffs exactly vertical from a slow figure 8, 20 times, since that is where the switches happen.",
+   "refs": [
+    "hopSnake2",
+    "hopSnake3",
+    "vDrexChuchu"
+   ]
+  },
+  {
+   "id": "H11",
+   "tier": 4,
+   "name": "Basic 3D",
+   "desc": "Spinning that leaves the flat plane, using points toward and away from the audience as well as up, down and sideways.",
+   "needs": [
+    "A2",
+    "I2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The DrexFactor model is a diamond that becomes an octahedron: add a point toward the audience and a point away from it.",
+    "Pass the staffs through those two extra points during moves you know.",
+    "DrexFactor notes that a rigid staff is less affected by gravity than poi, which makes 3D spinning fairly simple.",
+    "The tutorial gives several exercises. The description does not list them."
+   ],
+   "watch": [
+    "Planes that tilt by accident, not by choice",
+    "Staff ends close to the face on the point toward you"
+   ],
+   "drill": "Hold one staff still and point it in turn up, down, left, right, toward the audience and away. Repeat with both staffs for 10 rounds.",
+   "refs": [
+    "vDrex3D"
+   ]
+  },
+  {
+   "id": "H12",
+   "tier": 5,
+   "name": "S-CAPs",
+   "desc": "A CAP on an S-shaped hand path. The staff changes its style of movement as the hand travels back and forth along the S.",
+   "needs": [
+    "H3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Trace an S shape with the empty hand until it is smooth.",
+    "Add the staff. Change its style of movement, for example between antispin and isolation, as the hand goes back and forth along the S.",
+    "The idea comes from poi. DrexFactor links it with a pattern called Zan's Diamond.",
+    "Follow the tech blog for which change goes where."
+   ],
+   "watch": [
+    "The S flattening into a straight line",
+    "Changing style at random points"
+   ],
+   "drill": "Mark a large S on a wall with tape. Trace it with the hand for 10 passes, then 10 with the staff.",
+   "refs": [
+    "vDrexScaps"
+   ]
+  },
+  {
+   "id": "J1",
+   "tier": 2,
+   "name": "Inside throw, same hand",
+   "desc": "The basic throw from the Home of Poi doubles lessons, released and caught by the same hand.",
+   "needs": [
+    "F6!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Practise with one staff first. Staff Doctor recommends single-staff throws as preparation for throwing two.",
+    "Release the staff when it is horizontal, so it flies straight up.",
+    "Keep the throw low, around head height, until the catch is reliable.",
+    "Catch at the middle of the staff and carry on spinning.",
+    "The lesson notes do not say what makes a throw inside or outside. Check the video."
+   ],
+   "watch": [
+    "Releasing early or late, so the staff travels forward or back",
+    "Throwing high before the low throw is clean",
+    "Looking away from the staff"
+   ],
+   "drill": "Throw one staff to head height and catch it. Aim for 10 clean catches in a row on each hand, on grass or over a mat.",
+   "refs": [
+    "hopInsideThrow",
+    "vStaffDocThrow",
+    "vRemi"
+   ]
+  },
+  {
+   "id": "J2",
+   "tier": 3,
+   "name": "Inside throw to the other hand",
+   "desc": "The same throw, caught by the opposite hand.",
+   "needs": [
+    "J1!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Start with one staff and one empty hand.",
+    "Release when the staff is horizontal so it rises straight, then move the catching hand under it.",
+    "Add the second staff only when the one-staff version is reliable.",
+    "The lesson has no written notes on what the other staff does meanwhile. Follow the video."
+   ],
+   "watch": [
+    "Throwing across the body at an angle, toward the face",
+    "Reaching up to snatch the catch"
+   ],
+   "drill": "Throw one staff from right to left and back, 20 catches without a drop, before picking up the second staff.",
+   "refs": [
+    "hopInsideThrow",
+    "vTracerToss"
+   ]
+  },
+  {
+   "id": "J3",
+   "tier": 3,
+   "name": "Outside throw",
+   "desc": "The second throw in the Home of Poi doubles lessons. The lesson has a video but no written notes.",
+   "needs": [
+    "J1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare with the inside throw on each hand at low height.",
+    "Use soft staffs and clear space above you."
+   ],
+   "watch": [
+    "Guessing the release from the name"
+   ],
+   "drill": "Do 10 clean low inside throws on each hand before you watch the outside throw lesson.",
+   "refs": [
+    "hopOutsideThrow"
+   ]
+  },
+  {
+   "id": "J4",
+   "tier": 4,
+   "name": "Same-direction throws",
+   "desc": "Throws with both staffs turning the same way, from the Home of Poi doubles lessons.",
+   "needs": [
+    "J2",
+    "T3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare with same-direction figure 8s and with the inside throw to each hand.",
+    "Staff Doctor describes a loop of four throws for two staffs. Watch it for a second approach."
+   ],
+   "watch": [
+    "Throwing both staffs before one-staff throws are reliable"
+   ],
+   "drill": "Do 20 low one-staff throws from right to left and back without a drop. Only then watch the lesson.",
+   "refs": [
+    "hopSameThrow",
+    "vStaffDocThrow"
+   ]
+  },
+  {
+   "id": "J5",
+   "tier": 4,
+   "name": "Showers",
+   "desc": "The last lesson in the Home of Poi doubles series. It has a video but no written notes.",
+   "needs": [
+    "J2",
+    "J4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "It follows the inside, outside and same-direction throw lessons, so learn those first.",
+    "The tracerammo toss and juggle ideas video covers tosses, timing and passes with two staffs."
+   ],
+   "watch": [
+    "Starting here before the single throws are reliable"
+   ],
+   "drill": "String five low throws from hand to hand with one staff, keeping an even rhythm. Do 10 rounds.",
+   "refs": [
+    "hopShowers",
+    "hopIndex",
+    "vTracerToss"
+   ]
+  },
+  {
+   "id": "J6",
+   "tier": 3,
+   "name": "Swaps",
+   "desc": "The two staffs change hands. The Power Surge thread the needle tutorial relies on swaps, and the tracerammo toss video covers passes.",
+   "needs": [
+    "T2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare by passing one staff from hand to hand at the centre grip, without spinning, until the grip lands right every time.",
+    "Then follow a video to add the swap to a slow butterfly figure 8."
+   ],
+   "watch": [
+    "Catching off centre, which unbalances the next move",
+    "Fingers pinched between the two staffs"
+   ],
+   "drill": "With both staffs held still and upright, swap them between the hands 20 times without looking down.",
+   "refs": [
+    "vThread",
+    "vTracerToss"
+   ]
+  },
+  {
+   "id": "J7",
+   "tier": 4,
+   "name": "Thread the needle",
+   "desc": "A poi move adapted for double staff. The staffs pass in front of each other one after the other, using swaps to change hands.",
+   "needs": [
+    "J6",
+    "T5"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn swaps first.",
+    "Power Surge describes the result as a butterfly pattern in which the staffs move in front of each other in turn.",
+    "The tutorial calls it intermediate and says it looks harder than it is.",
+    "The description does not give the hand path, so follow the video."
+   ],
+   "watch": [
+    "Staffs colliding as they pass",
+    "Rushing the swap"
+   ],
+   "drill": "Do 10 slow butterfly weaves, then 10 still swaps, back to back. Add the sequence from the tutorial once both are steady.",
+   "refs": [
+    "vThread"
+   ]
+  },
+  {
+   "id": "C1",
+   "tier": 3,
+   "name": "Waist wrap",
+   "desc": "In poi, moving the hand from one side of the body to the other by reaching round the front or the back. A video tutorial teaches a double staff variation.",
+   "needs": [
+    "W1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Wikipedia files the poi waist wrap under fountains: the hand reaches round the front while the prop spins behind, or round the back while it spins in front.",
+    "Prepare with hip reels in both directions on each hand."
+   ],
+   "watch": [
+    "Leaning away from the staff",
+    "Trying it with both staffs before one works"
+   ],
+   "drill": "Do 20 hip reels per hand in each direction, keeping the hips square, before you follow the tutorial.",
+   "refs": [
+    "vWaistWrap",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "C2",
+   "tier": 5,
+   "name": "Body tracing with cranks",
+   "desc": "Patterns that travel around the body. A crank goes back and forth between an antispin pattern and an isolation pattern.",
+   "needs": [
+    "H3",
+    "H7"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Tracing means the centre of the move travels along the body or a limb.",
+    "A crank alternates between an antispin and an isolation.",
+    "DrexFactor chains cranks along a vertical line, and in a later video takes them around the whole body.",
+    "The descriptions give the idea only. Follow the tech blogs for the paths."
+   ],
+   "watch": [
+    "Staff ends close to the head on the high positions",
+    "Losing the alternation as the pattern travels"
+   ],
+   "drill": "Do one antispin then one isolation, 10 times in place per hand. Then move the pattern a hand width up the body on each rep.",
+   "refs": [
+    "vDrexCranks",
+    "vDrexTracers",
+    "wikiPoiDefs"
+   ]
+  },
+  {
+   "id": "C3",
+   "tier": 4,
+   "name": "Fishtails",
+   "desc": "A contact move. The staff traces a one-beat figure 8 while balancing on the back of the hand.",
+   "needs": [
+    "F6!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Find the balance point of the staff on the back of your hand.",
+    "Use the thumb knuckle and the pinky knuckle to control the staff on either side.",
+    "Start by rolling the staff over the back of the hand.",
+    "DrexFactor describes it as something like controlled falling. Home of Poi adds that it is easier in reverse."
+   ],
+   "watch": [
+    "Gripping to save it: let it drop and start again",
+    "Practising over a hard floor"
+   ],
+   "drill": "Balance the staff on the back of the hand for 10 seconds, then roll it over the hand once and catch. Ten rolls per hand.",
+   "refs": [
+    "vDrexFishtail",
+    "hopFishtail",
+    "vTracerContact"
+   ]
+  },
+  {
+   "id": "C4",
+   "tier": 4,
+   "name": "Staff-on-staff traps and violins",
+   "desc": "Moves where one staff rests on or is held by the other. A Flow Arts Institute tutorial by Spades covers traps and violins.",
+   "needs": [
+    "T3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare by balancing one staff across the other, held level, for a few seconds at a time."
+   ],
+   "watch": [
+    "Fingers caught between the staffs"
+   ],
+   "drill": "Balance one staff across the other for 10 seconds, five times with each hand underneath.",
+   "refs": [
+    "vFaiStaffOnStaff"
+   ]
+  },
+  {
+   "id": "C5",
+   "tier": 5,
+   "name": "Two-staff halo and SNeS rolls",
+   "desc": "Shoulder and neck rolls from contact staff, tried with two staffs. The tracerammo intro to double staff contact lists them.",
+   "needs": [
+    "C3"
+   ],
+   "track": "one",
+   "star": true,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Single-staff definitions from Home of Poi: a halo rolls the staff from one shoulder to the other, and a SNES rolls it from one shoulder, over the neck, to the other shoulder.",
+    "The Home of Poi tip for the halo: do not go fast at first, or it will hit you.",
+    "Learn each roll with one staff before trying two."
+   ],
+   "watch": [
+    "Speed before control, which ends with a staff in the neck or head",
+    "Looking down, which tips the staff off the shoulders"
+   ],
+   "drill": "With one soft staff, do 10 slow halo rolls. Add the second staff only after following a double contact tutorial.",
+   "refs": [
+    "vTracerContact",
+    "hopHalo",
+    "hopSnes"
+   ]
+  },
+  {
+   "id": "L1",
+   "tier": 2,
+   "name": "Move with and against the staffs",
+   "desc": "Stepping and leaning in the direction the staffs travel, then against it. A tip from the Home of Poi figure 8 lesson.",
+   "needs": [
+    "T3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Do same-direction figure 8s with both staffs.",
+    "Shift your weight and step in the direction the staffs are moving.",
+    "Then step against that direction while the staffs keep going.",
+    "Keep the planes flat while the body moves."
+   ],
+   "watch": [
+    "Planes tilting as soon as the feet move",
+    "Stiff knees"
+   ],
+   "drill": "Do eight figure 8s stepping with the staffs, then eight stepping against them. Repeat five times.",
+   "refs": [
+    "hopFig8Same"
+   ]
+  },
+  {
+   "id": "L2",
+   "tier": 3,
+   "name": "Turns",
+   "desc": "Turning the body while the staffs keep their pattern. The Intro to Double Staves class lists same-direction turns and opposite-direction turns.",
+   "needs": [
+    "T5",
+    "L1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start with the turn from the butterfly flower lesson: 90 degrees as the arms go from vertical to horizontal, then 90 more as they return.",
+    "Try a quarter turn inside a 2-beat weave.",
+    "Then turn with the butterfly weave, which the tracerammo weaves video covers.",
+    "Join the quarter turns into half turns and full turns."
+   ],
+   "watch": [
+    "Stopping the staffs to turn",
+    "Planes following the shoulders late"
+   ],
+   "drill": "Do four beats, a quarter turn, four beats, a quarter turn, until you have gone all the way round. Then go the other way.",
+   "refs": [
+    "hopFlower2",
+    "vSpark",
+    "vTracerWeaves",
+    "vTracerIso"
+   ]
+  },
+  {
+   "id": "L3",
+   "tier": 3,
+   "name": "Basic transitions",
+   "desc": "Moving between timing and direction modes, between prop facings, and between styles of movement without stopping.",
+   "needs": [
+    "T1",
+    "I2",
+    "A2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Pick two things you can do, for example isolations in tog-same and in split-same.",
+    "Look for a moment where both look alike, and change there.",
+    "Work through changes of mode, then of facing, then between isolation, extension, inspin and antispin.",
+    "The DrexFactor transitions tutorial gives set exercises for each kind of change."
+   ],
+   "watch": [
+    "A stop or reset between the two halves",
+    "Practising the change in one direction only"
+   ],
+   "drill": "Choose one pair of modes. Do four counts in the first and four in the second, back and forth 10 times without a pause.",
+   "refs": [
+    "vDrexTransitions"
+   ]
+  },
+  {
+   "id": "L4",
+   "tier": 4,
+   "name": "Direction-of-rotation tracking",
+   "desc": "Keeping track of which way each staff is rotating, and choosing the next move so that the rotation carries on.",
+   "needs": [
+    "L3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "During any move, say out loud which way each staff is turning.",
+    "Choose a next move that keeps the same rotation for at least one staff.",
+    "DrexFactor says this is not essential, but finds it an excellent way to make transitions that flow."
+   ],
+   "watch": [
+    "Forcing a reversal in the middle of a transition when a smoother option exists"
+   ],
+   "drill": "List five moves you know and the rotation of each staff in them. Link any two that share a rotation, 10 times each.",
+   "refs": [
+    "vDrexDir"
+   ]
+  },
+  {
+   "id": "L5",
+   "tier": 4,
+   "name": "Set sequence",
+   "desc": "A short written sequence of moves you know, repeated the same way each time.",
+   "needs": [
+    "L3",
+    "L2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Write down four to eight moves you can do cleanly, with the timing and direction mode of each.",
+    "Check each join between moves on its own before running the whole thing.",
+    "Run the sequence slowly, then at normal speed.",
+    "The Kinetic Alphabet is one notation built for writing double staff sequences down."
+   ],
+   "watch": [
+    "Adding a move you cannot yet do alone",
+    "Changing the order on every run"
+   ],
+   "drill": "Run the sequence five times in a row. Count a run only if there was no drop, collision or stop.",
+   "refs": [
+    "tkaGuide"
+   ]
+  },
+  {
+   "id": "L6",
+   "tier": 5,
+   "name": "Routine to music",
+   "desc": "A full piece set to music, linking weaves, flowers, hybrids and throws with turns and movement across the floor.",
+   "needs": [
+    "L5",
+    "L4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Choose the music and mark its sections.",
+    "Place your most reliable sequence at the start, and your riskiest move where a drop costs least.",
+    "Fill the joins with turns and transitions you already own.",
+    "Film a full run and note the weakest join."
+   ],
+   "watch": [
+    "Packing in moves that are not yet reliable",
+    "Standing in one spot throughout"
+   ],
+   "drill": "Run the whole routine once per session without stopping, whatever happens. Then repair the worst join.",
+   "refs": []
+  }
+ ],
+ "refs": {
+  "hopIndex": [
+   "Home of Poi: Double Staff lesson index",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff"
+  ],
+  "hopFig8Opp": [
+   "Home of Poi double staff lesson: Figure 8s, Opposite Direction",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Figure-8s-Opposite-Direction"
+  ],
+  "hopFig8Same": [
+   "Home of Poi double staff lesson: Figure 8, Same Direction",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Figure-8-Same-Direction"
+  ],
+  "hopIso": [
+   "Home of Poi double staff lesson: Basic Isolations, Wheel Plane and Wall Plane",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Basic-Isolations-Wheel-Plane+Wall-Plane"
+  ],
+  "hopAnti": [
+   "Home of Poi double staff lesson: Basic Antispins",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Basic-Antispins"
+  ],
+  "hopWeaveSame": [
+   "Home of Poi double staff lesson: Same Direction 2beat Weaves",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Same-Direction-2beat-Weaves"
+  ],
+  "hopWeaveOpp": [
+   "Home of Poi double staff lesson: Opposite Direction 2beat Weaves",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Opposite-Direction-2beat-Weaves"
+  ],
+  "hopFlower1": [
+   "Home of Poi double staff lesson: Flowers Part 1, Same Direction",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Flowers-Same-Direction"
+  ],
+  "hopFlower2": [
+   "Home of Poi double staff lesson: Flowers Part 2, Opposite Direction and Turns",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Flowers-Opposite-Direction-Turns"
+  ],
+  "hopFlower3": [
+   "Home of Poi double staff lesson: Flowers Part 3, Wall Plane",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Flowers-Wall-Plane"
+  ],
+  "hopFlower4": [
+   "Home of Poi double staff lesson: Flowers Part 4, Antispins",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Flowers-Antispins"
+  ],
+  "hopIsoVar": [
+   "Home of Poi double staff lesson: Isolation Variations",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Isolation-Variations"
+  ],
+  "hopInsideAnti": [
+   "Home of Poi double staff lesson: Inside Plane Antispins",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Inside-Plane-Antispins"
+  ],
+  "hopHybrid": [
+   "Home of Poi double staff lesson: Hybrid, Isolation and Antispin",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Hybrid-Isolation+Antispin"
+  ],
+  "hopHybridWeave": [
+   "Home of Poi double staff lesson: Hybrid (I+AS) Weave",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Hybrid-I+AS-Weave"
+  ],
+  "hop3beat": [
+   "Home of Poi double staff lesson: Isolated 3 Beat Weave",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Isolated-3-Beat-Weave"
+  ],
+  "hopHybridCap": [
+   "Home of Poi double staff lesson: Wheel Plane Hybrid CAP",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Wheel-Plane-Hybrid-CAP"
+  ],
+  "hopSnake1": [
+   "Home of Poi double staff lesson: Snake 1",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Snake-1"
+  ],
+  "hopSnake2": [
+   "Home of Poi double staff lesson: Snake 2, Chuu Chuu Snake",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Snake-2-Chuu-Chuu-Snake"
+  ],
+  "hopSnake3": [
+   "Home of Poi double staff lesson: Snake 3, Opposite Chuu Chuu Snake",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Snake-3-Opposite-Chuu-Chuu-Snake"
+  ],
+  "hopFinger": [
+   "Home of Poi double staff lesson: Wall Plane CAPs part 0, Fingerspin",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Wall-Plane-CAPs-part-0-Fingerspin"
+  ],
+  "hopCapNoSpin": [
+   "Home of Poi double staff lesson: Wall Plane CAPs Part 1, No spin",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Wall-Plane-CAPs-No-spin"
+  ],
+  "hopCapVert": [
+   "Home of Poi double staff lesson: Wall Plane CAPs Part 2, Vertical Halfs",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Wall-Plane-CAPs-Vertical-Halfs"
+  ],
+  "hopCapHoriz": [
+   "Home of Poi double staff lesson: Wall Plane CAPs Part 3, Horizontal Halfs",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Wall-Plane-CAPs-Horizontal-Halfs"
+  ],
+  "hopInsideThrow": [
+   "Home of Poi double staff lesson: Inside Throws",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Inside-Throws"
+  ],
+  "hopOutsideThrow": [
+   "Home of Poi double staff lesson: Outside Throws",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Outside-Throws"
+  ],
+  "hopSameThrow": [
+   "Home of Poi double staff lesson: Same Direction Throws",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Same-Direction-Throws"
+  ],
+  "hopShowers": [
+   "Home of Poi double staff lesson: Showers",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Double-Staff/Showers"
+  ],
+  "hopFig8Single": [
+   "Home of Poi staff lesson: Figure 8 (single staff)",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Beginners-2/Figure-8"
+  ],
+  "hopFingerSingle": [
+   "Home of Poi staff lesson: Finger spins (single staff)",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Beginners3/Finger-spins"
+  ],
+  "hopFishtail": [
+   "Home of Poi contact staff lesson: Fishtails (single staff)",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Contact/Fishtails"
+  ],
+  "hopHalo": [
+   "Home of Poi contact staff lesson: Halo Roll (single staff)",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Contact/Halo-Roll"
+  ],
+  "hopSnes": [
+   "Home of Poi contact staff lesson: SNES (single staff)",
+   "https://www.homeofpoi.com/en/lessons/teach/Staff/Contact/SNES"
+  ],
+  "tkaTD": [
+   "The Kinetic Alphabet: Timing and Direction, all six modes",
+   "https://tkaflowarts.com/timing-and-direction"
+  ],
+  "tkaTricks": [
+   "The Kinetic Alphabet: Poi and staff trick names",
+   "https://tkaflowarts.com/tricks"
+  ],
+  "tkaProps": [
+   "The Kinetic Alphabet: Prop notation, staves",
+   "https://tkaflowarts.com/notation/props"
+  ],
+  "tkaMotions": [
+   "The Kinetic Alphabet guide: Staff motions, prospin and antispin",
+   "https://tkaflowarts.com/guide/level-1/staff-motions"
+  ],
+  "tkaPlacements": [
+   "The Kinetic Alphabet guide: Staff placements",
+   "https://tkaflowarts.com/guide/level-1/staff-placements"
+  ],
+  "tkaNegative": [
+   "The Kinetic Alphabet guide: Negative space and body turns",
+   "https://tkaflowarts.com/guide/level-1/negative-space"
+  ],
+  "tkaHand": [
+   "The Kinetic Alphabet guide: Hand motions, shift, dash, static",
+   "https://tkaflowarts.com/guide/level-1/hand-motions"
+  ],
+  "tkaGrid": [
+   "The Kinetic Alphabet guide: The grid, diamond and box mode",
+   "https://tkaflowarts.com/guide/level-1/the-grid"
+  ],
+  "tkaType1": [
+   "The Kinetic Alphabet guide: Dual-shift and the modes as hand paths",
+   "https://tkaflowarts.com/guide/level-1/hm-type1"
+  ],
+  "tkaGuide": [
+   "The Kinetic Alphabet guide: contents",
+   "https://tkaflowarts.com/guide"
+  ],
+  "wikiPoiDefs": [
+   "Wikipedia: Poi definitions",
+   "https://en.wikipedia.org/wiki/Poi_definitions"
+  ],
+  "wikiFireStaff": [
+   "Wikipedia: Fire staff (construction and balance only)",
+   "https://en.wikipedia.org/wiki/Fire_staff"
+  ],
+  "vtg": [
+   "Noel Yee: Vulcan Tech Gospel, timing and direction",
+   "https://noelyee.com/instruction/vulcan-tech-gospel/"
+  ],
+  "vDrexGrip": [
+   "Video: Beginner Double Staff Tutorial: Grip, Timing and Direction (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=tqJoUgprXws"
+  ],
+  "vDrexDir": [
+   "Video: Double Staff Tutorial: Direction of Rotation (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=C_SCnUKrNyY"
+  ],
+  "vDrexFinger": [
+   "Video: Beginner Double Staff Tutorial: Finger Spinning (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=xe5YWGbedHE"
+  ],
+  "vDrexIso": [
+   "Video: Beginner Double Staff Tutorial: Isolations (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=sGrt1Uj8Ud4"
+  ],
+  "vDrexExt": [
+   "Video: Beginner Double Staff Tutorial: Extensions (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=L9DO8BIlXrs"
+  ],
+  "vDrexInspin": [
+   "Video: Beginner Double Staff Tutorial: Inspin (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=fb3CTGPTGyw"
+  ],
+  "vDrexAnti": [
+   "Video: Beginner Double Staff Tutorial: Antispin (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=pRoRKPIewhE"
+  ],
+  "vDrexAntiInt": [
+   "Video: Beginner Double Staff Tutorial: Antispin Intensive (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=VWDPoAbcuoI"
+  ],
+  "vDrexEight": [
+   "Video: Beginner Double Staff Tutorial: 8-Petal Antispin Flowers (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Kov6EWAWnDc"
+  ],
+  "vDrexReels": [
+   "Video: Beginner Double Staff Tutorial: Reels (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=7nPzvxhRrpI"
+  ],
+  "vDrexReelFlowers": [
+   "Video: Double Staff Tutorial: Hip and Shoulder Reel Flowers (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=0Rm1ShTTX5c"
+  ],
+  "vDrexCaps": [
+   "Video: Beginner Double Staff Tutorial: CAPs (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=D_3aH8SSRg0"
+  ],
+  "vDrexBox": [
+   "Video: Basic Double Staff Tutorial: Box Mode (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=JsRIkP_il7s"
+  ],
+  "vDrexHybrids": [
+   "Video: Beginner Double Staff Tutorial: Hybrids (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=nrYl22Z7bQ8"
+  ],
+  "vDrexTransitions": [
+   "Video: Beginner Double Staff Tutorial: Basic Transitions (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=SObR9W5eK-Y"
+  ],
+  "vDrexArcher": [
+   "Video: Beginner Double Staff Tutorial Archer Weaves (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=2WMkronsmfo"
+  ],
+  "vDrexBTB": [
+   "Video: Beginner Double Staff Tutorial: Basic Behind the Back (BTB) Weaves (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=D8woEIBiRAY"
+  ],
+  "vDrex3D": [
+   "Video: Beginner Double Staff Tutorial: Basic 3D (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Awp9Jr5XuMg"
+  ],
+  "vDrexTranslations": [
+   "Video: Double Staff Tutorial: Translations (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=r1MM-SkZTCE"
+  ],
+  "vDrexAntibrid": [
+   "Video: Double Staff Tutorial: Basic Antibrids (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=8ScYjUsv4LQ"
+  ],
+  "vDrexQuarter": [
+   "Video: Double Staff Tutorial: Quarter-Time Hybrids (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=crQg7DRk2Zg"
+  ],
+  "vDrexBookHyb": [
+   "Video: Double Staff Tech Blog: Book Hybrids (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Pz_reSbToiU"
+  ],
+  "vDrexBook": [
+   "Video: Double Staff Tech Blog: Opening/Closing the Book (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=tca_eAox9CA"
+  ],
+  "vDrexSnakesTech": [
+   "Video: Double Staff Tech Blog: Snakes (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=79SQTmdYwoU"
+  ],
+  "vDrexSnakesBeg": [
+   "Video: Beginner Double Staff Tutorial: Snakes (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Liq1Q9BYllo"
+  ],
+  "vDrexCateye": [
+   "Video: Beginner Double Staff Tutorial: Cateyes (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=u0oQKrC_Blo"
+  ],
+  "vDrexCrossers": [
+   "Video: Beginner Double Staff Tutorial: Crossers (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=3PJ94YXFpls"
+  ],
+  "vDrexFishtail": [
+   "Video: Double Staff Tutorial: Fishtails (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=qT8nUzlkIWM"
+  ],
+  "vDrexScaps": [
+   "Video: Double Staff Tech Blog: S-CAPs (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=urvpRmrGDEk"
+  ],
+  "vDrexCranks": [
+   "Video: Double Staff Tech Blog: Body Tracing Cranks/Antibrids (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=NbWdQM7LvpY"
+  ],
+  "vDrexTracers": [
+   "Video: Double Staff Tech Blog: Crank/Antibrid Tracers (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=fPCO4NZqk3k"
+  ],
+  "vDrexChuchu": [
+   "Video: Double Staff Tech Blog: Folding Chu-chus (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=UcPEomhreMI"
+  ],
+  "vPlaypoiStalls": [
+   "Video: Double-Staff Spinning Lesson: Stalls (playpoi)",
+   "https://www.youtube.com/watch?v=F_EWIUbeEWo"
+  ],
+  "vBanyanFig8": [
+   "Video: Double Staff: Figure Eights with Banyan (playpoi)",
+   "https://www.youtube.com/watch?v=5JbSP88YKsg"
+  ],
+  "vBanyanReels": [
+   "Video: Double Staffs with Banyan: Reels (playpoi)",
+   "https://www.youtube.com/watch?v=g7rcP_VXRuA"
+  ],
+  "vPlaypoiStart": [
+   "Video: Getting Started with Double-Staffs (playpoi)",
+   "https://www.youtube.com/watch?v=7y1lCWnxECk"
+  ],
+  "vPlaypoiModes": [
+   "Video: Beginner Poi Spinning Lesson: 4 Basic Modes (playpoi)",
+   "https://www.youtube.com/watch?v=HfWtSAvsZaE"
+  ],
+  "vFaiTD": [
+   "Video: Timing and Direction for Flow Artists and Fire Spinners (FlowArtsInstitute)",
+   "https://www.youtube.com/watch?v=ybhuyl4UcIc"
+  ],
+  "vFaiStaffOnStaff": [
+   "Video: FAI Tutsday Tutorial: Double Staff \"Staff on Staff\" by Spades (FlowArtsInstitute)",
+   "https://www.youtube.com/watch?v=Y2r2ddiW0i8"
+  ],
+  "vTracerWeaves": [
+   "Video: Double Staff Tricks - A Bunch of Weaves (tracerammo)",
+   "https://www.youtube.com/watch?v=uaJ-DikrCqg"
+  ],
+  "vTracerIso": [
+   "Video: Double Staff Tricks - Isolations (tracerammo)",
+   "https://www.youtube.com/watch?v=GvzBs-fVmG4"
+  ],
+  "vTracerContact": [
+   "Video: Double Staff Tricks - Intro to x2 Staff Contact (tracerammo)",
+   "https://www.youtube.com/watch?v=1o_l0du66cI"
+  ],
+  "vTracerToss": [
+   "Video: Double Staff Toss/Juggle Ideas (tracerammo)",
+   "https://www.youtube.com/watch?v=h-h_8-Cours"
+  ],
+  "vStaffDocThrow": [
+   "Video: How to start doublestaffs throwing? | Staff Doctor Tutorial (Staff Doctor)",
+   "https://www.youtube.com/watch?v=WRMXFzSWcOY"
+  ],
+  "vStaffDocArcher": [
+   "Video: Double staffs tutorial - counterclockwise archer weave (Staff Doctor)",
+   "https://www.youtube.com/watch?v=yh7TPpWaB2A"
+  ],
+  "vThread": [
+   "Video: DOUBLE STAFF TUTORIAL - THREAD THE NEEDLE (Intermediate) (Power Surge)",
+   "https://www.youtube.com/watch?v=jiPktV3k2DI"
+  ],
+  "vRemi": [
+   "Video: Double Staff Tutorial - spinning and throw - 19 moves ( beginners / intermediates ) (Rémi D)",
+   "https://www.youtube.com/watch?v=fGSdOfK3zSU"
+  ],
+  "vWaistWrap": [
+   "Video: Double Staff Tutorial - Waist Wraps (Dm6ripper)",
+   "https://www.youtube.com/watch?v=OQZL_hqAyPs"
+  ],
+  "vSpark": [
+   "Video: Spark: Intro to Double Staves (WildFire Retreat)",
+   "https://www.youtube.com/watch?v=0bfCvCVPd68"
+  ],
+  "vChadStall": [
+   "Video: Chad's Double Staff Blog #3: Charlie's 8-Step CAP/Stall patterns (Chad Svoboda)",
+   "https://www.youtube.com/watch?v=sWaknQbAVOA"
+  ],
+  "vPeteAntibrid": [
+   "Video: Pete Stewart Double Staff Tutorial: Antibrids (Apex Flowarts)",
+   "https://www.youtube.com/watch?v=ejgctwJoAKc"
+  ],
+  "vPeteHybrids": [
+   "Video: Pete Stewart Double Staff Tutorial: Hybrids (Apex Flowarts)",
+   "https://www.youtube.com/watch?v=5qz4hTcshMs"
+  ]
+ },
+ "phases": [
+  {
+   "id": "p1",
+   "name": "First rotations",
+   "time": "2 to 4 weeks",
+   "skills": "F1 F2 F3 F4 F5 F6 T1 T2",
+   "gate": "Twenty clean one-hand figure 8s in each direction on each hand, then 10 butterfly figure 8s without the staffs touching",
+   "req": [
+    "F5!",
+    "F6!",
+    "T2"
+   ]
+  },
+  {
+   "id": "p2",
+   "name": "Two staffs together",
+   "time": "1 to 3 months",
+   "skills": "T3 T4 T5 W1 W2 W3 I1 I4 F7 L1",
+   "gate": "A same-direction 2-beat weave, a butterfly weave, and joined hip and shoulder reels, each for 30 seconds without a collision",
+   "req": [
+    "T4",
+    "T5",
+    "W3"
+   ]
+  },
+  {
+   "id": "p3",
+   "name": "Isolation and antispin",
+   "time": "3 to 6 months",
+   "skills": "I2 I3 I5 I8 A1 A2 A3 A4 A5 W4 W5 L2 L3",
+   "gate": "An isolation and a four-petal antispin in both directions on each hand, then both staffs together in two timing and direction modes",
+   "req": [
+    "I1!",
+    "A1!",
+    "A2"
+   ]
+  },
+  {
+   "id": "p4",
+   "name": "Hybrids and throws",
+   "time": "6 to 12 months",
+   "skills": "H1 H2 H3 H4 H5 H9 A6 A7 A8 A9 T6 W6 W7 W8 I6 I7 J1 J2 J3 J6 C1 C3 C4 L4",
+   "gate": "An isolation versus antispin hybrid, a CAP on each side, and 10 low inside throws caught in a row with each hand",
+   "req": [
+    "H1",
+    "H3",
+    "J1!"
+   ]
+  },
+  {
+   "id": "p5",
+   "name": "Sequence and style",
+   "time": "Open-ended",
+   "skills": "L5 L6 H6 H7 H8 H10 H11 H12 A10 A11 W9 W10 J4 J5 J7 C2 C5",
+   "gate": "A one-minute routine to music with a weave, a flower, a hybrid and one throw, run three times with no drop",
+   "req": [
+    "L6"
+   ]
+  }
+ ]
+}

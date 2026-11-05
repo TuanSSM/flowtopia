@@ -1,0 +1,1 @@
+{"trail":0.5,"scene":true,"still":true,"dur":1,"loop":false,"props":[{"kind":"staff","hand":"R"},{"kind":"staff","hand":"L"}],"labels":[{"at":[0,1.3,0.42],"text":"centre point","dx":0,"dy":-0.1}],"n":1,"keys":[],"const":{"hR":[-0.44,1.3,0.42],"hL":[0.44,1.3,0.42],"0.a":[-0.02,1.3,0.42],"0.b":[-0.86,1.3,0.42],"1.a":[0.02,1.3,0.42],"1.b":[0.86,1.3,0.42]},"data":[]}

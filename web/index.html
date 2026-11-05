@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Flowa</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+<script src="theme.js"></script>
+</head>
+<body>
+<div id="app" class="shell">
+  <div class="scrim" data-act="nav-close"></div>
+  <nav id="side" class="side" aria-label="Main"></nav>
+  <div class="content">
+    <header class="top">
+      <button class="icon-btn menu-btn" data-act="nav-open" aria-label="Open navigation"></button>
+      <div id="crumb" class="crumb"></div>
+      <button class="search-btn" data-act="palette" aria-label="Search skills and pages"></button>
+    </header>
+    <main id="main" tabindex="-1"></main>
+  </div>
+  <aside id="panel" class="panel" aria-label="Skill details" hidden></aside>
+</div>
+<div id="palette" class="palette" hidden></div>
+<div id="tip" class="tip" hidden role="status"></div>
+<div id="toast" class="toast" hidden role="status"></div>
+<script src="props.js"></script>
+<script src="data.js"></script>
+<script src="details.js"></script>
+<script src="demo.js"></script>
+<script src="catalogs.js"></script>
+<script src="account.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

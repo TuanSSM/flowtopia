@@ -1,0 +1,3205 @@
+{
+ "id": "poi",
+ "name": "Poi",
+ "about": "Names and definitions come from pages opened during research: the Wikipedia article Poi definitions, the Wikibooks poi tricks page, the Home of Poi lesson library and terminology page, and the written descriptions of video lessons by Playpoi and DrexFactor Poi. Prerequisites, tiers and time estimates are coaching proposals. Fire spinning is not covered.",
+ "careNote": "Learn this with soft practice poi such as sock poi, in a clear space away from other people, and add speed only when the path is clean at slow speed.",
+ "branches": [
+  {
+   "k": "F",
+   "name": "Foundations",
+   "blurb": "Length, grip, planes, timing and the first swings"
+  },
+  {
+   "k": "R",
+   "name": "Reels and turns",
+   "blurb": "Turning with the poi: reels, tuck turns, windmill and corkscrew"
+  },
+  {
+   "k": "W",
+   "name": "Weaves",
+   "blurb": "Same-direction crossing patterns, forward, reverse and behind the back"
+  },
+  {
+   "k": "B",
+   "name": "Butterflies",
+   "blurb": "Opposite-direction patterns in front of the body"
+  },
+  {
+   "k": "S",
+   "name": "Stalls and pendulums",
+   "blurb": "Stops, direction changes and swings that do not close the circle"
+  },
+  {
+   "k": "I",
+   "name": "Isolations and extensions",
+   "blurb": "Unit circle shapes: extension, isolation, cat-eye, lines and tracers"
+  },
+  {
+   "k": "L",
+   "name": "Flowers and CAPs",
+   "blurb": "In-spin and antispin flowers, triquetras and CAPs"
+  },
+  {
+   "k": "C",
+   "name": "Body positions",
+   "blurb": "Behind the back, buzzsaw, crossers and between the legs"
+  },
+  {
+   "k": "O",
+   "name": "Wraps and tangles",
+   "blurb": "Recoil wraps, thru-wraps, air wraps, hyperloops and orbitals"
+  },
+  {
+   "k": "T",
+   "name": "Tosses and contact",
+   "blurb": "Throws, catches and contact poi"
+  }
+ ],
+ "skills": [
+  {
+   "id": "F1",
+   "tier": 1,
+   "name": "Poi length and grip",
+   "desc": "Set the tether so the head just reaches your armpit with the arm stretched out, and hold the handle in a way you find comfortable and controlled.",
+   "needs": [],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold the handle and stretch that arm out. With the other hand, pull the head along the arm.",
+    "The head should only just reach the side of your armpit. Shorter is fine. Longer limits the moves you can do.",
+    "Double loop handles: put one finger through each loop. Use the two fingers that give you the most comfort and control.",
+    "Single loop handles: put one, two or three fingers through the loop.",
+    "Ring or ball handles suit throws and catches, but they can whip back and hurt if you catch them badly."
+   ],
+   "watch": [
+    "A tether that is too long, which limits what you can learn",
+    "Two poi set to different lengths"
+   ],
+   "drill": "Measure both poi against your arm. Then swing one slowly at your side for a minute with each hand without the handle slipping.",
+   "refs": [
+    "hopLength",
+    "hopHold",
+    "vDrexHold",
+    "wikiPoi"
+   ]
+  },
+  {
+   "id": "F2",
+   "tier": 1,
+   "name": "One-poi circles",
+   "desc": "The first motion: one poi swinging in steady circles at your side, forward and backward.",
+   "needs": [
+    "F1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold one poi and let it hang at your side.",
+    "Start it swinging and let the swing grow into full circles beside your body.",
+    "Forward: the head moves away from you as it passes over the top. Keep the palm facing down and forward.",
+    "Backward: the head comes toward you over the top. Keep the palm facing up and forward.",
+    "Keep the circle on one flat plane beside you."
+   ],
+   "watch": [
+    "The circle drifting in toward your body",
+    "The palm turning inward, which pulls the poi across you"
+   ],
+   "drill": "Ten forward circles, then ten backward, with each hand. Keep the other hand still.",
+   "refs": [
+    "vOnePoi",
+    "hopFwd",
+    "hopBack",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "F3",
+   "tier": 1,
+   "name": "Planes: wheel, wall and horizontal",
+   "desc": "A plane is the flat surface a poi spins in. Wheel plane is at your sides, wall plane is in front of or behind you, horizontal plane is flat like a lasso.",
+   "needs": [
+    "F2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Picture yourself standing in the centre square of a tic-tac-toe grid.",
+    "The lines running past your sides are wheel planes. The poi spin there like the wheels of a car you are sitting in.",
+    "The lines in front of and behind you are wall planes, as if you were facing a wall.",
+    "The horizontal plane is parallel to the floor, like a lasso.",
+    "Some spinners also name a buzzsaw plane, straight out in front of the body, and diagonal planes."
+   ],
+   "watch": [
+    "A wobbling circle, which means the hand is steering off the plane",
+    "Naming planes by the room: they are defined by the way you face"
+   ],
+   "drill": "Spin one poi in wheel plane for ten circles, then in wall plane in front of you for ten. Say the plane name out loud each time.",
+   "refs": [
+    "hopTerms",
+    "wbTricks",
+    "wpDefs",
+    "vDrexPlanes"
+   ]
+  },
+  {
+   "id": "F4",
+   "tier": 1,
+   "name": "Forward and backward swing",
+   "desc": "Both poi spin at your sides in the same direction and at the same time, one on each side of the body.",
+   "needs": [
+    "F2!"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold one poi in each hand and start both swinging forward together.",
+    "Forward: palms face down and forward. Imagine pushing air away from you as the poi pass over the top.",
+    "Backward: palms face up and forward. Imagine scooping air up from in front of you as the poi pass your legs.",
+    "Keep each poi on its own side of the body."
+   ],
+   "watch": [
+    "Palms facing each other: the poi come in together and cross, tangle or hit your head",
+    "One poi running ahead of the other"
+   ],
+   "drill": "Twenty beats forward, stop, twenty beats backward. Repeat until the poi stay on their own sides without a correction.",
+   "refs": [
+    "hopFwd",
+    "hopBack"
+   ]
+  },
+  {
+   "id": "F5",
+   "tier": 1,
+   "name": "Split-time swing",
+   "desc": "Both poi spin the same way but half a circle apart: when one is at the top, the other is at the bottom.",
+   "needs": [
+    "F4"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start both poi swinging forward together.",
+    "Speed one poi up slightly until it passes the top as the other passes the bottom. This is split time.",
+    "Hold that gap at an even speed.",
+    "Go from split time back to same time, and out again.",
+    "Repeat it all swinging backward."
+   ],
+   "watch": [
+    "The gap closing back to same time without you noticing",
+    "The planes swaying: watch the path of each poi and adjust your wrists"
+   ],
+   "drill": "Eight beats in same time, eight beats in split time, without stopping. Do it forward, then backward.",
+   "refs": [
+    "hopSplit",
+    "vSplit"
+   ]
+  },
+  {
+   "id": "F6",
+   "tier": 2,
+   "name": "Four modes of timing and direction",
+   "desc": "Two poi can be together or split in time, and can spin in the same or opposite directions. That gives four modes, and most patterns exist in all of them.",
+   "needs": [
+    "F5"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Together time, same direction: both poi move as one.",
+    "Split time, same direction: the same way, half a circle apart. Weaves use this mode.",
+    "Together time, opposite direction: the poi mirror each other left and right. The butterfly uses this mode.",
+    "Split time, opposite direction: opposite ways and half a circle apart.",
+    "A beat is one full rotation of a poi. Count beats to keep the timing steady."
+   ],
+   "watch": [
+    "Practising only one or two of the modes",
+    "Losing the mode when you change plane"
+   ],
+   "drill": "In wheel plane, hold each of the four modes for eight beats. Then do the same in wall plane in front of you.",
+   "refs": [
+    "wpDefs",
+    "vModes",
+    "vFaiTD",
+    "vDrexTD",
+    "vtg",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "F7",
+   "tier": 1,
+   "name": "One-poi crossing (tic-tacs)",
+   "desc": "One poi switches from one side of the body to the other and back while it spins, tracing a figure 8 in front of you.",
+   "needs": [
+    "F2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin one poi forward at your side.",
+    "Carry the hand across your body so that the next circle is on the other side.",
+    "Bring it back to its own side for the circle after that. The path is a figure 8.",
+    "Learn it spinning backward as well."
+   ],
+   "watch": [
+    "The poi clipping your shoulder or leg as it changes side",
+    "Pausing the spin to change sides"
+   ],
+   "drill": "Ten crossings forward and ten backward with each hand, at an even speed.",
+   "refs": [
+    "vCrossF",
+    "vCrossB",
+    "vDrex2beat",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "F8",
+   "tier": 2,
+   "name": "Footwork and weight shifts",
+   "desc": "Simple movement to add under the spinning: weight shifts, half turns and sideways steps.",
+   "needs": [
+    "F4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Shift your weight from side to side on the spot. First follow the movement of the poi, then oppose it.",
+    "Add levels: shift low, shift high, then take the weight around in a full circle.",
+    "Turn or pivot 180 degrees on one foot, with a slight rise as you turn.",
+    "Travel sideways while facing the same direction."
+   ],
+   "watch": [
+    "Locked knees while the arms do all the work",
+    "Losing the poi timing when the feet start to move"
+   ],
+   "drill": "Spin a forward swing and shift your weight side to side for one song. Then add one half turn every eight beats.",
+   "refs": [
+    "hopFootwork"
+   ]
+  },
+  {
+   "id": "R1",
+   "tier": 1,
+   "name": "Turning with one poi",
+   "desc": "Turn your body in any direction while one poi keeps spinning in circles.",
+   "needs": [
+    "F2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin one poi in steady circles at your side.",
+    "Turn your body a little at a time while the poi keeps circling.",
+    "Turn both ways, with the poi spinning forward and then backward.",
+    "The written summary of this lesson is a single line, so watch it for the hand positions."
+   ],
+   "watch": [
+    "The circle stopping or wobbling when the feet move",
+    "Turning only in your comfortable direction"
+   ],
+   "drill": "Walk one slow full turn to the left, then one to the right, without the poi leaving its circle. Repeat with the other hand.",
+   "refs": [
+    "vTurnOne"
+   ]
+  },
+  {
+   "id": "R2",
+   "tier": 2,
+   "name": "Low turn",
+   "desc": "A half turn that changes the poi from forward to reverse swinging by passing both of them behind the back.",
+   "needs": [
+    "F4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start with the forward swing.",
+    "On the downswing, rotate your hips a quarter turn. Turn the left hand upside down and swing that poi past your hip to behind your back.",
+    "On the same downswing the right hand also turns upside down and swings its poi behind the back. Both poi now swing behind you.",
+    "As they swing down behind you, rotate another quarter turn and pass the right hand in front of your hip.",
+    "You now face the other way and the poi swing in reverse. To go back, pass both poi in front of your body as you rotate to the start."
+   ],
+   "watch": [
+    "Rotating the hips late, so the poi catch your legs",
+    "Rushing the second quarter turn before both poi are behind you"
+   ],
+   "drill": "Four beats forward, low turn, four beats in reverse, turn back. Ten rounds without a hit.",
+   "refs": [
+    "hopLowTurn"
+   ]
+  },
+  {
+   "id": "R3",
+   "tier": 2,
+   "name": "Reel turn",
+   "desc": "A half turn that follows the leading poi around, so that a forward spin becomes a reverse spin without the poi stopping.",
+   "needs": [
+    "F5",
+    "R1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin both poi forward in split time, same direction.",
+    "To turn from forward to reverse, wait until the poi on the leading side points down at the ground. Turn to follow it and let the trailing poi follow through.",
+    "To turn from reverse to forward, turn when the poi on the leading side points up.",
+    "Then learn the turn in the other timing and direction modes."
+   ],
+   "watch": [
+    "Turning at the wrong point of the circle, so the trailing poi cuts across your body",
+    "Stopping the poi in order to turn"
+   ],
+   "drill": "Three beats forward, turn, three beats in reverse, turn. When that is easy, cut to two beats each way.",
+   "refs": [
+    "vReelTurns",
+    "vCrossers",
+    "vWindmill"
+   ]
+  },
+  {
+   "id": "R4",
+   "tier": 2,
+   "name": "Hip reel",
+   "desc": "A same-time turn that brings the poi up behind your hips. Playpoi also calls it a tuck turn, while DrexFactor teaches the tuck turn differently, so the names overlap.",
+   "needs": [
+    "F4",
+    "R1"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "Spin both poi together in the same direction.",
+    "As you turn, let both poi swing up behind your hips, then bring them back in front.",
+    "The written sources give only this outline, so watch the lesson for the hand positions before drilling it.",
+    "Learn it turning both ways."
+   ],
+   "watch": [
+    "Hitting the backs of your legs when the poi go behind you",
+    "The planes tilting as the hands pass the hips"
+   ],
+   "drill": "With one poi, pass it behind the hip and back to the front ten times per hand. Then try it with both.",
+   "refs": [
+    "vHipReels",
+    "vHipTuck"
+   ]
+  },
+  {
+   "id": "R5",
+   "tier": 2,
+   "name": "Chase the sun (shoulder reels)",
+   "desc": "Both poi swing the same way in front of you, then pass together over the shoulders and swing behind you. Linking these reels lets you turn smoothly.",
+   "needs": [
+    "R4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Swing both poi in front of your body in the same direction.",
+    "Wait for them to reach the bottom of their path. On the upswing, pass both hands over your shoulders.",
+    "Let your hands flop behind the shoulders, palms to the sky, as the poi reach the bottom again.",
+    "On the next upswing bring your hands back in front of your body.",
+    "Keep your hands the same distance apart the whole time."
+   ],
+   "watch": [
+    "Hands drifting together or apart",
+    "Hands too low behind the shoulders, which brings the poi onto your head"
+   ],
+   "drill": "One reel in front, one behind, for twenty beats. Then add a quarter turn of the body on each pass.",
+   "refs": [
+    "hopChase",
+    "vLinkReels"
+   ]
+  },
+  {
+   "id": "R6",
+   "tier": 2,
+   "name": "Tuck turn",
+   "desc": "A half turn in which the poi make a small petal behind the shoulders or under the armpits. It is usually the first body tracing move people learn.",
+   "needs": [
+    "R5"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Spin both poi in reverse in wheel plane and let the heads drop back behind your shoulders.",
+    "Turn your body 180 degrees and pull them out. They should now feel as if they are spinning forward.",
+    "Next, with the poi in reverse, catch the tethers in your armpits before turning back to the other side. Let them fall out and they spin in reverse again.",
+    "Then turn straight back and forth between the petal behind the shoulders and the petal under the armpits.",
+    "Keep some space between your elbows and the sides of your body."
+   ],
+   "watch": [
+    "Elbows pinned to the ribs, which leaves no room for the petal",
+    "Turning before the heads have dropped behind the shoulders"
+   ],
+   "drill": "Ten shoulder tucks, ten armpit tucks, then alternate the two for ten turns.",
+   "refs": [
+    "vTuck",
+    "vTuckDrex"
+   ]
+  },
+  {
+   "id": "R7",
+   "tier": 3,
+   "name": "Windmill",
+   "desc": "A reel in which the hands pass above the head: the poi swing in front of you and then behind you, one after the other in split time.",
+   "needs": [
+    "R3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Spin both poi forward in split time in wheel plane, with your hands up near your ears.",
+    "When the left poi swings down past your chest, follow it all the way around to face the opposite way. The poi now spin in reverse.",
+    "When the right poi points up to the sky, follow it around to the right to face forward again.",
+    "Count three beats each way between turns, then two, then one. One beat each way is a windmill.",
+    "Later, do it with just the arms. Swinging the arms out wide makes the larger pattern Home of Poi calls the giant windmill."
+   ],
+   "watch": [
+    "Hands dropping below ear height, which brings the poi down onto your head",
+    "Cutting to one beat before two beats are clean"
+   ],
+   "drill": "Three beats forward, turn, three beats in reverse, turn. Cut to two, then one, only when each stage is clean.",
+   "refs": [
+    "vWindmill",
+    "hopWindmill",
+    "wpDefs",
+    "vCorkWind"
+   ]
+  },
+  {
+   "id": "R8",
+   "tier": 3,
+   "name": "Corkscrew",
+   "desc": "A horizontal plane move. The poi stay parallel to the floor while the hands travel up the body, behind the head and back down.",
+   "needs": [
+    "R7",
+    "W2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Without poi, start with both hands in front of your body.",
+    "Each hand goes up the body, past the left ear, behind the head, past the right ear and back down in front.",
+    "One hand chases the other. When the right hand reaches the left ear, the left hand starts. When the right hand passes the right ear, the left hand is at the left ear.",
+    "Add the poi and keep them spinning parallel to the floor the whole time.",
+    "The right hand poi should lead on the way up and on the way down."
+   ],
+   "watch": [
+    "The plane tilting out of horizontal, which brings the poi toward your face",
+    "Both hands moving together when one should chase the other"
+   ],
+   "drill": "Walk the hand path twenty times without poi. Then do it with soft poi at half speed.",
+   "refs": [
+    "vCork4",
+    "vCork",
+    "vCorkWind",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "R9",
+   "tier": 4,
+   "name": "Four-beat corkscrew",
+   "desc": "A corkscrew with an extra twist of the hands at the top and at the bottom, which changes which poi leads.",
+   "needs": [
+    "R8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Start from a clean regular corkscrew.",
+    "At the top and at the bottom, twist your hands so that the index finger of the right hand points back at you.",
+    "Then drop the hands down, or bring them back up.",
+    "With poi, the left hand poi should now lead on the way up and on the way down."
+   ],
+   "watch": [
+    "Twisting at only one end of the pattern",
+    "Losing the horizontal plane during the twist"
+   ],
+   "drill": "Practise the hand twist without poi at the top, then at the bottom. Then alternate one regular corkscrew and one four-beat corkscrew.",
+   "refs": [
+    "vCork4"
+   ]
+  },
+  {
+   "id": "R10",
+   "tier": 4,
+   "name": "Pirouette",
+   "desc": "A dance turn on one leg. DrexFactor pairs it with extensions, antispins, in-spins and corkscrews.",
+   "needs": [
+    "R3",
+    "F8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start in a lunge with both knees slightly bent. The arm above the rear foot points forward, the arm above the front foot points out to the side.",
+    "Step up onto the front leg, all the way to tiptoe. The rear leg comes forward to touch the knee of the standing leg, and the arms close into a circle in front of you.",
+    "Step forward with the tucked leg and land in a lunge again with the arms open.",
+    "Add the turn in stages: a quarter turn away from the side arm, then a half, three quarters, then a whole turn. Spot each one.",
+    "Then add the poi back in."
+   ],
+   "watch": [
+    "Skipping the balance practice on one leg",
+    "Landing somewhere you did not choose"
+   ],
+   "drill": "Walk the lunge and rise without poi, pausing two seconds on one leg each time. Then do quarter, half, three-quarter and full turns.",
+   "refs": [
+    "vPirouette"
+   ]
+  },
+  {
+   "id": "W1",
+   "tier": 2,
+   "name": "Two-beat weave",
+   "desc": "Both poi trace a figure 8 in front of the body in split time, same direction. It is the simplest weave.",
+   "needs": [
+    "F7!",
+    "F5"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn the one-poi crossing with each hand first.",
+    "Start both poi in split time, spinning forward.",
+    "Let one poi cross to the other side of the body, and the other follow it half a circle later.",
+    "Both then cross back in the same order.",
+    "The written sources give only an outline of this move, so watch a lesson for the arm positions."
+   ],
+   "watch": [
+    "The timing sliding back to same time",
+    "Hands drifting apart, so the poi cross at different points"
+   ],
+   "drill": "Twenty beats forward, twenty beats in reverse. Count one, two as the poi change sides.",
+   "refs": [
+    "vPP2bw",
+    "vDrex2bw",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "W2",
+   "tier": 2,
+   "name": "Three-beat weave",
+   "desc": "The staple weave. Each poi does one beat on its own side and two on the other, with the arms crossing over and under.",
+   "needs": [
+    "W1"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "With one poi, hold the empty arm out in front. Swing the poi across your body and over that arm for one rotation.",
+    "On the next rotation stay across the body but swing under the arm. Then uncross back to the poi side.",
+    "That is three beats: over, under, out. Practise it with each hand.",
+    "With both poi, start in split time. Each hand does over, under, out, with one arm a beat behind the other.",
+    "For the reverse weave, do the same with the poi spinning backward."
+   ],
+   "watch": [
+    "Adding speed before the over, under, out count is steady",
+    "Skipping the weak hand in the one-poi stage"
+   ],
+   "drill": "Say over, under, out aloud. Ten clean cycles with each hand alone, then with both poi. Then the same in reverse.",
+   "refs": [
+    "hopWeave3",
+    "wbTricks",
+    "vPP3bw",
+    "vPP3bwBack",
+    "vDrex3bw"
+   ]
+  },
+  {
+   "id": "W3",
+   "tier": 3,
+   "name": "Waist wrap",
+   "desc": "A turn back and forth between the forward and the reverse three-beat weave, using only the upper body.",
+   "needs": [
+    "W2!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Plant your feet. Only the upper body rotates.",
+    "Spread your arms to the sides. Bring the left hand over the right and turn slightly right, entering a forward three-beat weave.",
+    "When your hands come back to the left or front side, let them spread out again.",
+    "Reach the right hand under the left and turn slightly left, entering a reverse weave. Let the hands separate again when they return.",
+    "Go back and forth with a pause in the middle, then remove the pause. Aim for one weave on each side."
+   ],
+   "watch": [
+    "Stepping with the feet, which makes the move harder",
+    "Doing several weaves on one side before turning"
+   ],
+   "drill": "Forward weave, pause, reverse weave, pause, ten times. Then ten times with no pause.",
+   "refs": [
+    "vWaist",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "W4",
+   "tier": 3,
+   "name": "Fountain",
+   "desc": "A wall plane pattern that combines forward and reverse weaves with high and low transitions.",
+   "needs": [
+    "W3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Have the forward weave, the reverse weave and the waist wrap clean first.",
+    "Link the forward and the reverse weave so that one transition between them is made high and the other low.",
+    "Keep the whole pattern in the wall plane.",
+    "The written sources stop at this outline, so follow a video lesson for the arm path."
+   ],
+   "watch": [
+    "Leaving the wall plane during the transitions",
+    "Extra weave beats creeping in between the transitions"
+   ],
+   "drill": "Do the high transition alone ten times, then the low one ten times, then alternate them.",
+   "refs": [
+    "hopFountain",
+    "vFountain",
+    "vDrexFountain",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "W5",
+   "tier": 3,
+   "name": "Four-beat weave",
+   "desc": "A weave with four beats on each side of the body. Home of Poi teaches it as the step between the three-beat and the five-beat weave.",
+   "needs": [
+    "W2"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Do a forward three-beat weave. On your right side, the right hand rotates over the left.",
+    "Normally that poi would now swing to your left. Let it swing on the right again.",
+    "Curve your left hand over your right and down to your left.",
+    "Follow with the right hand to the left side. You have now done four beats on the right.",
+    "With both poi on the left, untwist your arms for four beats, then go back to the right."
+   ],
+   "watch": [
+    "Falling back into the three-beat count",
+    "The hands separating during the extra beat"
+   ],
+   "drill": "Count four on the right and four on the left for ten cycles. Then try it in reverse.",
+   "refs": [
+    "hopWeave5"
+   ]
+  },
+  {
+   "id": "W6",
+   "tier": 4,
+   "name": "Five-beat weave",
+   "desc": "A weave with five beats on each side. Each poi does three beats on its own side and two on the other.",
+   "needs": [
+    "W5"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from the four-beat weave.",
+    "When you untwist your arms on the left, let the left poi do one extra revolution.",
+    "Wrap your right wrist around your left and down to the right. This mirrors what you did on the right side.",
+    "That is five beats on the left. Do the same on the right.",
+    "Check the count: the right poi does three beats on the right and two on the left."
+   ],
+   "watch": [
+    "Wrists too far apart for the extra wrap",
+    "Tension in the forearms, which makes the wrap jerky"
+   ],
+   "drill": "Three cycles of three-beat, three of four-beat, three of five-beat, without stopping. Then in reverse.",
+   "refs": [
+    "hopWeave5",
+    "v5beat",
+    "v5beatPP",
+    "wbTricks"
+   ]
+  },
+  {
+   "id": "W7",
+   "tier": 4,
+   "name": "Behind-the-back weave",
+   "desc": "A three-beat weave in which the hands work behind the back.",
+   "needs": [
+    "W2!",
+    "C1!"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn plane control first: spin one poi in a vertical plane and rotate your body until the hand is wrapped behind your back.",
+    "Sweep the poi back and forth with the hand in the small of your back. Rotate your upper body from side to side so the poi misses you.",
+    "Move the poi hand around the other hand: over, under, back. It is the three-beat pattern, but behind the back the over feels like an under.",
+    "Practise that with each hand.",
+    "With both poi in split time, same direction, sneak one hand behind your back and think: left under, right under."
+   ],
+   "watch": [
+    "Not rotating the upper body, so the poi hits your back or legs",
+    "Pushing on through an awkward spot: go back to the last comfortable position and rebuild"
+   ],
+   "drill": "Twenty behind-the-back sweeps per hand, then ten one-poi cycles of over, under, back per hand, before trying both poi.",
+   "refs": [
+    "vBTB",
+    "vBTBPP",
+    "hopBTBWeave"
+   ]
+  },
+  {
+   "id": "W8",
+   "tier": 4,
+   "name": "Behind-the-back waist wrap",
+   "desc": "A waist wrap with the hands passing behind the back, built on the behind-the-back weave.",
+   "needs": [
+    "W7",
+    "W3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold one poi by both ends, head in one hand and handle in the other, with the tether behind your back.",
+    "Pull with the right hand so that the left hand tucks behind your back. Move the right hand in a circle around the left.",
+    "Tug with the left, dragging the right hand behind your back to the left side. Circle the left hand around the right.",
+    "Go back and forth: tug right, circle around the left, tug left, circle around the right.",
+    "With poi in your hands the circle shrinks to about a half circle each time."
+   ],
+   "watch": [
+    "Circling before the other hand is tucked behind the back",
+    "Standing square when the upper body should rotate"
+   ],
+   "drill": "Do the tether exercise for two minutes with no spinning. Then try it with soft poi, one side at a time.",
+   "refs": [
+    "vBTBWaist"
+   ]
+  },
+  {
+   "id": "W9",
+   "tier": 4,
+   "name": "Archer weave",
+   "desc": "A three-beat weave with one arm stretched straight out to the side and the other hand kept at that shoulder.",
+   "needs": [
+    "W2!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Do a forward three-beat weave with your left hand touching your right elbow.",
+    "Gradually move the left hand back toward the shoulder.",
+    "Aim to keep the right arm stretched straight out to the side with the left hand always at the shoulder.",
+    "Do the same with the reverse weave: right hand level with the left elbow, then back to the shoulder, left arm straight out."
+   ],
+   "watch": [
+    "The straight arm bending as the other hand moves back",
+    "Jumping to the shoulder position before the elbow position is clean"
+   ],
+   "drill": "Ten weave cycles with the hand at the elbow, ten at the middle of the upper arm, ten at the shoulder. Repeat in reverse.",
+   "refs": [
+    "vArcher"
+   ]
+  },
+  {
+   "id": "W10",
+   "tier": 4,
+   "name": "Antispin weave",
+   "desc": "A forward weave done with the hand motions of a reverse weave, so the hands travel against the spin of the poi.",
+   "needs": [
+    "W2!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin the poi forward, as in a forward weave.",
+    "Move the hands the way they move in a reverse weave.",
+    "When the arms are crossed with the right arm on top, the left arm stays still and the right hand moves around it. You end crossed again with the right arm underneath.",
+    "Start with as many beats as you need. It can be reduced to four beats in total."
+   ],
+   "watch": [
+    "The poi direction flipping to match the hands",
+    "Rushing to the short version before the long one is steady"
+   ],
+   "drill": "Mime the reverse weave hand path without poi. Then add poi spinning forward and count the beats you need. Take out one beat at a time.",
+   "refs": [
+    "hopAntiWeave"
+   ]
+  },
+  {
+   "id": "B1",
+   "tier": 2,
+   "name": "Butterfly",
+   "desc": "Hands close together in front of you, poi spinning in opposite directions in wall plane and crossing at the top and bottom of their circles.",
+   "needs": [
+    "F4",
+    "F3"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Swing both poi forward in same time, with your arms out in front.",
+    "Slowly rotate your palms inward toward each other, and keep rotating until they face up. The poi start to cross.",
+    "Put the bottom arm slightly in front of the top arm. The poi are now going in opposite directions.",
+    "Keep the two planes very slightly offset so the poi pass without colliding.",
+    "Learn it in reverse as well."
+   ],
+   "watch": [
+    "Poi knocking together: check that the bottom hand is slightly in front",
+    "Palms not turned fully up"
+   ],
+   "drill": "Go from the forward swing into the butterfly and back out, ten times. Then hold the butterfly for thirty beats.",
+   "refs": [
+    "hopButterfly",
+    "wbTricks",
+    "vBfPP",
+    "vBfTTN",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "B2",
+   "tier": 2,
+   "name": "Giant butterfly",
+   "desc": "A butterfly in which the arms open wide to the sides and then cross above the head.",
+   "needs": [
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start a butterfly.",
+    "When the poi are at the bottom of their path, stretch your arms out to the sides.",
+    "Bring the arms together and cross them above your head.",
+    "Lower the hands to normal butterfly height and repeat."
+   ],
+   "watch": [
+    "Poi colliding as the arms cross: keep the bottom hand slightly in front",
+    "The two arms opening at different times"
+   ],
+   "drill": "Four beats of butterfly, one giant butterfly, for twenty rounds.",
+   "refs": [
+    "hopGiantBf"
+   ]
+  },
+  {
+   "id": "B3",
+   "tier": 3,
+   "name": "Overhead butterfly",
+   "desc": "A butterfly in which the hands go behind the head at the top of the path, so the poi flap behind you.",
+   "needs": [
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Do a butterfly.",
+    "At the top of the path, flop both hands behind your head with the palms facing the sky.",
+    "The hand that is on top in the normal butterfly goes underneath the other when it is behind the head.",
+    "Then try two beats behind the head followed by a giant butterfly in front."
+   ],
+   "watch": [
+    "Hands too close to the neck, which brings the poi onto your head",
+    "The wrong hand on top behind the head, so the poi collide"
+   ],
+   "drill": "One butterfly in front, one behind the head, alternating for twenty beats with soft poi.",
+   "refs": [
+    "hopOverBf",
+    "wbTricks"
+   ]
+  },
+  {
+   "id": "B4",
+   "tier": 3,
+   "name": "Alternate butterfly",
+   "desc": "From a butterfly, one hand at a time passes over its shoulder and behind, then returns to the front.",
+   "needs": [
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start a butterfly.",
+    "When the poi reach the bottom of their path, pass your left hand over your left shoulder on the upswing.",
+    "Let the hand flop behind the shoulder, palm to the sky, as the poi reach the bottom again.",
+    "On the next upswing bring the hand back in front to the butterfly position.",
+    "Do a few beats of butterfly, then do the same with the right hand over the right shoulder."
+   ],
+   "watch": [
+    "The front poi drifting off its plane while you think about the back hand",
+    "Bringing the hand back before the poi has reached the bottom"
+   ],
+   "drill": "Left hand back and return, four beats of butterfly, right hand back and return. Twenty rounds.",
+   "refs": [
+    "hopAltBf"
+   ]
+  },
+  {
+   "id": "B5",
+   "tier": 3,
+   "name": "Mexican wave",
+   "desc": "An alternate butterfly with no plain butterfly beats in between. One poi is always in front of you and one behind, and they swap places above the head.",
+   "needs": [
+    "B4"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Get the alternate butterfly clean on both sides.",
+    "Flop the left hand behind, then the right, with no standard butterfly beats in the middle.",
+    "One poi is now always in front of you and one always behind.",
+    "They cross and swap places above your head at the top of each swing."
+   ],
+   "watch": [
+    "Poi colliding above the head",
+    "Hands dropping, which brings the crossing point down onto your head"
+   ],
+   "drill": "Alternate butterfly with two butterfly beats between sides, then with one, then with none.",
+   "refs": [
+    "hopAltBf",
+    "vMexWave"
+   ]
+  },
+  {
+   "id": "B6",
+   "tier": 3,
+   "name": "Thread the needle",
+   "desc": "A butterfly variation in which one hand slides down the other arm, alternating hands.",
+   "needs": [
+    "B1"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start a butterfly.",
+    "As the poi pass above your head and reach their peak, slide one hand down the other arm.",
+    "Alternate between sliding the left hand and the right hand.",
+    "Reverse: from a reverse butterfly, as the poi starts its downward arc out from the middle, pull one hand back. Slide it underneath and through as you pull the next hand back."
+   ],
+   "watch": [
+    "Sliding after the poi have already passed the top",
+    "Poi touching as the hands pass"
+   ],
+   "drill": "Two beats of butterfly, one thread, alternating sides, for twenty rounds. Then thread without the butterfly beats.",
+   "refs": [
+    "hopTTN",
+    "hopRevTTN",
+    "vTTN",
+    "vBfTTN"
+   ]
+  },
+  {
+   "id": "B7",
+   "tier": 4,
+   "name": "Four-beat thread the needle",
+   "desc": "Thread the needle with the other arm left in front for an extra rotation. The hand position is similar to a five-beat weave.",
+   "needs": [
+    "B6"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start a normal thread the needle.",
+    "As you slide your arm down, leave the other arm in front instead of pulling it back.",
+    "Let that hand rotate the poi as you slide down.",
+    "When your hands are next to each other and the poi are rotating outward, withdraw the next arm and repeat.",
+    "Starting the slide from a higher position gives you more time."
+   ],
+   "watch": [
+    "Pulling the front arm back out of habit",
+    "Starting the slide low, which leaves no time"
+   ],
+   "drill": "Alternate one normal thread and one four-beat thread for twenty rounds.",
+   "refs": [
+    "hop4TTN"
+   ]
+  },
+  {
+   "id": "B8",
+   "tier": 3,
+   "name": "Split-time butterfly",
+   "desc": "A butterfly with the poi half a circle apart. They still spin in opposite directions but no longer meet at the top and bottom.",
+   "needs": [
+    "B1",
+    "F6"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin a clean butterfly. That is together time, opposite direction.",
+    "Shift one poi half a circle away from the other, as you did when you first learned split time.",
+    "The written sources give only this outline, so watch the lesson for how the hands are placed.",
+    "Learn to move between the two timings and back."
+   ],
+   "watch": [
+    "The poi colliding as the timing shifts",
+    "Sliding back to together time without noticing"
+   ],
+   "drill": "Eight beats of butterfly, eight beats of split-time butterfly, back and forth for two minutes.",
+   "refs": [
+    "vSplitBf",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "B9",
+   "tier": 3,
+   "name": "Linking weaves and butterflies",
+   "desc": "Changing between same-direction moves such as weaves and opposite-direction moves such as butterflies, by reversing one poi with a stall or a wrap.",
+   "needs": [
+    "W2",
+    "B1",
+    "S1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Weaves spin both poi the same way. Butterflies spin them in opposite ways.",
+    "To change from one family to the other, one poi has to change direction.",
+    "Use a stall or a recoil wrap on one poi to reverse it.",
+    "Go straight from the reversal into the new move."
+   ],
+   "watch": [
+    "Reversing the poi but arriving in the wrong timing",
+    "Always reversing the same hand"
+   ],
+   "drill": "Three-beat weave, stall one poi, butterfly for eight beats, stall the same poi, back to the weave. Ten rounds per hand.",
+   "refs": [
+    "wbTricks",
+    "vLinkWB"
+   ]
+  },
+  {
+   "id": "B10",
+   "tier": 4,
+   "name": "One-handed butterfly",
+   "desc": "A butterfly with both poi held in one hand, one leaving each end of the fist.",
+   "needs": [
+    "B8"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Grip two poi in one hand. They are called the thumb end poi and the pinkie end poi.",
+    "One grip: hold the thumb end poi between thumb and index finger, and the pinkie end poi between the ring and little fingers.",
+    "The written sources describe the grip but not the spin, so find a demonstration before training the butterfly itself.",
+    "Work toward holding it in together time and in split time."
+   ],
+   "watch": [
+    "Losing track of which poi is in front, which leads to collisions",
+    "The two tethers crossing inside the hand"
+   ],
+   "drill": "Hold the grip and swing both poi gently as pendulums for one minute per hand, without the tethers crossing in your fingers.",
+   "refs": [
+    "vSuperman",
+    "vMercedes",
+    "vOneHandBf",
+    "hopOneHand",
+    "wbTricks"
+   ]
+  },
+  {
+   "id": "S1",
+   "tier": 2,
+   "name": "Stall",
+   "desc": "The poi comes to a stop in mid-air and then continues, either in the same direction or in a new one.",
+   "needs": [
+    "F2",
+    "F3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Make it easier first: shorten the poi to about elbow length, and use slightly heavier poi if you can.",
+    "Imagine the circle of the poi in front of you with a box drawn around it. Every stall lands in a corner of the box.",
+    "Wait until the poi passes the point where the circle touches the box just before your chosen corner. Then move your hand straight out toward that point.",
+    "The head leaves the circle and follows the edge of the box to the corner, where it stops.",
+    "To exit, pull your hand back toward the centre of the circle. The poi starts turning back the other way."
+   ],
+   "watch": [
+    "Neglecting upward stalls: they are usually harder than downward ones",
+    "Stopping the hand dead when it should move out with the poi"
+   ],
+   "drill": "Stall to each corner of the box in turn, ten times per corner, with each hand.",
+   "refs": [
+    "vStalls",
+    "hopStalls",
+    "wbTricks",
+    "wpDefs",
+    "vStallsPP",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "S2",
+   "tier": 3,
+   "name": "Double stalls",
+   "desc": "Both poi stall at the same moment.",
+   "needs": [
+    "S1!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Have single stalls clean with each hand, in every corner.",
+    "Spin both poi and stall them at the same moment.",
+    "When one poi stalls upward and the other downward, concentrate on the upward one. It happens less naturally.",
+    "Work through all the combinations of timing and direction."
+   ],
+   "watch": [
+    "The two stalls landing at different times",
+    "Watching only the easy hand"
+   ],
+   "drill": "Ten double stalls in each of the four timing and direction modes, with a reset between each.",
+   "refs": [
+    "hopDoubleStalls",
+    "vStalls"
+   ]
+  },
+  {
+   "id": "S3",
+   "tier": 2,
+   "name": "Pendulum",
+   "desc": "The poi is not allowed to complete a circle. It swings up, stops at the height of its arc, and swings back the other way.",
+   "needs": [
+    "F2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Let one poi hang, then swing it up to one side.",
+    "It stops at the height of its arc and changes direction.",
+    "Let it swing back through the bottom and up the other side, where it stops again.",
+    "Because the direction switches at each end, pendulums are a tool for moving between other moves."
+   ],
+   "watch": [
+    "The tether going slack at the top of the swing",
+    "Swinging over the top into a full circle"
+   ],
+   "drill": "Twenty pendulum swings per hand at an even height. Then with both poi together, and in split time.",
+   "refs": [
+    "vPend",
+    "hopTerms",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "S4",
+   "tier": 3,
+   "name": "1.5-beat weave",
+   "desc": "A weave that uses the pendulum. DrexFactor teaches it as a way to switch to other moves, and Home of Poi lists it as The 1.5.",
+   "needs": [
+    "S3",
+    "W1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare with pendulums in each hand and a clean two-beat weave.",
+    "Practise pendulums with both poi in split time, same direction."
+   ],
+   "watch": [
+    "Guessing the pattern from the name"
+   ],
+   "drill": "Twenty split-time pendulum swings with both poi, keeping the two heights equal.",
+   "refs": [
+    "vPend",
+    "hopPendulum",
+    "wbTricks"
+   ]
+  },
+  {
+   "id": "S5",
+   "tier": 3,
+   "name": "Bumps",
+   "desc": "Contact stalls: the poi is touched very softly at the still point of a stall.",
+   "needs": [
+    "S1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Stall the poi.",
+    "At the zero point of the stall, when the head has stopped, touch it very softly.",
+    "Let it continue out of the stall.",
+    "The source gives only this tip, so watch the lesson to see where the touch is made."
+   ],
+   "watch": [
+    "Touching the poi while it is still moving",
+    "Touching the tether: the lesson warns against it"
+   ],
+   "drill": "Ten slow stalls per hand, touching the head only once it has fully stopped.",
+   "refs": [
+    "hopBumps"
+   ]
+  },
+  {
+   "id": "S6",
+   "tier": 4,
+   "name": "Plane shift through a stall",
+   "desc": "Jumping from one plane to another. The most common method is to stall the poi and leave the stall in the new plane.",
+   "needs": [
+    "S1!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin one poi forward in wheel plane.",
+    "Stall it down.",
+    "Coming out of the stall, move into the wall plane.",
+    "Stall down again and come back out into wheel plane.",
+    "When horizontal stalls are comfortable, add the horizontal plane."
+   ],
+   "watch": [
+    "Leaving the stall before the poi has stopped",
+    "Confusing this with plane bending, where the plane is twisted over time with no stall"
+   ],
+   "drill": "Wheel plane, stall, wall plane, stall, wheel plane. Ten rounds per hand.",
+   "refs": [
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "S7",
+   "tier": 4,
+   "name": "Horizontal stall",
+   "desc": "A stall in the horizontal plane, made by whipping the poi back and forth across the body.",
+   "needs": [
+    "S1!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Whip one poi back and forth across your body in the horizontal plane.",
+    "Keep the poi from going slack at each end.",
+    "Do not let gravity pull it down out of the plane."
+   ],
+   "watch": [
+    "The poi dipping toward the floor between stalls",
+    "Slack in the tether at the turn"
+   ],
+   "drill": "Twenty whips back and forth per hand with soft poi, with clear space around you.",
+   "refs": [
+    "vYuta",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "S8",
+   "tier": 5,
+   "name": "Yuta stalls",
+   "desc": "Plane-changing stalls developed by Yuta Imamura. The poi moves between horizontal stalls and a wall plane spin.",
+   "needs": [
+    "S7",
+    "S6"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start with horizontal stalls, whipping the poi back and forth across the body.",
+    "Pull your hand upward and away from the point where the poi stopped. This pulls it into a wall plane spin.",
+    "To return, do a bottom stall out of the wall plane spin and pull the poi out horizontally into the whipping motion.",
+    "Also learn it pulling the hand downward and away. Return from that side with a top stall.",
+    "With two poi, spin together time same direction with matching stalls, or split time opposites with a top and a bottom stall at once."
+   ],
+   "watch": [
+    "Pulling out before the horizontal stall has stopped",
+    "Mixing up which stall returns from which entry"
+   ],
+   "drill": "Whip, whip, pull up into wall plane for two beats, bottom stall, whip. Ten rounds per hand.",
+   "refs": [
+    "vYuta"
+   ]
+  },
+  {
+   "id": "S9",
+   "tier": 5,
+   "name": "Horizontal stacking",
+   "desc": "A pattern of stalls and pendulums that goes from hands apart to hands together across the body, moving one hand at a time.",
+   "needs": [
+    "S2",
+    "S3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The basic pattern goes from hands apart to hands together, back and forth across the body, with only one hand moving at a time.",
+    "With one hand, do top stalls back and forth.",
+    "Add two pendulums on that hand side. The rhythm is: stall, stall, pendulum, pendulum.",
+    "When that is comfortable, add the other hand.",
+    "Aim for horizontal lines at each of the three segments of the trick."
+   ],
+   "watch": [
+    "Both hands moving at once",
+    "Losing the stall, stall, pendulum, pendulum rhythm when the second hand joins"
+   ],
+   "drill": "Stall, stall, pendulum, pendulum with one hand for two minutes, then the other hand, then both.",
+   "refs": [
+    "vStack"
+   ]
+  },
+  {
+   "id": "I1",
+   "tier": 2,
+   "name": "Extension",
+   "desc": "The arm circles in the same direction and at the same rate as the poi, so the poi looks like an extension of the arm.",
+   "needs": [
+    "F2",
+    "F3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin one poi with the hand still. DrexFactor calls this a static spin.",
+    "Now move the whole arm in a big circle, in the same direction as the poi and at the same rate.",
+    "Keep the arm fully extended, with the poi in line with it.",
+    "The hand and the head draw two circles with the same centre."
+   ],
+   "watch": [
+    "The poi running ahead of the arm or lagging behind it",
+    "A bent elbow, which shrinks the circle"
+   ],
+   "drill": "Four static spins, four extensions, alternating for two minutes per hand. Then the other direction.",
+   "refs": [
+    "wpDefs",
+    "hopTerms",
+    "wbTricks",
+    "vDrex2beat"
+   ]
+  },
+  {
+   "id": "I2",
+   "tier": 3,
+   "name": "Isolation",
+   "desc": "The hand circles opposite the head, so the centre of rotation moves from the hand to the middle of the tether.",
+   "needs": [
+    "I1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "An isolation moves the centre of rotation from your hand to a point along the poi.",
+    "The handle travels in a small circle, half a circle away from the head. In a perfect isolation the handle and the head move on the same circle.",
+    "Spin the poi slowly and rotate your hand as fast as the head, or faster.",
+    "Expect this to take months. The lessons give exercises for it."
+   ],
+   "watch": [
+    "The hand moving back and forth in a straight line: it has to trace a complete circle",
+    "Spinning too fast to see what the hand is doing"
+   ],
+   "drill": "Ten slow isolations per hand in each direction, checking that the middle of the tether stays in one place.",
+   "refs": [
+    "hopIso",
+    "wbTricks",
+    "wpDefs",
+    "vIso",
+    "vIsoEasy",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "I3",
+   "tier": 4,
+   "name": "Linear isolation",
+   "desc": "The poi appears to travel along a straight line: it drops or pops through your centre line while the hand passes over or under it.",
+   "needs": [
+    "I2",
+    "S1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start with your right hand far out to the right and the poi turning counter-clockwise.",
+    "As the poi passes your centre line, drop it straight down while the hand moves across above it from right to left.",
+    "As the hand comes out on the left, the poi regains its momentum, still turning counter-clockwise.",
+    "To return, pop the head up as it passes the centre line and let the hand sneak underneath it back to the right.",
+    "Learn it with the left hand too, turning the poi clockwise."
+   ],
+   "watch": [
+    "The poi swinging in an arc when it should drop straight down",
+    "The poi changing direction between passes"
+   ],
+   "drill": "Ten passes right to left and back with each hand, slowly, with the poi dropping or popping exactly on your centre line.",
+   "refs": [
+    "vOppAnti",
+    "vSnakes",
+    "vLinIso",
+    "vLinIsoExt",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "I4",
+   "tier": 4,
+   "name": "Cat-eye",
+   "desc": "Hand and poi circle at the same rate in opposite directions, and the head traces a narrow ellipse.",
+   "needs": [
+    "I3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start with hand and poi pointing straight down on your centre line.",
+    "Pull your hand up toward one shoulder so that the head travels to the opposite shoulder. Drop both back down the centre line.",
+    "Bounce back and forth, the hand going from shoulder to shoulder and the poi always going to the opposite shoulder.",
+    "Pick a side. As the poi comes up that side, give it an extra tug to pop it up, and sneak your hand around underneath it.",
+    "Return both to the centre line and repeat. The poi draws an ellipse."
+   ],
+   "watch": [
+    "Hand and poi going to the same shoulder",
+    "A weak tug, so the hand cannot get underneath"
+   ],
+   "drill": "Twenty shoulder to shoulder bounces per hand, then ten full cat-eyes per hand.",
+   "refs": [
+    "vIsoCat",
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "I5",
+   "tier": 5,
+   "name": "Horizontal cat-eye",
+   "desc": "A cat-eye lying on its side, with the hand travelling left and right. DrexFactor calls it the most challenging version.",
+   "needs": [
+    "I4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Move your hand back and forth along a horizontal line with the poi turning clockwise.",
+    "Moving right to left, drag the head underneath your hand. Moving left to right, flick the tether to launch the head over your hand.",
+    "When that is comfortable, drop the hand to your waist as the head goes over it, and raise it to shoulder or head height as the head goes under.",
+    "Three points need attention: the drag under, the flick over, and catching the tether again on the other side.",
+    "As soon as the head goes over your hand, start lifting the hand to begin the drag."
+   ],
+   "watch": [
+    "Losing the tether after the flick",
+    "The hand staying on a flat line: it should trace a circle about the size of an isolation"
+   ],
+   "drill": "Ten drag and flick passes on a flat line per hand, then ten with the hand dropping and rising. Later, pair it with an isolation in the other hand.",
+   "refs": [
+    "vHCat",
+    "vIsoCat"
+   ]
+  },
+  {
+   "id": "I6",
+   "tier": 5,
+   "name": "Point isolation",
+   "desc": "The head stays in one place while the hand circles around it. Home of Poi reports seeing it held for about three quarters of a beat, not a full one.",
+   "needs": [
+    "I2!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "What it is: the head stays still and the hand makes the big circle around it. In a normal spin it is the other way round.",
+    "Prepare with slow, clean isolations in both directions."
+   ],
+   "watch": [
+    "Expecting a full beat: the source calls that impractical"
+   ],
+   "drill": "Ten slow isolations per hand and direction, since the sources list no dedicated drill.",
+   "refs": [
+    "hopTerms"
+   ]
+  },
+  {
+   "id": "I7",
+   "tier": 4,
+   "name": "Isolation vs extension hybrid",
+   "desc": "One poi isolates while the other does an extension. Playpoi credits this definition of a hybrid to Andy House.",
+   "needs": [
+    "I2!",
+    "I1!"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "One hand spins an isolation while the other arm does an extension.",
+    "Get each move clean on its own, with each hand, first.",
+    "The written sources give only this definition, so follow a lesson for the timing and hand positions."
+   ],
+   "watch": [
+    "The isolation hand growing into a bigger circle to match the other arm",
+    "The two hands drifting out of time"
+   ],
+   "drill": "Thirty seconds of isolation with one hand alone, thirty of extension with the other alone, then both together for a few beats. Swap roles.",
+   "refs": [
+    "vHybridPP",
+    "wbTricks",
+    "hopHybrids",
+    "vtg"
+   ]
+  },
+  {
+   "id": "I8",
+   "tier": 4,
+   "name": "Snakes",
+   "desc": "The hands move straight out and back along a line while the heads follow a wave-shaped path, passing behind the shoulders.",
+   "needs": [
+    "I3!",
+    "F6"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Learn the one-poi pass first: with the poi turning clockwise on your left side, drop the head behind your shoulder and pass your hand over it to the right side.",
+    "After half a rotation, pop the head up behind your back and under the armpit as the hand sneaks beneath it back to the left.",
+    "Learn that in both directions and with both hands.",
+    "With two poi in split time, same direction, wait until the heads point up and down. Bring your hands close together, then pass each head behind its own shoulder.",
+    "The hands pass straight out to the sides, then return to centre as the heads go back up and down behind the shoulders."
+   ],
+   "watch": [
+    "Entering when the heads are not pointing up and down",
+    "Hands curving when they should travel straight out"
+   ],
+   "drill": "Ten one-poi passes per hand in each direction. Then ten two-poi snakes, with a reset after each.",
+   "refs": [
+    "vSnakes",
+    "wpDefs",
+    "vLinIsoExt"
+   ]
+  },
+  {
+   "id": "I9",
+   "tier": 4,
+   "name": "Body tracing",
+   "desc": "A class of moves in which the centre of rotation of the poi travels along the body or the limbs. Tuck turns are the usual first example.",
+   "needs": [
+    "R6",
+    "I3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The idea: the point the poi turns around moves along your body or an arm.",
+    "Start from tuck turns, where the poi makes a petal behind the shoulders and under the armpits.",
+    "DrexFactor uses linear isolations and linear extensions to build further tracers such as snakes.",
+    "The written sources define the class but not each pattern, so learn individual tracers from lessons."
+   ],
+   "watch": [
+    "The poi swinging wide of the body, which loses the tracing effect",
+    "Trying full patterns before tuck turns are smooth"
+   ],
+   "drill": "Alternate shoulder tucks and armpit tucks for two minutes, keeping the tether close to the body.",
+   "refs": [
+    "wpDefs",
+    "vTuck",
+    "vLinIsoExt"
+   ]
+  },
+  {
+   "id": "L1",
+   "tier": 3,
+   "name": "In-spin flower",
+   "desc": "The arm makes one big circle while the poi spins several times in the same direction, drawing loops called petals around the circle.",
+   "needs": [
+    "I1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start from an extension: arm and poi circling the same way at the same rate.",
+    "Keep the arm circle slow and add poi rotations. Two poi rotations per arm circle give one loop and a big circle.",
+    "Three poi rotations per arm circle give two loops. By this count, in-spin has one more poi rotation than petals.",
+    "Place the petals evenly around the circle.",
+    "Learn it in both directions."
+   ],
+   "watch": [
+    "The arm speeding up to match the poi",
+    "Petals bunching on one side"
+   ],
+   "drill": "One slow arm circle with two poi rotations, ten times per hand. Then three rotations per circle.",
+   "refs": [
+    "hopTerms",
+    "wpDefs",
+    "wbTricks",
+    "vFlowers"
+   ]
+  },
+  {
+   "id": "L2",
+   "tier": 4,
+   "name": "Four-petal antispin flower",
+   "desc": "The hand circles one way while the poi spins the other way, drawing four sharp, narrow petals.",
+   "needs": [
+    "L1",
+    "I3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Antispin means the arm and the poi move in opposite directions.",
+    "For four petals the poi makes three rotations for each arm circle. Antispin has one more petal than poi rotations.",
+    "DrexFactor teaches it by turning linear isolations into the flower, so have those clean first.",
+    "Good timing matters more than speed."
+   ],
+   "watch": [
+    "The arm changing direction to follow the poi",
+    "Uneven petals from an uneven arm speed"
+   ],
+   "drill": "One slow arm circle while counting three poi rotations aloud, ten times per hand, in each direction.",
+   "refs": [
+    "wbTricks",
+    "hopTerms",
+    "vAnti",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "L3",
+   "tier": 4,
+   "name": "Three-petal antispin flower",
+   "desc": "An antispin flower with two poi rotations per arm circle, which gives three petals.",
+   "needs": [
+    "L2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Have the four-petal antispin flower first.",
+    "Reduce to two poi rotations per arm circle. Antispin gives one more petal than rotations, so three petals.",
+    "DrexFactor builds it by mixing linear isolations and linear extensions.",
+    "Some sources call this shape a triquetra. See the triquetra entry for the disagreement."
+   ],
+   "watch": [
+    "Slipping back into four petals",
+    "Petals not evenly spaced around the circle"
+   ],
+   "drill": "One slow arm circle while counting two poi rotations, ten times per hand and direction.",
+   "refs": [
+    "hopTerms",
+    "vAnti",
+    "vTriq"
+   ]
+  },
+  {
+   "id": "L4",
+   "tier": 4,
+   "name": "Two-poi flowers: timing and direction",
+   "desc": "Flowers done with both hands, in split time same direction, together time opposite direction, or split time opposite direction.",
+   "needs": [
+    "L1!",
+    "F6"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Split time, same direction: both poi spin the same way, the arms move with them and stay half a circle apart.",
+    "Same time, opposite direction: the poi spin opposite ways and the arms meet twice per circle, at the top and at the bottom.",
+    "Split time, opposite direction: the hands still meet twice, but at the front and back positions.",
+    "Keep the two flowers the same size and speed."
+   ],
+   "watch": [
+    "One arm circling faster than the other",
+    "Arms not half a circle apart in split time"
+   ],
+   "drill": "Eight arm circles in each of the three versions with in-spin flowers, resting between.",
+   "refs": [
+    "wbTricks",
+    "wpDefs",
+    "vFlowers"
+   ]
+  },
+  {
+   "id": "L5",
+   "tier": 4,
+   "name": "Butterfly flowers",
+   "desc": "Flowers in which the two arms circle in opposite directions, meeting above the head and at the waist.",
+   "needs": [
+    "L4",
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "From the flower start position, one arm moves forward and the other backward.",
+    "They reach opposite points, then meet above the head.",
+    "They pass opposite points again, then meet at the waist.",
+    "The poi can be in-spin or antispin while the arms do this."
+   ],
+   "watch": [
+    "The arms meeting off centre",
+    "Poi colliding where the arms meet"
+   ],
+   "drill": "Mime the arm path without poi ten times. Then add in-spin poi for eight circles.",
+   "refs": [
+    "wbTricks"
+   ]
+  },
+  {
+   "id": "L6",
+   "tier": 5,
+   "name": "Triquetra",
+   "desc": "Named after the Celtic three-cornered symbol. Sources disagree: some use the name for any three-petal antispin flower, Home of Poi for a two-hand pattern.",
+   "needs": [
+    "L3!",
+    "L5"
+   ],
+   "track": "one",
+   "star": true,
+   "care": false,
+   "steps": [
+    "Home of Poi version: the arms move in same time and same direction, with the poi spinning in opposite directions.",
+    "One hand does a three-beat antispin flower. The other hand is extended in-spin.",
+    "The poi switch between same time and split time during the pattern.",
+    "Prerequisites it gives: the butterfly in each direction with either hand on top, and the three-beat antispin flower in each direction."
+   ],
+   "watch": [
+    "Assuming every source means the same pattern by this name",
+    "The extended arm shortening to match the antispin hand"
+   ],
+   "drill": "Antispin hand alone for eight circles, extension hand alone for eight, then together. Swap roles.",
+   "refs": [
+    "hopTriquetra",
+    "wpDefs",
+    "vTriq",
+    "vAnti"
+   ]
+  },
+  {
+   "id": "L7",
+   "tier": 4,
+   "name": "CAPs: the basic C-CAP",
+   "desc": "The hand swings back and forth in an arc: an extension one way, an antispin the other. Most sources expand CAP as Continuous Assembly Pattern, Playpoi as Capped Antispin Pattern.",
+   "needs": [
+    "L2",
+    "I1"
+   ],
+   "track": "LR",
+   "star": true,
+   "care": false,
+   "steps": [
+    "Swing your arm back and forth from one side of your body to the other.",
+    "Dip the poi beneath your hand going both ways: dip it down going one way and drag it around going the other.",
+    "Going one way you perform an antispin, going the other an extension.",
+    "The arm changes direction at each end while the poi keeps moving.",
+    "Playpoi suggests in-spin in place of the extension, as easier on the arms."
+   ],
+   "watch": [
+    "Stopping the poi when the arm reverses",
+    "Both halves turning into the same move"
+   ],
+   "drill": "Twenty swings back and forth per hand. Then start the pattern from the other end.",
+   "refs": [
+    "hopTerms",
+    "vCap8",
+    "vCCap",
+    "vCapPP",
+    "vCapAI",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "L8",
+   "tier": 5,
+   "name": "Eight-step CAP",
+   "desc": "A CAP that travels all the way around the body in four repeats of one antispin and one long extension. DrexFactor credits it to Charlie Cushing.",
+   "needs": [
+    "L7!"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn the basic C-CAP.",
+    "Go three quarters of the way around your body in a circle, with two antispin petals and one very long extension. Learn it both ways and with both hands.",
+    "Imagine your body divided into four quadrants, two on top and two below.",
+    "Do a CAP across a pair of quadrants, then move three quadrants around to the next section. Repeat four times to get all the way around.",
+    "One hand does: one antispin, then an extension for three quarters, four times over. That is eight steps."
+   ],
+   "watch": [
+    "Losing count of the quadrants",
+    "Shortening the three-quarter extension"
+   ],
+   "drill": "Walk through the four repeats slowly with one hand, saying antispin, extension at each step. Then the other hand.",
+   "refs": [
+    "vCap8"
+   ]
+  },
+  {
+   "id": "L9",
+   "tier": 5,
+   "name": "Opposite antispin flowers",
+   "desc": "Both hands do antispin in opposite directions. Poi and hands drop down the centre line together, and pop back up with the arms crossed.",
+   "needs": [
+    "L2!",
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn the one-hand pass: the poi drops straight down as it passes your centre line while the hand crosses above it, then pops up as the hand returns underneath.",
+    "Now drop the hand with the poi going one way, and pop the hand up with the poi coming back.",
+    "Learn it with both hands. The right poi turns counter-clockwise, the left clockwise.",
+    "Practise spinning with your arms crossed in opposites, with the planes angled outward away from your body.",
+    "Together: start with arms spread, drop both poi and hands down the centre line, cross the arms, then pop both up to get back to arms spread."
+   ],
+   "watch": [
+    "Tangling in the crossed position: angle the planes outward",
+    "One hand arriving late at the centre line"
+   ],
+   "drill": "Ten one-hand passes on each side, thirty seconds of crossed-arm opposites, then ten full repetitions. The split-time version has its own lesson.",
+   "refs": [
+    "vOppAnti",
+    "vSplitOppAnti"
+   ]
+  },
+  {
+   "id": "L10",
+   "tier": 5,
+   "name": "Wall plane flowers",
+   "desc": "Split-time flowers in wall plane. Arms and shoulders block each other there, so the hands go back and forth and switch between patterns.",
+   "needs": [
+    "L2!",
+    "I2",
+    "L7"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "In wall plane, split time same direction, the arms and shoulders block each other, so a continuous flower is not possible.",
+    "Have the hands go back and forth in split time, same direction, and switch between patterns on the way.",
+    "Most common: diamond mode antispin flowers, using the outside petals to switch into extensions that bring you back to arms crossed.",
+    "Variation: a box mode antispin flower, going into isolations where the poi overlap on either side.",
+    "Another option: spin the poi in opposite directions, so one hand does antispin and the other extension, swapping when the arms are crossed."
+   ],
+   "watch": [
+    "Trying to force a full continuous circle with both arms",
+    "The planes drifting forward out of the wall plane"
+   ],
+   "drill": "Antispin out, extension back, with one hand for ten rounds. Then the other hand, then both in split time.",
+   "refs": [
+    "vWallFl"
+   ]
+  },
+  {
+   "id": "L11",
+   "tier": 5,
+   "name": "Zan's Diamond",
+   "desc": "A split-time opposites pattern in which the hands trace a pair of back-to-back antispin triangles, switching which hand is on top.",
+   "needs": [
+    "L3",
+    "B8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Hold your hands apart, top and bottom, in split-time opposites, with the right hand on top spinning counter-clockwise.",
+    "Bring the hands together to the right, then across your body to the left, then separate them with the right hand on top again.",
+    "Now put the left hand on top, spinning clockwise. Bring the hands together to the left, then to the right, then separate.",
+    "Switch which hand is on top: triangles with the right on top, wait two beats, switch. Triangles with the left on top, wait one beat, switch.",
+    "When you can switch straight back and forth with no waiting beats, that is the full pattern."
+   ],
+   "watch": [
+    "Losing split-time opposites when the hands come together",
+    "Dropping the waiting beats too early"
+   ],
+   "drill": "Ten rounds with the right hand on top only, ten with the left, then alternate with the waiting beats.",
+   "refs": [
+    "vZan"
+   ]
+  },
+  {
+   "id": "C1",
+   "tier": 2,
+   "name": "Behind-the-back hand position",
+   "desc": "Keeping a stable vertical plane with the hand wrapped behind the back. It is the base for behind-the-back weaves and many other patterns.",
+   "needs": [
+    "F7"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin one poi in a vertical plane.",
+    "Rotate your body around until the hand is wrapped behind your back.",
+    "If a spot feels awkward or the plane wobbles, go back to the last comfortable spot and steady the plane before moving on.",
+    "Sweep the poi back and forth with the hand in the small of your back, rotating your upper body from side to side."
+   ],
+   "watch": [
+    "A stiff upper body, so the poi hits you",
+    "Moving on while the plane is unstable"
+   ],
+   "drill": "Take one minute to rotate from the front to fully behind the back and return, per hand. Then twenty behind-the-back sweeps.",
+   "refs": [
+    "vBTB",
+    "vBTBHand"
+   ]
+  },
+  {
+   "id": "C2",
+   "tier": 3,
+   "name": "Buzzsaw",
+   "desc": "Both poi spin between the arms, straight out in front of the body, in split time so that the heads do not collide.",
+   "needs": [
+    "F5"
+   ],
+   "track": "FR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Shorten the poi. One way is to wrap each tether once around your hand.",
+    "Bring your hands together in front of you and spin the poi between your arms.",
+    "Keep them in split time, half a circle apart, so the heads never meet.",
+    "The heads pass directly in front of your body. Check the length so that they clear your chin and the top of your head.",
+    "It can be done forward or in reverse."
+   ],
+   "watch": [
+    "Poi that are too long, which hit the chin or the top of the head",
+    "The timing sliding toward same time, so the heads collide"
+   ],
+   "drill": "Twenty beats forward with shortened soft poi, stop, twenty beats in reverse.",
+   "refs": [
+    "hopBuzzsaw",
+    "wbTricks",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "C3",
+   "tier": 4,
+   "name": "Crosser",
+   "desc": "Also called a straight jacket. The planes stay the same while the hands reach across the front of the body, as in a bear hug.",
+   "needs": [
+    "R3",
+    "W3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Learn reel turns in split time, same direction.",
+    "Practise spinning with your arms crossed, forward and in reverse, until you can keep the poi turning at least ten times each way.",
+    "Then do the reel turn with your arms crossed.",
+    "Turn from forward to reverse when the poi in the leading hand is down, and from reverse to forward when it is up.",
+    "The move should start in your body core. You can enter it from a waist wrap by keeping the arms crossed."
+   ],
+   "watch": [
+    "Driving the poi with the arms when the turn should come from the core",
+    "Turning at the wrong point in the circle of the leading poi"
+   ],
+   "drill": "Ten crossed-arm beats forward, ten in reverse, then five crossed-arm reel turns each way.",
+   "refs": [
+    "vCrossers",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "C4",
+   "tier": 4,
+   "name": "Weave crosser",
+   "desc": "A wall plane crosser. One hand comes up to the shoulder and the other goes under the opposite shoulder while the hips rotate.",
+   "needs": [
+    "W2",
+    "R3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin both poi in the same direction in front of you.",
+    "Bring one hand back up to your shoulder.",
+    "As you rotate your hips and the poi moves past, bring your other hand back underneath your other shoulder.",
+    "The move is in wall plane. Rotating the trunk moves the poi between the front and back wall planes, so the hands move very little.",
+    "It can also be done in split time."
+   ],
+   "watch": [
+    "Not rotating the hips",
+    "Moving the hands a lot when the trunk should do the work"
+   ],
+   "drill": "Mime the hand positions with the hip rotation ten times, then add poi for ten slow repetitions.",
+   "refs": [
+    "hopWeaveCrosser"
+   ]
+  },
+  {
+   "id": "C5",
+   "tier": 5,
+   "name": "Meltdown",
+   "desc": "Each hand moves from a crosser position to a waist wrap position, alternating without a break.",
+   "needs": [
+    "C3",
+    "W8"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "What it is: each hand moves from a crosser to a waist wrap position, in a continuously alternating way.",
+    "DrexFactor says it needs a lot of behind-the-back technique, so prepare with crossers and behind-the-back waist wraps."
+   ],
+   "watch": [
+    "Attempting it before the behind-the-back planes are stable"
+   ],
+   "drill": "Five crossers, then five behind-the-back waist wraps, back and forth, as preparation.",
+   "refs": [
+    "wpDefs",
+    "vMeltdown"
+   ]
+  },
+  {
+   "id": "C6",
+   "tier": 4,
+   "name": "Dodging daggers",
+   "desc": "A reel in which the centre of rotation of the poi passes between the legs. Wikipedia lists it beside the windmill, the reel that passes above the head.",
+   "needs": [
+    "R5",
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "What it is: a reel where the centre of rotation, normally the hand, passes between your legs.",
+    "Prepare with reels in front of and behind the body."
+   ],
+   "watch": [
+    "Using full-length poi before you have seen how much room the move needs"
+   ],
+   "drill": "Chase the sun for twenty beats, then the same reels with the hands held low at hip height.",
+   "refs": [
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "O1",
+   "tier": 3,
+   "name": "Arm wrap (recoil)",
+   "desc": "The tether wraps around the opposite arm, the head bounces off, and the poi unwinds spinning the other way.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "A recoil wrap winds around a target and bounces off, so the poi ends up spinning in the opposite direction.",
+    "From a forward swing, let one tether meet the opposite upper arm so that it winds around it.",
+    "The head reaches the arm and rebounds. Pull on the tether and the poi unwinds in the new direction.",
+    "It needs enough speed going in to wind and unwind completely.",
+    "Point your wrist at the place where the poi wraps. This gives it room to move freely."
+   ],
+   "watch": [
+    "Too little speed, so the poi stops half wound",
+    "Wrapping close to the face"
+   ],
+   "drill": "Ten wraps with each hand on the opposite upper arm with soft poi, holding the new direction for four beats each time.",
+   "refs": [
+    "wbTricks",
+    "hopWraps",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "O2",
+   "tier": 3,
+   "name": "Leg wrap",
+   "desc": "A recoil wrap on an outstretched leg. The tether winds around the leg, the head rebounds, and a pull sends the poi back the other way.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Swing the poi at the sides of the body and stretch one leg out to the side.",
+    "Let the tether meet the leg, so that the lower part winds around it.",
+    "With enough speed it winds completely and the head meets the leg, then rebounds.",
+    "Pull on the tether so that the poi unwinds fully and swings freely the other way.",
+    "Ankle wrap: bend the knee to 90 degrees with the lower leg turned out, so the tether winds around the ankle."
+   ],
+   "watch": [
+    "Too little speed to wind and unwind",
+    "Pulling before the head has rebounded"
+   ],
+   "drill": "Ten leg wraps per side with soft poi, continuing into four beats in the new direction.",
+   "refs": [
+    "wbTricks",
+    "hopWraps"
+   ]
+  },
+  {
+   "id": "O3",
+   "tier": 4,
+   "name": "Double bicep wrap",
+   "desc": "From a butterfly, both forearms come back so that both poi wrap on the biceps at once. The recoil leads into a reverse butterfly.",
+   "needs": [
+    "B1",
+    "O1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Spin a butterfly.",
+    "On the upswing, without moving your upper arms, bring both forearms back.",
+    "Both poi wrap on the biceps at the same time.",
+    "The recoil puts you into a reverse butterfly.",
+    "The source compares the motion to pulling back on a fishing pole."
+   ],
+   "watch": [
+    "The upper arms moving, which changes where the poi wrap",
+    "One poi wrapping before the other"
+   ],
+   "drill": "One poi at a time first: ten bicep wraps per arm. Then ten double wraps, each into four beats of reverse butterfly.",
+   "refs": [
+    "hopWraps"
+   ]
+  },
+  {
+   "id": "O4",
+   "tier": 4,
+   "name": "Thru-wrap",
+   "desc": "A wrap around a moving body part, or around the other poi, that keeps the direction of spin and only changes the path.",
+   "needs": [
+    "O1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "A thru-wrap does not bounce. The poi keeps its direction and comes out on a new path.",
+    "The wrap turn in the Home of Poi list is one example: spinning forward, wrap both poi on your upper arms.",
+    "As soon as they start to come up behind your back, twist quickly at the waist.",
+    "Let them unwind on the opposite side, in the same direction.",
+    "The head should never touch your skin. The poi speeds up as it wraps, so move quickly or use long tethers."
+   ],
+   "watch": [
+    "Twisting late, so the wrap turns into a recoil",
+    "The head hitting the arm"
+   ],
+   "drill": "Mime the wrap and the waist twist without poi ten times. Then try one wrap turn at a time with soft poi.",
+   "refs": [
+    "wpDefs",
+    "wbTricks",
+    "hopWraps"
+   ]
+  },
+  {
+   "id": "O5",
+   "tier": 3,
+   "name": "Air wrap",
+   "desc": "Also called a tangle. The two tethers meet and wrap around each other for one rotation, then come undone.",
+   "needs": [
+    "F5",
+    "F3"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Spin both poi in wall plane in front of you, same direction, split time.",
+    "Find the point in front of you where the poi cross. One poi is heading down to it and the other up.",
+    "Let the tethers cross at an angle near their midpoints. The heads must not hit.",
+    "The poi that was heading down goes under the crossing point between your arms, and the other follows it through.",
+    "Give the poi that was heading up a small tug so it can exit. Both leave the space between the arms and uncross."
+   ],
+   "watch": [
+    "The heads hitting each other where only the tethers should meet",
+    "Pulling hard: it needs steady hands and only a small tug"
+   ],
+   "drill": "Ten single air wraps with four clean beats between each. Then the same with the other poi leading.",
+   "refs": [
+    "hopAirWrap",
+    "vAirwrap",
+    "wbTricks",
+    "wpDefs"
+   ]
+  },
+  {
+   "id": "O6",
+   "tier": 4,
+   "name": "Hyperloop",
+   "desc": "An air wrap in which the tangled poi are carried through the buzzsaw plane to the other side of the body, where they untangle on their own.",
+   "needs": [
+    "O5",
+    "C2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Spin both poi in split time, same direction. Let the tethers cross at an angle at their midpoints.",
+    "Do not let them unwrap as in an air wrap. Turn 90 degrees so that both poi pass between your arms in buzzsaw plane.",
+    "After each head has passed between your arms, turn completely to the other side of your body.",
+    "The poi uncross on their own, as long as both heads escape the loop between your arms.",
+    "Learn it forward and backward."
+   ],
+   "watch": [
+    "Stopping the turn halfway, which leaves the poi tangled",
+    "One head not clearing the loop between the arms"
+   ],
+   "drill": "Five air wraps, then five hyperloops, on one side. Then enter from the other side.",
+   "refs": [
+    "vHyper",
+    "hopHyperloop",
+    "wpDefs",
+    "wbTricks"
+   ]
+  },
+  {
+   "id": "O7",
+   "tier": 5,
+   "name": "Orbital",
+   "desc": "A variation of the hyperloop. Pulling the handles away from the crossing point makes the two heads orbit each other very quickly.",
+   "needs": [
+    "O6"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Spin in split time, same direction, in wheel plane. Cross the poi so that they touch mid-tether.",
+    "Once the tethers cross, turn to put the poi into buzzsaw plane.",
+    "Pull the handles sharply out to either side until you feel resistance. The poi turn rapidly between your hands.",
+    "As it loses momentum, pull outward again to keep it going.",
+    "To exit, let the tethers go slightly slack to slow the poi. When the poi of the lead hand has cleared the space between your hands, finish the turn so they uncross."
+   ],
+   "watch": [
+    "Exiting at full speed without slowing the poi first",
+    "Tethers twisting up: swivels in or near the handles make orbitals smoother"
+   ],
+   "drill": "Enter, hold for a count of four, slow down and exit. Ten times, with soft poi.",
+   "refs": [
+    "vOrbital",
+    "hopOrbitals",
+    "vOrbitalPP"
+   ]
+  },
+  {
+   "id": "O8",
+   "tier": 4,
+   "name": "Spiral wrap",
+   "desc": "A wrap taught by Playpoi, DrexFactor and Home of Poi. From what the opened pages show, the tethers wind around the hands and then pop back out.",
+   "needs": [
+    "O5",
+    "B1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": false,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The one-handed version is described in text, so read that entry for the wrap and flick timing.",
+    "Prepare with clean butterflies in both directions."
+   ],
+   "watch": [
+    "Guessing the two-handed timing from the one-handed version"
+   ],
+   "drill": "Ten slow butterflies in each direction with shortened poi, keeping both planes flat.",
+   "refs": [
+    "vSpiral",
+    "vSpiralDrex",
+    "hopWrapList"
+   ]
+  },
+  {
+   "id": "O9",
+   "tier": 5,
+   "name": "One-handed spiral wrap",
+   "desc": "Both poi are held in one hand. The hand stops, the tethers wrap around it, and a flick of the wrist unwinds them.",
+   "needs": [
+    "W1",
+    "B10"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Start with a one-handed two-beat weave and stop your hand out on the front side of your body.",
+    "Momentum makes the tethers begin to wrap around your hand. Turn the wrist slightly with them as they wrap.",
+    "Just as the tethers finish wrapping and the heads touch your hand, flick the wrist quickly the other way.",
+    "The tethers should then unwrap on their own."
+   ],
+   "watch": [
+    "Poi not unwrapping: the flick came just before or just after the wrap finished",
+    "Tethers falling off the hand: the hand is pointing off the plane of the poi"
+   ],
+   "drill": "Ten wraps and flicks with the strong hand, then ten with the weak hand, with soft poi.",
+   "refs": [
+    "vSpiral1"
+   ]
+  },
+  {
+   "id": "T1",
+   "tier": 3,
+   "name": "Toss and catch",
+   "desc": "Releasing a poi and catching it again. Weighted handles, rings or balls make tosses easier.",
+   "needs": [
+    "F5",
+    "S1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Ring or ball handles are good for throws and catches, but they can whip back and hurt if you catch them badly.",
+    "DrexFactor starts beginners with two kinds: in-spin throws and isolated throws.",
+    "Prepare with slow one-poi circles and stalls in each hand."
+   ],
+   "watch": [
+    "Throwing near other people or under a low ceiling",
+    "Starting with hard or heavy heads"
+   ],
+   "drill": "Until you have watched a lesson, practise only stalls and slow one-poi circles with soft poi in a clear space.",
+   "refs": [
+    "vTossPP",
+    "vThrowsDrex",
+    "hopThrows",
+    "hopHold",
+    "wikiPoi"
+   ]
+  },
+  {
+   "id": "T2",
+   "tier": 4,
+   "name": "In-spin throw",
+   "desc": "A basic throw. DrexFactor names it as one of the two throws to learn first.",
+   "needs": [
+    "T1",
+    "L1"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare with in-spin flowers and extensions in each hand.",
+    "Use soft poi and a clear space when you start."
+   ],
+   "watch": [
+    "Guessing the release point from the name"
+   ],
+   "drill": "Eight slow in-spin flowers per hand as preparation.",
+   "refs": [
+    "vInspinThrow",
+    "vThrowsDrex",
+    "hopThrows"
+   ]
+  },
+  {
+   "id": "T3",
+   "tier": 4,
+   "name": "Isolated throw",
+   "desc": "A throw taught alongside the in-spin throw. Home of Poi lists forward, reverse and horizontal versions.",
+   "needs": [
+    "T1",
+    "I2"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Prepare with slow isolations in each hand and direction.",
+    "Use soft poi and a clear space when you start."
+   ],
+   "watch": [
+    "Guessing the release point from the name"
+   ],
+   "drill": "Ten slow isolations per hand and direction as preparation.",
+   "refs": [
+    "vIsoThrow",
+    "vThrowsDrex",
+    "hopThrows"
+   ]
+  },
+  {
+   "id": "T4",
+   "tier": 5,
+   "name": "Wibbles",
+   "desc": "After a throw, the direction of the poi is changed again and again by rebounding it off the hand or wrist.",
+   "needs": [
+    "T1"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "Throw the poi.",
+    "Catch it close to the handle, but do not grasp it.",
+    "Let it rebound from the hand or wrist, which reverses its direction.",
+    "Repeat. Done cleanly, the poi stalls for only a fraction of a second before it recoils."
+   ],
+   "watch": [
+    "Gripping the poi, which ends the rebound",
+    "Meeting the poi far from the handle"
+   ],
+   "drill": "The source gives no drill. After learning a basic toss from a lesson, try single rebounds before chaining them.",
+   "refs": [
+    "wbTricks",
+    "vWibbles",
+    "hopThrows"
+   ]
+  },
+  {
+   "id": "T5",
+   "tier": 5,
+   "name": "Suicide",
+   "desc": "The poi is thrown against a part of the body, rotates around it, flies off and is caught again.",
+   "needs": [
+    "T1",
+    "O1",
+    "O2"
+   ],
+   "track": "one",
+   "star": false,
+   "care": true,
+   "steps": [
+    "The poi is thrown against a part of the body, usually the leg or the opposite arm.",
+    "It rotates around that body part.",
+    "It flies off and is caught again.",
+    "The source gives only this outline, so watch a demonstration for the release and the catch."
+   ],
+   "watch": [
+    "Aiming near the head or neck",
+    "Using hard heads while learning"
+   ],
+   "drill": "Prepare with recoil arm wraps and leg wraps, ten per side, before you let go of anything.",
+   "refs": [
+    "wbTricks"
+   ]
+  },
+  {
+   "id": "T6",
+   "tier": 4,
+   "name": "Cradle and outer arm roll",
+   "desc": "Contact poi basics: the head balances on the back of the hand, then rolls along the forearm and the tether is caught again.",
+   "needs": [
+    "S3"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Use poi with ball-shaped heads, such as stage balls.",
+    "Cradle: spread your fingers to make a small bowl on the back of the hand. Put the tether between the index and middle fingers and balance the head on your knuckles.",
+    "Walk around holding the cradle. Train the hand to open, not grip, when the head starts to fall.",
+    "Swing the tether back and forth beneath your hand as a pendulum.",
+    "When the handle or tether taps your elbow, flick your fingers upward. The head rolls to the end of the forearm and you catch the tether as it comes back around."
+   ],
+   "watch": [
+    "Tilting the forearm to start the roll: keep it level and let the tether supply the momentum",
+    "Gripping when the head wobbles"
+   ],
+   "drill": "Hold the cradle for one minute while walking, per hand. Then ten pendulum swings and ten rolls.",
+   "refs": [
+    "vContactRoll",
+    "hopContact",
+    "wpDefs",
+    "wikiPoi"
+   ]
+  },
+  {
+   "id": "T7",
+   "tier": 5,
+   "name": "Fishtail",
+   "desc": "A contact move. The head sits on the back of the hand while the tether and handle swing over to the other side of the hand and back.",
+   "needs": [
+    "T6"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "Balance the head on the back of your hand with the index and little fingers out and the middle two folded down. The tether hangs on the thumb side.",
+    "Swing the tether back and forth to build momentum.",
+    "Swing it down and away with enough force to carry the tether and handle over to the other side of the hand, like a reverse weave. Relax into pendulums.",
+    "Build momentum again and swing them up and over, back to the side you started on.",
+    "Then go back and forth without the pendulums. Keep the hand cupped: the head does a small jump on each pass."
+   ],
+   "watch": [
+    "A flat hand, so the head rolls off",
+    "Chaining passes before single passes are reliable"
+   ],
+   "drill": "Ten single passes each way with pendulums between. Then two in a row, then three.",
+   "refs": [
+    "vFishtail",
+    "hopContact",
+    "wikiPoi"
+   ]
+  },
+  {
+   "id": "T8",
+   "tier": 5,
+   "name": "Gunslinger (propeller)",
+   "desc": "The poi is released and kept spinning in place by circling the hand, with the wrist pressing on the tether close to the weighted handle.",
+   "needs": [
+    "T6"
+   ],
+   "track": "LR",
+   "star": false,
+   "care": false,
+   "steps": [
+    "It needs poi with weighted handles.",
+    "The poi is released from the normal grip.",
+    "The hand makes a small circle with the wrist pressing against the tether close to the handle. This keeps the poi spinning in place.",
+    "The source gives only this outline. DrexFactor has a lesson on ways in and out."
+   ],
+   "watch": [
+    "Trying it with handles that have no weight",
+    "Starting before you have watched an entry demonstrated"
+   ],
+   "drill": "The source gives no drill. Watch the entry lesson first, then practise the small hand circle slowly with a soft poi that has a weighted handle.",
+   "refs": [
+    "wbTricks",
+    "vGunslinger",
+    "vSpiral1",
+    "hopContact"
+   ]
+  }
+ ],
+ "refs": {
+  "wikiPoi": [
+   "Wikipedia: Poi (performance art)",
+   "https://en.wikipedia.org/wiki/Poi_(performance_art)"
+  ],
+  "wpDefs": [
+   "Wikipedia: Poi definitions",
+   "https://en.wikipedia.org/wiki/Poi_definitions"
+  ],
+  "wbTricks": [
+   "Wikibooks: Juggling, Poi tricks",
+   "https://en.wikibooks.org/wiki/Juggling/Poi_tricks"
+  ],
+  "vtg": [
+   "Vulcan Tech Gospel V.1, compiled by Noel Yee (PDF)",
+   "https://noelyee.weebly.com/uploads/7/2/9/6/7296674/vulcan_tech_gospel.pdf"
+  ],
+  "hopTerms": [
+   "Home of Poi: Poi terminology",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Poi-terminology"
+  ],
+  "hopWraps": [
+   "Home of Poi: Definitive Listing of Wraps",
+   "https://www.homeofpoi.com/articles/wraps.php"
+  ],
+  "hopThrows": [
+   "Home of Poi: throws lesson list",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Throws-2"
+  ],
+  "hopContact": [
+   "Home of Poi: contact poi lesson list",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Contact1"
+  ],
+  "hopPendulum": [
+   "Home of Poi: pendulum lesson list",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Pendulum"
+  ],
+  "hopOneHand": [
+   "Home of Poi: one-handed poi lesson list",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/One-Handed-Poi-meteor-style"
+  ],
+  "hopHybrids": [
+   "Home of Poi: hybrids lesson list",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Hybrids"
+  ],
+  "hopWrapList": [
+   "Home of Poi: wraps lesson list",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Wraps"
+  ],
+  "hopLength": [
+   "Home of Poi lesson: Length of Poi",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners/Length-Poi"
+  ],
+  "hopHold": [
+   "Home of Poi lesson: Holding the poi",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners/Holding-poi"
+  ],
+  "hopFwd": [
+   "Home of Poi lesson: Forward swing",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners/Forward-swing"
+  ],
+  "hopBack": [
+   "Home of Poi lesson: Backward swing",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners/Backward-swing"
+  ],
+  "hopSplit": [
+   "Home of Poi lesson: Split time swinging",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners/Split-time-swinging"
+  ],
+  "hopLowTurn": [
+   "Home of Poi lesson: Low Turn",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-1/Low-Turn"
+  ],
+  "hopChase": [
+   "Home of Poi lesson: Chasing the Sun",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-1/Chasing-Sun"
+  ],
+  "hopWindmill": [
+   "Home of Poi lesson: Windmill",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-1/Windmill"
+  ],
+  "hopBuzzsaw": [
+   "Home of Poi lesson: Buzzsaw",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-1/Buzzsaw"
+  ],
+  "hopButterfly": [
+   "Home of Poi lesson: Butterfly",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Butterflies/Butterfly"
+  ],
+  "hopGiantBf": [
+   "Home of Poi lesson: Giant Butterfly",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Butterflies/Giant-Butterfly"
+  ],
+  "hopOverBf": [
+   "Home of Poi lesson: Overhead Butterfly",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Butterflies/Overhead-Butterfly"
+  ],
+  "hopAltBf": [
+   "Home of Poi lesson: Alternate Butterfly",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Butterflies/Alternate-Butterfly"
+  ],
+  "hopTTN": [
+   "Home of Poi lesson: Thread the needle",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Butterflies/Thread-needle"
+  ],
+  "hopRevTTN": [
+   "Home of Poi lesson: Reverse Thread the Needle",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Butterflies/Reverse-Thread-Needle"
+  ],
+  "hop4TTN": [
+   "Home of Poi lesson: Four Beat Thread the needle",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Advanced-Butterflies/Four-Beat-Thread-needle"
+  ],
+  "hopWeave3": [
+   "Home of Poi lesson: Forward Weave (3 beats)",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Weaves/Forward-Weave-3-beats"
+  ],
+  "hopFountain": [
+   "Home of Poi lesson: Fountain (3 Beats)",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Weaves/Fountain-3-Beats"
+  ],
+  "hopWeave5": [
+   "Home of Poi lesson: Forward Weave (5 beats)",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Advanced-Weaves/Forward-Weave-5-beats"
+  ],
+  "hopBTBWeave": [
+   "Home of Poi lesson: Reverse Behind the back Weave (3 beats)",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Weaves/Reverse-Behind-back-Weave-3-beats-BTB"
+  ],
+  "hopAntiWeave": [
+   "Home of Poi lesson: Forward Antispin Weave",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Advanced-Weaves/Forward-Antispin-Weave"
+  ],
+  "hopWeaveCrosser": [
+   "Home of Poi lesson: Weave Crosser",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Crossers/Weave-Crosser"
+  ],
+  "hopTriquetra": [
+   "Home of Poi lesson: Triquetras",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Flowers/Triquetras"
+  ],
+  "hopStalls": [
+   "Home of Poi lesson: Basic vertical stalls",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Stalls/Basic-vertical-stalls"
+  ],
+  "hopDoubleStalls": [
+   "Home of Poi lesson: Double stalls",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Stalls/Double-stalls"
+  ],
+  "hopBumps": [
+   "Home of Poi lesson: Bumps",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Stalls/Bumps"
+  ],
+  "hopAirWrap": [
+   "Home of Poi lesson: Air Wrap in Wall Plane",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Wraps/Air-Wrap-in-Wall-Plane"
+  ],
+  "hopHyperloop": [
+   "Home of Poi lesson: Basic Hyperloops",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Wraps/Basic-Hyperloops"
+  ],
+  "hopOrbitals": [
+   "Home of Poi lesson: Orbitals",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Wraps/Orbitals"
+  ],
+  "hopIso": [
+   "Home of Poi lesson: Isolations",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Isolations/Isolations"
+  ],
+  "hopFootwork": [
+   "Home of Poi lesson: Footwork",
+   "https://www.homeofpoi.com/us/lessons/teach/POI/Movement/Footwork"
+  ],
+  "vOnePoi": [
+   "Video: Beginner Poi: How to Start Swinging One Poi (playpoi)",
+   "https://www.youtube.com/watch?v=SovA_YLxKOI"
+  ],
+  "vCrossF": [
+   "Video: Beginner Poi: Spinning & Crossing One Poi Forward (playpoi)",
+   "https://www.youtube.com/watch?v=SynvBPFZbYM"
+  ],
+  "vCrossB": [
+   "Video: Beginner Poi: Spinning & Crossing One Poi Backward (playpoi)",
+   "https://www.youtube.com/watch?v=BVcLv7JgiaY"
+  ],
+  "vTurnOne": [
+   "Video: Beginner Poi: Turning Freely with One Poi (playpoi)",
+   "https://www.youtube.com/watch?v=KO77rwkYHJs"
+  ],
+  "vSplit": [
+   "Video: Poi: How to Get Better at Split-Time (playpoi)",
+   "https://www.youtube.com/watch?v=dYigbIlLrJA"
+  ],
+  "vModes": [
+   "Video: Beginner Poi Spinning Lesson: 4 Basic Modes (playpoi)",
+   "https://www.youtube.com/watch?v=HfWtSAvsZaE"
+  ],
+  "vFaiTD": [
+   "Video: Timing and Direction for Flow Artists and Fire Spinners (FlowArtsInstitute)",
+   "https://www.youtube.com/watch?v=ybhuyl4UcIc"
+  ],
+  "vDrexHold": [
+   "Video: How to Hold Poi (Beginner Poi Spinning Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=mTN1kXIC4bU"
+  ],
+  "vDrexPlanes": [
+   "Video: Poi Plane Control (Beginner Poi Spinning tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=XvPdWx77X3g"
+  ],
+  "vDrexTD": [
+   "Video: Poi Timing and Direction (Basic Poi Spinning Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=bItWqsX1yjI"
+  ],
+  "vDrex2beat": [
+   "Video: 2-beats and Extensions for Poi (Basic Poi Spinning Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=pdQWrowsK9Y"
+  ],
+  "vReelTurns": [
+   "Video: Reel Turns for Poi (Basic Poi Spinning Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=pXu9rXZGKm0"
+  ],
+  "vHipReels": [
+   "Video: 2.14 Same-Same Turn: Poi Up Behind the Hips (Hip Reels) (playpoi)",
+   "https://www.youtube.com/watch?v=oHRDrPlUoGc"
+  ],
+  "vHipTuck": [
+   "Video: Beginner Poi Spinning tutorial: Same Time Turns (Hip Reels) (playpoi)",
+   "https://www.youtube.com/watch?v=r4-8yrkHEbQ"
+  ],
+  "vLinkReels": [
+   "Video: Beginner Poi Spinning Tutorial: Linking the Reels (playpoi)",
+   "https://www.youtube.com/watch?v=X1w77tSXcw0"
+  ],
+  "vTuck": [
+   "Video: How to do Poi Tuck Turns: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=tSEHU_ymQn4"
+  ],
+  "vWindmill": [
+   "Video: How to do Poi Windmills: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=AmwQYLokqNA"
+  ],
+  "vCorkWind": [
+   "Video: Beginner Poi Spinning Lesson: Corkscrew and Windmill (playpoi)",
+   "https://www.youtube.com/watch?v=-o_kPvsXgqA"
+  ],
+  "vCork4": [
+   "Video: How to do 4-beat Corkscrews for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=19TO2NCRV4A"
+  ],
+  "vCork": [
+   "Video: Poi Corkscrew Tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=-StRP733ucQ"
+  ],
+  "vPirouette": [
+   "Video: How to do Poi Pirouettes: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=BIrKLzfhRp4"
+  ],
+  "vPP2bw": [
+   "Video: Beginner Poi Spinning Tutorial: Forward 2-Beat Weaves (playpoi)",
+   "https://www.youtube.com/watch?v=xm_sw1KePHg"
+  ],
+  "vDrex2bw": [
+   "Video: 2-beat Weaves for Poi (Basic Poi Spinning Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=hanrZuOio5c"
+  ],
+  "vPP3bw": [
+   "Video: Beginner Poi Spinning Tutorial: Forward 3-Beat Weave (playpoi)",
+   "https://www.youtube.com/watch?v=PiGuTsaoE1w"
+  ],
+  "vPP3bwBack": [
+   "Video: Beginner Poi Spinning Tutorial: Backwards 3-Beat Weave (playpoi)",
+   "https://www.youtube.com/watch?v=Ky85zHnsCug"
+  ],
+  "vDrex3bw": [
+   "Video: Poi 3-beat Weave (Basic Poi Spinning Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=hIxegkH1M6U"
+  ],
+  "vWaist": [
+   "Video: How to do Waistwraps for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=PqwdcKSRUoc"
+  ],
+  "vFountain": [
+   "Video: Beginner Poi Tutorial: How to Learn the Fountain (playpoi)",
+   "https://www.youtube.com/watch?v=_obl7KD8YSI"
+  ],
+  "vDrexFountain": [
+   "Video: How to do the Poi Fountain (Beginner Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=iCMgpkT3q5E"
+  ],
+  "v5beat": [
+   "Video: 5 Beat Weave Tutorial for Poi (Intermediate Poi Tricks) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=_gWX5WSJ3TU"
+  ],
+  "v5beatPP": [
+   "Video: Poi Dancing Tutorial: 5-beat weaves and related theory (Intermediate) (playpoi)",
+   "https://www.youtube.com/watch?v=z9PvtqbU8zQ"
+  ],
+  "vBTB": [
+   "Video: How to do Behind the Back (BTB) Weaves for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Gpx68fac550"
+  ],
+  "vBTBPP": [
+   "Video: Poi Dancing Lesson: Behind-the-Back Weave (playpoi)",
+   "https://www.youtube.com/watch?v=ObeWAuKi4IM"
+  ],
+  "vBTBWaist": [
+   "Video: How to do Behind the Back Waistwraps for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Mz94nrPugvw"
+  ],
+  "vArcher": [
+   "Video: How to do Archer Weave Fountains for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=scUBx9H1PcU"
+  ],
+  "vBfPP": [
+   "Video: Beginner Poi Spinning Tutorial: The Butterfly (playpoi)",
+   "https://www.youtube.com/watch?v=qiBei0PGjvw"
+  ],
+  "vBfTTN": [
+   "Video: Butterflies and Thread the Needle for Poi (Basic Poi Spinning Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=UA_UiqPnUcA"
+  ],
+  "vTTN": [
+   "Video: Threading the Needle with Poi (playpoi)",
+   "https://www.youtube.com/watch?v=WcMk0kVRXyA"
+  ],
+  "vMexWave": [
+   "Video: Poi Tutorial: Turning in Mexican Waves (playpoi)",
+   "https://www.youtube.com/watch?v=y8UyiHVKybk"
+  ],
+  "vSplitBf": [
+   "Video: Beginner Poi Dancing Lesson: Split-Time Butterfly (playpoi)",
+   "https://www.youtube.com/watch?v=cmtCuyvQGOs"
+  ],
+  "vLinkWB": [
+   "Video: Beginner Poi Dancing Lesson: Linking Weaves and Butterflies (playpoi)",
+   "https://www.youtube.com/watch?v=lbcPPDbvCyQ"
+  ],
+  "vOneHandBf": [
+   "Video: Beginner Poi Lesson: Commentary on One-Handed Butterfly (playpoi)",
+   "https://www.youtube.com/watch?v=Se6_PU3d684"
+  ],
+  "vMercedes": [
+   "Video: How to do the One-handed Mercedes for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=ZldIvIfANKQ"
+  ],
+  "vSuperman": [
+   "Video: How to do the Superman for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=CpqC7yFhhdg"
+  ],
+  "vStalls": [
+   "Video: How to do Stalls for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=LSfXjfc80mE"
+  ],
+  "vStallsPP": [
+   "Video: Beginner Poi Spinning Tutorial: Stalls and Speeds (playpoi)",
+   "https://www.youtube.com/watch?v=I-MRaPBjpMg"
+  ],
+  "vPend": [
+   "Video: How to do Pendulums and 1.5s: Beginner Poi Spinning Tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=BX9RWpF_9V8"
+  ],
+  "vYuta": [
+   "Video: How to do Yuta Stalls for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=LfWpZZWYWqI"
+  ],
+  "vStack": [
+   "Video: How to do Horizontal Stacking for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=QP3LKLoXX-0"
+  ],
+  "vIso": [
+   "Video: How to do Isolations for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=hdacfNXSx0Y"
+  ],
+  "vIsoEasy": [
+   "Video: Isolations Made Easy - Poi Isolation Tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=yGHeHr9wBrk"
+  ],
+  "vLinIso": [
+   "Video: How to Do Linear Isolations for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=tdN9W8UgsIQ"
+  ],
+  "vLinIsoExt": [
+   "Video: Poi Linear Isolations and Extensions: The Ultimate Poi Tricks! (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=49uGjybRFQw"
+  ],
+  "vIsoCat": [
+   "Video: How to do Isolation vs Cateye for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=xEwodb87P2U"
+  ],
+  "vHCat": [
+   "Video: How to do Horizontal Cateyes for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=s7UK--_tpwY"
+  ],
+  "vHybridPP": [
+   "Video: Poi Spinning Lesson: How to Learn Hybrids (Advanced) (playpoi)",
+   "https://www.youtube.com/watch?v=Om2UEA3dmRQ"
+  ],
+  "vSnakes": [
+   "Video: How to do Snakes for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=qiIhxfyePpE"
+  ],
+  "vAnti": [
+   "Video: Poi Antispin Flowers Tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Wp5XkJ3vxQQ"
+  ],
+  "vFlowers": [
+   "Video: Flowing with Poi Flowers (Beginner Poi Tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=4_x8W5HQnbs"
+  ],
+  "vTriq": [
+   "Video: Poi Dancing Tutorial - How to Spin Triquetras (Intermediate) (playpoi)",
+   "https://www.youtube.com/watch?v=AyhN3qzHoag"
+  ],
+  "vOppAnti": [
+   "Video: How to do Opposite Antispin Flowers for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=sZVFM3irpFY"
+  ],
+  "vSplitOppAnti": [
+   "Video: How to do Split Time Opposite Antispin Flowers for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=0O4qteozqDk"
+  ],
+  "vCap8": [
+   "Video: How to do 8-Step CAPs for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=dBn6kz_7huc"
+  ],
+  "vCCap": [
+   "Video: Poi CAPs Tutorial: Basic C-CAPs (Intermediate Poi Tricks) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Chf9IAhqp7M"
+  ],
+  "vCapPP": [
+   "Video: Poi Flowers: Learning CAPs (Capped Antispin Patterns) (playpoi)",
+   "https://www.youtube.com/watch?v=UBx2IZVzSVA"
+  ],
+  "vCapAI": [
+   "Video: antispin-inspin poi CAPs! (playpoi)",
+   "https://www.youtube.com/watch?v=LCOy8JiktwQ"
+  ],
+  "vWallFl": [
+   "Video: How to do Wall Plane Flowers for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=VPt13FiIdxg"
+  ],
+  "vZan": [
+   "Video: How to do Zan's Diamond for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=ejzUMCpsG4Q"
+  ],
+  "vBTBHand": [
+   "Video: Beginner Poi Spinning Tutorial: Hand Positions Behind the Back (playpoi)",
+   "https://www.youtube.com/watch?v=G83_7TmI-_M"
+  ],
+  "vCrossers": [
+   "Video: How to do Poi Crossers: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=trVXZX5btOA"
+  ],
+  "vMeltdown": [
+   "Video: The Secret to Poi Meltdowns (Poi Lessons Intermediate) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=0Og8JfEfbQ0"
+  ],
+  "vAirwrap": [
+   "Video: How to do Airwraps for Poi: 1 Minute Tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=dYadU_W-RHk"
+  ],
+  "vHyper": [
+   "Video: How to do Hyperloops for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=tsu2cPelfmw"
+  ],
+  "vOrbital": [
+   "Video: How to do Orbitals for Poi: 1-Minute Tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=1GT6trTGpUE"
+  ],
+  "vOrbitalPP": [
+   "Video: Poi Spinning Lesson: Orbitals (AKA Superduperuberloops) (playpoi)",
+   "https://www.youtube.com/watch?v=GpNYuEv6fTQ"
+  ],
+  "vSpiral": [
+   "Video: Poi Tutorial: How to Spiral Wrap (Intermediate to Advanced) (playpoi)",
+   "https://www.youtube.com/watch?v=LxuBF2iZuv4"
+  ],
+  "vSpiralDrex": [
+   "Video: The Secret to Poi Spiral Wraps (Intermediate Poi Tricks) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=IDwsXT1Ovc0"
+  ],
+  "vSpiral1": [
+   "Video: How to do 1-handed Spiral Wraps for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Xg-_6Vk5GGU"
+  ],
+  "vTossPP": [
+   "Video: Poi Tosses: Getting Started (playpoi)",
+   "https://www.youtube.com/watch?v=s3JmqYeqTD0"
+  ],
+  "vThrowsDrex": [
+   "Video: Introduction to Poi Throws (Beginner tutorial) (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=-iJ34VMkFgs"
+  ],
+  "vInspinThrow": [
+   "Video: How to do Inspin Throws for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=elo5loBOPlw"
+  ],
+  "vIsoThrow": [
+   "Video: How to do Isolated Throws for Poi: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Donl2xXqBj8"
+  ],
+  "vWibbles": [
+   "Video: Poi throws tutorials # 26 : Wibbles (Joff J-K)",
+   "https://www.youtube.com/watch?v=uPMX419hLys"
+  ],
+  "vContactRoll": [
+   "Video: How to do Basic Contact Poi Rolls: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=2EF6FjLvdsk"
+  ],
+  "vFishtail": [
+   "Video: How to do Poi Fishtails: 1-minute tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=HFYbMX2FJSk"
+  ],
+  "vGunslinger": [
+   "Video: How to Enter Gunslingers: Poi Gunslingers 101 Tutorial (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=Epx_4YycSG4"
+  ],
+  "vTuckDrex": [
+   "Video: Beginner Poi Tutorial: Tuck Turns (DrexFactor Poi)",
+   "https://www.youtube.com/watch?v=h2CChcNsPRI"
+  ]
+ },
+ "phases": [
+  {
+   "id": "p1",
+   "name": "First swings",
+   "time": "2 to 4 weeks",
+   "skills": "F1 F2 F3 F4 F5 F7 R1 S3",
+   "gate": "Twenty beats of split-time swing forward and twenty backward with no collision, plus ten one-poi crossings with each hand",
+   "req": [
+    "F5!",
+    "F7!"
+   ]
+  },
+  {
+   "id": "p2",
+   "name": "Core patterns",
+   "time": "1 to 3 months",
+   "skills": "F6 F8 R2 R3 R4 R5 R6 W1 W2 B1 B2 S1 I1 C1",
+   "gate": "A forward and a reverse three-beat weave, a butterfly and a reel turn, each held for thirty beats without a collision",
+   "req": [
+    "W2!",
+    "B1",
+    "R3"
+   ]
+  },
+  {
+   "id": "p3",
+   "name": "Linking and turning",
+   "time": "3 to 6 months",
+   "skills": "W3 W4 W5 R7 R8 B3 B4 B5 B6 B8 B9 S2 S4 S5 C2 I2 L1 O1 O2 O5",
+   "gate": "One minute without a stop, linking a waist wrap, a windmill, a butterfly and a stall that changes the direction of one poi",
+   "req": [
+    "W3",
+    "R7",
+    "B9",
+    "S1!"
+   ]
+  },
+  {
+   "id": "p4",
+   "name": "Unit circle and tech entry",
+   "time": "6 to 12 months",
+   "skills": "W6 W7 W8 W9 W10 R9 R10 B7 B10 S6 S7 I3 I4 I7 I8 I9 L2 L3 L4 L5 L7 C3 C4 C6 O3 O4 O6 O8 T1 T2 T3 T6",
+   "gate": "An isolation and a four-petal antispin flower with each hand, a five-beat weave, and ten clean cycles of the behind-the-back weave",
+   "req": [
+    "I2!",
+    "L2!",
+    "W6",
+    "W7"
+   ]
+  },
+  {
+   "id": "p5",
+   "name": "Advanced material",
+   "time": "Open-ended",
+   "skills": "S8 S9 I5 I6 L6 L8 L9 L10 L11 C5 O7 O9 T4 T5 T7 T8",
+   "gate": "An eight-step CAP with each hand, an orbital with a clean exit, and a two-minute piece to music with no drop",
+   "req": [
+    "L8!",
+    "O7"
+   ]
+  }
+ ]
+}
