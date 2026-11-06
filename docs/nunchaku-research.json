@@ -1,0 +1,1123 @@
+{
+  "F8": {
+    "name": "12 basic F8s",
+    "defined": "full",
+    "mechanics": "Wiki: the six basic figure-8s (nearspin V8, farspin V8, upspin H8, downspin H8, inspin H8, outspin H8) should each be learned \"in both frontgrip and backgrip. As such there are 12 basic F8s.\" Front grip: thumb toward the top of the stick, \"chain protruding from the top of your hand\". Back grip: little finger toward the top, \"chain protruding from the base of your hand\". V8 traces an upright 8 (floor to roof); H8 traces an 8 lying on its side (wall to wall). A figure-8 is two or more circular swings joined by a crossing, the striker changing plane at the crossing.",
+    "start": "Front grip or back grip, one stick held, striker free",
+    "end": "Continuous; same grip",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Figure-8 (https://nunchaku.fandom.com/wiki/Figure-8)",
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)",
+      "Freestyle Nunchaku Wiki: Frontgrip (https://nunchaku.fandom.com/wiki/Frontgrip)",
+      "Freestyle Nunchaku Wiki: Backgrip (https://nunchaku.fandom.com/wiki/Backgrip)",
+      "Freestyle Nunchaku Wiki: Swing (https://nunchaku.fandom.com/wiki/Swing)"
+    ],
+    "notes": "Rated full only because it is the already-animated F7 paths repeated with the grip reversed; the sources give no extra detail on how the wrist leads differently in back grip."
+  },
+  "F10": {
+    "name": "Stalls",
+    "defined": "partial",
+    "mechanics": "Wiki: stalls are techniques \"in which the nunchaku are turned in order to pause during a swing, eliminating momentum\"; like bounces they are \"useful for changing the direction of a swing\". Adapted from poi. Poi definition (Wikipedia): a stall is \"a change in the center of gravity of the poi along a radius of the unit-circle\", letting the head travel tangentially and stop in its path.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "None stated",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Stall (https://nunchaku.fandom.com/wiki/Stall)",
+      "https://en.wikipedia.org/wiki/Poi_definitions"
+    ],
+    "notes": "No source says at which clock position the nunchaku pauses, how the hand moves to turn it, or what each stick does. The poi definition is for poi, not nunchaku."
+  },
+  "F11": {
+    "name": "BTB, BTH and UTL F8",
+    "defined": "partial",
+    "mechanics": "Wiki, Advanced Figure-8s. Behind-the-back F8 (BTB F8): \"the two circles are on the near and far walls, but the crossing happens behind the back.\" Variant BTB Cavity F8: behind the back and \"between the back and arm on the far side (the far cavity)\". Behind-the-head F8 (BTH F8): circles on the near and far walls, \"the crossing happens behind the head\". Under-the-leg F8 (UTL F8): circles on the near and far walls, \"the crossing happens under the far leg (usually lifted up)\". Variant UTL near F8: under the near leg, with the F8 between the core and the near wall. Near = side of the holding hand; far = the other side.",
+    "start": "One hand holds the handle; grip not specified",
+    "end": "Continuous",
+    "contact": "None stated (crossing passes behind back / behind head / under the lifted far leg)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Figure-8 (https://nunchaku.fandom.com/wiki/Figure-8)",
+      "Freestyle Nunchaku Wiki: Plane (https://nunchaku.fandom.com/wiki/Plane)",
+      "Freestyle Nunchaku Wiki: Acronyms (https://nunchaku.fandom.com/wiki/Acronyms)"
+    ],
+    "notes": "Planes and crossing location are defined; spin direction, arm/elbow position, and how the holding arm gets behind the back or head are not described."
+  },
+  "F12": {
+    "name": "Straightjacket, sunshine, sweeper",
+    "defined": "partial",
+    "mechanics": "Wiki. Straightjacket F8: \"go behind the back, through the far cavity, and F8 in front of the body between the far wall and the core\". Sunshine F8: an F8 that goes \"between the face and back plane over the head\" (listed as a variant of the behind-the-head F8). Sweeper F8: an F8 \"between the face and back plane between the legs\" (variant of the under-the-leg F8). Far cavity = plane between the far arm and the body, through the armpit; core = plane between the walls at nose level; face/back = planes in front of and behind the body.",
+    "start": "not described",
+    "end": "Continuous",
+    "contact": "None stated",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Figure-8 (https://nunchaku.fandom.com/wiki/Figure-8)",
+      "Freestyle Nunchaku Wiki: Plane (https://nunchaku.fandom.com/wiki/Plane)"
+    ],
+    "notes": "One sentence each on the wiki; no direction, grip, or arm positions."
+  },
+  "R1": {
+    "name": "F2B and B2F hand roll",
+    "defined": "full",
+    "mechanics": "Wiki: front-to-back (F2B) and back-to-front (B2F) rolls travel 180 degrees and \"travel over the finger area of the hand, not coming in contact with the wrist\", hence \"hand rolls\"; they are the common way to switch grip during a spin. An open grip (stick held against the palm by the thumb only, fingers open) is used for rolls. SportsRec \"Hand Roll\": hold one stick, \"Flip the other side of the nunchaku over your right hand so that the rope goes across the back of your hand\", then \"let go of one side and capture the other side as it comes around your hand\"; return \"by flipping the nunchaku over your hand in the reverse direction\". Net: striker flips over the hand, link lies across the back of the hand/fingers, held stick is released, the stick that comes around into the palm is caught, grip has changed front to back (or back to front on the reverse).",
+    "start": "F2B: front grip (thumb toward link), opening to an open grip. B2F: back grip.",
+    "end": "F2B: back grip. B2F: front grip. Same hand.",
+    "contact": "Link crosses the back of the hand / fingers; not the wrist",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)",
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)",
+      "https://www.sportsrec.com/345159-list-nunchuck-techniques.html",
+      "Wiki animated GIF, F2B hand roll: https://static.wikia.nocookie.net/nunchaku/images/0/01/Davef2b.gif/revision/latest?cb=20080824070228",
+      "Wiki animated GIF, B2F hand roll: https://static.wikia.nocookie.net/nunchaku/images/e/eb/Daveb2f.gif/revision/latest?cb=20080824070219"
+    ],
+    "notes": "Mild wording difference: SportsRec says the rope crosses \"the back of your hand\"; the wiki says it travels over \"the finger area\". Plane and swing direction are not stated in text; the wiki GIFs show them."
+  },
+  "R2": {
+    "name": "F8 hand-roll chain",
+    "defined": "partial",
+    "mechanics": "Wiki: wrist/hand rolls can be chain-combined into continuously looping combinations; \"The most common is a figure-8 combining a front-to-back and back-to-front hand rolls.\" Udemy outline lists a \"figure 8 wrist roll\" (a wrist roll performed during a figure-8).",
+    "start": "Front grip (for the F2B roll)",
+    "end": "Loops back to the start grip",
+    "contact": "Back of hand/fingers, as for hand rolls",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)",
+      "Freestyle Nunchaku Wiki: Figure-8 (https://nunchaku.fandom.com/wiki/Figure-8)",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)"
+    ],
+    "notes": "Which roll falls on which side of the 8, and the direction, are not described."
+  },
+  "R3": {
+    "name": "B2B wrist roll",
+    "defined": "partial",
+    "mechanics": "Wiki: wrist rolls \"revolve around the wrist area\"; back-to-back (B2B) is assumed to travel 360 degrees, around the wrist, starting and ending in back grip. A grip near the head (link end) of the stick is used \"to maintain tight control\". Roll page: after release \"the practitioner can catch the first stick that circles around or wait to catch one of the next ones\". Udemy outline: \"wrist roll - rolling the nunchaku over the wrist and catching the other stick\".",
+    "start": "Back grip (little finger toward the link), near the link end",
+    "end": "Back grip, same hand",
+    "contact": "Wrist",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)",
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)",
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)",
+      "Wiki animated GIF, B2B wrist roll: https://static.wikia.nocookie.net/nunchaku/images/7/74/Daveb2b.gif/revision/latest?cb=20080824070216"
+    ],
+    "notes": "Text does not give plane, spin direction, or the release moment. The wiki GIF is the only precise depiction."
+  },
+  "R4": {
+    "name": "F2F wrist roll",
+    "defined": "partial",
+    "mechanics": "Wiki: front-to-front (F2F) wrist roll travels 360 degrees around the wrist, front grip to front grip; grip near the head of the stick. Same general roll mechanics as B2B (release, nunchaku circles the wrist, a stick is caught).",
+    "start": "Front grip, near the link end",
+    "end": "Front grip, same hand",
+    "contact": "Wrist",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)",
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)",
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)",
+      "Wiki animated GIF, F2F wrist roll: https://static.wikia.nocookie.net/nunchaku/images/5/5b/Davef2f.gif/revision/latest?cb=20080824070231"
+    ],
+    "notes": "Plane, direction and release point not given in text."
+  },
+  "R5": {
+    "name": "Continuous B2B and F2F chains",
+    "defined": "partial",
+    "mechanics": "Wiki: wrist rolls can be \"chain combined into continuously looping combinations... Also popular is the continuous back-to-back wrist roll combination, and, to a lesser degree, the continuous front-to-front wrist roll combination.\" Roll page: a roll may be continued \"theoretically infinitely, either through chain combination or by otherwise offsetting the gradual decrease in momentum and effects of gravity\".",
+    "start": "Back grip (B2B chain) or front grip (F2F chain)",
+    "end": "Same grip; repeats",
+    "contact": "Wrist",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)",
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)"
+    ],
+    "notes": "No timing or re-acceleration detail."
+  },
+  "R6": {
+    "name": "540° wrist roll",
+    "defined": "partial",
+    "mechanics": "Wiki: \"180 degree hand rolls are commonly used to switch between grips, and the same can be done with 540 degree wrist rolls.\" Rolls are named by degrees of rotation; after release the performer can wait to catch a later stick than the first one that comes around.",
+    "start": "Front or back grip",
+    "end": "The opposite grip (implied by \"switch between grips\")",
+    "contact": "Wrist",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)",
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)"
+    ],
+    "notes": "Only the degree count and the grip-switch result are given."
+  },
+  "R7": {
+    "name": "720° and 1080° rolls",
+    "defined": "partial",
+    "mechanics": "Wiki: \"A roll is named by the degrees of rotation; for example... 360, 540, 720, or 1080 degree rolls. The possibility of executing a higher degree roll varies depending on the momentum behind the roll, but 180 and 360 degree rolls are by far the most commonly performed.\"",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Body part rolled around (wrist by default)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)"
+    ],
+    "notes": "Rotation count only."
+  },
+  "R8": {
+    "name": "Finger roll",
+    "defined": "partial",
+    "mechanics": "Wiki: \"a move where you roll the nunchaku around one or more fingers, can be done with any finger\". Grip page: \"Many finger rolls use a midgrip over the join\" (midgrip = link or stick passing between two fingers). The disconnected wheel is described as \"temporarily going into a finger roll\" when one finger is removed from the link.",
+    "start": "Often a midgrip over the join",
+    "end": "not described",
+    "contact": "One or more fingers",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Finger roll (https://nunchaku.fandom.com/wiki/Finger_roll)",
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)",
+      "Freestyle Nunchaku Wiki: Wheel (https://nunchaku.fandom.com/wiki/Wheel)"
+    ],
+    "notes": "No plane, direction, or catch. A 2008 \"Basic Finger Spins Tutorial\" existed on nunchakututorials.com but is offline."
+  },
+  "R9": {
+    "name": "Thumb spin",
+    "defined": "partial",
+    "mechanics": "Wiki, Finger roll page: a finger roll \"performed with a thumb... is called a thumb spin\". Nothing further.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Thumb",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Finger roll (https://nunchaku.fandom.com/wiki/Finger_roll)"
+    ],
+    "notes": "Name and axis only."
+  },
+  "R10": {
+    "name": "Round The Back Finger Spin",
+    "defined": "none",
+    "mechanics": "Not described. Search snippets from nunchakututorials.com only give titles: \"Round The Back Finger Spin To Aerial\" and a combo \"Round The Back (RTB) Finger Spins to Opposite Finger Spin\" done with a body pivot.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Finger (by name)",
+    "sources": [
+      "nunchakututorials.com tag/finger, category/learn/combos (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "Name only."
+  },
+  "R11": {
+    "name": "Intercept",
+    "defined": "partial",
+    "mechanics": "nunchakututorials.com snippets: an intercept is when \"the opposite arm ... plac[es] itself in the path of the Nunchaku, after a primary hand trick, to intercept\"; one combo note describes \"putting a single finger in the path of the chain for a single finger spin\". Titles seen: \"B2B Aerial to Intercept Finger Spins\", \"Back to Back Spin/Aerial Hybrid, Intercept Fingers then SAH again, and repeat\".",
+    "start": "After a primary-hand trick (e.g. B2B aerial / SAH)",
+    "end": "A finger spin on the intercepting (opposite) hand",
+    "contact": "Finger or arm of the opposite (non-throwing) hand meets the chain",
+    "sources": [
+      "nunchakututorials.com tag/intercept, tag/ifs (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "Snippets only. Note the intercepting finger belongs to the OPPOSITE hand, not the hand that did the previous trick."
+  },
+  "R12": {
+    "name": "Wheel",
+    "defined": "full",
+    "mechanics": "Wiki: \"the nunchaku is spun using two fingers - one of each hand - placed on opposite sides of the nunchaku link\"; only the link is touched. \"Usually performed on the middle wall plane\" and \"can be performed either upward or downward, referring to the direction of rotation towards the performer\". Easier on cord than chain; a standard 3-4 inch link allows it.",
+    "start": "One finger of each hand on opposite sides of the link, in front of the body on the centre (middle wall) plane",
+    "end": "Continuous",
+    "contact": "Two fingers (one per hand) on the link only",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wheel (https://nunchaku.fandom.com/wiki/Wheel)",
+      "Freestyle Nunchaku Wiki: Link (https://nunchaku.fandom.com/wiki/Link)"
+    ],
+    "notes": "Which fingers are used, and how the fingers move to drive the spin, are not stated. \"Middle wall\" is not defined elsewhere on the wiki; the Plane page calls the centre plane parallel to the walls the \"core\"."
+  },
+  "R13": {
+    "name": "Horizontal and disconnected wheel",
+    "defined": "partial",
+    "mechanics": "Wiki: \"The horizontal wheel involves performing the wheel on a horizontal plane.\" \"The disconnected wheel... involves removing one finger from the nunchaku during the wheel, temporarily going into a finger roll.\"",
+    "start": "A running wheel",
+    "end": "not described",
+    "contact": "Two fingers on the link; one finger during the disconnected phase",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wheel (https://nunchaku.fandom.com/wiki/Wheel)"
+    ],
+    "notes": "No detail on which finger leaves or for how long."
+  },
+  "R14": {
+    "name": "360 horizontal and orbital wheel",
+    "defined": "partial",
+    "mechanics": "Wiki: \"The 360 horizontal wheel involves spinning the body 360 degrees while performing a horizontal wheel.\" \"The orbital wheel... involves revolving the nunchaku around the body while performing the wheel.\"",
+    "start": "A running (horizontal) wheel",
+    "end": "not described",
+    "contact": "Two fingers on the link",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wheel (https://nunchaku.fandom.com/wiki/Wheel)"
+    ],
+    "notes": "Turn direction and the orbit path are not described."
+  },
+  "R15": {
+    "name": "Arm and leg rolls",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Roll page only lists \"Arm rolls\", \"Leg rolls\" and \"Ankle rolls\" as types of roll, under the general definition \"the nunchaku travel in a circular motion around a part of the body\"; a roll may be caught by the same or the opposite hand.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Arm, leg or ankle (by name)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)"
+    ],
+    "notes": "List entry only."
+  },
+  "R16": {
+    "name": "Neck roll",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Roll page lists \"Neck rolls\" as a type of roll; nothing else.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Neck (by name)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)"
+    ],
+    "notes": "List entry only."
+  },
+  "R17": {
+    "name": "Isolations",
+    "defined": "partial",
+    "mechanics": "Wiki: isolations are poi techniques \"in which both the poi and the hand rotate around the center of the string. The same technique can be applied to nunchaku, in which both the tail of the stick and the hand rotate around the head of the stick.\" Harder, rarer and less clean than poi because nunchaku have more rotational points. Poi definition (Wikipedia): the hands follow the poi head, \"changing the center of rotation from the end of the poi to the center of the string\".",
+    "start": "not described",
+    "end": "Continuous",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Isolations (https://nunchaku.fandom.com/wiki/Isolations)",
+      "https://en.wikipedia.org/wiki/Poi_definitions"
+    ],
+    "notes": "Geometry is clear (the head of the stick is the fixed centre; hand and tail circle it) but the sources do not say which stick is meant relative to the held one, nor plane or direction."
+  },
+  "S1": {
+    "name": "Swap",
+    "defined": "partial",
+    "mechanics": "Wiki: swaps \"involve swapping the handle between hands\"; unlike passes, which put the striker in the opposite hand, \"swaps place the handle (stick currently held) in the opposite hand\". Considered basic; advanced swaps are little explored.",
+    "start": "One hand holds the handle",
+    "end": "The other hand holds the same stick",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Swap (https://nunchaku.fandom.com/wiki/Swap)"
+    ],
+    "notes": "No position, plane or timing."
+  },
+  "S2": {
+    "name": "Shoulder pass (arm switch)",
+    "defined": "full",
+    "mechanics": "SportsRec \"Arm Switch\": hold one stick in the right hand; \"Flip the other end backward over your right shoulder. Reach across the front of your body with your left hand. Catch the nunchaku below your right arm with your left hand. Let go of the nunchaku with your right hand\", then begin the same move on the left side; build speed gradually. Instructables \"Over the Shoulder and Around\": \"Place your weak hand across your body and then swing the nunchucks over your shoulder. Catch the handle being swung with your weak hand. Then pull the rest through and swing over your other shoulder and catch with your strong hand. Pull through and start again.\" Udemy outline: \"Shoulder pass - passing the nunchaku over the shoulder with correct alignment\". Wiki Pass: the pass is the catch of the striker in the empty hand, release of the original handle, and exchange to the other hand.",
+    "start": "Right hand holds one stick in front; left hand empty, reaching across the front of the body to under the right arm",
+    "end": "Left hand holds the caught stick, right hand has let go; nunchaku is pulled through and swung over the left shoulder for the mirror pass",
+    "contact": "Striker goes over the same-side shoulder and hangs down the back; caught below the arm (armpit side)",
+    "sources": [
+      "https://www.sportsrec.com/345159-list-nunchuck-techniques.html",
+      "https://www.instructables.com/Nunchucks-Tricks-for-Dummies/",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)",
+      "Freestyle Nunchaku Wiki: Pass (https://nunchaku.fandom.com/wiki/Pass)"
+    ],
+    "notes": "Catch grip not stated. SportsRec warns that done wrong the stick can hit your head. Udemy also lists the \"reverse shoulder pass - throwing the stick under the armpit and catching over the shoulder, the shoulder pass in the opposite direction\"."
+  },
+  "S3": {
+    "name": "Waist pass",
+    "defined": "none",
+    "mechanics": "Not described under this name. Wiki Pass page lists \"Waist pass\" with no text. Nearest named items elsewhere (Udemy outline snippets): \"hip pass - passing to the side of your hip\" and \"flip behind waist: flip the nunchaku from one hand to the other, behind your lower back\".",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Pass (https://nunchaku.fandom.com/wiki/Pass)",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)"
+    ],
+    "notes": "It is not confirmed that the Udemy \"hip pass\" or \"flip behind waist\" is the wiki's waist pass."
+  },
+  "S4": {
+    "name": "Slick and gritch pass",
+    "defined": "partial",
+    "mechanics": "Wiki: \"If you catch the striker in the same grip you have the handle, it's a slick pass (FF or BB). If you catch the striker in a different grip to the handle, it's a gritch (grip-switch) pass (FB or BF).\"",
+    "start": "Handle in front or back grip",
+    "end": "Striker caught in the same grip (slick) or the other grip (gritch)",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Pass (https://nunchaku.fandom.com/wiki/Pass)"
+    ],
+    "notes": "A classification of any pass by catch grip, not a motion of its own."
+  },
+  "S5": {
+    "name": "Mirror pass",
+    "defined": "partial",
+    "mechanics": "Wiki: a pass-stance is \"the position of your body when you have a stick in each hand\"; \"A mirror-pass is the transition from one pass-stance to the mirrored version, for example a left shoulder stance to a right shoulder stance.\" Instructables shoulder routine: after the catch, \"pull the rest through and swing over your other shoulder and catch with your strong hand\".",
+    "start": "A pass-stance (a stick in each hand), e.g. left shoulder stance",
+    "end": "The mirrored pass-stance, e.g. right shoulder stance",
+    "contact": "Depends on the pass used",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Pass (https://nunchaku.fandom.com/wiki/Pass)",
+      "https://www.instructables.com/Nunchucks-Tricks-for-Dummies/"
+    ],
+    "notes": "Defined as a transition; the path between the stances is given only for the shoulder case, via Instructables."
+  },
+  "S6": {
+    "name": "Back pass",
+    "defined": "partial",
+    "mechanics": "GMAU: the back-switch is to \"transition the nunchaku from one hand to the other behind your back in a fluid motion\". \"Your empty hand should be close to the shoulder\" (grabbing too high is a common mistake); the swinging hand should line up with \"the small (lower part) of your back\". Wiki Drop pass page refers to an \"upward front to front back pass\" whose hand position matches the drop pass: one hand above the shoulder, one hand at the back. Udemy outline: \"flip behind back - flip the nunchaku behind your back and catch it (grip in the middle of the stick)\".",
+    "start": "Swinging hand at the small of the back; empty hand close to the shoulder",
+    "end": "Nunchaku in the other hand",
+    "contact": "Behind the back",
+    "sources": [
+      "https://globalmartialarts.university/?p=10511",
+      "Freestyle Nunchaku Wiki: Drop pass (https://nunchaku.fandom.com/wiki/Drop_pass)",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)",
+      "https://nunchaku-fan.pages.dev/fun",
+      "Wiki image comparing drop pass and UFF back pass hand positions: https://static.wikia.nocookie.net/nunchaku/images/5/59/DropPassvsUFFBackPass.png/revision/latest?cb=20080731215429"
+    ],
+    "notes": "Sources do not say which shoulder the empty hand is near, the swing direction, or the plane. GMAU puts the catching hand near the shoulder and the swinging hand low, i.e. an upward pass."
+  },
+  "S7": {
+    "name": "Under-the-leg pass",
+    "defined": "partial",
+    "mechanics": "Nunchaku Fan: \"Swing the stick under one leg and catch it on the other side\", starting from a wide stance. nunchaku.pages.dev: under-leg passes are \"passing the nunchaku beneath one leg during rotations\". Udemy snippet: after a between-the-legs flip the catch is in a reverse (back) grip.",
+    "start": "Wide stance (or leg lifted)",
+    "end": "Other hand holds the nunchaku on the far side of the leg",
+    "contact": "Passes under one leg",
+    "sources": [
+      "https://nunchaku-fan.pages.dev/fun",
+      "https://nunchaku.pages.dev/techniques.html",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)"
+    ],
+    "notes": "Which leg, direction of swing, and catch position are not given."
+  },
+  "S8": {
+    "name": "Flip switch",
+    "defined": "full",
+    "mechanics": "Instructables \"Flip Switch\": (1) Hold one handle \"close to the chain without touching it\" with the other handle hanging toward the ground. (2) Throw: \"swing your arm upwards about 6 inches and then flick your wrist to allow the chain to wrap around the back of your hand until the handle that is not being held [hangs] on the other side of your hand.\" (3) Release: give enough momentum for the nunchaku \"to swing around your hand and have the unheld handle swing into your now open hand. As you swing the nunchaku around open your hand making it flat so as to allow the chain to freely swing around your hand. As the handle comes around grab the unheld handle\"; the result is \"holding onto the handle close to the chain with the other handle freely [hanging] towards the ground\".",
+    "start": "One hand holds a handle close to the chain, other handle hanging straight down",
+    "end": "Same hand now holds the other handle close to the chain; the first handle hangs down",
+    "contact": "Chain wraps around the back of the hand",
+    "sources": [
+      "https://www.instructables.com/Flip-switch-nunchaku"
+    ],
+    "notes": "This is the same motion SportsRec calls a \"Hand Roll\" (see R1) described from a dead hang. The app's current one-liner matches the source."
+  },
+  "S9": {
+    "name": "Elbow pass",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Pass page lists \"Elbow pass\" with no text. nunchakututorials.com snippets mention \"Shoulder Pass to Backward Elbow Pass\" and forward elbow passes inside combos, without mechanics.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Elbow (by name)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Pass (https://nunchaku.fandom.com/wiki/Pass)",
+      "nunchakututorials.com tag/elbow (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "Name only. Backward and forward variants exist by name."
+  },
+  "S10": {
+    "name": "Neck pass",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Pass page lists \"Neck pass\" with no text.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Neck (by name)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Pass (https://nunchaku.fandom.com/wiki/Pass)"
+    ],
+    "notes": "Name only."
+  },
+  "S11": {
+    "name": "Side bounce pass",
+    "defined": "none",
+    "mechanics": "Not described in any readable source. nunchakututorials.com had a basics-level \"Side Bounce Pass\" tutorial (\"explained and demonstrated in possibly more detail than necessary\") that told newcomers to check its \"Wrapping tutorial\" first; combos listed include \"Side Bounce Pass to Opposite Arm Spins\" and \"Side Bounce Pass to Round The Back Pass\".",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "nunchakututorials.com category/learn/tricks/basics, tag/basic (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "Site offline; only titles and blurbs survive in search snippets."
+  },
+  "S12": {
+    "name": "Opposite arm spin",
+    "defined": "partial",
+    "mechanics": "nunchakututorials.com snippets: an Opposite Arm Spin (OAS) is \"where the Nunchaku is propelled around the opposite wrist by the primary hand\". The related \"Opposite Wrist Spins\" tutorial describes sending the nunchaku around the opposite wrist \"rather than the primary one\", and says the same idea applies to fingers or other extremities. A drill combines \"the side bounce pass to a single opposite arm spin and repeat on the other side\".",
+    "start": "Nunchaku driven by the primary hand",
+    "end": "not described",
+    "contact": "Opposite wrist (the chain goes around it)",
+    "sources": [
+      "nunchakututorials.com category/learn/combos, tag/b2b (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "CONTRADICTS the app text slightly: the source says the roll goes around the opposite WRIST and is propelled by the primary hand, not a spin \"on the opposite arm after the pass\". Release/catch hand not stated."
+  },
+  "S13": {
+    "name": "Drop pass",
+    "defined": "full",
+    "mechanics": "Wiki (technique created by SpinStorm): \"the performer swings the striker over the shoulder and around to the [b]ack and catches it in a reverse armpit trap. The other hand is placed in the same position as in an upward front to front back pass. The handle is then dropped from the hand positioned above the shoulder into the hand at the back. Then the striker is freed from the reverse armpit catch and the whole nunchaku ha[s] transfer[r]ed hands.\"",
+    "start": "Holding hand above its own shoulder with the handle; striker swung over that shoulder",
+    "end": "Other hand, at the back, holds the former handle; striker released from the armpit",
+    "contact": "Striker trapped in the armpit from behind (reverse armpit trap); handle falls down the back",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Drop pass (https://nunchaku.fandom.com/wiki/Drop_pass)",
+      "Wiki image of the hand position: https://static.wikia.nocookie.net/nunchaku/images/5/59/DropPassvsUFFBackPass.png/revision/latest?cb=20080731215429"
+    ],
+    "notes": "Phases are explicit. \"Reverse armpit trap\" has no page of its own; this sentence is its only description. Catch grip is implied front-to-front by the back-pass reference."
+  },
+  "S14": {
+    "name": "Pinwheel",
+    "defined": "partial",
+    "mechanics": "Wiki: the pinwheel is \"adapted from staff spinning. It is a combination of a behind-the-back pass and an over-the-he[a]d pass performed in a circular motion.\"",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Behind the back, then over the head",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Pinwheel (https://nunchaku.fandom.com/wiki/Pinwheel)"
+    ],
+    "notes": "Order is implied by the sentence; hands, direction and planes are not described."
+  },
+  "S15": {
+    "name": "One-handed pass",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Roll page lists \"One handed passes\" as a type of roll; nothing else.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Roll (https://nunchaku.fandom.com/wiki/Roll)"
+    ],
+    "notes": "List entry only."
+  },
+  "C1": {
+    "name": "Armpit trap",
+    "defined": "full",
+    "mechanics": "Wiki: \"The most common trap is the armpit trap\" (a trap holds the nunchaku with a body part other than the hand). Instructables \"From the Swing to the Arm Catch\": keep swinging the sideways figure-8; \"When you get to the point where you're about to swing back up on your strong side, swing the other handle up to the peak and twist your wrist to bring the handle into your armpit.\" Udemy outline: \"Armpit catch - pinching the elbow into the ribs to catch the stick in the armpit\". Nunchaku Fan: \"Swing the nunchaku up, trap the loose stick under your arm, then release and swing again\". Instructables release: from the catch, \"flick the handle out and around by twisting your wrist\".",
+    "start": "Figure-8 swing in the strong hand, at the point of swinging back up on the strong side",
+    "end": "Striker pinned in the same-side armpit, elbow pinched to the ribs; hand still holds the handle in front",
+    "contact": "Striker held between upper arm and ribs (armpit)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Trap (https://nunchaku.fandom.com/wiki/Trap)",
+      "https://www.instructables.com/Nunchucks-Tricks-for-Dummies/",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)",
+      "https://nunchaku-fan.pages.dev/fun"
+    ],
+    "notes": "The striker enters from the front (swung up to its peak, then the wrist turns it back into the armpit)."
+  },
+  "C3": {
+    "name": "Wrist, elbow and waist trap",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Trap page lists \"Wrist trap\", \"Elbow trap\" and \"Waist trap\" under the general definition: \"holding/trapping the nunchaku with a part of your body other than the hand\".",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Wrist, elbow or waist (by name)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Trap (https://nunchaku.fandom.com/wiki/Trap)"
+    ],
+    "notes": "Names only; how the stick is held at each place is not stated."
+  },
+  "C4": {
+    "name": "Reverse armpit trap",
+    "defined": "partial",
+    "mechanics": "Only described inside the wiki's drop pass: the performer \"swings the striker over the shoulder and around to the [b]ack and catches it in a reverse armpit trap\"; later \"the striker is freed from the reverse armpit catch\". Related, Udemy outline: \"reverse shoulder pass - throwing the stick under the armpit and catching over the shoulder\".",
+    "start": "Handle hand above its shoulder",
+    "end": "Striker pinned in the armpit, having arrived from behind",
+    "contact": "Armpit, entered from the back",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Drop pass (https://nunchaku.fandom.com/wiki/Drop_pass)",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)"
+    ],
+    "notes": "No dedicated page. It is not stated whether it is the same-side or opposite armpit; the drop-pass picture implies the same side as the holding hand."
+  },
+  "C5": {
+    "name": "Chest, waist and leg bounce",
+    "defined": "partial",
+    "mechanics": "Wiki: a bounce is \"rebounding the striker stick against some part of the body, redirecting the swinging direction... The swing fades into the bounce, and any remaining momentum is absorbed by the body and then redirected into the bounce.\" Chest, waist and legs are in the list of possible bounce points.",
+    "start": "A fading swing",
+    "end": "Swing in the redirected direction",
+    "contact": "Chest, waist or legs",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Bounce (https://nunchaku.fandom.com/wiki/Bounce)"
+    ],
+    "notes": "General definition only; no swing, plane or exact contact spot per body part."
+  },
+  "C6": {
+    "name": "Knee and chin trap",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Trap page lists \"Chin trap\" and \"Knee trap\" by name only.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Chin or knee (by name)",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Trap (https://nunchaku.fandom.com/wiki/Trap)"
+    ],
+    "notes": "Names only."
+  },
+  "C7": {
+    "name": "Straight swing into bounce",
+    "defined": "partial",
+    "mechanics": "Wiki Swing: a straight swing is \"a straight lane... not really straight, just broad curves\"; straight swings \"begin in one place and end in another, they're not continuous. With freestyle, most straight swings can end in a bounce\".",
+    "start": "Start point of the straight swing",
+    "end": "A bounce",
+    "contact": "Wherever the bounce lands",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Swing (https://nunchaku.fandom.com/wiki/Swing)",
+      "Freestyle Nunchaku Wiki: Bounce (https://nunchaku.fandom.com/wiki/Bounce)"
+    ],
+    "notes": "No specific swing/bounce pairs are given."
+  },
+  "C8": {
+    "name": "Neck, knee and foot bounce",
+    "defined": "partial",
+    "mechanics": "Wiki Bounce: same general bounce definition (swing fades into the bounce; momentum absorbed then redirected). Neck, knees and feet are on the list of possible bounce points.",
+    "start": "A fading swing",
+    "end": "Swing in the redirected direction",
+    "contact": "Neck, knee or foot",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Bounce (https://nunchaku.fandom.com/wiki/Bounce)"
+    ],
+    "notes": "List entry plus general definition only."
+  },
+  "C9": {
+    "name": "Opposite-arm hook",
+    "defined": "partial",
+    "mechanics": "nunchakututorials.com snippet (a hook-pass variant): the \"basic motion is almost identical to the Reverse Shoulder Pass, but instead of catching, the chain is hooked around the opposite arm above the elbow, from behind the body\". Udemy defines the reverse shoulder pass as \"throwing the stick under the armpit and catching over the shoulder\".",
+    "start": "As for a reverse shoulder pass (stick thrown back under the armpit)",
+    "end": "Chain hooked on the opposite upper arm",
+    "contact": "Chain around the opposite arm above the elbow, arriving from behind the body",
+    "sources": [
+      "nunchakututorials.com search snippet (site is now offline; text known only from search-engine snippets)",
+      "https://www.udemy.com/course/ultimate-nunchaku-mastering-the-art-of-momentum/ (course outline, read only as search-result snippets; page itself returns 403)"
+    ],
+    "notes": "Snippet only; what happens after the hook is not known."
+  },
+  "C10": {
+    "name": "Contact-staff style flow",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Style page only names \"contact staff\" as an influence on calm, fluid styles (example performer NinjaRob).",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Style (https://nunchaku.fandom.com/wiki/Style)"
+    ],
+    "notes": "A style label, not a technique."
+  },
+  "C11": {
+    "name": "Wrap and release",
+    "defined": "partial",
+    "mechanics": "Wiki Grip: \"Having both heads crossed in your palm with the link wrapped around the back of the hand is known as a handwrap.\" Instructables Flip Switch practice throw: swing the arm up about 6 inches and flick the wrist \"to allow the chain to wrap around the back of your hand until the handle that is not being held [hangs] on the other side of your hand\".",
+    "start": "One handle held near the chain, other hanging",
+    "end": "Handwrap: link around the back of the hand, both heads in the palm",
+    "contact": "Link around the back of the hand",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)",
+      "https://www.instructables.com/Flip-switch-nunchaku"
+    ],
+    "notes": "The release back into a swing is not described by any source. nunchakututorials.com had a \"Wrapping tutorial\" (offline)."
+  },
+  "B1": {
+    "name": "Supported placement",
+    "defined": "none",
+    "mechanics": "Not described in any source found. The term appears to be this app's own.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "No wiki page or tutorial uses this name."
+  },
+  "B2": {
+    "name": "Short contact path",
+    "defined": "none",
+    "mechanics": "Not described in any source found.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "App-defined skill."
+  },
+  "B3": {
+    "name": "Connected contact phrase",
+    "defined": "none",
+    "mechanics": "Not described in any source found.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "App-defined skill."
+  },
+  "A2": {
+    "name": "Spin/aerial hybrid (SAH)",
+    "defined": "partial",
+    "mechanics": "nunchakututorials.com snippet: a Spin/Aerial Hybrid (SAH) is a \"Back to Back-style spin where the chucks are flicked into the air with an open palm to form an aerial\". Titles seen: \"F2F SAH to Primary Front Hand Catch\"; \"Back to Back Spin/Aerial Hybrid, Intercept Fingers then SAH again, and repeat\".",
+    "start": "As for a back-to-back wrist spin (an F2F variant also exists)",
+    "end": "Caught after the flick; one listed variant ends in a primary-hand front catch",
+    "contact": "Open palm flicks the nunchaku up",
+    "sources": [
+      "nunchakututorials.com category/learn/tricks/page/7, tag/ifs (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "Snippet only; height, rotations and catch are not described."
+  },
+  "A4": {
+    "name": "Grip-change catch",
+    "defined": "partial",
+    "mechanics": "Wiki Grip: \"One can also switch grips by launching an aerial and catching it in the desired grip.\" Using a pinch right on the tail can be useful for some aerials.",
+    "start": "Any grip",
+    "end": "The chosen grip",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)"
+    ],
+    "notes": "One sentence; no throw details."
+  },
+  "A5": {
+    "name": "Pop and catapult",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Aerial page lists \"Pop\" and \"Catapult\" under both types of throw and types of catch; neither has a page.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Aerial (https://nunchaku.fandom.com/wiki/Aerial)"
+    ],
+    "notes": "Names only."
+  },
+  "A6": {
+    "name": "Hang catch",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Aerial page lists \"Hang\" as a type of catch; no page.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Aerial (https://nunchaku.fandom.com/wiki/Aerial)"
+    ],
+    "notes": "Name only."
+  },
+  "A7": {
+    "name": "Clock-call releases",
+    "defined": "partial",
+    "mechanics": "Wiki Clocks: on a face or wall plane, \"12 O'Clock is the top of the circle, and whichever direction it's spinning it then goes onto 1, 2, 3 etc.\" On a table plane, 12 is \"the point of the circle furthest away from you\", again numbered in the direction of spin. Used for stops and technical aerials: \"you can say at which point of the clock you release, and at which point you catch\".",
+    "start": "not described",
+    "end": "not described",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Clocks (https://nunchaku.fandom.com/wiki/Clocks)"
+    ],
+    "notes": "A notation, fully defined; no specific release/catch pair is given by the source."
+  },
+  "A8": {
+    "name": "Matrix Aerial",
+    "defined": "partial",
+    "mechanics": "Wiki (technique created by ChuckNasty): \"the pe[r]former bends his torso over to look at the ground while crossing his hand over to the opposite side to throw the nunchaku around his back. Then, as he rises back to a standing position, he catches the nunchaku on the opposite side with the same hand.\"",
+    "start": "Torso bent forward looking at the ground; throwing hand crossed to the opposite side of the body",
+    "end": "Standing; same hand catches on the opposite side",
+    "contact": "None stated; the nunchaku travels around the back in the air",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Matrix Aerial (https://nunchaku.fandom.com/wiki/Matrix_Aerial)"
+    ],
+    "notes": "Sequence is clear, but rotation count, release grip, and the exact flight path over or around the back are not given. The wiki's \"opposite side\" is ambiguous (opposite to the hand's own side, or to the throw side). The forum thread it links is offline."
+  },
+  "A9": {
+    "name": "Reverse rebound",
+    "defined": "partial",
+    "mechanics": "Wiki (created by Matt-Chez): a type of aerial rebound \"in which the nunchaku stalls in the air and then reverses direction... performed by tapping the nunchaku while it is in air\". A rebound is \"when you make contact with one or both sticks while they're in the air to change the speed or direction of their spin\".",
+    "start": "Nunchaku airborne after a throw",
+    "end": "Spinning the opposite way, then caught",
+    "contact": "A tap on the airborne nunchaku",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Reverse rebound (https://nunchaku.fandom.com/wiki/Reverse_rebound)",
+      "Freestyle Nunchaku Wiki: Aerial (https://nunchaku.fandom.com/wiki/Aerial)"
+    ],
+    "notes": "Where it is tapped and with what is not described. Video reference on the wiki: KpMXj71FtZU at 0:45-0:50."
+  },
+  "A10": {
+    "name": "Partial reverse rebound",
+    "defined": "partial",
+    "mechanics": "Wiki: \"a variation of the reverse rebound in which only one stick reverses direction while the other continues in the same direction\".",
+    "start": "Nunchaku airborne",
+    "end": "not described",
+    "contact": "A tap on the airborne nunchaku",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Reverse rebound (https://nunchaku.fandom.com/wiki/Reverse_rebound)"
+    ],
+    "notes": "Video reference on the wiki: KpMXj71FtZU at 1:17-1:23."
+  },
+  "A11": {
+    "name": "Siteswap aerials",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Aerial page only captions a video: \"Trent demonstrates aerials in terms of siteswap, a juggling concept\".",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Aerial (https://nunchaku.fandom.com/wiki/Aerial)"
+    ],
+    "notes": "No notation mapping is written down."
+  },
+  "N1": {
+    "name": "Supported finger pivot",
+    "defined": "none",
+    "mechanics": "Not described in any source found. Nearest source text is the midgrip definition (link or stick passing between two fingers) on the wiki Grip page.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Finger",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Grip (https://nunchaku.fandom.com/wiki/Grip)"
+    ],
+    "notes": "App-defined progression step."
+  },
+  "M2": {
+    "name": "Steps and pivots",
+    "defined": "partial",
+    "mechanics": "Only a traditional example. Green belt sheet, Footwork 1: \"Using one nunchaku, from a right backward (rear) leaning stance, step forward with left leg and throw a right-side strike, pivot with a simple up and side swing, step and turn back to a modified forward leaning stance with the right inward 8 block (opening of dragons kata)\".",
+    "start": "Right backward (rear) leaning stance",
+    "end": "Modified forward leaning stance, facing front",
+    "contact": "None stated",
+    "sources": [
+      "https://virtualnunchaku.com/wp-content/uploads/2021/11/Green-Belt-Testing-Sheet.pdf"
+    ],
+    "notes": "One specific sequence from an American Style Nunchaku syllabus, not a general definition. The strikes named are not themselves described."
+  },
+  "M3": {
+    "name": "Travel",
+    "defined": "none",
+    "mechanics": "Not described as a motion. WNA rules only require that \"The entire competition area needs to be used during the freestyle\" (area 7x7 m to 10x10 m).",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "https://nunchaku.org/wp-content/uploads/2026/01/Nunchaku-do-kata-and-freestyle-regulations-January-2026.pdf"
+    ],
+    "notes": "Rule, not mechanics."
+  },
+  "M5": {
+    "name": "Choreography",
+    "defined": "none",
+    "mechanics": "Not described as a motion. WNA rules: \"The exercise needs to be in harmony with the style of music.\"",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "https://nunchaku.org/wp-content/uploads/2026/01/Nunchaku-do-kata-and-freestyle-regulations-January-2026.pdf"
+    ],
+    "notes": "Rule, not mechanics."
+  },
+  "G1": {
+    "name": "Path control",
+    "defined": "none",
+    "mechanics": "Not described in any source found.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "App-defined skill."
+  },
+  "G2": {
+    "name": "Isolation-like accents",
+    "defined": "none",
+    "mechanics": "Not described beyond the isolation definition (see R17).",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Isolations (https://nunchaku.fandom.com/wiki/Isolations)"
+    ],
+    "notes": "App-defined skill."
+  },
+  "G3": {
+    "name": "Body and prop contrast",
+    "defined": "none",
+    "mechanics": "Not described in any source found.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "App-defined skill."
+  },
+  "L1": {
+    "name": "Lane linking",
+    "defined": "partial",
+    "mechanics": "Wiki Swing: \"The path the striker follows through the air is called a lane.\" \"The sphere of space the striker is circling within around your hand is called a pocket. You can move your arm into many different positions... which means there are many different pockets. Lanes link pockets together.\"",
+    "start": "Circling in one pocket",
+    "end": "Circling in another pocket",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Swing (https://nunchaku.fandom.com/wiki/Swing)"
+    ],
+    "notes": "Concept only; no specific pocket-to-pocket link is described."
+  },
+  "L2": {
+    "name": "Rolling figure-8",
+    "defined": "partial",
+    "mechanics": "Wiki Figure-8: \"Figure-8's can be performed with rolls, usually wrist rolls and hand rolls.\" Wrist roll page: the most common chain is a figure-8 combining F2B and B2F hand rolls.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "Hand / wrist",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Figure-8 (https://nunchaku.fandom.com/wiki/Figure-8)",
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)"
+    ],
+    "notes": "Same content as R2."
+  },
+  "L3": {
+    "name": "Horizontal-to-vertical bridge",
+    "defined": "none",
+    "mechanics": "Not described. Only a nunchakututorials.com blurb: \"Something nice and easy. A simple way to bridge a between horizontal and vertical path.\"",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "nunchakututorials.com category/learn/page/9 (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "Blurb only; the move itself was a video."
+  },
+  "L4": {
+    "name": "Trick progression drill",
+    "defined": "partial",
+    "mechanics": "nunchakututorials.com snippet: a combo that starts with \"the side bounce pass to a single opposite arm spin and repeat on the other side\"; another entry is \"Side Bounce Pass to Opposite Arm Spins\".",
+    "start": "not described",
+    "end": "not described",
+    "contact": "See S11 and S12",
+    "sources": [
+      "nunchakututorials.com category/learn/combos (site is now offline; text known only from search-engine snippets)"
+    ],
+    "notes": "Sequence of named moves only; neither component is described."
+  },
+  "L5": {
+    "name": "Turns",
+    "defined": "none",
+    "mechanics": "Not described in any readable source.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "The tutorial the app cites could not be read."
+  },
+  "L6": {
+    "name": "Tempo changes",
+    "defined": "none",
+    "mechanics": "Not described as a motion. WNA rules list \"Tempo and rhythm of the techniques\" and \"Variation in slow and fast movements, in combination with a change of pace in the music\" as assessed points. Wiki: slowing the nunchaku is a fade.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "https://nunchaku.org/wp-content/uploads/2026/01/Nunchaku-do-kata-and-freestyle-regulations-January-2026.pdf",
+      "Freestyle Nunchaku Wiki: Swing (https://nunchaku.fandom.com/wiki/Swing)"
+    ],
+    "notes": "Judging criteria only."
+  },
+  "L7": {
+    "name": "Flairs",
+    "defined": "none",
+    "mechanics": "Wiki: a flair is \"any novelty technique that does not fit well into one of the other groups of techniques\". No specific flair is described.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Flair (https://nunchaku.fandom.com/wiki/Flair)"
+    ],
+    "notes": "Category definition only."
+  },
+  "L8": {
+    "name": "Gap filling",
+    "defined": "none",
+    "mechanics": "Not described in any readable source.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "Only known from unreadable snippets."
+  },
+  "L9": {
+    "name": "Personal style",
+    "defined": "none",
+    "mechanics": "Not a motion. Wiki Style: aggressive styles (XMA / Bruce Lee influenced, usually chain) versus calm, fluid styles (poi, juggling, dance, contact staff influenced, usually cord).",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Style (https://nunchaku.fandom.com/wiki/Style)",
+      "Freestyle Nunchaku Wiki: Link (https://nunchaku.fandom.com/wiki/Link)"
+    ],
+    "notes": "Descriptive only."
+  },
+  "L10": {
+    "name": "Competition routine",
+    "defined": "none",
+    "mechanics": "Not a motion; rules only. WNA: duration \"between 90 and 180 seconds\"; omitting single nunchaku or double nunchaku each costs 2.0 points; a drop with both parts on the floor costs 0.5 (max 2.5); a total freeze of 3 seconds or longer costs 0.5; \"A high-risk technique is a technique where the nunchaku(s) are released in the air and caught after at least one full rotation\", required once with the left hand and once with the right in the single part, and with both nunchaku in the air simultaneously in the double part; area 7x7 m to 10x10 m and all of it must be used.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "https://nunchaku.org/wp-content/uploads/2026/01/Nunchaku-do-kata-and-freestyle-regulations-January-2026.pdf"
+    ],
+    "notes": "Matches the app's current text."
+  },
+  "L11": {
+    "name": "Two-skill bridge",
+    "defined": "none",
+    "mechanics": "Not described in any source found.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "App-defined skill."
+  },
+  "L12": {
+    "name": "Loop",
+    "defined": "none",
+    "mechanics": "Not described in any source found. Wiki only notes rolls can be \"chain combined into continuously looping combinations\".",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Wrist roll (https://nunchaku.fandom.com/wiki/Wrist_roll)"
+    ],
+    "notes": "App-defined skill."
+  },
+  "L13": {
+    "name": "Signature phrase",
+    "defined": "none",
+    "mechanics": "Not described in any source found.",
+    "start": "not described",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [],
+    "notes": "App-defined skill."
+  },
+  "D1": {
+    "name": "Two-stick handling",
+    "defined": "none",
+    "mechanics": "Not described. Wiki: double nunchaku is \"the use of two nunchaku - one in each hand\". Green belt sheet lists \"Adjust the chucks-technique\" and \"Rhythm move\" without description; Footwork 2 mentions pivoting to the rear \"while adjusting the chucks\".",
+    "start": "One nunchaku in each hand",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Double nunchaku (https://nunchaku.fandom.com/wiki/Double_nunchaku)",
+      "https://virtualnunchaku.com/wp-content/uploads/2021/11/Green-Belt-Testing-Sheet.pdf"
+    ],
+    "notes": "Names only."
+  },
+  "D2": {
+    "name": "Double, side and diagonal strikes",
+    "defined": "none",
+    "mechanics": "Not described. Green belt sheet lists \"Double strikes\", \"Alternating side strikes\", \"Downward diagonal strikes\", plus \"cross strikes\" and \"front strikes\" in combinations, each done right and left; no mechanics.",
+    "start": "One nunchaku in each hand",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "https://virtualnunchaku.com/wp-content/uploads/2021/11/Green-Belt-Testing-Sheet.pdf"
+    ],
+    "notes": "Names and combination order only."
+  },
+  "D3": {
+    "name": "Alternating outward figure-8",
+    "defined": "none",
+    "mechanics": "Not described. Green belt sheet lists \"Alternating outward figure 8 strikes\" and, in combinations, \"right and left outward figure 8 strikes\".",
+    "start": "One nunchaku in each hand",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "https://virtualnunchaku.com/wp-content/uploads/2021/11/Green-Belt-Testing-Sheet.pdf"
+    ],
+    "notes": "Name only; \"alternating\" and \"outward\" are the only facts."
+  },
+  "D6": {
+    "name": "Three-beat downward weave",
+    "defined": "full",
+    "mechanics": "Wiki: the weave is a double-nunchaku technique \"in which the two nunchaku and two wrists cross over each other, alternating, in a motion similar to that of two separate figure-8's\", adapted from poi, with a number of beats on each side; \"The most common and basic version of the weave is the three-beat downwards weave.\" Poi sources: a beat is \"a single rotation of the poi head\"; weaves keep split time (the two props 180 degrees out of phase, same direction) with both hands in the same position. Home of Poi written steps (for a 3-beat weave): with one prop, arm out in front, cross it over the other arm for one rotation, then pass it under that arm for the next, then uncross back to its own side (over, under, out), repeating. With two: start staggered by 180 degrees, one arm one beat behind; the left prop goes over the right arm, then under it, then out; the right prop follows one beat later in the same pattern.",
+    "start": "One nunchaku per hand, both spinning the same direction on wall planes, half a turn apart",
+    "end": "Continuous, 3 beats per cycle",
+    "contact": "None; wrists cross over and under each other",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Weave (https://nunchaku.fandom.com/wiki/Weave)",
+      "https://en.wikipedia.org/wiki/Poi_definitions",
+      "https://www.homeofpoi.com/us/lessons/teach/POI/Beginners-Weaves/Forward-Weave-3-beats (written text on that page belongs to the linked Reverse Weave (3 beats) lesson)"
+    ],
+    "notes": "The beat-by-beat steps come from poi sources, and the Home of Poi text is attached to its reverse-weave lesson, so the over/under/out order is confirmed but which spin direction it belongs to is not. The wiki confirms only that the nunchaku version follows the poi move."
+  },
+  "D7": {
+    "name": "Upward; four- and five-beat weaves",
+    "defined": "partial",
+    "mechanics": "Wiki Weave: the weave can be performed \"either spinning downwards or upwards\" and with a varying number of beats; \"Four-beat and five-beat weaves are also performed, but with greater difficulty.\"",
+    "start": "One nunchaku per hand",
+    "end": "Continuous",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Weave (https://nunchaku.fandom.com/wiki/Weave)"
+    ],
+    "notes": "Where the extra beats fall is not described."
+  },
+  "D8": {
+    "name": "Butterfly",
+    "defined": "partial",
+    "mechanics": "Wiki names the butterfly as a poi technique performable with double nunchaku. Poi definition (Wikipedia): butterfly (\"opposites\") = the props move in opposite directions; the traditional butterfly uses same-time, same-position props \"which appear to meet at the top and bottom of the spin, simulating flapping wings\"; together-time/opposite-direction tricks appear \"to reflect across a vertical line of symmetry\".",
+    "start": "One nunchaku per hand, hands in the same position",
+    "end": "Continuous",
+    "contact": "None",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Double nunchaku (https://nunchaku.fandom.com/wiki/Double_nunchaku)",
+      "https://en.wikipedia.org/wiki/Poi_definitions"
+    ],
+    "notes": "Poi definition only; plane relative to the body and hand spacing for nunchaku are not described."
+  },
+  "D9": {
+    "name": "Windmill",
+    "defined": "partial",
+    "mechanics": "Wiki names the windmill as a poi technique performable with double nunchaku. Poi definition (Wikipedia): a windmill is \"a type of reel in which the poi's center of gravity passes above the spinner's head\". A Home of Poi forum post adds that in a windmill the props \"follow each other\" in the same direction in a vertical plane, not crossing as in butterfly-type moves.",
+    "start": "One nunchaku per hand",
+    "end": "Continuous",
+    "contact": "None stated; passes above the head",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Double nunchaku (https://nunchaku.fandom.com/wiki/Double_nunchaku)",
+      "https://en.wikipedia.org/wiki/Poi_definitions",
+      "https://www.homeofpoi.com/en/community/forums/topics/938539/Windmill-Planes"
+    ],
+    "notes": "Poi definitions only. The app's note says \"lateral crossover over or near the head\"; the sources read here say the props pass above the head and follow each other, and do not use the word crossover."
+  },
+  "D10": {
+    "name": "Double wrist rolls",
+    "defined": "partial",
+    "mechanics": "Doubles blog: covers \"wrist spins with doubles\" but does not teach the wrist spin itself. \"You want to begin by learning to keep your hips fixed\", then \"learn to move them with control and intention\"; \"Practice a full range of motion\"; as the rolls go \"wider or higher, you may find that they transition naturally into other moves\". Wiki: with doubles, rolling remains possible, in synchronized, unsynchronized or different-technique modes.",
+    "start": "One nunchaku per hand",
+    "end": "not described",
+    "contact": "Both wrists",
+    "sources": [
+      "https://how-to-learn-nunchaku.blogspot.com/2010/01/basic-freestyle-nunchaku-doubles.html",
+      "Freestyle Nunchaku Wiki: Double nunchaku (https://nunchaku.fandom.com/wiki/Double_nunchaku)"
+    ],
+    "notes": "Coaching advice only; for the roll itself see R3/R4."
+  },
+  "D11": {
+    "name": "Double bounces and traps",
+    "defined": "none",
+    "mechanics": "Not described. Wiki Double nunchaku: \"swinging, bouncing, trapping, rolling and aerials remain possible\".",
+    "start": "One nunchaku per hand",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Double nunchaku (https://nunchaku.fandom.com/wiki/Double_nunchaku)"
+    ],
+    "notes": "One clause only."
+  },
+  "D12": {
+    "name": "Double Dragons kata",
+    "defined": "partial",
+    "mechanics": "Only the opening is written down. Green belt sheet, Footwork 2: \"Using double nunchakus, from right backward leaning, step forward with rear leg (left) followed by left and right-side strikes, pivot to the rear moving the left leg while adjusting the chucks, step and turn back to face front in modified forward leaning stance (opening of double dragons kata)\". The kata itself is listed only by name (\"Demonstrate 1 time with strength and energy\").",
+    "start": "Right backward leaning stance, a nunchaku in each hand",
+    "end": "Modified forward leaning stance facing front (end of the opening only)",
+    "contact": "None stated",
+    "sources": [
+      "https://virtualnunchaku.com/wp-content/uploads/2021/11/Green-Belt-Testing-Sheet.pdf"
+    ],
+    "notes": "Rest of the form is not published in any source found; virtualnunchaku.com teaches it in a paid green-belt module."
+  },
+  "D15": {
+    "name": "Air pass or swap",
+    "defined": "partial",
+    "mechanics": "Wiki Double nunchaku: passes and swaps are not possible with doubles \"except during an aerial, while one nunchaku is in the air\".",
+    "start": "One nunchaku in each hand",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Double nunchaku (https://nunchaku.fandom.com/wiki/Double_nunchaku)"
+    ],
+    "notes": "Condition only; no sequence. (WNA duo rule about passing a nunchaku between two people by aerial is a different thing.)"
+  },
+  "D17": {
+    "name": "Double isolations",
+    "defined": "none",
+    "mechanics": "Wiki Double nunchaku: isolations with doubles, \"while still possible to a certain extent, are much harder, and poi isolation offer a much better visual effect\". No mechanics.",
+    "start": "One nunchaku in each hand",
+    "end": "not described",
+    "contact": "not described",
+    "sources": [
+      "Freestyle Nunchaku Wiki: Double nunchaku (https://nunchaku.fandom.com/wiki/Double_nunchaku)",
+      "Freestyle Nunchaku Wiki: Isolations (https://nunchaku.fandom.com/wiki/Isolations)"
+    ],
+    "notes": "See R17 for the single-stick definition."
+  }
+}

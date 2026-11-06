@@ -36,7 +36,7 @@ const NORMAL = { gamma: 0.61, rh: 0.03 }, POINT = { gamma: 0.5, rh: 0.03 }, PIVO
 
 // The handle circles on a cone around n while the fist makes a small circle.
 function cone(o) {
-  const bs = BASIS[o.plane === 'roof' ? 'table' : o.plane], c = CENTRE[o.plane];
+  const bs = BASIS[o.plane === 'roof' ? 'table' : o.plane], c = o.c || CENTRE[o.plane];
   return {
     bs, s: o.dir, cycle: TAU, at: () => c,
     pose: th => { const e = spoke(bs, th); return { h: add(c, mul(e, o.rh)), d: norm(add(mul(bs.n, cos(o.gamma)), mul(e, sin(o.gamma)))) }; },

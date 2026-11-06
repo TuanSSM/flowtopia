@@ -29,7 +29,7 @@ if (require.main === module) {
     const { meta, method, one, ...rest } = sc, json = JSON.stringify(Demo.pack(rest)), f = crypto.createHash('sha1').update(json).digest('hex').slice(0, 12);
     fs.writeFileSync(path.join(dir, f + '.json'), json);
     if (i === 0) index[key] = { note: NOTES[key], v: [] };
-    index[key].v[i] = { n: sp.n, f, m: method, one: one || undefined, note: sp.note };
+    index[key].v[i] = { n: sp.n, f, m: method, one: one || undefined, note: sp.note, d: Math.round(sc.dur * 100) / 100 };
     n++;
   }
   // Drop clip files that no move uses any more.

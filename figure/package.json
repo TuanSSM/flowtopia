@@ -1,0 +1,8 @@
+{
+  "name": "flowa-figure",
+  "private": true,
+  "description": "The 3D figure for Flowa demos: three.js and a rigged human model, bundled into web/figure3d.js",
+  "scripts": { "build": "esbuild src/figure.js --bundle --minify --format=iife --target=es2020 --outfile=../web/figure3d.js" },
+  "dependencies": { "three": "0.160.0" },
+  "devDependencies": { "esbuild": "0.28.2" }
+}

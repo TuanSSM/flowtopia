@@ -6,12 +6,12 @@ and of each other, hand speed, leg length, feet on the floor and balance.
 
 | Prop | Skills | With a demo | Unconfirmed or not described | Described, engine cannot show it yet |
 | --- | --- | --- | --- | --- |
-| Nunchaku | 109 | 19 | 15 | 75 |
-| Poi | 90 | 17 | 11 | 62 |
+| Nunchaku | 109 | 41 | 14 | 54 |
+| Poi | 90 | 18 | 11 | 61 |
 | Staff | 84 | 10 | 18 | 56 |
-| Double staff | 72 | 26 | 16 | 30 |
+| Double staff | 72 | 28 | 16 | 28 |
 | Buugeng | 56 | 7 | 35 | 14 |
-| **Total** | 411 | 79 | 95 | 237 |
+| **Total** | 411 | 104 | 94 | 213 |
 
 The number is how many variants the skill shows. "Simulated" clips move by gravity, drag, contact and tether or cord tension.
 "Solved" poi clips give the head its defined path and place the hand exactly where gravity and tension produce it.
@@ -20,27 +20,27 @@ The grouping in the last column is by keyword, so treat it as a guide to the wor
 
 ## Nunchaku
 
-**Demos (19):** F1 Front and back grip (2, picture); F2 Open grip (1, picture); F3 Plane map (3, simulated); F4 Point and pivot circle swings (2, simulated); F5 Six directions (7, simulated); F6 Fades and stops (3, simulated); F7 Six basic figure-8s (1, simulated); F9 Stretched and twisted F8 (1, simulated); C2 Hand, wrist, arm, shoulder bounce (1, simulated); A1 Low toss and catch (1, simulated); A3 One-rotation aerial (1, simulated); A12 Opposite-hand catch (1, simulated); M1 Weight shifts (1, simulated); M4 Level changes (1, simulated); D4 Synchronized mode (1, simulated); D5 Unsynchronized mode (1, simulated); D13 Different move on each hand (1, simulated); D14 One-stick aerial, other spinning (1, simulated); D16 Both sticks in the air (1, simulated).
+**Demos (41):** F1 Front and back grip (2, picture); F2 Open grip (1, picture); F3 Plane map (3, simulated); F4 Point and pivot circle swings (2, simulated); F5 Six directions (7, simulated); F6 Fades and stops (3, simulated); F7 Six basic figure-8s (1, simulated); F8 12 basic F8s (1, simulated); F9 Stretched and twisted F8 (1, simulated); R1 F2B and B2F hand roll (2, rolling); R2 F8 hand-roll chain (1, rolling); R3 B2B wrist roll (1, rolling); R4 F2F wrist roll (1, rolling); R5 Continuous B2B and F2F chains (2, rolling); R6 540° wrist roll (1, rolling); R7 720° and 1080° rolls (2, rolling); R8 Finger roll (1, rolling); R9 Thumb spin (1, rolling); R11 Intercept (1, rolling); R12 Wheel (2, hand-driven); R13 Horizontal and disconnected wheel (1, hand-driven); R15 Arm and leg rolls (1, rolling); R16 Neck roll (1, rolling); R17 Isolations (2, hand-driven); S2 Shoulder pass (arm switch) (1, picture); S4 Slick and gritch pass (2, picture); S6 Back pass (1, picture); C1 Armpit trap (1, picture); C2 Hand, wrist, arm, shoulder bounce (1, simulated); C11 Wrap and release (1, picture); A1 Low toss and catch (1, simulated); A3 One-rotation aerial (1, simulated); A7 Clock-call releases (1, picture); A12 Opposite-hand catch (1, simulated); M1 Weight shifts (1, simulated); M4 Level changes (1, simulated); D4 Synchronized mode (1, simulated); D5 Unsynchronized mode (1, simulated); D13 Different move on each hand (1, simulated); D14 One-stick aerial, other spinning (1, simulated); D16 Both sticks in the air (1, simulated).
 
-**No demo because the sources do not confirm or describe the move (15):** R10, R11, S3, S9, S10, S11, S12, S15, C9, A2, A5, A6, L3, L4, L8.
+**No demo because the sources do not confirm or describe the move (14):** R10, S3, S9, S10, S11, S12, S15, C9, A2, A5, A6, L3, L4, L8.
 
 **Described, but would need:**
 
-- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 18 skills (F8, F10, F11, R17, S2, S4, S5, S6, S7, S8, S13, G2, L5, D3, D6, D7, D9, D17)
-- the prop touching or wrapping the body (contact physics): 30 skills (F12, R1, R2, R3, R4, R6, R7, R8, R12, R13, R14, R15, R16, S14, C1, C3, C4, C5, C6, C7, C8, C10, B1, B2, B3, N1, M2, L2, D10, D11)
-- no motion to show, or a composition skill (grips, planning, routines, footwork): 18 skills (R5, R9, M3, M5, G1, G3, L1, L6, L7, L9, L10, L11, L12, L13, D1, D2, D8, D12)
-- the prop leaving the hand (release and catch physics): 9 skills (S1, C11, A4, A7, A8, A9, A10, A11, D15)
+- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 13 skills (F10, F11, S5, S7, S8, S13, G2, L5, D3, D6, D7, D9, D17)
+- the prop touching or wrapping the body (contact physics): 18 skills (F12, R14, S14, C3, C4, C5, C6, C7, C8, C10, B1, B2, B3, N1, M2, L2, D10, D11)
+- the prop leaving the hand (release and catch physics): 7 skills (S1, A4, A8, A9, A10, A11, D15)
+- no motion to show, or a composition skill (grips, planning, routines, footwork): 16 skills (M3, M5, G1, G3, L1, L6, L7, L9, L10, L11, L12, L13, D1, D2, D8, D12)
 
 ## Poi
 
-**Demos (17):** F1 Poi length and grip (2, picture); F2 One-poi circles (2, simulated); F3 Planes: wheel, wall and horizontal (3, simulated); F4 Forward and backward swing (2, simulated); F5 Split-time swing (2, simulated); F6 Four modes of timing and direction (4, simulated); F8 Footwork and weight shifts (1, simulated); B1 Butterfly (2, simulated); B8 Split-time butterfly (1, simulated); S3 Pendulum (1, simulated); I1 Extension (2, simulated); I2 Isolation (2, simulated); L1 In-spin flower (2, solved); L2 Four-petal antispin flower (1, solved); L3 Three-petal antispin flower (1, solved); L4 Two-poi flowers: timing and direction (3, solved); L5 Butterfly flowers (1, solved).
+**Demos (18):** F1 Poi length and grip (2, picture); F2 One-poi circles (2, simulated); F3 Planes: wheel, wall and horizontal (3, simulated); F4 Forward and backward swing (2, simulated); F5 Split-time swing (2, simulated); F6 Four modes of timing and direction (4, simulated); F8 Footwork and weight shifts (1, simulated); R1 Turning with one poi (3, solved); B1 Butterfly (2, simulated); B8 Split-time butterfly (1, simulated); S3 Pendulum (1, simulated); I1 Extension (2, simulated); I2 Isolation (2, simulated); L1 In-spin flower (2, solved); L2 Four-petal antispin flower (1, solved); L3 Three-petal antispin flower (1, solved); L4 Two-poi flowers: timing and direction (3, solved); L5 Butterfly flowers (1, solved).
 
 **No demo because the sources do not confirm or describe the move (11):** R4, S4, I6, L6, L7, C5, C6, O8, T1, T2, T3.
 
 **Described, but would need:**
 
 - no motion to show, or a composition skill (grips, planning, routines, footwork): 3 skills (F7, B4, B10)
-- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 43 skills (R1, R2, R3, R5, R6, R7, R8, R9, R10, W1, W2, W4, W5, W6, W7, W9, W10, B2, B3, B5, B6, B7, B9, S1, S2, S5, S6, S7, S8, S9, I3, I4, I5, I7, I8, L8, L9, L10, L11, C1, C2, C3, C4)
+- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 42 skills (R2, R3, R5, R6, R7, R8, R9, R10, W1, W2, W4, W5, W6, W7, W9, W10, B2, B3, B5, B6, B7, B9, S1, S2, S5, S6, S7, S8, S9, I3, I4, I5, I7, I8, L8, L9, L10, L11, C1, C2, C3, C4)
 - the prop touching or wrapping the body (contact physics): 11 skills (W3, W8, I9, O1, O2, O3, O4, O5, O6, O7, O9)
 - the prop leaving the hand (release and catch physics): 5 skills (T4, T5, T6, T7, T8)
 
@@ -59,16 +59,16 @@ The grouping in the last column is by keyword, so treat it as a guide to the wor
 
 ## Double staff
 
-**Demos (26):** F1 Thumb end and pinky end (1, picture); F3 Thumbs in and thumbs out (3, picture); F5 One-hand figure 8 (1, hand-driven); F6 Reverse figure 8 (1, hand-driven); T1 The four timing and direction modes (4, hand-driven); T2 Butterfly figure 8 (opposite direction) (1, hand-driven); T3 Same-direction figure 8 (1, hand-driven); T4 Same-direction 2-beat weave (2, hand-driven); T5 Butterfly weave (opposite-direction 2-beat) (1, hand-driven); T6 Quarter time (2, hand-driven); W1 Hip reel (1, hand-driven); W2 Shoulder reel (1, hand-driven); I1 One-staff isolation (2, hand-driven); I2 Double isolations in the four modes (4, hand-driven); I3 Pinky-end isolation and end combos (2, hand-driven); I4 Extension (2, hand-driven); A1 Basic antispin (1, hand-driven); A2 Four-petal antispin with both staffs (4, hand-driven); A3 Inspin (1, hand-driven); A8 Cateyes (1, hand-driven); A10 Eight-petal antispin flower (1, hand-driven); A11 Opening and closing the book (1, hand-driven); H1 Isolation versus antispin hybrid (1, hand-driven); H6 Quarter-time hybrids (1, hand-driven); J1 Inside throw, same hand (1, simulated); J2 Inside throw to the other hand (1, simulated).
+**Demos (28):** F1 Thumb end and pinky end (1, picture); F3 Thumbs in and thumbs out (3, picture); F5 One-hand figure 8 (1, hand-driven); F6 Reverse figure 8 (1, hand-driven); T1 The four timing and direction modes (4, hand-driven); T2 Butterfly figure 8 (opposite direction) (1, hand-driven); T3 Same-direction figure 8 (1, hand-driven); T4 Same-direction 2-beat weave (2, hand-driven); T5 Butterfly weave (opposite-direction 2-beat) (1, hand-driven); T6 Quarter time (2, hand-driven); W1 Hip reel (1, hand-driven); W2 Shoulder reel (1, hand-driven); I1 One-staff isolation (2, hand-driven); I2 Double isolations in the four modes (4, hand-driven); I3 Pinky-end isolation and end combos (2, hand-driven); I4 Extension (2, hand-driven); A1 Basic antispin (1, hand-driven); A2 Four-petal antispin with both staffs (4, hand-driven); A3 Inspin (1, hand-driven); A8 Cateyes (1, hand-driven); A10 Eight-petal antispin flower (1, hand-driven); A11 Opening and closing the book (1, hand-driven); H1 Isolation versus antispin hybrid (1, hand-driven); H6 Quarter-time hybrids (1, hand-driven); J1 Inside throw, same hand (1, simulated); J2 Inside throw to the other hand (1, simulated); L1 Move with and against the staffs (1, hand-driven); L2 Turns (1, hand-driven).
 
 **No demo because the sources do not confirm or describe the move (16):** F2, F4, W6, W8, W9, I6, I7, H9, H10, J3, J4, J5, J6, C1, C4, C5.
 
 **Described, but would need:**
 
-- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 21 skills (F7, W3, W4, W5, W7, W10, I5, I8, A4, A5, A6, A7, A9, H2, H3, H4, H7, H8, H11, H12, L2)
+- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 20 skills (F7, W3, W4, W5, W7, W10, I5, I8, A4, A5, A6, A7, A9, H2, H3, H4, H7, H8, H11, H12)
 - the prop touching or wrapping the body (contact physics): 3 skills (H5, C2, C3)
 - the prop leaving the hand (release and catch physics): 1 skills (J7)
-- no motion to show, or a composition skill (grips, planning, routines, footwork): 5 skills (L1, L3, L4, L5, L6)
+- no motion to show, or a composition skill (grips, planning, routines, footwork): 4 skills (L3, L4, L5, L6)
 
 ## Buugeng
 

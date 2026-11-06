@@ -140,6 +140,41 @@ const palmSpin = (half, c, dir, dur) => drawn('staff', dur, p => { const u = mul
 // A buugeng turning about the middle of one of its curves, so that curve stays on one circle.
 const buugengIsolation = (c, bs, dir, dur = 1.2) => drawn('buugeng', dur, p => { const t = dir * TAU * p, e = spoke(bs, t), h = add(c, mul(e, 0.19)); return { h, ...buugengAt(h, bs, t) }; });
 
+/* ---------- nunchaku rolls ---------- */
+// In a roll the hand lets go and the whole nunchaku turns about a part of the body, the cord
+// lying against it, until a stick comes round to be caught. Here the two sticks stand out
+// in one line that stays against the pivot (a balanced rotor, which keeps a steady rate),
+// and the rate is half the swing's: the same angular momentum now carries two sticks.
+//   o: at (the hand), a, b (the plane of the roll, square to the limb it goes round), up (angle of the held stick),
+//      off (the pivot, measured from the hand), rho (how far the line of the sticks sits from the pivot),
+//      seq: [{ swing: turns } | { roll: half turns }], loop, dir, elbow, free (no hand involved: h is where the idle hand rests)
+function roll(o) {
+  const W0 = TAU / 0.56, dt = 1 / 150, dir = o.dir || 1, a0 = o.up === undefined ? PI / 2 : o.up, u = t => add(mul(o.a, cos(t)), mul(o.b, sin(t)));
+  const e0 = u(a0), P = add(o.at, o.off || [0, 0, 0]), fr = [], n = cross(o.a, o.b);
+  // Layout while one stick is held: its head a little inside the fist, the other swinging from it at the length of the cord.
+  const heldAt = (idx, phi) => { const hx = sub(o.at, mul(e0, 0.05)), hy = add(hx, mul(u(phi), E.LINK)), X = [hx, e0], Y = [hy, u(phi)]; return idx ? [Y, X] : [X, Y]; };
+  // Layout while rolling: stick `lead` points along angle t, the other the opposite way, the line resting on the pivot.
+  const rolling = (lead, t) => { const d = u(t), m = add(P, mul(u(t + dir * PI / 2), -o.rho)), X = [add(m, mul(d, E.LINK / 2)), d], Y = [sub(m, mul(d, E.LINK / 2)), mul(d, -1)]; return lead ? [Y, X] : [X, Y]; };
+  const put = L => { const [[ha, da], [hb, db]] = L; fr.push({ h: o.free ? o.rest || [-0.24, 0.93, -0.04] : o.at, ...(o.elbow ? { e: o.elbow } : null), g: add(ha, mul(da, E.GRIP)), d: mul(da, -1), B: hb, T: add(hb, mul(db, E.STICK)) }); };
+  const blendL = (A, B, k) => A.map(([h, d], i) => [mix(h, B[i][0], k), norm(mix(d, B[i][1], k))]);
+  let held = 0, w = o.loop ? W0 / 2 : W0;
+  for (const step of o.seq) {
+    if (step.swing) {
+      for (let phi = 0; phi < TAU * step.swing - 1e-9; phi += w * dt) { put(heldAt(held, a0 + PI + dir * phi)); w += (W0 - w) * dt / 0.25; }
+    } else {
+      const total = step.roll * PI, next = step.roll % 2 ? 1 - held : held;
+      for (let psi = 0; psi < total - 1e-9; psi += W0 / 2 * dt) {
+        // The stick that was held leads; ease out of the grip at the start and into the catch at the end.
+        let L = rolling(held, a0 + dir * psi);
+        if (!o.free) { const k0 = smooth(0, 0.6, psi), k1 = smooth(0, 0.6, total - psi); if (k0 < 1) L = blendL(heldAt(held, a0 + PI + dir * psi), L, k0); else if (k1 < 1) L = blendL(heldAt(next, a0 + PI + dir * (psi - total)), L, k1); }
+        put(L);
+      }
+      held = next; w = W0 / 2;
+    }
+  }
+  return { kind: 'nunchaku', method: 'roll', dur: fr.length * dt, loop: !!o.loop, closure: 0, trail: 0.5, fr };
+}
+
 /* ---------- poi: carried spins ---------- */
 // A circle whose centre travels: the hand is carried from side to side while the poi keeps
 // turning, and the head's path comes out of the simulation.
@@ -158,14 +193,14 @@ const chuckCarried = (dr, body, turns) => memo(() => loopClip(carried(dr, body, 
 /* ---------- poi: solved paths ---------- */
 // Give the head a path and a timing. The only forces on it are gravity and the pull of the
 // tether, so the tether must lie along (acceleration - gravity): that fixes where the hand is.
-//   head: p (0 to 1) -> position;  dur: seconds per repeat
-const solved = (dur, head, extra) => memo(() => {
+//   head: p (0 to 1) -> position;  dur: seconds per repeat;  keys: p -> more parts of the frame (body pose, other hand)
+const solved = (dur, head, extra, keys) => memo(() => {
   const n = Math.round(dur * 120), dp = 1 / (dur * 500), fr = [];
   let weak = Infinity;
   for (let i = 0; i < n; i++) {
     const p = i / n, P = head(p), a = mul(add(sub(head(p + dp), mul(P, 2)), head(p - dp)), 1 / (dp * dur) ** 2), need = sub(a, GRAVITY);
     weak = Math.min(weak, len(need));
-    fr.push({ h: add(P, mul(norm(need), TETHER)), P });
+    fr.push({ h: add(P, mul(norm(need), TETHER)), P, ...(keys ? keys(p) : null) });
   }
   if (weak < 2.5) throw new Error(`the head is close to free fall (${weak.toFixed(1)} m/s2 of pull): the tether would go slack`);
   return { kind: 'poi', method: 'solved', dur, loop: true, closure: 0, trail: 0.92, fr, pull: weak, ...extra };
@@ -184,7 +219,7 @@ function picture(parts, opt = {}) {
   return still({ props, frame, ...opt });
 }
 const line = (pts, w, role) => ({ prop: { kind: 'line', pts: pts.map((_, i) => 'p' + i), w, role }, keys: Object.fromEntries(pts.map((p, i) => ['p' + i, p])) });
-const fistAt = (o, x, w, grip, r) => ({ prop: { kind: 'fist', hand: 'R', grip, r }, keys: { o, x, w } });
+const fistAt = (o, x, w, grip, r, hand = 'R') => ({ prop: { kind: 'fist', hand, grip, r }, keys: { o, x, w } });
 const ballAt = (c, r, role) => ({ prop: { kind: 'ball', r, role }, keys: { c } });
 
-module.exports = { picture, line, fistAt, ballAt, fitted, elbowAt, ELBOW, score, rotY, turnFeet, BODY, bodyKeys, carried, carriedClip, figure8, handRotor, unit, palmSpin, buugengIsolation, weaveDriver, weave, poiCarried, chuckCarried, solved, twoArm, still };
+module.exports = { roll, picture, line, fistAt, ballAt, fitted, elbowAt, ELBOW, score, rotY, turnFeet, BODY, bodyKeys, carried, carriedClip, figure8, handRotor, unit, palmSpin, buugengIsolation, weaveDriver, weave, poiCarried, chuckCarried, solved, twoArm, still };

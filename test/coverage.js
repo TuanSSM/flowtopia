@@ -5,7 +5,7 @@ const fs = require('fs'), path = require('path'), web = path.join(__dirname, '..
 const run = (files, tail) => (0, eval)(files.map(f => fs.readFileSync(path.join(web, f), 'utf8')).join('\n').replace('const Demo =', 'globalThis.Demo =') + tail);
 const INDEX = JSON.parse(fs.readFileSync(path.join(web, 'clips', 'index.json'), 'utf8'));
 const Demo = { has: (p, id) => !!INDEX[p + ':' + id] };
-const KIND = { sim: 'simulated', flight: 'simulated', solved: 'solved', hand: 'hand-driven', still: 'picture' };
+const KIND = { sim: 'simulated', flight: 'simulated', solved: 'solved', hand: 'hand-driven', roll: 'rolling', still: 'picture' };
 const nun = run(['data.js', 'details.js'], ';({SKILLS, BRANCHES, DETAILS})');
 const cats = { nunchaku: { name: 'Nunchaku', branches: nun.BRANCHES, skills: nun.SKILLS.map(s => ({ ...s, steps: (nun.DETAILS[s.id] || {}).s || [] })) } };
 for (const p of ['poi', 'staff', 'doublestaff', 'buugeng']) cats[p] = JSON.parse(fs.readFileSync(path.join(web, 'catalog', p + '.json'), 'utf8'));

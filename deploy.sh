@@ -5,6 +5,8 @@ cd "$(dirname "$0")"
 export PATH="$HOME/.local/go/bin:$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 # Rebuild the guided-tour bundle (React Joyride) when its dependencies are installed.
 [ -d tour/node_modules ] && (cd tour && npm run --silent build)
+# Rebuild the 3D figure bundle (three.js) when its dependencies are installed.
+[ -d figure/node_modules ] && (cd figure && npm run --silent build)
 # Work out the demo clips (physics simulation and checks happen here, not in the browser).
 node sim/bake.js
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o nunchaku .

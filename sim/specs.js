@@ -5,7 +5,7 @@ const E = require('./engine.js');
 const { Demo, TAU, WANT, GRIP, TETHER, ARM, SHOULDER, ISO, STAFF, SHORT, SHORT_SIDE, STAFF_AT, STAFF_BS, BASIS, CENTRE, PB, FWD, BACK, NORMAL, POINT, PIVOT, IDLE,
   spoke, cone, eightWall, eightTall, loopClip, stopClip, memo, herm, aerialClip, bounceClip, staffToss, drawn, turn, poiSpin, poiExtension, poiIsolation, poiPendulum,
   poiFlower, rotor, staffRotor, staffIsolation, staffAntispin, buugengAt, buugengSpin } = E;
-const M = require('./moves.js'), { fitted, elbowAt, BODY, figure8, handRotor, unit, palmSpin, buugengIsolation, carriedClip, weave, poiCarried, chuckCarried, solved, twoArm, still, picture, line, fistAt, ballAt } = M;
+const M = require('./moves.js'), { fitted, elbowAt, BODY, figure8, handRotor, unit, palmSpin, buugengIsolation, roll, carriedClip, weave, poiCarried, chuckCarried, solved, twoArm, still, picture, line, fistAt, ballAt } = M;
 const { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip } = Demo.v, { sin, cos, sqrt, PI } = Math;
 
 const circle = (n, plane, dir, x) => { const o = { plane, dir, ...NORMAL, ...x }; return { n, quads: x && x.showPlane ? quad(add(CENTRE[plane], mul(BASIS[plane].n, GRIP * cos(o.gamma))), BASIS[plane], 0.58) : undefined, make: memo(() => loopClip(cone(o))), ...x }; };
@@ -58,6 +58,12 @@ const CAT_AT = [-0.02, 1.25, 0.4], cateye = (dir, phase, dur = 0.85, R = 0.2) =>
 const petalF = flower(-3, FWD), petalB = flower(-3, BACK);
 const weaveOf = (n, dir, at = 1.0, x) => weave({ dir, n, A: 0.21, y: 1.16, z: 0.36, at, w: 0.05, lift: 0.04, ...x });
 const P_WIDE = [-0.38, 1.05, 0.12]; // far enough out that a shifting body stays clear of the poi
+// A plain spin at the side on a body that turns once: the head keeps its circle beside the
+// turning body, and the hand is solved for.
+const turningPoi = (dir, back) => solved(0.7 * 8, p => M.rotY(add(P_WIDE, mul(spoke(PB.wheel, dir * TAU * 8 * p), 0.62)), (back ? -1 : 1) * TAU * p), null, p => M.bodyKeys((back ? BODY.turnBack : BODY.turn)(p)));
+const C_ = require('./compose.js');
+// A two-hand pattern carried by a moving body: the left hand's clip is built mirrored, so it sees the opposite movement.
+const carriedPair = (n, a, b, time, bodyR, bodyL, k, x) => ({ n, make: carriedClip(a, bodyR, k), pair: { left: { make: carriedClip(b, bodyL, k) }, lag: () => C_.lagFor(a(), b(), time !== 'split') / k, ...x } });
 const swing = () => cone({ plane: 'wall', dir: 1, ...NORMAL });
 
 /* ---------- still pictures ---------- */
@@ -68,10 +74,47 @@ function chuckGrip(grip, thumbUp, labels) {
   return picture([line([[0, -0.18, 0], top], 0.03, 'prop'), line([top, [0.035, 0.16, 0.005], hang], 0.007, 'link'), line([hang, add(hang, [0.01, -0.3, 0])], 0.03, 'prop'), fistAt(O, thumbUp ? UPV : [0, -1, 0], OUTV, grip)],
     { hide: true, cam: { at: [0.03, -0.03, 0], zoom: 4.4 }, labels });
 }
+// The wheel: the nunchaku turns about its link, which rests on one finger of each hand.
+const WHEEL_AT = [0, 1.25, 0.52];
+const wheel = dir => drawn('nunchaku', 0.6, p => { const e = spoke(PB.wheel, dir * TAU * p), at = k => add(WHEEL_AT, mul(e, k)); return { h: add(WHEEL_AT, [-0.06, 0, 0]), h2: add(WHEEL_AT, [0.06, 0, 0]), g: at(0.045 + GRIP), d: mul(e, -1), B: at(-0.045), T: at(-0.345) }; });
+// A nunchaku placed on the figure for a still: g is the fist on the handle, d the handle's direction.
+// Two sticks side by side with a hand on each, to show the grips of a pass.
+const passGrips = (leftThumbUp, labels) => picture([line([[-0.06, -0.18, 0], [-0.06, 0.12, 0]], 0.03, 'prop'), line([[0.06, -0.18, 0], [0.06, 0.12, 0]], 0.03, 'prop'), line([[-0.06, 0.12, 0], [-0.03, 0.155, 0], [0.03, 0.155, 0], [0.06, 0.12, 0]], 0.007, 'link'),
+  fistAt([-0.06, 0, 0], UPV, OUTV, 'closed'), fistAt([0.06, 0, 0], leftThumbUp ? UPV : [0, -1, 0], OUTV, 'closed', 0.014, 'L')], { hide: true, cam: { at: [0, -0.02, 0], zoom: 4.2 }, labels });
+// Rolls. The forearm points forward, so the roll goes round it on the plane in front (the face plane).
+const ROLL_AT = [-0.24, 1.15, 0.44], FWDV = [0, 0, 1], ROLL = { at: ROLL_AT, a: [-1, 0, 0], b: [0, 1, 0], elbow: [-0.26, 1.08, 0.1] };
+const ROLL_ON = { hand: { off: [0, 0, 0], rho: 0.064 }, wrist: { off: [0, 0, -0.09], rho: 0.072 }, forearm: { off: [0, 0, -0.2], rho: 0.064 }, finger: { off: [0, 0, 0.17], rho: 0.03 }, thumb: { off: [0.07, 0.03, 0.1], rho: 0.03 } };
+const rollOf = (pivot, seq, x) => memo(() => roll({ ...ROLL, ...ROLL_ON[pivot], seq, ...x }));
+const once = (pivot, half, x) => rollOf(pivot, [{ swing: 1 }, { roll: half }, { swing: 2 }], x), chain = (pivot, halves, x) => rollOf(pivot, halves.flatMap(h => [{ swing: 1 }, { roll: h }]), { loop: true, ...x });
+const RL = { contact: 1, fingers: 1 };
+// Disconnected wheel: three turns of the wheel, with the left finger taken away for the middle one.
+const looseWheel = memo(() => { const c = wheel(1)(), n = c.fr.length, fr = []; for (let i = 0; i < 3 * n; i++) { const f = c.fr[i % n], k = smooth(0.9, 1.1, i / n) * (1 - smooth(1.9, 2.1, i / n)); fr.push({ ...f, h2: add(f.h2, [0.12 * k, -0.06 * k, -0.1 * k]) }); } return { ...c, fr, dur: c.dur * 3, loop: false }; });
+// Intercept: a finger roll on one hand; the other hand's finger comes in beside it and takes the roll over.
+const intercept = memo(() => {
+  const A = [-0.06, 1.2, 0.42], Bq = [0.06, 1.2, 0.42], W = TAU / 1.12, dt = 1 / 150, fr = [], total = 3.6;
+  for (let t = 0; t < total; t += dt) {
+    const k = smooth(1.4, 2.0, t), P = add(mix(A, Bq, k), [0, 0, 0.17]), d = spoke(PB.wall, W * t), m = add(P, mul(spoke(PB.wall, W * t + PI / 2), -0.03));
+    const hb = sub(m, mul(d, 0.045)), ha = add(m, mul(d, 0.045)), inn = smooth(0.7, 1.3, t), out = smooth(2.1, 2.7, t);
+    fr.push({ h: add(A, [-0.1 * out, -0.12 * out, -0.14 * out]), h2: mix([0.24, 0.93, -0.04], Bq, inn), g: add(ha, mul(d, GRIP)), d: mul(d, -1), B: hb, T: sub(hb, mul(d, 0.3)) });
+  }
+  return { kind: 'nunchaku', method: 'roll', dur: total, loop: false, trail: 0.5, fr };
+});
+// Isolation: the head of the handle stays on one spot; the hand and the tail go round it, level, and the other stick hangs still below.
+const ISO_Q = [-0.3, 1.22, 0.42];
+const chuckIso = dir => drawn('nunchaku', 1.0, p => { const e = spoke(PB.flat, dir * TAU * p); return { h: add(ISO_Q, mul(e, GRIP)), g: add(ISO_Q, mul(e, GRIP)), d: mul(e, -1), B: add(ISO_Q, [0, -0.09, 0]), T: add(ISO_Q, [0, -0.39, 0]) }; });
+const chuckOn = (g, d, B, T) => ({ prop: { kind: 'nunchaku', hand: 'R' }, keys: { g, d: norm(d), B, T } });
+const CLOCK_AT = [-0.22, 1.2, 0.5], clock = [12, 3, 6, 9].map((n, i) => ({ at: add(CLOCK_AT, mul(spoke(PB.wall, PI / 2 + i * PI / 2), 0.5)), text: String(n), dx: 0, dy: i === 2 ? 0.04 : -0.04 }));
 const STILLS = {
   nunchaku: {
     F1: [{ n: 'Front grip', make: chuckGrip('closed', true, [{ at: [0, 0.12, 0], text: 'link end', dx: -0.14, dy: -0.04 }, { at: [0.01, 0.045, 0.01], text: 'thumb toward the link', dx: -0.16, dy: 0.02 }, { at: [0, -0.18, 0], text: 'tail end', dx: -0.12, dy: 0.02 }]) },
       { n: 'Back grip', make: chuckGrip('closed', false, [{ at: [0, 0.12, 0], text: 'link end', dx: -0.14, dy: -0.04 }, { at: [0.01, -0.045, 0.01], text: 'thumb toward the tail', dx: -0.16, dy: 0.04 }, { at: [0.0, 0.04, 0.02], text: 'little finger toward the link', dx: 0.1, dy: 0.2 }]) }],
+    A7: [{ n: 'Clock on the face plane', make: picture([chuckOn(CLOCK_AT, [0, 0, 1], add(CLOCK_AT, [0, 0.085, 0.14]), add(CLOCK_AT, [0, 0.3835, 0.17]))], { pose: { hR: CLOCK_AT }, quads: quad(add(CLOCK_AT, [0, 0, 0.15]), PB.wall, 0.56), labels: clock }) }],
+    C1: [{ n: 'Trapped under the arm', contact: 1, make: picture([chuckOn([-0.2, 1.205, 0.265], [0.035, 0.105, -0.175], [-0.165, 1.31, 0.09], [-0.165, 1.27, -0.207])], { pose: { hR: [-0.2, 1.205, 0.265], eR: [-0.27, 1.1, -0.03] }, cam: { at: [-0.15, 1.25, 0], zoom: 2.2 }, labels: [{ at: [-0.165, 1.29, -0.06], text: 'striker pinned between arm and ribs', dx: -0.02, dy: -0.2 }, { at: [-0.2, 1.205, 0.265], text: 'hand keeps the handle in front', dx: 0.02, dy: 0.16 }] }) }],
+    S2: [{ n: 'Over the shoulder', make: picture([chuckOn([-0.22, 1.52, 0.07], [0, 0.05, -0.19], [-0.22, 1.57, -0.12], [-0.22, 1.275, -0.175])], { pose: { hR: [-0.22, 1.52, 0.07], hL: [-0.12, 1.25, 0.24] }, labels: [{ at: [-0.22, 1.42, -0.15], text: 'striker hangs down the back', dx: -0.04, dy: -0.2 }, { at: [-0.12, 1.25, 0.24], text: 'other hand reaches across', dx: 0.1, dy: 0.12 }] }) }],
+    S4: [{ n: 'Slick: same grip', make: passGrips(true, [{ at: [-0.06, 0.05, 0.02], text: 'thumb toward the link', dx: -0.1, dy: -0.22 }, { at: [0.06, 0.05, 0.02], text: 'thumb toward the link', dx: 0.1, dy: 0.26 }]) },
+      { n: 'Gritch: different grip', make: passGrips(false, [{ at: [-0.06, 0.05, 0.02], text: 'thumb toward the link', dx: -0.1, dy: -0.22 }, { at: [0.06, -0.05, 0.02], text: 'thumb toward the tail', dx: 0.1, dy: 0.26 }]) }],
+    S6: [{ n: 'Hand positions', make: picture([chuckOn([-0.06, 1.08, -0.2], [0.2, 0.6, -0.1], [0.02, 1.26, -0.2], [0.13, 1.535, -0.245])], { pose: { hR: [-0.06, 1.08, -0.2], hL: [0.2, 1.5, -0.12] }, labels: [{ at: [-0.06, 1.08, -0.2], text: 'swinging hand at the small of the back', dx: -0.03, dy: 0.2 }, { at: [0.2, 1.5, -0.12], text: 'empty hand close to the shoulder', dx: 0.03, dy: -0.2 }] }) }],
+    C11: [{ n: 'Handwrap', make: picture([line([[0, -0.035, 0], [0, 0.265, 0]], 0.03, 'prop'), line([[0.012, -0.03, 0.012], [0.05, -0.2, 0.26]], 0.03, 'prop'), line([[0, -0.035, 0], [-0.045, -0.05, 0.0], [-0.06, 0.0, 0.01], [-0.045, 0.045, 0.02], [0.012, -0.03, 0.012]], 0.007, 'link'), fistAt(O, UPV, OUTV, 'closed')], { hide: true, cam: { at: [0, 0.02, 0.05], zoom: 4 }, labels: [{ at: [-0.06, 0.0, 0.01], text: 'link round the back of the hand', dx: -0.1, dy: -0.16 }, { at: [0.006, -0.03, 0.006], text: 'both heads crossed in the palm', dx: 0.1, dy: 0.2 }] }) }],
     F2: [{ n: 'Open grip', make: chuckGrip('open', true, [{ at: [0.012, 0.02, 0.012], text: 'thumb holds the stick on the palm', dx: -0.1, dy: 0.26 }, { at: [0, 0.0, 0.09], text: 'fingers open', dx: 0.16, dy: 0.1 }]) }],
   },
   poi: {
@@ -108,6 +151,22 @@ const SPECS = {
     F9: [{ n: 'Stretched H8', make: () => loopClip(eightWall({ dir: 1, a: 0.26, y: 1.16, z: 0.42 })) }],
     M1: [hd('Weight shifts', chuckCarried(swing(), BODY.shift, 2))],
     M4: [hd('Down and up', chuckCarried(swing(), BODY.level, 4))],
+    F8: [{ n: 'Upspin H8', make: () => loopClip(eightWall({ dir: 1, a: 0.22, y: 1.16, z: 0.42 })) }],
+    R1: [hd('One half turn round the hand', once('hand', 1), RL), hd('The other way', once('hand', 1, { dir: -1 }), RL)],
+    R2: [hd('Hand rolls in a chain', chain('hand', [1, 1]), RL)],
+    R3: [hd('Once round the wrist', once('wrist', 2), RL)],
+    R4: [hd('Once round the wrist', once('wrist', 2, { dir: -1 }), RL)],
+    R5: [hd('Wrist rolls in a chain', chain('wrist', [2]), RL), hd('The other way', chain('wrist', [2], { dir: -1 }), RL)],
+    R6: [hd('One and a half turns', once('wrist', 3), RL)],
+    R7: [hd('Two turns (720)', once('wrist', 4), RL), hd('Three turns (1080)', once('wrist', 6), RL)],
+    R8: [hd('Round a finger', rollOf('finger', [{ swing: 1 }, { roll: 4 }, { swing: 2 }]), RL)],
+    R9: [hd('Round the thumb', rollOf('thumb', [{ swing: 1 }, { roll: 4 }, { swing: 2 }]), RL)],
+    R11: [hd('Intercept', intercept, { ...RL, fixed: 1 })],
+    R12: [hd('Upward', wheel(1), { fixed: 1, fingers: 1 }), hd('Downward', wheel(-1), { fixed: 1, fingers: 1 })],
+    R13: [hd('Disconnected wheel', looseWheel, { fixed: 1, fingers: 1 })],
+    R15: [hd('Round the forearm', once('forearm', 2), RL)],
+    R16: [hd('Round the neck', memo(() => roll({ at: [0, 1.51, 0], a: [0, 0, 1], b: [-1, 0, 0], rho: 0.085, free: true, loop: true, seq: [{ roll: 2 }] })), RL)],
+    R17: [hd('One way', chuckIso(1), { fingers: 1 }), hd('The other way', chuckIso(-1), { fingers: 1 })],
     D13: [{ n: 'Upspin and nearspin', make: swingOn, pair: { free: memo(() => loopClip(cone({ plane: 'table', dir: 1, ...NORMAL }))) } }],
     C2: [{ n: 'Forearm bounce', make: memo(() => bounceClip({ dir: -1, target: [0.02, 1.25, 0.55], fade: 0.2, on: 'forearm' })), contact: 1 }],
     A1: [{ n: 'Low toss', make: aerial }],
@@ -129,6 +188,7 @@ const SPECS = {
     S3: [{ n: 'Pendulum', make: poiPendulum }],
     I1: [{ n: 'Forward', make: poiExtension(FWD) }, { n: 'Backward', make: poiExtension(BACK) }],
     I2: [{ n: 'Forward', make: poiIsolation(FWD) }, { n: 'Backward', make: poiIsolation(BACK) }],
+    R1: [hd('Forward', turningPoi(FWD)), hd('Backward', turningPoi(BACK)), { n: 'Both poi', make: turningPoi(FWD), pair: { left: { make: turningPoi(FWD, true) }, lag: 0 } }],
     F8: [{ n: 'Weight shifts', make: poiCarried(P_WIDE, FWD, BODY.shift, 2), pair: { left: { make: poiCarried(P_WIDE, FWD, BODY.shiftL, 2) }, time: 'together', opposite: false } }],
     L1: [hd('One loop', flower(2)), hd('Two loops', flower(3))],
     L2: [hd('Four petals', petalF)],
@@ -169,6 +229,8 @@ const SPECS = {
     A11: [hd('Opening and closing the book', circleMove(0, FWD, { angle: t => 0.75 * PI * (1 - cos(2 * t)), dur: 2.4 }))],
     H1: [{ n: 'Same time, same direction', make: isoF, pair: { left: { make: anti1 }, lag: 0 } }],
     H6: [{ n: 'Each hand keeps its move', make: isoF, pair: { left: { make: anti1 }, lag: 0.25 } }],
+    L1: [carriedPair('Weight shifts under a weave', s8F, short8(FWD, -1), 'together', BODY.shift, BODY.shiftL, 2)],
+    L2: [carriedPair('Turning with a weave', s8F, short8(FWD, -1), 'together', BODY.turn, BODY.turnBack, 4)],
     J1: [{ n: 'Low throw', make: tossSide, fingers: 1 }],
     J2: [{ n: 'To the other hand', make: tossAcross }],
   },
@@ -185,6 +247,28 @@ const NOTES = {
   'nunchaku:F1': 'Thumb toward the link is the front grip; little finger toward the link is the back grip.',
   'nunchaku:F2': 'The fingers are open and the thumb alone holds the stick against the palm.',
   'nunchaku:F7': 'Only the upspin H8 is shown. The downspin version clips the forearm and the V8 hits the head, so both were removed. Inspin and outspin H8 are not simulated yet.',
+  'nunchaku:F8': 'The path is the same in front grip and back grip, and the figure\'s closed hand does not show which is used. The two grips are pictured under F1. The sources say nothing about how the wrist leads differently.',
+  'nunchaku:R1': 'The swinging stick comes over the hand, the hand opens, the nunchaku goes half a turn round it and the other stick is caught. The hand does not show front or back grip, so the change of grip is not visible. Plane and direction follow the wiki animations as far as they can be made out.',
+  'nunchaku:R2': 'A half-turn hand roll, one swing, and another half-turn roll, repeated. The change of plane that makes it a figure-8 is not shown.',
+  'nunchaku:R3': 'Released, the nunchaku goes once round the wrist and the same stick is caught again. The hand does not show that this is back grip to back grip.',
+  'nunchaku:R4': 'The same full turn round the wrist, shown turning the other way. The hand does not show that this is front grip to front grip, and the sources do not say how it differs from the back-grip roll beyond the grip.',
+  'nunchaku:R5': 'One swing and one full wrist roll, repeated without a break.',
+  'nunchaku:R6': 'One and a half turns round the wrist, so the other stick is caught and the grip changes.',
+  'nunchaku:R7': 'More turns before the catch. A real roll slows as it goes; here the rate is kept even.',
+  'nunchaku:R8': 'The roll taken round one finger. The sources say any finger can be used and that many finger rolls start from a midgrip; neither is shown.',
+  'nunchaku:R9': 'A finger roll on the thumb. The sources say no more than that, so the position of the thumb is my reading.',
+  'nunchaku:R11': 'From the surviving snippets: after a roll on one hand, a finger of the other hand is put in the path of the chain and takes the spin over. How the first trick ends is not described.',
+  'nunchaku:R13': 'The disconnected wheel: one finger is taken away for a turn, so the wheel becomes a finger roll, then comes back. The horizontal wheel is not shown: with the sticks turning level, neither arm can get past them to reach the link from below.',
+  'nunchaku:R15': 'The same roll moved up onto the forearm. The sources only name arm and leg rolls; the leg roll is not shown.',
+  'nunchaku:R16': 'The nunchaku turning round the neck with both sticks out. The sources only name the move, so the entry and the catch are left out. Learn it on foam.',
+  'nunchaku:R17': 'As the wiki defines it: the hand and the tail of the held stick go round its head, which stays on one spot. Shown level, with the other stick hanging still below.',
+  'nunchaku:R12': 'One finger of each hand sits on opposite sides of the link and only the link is touched. Upward and downward name the way the side nearest you travels. Which fingers, and how they drive the spin, the sources do not say.',
+  'nunchaku:S4': 'The moment of a pass when a hand is on each stick. Caught in the same grip as the handle it is a slick pass; caught in the other grip it is a gritch (grip-switch) pass.',
+  'nunchaku:S6': 'Seen best from the side or with the figure turned: the swinging hand is at the small of the back and the empty hand waits close to its shoulder, as the written advice says. The swing and the catch are not animated.',
+  'nunchaku:A7': 'Twelve is the top of the circle, and the numbers run on in the direction of the spin (shown for one direction). On a table plane twelve is the point furthest from you.',
+  'nunchaku:S2': 'The first moment of the written steps: the striker is flipped back over the shoulder while the other hand reaches across the front. That hand then catches the striker below the arm and the first hand lets go. The catch is not pictured: the figure cannot turn its chest to reach it.',
+  'nunchaku:C1': 'The end position only: the striker is pinned in the armpit by pinching the elbow to the ribs, with the hand still holding the handle in front. The swing into it and the release are not animated.',
+  'nunchaku:C11': 'The handwrap as the wiki defines it: both heads crossed in the palm with the link round the back of the hand. The throw that wraps it and the release are not shown.',
   'nunchaku:F9': 'The two planes are 52 cm apart, against 44 cm in the basic figure-8. The twisted figure-8 is not shown.',
   'nunchaku:C2': 'The swing is slowed a little, the other forearm comes up into its path, and the striker comes back the other way. How much speed the body returns (35%) is an assumed value, not a measured one.',
   'nunchaku:A1': 'The release was chosen by search so the handle turns once and returns within reach.',
@@ -196,6 +280,8 @@ const NOTES = {
   'nunchaku:D14': 'The other nunchaku keeps its normal swing.', 'nunchaku:D16': 'Both are released at the same moment, mirrored.',
   'poi:F1': 'With the arm stretched out, the head just reaches the armpit. The other hand, which pulls the head along the arm, is left out.',
   'poi:F3': 'The horizontal plane is shown overhead.', 'poi:B1': 'The hands are side by side with one a little in front, so the two planes sit 11 cm apart and the heads pass each other.',
+  'poi:R1': 'The head keeps a steady circle beside the body while the body turns once in eight spins. The hand is solved for.',
+  'doublestaff:L1': 'A same-direction weave while the weight goes from foot to foot.', 'doublestaff:L2': 'One body turn for every four repeats of the weave.',
   'poi:F8': 'Both poi keep spinning forward while the weight goes from foot to foot. Turns and steps are not shown.',
   'poi:L1': 'Loop counts follow the Home of Poi convention. The hand path is solved, so it is close to a circle but not exactly one.',
   'poi:L2': 'Petal counts follow the Home of Poi convention. The hand path is solved, so it is close to a circle but not exactly one.',

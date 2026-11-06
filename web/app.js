@@ -46,6 +46,7 @@ const FLAGS = [
   ['details', 'Skill guides', 'Steps, what to watch for and a drill on each skill.'],
   ['demos', 'Animated demos', 'Demos with three camera views, speed control and GIF download, on the skills whose motion is fully defined. Some are simulated, some are drawn from the definition.'],
   ['references', 'Reference links', 'Source pages and videos for each skill.'],
+  ['model3d', '3D figure', 'Show demos on a shaded 3D human model. When off, or where the browser has no WebGL, the drawn figure is used.'],
   ['tour', 'Guided tour', 'A step-by-step tour for new users, on first sign-in and the first visit to each section. When off, a short note is shown instead.'],
   ['signups', 'Open sign-ups', 'Let anyone who can open this page create an account. Turn it off once everyone has one.'],
 ];
@@ -422,23 +423,38 @@ function comboReady(c) {
 function pageCombos() {
   if (!curProp().ready) return needCatalog('Combos');
   const roles = { reliable: 'Reliable', signature: 'Signature', stretch: 'Stretch' };
+  const open = state.combos.find(c => c.id === ui.comboOpen) || state.combos[0];
   const cards = state.combos.map(c => {
-    const seq = c.seq || [];
-    const chain = seq.map((id, i) => {
-      const trKey = i < seq.length - 1 ? `${id}>${seq[i + 1]}` : '';
-      const t = trKey ? (c.tr?.[trKey] || 'untested') : '';
-      return `<span class="chain-sk"><a href="${skillHref(id)}" data-tip="${esc(SK[id]?.name || id)}" style="color:inherit">${esc(id)}</a><button class="x" data-act="combo-rm" data-id="${esc(c.id)}" data-i="${i}" aria-label="Remove ${esc(id)}">${icon('x')}</button></span>${trKey ? `<button class="tr ${t}" data-act="combo-tr" data-id="${esc(c.id)}" data-k="${esc(trKey)}" data-tip="Transition ${esc(trKey.replace('>', ' to '))}. Click to change.">${icon(TR[t].i)}${TR[t].n}</button>` : ''}`;
-    }).join('');
+    const seq = c.seq || [], reps = c.reps || [], ready = comboReady(c), secs = flags.demos ? Demo.comboSecs(CID, seq, reps) : 0;
+    const meta = `<span class="chip">${roles[c.role] || 'Reliable'}</span><span class="chip num">${seq.length} ${seq.length === 1 ? 'skill' : 'skills'}${flags.demos && seq.length ? ' · ' + Demo.clock(secs) : ''}</span>${ready ? `<span class="chip ok">${icon('check')}Ready</span>` : ''}`;
+    // Closed combos are one line: open one to play and edit it.
+    if (c !== open) return `<button class="cb-row" data-act="combo-open" data-id="${esc(c.id)}" aria-expanded="false"><b>${esc(c.name)}</b><span class="cb-mini">${seq.map(id => `<i>${esc(id)}</i>`).join('') || '<em>empty</em>'}</span><span class="row" style="gap:6px">${meta}</span>${icon('down')}</button>`;
     const runs = Number(c.runs) || 0, cleanRuns = Number(c.clean) || 0;
-    return `<div class="card"><div class="row wrap" style="margin-bottom:12px"><h2 class="grow">${esc(c.name)}</h2><span class="chip">${roles[c.role] || 'Reliable'}</span>
-      ${comboReady(c) ? `<span class="chip ok">${icon('check')}All transitions work</span>` : `<span class="chip">Not ready</span>`}
-      <button class="icon-btn" data-act="combo-del" data-id="${esc(c.id)}" aria-label="Delete combo">${icon('trash')}</button></div>
-      <div class="chain" style="margin-bottom:12px">${chain || '<span class="small muted">Add the first skill below.</span>'}</div>
-      <div class="row wrap"><select style="max-width:300px" data-change="combo-add" data-id="${esc(c.id)}" aria-label="Add skill to ${esc(c.name)}"><option value="">Add a skill</option>${skillOptions()}</select>
-      <span class="grow"></span><span class="small muted num">${cleanRuns} clean of ${runs} full runs</span>
-      <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Drop</button></div></div>`;
+    const steps = seq.map((id, i) => {
+      const inf = flags.demos ? Demo.info(CID, id) : { has: false }, n = reps[i] || 1;
+      const trKey = i < seq.length - 1 ? `${id}>${seq[i + 1]}` : '', t = trKey ? (c.tr?.[trKey] || 'untested') : '';
+      const tag = !flags.demos ? '' : !inf.has ? '<span class="cb-tag warn">no demo</span>' : inf.still ? '<span class="cb-tag">picture</span>' : `<span class="cb-tag num">${(inf.d * n).toFixed(1)} s</span>`;
+      return `<li class="cb-step ${inf.has ? '' : 'nodemo'}" data-step="${i}">
+        <button class="cb-main" data-act="combo-demo" data-k="step" data-v="${i}" aria-label="Play from ${esc(id)}"><span class="cb-n num">${i + 1}</span><span class="cb-id">${esc(id)}</span><span class="cb-name">${esc(SK[id]?.name || id)}</span>${tag}</button>
+        ${inf.has && !inf.still ? `<span class="cb-reps" role="group" aria-label="Repetitions of ${esc(id)}"><button data-act="combo-rep" data-id="${esc(c.id)}" data-i="${i}" data-d="-1" aria-label="One fewer" ${n <= 1 ? 'disabled' : ''}>${icon('minus')}</button><b class="num">${n}×</b><button data-act="combo-rep" data-id="${esc(c.id)}" data-i="${i}" data-d="1" aria-label="One more" ${n >= 9 ? 'disabled' : ''}>${icon('plus')}</button></span>` : ''}
+        <a class="icon-btn" href="${skillHref(id)}" data-tip="Open ${esc(id)}" aria-label="Open ${esc(id)}">${icon('ext')}</a>
+        <button class="icon-btn" data-act="combo-move" data-id="${esc(c.id)}" data-i="${i}" aria-label="Move ${esc(id)} earlier" ${i ? '' : 'disabled'}><span style="transform:rotate(180deg);display:grid">${icon('down')}</span></button>
+        <button class="icon-btn" data-act="combo-rm" data-id="${esc(c.id)}" data-i="${i}" aria-label="Remove ${esc(id)}">${icon('x')}</button>
+      </li>${trKey ? `<li class="cb-link"><button class="tr ${t}" data-act="combo-tr" data-id="${esc(c.id)}" data-k="${esc(trKey)}" data-tip="Transition ${esc(trKey.replace('>', ' to '))}. Click to change.">${icon(TR[t].i)}${TR[t].n}</button></li>` : ''}`;
+    }).join('');
+    return `<section class="card cb" aria-label="${esc(c.name)}">
+      <header class="cb-head"><h2 class="grow">${esc(c.name)}</h2>${meta}<button class="icon-btn" data-act="combo-del" data-id="${esc(c.id)}" aria-label="Delete combo">${icon('trash')}</button></header>
+      <div class="cb-body">
+        ${flags.demos ? Demo.comboStage(c.id, CID, seq, reps, id => SK[id]?.name || id, state.settings.dominant, esc) : ''}
+        <div class="cb-side">
+          <ol class="cb-steps">${steps || '<li class="small muted" style="padding:8px 2px">Start with two skills you can already do.</li>'}</ol>
+          <select data-change="combo-add" data-id="${esc(c.id)}" aria-label="Add skill to ${esc(c.name)}"><option value="">+ Add a skill</option>${skillOptions()}</select>
+          <div class="cb-runs"><span class="small muted num grow">${cleanRuns} clean of ${runs} full runs</span>
+            <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button></div>
+        </div>
+      </div></section>`;
   }).join('');
-  return `<div class="page-h"><div><h1>Combos</h1><p>A skill can be ready on its own while its links still need work, so test each transition here.</p></div></div>
+  return `<div class="page-h"><div><h1>Combos</h1><p>Build a sequence, watch it, and mark each link as you test it. A combo is ready when every link works.</p></div></div>
   <form class="card" id="combo-form" style="margin-bottom:16px"><div class="row wrap" style="align-items:flex-end">
     <label class="field grow" style="min-width:200px">Combo name<input type="text" name="name" maxlength="80" required placeholder="Morning loop"></label>
     <label class="field" style="width:150px">Role<select name="role"><option value="reliable">Reliable</option><option value="signature">Signature</option><option value="stretch">Stretch</option></select></label>
@@ -571,6 +587,8 @@ function render() {
     const nf = $('#log-form');
     if (nf && keep) { nf.date.value = keep.date; nf.minutes.value = keep.minutes; nf.notes.value = keep.notes; }
   }
+  Demo.figure(flags.demos && flags.model3d); // the 3D model is fetched the first time it is wanted
+  Demo.comboMount(); // the combo player, when one is open
   const hw = $('.heat-wrap');
   if (hw) hw.scrollLeft = hw.scrollWidth; // phones show the newest weeks first
   const ngw = $('.graph-wrap');
@@ -627,6 +645,10 @@ document.addEventListener('click', e => {
     case 'view': ui.graphView = d.v; localStorage.setItem('nf-view', d.v); render(); break;
     case 'level': setLevel(d.id, d.side, Number(d.v)); break;
     case 'demo': Demo.act(d); renderPanel(parseRoute()[2]); break;
+    case 'combo-open': ui.comboOpen = d.id; render(); break;
+    case 'combo-rep': if (combo) { const r = (combo.reps ||= []), i = Number(d.i); r[i] = Math.max(1, Math.min(9, (r[i] || 1) + Number(d.d))); commit(); } break;
+    case 'combo-move': if (combo) { const i = Number(d.i), r = (combo.reps ||= []); if (i > 0) { [combo.seq[i - 1], combo.seq[i]] = [combo.seq[i], combo.seq[i - 1]]; [r[i - 1], r[i]] = [r[i] || 1, r[i - 1] || 1]; commit(); } } break;
+    case 'combo-demo': Demo.comboAct(d); render(); break;
     case 'focus-del': ui.draftFocus = ui.draftFocus.filter(x => x !== d.id); render(); break;
     case 'session-del':
       if (confirm('Delete this session?')) { state.sessions = state.sessions.filter(s => s.id !== d.id); commit(); }
@@ -634,7 +656,7 @@ document.addEventListener('click', e => {
     case 'combo-del':
       if (combo && confirm(`Delete "${combo.name}"?`)) { state.combos = state.combos.filter(c => c !== combo); commit(); }
       break;
-    case 'combo-rm': if (combo) { combo.seq.splice(Number(d.i), 1); commit(); } break;
+    case 'combo-rm': if (combo) { combo.seq.splice(Number(d.i), 1); (combo.reps ||= []).splice(Number(d.i), 1); commit(); } break;
     case 'combo-tr':
       if (combo) {
         combo.tr ||= {};
@@ -669,7 +691,7 @@ document.addEventListener('change', async e => {
       t.value = ''; render(); break;
     case 'combo-add': {
       const c = state.combos.find(x => x.id === d.id);
-      if (c && t.value) { (c.seq ||= []).push(t.value); commit(); }
+      if (c && t.value) { (c.seq ||= []).push(t.value); (c.reps ||= [])[c.seq.length - 1] = 1; commit(); }
       break;
     }
     case 'flag': setFlag(d.k, t.checked); break;
@@ -698,7 +720,8 @@ document.addEventListener('submit', e => {
   } else if (f.id === 'combo-form') {
     const name = f.name.value.trim();
     if (!name) return;
-    state.combos.unshift({ id: uid(), name, role: f.role.value, seq: [], tr: {}, runs: 0, clean: 0 });
+    const made = { id: uid(), name, role: f.role.value, seq: [], reps: [], tr: {}, runs: 0, clean: 0 };
+    state.combos.unshift(made); ui.comboOpen = made.id;
     document.activeElement?.blur?.(); commit(); $('#combo-form')?.reset();
   }
 });

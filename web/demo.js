@@ -99,18 +99,20 @@ const Demo = (() => {
   // x points along the stick out of the thumb side of the fist, and w runs from the wrist
   // toward the knuckles. grip: 'closed' wraps the fingers round, 'open' lays them flat.
   function fist(pr, o, x, w) {
-    const n = mul(cross(x, w), pr.hand === 'L' ? -1 : 1), r = pr.r || 0.014, rho = r + 0.01, segs = [];
-    const round = (a, off) => add(add(o, mul(x, off)), add(mul(n, -rho * cos(a)), mul(w, rho * sin(a)))); // a point around the stick
-    const wrist = add(o, add(mul(w, -0.08), mul(n, -(r + 0.02)))), knuckles = add(o, add(mul(w, 0.012), mul(n, -(r + 0.021))));
-    segs.push([[add(wrist, mul(w, -0.2)), wrist], 0.058, 'skin'], [[wrist, knuckles], 0.078, 'skin']);
+    // On the whole figure the same hand is drawn a little larger than life (k), without its own forearm.
+    const k = pr.k || 1, n = mul(cross(x, w), pr.hand === 'L' ? -1 : 1), r = (pr.r || 0.014), rho = r + 0.01 * k, segs = [], role = pr.role || 'skin';
+    const round = (a, off) => add(add(o, mul(x, off * k)), add(mul(n, -rho * cos(a)), mul(w, rho * sin(a)))); // a point around the stick
+    const wrist = add(o, add(mul(w, -0.08 * k), mul(n, -(r + 0.02 * k)))), knuckles = add(o, add(mul(w, 0.012 * k), mul(n, -(r + 0.021 * k))));
+    if (!pr.bare) segs.push([[add(wrist, mul(w, -0.2)), wrist], 0.058, role]);
+    segs.push([[wrist, knuckles], 0.078 * k, role]);
     for (let i = 0; i < 4; i++) {
-      const off = 0.031 - i * 0.021, reach = 0.088 - Math.abs(i - 1) * 0.008;
-      if (pr.grip === 'open') { const k = add(knuckles, mul(x, off)); segs.push([[k, add(k, add(mul(w, reach * 0.55), mul(n, 0.004))), add(k, add(mul(w, reach), mul(n, 0.016)))], 0.017, 'skin']); }
-      else segs.push([Array.from({ length: 9 }, (_, j) => round(0.3 + j / 8 * reach / rho, off)), 0.017, 'skin']);
+      const off = 0.031 - i * 0.021, reach = (0.088 - Math.abs(i - 1) * 0.008) * k;
+      if (pr.grip === 'open') { const q = add(knuckles, mul(x, off * k)); segs.push([[q, add(q, add(mul(w, reach * 0.55), mul(n, 0.006 * k))), add(q, add(mul(w, reach), mul(n, 0.022 * k)))], 0.017 * k, role]); }
+      else segs.push([Array.from({ length: 9 }, (_, j) => round(0.3 + j / 8 * reach / rho, off)), 0.017 * k, role]);
     }
-    // The thumb comes round the other way and closes over the stick (or over the first finger).
-    const base = add(add(o, mul(x, 0.05)), add(mul(w, -0.05), mul(n, -(r + 0.006))));
-    segs.push([[base, round(-1.9, 0.044), round(-2.9, 0.03), round(-3.6, 0.016)], 0.021, 'skin']);
+    // The thumb comes round the other way and closes over the stick (or over the first finger). On an open hand it stands out to the side.
+    const base = add(add(o, mul(x, 0.05 * k)), add(mul(w, -0.05 * k), mul(n, -(r + 0.006 * k))));
+    segs.push([pr.grip === 'open' && pr.bare ? [base, add(base, add(mul(x, 0.03 * k), mul(w, 0.035 * k))), add(base, add(mul(x, 0.04 * k), mul(w, 0.07 * k)))] : [base, round(-1.9, 0.044), round(-2.9, 0.03), round(-3.6, 0.016)], 0.021 * k, role]);
     return { segs, balls: [], tip: null };
   }
 
@@ -143,6 +145,49 @@ const Demo = (() => {
   const other = s => s === 'L' ? 'R' : 'L';
   const propsOf = (clip, mir) => mir ? clip.props.map(p => p.hand ? { ...p, hand: other(p.hand) } : p) : clip.props;
 
+  // The hand: a fist round whatever it holds, or an open hand with the thumb forward.
+  // Returns where the grip is (o), the axis out of the thumb side (x), wrist-to-knuckles (w), and how big the thing held is.
+  function handPose(J, s, props, f, HAND = 1) {
+    const H = J['h' + s], fa = norm(sub(H, J['el' + s])), side = s === 'L' ? 1 : -1;
+    // What the hand is wrapped round, if anything: the axis of the prop where it passes through the fist.
+    let g = null;
+    for (const [i, p] of props.entries()) {
+      const K = q => f[i + '.' + q];
+      if (p.kind === 'nunchaku') {
+        // Either stick can be the one in the hand: after a roll or a pass it is the other one.
+        const top = add(K('g'), mul(K('d'), GRIP)), near = (a, b) => { const d = sub(b, a), t = clamp(dot(sub(H, a), d) / dot(d, d), 0, 1); return len(sub(H, add(a, mul(d, t)))); };
+        if (near(sub(K('g'), mul(K('d'), BUTT)), top) < 0.035) g = { x: K('d'), r: 0.0225 };
+        else if (near(K('B'), K('T')) < 0.035) g = { x: norm(sub(K('B'), K('T'))), r: 0.0225 };
+      }
+      if (p.kind === 'staff') { const d = sub(K('a'), K('b')), t = clamp(dot(sub(H, K('b')), d) / dot(d, d), 0, 1); if (len(sub(H, add(K('b'), mul(d, t)))) < 0.065) g = { x: norm(d), r: 0.017, at: add(K('b'), mul(d, t)) }; }
+      if (p.kind === 'buugeng' && len(sub(H, K('c'))) < 0.03) g = { x: K('v'), r: 0.018 };
+      if (p.kind === 'poi' && p.hand === s) g = { x: null, r: 0.008, to: norm(sub(K('q1') || K('P'), K('o') || H)) };
+      if (g) break;
+    }
+    let x, w, o = H, grip = 'closed';
+    if (g && g.x) { x = g.x; w = sub(fa, mul(x, dot(fa, x))); if (len(w) < 0.25) w = cross(x, cross(fa, J.left)); if (len(w) < 0.1) w = cross(x, UP); w = norm(w); o = g.at || H; }
+    else {
+      w = fa; x = g ? cross(fa, g.to) : sub(J.face, mul(fa, dot(J.face, fa)));
+      if (len(x) < 0.2) x = cross(fa, mul(J.left, side)); x = norm(x);
+      if (!g) { grip = 'open'; o = add(H, mul(w, 0.07 * HAND)); } else o = add(H, mul(w, 0.03));
+    }
+    return { o, x, w, grip, r: g ? g.r : 0.012 };
+  }
+
+  /* ---------- the 3D figure ---------- */
+  // A rigged human model drawn by web/figure3d.js, loaded only when wanted. Until it is ready,
+  // or where WebGL is missing, the drawn figure is used.
+  let want3d = false, asked3d = false;
+  function figure(on) {
+    want3d = !!on;
+    if (!on || asked3d || typeof document === 'undefined') return;
+    asked3d = true;
+    const sc = document.createElement('script'); sc.src = 'figure3d.js';
+    sc.onload = () => window.Figure3D.load('assets/human.glb').then(ok => { if (ok) { mount(); comboMount(); } });
+    document.head.appendChild(sc);
+  }
+  const use3d = clip => want3d && !clip.hide && typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready;
+
   /* ---------- drawing ---------- */
   function draw(ctx, W, clip, ph, view, mir, col, full) {
     const cam = clip.cam, zoom = cam ? cam.zoom : 1, S = W / 2.75 * zoom, base = W * 0.93;
@@ -168,30 +213,44 @@ const Demo = (() => {
       ctx.beginPath(); c.forEach((v, i) => i ? ctx.lineTo(v[0], v[1]) : ctx.moveTo(v[0], v[1])); ctx.closePath();
       ctx.fillStyle = col.plane; ctx.fill(); ctx.strokeStyle = col.prop; ctx.globalAlpha = 0.5; ctx.lineWidth = W / 240; ctx.stroke(); ctx.globalAlpha = 1;
     }
-    const f = pose(clip, ph, mir), props = propsOf(clip, mir), busy = {};
+    const f = pose(clip, ph, mir), props = propsOf(clip, mir), busy = {}, solid = use3d(clip);
     for (const p of props) if (p.hand) busy[p.hand] = true;
-    if (!clip.hide) {
-      const J = rig(f);
+    if (solid) {
+      // The model, its props and their shading come from three.js; trails and labels are drawn over it here.
+      const J = rig(f), list = [], R = [cy, 0, k * sy], D = [-k * sy, 0, cy], U = sub([0, cos(tilt), 0], mul(D, sin(tilt)));
+      props.forEach((p, i) => { const pt = parts(p, i, f); for (const [pts, wd, role] of pt.segs) list.push({ pts, w: wd, color: col[role] }); for (const [c, r, role] of pt.balls) list.push({ c, r, color: col[role] }); });
+      const sh = pr([J.pelvis[0], 0, J.pelvis[2]]), g = ctx.createRadialGradient(sh[0], sh[1], 0, sh[0], sh[1], 0.42 * S);
+      g.addColorStop(0, 'rgba(0,0,0,.35)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.save(); ctx.translate(sh[0], sh[1]); ctx.scale(1, 0.28); ctx.translate(-sh[0], -sh[1]); ctx.fillStyle = g; ctx.fillRect(sh[0] - S, sh[1] - S, 2 * S, 2 * S); ctx.restore();
+      const gl = window.Figure3D.render(W, J, { L: handPose(J, 'L', props, f), R: handPose(J, 'R', props, f) }, list,
+        { right: R, up: U, toward: cross(R, U), cx: (aim ? aim[0] : 0) + 0.3 * k * sy * sy, cy: aim ? aim[1] : (base - W / 2) / S, half: W / (2 * S) });
+      ctx.drawImage(gl, 0, 0, W, W);
+    } else if (!clip.hide) {
+      const J = rig(f), HAND = 1.3;
       for (const s of ['L', 'R']) {
-        const foot = J['f' + s];
-        seg([J['hip' + s], J['knee' + s], foot], 0.115, col.body);
-        seg([foot, add(foot, add(mul(J['t' + s], 0.15), [0, -0.02, 0]))], 0.075, col.body);
-        seg([J['sh' + s], J['el' + s], J['h' + s]], 0.078, busy[s] ? col.arm : col.body, busy[s] ? 0.02 : 0);
-        ball(J['h' + s], 0.052, busy[s] ? col.arm : col.body, busy[s] ? 0.07 : 0.03);
+        const foot = J['f' + s], knee = J['knee' + s], el = J['el' + s], H = J['h' + s], tone = busy[s] ? col.arm : col.body, lift = busy[s] ? 0.02 : 0;
+        // Limbs taper: thigh to shin, upper arm to forearm.
+        seg([J['hip' + s], knee], 0.135, col.body); seg([knee, foot], 0.1, col.body); ball(knee, 0.052, col.body, -0.01);
+        seg([add(foot, [0, -0.01, 0]), add(foot, add(mul(J['t' + s], 0.17), [0, -0.025, 0]))], 0.07, col.body);
+        seg([J['sh' + s], el], 0.088, tone, lift); seg([el, H], 0.068, tone, lift); ball(J['sh' + s], 0.052, tone, lift - 0.01);
+        const hp = handPose(J, s, props, f, HAND);
+        for (const [pts, wd] of fist({ hand: s, grip: hp.grip, r: hp.r, k: HAND, bare: true }, hp.o, hp.x, hp.w).segs) seg(pts, wd, busy[s] ? col.arm : col.body, (busy[s] ? 0.075 : 0.035));
       }
-      const hipL = add(J.pelvis, mul(sub(J.hipL, J.pelvis), 1.25)), hipR = add(J.pelvis, mul(sub(J.hipR, J.pelvis), 1.25));
-      fill([J.shL, J.shR, hipR, hipL], col.body);
+      // Trunk: shoulders, a narrower waist, hips.
+      const hipL = add(J.pelvis, mul(sub(J.hipL, J.pelvis), 1.3)), hipR = add(J.pelvis, mul(sub(J.hipR, J.pelvis), 1.3)), mid = add(J.pelvis, mul(J.up, 0.2)), wl = mul(J.left, 0.125);
+      fill([J.shL, J.shR, sub(mid, wl), hipR, hipL, add(mid, wl)], col.body);
       seg([J.shL, J.shR], 0.1, col.body); seg([hipL, hipR], 0.13, col.body);
-      seg([add(J.pelvis, mul(J.up, 0.04)), add(J.pelvis, mul(J.up, 0.4))], 0.2, col.body);
-      seg([J.chest, J.head], 0.07, col.body);
-      ball(J.head, 0.105, col.body, 0.01);
-      ball(J.nose, 0.024, col.body, dot(J.face, [-k * sy, 0, cy]) > 0 ? 0.03 : -0.2);
+      seg([add(J.pelvis, mul(J.up, 0.05)), add(J.pelvis, mul(J.up, 0.2))], 0.19, col.body); seg([add(J.pelvis, mul(J.up, 0.24)), add(J.pelvis, mul(J.up, 0.4))], 0.215, col.body);
+      seg([J.chest, add(J.chest, mul(J.up, 0.1))], 0.075, col.body);
+      // Head: a skull with a jaw below and in front, and a nose to show which way it faces.
+      const fw = cross(J.left, J.up);
+      ball(add(J.head, mul(J.up, 0.012)), 0.098, col.body, 0.01); ball(add(J.head, add(mul(J.up, -0.05), mul(fw, 0.022))), 0.07, col.body, 0.005);
+      ball(J.nose, 0.022, col.body, dot(J.face, [-k * sy, 0, cy]) > 0 ? 0.03 : -0.2);
     }
     const tips = [];
     props.forEach((p, i) => {
       const pt = parts(p, i, f);
-      for (const [pts, wd, role] of pt.segs) seg(pts, wd, col[role], 0.05);
-      for (const [c, r, role] of pt.balls) ball(c, r, col[role], 0.06);
+      if (!solid) { for (const [pts, wd, role] of pt.segs) seg(pts, wd, col[role], 0.05); for (const [c, r, role] of pt.balls) ball(c, r, col[role], 0.06); }
       if (!pt.tip || clip.still) return;
       // Trail of the prop's marked point, newest first.
       const span = full ? (clip.loop ? 1 : 0.3) : clip.loop ? clip.trail : 0.07, n = full || span > 0.6 ? 96 : 26;
@@ -206,7 +265,7 @@ const Demo = (() => {
         continue;
       }
       // An outline in the background colour keeps overlapping limbs readable.
-      for (const [w, c] of [[it.w + W / 90, col.bg], [it.w, it.color]]) {
+      for (const [w, c] of [[it.w + Math.min(W / 90, it.w * 0.7 + 1), col.bg], [it.w, it.color]]) {
         ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath();
         it.q.forEach((v, i) => i ? ctx.lineTo(v[0], v[1]) : ctx.moveTo(v[0], v[1])); ctx.stroke();
       }
@@ -251,11 +310,14 @@ const Demo = (() => {
   function clipNow() {
     const v = variant();
     if (!v) return null;
-    if (!cache.has(v.f)) {
-      cache.set(v.f, undefined);
-      fetch(`clips/${v.f}.json`).then(r => r.ok ? r.json() : Promise.reject(new Error(r.status))).then(c => { cache.set(v.f, unpack(c)); mount(); }, () => { cache.set(v.f, null); paint(); });
+    return fetchClip(v.f, mount);
+  }
+  function fetchClip(f, then) {
+    if (!cache.has(f)) {
+      cache.set(f, undefined);
+      fetch(`clips/${f}.json`).then(r => r.ok ? r.json() : Promise.reject(new Error(r.status))).then(c => { cache.set(f, unpack(c)); then(); }, () => { cache.set(f, null); then(); });
     }
-    return cache.get(v.f);
+    return cache.get(f);
   }
   let raf = 0, last = 0;
   function paint() {
@@ -282,12 +344,13 @@ const Demo = (() => {
     if (st.playing && !raf) { last = performance.now(); raf = requestAnimationFrame(tick); }
   }
 
-  const segBtn = (k, v, label, on, aria) => `<button class="${on ? 'on' : ''}" data-act="demo" data-k="${k}" data-v="${v}" aria-pressed="${on}"${aria ? ` aria-label="${aria}"` : ''}>${label}</button>`;
+  const segBtn = (k, v, label, on, aria, act = 'demo') => `<button class="${on ? 'on' : ''}" data-act="${act}" data-k="${k}" data-v="${v}" aria-pressed="${on}"${aria ? ` aria-label="${aria}"` : ''}>${label}</button>`;
   const viewName = () => st.view === 'angle' ? 'three-quarter' : st.view;
   const CAPTION = {
     sim: 'Simulated: the prop moves by gravity, air drag, tension in its cord or tether, and contact with the body. The hands follow a model of the move, not motion capture.',
     flight: 'Simulated: once released, the prop keeps its spin and its centre follows a ballistic arc. The catching hand arrives moving with it.',
     solved: 'Solved: the head follows the path the move is defined by, and the hand is placed exactly where gravity and tether tension produce that path.',
+    roll: 'Rolling: the hand lets go and the nunchaku turns about the part of the body it rests on, both sticks out, at a steady rate, as a balanced rotor does. How the cord grips the skin and how the fingers open and close are not simulated.',
     hand: "Hand-driven: a rigid prop goes where the hand takes it, so this traces the move's defined path on a jointed figure. Grip and finger work are not shown.",
     still: 'A still picture. The view buttons turn it.',
   };
@@ -312,6 +375,85 @@ const Demo = (() => {
     if (d.k === 'play') st.playing = !st.playing;
     else if (d.k === 'gif') download();
     else if (d.k === 'variant') { st.variant = Number(d.v); st.phase = 0; }
+    else if (d.k === 'speed') st.speed = Number(d.v);
+    else st[d.k] = d.v;
+  }
+
+  /* ---------- combos: each skill's demo, one after another ---------- */
+  // The combo builder strings skills together. This plays their demos in that order on one
+  // figure: every skill runs for whole cycles of its move, as many times as the combo asks.
+  // A skill with no demo gets a card with its name. The links between skills are not
+  // animated: each demo starts from its own position.
+  const cs = { sig: '', steps: [], i: 0, t: 0, playing: !still, hand: 'R' };
+  let craf = 0, clast = 0;
+  const CARD = 1.6, PICTURE = 2.4; // seconds a name card or a still picture stays up
+  // What the combo page needs to know about a skill's demo before any clip is loaded.
+  const info = (cid, sid) => { const v = index[cid + ':' + sid]?.v[0]; return v ? { has: true, still: v.m === 'still', d: v.d || 1, n: v.n } : { has: false }; };
+  const stepSecs = x => !x.v ? CARD : x.v.m === 'still' ? PICTURE : (x.v.d || 1) * x.reps;
+  const comboSecs = (cid, seq, reps) => seq.reduce((t, sid, i) => t + stepSecs({ v: index[cid + ':' + sid]?.v[0], reps: reps[i] || 1 }), 0);
+  const comboClip = step => step.v ? fetchClip(step.v.f, comboMount) : null;
+  const clock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  function comboPaint() {
+    const cv = document.getElementById('combo-cv'), step = cs.steps[cs.i];
+    if (!cv || !step) return false;
+    const ctx = cv.getContext('2d'), W = cv.width, col = colors(), clip = comboClip(step), d = step.v && step.v.d || 1;
+    if (clip) draw(ctx, W, clip, clip.still ? 0 : clip.loop ? cs.t / d : Math.min((cs.t % d) / d, 0.999), st.view, step.v.one && cs.hand === 'L', col, false);
+    else {
+      ctx.fillStyle = col.bg; ctx.fillRect(0, 0, W, W); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = col.ink; ctx.font = `600 ${W / 14}px system-ui, sans-serif`; ctx.fillText(step.sid, W / 2, W * 0.43);
+      ctx.fillStyle = col.link; ctx.font = `${W / 26}px system-ui, sans-serif`; ctx.fillText(step.name.length > 42 ? step.name.slice(0, 40) + '…' : step.name, W / 2, W * 0.53);
+      ctx.fillText(step.v ? (clip === undefined ? 'Loading the demo…' : 'This demo could not be loaded.') : 'No demo for this skill yet', W / 2, W * 0.61);
+    }
+    // Keep the timeline, the progress bar and the caption in step without redrawing the page.
+    const secs = stepSecs(step), before = cs.steps.slice(0, cs.i).reduce((t, x) => t + stepSecs(x), 0), total = cs.steps.reduce((t, x) => t + stepSecs(x), 0);
+    document.querySelectorAll('.cb-step').forEach(r => r.classList.toggle('playing', Number(r.dataset.step) === cs.i));
+    document.querySelectorAll('#combo-prog i').forEach((sgm, i) => { sgm.firstChild.style.width = (i < cs.i ? 100 : i > cs.i ? 0 : Math.min(cs.t / secs, 1) * 100) + '%'; });
+    const now = document.getElementById('combo-now'), time = document.getElementById('combo-time');
+    if (now) now.textContent = `${step.sid} ${step.name}${step.v && step.v.m !== 'still' && step.reps > 1 ? ` · ${Math.min(Math.floor(cs.t / d) + 1, step.reps)} of ${step.reps}` : ''}`;
+    if (time) time.textContent = `${clock(before + Math.min(cs.t, secs))} / ${clock(total)}`;
+    return true;
+  }
+  function comboTick(ts) {
+    craf = 0;
+    const step = cs.steps[cs.i];
+    if (!step || !document.getElementById('combo-cv')) return;
+    if (cs.playing) {
+      cs.t += Math.min(ts - clast, 100) / 1000 * st.speed;
+      if (cs.t >= stepSecs(step)) { cs.i = (cs.i + 1) % cs.steps.length; cs.t = 0; }
+    }
+    clast = ts;
+    comboPaint();
+    if (cs.playing) craf = requestAnimationFrame(comboTick);
+  }
+  function comboMount() {
+    if (!comboPaint()) return;
+    if (cs.playing && !craf) { clast = performance.now(); craf = requestAnimationFrame(comboTick); }
+  }
+  // The stage of the open combo. seq: skill ids in order; reps: how many cycles each plays; nameOf: id -> name.
+  function comboStage(id, cid, seq, reps, nameOf, dominant, esc) {
+    const sig = id + '|' + cid + '|' + seq.join(','), same = cs.sig === sig;
+    const steps = seq.map((sid, i) => ({ sid, name: nameOf(sid), v: index[cid + ':' + sid]?.v[0], reps: reps[i] || 1 }));
+    if (!same) Object.assign(cs, { sig, i: cs.sig.split('|')[0] === id ? Math.min(cs.i, Math.max(seq.length - 1, 0)) : 0, t: 0, hand: dominant });
+    cs.steps = steps;
+    if (!steps.length) return `<div class="cb-stage cb-empty"><div><b>Nothing to play yet</b><span>Add a skill and it plays here.</span></div></div>`;
+    const missing = steps.filter(x => !x.v).length;
+    return `<div class="cb-stage">
+      <canvas id="combo-cv" width="720" height="720" role="img" aria-label="The combo's skills, demonstrated one after another, ${viewName()} view."></canvas>
+      <div class="cb-prog" id="combo-prog" aria-hidden="true">${steps.map(x => `<i style="flex-grow:${stepSecs(x)}"><b></b></i>`).join('')}</div>
+      <div class="cb-now"><span id="combo-now" aria-live="off"></span><span id="combo-time" class="num"></span></div>
+      <div class="demo-ctl">
+        <button class="btn sm primary" data-act="combo-demo" data-k="play" style="min-width:64px">${cs.playing ? 'Pause' : 'Play'}</button>
+        <button class="btn sm" data-act="combo-demo" data-k="restart">Restart</button>
+        <div class="seg" role="group" aria-label="Speed">${[[1, '1×', 'Real speed'], [0.5, '½', 'Half speed'], [0.25, '¼', 'Quarter speed']].map(([x, l, a]) => segBtn('speed', x, l, st.speed === x, a, 'combo-demo')).join('')}</div>
+        <div class="seg" role="group" aria-label="Camera view">${segBtn('view', 'angle', '3/4', st.view === 'angle', 'Three-quarter view', 'combo-demo')}${segBtn('view', 'front', 'Front', st.view === 'front', '', 'combo-demo')}${segBtn('view', 'side', 'Side', st.view === 'side', '', 'combo-demo')}</div>
+      </div>
+      <p class="tiny">Each skill plays whole cycles of its demo, as many as you set. The links between skills are not animated.${missing ? ` ${missing} ${missing === 1 ? 'skill has' : 'skills have'} no demo yet and ${missing === 1 ? 'shows' : 'show'} as a name card.` : ''}</p>
+    </div>`;
+  }
+  function comboAct(d) {
+    if (d.k === 'play') cs.playing = !cs.playing;
+    else if (d.k === 'restart') { cs.i = 0; cs.t = 0; }
+    else if (d.k === 'step') { cs.i = Number(d.v); cs.t = 0; }
     else if (d.k === 'speed') st.speed = Number(d.v);
     else st[d.k] = d.v;
   }
@@ -380,7 +522,7 @@ const Demo = (() => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  return { init, has, html, mount, act, gif, draw, colors, state: st, rig, caps, bend, parts, pose, pack, unpack, mirror, sPoints,
+  return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, pack, unpack, mirror, sPoints,
     index: () => index, clip: () => { const v = variant(); return v && cache.get(v.f); },
     v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim: { ...DIM, U_ARM, F_ARM, REACH, THIGH, SHIN, GRIP, BUTT } };
 })();

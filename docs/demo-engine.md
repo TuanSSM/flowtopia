@@ -33,6 +33,12 @@ can no longer come out differently on another browser.
   tether lies within a few degrees of the force it needs.
 - **Hand-driven.** A rigid prop goes where the hand takes it. Staff, double staff and buugeng moves
   trace the path their definition gives on the jointed figure.
+- **Rolling.** Nunchaku rolls. When the hand lets go, the nunchaku turns about the part of the
+  body the cord rests on. It is drawn as two sticks in one line that stays against that pivot: a
+  balanced rotor, which gravity does not speed up or slow down, turning at half the swing's rate
+  because the same angular momentum now carries both sticks. The cord's grip on the skin, friction
+  and the opening and closing of the fingers are not simulated, and the plane and direction were
+  taken from the wiki's four small animations as far as they can be made out.
 - **Still picture.** One frame with labels, for grips, lengths and planes. The view buttons turn it.
 
 ## The figure
@@ -80,8 +86,18 @@ same clip. If nothing on the grid is clear, the move gets no demo.
   existing hand model stalls the poi or sends it into the legs. A search over height, distance,
   width and timing (64 settings each for two and three beats) found none that kept turning clear.
   The hand needs to steer the plane of the poi, not only its speed.
-- **Turning with a spinning poi or nunchaku.** The plane has to be turned with the body, and the
-  hand model has no way to push it sideways, so the prop falls behind and hits the legs.
+- **Poi weaves, second attempt.** Solving for the hand (as for flowers) removes the stalling, and
+  the forces come out fine, but with the body standing square no setting kept the poi clear: on
+  the far side the tether passes through the other shoulder, or the reaching arm goes through the
+  chest (best case 26 mm in, over 1,500 settings for two beats; three beats were always out of
+  reach). A real weave turns the upper body toward the side the poi are on. The figure cannot turn
+  its chest against its hips yet, and that is the next thing to add.
+- **Turning with a spinning nunchaku.** The plane has to be turned with the body, and the wrist
+  model cannot push it sideways, so the striker falls behind and hits the arm. Turning with a poi
+  now works, because the poi's hand is solved for instead.
+- **Nunchaku butterfly and alternating figure-8, staff rotor behind the back.** The two nunchaku
+  hit each other's handles within arm's reach, and behind the back the staff lies through the
+  forearm that holds it.
 - **Long-staff figure-8.** With a 1.4 m staff no hand position on the grid kept the staff out of
   the torso (the best was 60 mm in). It does work for the 84 cm double staff.
 - **Cat-eye.** Solving for the hand gives exact physics, but the hand then no longer circles

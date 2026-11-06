@@ -54,7 +54,7 @@ on the Admin page. No restart is needed. `signups` opens or closes sign-up, and 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
 | `details` | Steps, what to watch for, a drill and a foam warning (`web/details.js`) |
-| `demos` | Animated path schematic with 3/4, front and side views, hand and speed controls, and GIF download (`web/demo.js`) |
+| `demos` | Demos on a jointed figure and labelled pictures, with 3/4, front and side views, hand and speed controls, and GIF download (`web/demo.js`, clips in `web/clips`) |
 | `references` | Source pages and videos |
 
 
@@ -72,30 +72,42 @@ only when a tour starts. Its source is `tour/src/tour.jsx`, and the steps are in
 
 ## Demos
 
-39 of the 411 skills have a demo (`web/demo.js`), on all five props. See
-[docs/demo-coverage.md](docs/demo-coverage.md) for the list and for why the rest have none.
+104 of the 411 skills have a demo, on all five props: 168 clips and pictures. See
+[docs/demo-coverage.md](docs/demo-coverage.md) for the list and for why the rest have none, and
+[docs/demo-engine.md](docs/demo-engine.md) for how they are made and where they are weak.
 
-- **Simulated** (nunchaku and most poi clips): the prop moves only by gravity, drag and cord or
-  tether tension, driven by a hand model that follows the prop.
-- **Throws** (nunchaku aerials, staff and double staff tosses): on release the prop is a free
-  body. Both nunchaku sticks fly joined by the cord; a staff keeps its spin on a ballistic arc.
-  The catching hand goes to where the prop arrives. Nunchaku release settings come from
-  `node test/search-throws.js`, which searches for a throw that turns once and returns within reach.
-- **Contact:** the body is a set of capsules, and props bounce off it and off each other.
-  No clip may pass through the body. See [docs/contact-review.md](docs/contact-review.md)
-  for what is handled and where it is still weak.
-- **Drawn** (poi flowers, staff, double staff, buugeng): the path that the move's definition
-  fixes, for rigid props that go where the hand puts them.
+The motion is worked out at build time (`sim/`, run by `./deploy.sh` through `node sim/bake.js`)
+and stored in `web/clips`. The browser (`web/demo.js`) only plays it, on a jointed figure.
 
-`node test/physics.js` checks every clip: lengths, slack, a seamless loop, and that the clip
-matches its move's definition (direction, timing, petal count, the fixed point of an isolation).
-For throws it also checks that the flight is free fall, that the prop really leaves the hand,
-and that the catching hand stays within reach.
-A move is only listed once it passes. `node test/coverage.js` regenerates the coverage report.
-Not modelled: tethers and cords touching the body (so no wraps or rolls), rolling contact,
-grip and hand changes, wrist limits.
+- **Simulated:** nunchaku and poi moved by gravity, drag, cord or tether tension and contact with
+  the body, including throws, a bounce, and swings carried by a body that shifts or bends.
+- **Solved:** poi flowers. The head follows its defined path and the hand is placed exactly where
+  gravity and tether tension produce it.
+- **Hand-driven:** staff, double staff and buugeng, tracing the path the definition gives.
+- **Rolling:** nunchaku rolls. The hand lets go and the nunchaku turns about the hand, wrist,
+  finger, forearm or neck as a balanced rotor, at half the rate of the swing, until a stick is caught.
+- **Pictures:** labelled stills for grips, lengths and planes.
 
-Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Only the guided tour has a build step.
+`node test/physics.js` checks every clip against its physics, its definition (`test/expect.js`)
+and the body: reach, limbs clear of the body and each other, hand speed, legs, feet and balance.
+Contact details are in [docs/contact-review.md](docs/contact-review.md).
+
+Not modelled: wraps and rolls, rolling contact, a wrist or fingers, poi weaves and turns.
+
+The figure is a rigged 3D model (`web/assets/human.glb`, drawn by `web/figure3d.js`, built from
+`figure/` with three.js). It is posed from the same joints as the drawn figure and skinned on the
+CPU, so it does not need float textures. The model is the "X Bot" mannequin from the three.js
+examples (a Mixamo character); any model with a Mixamo skeleton can replace the file. The `model3d`
+feature flag turns it off, and the drawn figure is used wherever WebGL is missing. Close-up grip
+pictures are always drawn.
+
+The Combos page plays the open combo on a stage beside its timeline. Each skill plays whole cycles
+of its demo, as many as its repetition count (1 to 9, saved with the combo); skills can be moved
+earlier; a skill with no demo shows as a name card; the links between skills are not animated.
+
+What the sources say about each nunchaku skill that had no demo is in
+[docs/nunchaku-research.json](docs/nunchaku-research.json) (8 fully described, 44 partly, 38 not at all).
+Browser tests live in `test/browser` (`test/browser/run.sh combo.py`); they use a throwaway database.
 
 ## Run
 
@@ -127,7 +139,7 @@ on the Admin page. No restart is needed. `signups` opens or closes sign-up, and 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
 | `details` | Steps, what to watch for, a drill and a foam warning (`web/details.js`) |
-| `demos` | Animated path schematic with 3/4, front and side views, hand and speed controls, and GIF download (`web/demo.js`) |
+| `demos` | Demos on a jointed figure and labelled pictures, with 3/4, front and side views, hand and speed controls, and GIF download (`web/demo.js`, clips in `web/clips`) |
 | `references` | Source pages and videos |
 
 

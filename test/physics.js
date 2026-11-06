@@ -47,7 +47,7 @@ for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) 
   if (!fr.every(f => Object.values(f).every(v => v.every(Number.isFinite)))) errs.push('non-finite numbers');
   if (!fr.every(f => Object.keys(f).length === Object.keys(fr[0]).length)) errs.push('frames do not all have the same parts');
   if (c.loop && m.closure > 0.01) errs.push(`loop seam ${mm(m.closure)}`);
-  notes.push(c.still ? 'still picture' : `${c.dur.toFixed(2)} s ${c.loop ? 'loop' : 'clip'}, ${{ sim: 'simulated', flight: 'simulated flight', solved: 'solved', hand: 'hand-driven' }[c.method] || c.method}`);
+  notes.push(c.still ? 'still picture' : `${c.dur.toFixed(2)} s ${c.loop ? 'loop' : 'clip'}, ${{ sim: 'simulated', flight: 'simulated flight', solved: 'solved', hand: 'hand-driven', roll: 'rolling' }[c.method] || c.method}`);
   c.props.forEach((p, j) => {
     const K = (f, k) => f[j + '.' + k];
     if (p.kind === 'nunchaku') {

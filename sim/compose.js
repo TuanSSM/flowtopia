@@ -59,7 +59,7 @@ function hands(sp) {
   if (!sp.pair) return [['R', clip, 0, 1]];
   if (sp.pair.free) { const other = sp.pair.free(); return [['R', clip, 0, 1], ['L', other, 0, clip.dur / other.dur]]; }
   const left = sp.pair.left ? clipOf(sp.pair.left) : clip;
-  const lag = sp.pair.lag !== undefined ? sp.pair.lag : clip.loop ? lagFor(clip, left, sp.pair.time !== 'split') : 0;
+  const lag = typeof sp.pair.lag === 'function' ? sp.pair.lag() : sp.pair.lag !== undefined ? sp.pair.lag : clip.loop ? lagFor(clip, left, sp.pair.time !== 'split') : 0;
   return [['R', clip, 0, 1], ['L', left, lag, 1, sp.pair.shift]];
 }
 function scene(sp) {

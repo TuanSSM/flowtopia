@@ -34,7 +34,8 @@ function overlaps(sc) {
     const who = sc.props.map((p, j) => {
       if (inAir && j === 0) return '';
       if (p.kind === 'poi') return p.hand;
-      const [a, b] = shapes(p, j, f)[0], on = ['L', 'R'].filter(h => { const q = E.closest(f['h' + h] || J['h' + h], f['h' + h] || J['h' + h], a, b); return len(sub(q.c1, q.c2)) < 0.06; });
+      // For a nunchaku either stick may be the one in the hand (after a roll it is the other one).
+      const rods = shapes(p, j, f).slice(0, p.kind === 'nunchaku' ? 2 : 1), on = ['L', 'R'].filter(h => rods.some(([a, b]) => { const q = E.closest(f['h' + h] || J['h' + h], f['h' + h] || J['h' + h], a, b); return len(sub(q.c1, q.c2)) < 0.06; }));
       return on.join('') || holder(p, j, f);
     });
     for (const w of who) for (const h of w) hold[h] = true;
@@ -46,7 +47,8 @@ function overlaps(sc) {
         if (own && (name === 'head of the poi' || name === 'tether') && c.name === 'forearm') continue; // the tether leaves from the fist
         if (name === 'tether' && own) continue;
         const q = E.closest(a, b, c.a, c.b), pen = c.r + r - len(sub(q.c1, q.c2));
-        if (own && name === 'handle') continue;                      // the tail of the handle lies along the forearm
+        if (own && name === 'handle') continue;
+        if (own && name === 'striker') { const hd = J['h' + c.side], q0 = E.closest(hd, hd, a, b); if (len(sub(q0.c1, q0.c2)) < 0.06) continue; } // the striker is the stick in this hand                      // the tail of the handle lies along the forearm
         if (own && held) {
           // A held stick lies in the palm and may rest along the wrist. Further up the forearm it must be clear.
           if (c.name !== 'forearm') { note(grip, pen, `${name} through its own upper arm`); continue; }
