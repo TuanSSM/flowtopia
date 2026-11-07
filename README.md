@@ -99,7 +99,14 @@ The figure is a rigged 3D model (`web/assets/human.glb`, drawn by `web/figure3d.
 CPU, so it does not need float textures. The model is the "X Bot" mannequin from the three.js
 examples (a Mixamo character); any model with a Mixamo skeleton can replace the file. The `model3d`
 feature flag turns it off, and the drawn figure is used wherever WebGL is missing. Close-up grip
-pictures are always drawn.
+pictures stand the model behind the picture and cut it away beyond the forearm, so the hand shown
+is the model's, with its thumb and fingers round the prop.
+
+The model is posed as a body moves, not only placed: the upper arm and thigh roll so that the elbow
+and knee are hinges that bend toward the forearm and shin (the knee points where the toes point);
+the forearm pronates or supinates to follow the palm, within about 100 degrees, and only the rest is
+left to the wrist; the collarbone lifts as the hand goes up; the head stays nearer upright than a
+leaning trunk; the fingers close less tightly round a thick handle.
 
 The Combos page plays the open combo on a stage beside its timeline. Each skill plays whole cycles
 of its demo, as many as its repetition count (1 to 9, saved with the combo); skills can be moved

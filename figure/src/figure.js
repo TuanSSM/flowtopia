@@ -32,7 +32,8 @@ async function load(url) {
     const gltf = await new GLTFLoader().loadAsync(url);
     model = gltf.scene; scene.add(model);
     // A neutral matte finish: light on the body, darker at the joints, so the pose reads on dark and light pages.
-    model.traverse(o => { if (o.isMesh && o.material) { const joint = /joint/i.test(o.material.name + o.name); o.material = new THREE.MeshStandardMaterial({ color: joint ? 0x596070 : 0xb8bdc9, roughness: 0.62, metalness: 0.04 }); } });
+    model.traverse(o => { if (o.isMesh && o.material) { const joint = /joint/i.test(o.material.name + o.name); o.material = new THREE.MeshStandardMaterial({ color: joint ? 0x596070 : 0xb8bdc9, roughness: 0.62, metalness: 0.04, side: THREE.DoubleSide }); } });
+    renderer.localClippingEnabled = true;
     const names = ['Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head'];
     for (const s of ['Left', 'Right']) names.push(s + 'Shoulder', s + 'Arm', s + 'ForeArm', s + 'Hand', s + 'UpLeg', s + 'Leg', s + 'Foot', s + 'ToeBase');
     for (const n of names) { bone[n] = find(model, n); if (!bone[n]) throw new Error('the model has no bone called ' + n); }
@@ -40,14 +41,16 @@ async function load(url) {
     model.updateMatrixWorld(true);
     model.scale.multiplyScalar(1.43 / wpos(bone.LeftArm).y);
     model.updateMatrixWorld(true);
-    const chain = { LeftArm: 'LeftForeArm', LeftForeArm: 'LeftHand', RightArm: 'RightForeArm', RightForeArm: 'RightHand', LeftUpLeg: 'LeftLeg', LeftLeg: 'LeftFoot', LeftFoot: 'LeftToeBase', RightUpLeg: 'RightLeg', RightLeg: 'RightFoot', RightFoot: 'RightToeBase' };
+    const chain = { LeftShoulder: 'LeftArm', RightShoulder: 'RightArm', LeftArm: 'LeftForeArm', LeftForeArm: 'LeftHand', RightArm: 'RightForeArm', RightForeArm: 'RightHand', LeftUpLeg: 'LeftLeg', LeftLeg: 'LeftFoot', LeftFoot: 'LeftToeBase', RightUpLeg: 'RightLeg', RightLeg: 'RightFoot', RightFoot: 'RightToeBase' };
     for (const n of names) rest[n] = { q: wquat(bone[n]), dir: chain[n] ? wpos(bone[chain[n]]).sub(wpos(bone[n])).normalize() : null, local: bone[n].quaternion.clone(), pos: bone[n].position.clone() };
     rest.hipOff = wpos(bone.Hips).y - wpos(bone.LeftUpLeg).y; // the hips bone sits a little above the hip joints
+    // The model stands in a T-pose facing its own +z: elbows bend toward the front, knees toward the back.
+    rest.fwd = new THREE.Vector3(0, 0, 1).transformDirection(model.matrixWorld).normalize();
     // Hands: the rest frame of each, and how each finger joint curls toward the palm.
     for (const [s, S] of [['L', 'Left'], ['R', 'Right']]) {
       const hand = bone[S + 'Hand'], at = n => wpos(find(model, S + 'Hand' + n));
       const w = at('Middle1').sub(wpos(hand)), x = at('Index1').sub(at('Pinky1')), fr = handFrame(x, w, s);
-      handRest[s] = { q: fr.q, bq: wquat(hand), grip: at('Middle1').sub(wpos(hand)).length() };
+      handRest[s] = { q: fr.q, bq: wquat(hand), grip: at('Middle1').sub(wpos(hand)).length(), N: fr.N.clone() };
       for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky']) for (let j = 1; j <= 3; j++) {
         const b = find(model, S + 'Hand' + f + j), c = find(model, S + 'Hand' + f + (j + 1));
         if (!b) continue;
@@ -85,26 +88,66 @@ function place(b, pos, q) {
   b.quaternion.copy(wquat(b.parent).invert().multiply(q));
 }
 // Point a bone from one joint to the next, turning it the short way from its rest direction.
-function aim(n, from, to) {
+// With `flex` and `want` it is then rolled about its own axis so that the direction it bends
+// in rest (flex) faces `want`: the elbow toward the forearm, the knee toward the shin, the
+// forearm's palm side toward the palm. `keep` leaves the bone where its parent put it.
+function aim(n, from, to, flex, want, keep) {
   const d = to.clone().sub(from); if (d.lengthSq() < 1e-10) return;
-  place(bone[n], from, new THREE.Quaternion().setFromUnitVectors(rest[n].dir, d.normalize()).multiply(rest[n].q));
+  d.normalize();
+  let q = new THREE.Quaternion().setFromUnitVectors(rest[n].dir, d);
+  if (flex && want) {
+    const w = want.clone().sub(d.clone().multiplyScalar(want.dot(d))), f = flex.clone().applyQuaternion(q);
+    f.sub(d.clone().multiplyScalar(f.dot(d)));
+    if (w.lengthSq() > 1e-8 && f.lengthSq() > 1e-8) {
+      w.normalize(); f.normalize();
+      q = new THREE.Quaternion().setFromAxisAngle(d, Math.atan2(new THREE.Vector3().crossVectors(f, w).dot(d), f.dot(w))).multiply(q);
+    }
+  }
+  place(bone[n], keep ? null : from, q.multiply(rest[n].q));
+}
+// The part of `v` at right angles to the unit vector `d`, padded with `fallback` as it gets short,
+// so a straight limb still knows which way it would bend.
+function across(v, d, fallback) {
+  const w = v.clone().sub(d.clone().multiplyScalar(v.dot(d))), L = w.length();
+  return L > 0.06 ? w : w.add(fallback.clone().multiplyScalar(0.06 - L));
 }
 
 function poseBody(J, hands) {
-  const left = V(J.left), up = V(J.up), fwd = new THREE.Vector3().crossVectors(left, up);
+  const left = V(J.left), up = V(J.up), fwd = new THREE.Vector3().crossVectors(left, up), UP = new THREE.Vector3(0, 1, 0);
   for (const n in rest) if (bone[n]) { bone[n].quaternion.copy(rest[n].local); bone[n].position.copy(rest[n].pos); }
   place(bone.Hips, V(J.pelvis).add(up.clone().multiplyScalar(rest.hipOff)), frameQuat(left, up, fwd).multiply(rest.Hips.q));
+  // The head stays nearer upright than the trunk, as a person's does when they lean.
+  const level = new THREE.Quaternion().setFromUnitVectors(up, up.clone().multiplyScalar(0.4).add(UP.clone().multiplyScalar(0.6)).normalize()), half = new THREE.Quaternion().slerp(level, 0.5);
+  place(bone.Neck, null, half.clone().multiply(wquat(bone.Neck)));
+  place(bone.Head, null, half.clone().multiply(wquat(bone.Head)));
   for (const [s, S] of [['L', 'Left'], ['R', 'Right']]) {
     const h = hands[s], fr = handFrame(V(h.x), V(h.w), s), k = handRest[s].grip / 0.085;
+    const sh = V(J['sh' + s]), el = V(J['el' + s]), hip = V(J['hip' + s]), knee = V(J['knee' + s]), foot = V(J['f' + s]), toe = V(J['t' + s]);
     // The wrist sits behind the grip and under the stick, as in the drawn hand.
-    const wrist = V(h.o).add(fr.W.clone().multiplyScalar(-0.085 * k)).add(fr.N.clone().multiplyScalar(-(h.r + 0.018)));
-    aim(S + 'UpLeg', V(J['hip' + s]), V(J['knee' + s])); aim(S + 'Leg', V(J['knee' + s]), V(J['f' + s]));
-    aim(S + 'Foot', V(J['f' + s]), V(J['f' + s]).add(V(J['t' + s]).multiplyScalar(0.14)).add(new THREE.Vector3(0, -0.035, 0)));
-    aim(S + 'Arm', V(J['sh' + s]), V(J['el' + s])); aim(S + 'ForeArm', V(J['el' + s]), wrist);
+    const wrist = V(h.o).add(fr.W.clone().multiplyScalar(-0.085 * k)).add(fr.N.clone().multiplyScalar(-(h.r + 0.01)));
+    // Legs: the knee bends backward and points where the toes point; the shin's front faces the toes.
+    const thigh = knee.clone().sub(hip).normalize(), shin = foot.clone().sub(knee).normalize();
+    aim(S + 'UpLeg', hip, knee, rest.fwd.clone().negate(), across(shin, thigh, toe.clone().negate()));
+    aim(S + 'Leg', knee, foot, rest.fwd, across(toe, shin, fwd));
+    aim(S + 'Foot', foot, foot.clone().add(toe.clone().multiplyScalar(0.14)).add(new THREE.Vector3(0, -0.035, 0)));
+    // Shoulder: the collarbone lifts as the hand goes up, and the arm starts from its tip.
+    const lift = Math.max(0, Math.min(1, (V(h.o).y - sh.y) / 0.45)) * 0.1;
+    aim(S + 'Shoulder', wpos(bone[S + 'Shoulder']), sh.clone().add(up.clone().multiplyScalar(lift)), null, null, true);
+    const start = wpos(bone[S + 'Arm']);
+    // Upper arm: rolled so the elbow is a hinge that bends toward the forearm; when the arm is
+    // straight the crease faces forward and a little in, as at rest.
+    const upper = el.clone().sub(start).normalize(), fore = wrist.clone().sub(el).normalize();
+    aim(S + 'Arm', start, el, rest.fwd, across(fore, upper, fwd.clone().add(left.clone().multiplyScalar(s === 'L' ? -0.5 : 0.5))), true);
+    // Forearm: turned (pronation or supination) so its palm side follows the hand, within what a forearm can do.
+    const q0 = new THREE.Quaternion().setFromUnitVectors(rest[S + 'ForeArm'].dir, fore), n0 = handRest[s].N.clone().applyQuaternion(q0);
+    const want = across(fr.N, fore, n0), have = n0.clone().sub(fore.clone().multiplyScalar(n0.dot(fore))).normalize(); want.normalize();
+    const turn = Math.max(-1.75, Math.min(1.75, Math.atan2(new THREE.Vector3().crossVectors(have, want).dot(fore), have.dot(want))));
+    place(bone[S + 'ForeArm'], el, new THREE.Quaternion().setFromAxisAngle(fore, turn).multiply(q0).multiply(rest[S + 'ForeArm'].q));
     place(bone[S + 'Hand'], wrist, fr.q.clone().multiply(handRest[s].q.clone().invert()).multiply(handRest[s].bq));
-    const closed = h.grip !== 'open';
+    // Fingers close round what is held, less tightly round something thick.
+    const closed = h.grip !== 'open', tight = Math.min(1.15, Math.sqrt(0.012 / Math.max(h.r || 0.012, 0.006)));
     for (const f of fingers[s]) {
-      const a = f.thumb ? (closed ? [0.35, 0.45, 0.6] : [0.05, 0.05, 0.05])[f.j - 1] : (closed ? [1.25, 1.5, 1.0] : [0.16, 0.16, 0.1])[f.j - 1];
+      const a = f.thumb ? (closed ? [0.35, 0.45, 0.6] : [0.05, 0.05, 0.05])[f.j - 1] : (closed ? [1.35, 1.6, 1.1].map(x => x * tight) : [0.16, 0.16, 0.1])[f.j - 1];
       f.b.quaternion.copy(f.local).multiply(new THREE.Quaternion().setFromAxisAngle(f.axis, a));
     }
   }
@@ -155,7 +198,8 @@ function skin() {
 }
 
 // W: size in pixels. J: joints. hands: { L, R } each { o, x, w, grip, r }. items: props as tubes and balls.
-// cam: { right, up, toward (unit vectors), cx, cy (centre, along right and up), half (half the width shown, metres) }.
+// cam: { right, up, toward (unit vectors), cx, cy (centre, along right and up), half (half the width shown, metres),
+// cut (optional: metres behind the centre beyond which nothing is drawn, for a close-up of a hand) }.
 function render(W, J, hands, items, cam) {
   if (renderer.domElement.width !== W) renderer.setSize(W, W, false);
   if (!F.nopose) poseBody(J, hands);
@@ -163,6 +207,7 @@ function render(W, J, hands, items, cam) {
   const R = V(cam.right), U = V(cam.up), T = V(cam.toward), c = R.clone().multiplyScalar(cam.cx).add(U.clone().multiplyScalar(cam.cy));
   camera.left = -cam.half; camera.right = cam.half; camera.top = cam.half; camera.bottom = -cam.half; camera.updateProjectionMatrix();
   camera.position.copy(c.clone().add(T.clone().multiplyScalar(20))); camera.up.copy(U); camera.lookAt(c);
+  renderer.clippingPlanes = cam.cut ? [new THREE.Plane(T.clone(), cam.cut - c.dot(T))] : [];
   sun.position.copy(c.clone().add(T.clone().multiplyScalar(4)).add(U.clone().multiplyScalar(3)).add(R.clone().multiplyScalar(-2.5))); sun.target.position.copy(c);
   renderer.render(scene, camera);
   return renderer.domElement;

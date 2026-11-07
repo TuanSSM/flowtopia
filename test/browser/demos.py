@@ -40,6 +40,11 @@ try:
     flat=js("const D=window.Demo,c=D.clip(),cv=document.createElement('canvas');cv.width=cv.height=360;const x=cv.getContext('2d');let n=0;const o=x.stroke.bind(x);x.stroke=()=>{n++;o()};D.draw(x,360,c,0.2,'angle',false,D.colors(),false);return n")
     check('with the 3D figure off, the drawn figure with fingers and thumbs is used',flat>60,flat)
     js("window.Demo.figure(true)")
+    if webgl and solid[0]:
+        # A grip picture has no body of its own; the model's hand and forearm stand in, cut off behind the hand.
+        nav('#/prop/nunchaku/F/F1',1.5);ready();time.sleep(.5)
+        pic=js("const D=window.Demo,c=D.clip(),cv=document.createElement('canvas');cv.width=cv.height=360;const x=cv.getContext('2d');D.draw(x,360,c,0,'angle',false,D.colors(),false);const d=x.getImageData(0,0,360,360).data;const set=new Set();let body=0;for(let i=0;i<d.length;i+=4*7){set.add(d[i]>>3<<10|d[i+1]>>3<<5|d[i+2]>>3);if(d[i]>120&&Math.abs(d[i]-d[i+2])<25)body++}return [!!c.hide,set.size,body]")
+        check('a close-up grip picture shows the model hand (shaded, grey, not a drawn fist)',pic[0] and pic[1]>60 and pic[2]>300,pic)
     nav('#/prop/poi/B/B1',1.5);check('two-prop demo has no hand switch',js("return !document.querySelector('[data-act=demo][data-k=hand]')"))
     nav('#/prop/staff/M/M1',2);ready()
     b64=js("const D=window.Demo,g=D.gif(D.clip(),'angle',false,D.colors());return [g.length,String.fromCharCode(g[0],g[1],g[2])]")

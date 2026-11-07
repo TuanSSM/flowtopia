@@ -136,20 +136,22 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: stable   # what the Pi builds with; go.mod only sets the language version
+      # Headless Firefox only gets WebGL (software, llvmpipe) when a display exists, so the
+      # browser tests run under Xvfb; without it the 3D figure cannot be tested.
       - name: Firefox
         run: firefox --version
 
       - name: Combo builder
         id: combo
         run: |
-          test/browser/run.sh combo.py | tee combo.txt || code=$?
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh combo.py | tee combo.txt || code=$?
           echo "line=$(grep -E 'passed' combo.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
       - name: Demos and 3D figure
         id: demos
         if: always()
         run: |
-          test/browser/run.sh demos.py | tee demos.txt || code=$?
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh demos.py | tee demos.txt || code=$?
           echo "line=$(grep -E 'passed' demos.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
       - name: Upload logs
@@ -197,7 +199,7 @@ jobs:
         # run.sh starts Python with -I, which ignores user site-packages, so install it system-wide.
         run: sudo python3 -m pip install --quiet --break-system-packages pillow
       - name: Take the screenshots
-        run: test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
+        run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v5
@@ -273,7 +275,7 @@ jobs:
             if [ -n "$BASE" ] && [ -f shots/index.json ]; then
               echo '### Screenshots'
               echo
-              echo 'Taken in headless Firefox on this commit (demos use the drawn figure there, as the runner has no WebGL). Click a name to open it.'
+              echo 'Taken in headless Firefox on this commit, with the 3D figure drawn in software. Click a name to open it.'
               echo
               jq -r --arg b "$BASE" '.[] | "<details" + (if (.file|test("^(combos|demos)\\.png$")) then " open" else "" end) + "><summary><b>" + .title + "</b></summary>\n\n<img src=\"" + $b + "/" + .file + "?raw=true\" width=\"" + (if (.file|test("phone")) then "360" else "900" end) + "\">\n\n</details>"' shots/index.json
             elif [ "$RESULT" = success ]; then
