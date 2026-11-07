@@ -1,9 +1,10 @@
 # A small driver for headless Firefox over Marionette (the Pi has no Playwright or Chromium).
-import json,socket,subprocess,tempfile,time,base64,urllib.request,http.cookiejar
+import json,socket,subprocess,tempfile,time,base64,urllib.request,http.cookiejar,os,shutil
 BASE='http://127.0.0.1:3170/'
-prof=tempfile.mkdtemp()
+prof=tempfile.mkdtemp(dir=os.environ.get('RUNNER_TEMP'))  # a snap Firefox (CI) cannot read /tmp
 open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui.systemUsesDarkTheme",1);user_pref("signon.rememberSignons",false);\n')
-ff=subprocess.Popen(['firefox-esr','--headless','--marionette','-no-remote','-profile',prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+FIREFOX=os.environ.get('FIREFOX') or next((b for b in ('firefox-esr','firefox') if shutil.which(b)),'firefox-esr')
+ff=subprocess.Popen([FIREFOX,'--headless','--marionette','-no-remote','-profile',prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 for _ in range(60):
     try: s=socket.create_connection(('127.0.0.1',2935));break
     except OSError: time.sleep(1)
