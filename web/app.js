@@ -28,7 +28,14 @@ const ICONS = {
   right: 'M9 6l6 6-6 6',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20c1-4 4-5.5 7.5-5.5s6.5 1.5 7.5 5.5',
   shield: 'M12 3l7 3v5.5c0 4.5-3 8-7 9.5-4-1.5-7-5-7-9.5V6z',
+  heart: 'M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z',
+  bell: 'M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15L6 16ZM10 20a2 2 0 0 0 4 0',
+  send: 'M20 4 4 11l8 2 2 8 6-17ZM12 13l8-9',
+  comment: 'M4 6h16v10H9l-5 4V6Z',
+  image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01',
+  users: 'M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM3 20c.8-3.5 3.2-5 6-5s5.2 1.5 6 5M16 11a3 3 0 1 0 0-6M21 20c-.5-2.5-1.8-4-3.5-4.6',
   edit: 'M4 20h4L18 10l-4-4L4 16v4ZM12 8l4 4',
+  feed: 'M4 5h16M4 10h16M4 15h10M4 20h7',
   instagram: 'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4ZM12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM17.3 6.7h.01',
   tiktok: 'M14 3v11.5a3.5 3.5 0 1 1-3.5-3.5M14 3c.5 3 2.5 4.5 5 4.5',
   youtube: 'M3 8.5c0-1.5 1-2.5 2.5-2.7C7.5 5.6 10 5.5 12 5.5s4.5.1 6.5.3C20 6 21 7 21 8.5v7c0 1.5-1 2.5-2.5 2.7-2 .2-4.5.3-6.5.3s-4.5-.1-6.5-.3C4 18 3 17 3 15.5v-7ZM10 9v6l5-3-5-3Z',
@@ -123,6 +130,7 @@ async function load() {
   const before = mark();
   await loadSession();
   loaded = true;
+  if (flags.community) loadNotifs();
   return mark() !== before;
 }
 document.addEventListener('visibilitychange', async () => {
@@ -532,6 +540,7 @@ function renderSide(route) {
   $('#side').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
     ${profile}
     ${a('#/', 'home', me ? 'Dashboard' : 'Welcome', curId === 'dashboard')}
+    ${me && flags.community ? a('#/timeline', 'feed', 'Timeline', curId === 'timeline' || curId === 'post' || curId === 'u') : ''}
     ${a('#/maps', 'map', 'Skill maps', curId === 'maps')}
     ${a('#/practice', 'log', 'Practice', curId === 'practice')}
     ${a('#/combos', 'link', 'Combos', curId === 'combos')}
@@ -551,16 +560,17 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', u: 'Profile' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
   if (p === 'branch') return pageBranch(a, b);
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
-  if (['practice', 'combos', 'plan', 'profile', 'u'].includes(p) && !me) return pageNeedAccount(title);
+  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u'].includes(p) && !me) return pageNeedAccount(title);
   if (p === 'practice') return pagePractice();
-  if (p === 'u' && !flags.community) return pageOff('Community');
+  if (['timeline', 'post', 'u'].includes(p) && !flags.community) return pageOff('Community');
+  if (p === 'timeline' || p === 'post') return pageTimeline(p === 'post' ? a : '');
   if (p === 'u') return pageUser(a);
   if (p === 'combos') return pageCombos();
   if (p === 'plan') return pagePlan();
@@ -583,7 +593,8 @@ function render() {
   document.title = `${title} · Flowa`;
   const gw = $('.graph-wrap'), sx = gw?.scrollLeft, sy = gw?.scrollTop;
   const key = first ? 'welcome' : `${p}/${a}/${ui.prop}/${me ? me.id : 0}`;
-  if (key !== lastRouteKey) social.profile = {}; // a profile reloads when its page is opened
+  if (key !== lastRouteKey) { social.stale = true; social.profile = {}; } // feeds and profiles reload when their page is opened
+  renderBell();
   // Keep form text when a save re-renders the page; only the panel and shell update.
   const active = document.activeElement;
   const typing = active && $('#main').contains(active) && /^(INPUT|TEXTAREA)$/.test(active.tagName) && active.type !== 'checkbox' && key === lastRouteKey;
@@ -616,7 +627,7 @@ function toast(msg) {
 }
 
 /* ---------- command palette ---------- */
-const pages = () => [['Dashboard', '#/'], ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ['Profile', '#/profile'], ['Settings', '#/settings'],
+const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ['Profile', '#/profile'], ['Settings', '#/settings'],
   ...myProps().filter(p => p.id !== ui.prop).map(p => [p.name + ' map', `#/prop/${p.id}`]), ...BRANCHES.map(b => [`${curProp().name}: ${b.name}`, `#/prop/${CID}/${b.k}`])];
 function palItems(q) {
   q = q.trim().toLowerCase();

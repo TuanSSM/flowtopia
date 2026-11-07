@@ -93,6 +93,7 @@ const TIPS = {
   combos: ['Combos', ['Build a sequence of skills, then mark each transition as you test it.', 'A combo is ready only when every transition works.']],
   plan: ['Plan', ['Tick a gate when you pass its test. Gates decide your current phase.', 'The 12-week track is for turning skills you already have into one routine.']],
   profile: ['Your profile', ['Add a picture, a bio and your social links, and choose the props you use.', 'There is no email on file, so a forgotten password has to be reset by the admin.']],
+  timeline: ['Timeline', ['Post what you worked on, with a picture or a tagged skill. Like and comment on others\u2019 posts.', 'Your milestones post themselves; turn that off in your profile.', 'The bell at the top shows likes, comments, mentions and new badges.']],
 };
 function tipCard(k) {
   if (flags.tour && !tourBroken) return ''; // the guided tour covers it
@@ -135,6 +136,11 @@ const TOURS = {
   plan: [
     { t: '.phase', n: 'Phases and gates', c: 'Tick a gate when you pass its test. Gates decide which phase you are in.' },
     { t: '[data-tour=track]', n: 'Contest track', c: 'An optional 12-week track for turning skills you already have into one routine.' },
+  ],
+  timeline: [
+    { t: '#compose-form', n: 'Post', c: 'Say what you worked on, add a picture or tag a skill. Use @name to mention someone.' },
+    { t: '[data-tour=people]', n: 'People', c: 'Everyone here, by XP. Open a profile to see their bio, links and badges.' },
+    { t: '#bell', n: 'Notifications', c: 'Likes, comments, mentions and new badges arrive here.' },
   ],
   profile: [
     { t: '.avatar.big', n: 'Your picture', c: 'Upload a picture. It is cropped to a square and shown in the menu.' },
