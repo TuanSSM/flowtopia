@@ -53,7 +53,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true}
+var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -113,20 +113,24 @@ type user struct {
 	Seen        json.RawMessage `json:"seen"`
 	Onboarded   bool            `json:"onboarded"`
 	Avatar      string          `json:"avatar"`
+	Bio         string          `json:"bio"`
+	Links       json.RawMessage `json:"links"`
 	Created     time.Time       `json:"created"`
 }
 
-const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.created_at"
+const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.created_at"
 
 type scanner interface{ Scan(...any) error }
 
-func scanUser(row scanner) (*user, error) {
+// scanUser reads userCols, followed by any extra columns the query selected.
+func scanUser(row scanner, extra ...any) (*user, error) {
 	var u user
-	var props, seen []byte
-	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Created); err != nil {
+	var props, seen, links []byte
+	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &u.Created}, extra...)
+	if err := row.Scan(dst...); err != nil {
 		return nil, err
 	}
-	u.Props, u.Seen = props, seen
+	u.Props, u.Seen, u.Links = props, seen, links
 	return &u, nil
 }
 
@@ -434,14 +438,7 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var hash string
-	u, err := func() (*user, error) {
-		row := a.db.QueryRow(`SELECT `+userCols+`, u.pw_hash FROM users u WHERE u.username = $1`, name)
-		var x user
-		var props, seen []byte
-		err := row.Scan(&x.ID, &x.Username, &x.DisplayName, &x.Role, &props, &seen, &x.Onboarded, &x.Avatar, &x.Created, &hash)
-		x.Props, x.Seen = props, seen
-		return &x, err
-	}()
+	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, u.pw_hash FROM users u WHERE u.username = $1`, name), &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		checkPassword(dummyHash, in.Password)
 	} else if err != nil {
@@ -474,6 +471,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		Props       *[]string `json:"props"`
 		Seen        *[]string `json:"seen"`
 		Avatar      *string   `json:"avatar"`
+		Bio         *string   `json:"bio"`
+		// Social links, as handles or pasted URLs; see cleanLink.
+		Links *map[string]string `json:"links"`
 	}
 	if !readJSON(w, r, 200<<10, &in) {
 		return
@@ -522,8 +522,37 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		u.Avatar = v
 	}
-	_, err := a.db.Exec(`UPDATE users SET display_name = $2, props = $3, seen = $4, onboarded = $5, avatar = $6 WHERE id = $1`,
-		u.ID, u.DisplayName, string(u.Props), string(u.Seen), u.Onboarded, u.Avatar)
+	if in.Bio != nil {
+		b := strings.TrimSpace(*in.Bio)
+		if len([]rune(b)) > maxBio {
+			fail(w, http.StatusBadRequest, "Keep the bio under 300 characters.")
+			return
+		}
+		u.Bio = b
+	}
+	if in.Links != nil {
+		links := map[string]string{}
+		json.Unmarshal(u.Links, &links)
+		for _, k := range linkKinds {
+			v, ok := (*in.Links)[k]
+			if !ok {
+				continue
+			}
+			h, good := cleanLink(k, v)
+			if !good {
+				fail(w, http.StatusBadRequest, "That does not look like a "+k+" handle or link.")
+				return
+			}
+			if h == "" {
+				delete(links, k)
+			} else {
+				links[k] = h
+			}
+		}
+		u.Links, _ = json.Marshal(links)
+	}
+	_, err := a.db.Exec(`UPDATE users SET display_name = $2, props = $3, seen = $4, onboarded = $5, avatar = $6, bio = $7, links = $8 WHERE id = $1`,
+		u.ID, u.DisplayName, string(u.Props), string(u.Seen), u.Onboarded, u.Avatar, u.Bio, string(u.Links))
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -792,7 +821,10 @@ func openDB(dsn string) (*sql.DB, error) {
 		}
 		time.Sleep(time.Second)
 	}
-	_, err = db.Exec(schema)
+	if _, err = db.Exec(schema); err != nil {
+		return nil, err
+	}
+	_, err = db.Exec(schemaSocial)
 	return db, err
 }
 
@@ -971,6 +1003,7 @@ func main() {
 	mux.HandleFunc("GET /api/admin/users", a.authed(true, a.handleUsers))
 	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(true, a.handleDeleteUser))
 	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(true, a.handleResetPassword))
+	a.socialRoutes(mux)
 	mux.HandleFunc("GET /", handleStatic(assets))
 
 	srv := &http.Server{Addr: *listen, Handler: guard(mux), ReadHeaderTimeout: 5 * time.Second,
@@ -987,4 +1020,102 @@ func main() {
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+/* ---------- community ----------
+
+Community features: profiles with a bio and social links. */
+
+const schemaSocial = `
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS links JSONB NOT NULL DEFAULT '{}';`
+
+const maxBio = 300
+
+// Social networks a profile can link to. The value stored is the handle, not a URL.
+var linkKinds = []string{"instagram", "tiktok", "youtube"}
+
+var (
+	handleRE   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,60}$`)
+	ytHandleRE = regexp.MustCompile(`^[A-Za-z0-9._@/-]{1,80}$`)
+)
+
+// cleanLink turns a pasted URL or handle into a bare handle, or reports it as invalid.
+// An empty value is valid and removes the link.
+func cleanLink(kind, v string) (string, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", true
+	}
+	low := strings.ToLower(v)
+	for _, p := range []string{"https://", "http://"} {
+		if strings.HasPrefix(low, p) {
+			v, low = v[len(p):], low[len(p):]
+			break
+		}
+	}
+	for _, p := range []string{"www.", "m.", "vm."} {
+		if strings.HasPrefix(low, p) {
+			v, low = v[len(p):], low[len(p):]
+			break
+		}
+	}
+	for _, d := range []string{"instagram.com/", "tiktok.com/", "youtube.com/"} {
+		if strings.HasPrefix(low, d) {
+			v = v[len(d):]
+			break
+		}
+	}
+	if i := strings.IndexAny(v, "?#"); i >= 0 {
+		v = v[:i]
+	}
+	v = strings.Trim(v, "/")
+	v = strings.TrimPrefix(v, "@")
+	if kind == "youtube" {
+		// A channel or handle, not a video, short or playlist link.
+		low := strings.ToLower(v)
+		for _, p := range []string{"watch", "shorts/", "playlist", "embed/", "youtu.be"} {
+			if strings.HasPrefix(low, p) {
+				return "", false
+			}
+		}
+		return v, ytHandleRE.MatchString(v)
+	}
+	return v, handleRE.MatchString(v)
+}
+
+/* ---------- public view of a user ---------- */
+
+type pubUser struct {
+	ID          int64           `json:"id"`
+	Username    string          `json:"username"`
+	DisplayName string          `json:"displayName"`
+	Role        string          `json:"role"`
+	Avatar      string          `json:"avatar"`
+	Bio         string          `json:"bio"`
+	Links       json.RawMessage `json:"links"`
+	Props       json.RawMessage `json:"props"`
+	Created     time.Time       `json:"created"`
+}
+
+func (u *user) public() pubUser {
+	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Created}
+}
+
+func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user) {
+	name := strings.ToLower(r.PathValue("username"))
+	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.username = $1`, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u.public()})
+}
+
+func (a *app) socialRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/users/{username}", a.authed(false, a.handleUserProfile))
 }

@@ -92,7 +92,7 @@ const TIPS = {
   practice: ['Practice log', ['Log each session with its minutes and the skills you worked on.', 'Sessions feed the heatmap and the streak on your dashboard.']],
   combos: ['Combos', ['Build a sequence of skills, then mark each transition as you test it.', 'A combo is ready only when every transition works.']],
   plan: ['Plan', ['Tick a gate when you pass its test. Gates decide your current phase.', 'The 12-week track is for turning skills you already have into one routine.']],
-  profile: ['Your profile', ['Add a picture and choose the props you use.', 'There is no email on file, so a forgotten password has to be reset by the admin.']],
+  profile: ['Your profile', ['Add a picture, a bio and your social links, and choose the props you use.', 'There is no email on file, so a forgotten password has to be reset by the admin.']],
 };
 function tipCard(k) {
   if (flags.tour && !tourBroken) return ''; // the guided tour covers it
@@ -138,6 +138,7 @@ const TOURS = {
   ],
   profile: [
     { t: '.avatar.big', n: 'Your picture', c: 'Upload a picture. It is cropped to a square and shown in the menu.' },
+    { t: '#about-form', n: 'About you', c: 'A bio and your Instagram, TikTok and YouTube, shown on your public profile.' },
     { t: '#props-form', n: 'Your props', c: 'Choose which props Flowa shows you. Your progress on the others is kept.' },
     { t: '#password-form', n: 'Password', c: 'There is no email on file, so only the admin can reset a forgotten password.' },
   ],
@@ -231,6 +232,12 @@ function pageProfile() {
       <label class="field">New password<input type="password" name="next" autocomplete="new-password" minlength="8" maxlength="200" required></label>
       <p class="form-err" id="pw-err" role="alert" hidden></p>
       <div><button class="btn" type="submit">Change password</button></div><p class="tiny">Changing it signs out your other devices.</p></div></form>
+    <form class="card span-2" id="about-form"><div class="card-h"><h2 class="grow">About you</h2>${flags.community ? `<a class="small" href="#/u/${esc(me.username)}">View your public profile</a>` : ''}</div>
+      <div class="stack" style="gap:12px">
+        <label class="field">Bio<textarea name="bio" maxlength="300" placeholder="What you spin, where you practise, what you are working toward">${esc(me.bio || '')}</textarea></label>
+        <div class="grid links-grid">${Object.entries(LINK_KINDS).map(([k, L]) => `<label class="field social-${k}">${icon(k)} ${L.name}<input type="text" name="${k}" maxlength="120" value="${esc((me.links || {})[k] || '')}" placeholder="${L.hint} or just the handle" autocapitalize="none" spellcheck="false"></label>`).join('')}</div>
+        <p class="form-err" id="about-err" role="alert" hidden></p>
+        <div><button class="btn" type="submit">Save</button></div></div></form>
     <form class="card span-2" id="props-form"><div class="card-h"><h2>Your props</h2></div>${propChecks(me.props || [])}
       <p class="form-err" id="props-err" role="alert" hidden></p><div class="row" style="margin-top:14px"><button class="btn" type="submit">Save props</button></div></form>
   </div>`;
@@ -359,6 +366,13 @@ document.addEventListener('submit', async e => {
       if (f.dataset.first) location.hash = '#/';
     }
     render();
+  } else if (f.id === 'about-form') {
+    const links = {};
+    for (const k in LINK_KINDS) links[k] = f[k].value;
+    const r = await api('me', 'PUT', { bio: f.bio.value, links });
+    if (!r.ok) { showErr('about-err', r.error); return; }
+    me = r.data.user; showErr('about-err', ''); document.activeElement?.blur?.(); delete social.profile[me.username];
+    toast('Profile saved.'); render();
   } else if (f.id === 'profile-form') {
     document.activeElement?.blur?.();
     await updateMe({ displayName: f.displayName.value }, 'Name saved.'); render();

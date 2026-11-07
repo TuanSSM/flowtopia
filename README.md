@@ -21,6 +21,8 @@ named but not described.
 - **Without an account:** browse the skill maps, guides, demos and references.
 - **Dashboard, Practice, Combos, Plan:** per user and per prop.
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
+- **Profiles:** a picture, a bio and Instagram, TikTok and YouTube links, shown on a public profile page
+  (`#/u/<username>`).
 
 Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Only the guided tour has a build step.
 
@@ -48,8 +50,9 @@ The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only.
 
 ## Feature flags
 
-Three features are behind flags, stored in Postgres and changed at runtime by an admin
+Several features are behind flags, stored in Postgres and changed at runtime by an admin
 on the Admin page. No restart is needed. `signups` opens or closes sign-up, and `tour` turns the guided tour on.
+`community` (public profiles) is on by default and can be turned off if it gets in the way.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -57,6 +60,12 @@ on the Admin page. No restart is needed. `signups` opens or closes sign-up, and 
 | `demos` | Demos on a jointed figure and labelled pictures, with 3/4, front and side views, hand and speed controls, and GIF download (`web/demo.js`, clips in `web/clips`) |
 | `references` | Source pages and videos |
 
+
+## Community API
+
+`GET /api/users/{name}` returns a user's public profile and needs a signed-in user. Profile fields
+(`bio`, `links`) go through `PUT /api/me`; links are stored as handles, whether a handle or a URL
+was pasted.
 
 ## Guided tour
 
@@ -127,7 +136,7 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; Python syntax; actionlint |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration tests` | the real server against a Postgres service, driven through headless Firefox (`test/browser/combo.py`, `demos.py`) |
+| `integration tests` | the real server against a Postgres service, driven through headless Firefox (`test/browser/combo.py`, `demos.py`, `social.py`) |
 | `screenshots` | `test/browser/pages.py`: the main pages at desktop and phone width and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job above passed |
@@ -136,4 +145,4 @@ Working on the repository with Claude Code: see [docs/claude-code-setup.md](docs
 (`CLAUDE.md`, path rules, scoped agents and skills in `.claude/`).
 
 A push to the PR cancels the run for the previous commit. Before opening a PR the same checks can
-be run locally with `gofmt -l . && go vet ./... && node test/physics.js` and `test/browser/run.sh combo.py`.
+be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/physics.js` and `test/browser/run.sh combo.py social.py`.
