@@ -1024,13 +1024,58 @@ func main() {
 
 /* ---------- community ----------
 
-Community features: profiles with a bio and social links. */
+Community features: profiles with a bio and social links, a timeline of posts with
+likes and comments, and notifications. */
 
 const schemaSocial = `
 ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT NOT NULL DEFAULT '';
-ALTER TABLE users ADD COLUMN IF NOT EXISTS links JSONB NOT NULL DEFAULT '{}';`
+ALTER TABLE users ADD COLUMN IF NOT EXISTS links JSONB NOT NULL DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS posts (
+	id BIGSERIAL PRIMARY KEY,
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL DEFAULT 'post',
+	body TEXT NOT NULL DEFAULT '',
+	prop TEXT NOT NULL DEFAULT '',
+	skill TEXT NOT NULL DEFAULT '',
+	image TEXT NOT NULL DEFAULT '',
+	data JSONB NOT NULL DEFAULT '{}',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS posts_user ON posts (user_id, id DESC);
+CREATE TABLE IF NOT EXISTS likes (
+	post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (post_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS comments (
+	id BIGSERIAL PRIMARY KEY,
+	post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	body TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS comments_post ON comments (post_id, id);
+CREATE TABLE IF NOT EXISTS notifications (
+	id BIGSERIAL PRIMARY KEY,
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	actor_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL,
+	post_id BIGINT REFERENCES posts(id) ON DELETE CASCADE,
+	text TEXT NOT NULL DEFAULT '',
+	read BOOLEAN NOT NULL DEFAULT false,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, id DESC);`
 
-const maxBio = 300
+const (
+	maxBio       = 300
+	maxPost      = 2000
+	maxComment   = 1000
+	maxImage     = 400000 // bytes of data URL; the client sends a resized JPEG
+	pageSize     = 20
+	maxNotifList = 40
+)
 
 // Social networks a profile can link to. The value stored is the handle, not a URL.
 var linkKinds = []string{"instagram", "tiktok", "youtube"}
@@ -1038,6 +1083,7 @@ var linkKinds = []string{"instagram", "tiktok", "youtube"}
 var (
 	handleRE   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,60}$`)
 	ytHandleRE = regexp.MustCompile(`^[A-Za-z0-9._@/-]{1,80}$`)
+	mentionRE  = regexp.MustCompile(`(?:^|[^a-z0-9._-])@([a-z0-9][a-z0-9._-]{2,23})`)
 )
 
 // cleanLink turns a pasted URL or handle into a bare handle, or reports it as invalid.
@@ -1084,6 +1130,23 @@ func cleanLink(kind, v string) (string, bool) {
 	return v, handleRE.MatchString(v)
 }
 
+// mentions lists the usernames written as @name in a text, without repeats.
+func mentions(text string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, m := range mentionRE.FindAllStringSubmatch(strings.ToLower(text), -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+func validImage(v string) bool {
+	return v == "" || ((strings.HasPrefix(v, "data:image/jpeg;base64,") || strings.HasPrefix(v, "data:image/png;base64,")) && len(v) <= maxImage)
+}
+
 /* ---------- public view of a user ---------- */
 
 type pubUser struct {
@@ -1102,6 +1165,46 @@ func (u *user) public() pubUser {
 	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Created}
 }
 
+func (a *app) usersByID(ids []int64) (map[int64]pubUser, error) {
+	out := map[int64]pubUser{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := a.db.Query(`SELECT `+userCols+` FROM users u WHERE u.id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[u.ID] = u.public()
+	}
+	return out, rows.Err()
+}
+
+// handleUserList is the people list: everyone, in the order they joined.
+func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
+	rows, err := a.db.Query(`SELECT ` + userCols + ` FROM users u ORDER BY u.id`)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []pubUser{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out = append(out, u.public())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": out})
+}
+
 func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user) {
 	name := strings.ToLower(r.PathValue("username"))
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.username = $1`, name))
@@ -1113,9 +1216,421 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user)
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u.public()})
+	var posts, likes int
+	if err := a.db.QueryRow(`SELECT count(*) FROM posts WHERE user_id = $1`, u.ID).Scan(&posts); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.db.QueryRow(`SELECT count(*) FROM likes l JOIN posts p ON p.id = l.post_id WHERE p.user_id = $1`, u.ID).Scan(&likes); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u.public(), "posts": posts, "likes": likes})
+}
+
+/* ---------- notifications ---------- */
+
+type notification struct {
+	ID      int64     `json:"id"`
+	Kind    string    `json:"kind"`
+	ActorID int64     `json:"actorId"`
+	PostID  int64     `json:"postId"`
+	Text    string    `json:"text"`
+	Read    bool      `json:"read"`
+	Created time.Time `json:"created"`
+}
+
+// notify records an event for a user. Nothing is recorded for one's own actions.
+func (a *app) notify(userID, actorID int64, kind string, postID int64, text string) {
+	if userID == 0 || userID == actorID {
+		return
+	}
+	var actor, post any
+	if actorID != 0 {
+		actor = actorID
+	}
+	if postID != 0 {
+		post = postID
+	}
+	if _, err := a.db.Exec(`INSERT INTO notifications (user_id, actor_id, kind, post_id, text) VALUES ($1, $2, $3, $4, $5)`, userID, actor, kind, post, text); err != nil {
+		log.Printf("notify: %v", err)
+	}
+}
+
+func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *user) {
+	rows, err := a.db.Query(`SELECT id, kind, COALESCE(actor_id, 0), COALESCE(post_id, 0), text, read, created_at FROM notifications
+		WHERE user_id = $1 ORDER BY id DESC LIMIT $2`, u.ID, maxNotifList)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	items := []notification{}
+	ids := []int64{}
+	for rows.Next() {
+		var n notification
+		if err := rows.Scan(&n.ID, &n.Kind, &n.ActorID, &n.PostID, &n.Text, &n.Read, &n.Created); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		items = append(items, n)
+		if n.ActorID != 0 {
+			ids = append(ids, n.ActorID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var unread int
+	if err := a.db.QueryRow(`SELECT count(*) FROM notifications WHERE user_id = $1 AND NOT read`, u.ID).Scan(&unread); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	users, err := a.usersByID(ids)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "unread": unread, "users": users})
+}
+
+func (a *app) handleReadNotifications(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		IDs []int64 `json:"ids"`
+	}
+	if !readJSON(w, r, 8192, &in) {
+		return
+	}
+	var err error
+	if len(in.IDs) == 0 {
+		_, err = a.db.Exec(`UPDATE notifications SET read = true WHERE user_id = $1 AND NOT read`, u.ID)
+	} else {
+		_, err = a.db.Exec(`UPDATE notifications SET read = true WHERE user_id = $1 AND id = ANY($2)`, u.ID, pq.Array(in.IDs))
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+/* ---------- posts, likes and comments ---------- */
+
+type comment struct {
+	ID      int64     `json:"id"`
+	PostID  int64     `json:"postId"`
+	UserID  int64     `json:"userId"`
+	Body    string    `json:"body"`
+	Created time.Time `json:"created"`
+}
+
+type post struct {
+	ID       int64           `json:"id"`
+	UserID   int64           `json:"userId"`
+	Kind     string          `json:"kind"`
+	Body     string          `json:"body"`
+	Prop     string          `json:"prop"`
+	Skill    string          `json:"skill"`
+	Image    string          `json:"image"`
+	Data     json.RawMessage `json:"data"`
+	Created  time.Time       `json:"created"`
+	Likes    int             `json:"likes"`
+	Liked    bool            `json:"liked"`
+	Comments []comment       `json:"comments"`
+}
+
+// loadPosts reads a page of posts newest first, with like counts, whether the viewer
+// liked each one, every comment, and the users involved.
+func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, error) {
+	rows, err := a.db.Query(`SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
+		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1)
+		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) ORDER BY p.id DESC LIMIT $5`,
+		viewer, before, byUser, only, pageSize+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	posts := []*post{}
+	byID := map[int64]*post{}
+	ids, uids := []int64{}, []int64{}
+	for rows.Next() {
+		p := &post{Comments: []comment{}}
+		var data []byte
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked); err != nil {
+			return nil, err
+		}
+		p.Data = data
+		posts = append(posts, p)
+		byID[p.ID] = p
+		ids = append(ids, p.ID)
+		uids = append(uids, p.UserID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	more := len(posts) > pageSize
+	if more {
+		delete(byID, posts[pageSize].ID)
+		posts = posts[:pageSize]
+		ids = ids[:pageSize]
+	}
+	if len(ids) > 0 {
+		crows, err := a.db.Query(`SELECT id, post_id, user_id, body, created_at FROM comments WHERE post_id = ANY($1) ORDER BY id`, pq.Array(ids))
+		if err != nil {
+			return nil, err
+		}
+		defer crows.Close()
+		for crows.Next() {
+			var c comment
+			if err := crows.Scan(&c.ID, &c.PostID, &c.UserID, &c.Body, &c.Created); err != nil {
+				return nil, err
+			}
+			if p := byID[c.PostID]; p != nil {
+				p.Comments = append(p.Comments, c)
+				uids = append(uids, c.UserID)
+			}
+		}
+		if err := crows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	users, err := a.usersByID(uids)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"posts": posts, "users": users, "more": more}, nil
+}
+
+func queryID(r *http.Request, key string) int64 {
+	n, _ := strconv.ParseInt(r.URL.Query().Get(key), 10, 64)
+	return n
+}
+
+func (a *app) handleGetPosts(w http.ResponseWriter, r *http.Request, u *user) {
+	var byUser int64
+	if name := strings.ToLower(r.URL.Query().Get("user")); name != "" {
+		err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&byUser)
+		if errors.Is(err, sql.ErrNoRows) {
+			fail(w, http.StatusNotFound, "No such user.")
+			return
+		}
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	out, err := a.loadPosts(u.ID, queryID(r, "before"), byUser, 0)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (a *app) writePost(w http.ResponseWriter, viewer, id int64) {
+	out, err := a.loadPosts(viewer, 0, 0, id)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if len(out["posts"].([]*post)) == 0 {
+		fail(w, http.StatusNotFound, "No such post.")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (a *app) handleGetPost(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	a.writePost(w, u.ID, id)
+}
+
+// notifyMentions tells each @named user, except the actor and anyone already told.
+func (a *app) notifyMentions(text string, actor, postID int64, skip ...int64) {
+	names := mentions(text)
+	if len(names) == 0 {
+		return
+	}
+	rows, err := a.db.Query(`SELECT id FROM users WHERE username = ANY($1)`, pq.Array(names))
+	if err != nil {
+		log.Printf("mentions: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) != nil {
+			continue
+		}
+		told := id == actor
+		for _, s := range skip {
+			told = told || id == s
+		}
+		if !told {
+			a.notify(id, actor, "mention", postID, "")
+		}
+	}
+}
+
+func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Body  string `json:"body"`
+		Prop  string `json:"prop"`
+		Skill string `json:"skill"`
+		Image string `json:"image"`
+	}
+	if !readJSON(w, r, maxImage+4*maxPost+4096, &in) {
+		return
+	}
+	body := strings.TrimSpace(in.Body)
+	if len([]rune(body)) > maxPost {
+		fail(w, http.StatusBadRequest, "Keep a post under 2000 characters.")
+		return
+	}
+	if !validImage(in.Image) {
+		fail(w, http.StatusBadRequest, "The picture must be a JPEG or PNG under 300 KB.")
+		return
+	}
+	if body == "" && in.Image == "" {
+		fail(w, http.StatusBadRequest, "Write something or add a picture.")
+		return
+	}
+	prop := ""
+	for _, p := range knownProps {
+		if p == in.Prop {
+			prop = p
+		}
+	}
+	skill := strings.TrimSpace(in.Skill)
+	if prop == "" || len(skill) > 12 {
+		skill = ""
+	}
+	var id int64
+	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		u.ID, body, prop, skill, in.Image).Scan(&id); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.notifyMentions(body, u.ID, id)
+	a.writePost(w, u.ID, id)
+}
+
+func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	res, err := a.db.Exec(`DELETE FROM posts WHERE id = $1 AND (user_id = $2 OR $3)`, id, u.ID, u.Role == "admin")
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(w, http.StatusNotFound, "No such post, or it is not yours.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// postOwner finds who wrote a post, answering the request itself when it cannot.
+func (a *app) postOwner(w http.ResponseWriter, id int64) (int64, bool) {
+	var owner int64
+	err := a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1`, id).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such post.")
+		return 0, false
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return 0, false
+	}
+	return owner, true
+}
+
+func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	owner, ok := a.postOwner(w, id)
+	if !ok {
+		return
+	}
+	// One statement either way, so two quick clicks cannot race into a duplicate key.
+	res, err := a.db.Exec(`INSERT INTO likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, id, u.ID)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	liked := n == 1
+	if liked {
+		// Liking, unliking and liking again tells the author once.
+		var told bool
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM notifications WHERE user_id = $1 AND actor_id = $2 AND post_id = $3 AND kind = 'like')`, owner, u.ID, id).Scan(&told); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if !told {
+			a.notify(owner, u.ID, "like", id, "")
+		}
+	} else if _, err := a.db.Exec(`DELETE FROM likes WHERE post_id = $1 AND user_id = $2`, id, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var likes int
+	if err := a.db.QueryRow(`SELECT count(*) FROM likes WHERE post_id = $1`, id).Scan(&likes); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
+}
+
+func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var in struct {
+		Body string `json:"body"`
+	}
+	if !readJSON(w, r, 8192, &in) {
+		return
+	}
+	body := strings.TrimSpace(in.Body)
+	if body == "" || len([]rune(body)) > maxComment {
+		fail(w, http.StatusBadRequest, "A comment needs 1 to 1000 characters.")
+		return
+	}
+	owner, ok := a.postOwner(w, id)
+	if !ok {
+		return
+	}
+	if _, err := a.db.Exec(`INSERT INTO comments (post_id, user_id, body) VALUES ($1, $2, $3)`, id, u.ID, body); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.notify(owner, u.ID, "comment", id, "")
+	a.notifyMentions(body, u.ID, id, owner)
+	a.writePost(w, u.ID, id)
+}
+
+func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	res, err := a.db.Exec(`DELETE FROM comments c USING posts p WHERE c.id = $1 AND p.id = c.post_id AND (c.user_id = $2 OR p.user_id = $2 OR $3)`, id, u.ID, u.Role == "admin")
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(w, http.StatusNotFound, "No such comment, or it is not yours.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *app) socialRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/users", a.authed(false, a.handleUserList))
 	mux.HandleFunc("GET /api/users/{username}", a.authed(false, a.handleUserProfile))
+	mux.HandleFunc("GET /api/posts", a.authed(false, a.handleGetPosts))
+	mux.HandleFunc("POST /api/posts", a.authed(false, a.handleCreatePost))
+	mux.HandleFunc("GET /api/posts/{id}", a.authed(false, a.handleGetPost))
+	mux.HandleFunc("DELETE /api/posts/{id}", a.authed(false, a.handleDeletePost))
+	mux.HandleFunc("POST /api/posts/{id}/like", a.authed(false, a.handleLike))
+	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed(false, a.handleComment))
+	mux.HandleFunc("DELETE /api/comments/{id}", a.authed(false, a.handleDeleteComment))
+	mux.HandleFunc("GET /api/notifications", a.authed(false, a.handleNotifications))
+	mux.HandleFunc("PUT /api/notifications/read", a.authed(false, a.handleReadNotifications))
 }

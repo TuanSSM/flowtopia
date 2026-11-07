@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestCleanLink(t *testing.T) {
 	cases := []struct {
@@ -28,5 +31,16 @@ func TestCleanLink(t *testing.T) {
 		if ok != c.ok || (ok && got != c.want) {
 			t.Errorf("cleanLink(%q, %q) = %q, %v; want %q, %v", c.kind, c.in, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+func TestMentions(t *testing.T) {
+	got := mentions("Hey @Sam and @sam, @jo-2 did F7! mail me@example.com @x")
+	want := []string{"sam", "jo-2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mentions = %v, want %v", got, want)
+	}
+	if n := len(mentions("nobody here")); n != 0 {
+		t.Errorf("expected no mentions, got %d", n)
 	}
 }

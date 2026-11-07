@@ -22,7 +22,10 @@ named but not described.
 - **Dashboard, Practice, Combos, Plan:** per user and per prop.
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
 - **Profiles:** a picture, a bio and Instagram, TikTok and YouTube links, shown on a public profile page
-  (`#/u/<username>`).
+  (`#/u/<username>`) with the user's posts.
+- **Timeline:** posts with a picture or a tagged skill, likes, comments and @mentions, and a list of
+  everyone here.
+- **Notifications:** a bell in the header for likes, comments and mentions.
 
 Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Only the guided tour has a build step.
 
@@ -40,9 +43,11 @@ Changing the admin password in `.env` later does nothing; change it on the Profi
 
 ## Data
 
-- Postgres holds users, sessions, progress (one JSON document per user and prop) and flags.
+- Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
+  likes, comments and notifications.
 - Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
 - `data/backups/progress-DATE.json` is written before the first change each day, kept 14 days.
+  Posts and comments are not in it; the database dump below covers them.
 - Full database dump: `docker exec nunchaku-db pg_dump -U flowa flowa > flowa.sql`
 - The files from before accounts existed were imported into the admin account and renamed `*.imported`.
 
@@ -52,7 +57,8 @@ The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only.
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
 on the Admin page. No restart is needed. `signups` opens or closes sign-up, and `tour` turns the guided tour on.
-`community` (public profiles) is on by default and can be turned off if it gets in the way.
+`community` (timeline, public profiles, people list, notifications) is on by default and can be turned off
+if it gets in the way.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -63,9 +69,11 @@ on the Admin page. No restart is needed. `signups` opens or closes sign-up, and 
 
 ## Community API
 
-`GET /api/users/{name}` returns a user's public profile and needs a signed-in user. Profile fields
-(`bio`, `links`) go through `PUT /api/me`; links are stored as handles, whether a handle or a URL
-was pasted.
+All of these need a signed-in user. `GET /api/users` (people), `GET /api/users/{name}` (profile), `GET /api/posts?before=&user=`, `POST /api/posts`, `GET|DELETE
+/api/posts/{id}`, `POST /api/posts/{id}/like` (toggle), `POST /api/posts/{id}/comments`,
+`DELETE /api/comments/{id}`, `GET /api/notifications`, `PUT /api/notifications/read`.
+Profile fields (`bio`, `links`) go through `PUT /api/me`; links are stored as handles, whether a
+handle or a URL was pasted.
 
 ## Guided tour
 

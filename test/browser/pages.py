@@ -29,8 +29,11 @@ try:
     page('combos','Combos','#/combos',wait=2.5)
     page('practice','Practice','#/practice')
     page('plan','Plan','#/plan')
-    # Community: the public profile.
+    # Community: a post with a tagged skill, then the timeline, achievements and the public profile.
+    nav('#/timeline',2);js("const f=document.querySelector('#compose-form');f.body.value='Clean F4 today, finally. On to the figure-8 chain.';f.skill.value='F4';f.requestSubmit()");time.sleep(2)
+    page('timeline','Timeline','#/timeline',wait=2.5)
     page('profile-public','Public profile','#/u/admin',wait=2.5)
+    page('timeline-phone','Timeline, phone','#/timeline',w=420,ht=900,wait=2.5)
     page('map-phone','Skill map, phone','#/maps',w=420,ht=900)
     page('combos-phone','Combos, phone','#/combos',w=420,ht=900,wait=2.5)
     page('skill-phone','Skill guide, phone','#/prop/nunchaku/F/F5',w=420,ht=900,wait=2.5)
