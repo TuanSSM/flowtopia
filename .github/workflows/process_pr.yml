@@ -164,11 +164,84 @@ jobs:
             demos.txt
           retention-days: 7
 
+  # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
+  # real server. They go to the ci-screenshots branch (same-repo PRs only; the token for a fork
+  # PR cannot push) and the PR summary shows them inline.
+  screenshots:
+    name: screenshots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disable
+    outputs:
+      base: ${{ steps.publish.outputs.base }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - name: Pillow
+        # run.sh starts Python with -I, which ignores user site-packages, so install it system-wide.
+        run: sudo python3 -m pip install --quiet --break-system-packages pillow
+      - name: Take the screenshots
+        run: test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: screenshots
+          path: ${{ runner.temp }}/shots
+          retention-days: 14
+      - name: Publish to the ci-screenshots branch
+        id: publish
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          SHOTS: ${{ runner.temp }}/shots
+        run: |
+          set -u
+          url="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+          d="$RUNNER_TEMP/ci-screenshots"
+          if ! git clone -q --depth 1 --branch ci-screenshots "$url" "$d" 2>/dev/null; then
+            mkdir -p "$d"; git -C "$d" init -q -b ci-screenshots; git -C "$d" remote add origin "$url"
+            printf '# CI screenshots\n\nWritten by the process_pr workflow: one folder per pull request, replaced on every run.\nNothing here is deployed.\n' > "$d/README.md"
+          fi
+          git -C "$d" config user.name github-actions[bot]
+          git -C "$d" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          dir="pr-$PR/${SHA:0:7}"
+          rm -rf "$d/pr-$PR"; mkdir -p "$d/$dir"; cp "$SHOTS"/*.png "$SHOTS"/index.json "$d/$dir/"
+          git -C "$d" add -A
+          git -C "$d" commit -q -m "PR #$PR at ${SHA:0:7}"
+          # Another PR may have pushed meanwhile: rebase and try again a few times.
+          for i in 1 2 3 4; do
+            git -C "$d" push -q origin ci-screenshots && break
+            git -C "$d" fetch -q origin ci-screenshots
+            if ! git -C "$d" rebase -q origin/ci-screenshots; then git -C "$d" rebase --abort; exit 1; fi
+            sleep $((i * 2))
+          done
+          echo "base=https://github.com/$REPO/blob/ci-screenshots/$dir" >> "$GITHUB_OUTPUT"
+
   pr_summary:
     name: PR summary
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [lint, unit, integration]
+    needs: [lint, unit, integration, screenshots]
     if: always() && github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -183,9 +256,38 @@ jobs:
           base=${{ github.event.pull_request.base.sha }}
           echo "stat=$(git diff --shortstat "$base"...HEAD | sed 's/^ *//')" >> "$GITHUB_OUTPUT"
           { echo 'files<<EOF'; git diff --stat=100 "$base"...HEAD | head -60; echo EOF; } >> "$GITHUB_OUTPUT"
+      - name: Fetch the screenshot index
+        if: needs.screenshots.outputs.base != ''
+        uses: actions/download-artifact@v5
+        with:
+          name: screenshots
+          path: shots
+      - name: Screenshot gallery
+        id: shots
+        env:
+          BASE: ${{ needs.screenshots.outputs.base }}
+          RESULT: ${{ needs.screenshots.result }}
+        run: |
+          {
+            echo 'md<<EOF'
+            if [ -n "$BASE" ] && [ -f shots/index.json ]; then
+              echo '### Screenshots'
+              echo
+              echo 'Taken in headless Firefox on this commit (demos use the drawn figure there, as the runner has no WebGL). Click a name to open it.'
+              echo
+              jq -r --arg b "$BASE" '.[] | "<details" + (if (.file|test("^(combos|demos)\\.png$")) then " open" else "" end) + "><summary><b>" + .title + "</b></summary>\n\n<img src=\"" + $b + "/" + .file + "?raw=true\" width=\"" + (if (.file|test("phone")) then "360" else "900" end) + "\">\n\n</details>"' shots/index.json
+            elif [ "$RESULT" = success ]; then
+              echo '_Screenshots were taken (see the run artifacts) but are not published for a pull request from a fork._'
+            else
+              echo "_Screenshots: job $RESULT._"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
       - name: Write summary
         id: md
         env:
+          SHOTS_MD: ${{ steps.shots.outputs.md }}
+          SCREENS: ${{ needs.screenshots.result }}
           LINT: ${{ needs.lint.result }}
           UNIT: ${{ needs.unit.result }}
           INTEG: ${{ needs.integration.result }}
@@ -207,6 +309,9 @@ jobs:
             echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
             echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a} |"
+            echo "| screenshots | $(icon "$SCREENS") | pages at desktop and phone width, demo sheet |"
+            echo
+            echo "$SHOTS_MD"
             echo
             echo "**Change:** ${STAT:-no diff}"
             echo
@@ -241,7 +346,7 @@ jobs:
     name: process_pr_result
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    needs: [lint, unit, integration, pr_summary]
+    needs: [lint, unit, integration, screenshots, pr_summary]
     if: always()
     steps:
       - name: Check every job passed

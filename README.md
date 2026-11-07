@@ -119,7 +119,8 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; Python syntax; actionlint |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
 | `integration tests` | the real server against a Postgres service, driven through headless Firefox (`test/browser/combo.py`, `demos.py`) |
-| `PR summary` | one comment on the PR, kept up to date, with the results and the size of the change |
+| `screenshots` | `test/browser/pages.py`: the main pages at desktop and phone width and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
+| `PR summary` | one comment on the PR, kept up to date, with the results, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job above passed |
 
 A push to the PR cancels the run for the previous commit. Before opening a PR the same checks can
