@@ -32,6 +32,7 @@ try:
     # Community: a post with a tagged skill, then the timeline, achievements and the public profile.
     nav('#/timeline',2);js("const f=document.querySelector('#compose-form');f.body.value='Clean F4 today, finally. On to the figure-8 chain.';f.skill.value='F4';f.requestSubmit()");time.sleep(2)
     page('timeline','Timeline','#/timeline',wait=2.5)
+    page('achievements','Achievements','#/achievements',wait=2)
     page('profile-public','Public profile','#/u/admin',wait=2.5)
     page('timeline-phone','Timeline, phone','#/timeline',w=420,ht=900,wait=2.5)
     page('map-phone','Skill map, phone','#/maps',w=420,ht=900)

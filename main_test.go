@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -42,5 +43,20 @@ func TestMentions(t *testing.T) {
 	}
 	if n := len(mentions("nobody here")); n != 0 {
 		t.Errorf("expected no mentions, got %d", n)
+	}
+}
+
+func TestValidStats(t *testing.T) {
+	good := []string{`{}`, `{"xp": 120, "level": 3, "streak": 7, "shared": true}`}
+	bad := []string{`[]`, `"x"`, `{"xp": "120"}`, `{"nested": {"a": 1}}`, `{"list": [1]}`}
+	for _, s := range good {
+		if !validStats(json.RawMessage(s)) {
+			t.Errorf("validStats(%s) should pass", s)
+		}
+	}
+	for _, s := range bad {
+		if validStats(json.RawMessage(s)) {
+			t.Errorf("validStats(%s) should fail", s)
+		}
 	}
 }

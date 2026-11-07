@@ -1,4 +1,5 @@
-# Community: profile bio and links, the timeline with likes, comments and mentions, and notifications.
+# Community and gamification: profile bio and links, the timeline with likes, comments and
+# mentions, notifications, and achievements with their milestone post.
 import sys,os
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from h import *
@@ -10,7 +11,7 @@ def refused(*a):
     # True when the server answers a 4xx (the helper raises on it).
     try: api(*a);return False
     except urllib.error.HTTPError as e: return 400<=e.code<500
-def wait(fn,n=20,dt=.5):
+def wait(fn,n=60,dt=.5):  # up to 30 s: a save, the badge sync and the post can be slow on the Pi
     for _ in range(n):
         v=fn()
         if v: return v
@@ -31,20 +32,22 @@ try:
     check('a mention in the bio links to that profile',js("return document.querySelector('.prof-bio a[href=\"#/u/sam\"]')!==null"))
     # Timeline: post, mention, like, comment.
     nav('#/timeline',2)
-    check('the people list has both users',js("return [...document.querySelectorAll('.person b')].map(b=>b.textContent).sort().join()")=='Admin,Sam Spins' and '@' in txt('.person .tiny'))
+    check('the people list has both users, with a level each',js("return [...document.querySelectorAll('.person b')].map(b=>b.textContent).sort().join()")=='Admin,Sam Spins' and 'Level' in txt('.person .tiny'))
     js("const f=document.querySelector('#compose-form');f.body.value='Worked on F7 today. Thanks @sam for the tip!';f.skill.value='F7';f.requestSubmit()");time.sleep(1.5)
     post=wait(lambda: js("return [...document.querySelectorAll('.post')].find(p=>p.textContent.includes('Worked on F7'))?.dataset.post"))
     check('a post appears at once, with the skill tag and the mention linked',bool(post) and js("return document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .chip[href=\"#/prop/nunchaku/F/F7\"]')!==null&&document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .post-body a[href=\"#/u/sam\"]')!==null",post))
     n2=get(sam,'notifications')
     check('the mentioned user is notified',n2['unread']==1 and n2['items'][0]['kind']=='mention',n2)
+    first=get(op,'me')
+    check('the first post unlocks a badge',any(a['key']=='first-post' for a in first['achievements']),[a['key'] for a in first['achievements']])
     api(sam,f'posts/{post}/like',{});api(sam,f'posts/{post}/comments',{'body':'Nice one @admin, keep it up'})
     sp=api(sam,'posts',{'body':'Poi flowers all evening','prop':'poi','skill':'F2'})['posts'][0]['id']
     api(sam,f'posts/{post}/like',{});api(sam,f'posts/{post}/like',{})  # unlike and like again: still one notification
-    mine=get(op,'notifications')
-    kinds=sorted(i['kind'] for i in mine['items'])
-    check('the author is told once about the like and once about the comment, not about their own mention',kinds==['comment','like'] and mine['unread']==2,kinds)
+    # Earlier suites on the same database may already have unlocked badges, so count kinds, not items.
+    mine=get(op,'notifications');kinds=[i['kind'] for i in mine['items']];unread=mine['unread']
+    check('the author is told once about the like, once about the comment and about the badge, not about their own mention',kinds.count('like')==1 and kinds.count('comment')==1 and kinds.count('achievement')>=1 and 'mention' not in kinds and unread==len(kinds),kinds)
     click('[data-act=bell]');time.sleep(1.2)
-    check('the bell shows the unread count and opens a panel with both notifications',txt('.bell-n')=='2' and js("return document.querySelectorAll('.ntf-panel .ntf.unread').length")==2 and 'liked your post' in txt('.ntf-panel'),txt('.ntf-panel')[:120])
+    check('the bell shows the unread count and opens a panel with every notification',txt('.bell-n')==str(unread) and js("return document.querySelectorAll('.ntf-panel .ntf.unread').length")==unread and 'liked your post' in txt('.ntf-panel') and 'Said hello' in txt('.ntf-panel'),(txt('.bell-n'),unread))
     click('[data-act=ntf-read-all]');time.sleep(1)
     check('mark all read clears the badge',js("return !document.querySelector('.bell-n')") and get(op,'notifications')['unread']==0)
     js("document.body.click()");nav('#/practice',1);nav('#/timeline',2.5)
@@ -55,5 +58,23 @@ try:
     js("const f=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .cmt-form');f.body.value='Which flower?';f.requestSubmit()",str(sp));time.sleep(1.5)
     check('a comment from the form shows up under the post',js("return [...document.querySelectorAll('.post[data-post=\"'+arguments[0]+'\"] .cmt-body')].map(c=>c.textContent)",str(sp))==['Which flower?'] and get(sam,'notifications')['items'][0]['kind']=='comment')
     check('only the author or an admin can delete a post',refused(sam,f'posts/{post}',{},'DELETE') and not refused(op,f'posts/{sp}',{},'DELETE'))
+    # Achievements: a session unlocks badges, which post a milestone and show in the bell.
+    nav('#/practice',1.5)
+    js("const f=document.querySelector('#log-form');f.minutes.value='35';f.requestSubmit()");time.sleep(1)
+    ach=wait(lambda: [a['key'] for a in get(op,'me')['achievements'] if a['key']=='sessions-1'])
+    check('logging a session unlocks First steps',ach==['sessions-1'],ach)
+    check('an unlock card is shown',js("return !document.querySelector('#unlock').hidden&&document.querySelector('#unlock').textContent.includes('First steps')"))
+    ms=wait(lambda: [p for p in get(op,'posts')['posts'] if p['kind']=='milestone' and 'sessions-1' in p['data']['achievements']])
+    check('one milestone post is made for the batch',len(ms)==1 and 'first-post' not in ms[0]['data']['achievements'],[p['data'] for p in ms])
+    check('the user is notified of the badge',any(i['kind']=='achievement' and i['text']=='sessions-1' for i in get(op,'notifications')['items']))
+    stats=wait(lambda: get(op,'me')['user'].get('stats') or None)
+    check('level, XP and streak are reported for the profile',stats and stats['streak']==1 and stats['xp']>=45 and stats['level']>=1 and stats['sessions']==1,stats)
+    nav('#/achievements',2)
+    check('the achievements page shows the badge unlocked, the level and a one-day streak',js("return [...document.querySelectorAll('.badge.on b')].map(b=>b.textContent)").count('First steps')==1 and txt('.level-ring b')=='1')
+    check('weekly challenges show progress',js("return document.querySelectorAll('.ch').length")==4 and '1 of 4' in txt('.ch .tiny'))
+    # Plan: quests with XP.
+    nav('#/plan',2)
+    check('the plan shows quests with skill chips and XP on each gate',js("return document.querySelectorAll('.quest').length")==5 and js("return document.querySelectorAll('.quest.on .chip.on').length")==1 and '+150 XP' in txt('.quest .check .chip') and js("return document.querySelectorAll('.quest .qs').length")>20)
+    check('the plan has an XP card, challenges and a focus skill',txt('[data-tour=xp] h2')=='Nunchaku XP' and js("return !!document.querySelector('[data-tour=challenges]')") and js("return !!document.querySelector('[data-tour=focus] .sk-row')"))
 finally:
     done()

@@ -28,11 +28,18 @@ const ICONS = {
   right: 'M9 6l6 6-6 6',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20c1-4 4-5.5 7.5-5.5s6.5 1.5 7.5 5.5',
   shield: 'M12 3l7 3v5.5c0 4.5-3 8-7 9.5-4-1.5-7-5-7-9.5V6z',
+  flame: 'M12 21c-3.5 0-6-2.4-6-5.8 0-2.6 1.6-4.3 2.8-6 .3 1.2.9 2.2 1.9 2.9C10.3 9 10.7 5.8 13 3c.4 3 2.5 4.4 3.8 6.4A7 7 0 0 1 18 15.2C18 18.6 15.5 21 12 21Z',
+  trophy: 'M8 4h8v5a4 4 0 0 1-8 0V4ZM8 6H5v1a3 3 0 0 0 3 3M16 6h3v1a3 3 0 0 1-3 3M12 13v4M9 20h6M10 17h4',
+  medal: 'M12 15a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9ZM9 14l-1.5 6 4.5-2 4.5 2L15 14',
+  bolt: 'M13 3 5 14h6l-1 7 8-11h-6l1-7Z',
   heart: 'M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z',
   bell: 'M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15L6 16ZM10 20a2 2 0 0 0 4 0',
   send: 'M20 4 4 11l8 2 2 8 6-17ZM12 13l8-9',
   comment: 'M4 6h16v10H9l-5 4V6Z',
   image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01',
+  calendar: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+  hands: 'M7 20v-6l-3-4 2-1 3 3V5h2v7M17 20v-6l3-4-2-1-3 3V5h-2v7',
+  note: 'M6 4h9l4 4v12H6zM14 4v5h5M9 13h6M9 16h6',
   users: 'M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM3 20c.8-3.5 3.2-5 6-5s5.2 1.5 6 5M16 11a3 3 0 1 0 0-6M21 20c-.5-2.5-1.8-4-3.5-4.6',
   edit: 'M4 20h4L18 10l-4-4L4 16v4ZM12 8l4 4',
   feed: 'M4 5h16M4 10h16M4 15h10M4 20h7',
@@ -61,6 +68,7 @@ const FLAGS = [
   ['tour', 'Guided tour', 'A step-by-step tour for new users, on first sign-in and the first visit to each section. When off, a short note is shown instead.'],
   ['signups', 'Open sign-ups', 'Let anyone who can open this page create an account. Turn it off once everyone has one.'],
   ['community', 'Community', 'The timeline with posts, likes and comments, public profiles, the people list and the notification bell.'],
+  ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and the Plan as quests.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
 const ui = { graphView: localStorage.getItem('nf-view') || 'graph', draftFocus: [], palIdx: 0, prop: localStorage.getItem('fl-prop') || 'nunchaku', open: (localStorage.getItem('fl-groups') ?? localStorage.getItem('fl-prop') ?? 'nunchaku').split(',').filter(Boolean), users: null };
@@ -111,6 +119,7 @@ async function save() {
     }
     docs[prop] = { rev, state };
     setSync(dirty ? 'saving' : 'ok');
+    if (!dirty && flags.game) syncGame();
   } catch {
     dirty = true; setSync('err');
     clearTimeout(saveTimer); saveTimer = setTimeout(save, 5000);
@@ -130,6 +139,7 @@ async function load() {
   const before = mark();
   await loadSession();
   loaded = true;
+  if (flags.game) syncGame();
   if (flags.community) loadNotifs();
   return mark() !== before;
 }
@@ -269,6 +279,7 @@ function pageDashboard() {
     <div class="card stat"><div class="lbl">Practice streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div>
     <div class="card stat"><div class="lbl">Gates passed</div><div class="val">${gates}<small> / ${PHASES.length}</small></div><div class="foot">${phase ? 'Next: ' + esc(phase.name) : 'Roadmap complete'}</div></div>
   </div>
+  ${flags.game ? `<div style="margin-bottom:16px">${levelCard(true)}</div>` : ''}
   <div class="grid g32" style="margin-bottom:16px">
     <div class="stack">
       <div class="card"><div class="card-h"><h2 class="grow">Practice, last 9 months</h2><a class="small" href="#/practice">View log</a></div>${heatmap(m)}</div>
@@ -481,18 +492,27 @@ function pagePlan() {
   const start = state.settings.trackStart;
   let week = 0;
   if (start) week = Math.floor((parseDay(dayKey()) - parseDay(start)) / (7 * 864e5)) + 1;
+  // Each phase is a quest: its skills, the XP they hold, and the gate that ends it.
   const phases = PHASES.map((p, i) => {
-    const list = p.skills.split(' ').map(id => SK[id]), done = state.gates[p.id];
+    const list = p.skills.split(' ').map(id => SK[id]).filter(Boolean), done = state.gates[p.id];
     const met = p.req.every(needMet), pc = pctOf(list);
-    return `<div class="card phase"><span class="phase-n ${done ? 'done' : p === cur ? 'on' : ''}">${done ? icon('check') : i + 1}</span><div>
-      <div class="row wrap"><h2 class="grow">${esc(p.name)}</h2><span class="tiny">${esc(p.time)} (estimate)</span></div>
-      <div class="row" style="margin:9px 0 11px"><div class="bar grow"><i style="width:${pc}%"></i></div><span class="num small muted">${pc}%</span></div>
-      <label class="check"><input type="checkbox" data-change="gate" data-id="${p.id}" ${done ? 'checked' : ''}><span class="grow">${esc(p.gate)}</span></label>
+    const earned = list.reduce((a, s) => a + variants(s).reduce((b, [k]) => b + XP_SKILL[lv(s.id, k)], 0), 0);
+    const possible = list.reduce((a, s) => a + variants(s).length * XP_SKILL[4], 0);
+    return `<div class="card phase quest ${done ? 'done' : p === cur ? 'on' : ''}"><span class="phase-n ${done ? 'done' : p === cur ? 'on' : ''}">${done ? icon('check') : i + 1}</span><div>
+      <div class="row wrap"><h2 class="grow">${esc(p.name)}</h2>${p === cur && !done ? '<span class="chip on">Current quest</span>' : ''}<span class="tiny">${esc(p.time)} (estimate)</span></div>
+      <div class="row" style="margin:9px 0 11px"><div class="bar grow"><i style="width:${pc}%"></i></div><span class="num small muted">${pc}%</span>${flags.game ? `<span class="chip num" data-tip="Skill XP earned in this phase, of what its skills hold at Performance level">${earned.toLocaleString()} / ${possible.toLocaleString()} XP</span>` : ''}</div>
+      <div class="quest-skills">${list.map(s => `<a class="qs ${best(s.id) >= 2 ? 'ok' : best(s.id) ? 'part' : ''}" href="${skillHref(s.id)}" data-tip="${esc(s.name)}: ${esc(statusLabel(s.id))}">${best(s.id) >= 2 ? icon('check') : ''}${s.id}</a>`).join('')}<span class="tiny num">${cleanCount(list)} of ${list.length} clean</span></div>
+      <label class="check" style="margin-top:10px"><input type="checkbox" data-change="gate" data-id="${p.id}" ${done ? 'checked' : ''}><span class="grow">${esc(p.gate)}</span>${flags.game ? `<span class="chip ${done ? 'ok' : ''} num">${done ? icon('check') : '+'}${XP.gate} XP</span>` : ''}</label>
       <div class="chips" style="margin-top:9px">${p.req.map(reqChip).join('')}${met && !done ? '<span class="chip ok">Skills ready. Test the gate.</span>' : ''}</div></div></div>`;
   }).join('');
   const weeks = WEEKS.map(w => `<div class="wk ${week >= w.from && week <= w.to ? 'now' : ''}"><b class="small">${esc(w.label)}</b><div><div class="small" style="font-weight:540">${esc(w.focus)}</div><div class="tiny">${esc(w.result)}</div></div>
-    <label class="check"><input type="checkbox" data-change="gate" data-id="${w.id}" ${state.gates[w.id] ? 'checked' : ''}><span>${esc(w.gate)}</span></label></div>`).join('');
-  return `<div class="page-h"><div><h1>Plan</h1><p>${PHASES.length} long-term phases for ${esc(curProp().name.toLowerCase())}${WEEKS.length ? ', plus a 12-week track for turning existing skills into one routine' : ''}. Time estimates are rough.</p></div></div>
+    <label class="check"><input type="checkbox" data-change="gate" data-id="${w.id}" ${state.gates[w.id] ? 'checked' : ''}><span class="grow">${esc(w.gate)}</span>${flags.game ? `<span class="chip ${state.gates[w.id] ? 'ok' : ''} num">${state.gates[w.id] ? icon('check') : '+'}${XP.week}</span>` : ''}</label></div>`).join('');
+  const focus = nextUp(1)[0];
+  const focusCard = `<div class="card" data-tour="focus"><div class="card-h"><h2 class="grow">Today\u2019s focus</h2><span class="sub">Ready to learn</span></div>
+    ${focus ? `<a class="sk-row" style="padding-left:0" href="${skillHref(focus.id)}"><span class="tag">${focus.id}</span><span class="grow"><b style="font-weight:560">${esc(focus.name)}</b><br><span class="tiny">${esc(focus.desc)}</span></span>${icon('right')}</a>
+    ${flags.details && focus.drill ? `<p class="small muted" style="margin-top:8px"><b>Drill:</b> ${esc(focus.drill)}</p>` : ''}<p class="tiny" style="margin-top:8px">Clean it for +${XP_SKILL[2]} XP per hand or direction, and it unlocks what depends on it.</p>` : '<div class="empty small">Nothing new is unlocked. Bring a skill to Clean first.</div>'}</div>`;
+  return `<div class="page-h"><div><h1>Plan</h1><p>${PHASES.length} ${flags.game ? 'quests' : 'long-term phases'} for ${esc(curProp().name.toLowerCase())}${WEEKS.length ? ', plus a 12-week track for turning existing skills into one routine' : ''}.${flags.game ? ` Each gate passed is ${XP.gate} XP.` : ''} Time estimates are rough.</p></div></div>
+  ${flags.game ? `<div class="grid g3" style="margin-bottom:16px">${propXPCard()}${challengesCard()}${focusCard}</div>` : ''}
   <div class="stack" style="margin-bottom:26px">${phases}</div>
   ${!WEEKS.length ? '' : `<div class="card" data-tour="track"><div class="card-h"><h2 class="grow">12-week contest track</h2>${start ? `<span class="chip">${week > 12 ? 'Track finished' : week < 1 ? 'Not started' : 'Week ' + week}</span>` : ''}</div>
     <div class="grid g2" style="margin-bottom:12px">
@@ -501,6 +521,13 @@ function pagePlan() {
     </div>
     <p class="notice warn" style="margin-bottom:10px">Check the current rules for your event before shaping a routine. WNA freestyle (January 2026) is 90 to 180 seconds. The Golden Combo figure of 25 to 35 seconds is unconfirmed.</p>
     ${weeks}<p class="tiny" style="margin-top:10px">Phases are adjustable, not a promise of mastery in twelve weeks. Stay in a phase until you pass its gate.</p></div>`}`;
+}
+function propXPCard() {
+  const x = propXP(), all = xpAll(), L = levelInfo(all.total);
+  return `<div class="card" data-tour="xp"><div class="card-h"><h2 class="grow">${esc(curProp().name)} XP</h2><a class="small" href="#/achievements">Level ${L.level} · ${L.title}</a></div>
+    <div class="val num" style="font-size:27px;font-weight:640;letter-spacing:-.02em">${x.total.toLocaleString()}<small style="font-size:13px;font-weight:500;color:var(--ink-3)"> of ${all.total.toLocaleString()} XP overall</small></div>
+    <div class="xp-split num">${[['Skills', x.skills], ['Practice', x.practice], ['Gates', x.gates], ['Combos', x.combos]].map(([n, v]) => `<span><b>${v.toLocaleString()}</b><span class="tiny">${n}</span></span>`).join('')}</div>
+    <div class="bar" style="margin-top:10px"><i style="width:${L.pct}%"></i></div><div class="tiny num" style="margin-top:4px">${L.next.toLocaleString()} XP to level ${L.level + 1}</div></div>`;
 }
 
 function pageSettings() {
@@ -545,6 +572,7 @@ function renderSide(route) {
     ${a('#/practice', 'log', 'Practice', curId === 'practice')}
     ${a('#/combos', 'link', 'Combos', curId === 'combos')}
     ${a('#/plan', 'flag', 'Plan', curId === 'plan')}
+    ${me && flags.game ? a('#/achievements', 'trophy', 'Achievements', curId === 'achievements') : ''}
     <div class="nav-h">Props</div>
     ${props}
     <div class="side-foot">${me?.role === 'admin' ? a('#/admin', 'shield', 'Admin', curId === 'admin') : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}
@@ -560,18 +588,20 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
   if (p === 'branch') return pageBranch(a, b);
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
-  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u'].includes(p) && !me) return pageNeedAccount(title);
+  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements'].includes(p) && !me) return pageNeedAccount(title);
   if (p === 'practice') return pagePractice();
   if (['timeline', 'post', 'u'].includes(p) && !flags.community) return pageOff('Community');
+  if (p === 'achievements' && !flags.game) return pageOff('Gamification');
   if (p === 'timeline' || p === 'post') return pageTimeline(p === 'post' ? a : '');
   if (p === 'u') return pageUser(a);
+  if (p === 'achievements') return pageAchievements();
   if (p === 'combos') return pageCombos();
   if (p === 'plan') return pagePlan();
   if (p === 'profile') return pageProfile();
@@ -627,7 +657,7 @@ function toast(msg) {
 }
 
 /* ---------- command palette ---------- */
-const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ['Profile', '#/profile'], ['Settings', '#/settings'],
+const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ['Settings', '#/settings'],
   ...myProps().filter(p => p.id !== ui.prop).map(p => [p.name + ' map', `#/prop/${p.id}`]), ...BRANCHES.map(b => [`${curProp().name}: ${b.name}`, `#/prop/${CID}/${b.k}`])];
 function palItems(q) {
   q = q.trim().toLowerCase();

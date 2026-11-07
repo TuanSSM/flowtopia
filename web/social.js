@@ -85,7 +85,14 @@ function postCard(p) {
   const u = social.users[p.userId] || {}, mine = p.userId === me.id || me.role === 'admin';
   const cat = CATALOGS[p.prop], skill = p.skill && cat ? cat.skills.find(s => s.id === p.skill) : null;
   const chips = (p.prop ? `<span class="chip">${esc(propById(p.prop)?.name || p.prop)}</span>` : '') + (skill ? `<a class="chip" href="#/prop/${p.prop}/${skill.b}/${skill.id}" data-tip="${esc(skill.name)}">${skill.id}</a>` : '');
-  const body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}`;
+  let body;
+  if (p.kind === 'milestone') {
+    const keys = p.data?.achievements || [];
+    body = `<div class="ms"><div class="row" style="gap:10px"><span class="badge-ic on">${icon('trophy')}</span><b>Unlocked ${keys.length === 1 ? 'an achievement' : keys.length + ' achievements'}</b></div>
+      <div class="chips" style="margin-top:10px">${keys.map(k => { const b = badgeByKey(k); return `<span class="chip ok" data-tip="${esc(b?.desc || '')}">${icon(b?.icon || 'medal')}${esc(b?.name || k)}</span>`; }).join('')}</div></div>`;
+  } else {
+    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}`;
+  }
   const comments = p.comments.map(c => {
     const cu = social.users[c.userId] || {}, canDel = c.userId === me.id || p.userId === me.id || me.role === 'admin';
     return `<div class="cmt">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row" style="gap:6px"><a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a><span class="tiny">${ago(c.created)}</span><span class="grow"></span>${canDel ? `<button class="icon-btn xs" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}" aria-label="Delete comment">${icon('x')}</button>` : ''}</span><span class="small cmt-body">${richText(c.body)}</span></div></div>`;
@@ -109,14 +116,14 @@ function composer() {
 function peopleCard() {
   if (!social.people) { loadPeople(); return `<div class="card"><div class="card-h"><h2>People</h2></div><div class="empty small">Loading…</div></div>`; }
   const list = social.people.slice(0, 12);
-  return `<div class="card people" data-tour="people"><div class="card-h"><h2 class="grow">People</h2><span class="sub">${social.people.length} here</span></div>
-    ${list.map(u => `<a class="person ${u.id === me.id ? 'me' : ''}" href="#/u/${esc(u.username)}">${avatarHTML(u)}<span class="grow" style="display:grid"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a>`).join('')}</div>`;
+  return `<div class="card people" data-tour="people"><div class="card-h"><h2 class="grow">People</h2><span class="sub">Most XP first</span></div>
+    ${list.map((u, i) => { const s = u.stats || {}; return `<a class="person ${u.id === me.id ? 'me' : ''}" href="#/u/${esc(u.username)}"><span class="rank num">${i + 1}</span>${avatarHTML(u)}<span class="grow" style="display:grid"><b>${esc(u.displayName || u.username)}</b><span class="tiny">Level ${s.level || 1}${s.streak ? ` · ${s.streak}-day streak` : ''}</span></span><span class="tiny num">${(s.xp || 0).toLocaleString()} XP</span></a>`; }).join('')}</div>`;
 }
 function pageTimeline(single) {
   const key = single ? 'post:' + single : 'all';
-  return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${single ? '<a href="#/timeline">Back to the timeline</a>' : 'What everyone here is working on.'}</p></div></div>
+  return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${single ? '<a href="#/timeline">Back to the timeline</a>' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.'}</p></div></div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, single ? 'That post is gone.' : 'Nothing here yet. Share what you worked on today.')}</div>
-    <div class="stack tl-side">${peopleCard()}</div></div>`;
+    <div class="stack tl-side">${flags.game ? levelCard(true) : ''}${peopleCard()}</div></div>`;
 }
 
 /* ---------- public profile ---------- */
@@ -126,15 +133,17 @@ function pageUser(name) {
   if (!pr) { loadProfile(name); return '<div class="empty small">Loading…</div>'; }
   if (pr.loading) return '<div class="empty small">Loading…</div>';
   if (pr.error) return `<div class="empty">${esc(pr.error)} <a href="#/timeline">Back to the timeline</a>.</div>`;
-  const u = pr.user, mine = u.username === me.username;
+  const u = pr.user, s = u.stats || {}, L = Math.max(1, Math.floor(Number(s.level) || 1)), title = levelTitle(L), mine = u.username === me.username;
   const links = Object.keys(LINK_KINDS).filter(k => (u.links || {})[k]).map(k => `<a class="btn sm social-${k}" href="${esc(linkURL(k, u.links[k]))}" target="_blank" rel="noopener noreferrer">${icon(k)}${esc(LINK_KINDS[k].name)}</a>`).join('');
+  const keys = (pr.achievements || []).slice().reverse();
   return `<div class="card prof-head"><div class="row wrap" style="gap:18px;align-items:flex-start">${avatarHTML(u, 'big')}
       <div class="grow" style="min-width:220px"><h1>${esc(u.displayName || u.username)}</h1><p class="muted">@${esc(u.username)}${u.role === 'admin' ? ' · Admin' : ''} · joined ${esc(new Date(u.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p>
         ${u.bio ? `<p class="prof-bio">${richText(u.bio)}</p>` : mine ? '<p class="tiny" style="margin-top:6px">Add a bio and your social links in your profile settings.</p>' : ''}
         <div class="row wrap" style="gap:6px;margin-top:12px">${(u.props || []).map(id => `<span class="chip">${esc(propById(id)?.name || id)}</span>`).join('')}${links}</div></div>
       ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}</div>
-</div>
-  <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2><span class="sub num">${pr.posts} ${pr.posts === 1 ? 'post' : 'posts'} · ${pr.likes} ${pr.likes === 1 ? 'like' : 'likes'} received</span></div>${feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.')}</div></div>`;
+    ${flags.game ? `<div class="grid g4 prof-stats">${[['Level', `${L}<small> ${title}</small>`], ['XP', (s.xp || 0).toLocaleString()], ['Streak', `${s.streak || 0}<small> ${s.streak === 1 ? 'day' : 'days'} · best ${s.best || 0}</small>`], ['Clean skills', s.clean || 0]].map(([n, v]) => `<div class="stat"><div class="lbl">${n}</div><div class="val num">${v}</div></div>`).join('')}</div>` : ''}</div>
+  <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2><span class="sub num">${pr.posts} ${pr.posts === 1 ? 'post' : 'posts'} · ${pr.likes} ${pr.likes === 1 ? 'like' : 'likes'} received</span></div>${feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.')}</div>
+    ${!flags.game ? '' : `<div class="card"><div class="card-h"><h2 class="grow">Badges</h2><span class="sub num">${keys.length}</span></div>${keys.length ? `<div class="badge-grid one">${keys.map(a => { const b = badgeByKey(a.key); return `<div class="badge on" data-tip="${esc(b?.desc || '')}"><span class="badge-ic on">${icon(b?.icon || 'medal')}</span><span class="grow"><b>${esc(b?.name || a.key)}</b><span class="tiny">${esc(new Date(a.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</span></span></div>`; }).join('')}</div>` : '<div class="empty small">No badges yet.</div>'}</div>`}</div>`;
 }
 
 /* ---------- notifications ---------- */
@@ -151,15 +160,16 @@ function notifText(n) {
     case 'like': return `<b>${who}</b> liked your post`;
     case 'comment': return `<b>${who}</b> commented on your post`;
     case 'mention': return `<b>${who}</b> mentioned you`;
+    case 'achievement': { const b = badgeByKey(n.text); return `Achievement unlocked: <b>${esc(b?.name || n.text)}</b>`; }
     default: return esc(n.text);
   }
 }
 function bellHTML() {
   if (!me || !me.onboarded || !flags.community) return '';
   const n = social.unread;
-  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
+  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
   const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
-    ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments and mentions show up here.</div>'}</div>`;
+    ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, mentions and achievements show up here.</div>'}</div>`;
   return `<button class="icon-btn bell ${n ? 'has' : ''}" data-act="bell" aria-label="Notifications${n ? `, ${n} unread` : ''}" aria-expanded="${social.nOpen}">${icon('bell')}${n ? `<span class="bell-n num">${n > 9 ? '9+' : n}</span>` : ''}</button>${panel}`;
 }
 function renderBell() { const el = $('#bell'); if (el) el.innerHTML = bellHTML(); }
@@ -219,7 +229,7 @@ document.addEventListener('submit', async e => {
     social.draftBody = ''; social.draftImg = '';
     Object.assign(social.users, r.data.users);
     if (social.key === 'all') social.posts.unshift(r.data.posts[0]); else social.stale = true;
-    render(); toast('Posted.');
+    render(); grant(['first-post']); toast('Posted.');
   } else if (f.classList.contains('cmt-form')) {
     e.preventDefault();
     const id = Number(f.dataset.id), body = f.body.value.trim();
