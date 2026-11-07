@@ -195,7 +195,7 @@ jobs:
           go-version: stable
       - name: Pillow
         # run.sh starts Python with -I, which ignores user site-packages, so install it system-wide.
-        run: sudo apt-get install -y -qq --no-install-recommends python3-pil >/dev/null
+        run: sudo python3 -m pip install --quiet --break-system-packages pillow
       - name: Take the screenshots
         run: test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
