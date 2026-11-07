@@ -4,7 +4,13 @@
 #   lint         gofmt, go vet, staticcheck; JS syntax and catalog format; Python syntax; workflow lint
 #   unit         go build + go test; the physics suite over every demo clip; bundles reproducible
 #   integration  real server against Postgres, driven through headless Firefox (test/browser)
+#   screenshots  pictures of the pages and demos, pushed to the ci-screenshots branch
+#   docs         Markdown links and the front matter of the Claude Code files
 #   pr_summary   one sticky comment on the PR with the results and the size of the change
+#
+# A pull request that touches no code (Markdown, docs/, .claude/, .gitignore, LICENSE) runs only
+# the docs job: `changes` decides, the code jobs are skipped, and process_pr_result accepts the
+# skips in that case only, so such a PR can still auto-merge on the required check.
 name: process_pr
 
 on:
@@ -29,10 +35,46 @@ env:
   NODE_VERSION: 24
 
 jobs:
+  # Does the PR change anything but documentation? Workflow files count as code.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      files: ${{ steps.classify.outputs.files }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: classify
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then echo "code=true" >> "$GITHUB_OUTPUT"; echo "files=0" >> "$GITHUB_OUTPUT"; echo "not a pull request: everything runs"; exit 0; fi
+          changed=$(git diff --name-only "$BASE"...HEAD)
+          # Documentation: anything matching every pattern here is not code.
+          code=$(printf '%s\n' "$changed" | grep -vE '(^|/)[^/]+\.md$|^docs/|^\.claude/|^\.gitignore$|^\.editorconfig$|^LICENSE$' || true)
+          printf 'changed files:\n%s\n' "$changed"
+          if [ -n "$code" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; printf 'code files:\n%s\n' "$code"; else echo "code=false" >> "$GITHUB_OUTPUT"; echo "documentation only: the code jobs are skipped"; fi
+          echo "files=$(printf '%s\n' "$changed" | grep -c .)" >> "$GITHUB_OUTPUT"
+
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v5
+      - name: Markdown links and Claude Code files
+        run: test/docs.sh
+
   lint:
     name: lint
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -69,6 +111,8 @@ jobs:
     name: unit tests
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     outputs:
       physics: ${{ steps.physics.outputs.line }}
     steps:
@@ -115,6 +159,8 @@ jobs:
     name: integration tests
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -173,6 +219,8 @@ jobs:
     name: screenshots
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     permissions:
       contents: write
     services:
@@ -243,7 +291,7 @@ jobs:
     name: PR summary
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [lint, unit, integration, screenshots]
+    needs: [changes, docs, lint, unit, integration, screenshots]
     if: always() && github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -269,10 +317,13 @@ jobs:
         env:
           BASE: ${{ needs.screenshots.outputs.base }}
           RESULT: ${{ needs.screenshots.result }}
+          CODE: ${{ needs.changes.outputs.code }}
         run: |
           {
             echo 'md<<EOF'
-            if [ -n "$BASE" ] && [ -f shots/index.json ]; then
+            if [ "$CODE" = false ]; then
+              echo '_No screenshots: nothing that is drawn changed._'
+            elif [ -n "$BASE" ] && [ -f shots/index.json ]; then
               echo '### Screenshots'
               echo
               echo 'Taken in headless Firefox on this commit, with the 3D figure drawn in software. Click a name to open it.'
@@ -290,6 +341,8 @@ jobs:
         env:
           SHOTS_MD: ${{ steps.shots.outputs.md }}
           SCREENS: ${{ needs.screenshots.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          DOCS: ${{ needs.docs.result }}
           LINT: ${{ needs.lint.result }}
           UNIT: ${{ needs.unit.result }}
           INTEG: ${{ needs.integration.result }}
@@ -301,13 +354,15 @@ jobs:
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          icon() { case "$1" in success) echo "✅ passed";; failure) echo "❌ failed";; cancelled) echo "⚪ cancelled";; *) echo "⏭️ skipped";; esac; }
+          icon() { case "$1" in success) echo "✅ passed";; failure) echo "❌ failed";; cancelled) echo "⚪ cancelled";; skipped) [ "$CODE" = false ] && echo "➖ not needed" || echo "⏭️ skipped";; *) echo "⏭️ skipped";; esac; }
           {
             echo '<!-- process_pr summary -->'
             echo "## process_pr · \`${SHA:0:7}\`"
             echo
+            [ "$CODE" = false ] && echo '_Documentation only: no code changed, so the lint, test and screenshot jobs were not needed._' && echo
             echo '| Job | Result | Detail |'
             echo '| --- | --- | --- |'
+            echo "| docs | $(icon "$DOCS") | Markdown links, Claude Code front matter |"
             echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
             echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a} |"
@@ -348,15 +403,21 @@ jobs:
     name: process_pr_result
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    needs: [lint, unit, integration, screenshots, pr_summary]
+    needs: [changes, docs, lint, unit, integration, screenshots, pr_summary]
     if: always()
     steps:
       - name: Check every job passed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          CODE: ${{ needs.changes.outputs.code }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          # pr_summary is informational and does not run on workflow_dispatch; everything else must pass.
-          bad=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.key != "pr_summary") | select(.value.result != "success") | .key')
+          # pr_summary is informational and does not run on workflow_dispatch. The code jobs may be
+          # skipped only when `changes` found no code; `changes` and `docs` must always pass.
+          bad=$(echo "$RESULTS" | jq -r --arg code "$CODE" 'to_entries[]
+            | select(.key != "pr_summary")
+            | select(.value.result != "success")
+            | select(.value.result != "skipped" or $code != "false" or (.key == "changes" or .key == "docs"))
+            | .key')
           if [ -n "$bad" ]; then echo "::error::failed or skipped: $bad"; exit 1; fi
-          echo "all checks passed"
+          [ "$CODE" = false ] && echo "documentation only: docs passed, code jobs not needed" || echo "all checks passed"
