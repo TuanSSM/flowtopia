@@ -82,8 +82,9 @@ user reports for their profile and the people list (`social.go`).
   level: reaching level n takes 50 * (n - 1) * n XP, with titles from Beginner to Legend.
 - **Streak.** Consecutive days with a logged session on any prop; the dashboard, Achievements page and
   bell say when today's session is still missing. **Share** renders a transparent PNG overlay
-  (story 1080 by 1920 or square 1080) with the flame, the count, the week and the user's name, to
-  lay over one's own photo or video in Instagram, TikTok or any other app; it can be downloaded,
+  (story 1080 by 1920 or square 1080) with the flame, the count, the week and the user's name, in one
+  of five templates (classic, minimal, card for busy photos, bold, week) placed at the top, middle or
+  bottom, to lay over one's own photo or video in Instagram, TikTok or any other app; it can be downloaded,
   shared through the Web Share API where the browser offers it, or posted to the timeline with a
   background.
 - **Weekly challenges.** Monday to Sunday, across props: practise on 4 days, log 120 minutes, raise

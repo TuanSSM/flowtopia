@@ -281,8 +281,26 @@ function drawFlame(c, x, y, s) {
   const inner = new Path2D('M12 20c-1.9 0-3.3-1.3-3.3-3.2 0-1.5 1-2.6 1.7-3.6.3.8.8 1.3 1.3 1.6.1-1.6.6-2.9 1.6-4 .3 1.6 1.4 2.5 2 3.6.4.7.6 1.5.6 2.4 0 1.9-1.6 3.2-3.9 3.2Z');
   c.fillStyle = '#fff3c4'; c.fill(inner); c.restore();
 }
+// Templates for the overlay, and where on the picture the block goes. The choice is kept in
+// this browser.
+const SHARE_TEMPLATES = [
+  ['classic', 'Classic', 'Flame, count, the week and your name'],
+  ['minimal', 'Minimal', 'Flame and count only, small enough for a corner'],
+  ['card', 'Card', 'On a dark panel, for busy photos'],
+  ['bold', 'Bold', 'One huge number'],
+  ['week', 'Week', 'The seven days, large, with the count under them'],
+];
+const SHARE_PLACES = [['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']];
+const share = Object.assign({ fmt: 'story', tpl: 'classic', place: 'bottom' }, (() => { try { return JSON.parse(localStorage.getItem('fl-share') || '{}'); } catch { return {}; } })());
+const saveShare = () => localStorage.setItem('fl-share', JSON.stringify(share));
+function roundRect(x, l, t, w, h, r) {
+  x.beginPath();
+  if (x.roundRect) { x.roundRect(l, t, w, h, r); return; }
+  x.moveTo(l + r, t); x.arcTo(l + w, t, l + w, t + h, r); x.arcTo(l + w, t + h, l, t + h, r); x.arcTo(l, t + h, l, t, r); x.arcTo(l, t, l + w, t, r); x.closePath();
+}
 function streakCanvas(opts = {}) {
   const st = streakInfo(), story = opts.format !== 'square', W = 1080, H = story ? 1920 : 1080;
+  const tpl = opts.template || 'classic', place = opts.place || 'bottom';
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const x = c.getContext('2d');
   if (opts.bg) {
@@ -291,48 +309,101 @@ function streakCanvas(opts = {}) {
     x.fillStyle = 'rgba(255,255,255,.04)';
     for (let i = 0; i < 40; i++) { x.beginPath(); x.arc((i * 263) % W, (i * 571) % H, 40 + (i * 37) % 90, 0, 7); x.fill(); }
   }
-  // The block sits in the lower part of a story, leaving room for a face above it.
-  const cy = story ? 1250 : 540, font = 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-  const text = (t, y, size, weight = 600, color = '#fff', spacing = 0) => {
+  const font = 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const text = (t, cx, y, size, weight = 600, color = '#fff', spacing = 0) => {
     x.font = `${weight} ${size}px ${font}`; x.textAlign = 'center'; x.textBaseline = 'middle';
     if ('letterSpacing' in x) x.letterSpacing = spacing + 'px';
     x.shadowColor = 'rgba(0,0,0,.6)'; x.shadowBlur = size / 5; x.shadowOffsetY = size / 30;
-    x.lineWidth = Math.max(2, size / 22); x.strokeStyle = 'rgba(0,0,0,.35)'; x.strokeText(t, W / 2, y);
-    x.fillStyle = color; x.fillText(t, W / 2, y);
+    x.lineWidth = Math.max(2, size / 22); x.strokeStyle = 'rgba(0,0,0,.35)'; x.lineJoin = 'round'; x.strokeText(t, cx, y);
+    x.fillStyle = color; x.fillText(t, cx, y);
     x.shadowBlur = 0; x.shadowOffsetY = 0;
+    if ('letterSpacing' in x) x.letterSpacing = '0px';
   };
-  x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 30;
-  drawFlame(x, W / 2, cy - 330, 300);
-  x.shadowBlur = 0;
-  text(String(st.current), cy - 40, 320, 800, '#fff', -10);
-  text(st.current === 1 ? 'DAY STREAK' : 'DAY STREAK', cy + 160, 54, 700, '#ffd9a8', 10);
-  // The week, Monday to Sunday.
-  const names = ['M', 'T', 'W', 'T', 'F', 'S', 'S'], gap = 92, x0 = W / 2 - 3 * gap, wy = cy + 290;
-  st.week.forEach((d, i) => {
-    const px = x0 + i * gap;
-    x.beginPath(); x.arc(px, wy, 30, 0, 7);
+  const width = (t, size, weight = 600) => { x.font = `${weight} ${size}px ${font}`; return x.measureText(t).width; };
+  // The week, Monday to Sunday: filled circles for practice days, a tick inside, the day's letter under.
+  const names = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  const dots = (cx, y, r, gap) => st.week.forEach((d, i) => {
+    const px = cx + (i - 3) * gap;
+    x.beginPath(); x.arc(px, y, r, 0, 7);
     x.fillStyle = d.on ? '#ff8a3d' : 'rgba(255,255,255,.22)'; x.fill();
-    x.lineWidth = 4; x.strokeStyle = d.key === dayKey() ? '#fff' : 'rgba(255,255,255,.55)'; x.stroke();
-    if (d.on) { x.beginPath(); x.moveTo(px - 12, wy); x.lineTo(px - 3, wy + 10); x.lineTo(px + 13, wy - 10); x.lineWidth = 6; x.strokeStyle = '#fff'; x.lineCap = x.lineJoin = 'round'; x.stroke(); }
-    text(names[i], wy + 60, 26, 600, 'rgba(255,255,255,.85)');
+    x.lineWidth = r / 7; x.strokeStyle = d.key === dayKey() ? '#fff' : 'rgba(255,255,255,.55)'; x.stroke();
+    if (d.on) { x.beginPath(); x.moveTo(px - r * .4, y); x.lineTo(px - r * .1, y + r * .33); x.lineTo(px + r * .43, y - r * .33); x.lineWidth = r / 5; x.strokeStyle = '#fff'; x.lineCap = x.lineJoin = 'round'; x.stroke(); }
+    text(names[i], px, y + r * 2, r * .85, 600, 'rgba(255,255,255,.85)');
   });
-  const props = myProps().map(p => p.name).join(' · ');
-  text(`@${me.username}${props ? ' · ' + props : ''}`, cy + 450, 40, 600, '#fff');
-  const L = levelInfo(xpAll().total);
-  text(`Level ${L.level} ${L.title} · ${st.best} day best · flowa`, cy + 515, 30, 500, 'rgba(255,255,255,.8)');
+  const L = levelInfo(xpAll().total), props = myProps().map(p => p.name).join(' · ');
+  const who = `@${me.username}${props ? ' · ' + props : ''}`, n = String(st.current), unit = 'DAY STREAK';
+  // The block's centre for its height, kept inside the picture.
+  const cyFor = h => Math.max(h / 2 + 24, Math.min(H - h / 2 - 24, { top: h / 2 + 150, middle: H / 2, bottom: H - h / 2 - 150 }[place] ?? H / 2));
+  const cx = W / 2;
+  switch (tpl) {
+    case 'minimal': {
+      const cy = cyFor(340), fw = 200, nw = width(n, 230, 800), total = fw + 16 + nw, x0 = cx - total / 2;
+      x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 24; drawFlame(x, x0 + fw / 2, cy - 40, fw); x.shadowBlur = 0;
+      text(n, x0 + fw + 16 + nw / 2, cy - 40, 230, 800, '#fff', -6);
+      text(unit, cx, cy + 105, 40, 700, '#ffd9a8', 8);
+      text(`@${me.username}`, cx, cy + 160, 28, 500, 'rgba(255,255,255,.85)');
+      break;
+    }
+    case 'card': {
+      const w = 880, h = 780, cy = cyFor(h), top = cy - h / 2;
+      x.save(); x.shadowColor = 'rgba(0,0,0,.4)'; x.shadowBlur = 48; x.fillStyle = 'rgba(12,16,28,.62)'; roundRect(x, cx - w / 2, top, w, h, 48); x.fill(); x.restore();
+      x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,.18)'; roundRect(x, cx - w / 2, top, w, h, 48); x.stroke();
+      drawFlame(x, cx, top + 165, 190);
+      text(n, cx, top + 365, 220, 800, '#fff', -6);
+      text(unit, cx, top + 478, 40, 700, '#ffd9a8', 8);
+      dots(cx, top + 585, 26, 82);
+      text(who, cx, top + 712, 30, 600);
+      break;
+    }
+    case 'bold': {
+      const cy = cyFor(820);
+      x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 24; drawFlame(x, cx, cy - 320, 170); x.shadowBlur = 0;
+      x.save(); x.font = `900 500px ${font}`; x.textAlign = 'center'; x.textBaseline = 'middle';
+      if ('letterSpacing' in x) x.letterSpacing = '-22px';
+      x.lineJoin = 'round'; x.lineWidth = 26; x.strokeStyle = 'rgba(0,0,0,.45)'; x.strokeText(n, cx, cy - 30);
+      const g = x.createLinearGradient(0, cy - 260, 0, cy + 200); g.addColorStop(0, '#fff2c2'); g.addColorStop(.5, '#ffb347'); g.addColorStop(1, '#ff5f3d');
+      x.fillStyle = g; x.fillText(n, cx, cy - 30); x.restore();
+      const pw = width(unit, 44, 800) + 8 * unit.length + 90;
+      x.fillStyle = '#ff6a3d'; roundRect(x, cx - pw / 2, cy + 222, pw, 78, 39); x.fill();
+      text(unit, cx, cy + 261, 44, 800, '#fff', 8);
+      text(who, cx, cy + 355, 30, 600, 'rgba(255,255,255,.9)');
+      break;
+    }
+    case 'week': {
+      const cy = cyFor(660), done = st.week.filter(d => d.on).length;
+      text('THIS WEEK', cx, cy - 270, 44, 700, '#ffd9a8', 10);
+      dots(cx, cy - 125, 52, 138);
+      text(`${done} of 7 ${done === 1 ? 'day' : 'days'}`, cx, cy + 80, 64, 800);
+      const lw = width(`${n}-day streak`, 44), fw = 92, x0 = cx - (fw + 14 + lw) / 2;
+      drawFlame(x, x0 + fw / 2, cy + 185, fw); text(`${n}-day streak`, x0 + fw + 14 + lw / 2, cy + 185, 44, 600);
+      text(who, cx, cy + 275, 28, 500, 'rgba(255,255,255,.85)');
+      break;
+    }
+    default: {
+      const cy = cyFor(1010) - 25;
+      x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 30; drawFlame(x, cx, cy - 330, 300); x.shadowBlur = 0;
+      text(n, cx, cy - 40, 320, 800, '#fff', -10);
+      text(unit, cx, cy + 160, 54, 700, '#ffd9a8', 10);
+      dots(cx, cy + 290, 30, 92);
+      text(who, cx, cy + 450, 40, 600, '#fff');
+      text(`Level ${L.level} ${L.title} · ${st.best} day best · flowa`, cx, cy + 515, 30, 500, 'rgba(255,255,255,.8)');
+    }
+  }
   return c;
 }
 const canvasBlob = (c, type = 'image/png', q) => new Promise(ok => c.toBlob(ok, type, q));
-let shareFmt = 'story';
+const shareOpts = extra => ({ format: share.fmt, template: share.tpl, place: share.place, ...extra });
 function openShare() {
-  const st = streakInfo(), el = $('#modal');
+  const st = streakInfo(), el = $('#modal'), story = share.fmt === 'story';
   el.hidden = false;
   el.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="share-t">
     <div class="row"><h2 id="share-t" class="grow">Share your streak</h2><button class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
     <p class="small muted" style="margin-top:4px">A transparent PNG to lay over your own photo or video, for Instagram, TikTok or anywhere else.</p>
-    <div class="share-body"><div class="share-prev ${shareFmt}"><canvas id="share-cv" aria-label="Streak overlay preview"></canvas></div>
+    <div class="share-body"><div class="share-prev ${share.fmt}"><canvas id="share-cv" aria-label="Streak overlay preview"></canvas></div>
       <div class="stack" style="gap:10px">
-        <div class="seg" role="group" aria-label="Format" style="width:max-content"><button class="${shareFmt === 'story' ? 'on' : ''}" data-act="share-fmt" data-v="story">Story 9:16</button><button class="${shareFmt === 'square' ? 'on' : ''}" data-act="share-fmt" data-v="square">Square</button></div>
+        <div class="tpl-row" role="radiogroup" aria-label="Template">${SHARE_TEMPLATES.map(([k, n, d]) => `<button class="tpl ${share.tpl === k ? 'on' : ''}" data-act="share-tpl" data-v="${k}" role="radio" aria-checked="${share.tpl === k}" data-tip="${esc(d)}"><canvas data-tpl="${k}" width="60" height="${story ? 106 : 60}" aria-hidden="true"></canvas><span>${n}</span></button>`).join('')}</div>
+        <div class="row wrap" style="gap:8px"><div class="seg" role="group" aria-label="Format"><button class="${story ? 'on' : ''}" data-act="share-fmt" data-v="story">Story 9:16</button><button class="${!story ? 'on' : ''}" data-act="share-fmt" data-v="square">Square</button></div>
+          <div class="seg" role="group" aria-label="Position">${SHARE_PLACES.map(([k, n]) => `<button class="${share.place === k ? 'on' : ''}" data-act="share-place" data-v="${k}">${n}</button>`).join('')}</div></div>
         <button class="btn primary" data-act="share-do" data-v="download">${icon('download')}Download PNG overlay</button>
         ${navigator.canShare ? `<button class="btn" data-act="share-do" data-v="share">${icon('share')}Share to an app…</button>` : ''}
         <button class="btn" data-act="share-do" data-v="post">${icon('send')}Post to the Flowa timeline</button>
@@ -344,22 +415,27 @@ function openShare() {
 function drawSharePreview() {
   const cv = $('#share-cv');
   if (!cv) return;
-  const src = streakCanvas({ format: shareFmt });
+  const src = streakCanvas(shareOpts());
   cv.width = src.width / 3; cv.height = src.height / 3;
   cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+  // Thumbnails of every template, on a dark background so they can be told apart.
+  for (const t of document.querySelectorAll('.tpl canvas')) {
+    const s = streakCanvas(shareOpts({ template: t.dataset.tpl, bg: true }));
+    t.getContext('2d').drawImage(s, 0, 0, t.width, t.height);
+  }
 }
 const shareCaption = () => { const st = streakInfo(); return `${st.current}-day practice streak on Flowa. ${myProps().map(p => p.name).join(', ')}. #flowarts #practice`; };
 async function shareStreak(how) {
-  const st = streakInfo(), name = `flowa-streak-${st.current}.png`;
+  const st = streakInfo(), name = `flowa-streak-${st.current}-${share.tpl}.png`;
   if (how === 'copy') { try { await navigator.clipboard.writeText(shareCaption()); toast('Caption copied.'); } catch { toast('Could not copy. The caption is in the note below.'); } return; }
   if (how === 'post') {
-    const c = streakCanvas({ format: 'square', bg: true }), img = c.toDataURL('image/jpeg', 0.82);
+    const c = streakCanvas(shareOpts({ format: 'square', bg: true })), img = c.toDataURL('image/jpeg', 0.82);
     const r = await api('posts', 'POST', { body: shareCaption().replace(/ #\S+/g, ''), image: img });
     if (!r.ok) { toast(r.error); return; }
     closeModal(); grant(['share-streak', 'first-post']); location.hash = '#/timeline'; social.stale = true; render(); toast('Posted to the timeline.');
     return;
   }
-  const blob = await canvasBlob(streakCanvas({ format: shareFmt }));
+  const blob = await canvasBlob(streakCanvas(shareOpts()));
   if (how === 'share') {
     const file = new File([blob], name, { type: 'image/png' });
     if (navigator.canShare?.({ files: [file] })) {
@@ -384,7 +460,9 @@ document.addEventListener('click', e => {
   const d = t.dataset;
   switch (d.act) {
     case 'share-streak': openShare(); break;
-    case 'share-fmt': shareFmt = d.v; openShare(); break;
+    case 'share-fmt': share.fmt = d.v; saveShare(); openShare(); break;
+    case 'share-tpl': share.tpl = d.v; saveShare(); openShare(); break;
+    case 'share-place': share.place = d.v; saveShare(); openShare(); break;
     case 'share-do': shareStreak(d.v); break;
     case 'modal-close': closeModal(); break;
   }
