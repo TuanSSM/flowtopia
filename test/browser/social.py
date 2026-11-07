@@ -43,11 +43,11 @@ try:
     api(sam,f'posts/{post}/like',{});api(sam,f'posts/{post}/comments',{'body':'Nice one @admin, keep it up'})
     sp=api(sam,'posts',{'body':'Poi flowers all evening','prop':'poi','skill':'F2'})['posts'][0]['id']
     api(sam,f'posts/{post}/like',{});api(sam,f'posts/{post}/like',{})  # unlike and like again: still one notification
-    mine=get(op,'notifications')
-    kinds=sorted(i['kind'] for i in mine['items'])
-    check('the author is told once about the like, once about the comment and once about the badge, not about their own mention',kinds==['achievement','comment','like'] and mine['unread']==3,kinds)
+    # Earlier suites on the same database may already have unlocked badges, so count kinds, not items.
+    mine=get(op,'notifications');kinds=[i['kind'] for i in mine['items']];unread=mine['unread']
+    check('the author is told once about the like, once about the comment and about the badge, not about their own mention',kinds.count('like')==1 and kinds.count('comment')==1 and kinds.count('achievement')>=1 and 'mention' not in kinds and unread==len(kinds),kinds)
     click('[data-act=bell]');time.sleep(1.2)
-    check('the bell shows the unread count and opens a panel with the three notifications',txt('.bell-n')=='3' and js("return document.querySelectorAll('.ntf-panel .ntf.unread').length")==3 and 'liked your post' in txt('.ntf-panel') and 'Said hello' in txt('.ntf-panel'),txt('.ntf-panel')[:120])
+    check('the bell shows the unread count and opens a panel with every notification',txt('.bell-n')==str(unread) and js("return document.querySelectorAll('.ntf-panel .ntf.unread').length")==unread and 'liked your post' in txt('.ntf-panel') and 'Said hello' in txt('.ntf-panel'),(txt('.bell-n'),unread))
     click('[data-act=ntf-read-all]');time.sleep(1)
     check('mark all read clears the badge',js("return !document.querySelector('.bell-n')") and get(op,'notifications')['unread']==0)
     js("document.body.click()");nav('#/practice',1);nav('#/timeline',2.5)
@@ -64,8 +64,8 @@ try:
     ach=wait(lambda: [a['key'] for a in get(op,'me')['achievements'] if a['key']=='sessions-1'])
     check('logging a session unlocks First steps',ach==['sessions-1'],ach)
     check('an unlock card is shown',js("return !document.querySelector('#unlock').hidden&&document.querySelector('#unlock').textContent.includes('First steps')"))
-    ms=wait(lambda: [p for p in get(op,'posts')['posts'] if p['kind']=='milestone'])
-    check('one milestone post is made for the batch',len(ms)==1 and 'sessions-1' in ms[0]['data']['achievements'],ms and ms[0]['data'])
+    ms=wait(lambda: [p for p in get(op,'posts')['posts'] if p['kind']=='milestone' and 'sessions-1' in p['data']['achievements']])
+    check('one milestone post is made for the batch',len(ms)==1 and 'first-post' not in ms[0]['data']['achievements'],[p['data'] for p in ms])
     check('the user is notified of the badge',any(i['kind']=='achievement' and i['text']=='sessions-1' for i in get(op,'notifications')['items']))
     stats=wait(lambda: get(op,'me')['user'].get('stats') or None)
     check('level, XP and streak are reported for the profile',stats and stats['streak']==1 and stats['xp']>=45 and stats['level']>=1 and stats['sessions']==1,stats)
