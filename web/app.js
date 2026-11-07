@@ -28,6 +28,10 @@ const ICONS = {
   right: 'M9 6l6 6-6 6',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20c1-4 4-5.5 7.5-5.5s6.5 1.5 7.5 5.5',
   shield: 'M12 3l7 3v5.5c0 4.5-3 8-7 9.5-4-1.5-7-5-7-9.5V6z',
+  edit: 'M4 20h4L18 10l-4-4L4 16v4ZM12 8l4 4',
+  instagram: 'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4ZM12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM17.3 6.7h.01',
+  tiktok: 'M14 3v11.5a3.5 3.5 0 1 1-3.5-3.5M14 3c.5 3 2.5 4.5 5 4.5',
+  youtube: 'M3 8.5c0-1.5 1-2.5 2.5-2.7C7.5 5.6 10 5.5 12 5.5s4.5.1 6.5.3C20 6 21 7 21 8.5v7c0 1.5-1 2.5-2.5 2.7-2 .2-4.5.3-6.5.3s-4.5-.1-6.5-.3C4 18 3 17 3 15.5v-7ZM10 9v6l5-3-5-3Z',
 };
 const icon = n => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[n]}"/></svg>`;
 // Lookups for the catalog in use; useCatalog() in catalogs.js fills them.
@@ -49,6 +53,7 @@ const FLAGS = [
   ['model3d', '3D figure', 'Show demos on a shaded 3D human model. When off, or where the browser has no WebGL, the drawn figure is used.'],
   ['tour', 'Guided tour', 'A step-by-step tour for new users, on first sign-in and the first visit to each section. When off, a short note is shown instead.'],
   ['signups', 'Open sign-ups', 'Let anyone who can open this page create an account. Turn it off once everyone has one.'],
+  ['community', 'Community', 'The timeline with posts, likes and comments, public profiles, the people list and the notification bell.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
 const ui = { graphView: localStorage.getItem('nf-view') || 'graph', draftFocus: [], palIdx: 0, prop: localStorage.getItem('fl-prop') || 'nunchaku', open: (localStorage.getItem('fl-groups') ?? localStorage.getItem('fl-prop') ?? 'nunchaku').split(',').filter(Boolean), users: null };
@@ -504,6 +509,7 @@ function pageSettings() {
   </div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
+const pageOff = what => `<div class="empty">${what} is turned off on this Flowa. An admin can turn it on under Admin, Features. <a href="#/">Go to the dashboard</a>.</div>`;
 
 /* ---------- shell ---------- */
 function renderSide(route) {
@@ -545,15 +551,17 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', u: 'Profile' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
   if (p === 'branch') return pageBranch(a, b);
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
-  if (['practice', 'combos', 'plan', 'profile'].includes(p) && !me) return pageNeedAccount(title);
+  if (['practice', 'combos', 'plan', 'profile', 'u'].includes(p) && !me) return pageNeedAccount(title);
   if (p === 'practice') return pagePractice();
+  if (p === 'u' && !flags.community) return pageOff('Community');
+  if (p === 'u') return pageUser(a);
   if (p === 'combos') return pageCombos();
   if (p === 'plan') return pagePlan();
   if (p === 'profile') return pageProfile();
@@ -569,12 +577,13 @@ function render() {
   // A new user picks their props before anything else.
   const first = !!me && !me.onboarded;
   renderSide(first ? ['welcome'] : route);
-  const title = first ? 'Welcome' : !p ? (me ? 'Dashboard' : 'Welcome') : p === 'branch' ? (BR[a]?.name || 'Branch') : TITLES[p] || 'Not found';
+  const title = first ? 'Welcome' : !p ? (me ? 'Dashboard' : 'Welcome') : p === 'branch' ? (BR[a]?.name || 'Branch') : p === 'u' && a ? '@' + a : TITLES[p] || 'Not found';
   const scoped = me && !first && (!p || ['branch', 'practice', 'combos', 'plan', 'maps', 'prop'].includes(p));
   $('#crumb').innerHTML = `Flowa / ${scoped ? esc(curProp().name) + ' / ' : ''}<b>${esc(title)}</b>`;
   document.title = `${title} · Flowa`;
   const gw = $('.graph-wrap'), sx = gw?.scrollLeft, sy = gw?.scrollTop;
   const key = first ? 'welcome' : `${p}/${a}/${ui.prop}/${me ? me.id : 0}`;
+  if (key !== lastRouteKey) social.profile = {}; // a profile reloads when its page is opened
   // Keep form text when a save re-renders the page; only the panel and shell update.
   const active = document.activeElement;
   const typing = active && $('#main').contains(active) && /^(INPUT|TEXTAREA)$/.test(active.tagName) && active.type !== 'checkbox' && key === lastRouteKey;

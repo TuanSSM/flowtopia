@@ -3,7 +3,8 @@
 #
 #   lint         gofmt, go vet, staticcheck; JS syntax and catalog format; Python syntax; workflow lint
 #   unit         go build + go test; the physics suite over every demo clip; bundles reproducible
-#   integration  real server against Postgres, driven through headless Firefox (test/browser)
+#   integration  real server against Postgres, driven through headless Firefox (test/browser:
+#                combos, demos, and the timeline, profiles, notifications and achievements)
 #   screenshots  pictures of the pages and demos, pushed to the ci-screenshots branch
 #   docs         Markdown links and the front matter of the Claude Code files
 #   pr_summary   one sticky comment on the PR with the results and the size of the change
@@ -177,6 +178,7 @@ jobs:
     outputs:
       combo: ${{ steps.combo.outputs.line }}
       demos: ${{ steps.demos.outputs.line }}
+      social: ${{ steps.social.outputs.line }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -200,6 +202,13 @@ jobs:
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh demos.py | tee demos.txt || code=$?
           echo "line=$(grep -E 'passed' demos.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
+      - name: Timeline, profiles, notifications and achievements
+        id: social
+        if: always()
+        run: |
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh social.py | tee social.txt || code=$?
+          echo "line=$(grep -E 'passed' social.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v5
@@ -210,6 +219,7 @@ jobs:
             /tmp/flowa-test/dev.log
             combo.txt
             demos.txt
+            social.txt
           retention-days: 7
 
   # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
@@ -349,6 +359,7 @@ jobs:
           PHYSICS: ${{ needs.unit.outputs.physics }}
           COMBO: ${{ needs.integration.outputs.combo }}
           DEMOS: ${{ needs.integration.outputs.demos }}
+          SOCIAL: ${{ needs.integration.outputs.social }}
           STAT: ${{ steps.size.outputs.stat }}
           FILES: ${{ steps.size.outputs.files }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -365,7 +376,7 @@ jobs:
             echo "| docs | $(icon "$DOCS") | Markdown links, Claude Code front matter |"
             echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
-            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a} |"
+            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a} |"
             echo "| screenshots | $(icon "$SCREENS") | pages at desktop and phone width, demo sheet |"
             echo
             echo "$SHOTS_MD"

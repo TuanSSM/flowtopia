@@ -29,6 +29,8 @@ try:
     page('combos','Combos','#/combos',wait=2.5)
     page('practice','Practice','#/practice')
     page('plan','Plan','#/plan')
+    # Community: the public profile.
+    page('profile-public','Public profile','#/u/admin',wait=2.5)
     page('map-phone','Skill map, phone','#/maps',w=420,ht=900)
     page('combos-phone','Combos, phone','#/combos',w=420,ht=900,wait=2.5)
     page('skill-phone','Skill guide, phone','#/prop/nunchaku/F/F5',w=420,ht=900,wait=2.5)

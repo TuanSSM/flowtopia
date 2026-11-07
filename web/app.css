@@ -413,3 +413,16 @@ button:disabled { opacity: .6; cursor: default; }
   .cb-stage canvas { max-width: 380px; margin: 0 auto; }
   .cb-row .chip { display: none; }
 }
+
+/* Public profiles */
+.prof-head h1 { font-size: 26px; }
+.prof-bio { margin-top: 10px; max-width: 620px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.social-instagram svg.i { color: #e1306c; } .social-tiktok svg.i { color: #25f4ee; } .social-youtube svg.i { color: #ff0000; }
+:root[data-theme="light"] .social-tiktok svg.i { color: #0b8f8a; }
+@media (prefers-color-scheme: light) { :root:where(:not([data-theme="dark"])) .social-tiktok svg.i { color: #0b8f8a; } }
+.links-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.links-grid .field { display: grid; }
+.links-grid .field svg.i { vertical-align: -3px; margin-right: 2px; }
+@media (max-width: 820px) {
+  .links-grid { grid-template-columns: 1fr; }
+}
