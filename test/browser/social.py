@@ -11,7 +11,7 @@ def refused(*a):
     # True when the server answers a 4xx (the helper raises on it).
     try: api(*a);return False
     except urllib.error.HTTPError as e: return 400<=e.code<500
-def wait(fn,n=20,dt=.5):
+def wait(fn,n=60,dt=.5):  # up to 30 s: a save, the badge sync and the post can be slow on the Pi
     for _ in range(n):
         v=fn()
         if v: return v
