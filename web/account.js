@@ -95,7 +95,7 @@ const TIPS = {
   plan: ['Plan', ['Tick a gate when you pass its test. Gates decide your current phase.', 'The 12-week track is for turning skills you already have into one routine.']],
   profile: ['Your profile', ['Add a picture, a bio and your social links, and choose the props you use.', 'There is no email on file, so a forgotten password has to be reset by the admin.']],
   timeline: ['Timeline', ['Post what you worked on, with a picture or a tagged skill. Like and comment on others\u2019 posts.', 'Your milestones post themselves; turn that off in your profile.', 'The bell at the top shows likes, comments, mentions and new badges.']],
-  achievements: ['Achievements', ['XP comes from skill levels, sessions, gates, combos and weekly challenges. Levels count every prop.', 'Streak badges count a practice session on any prop.']],
+  achievements: ['Achievements', ['XP comes from skill levels, sessions, gates, combos and weekly challenges. Levels count every prop.', 'Your streak counts a practice session on any prop. Share it as a PNG overlay for your own photo.']],
 };
 function tipCard(k) {
   if (flags.tour && !tourBroken) return ''; // the guided tour covers it
@@ -146,6 +146,7 @@ const TOURS = {
   ],
   achievements: [
     { t: '[data-tour=level]', n: 'Level and XP', c: 'XP from every prop adds up to one level.' },
+    { t: '[data-tour=streak]', n: 'Streak', c: 'A session on any prop keeps it going. Share it as an overlay for your own photo or video.' },
     { t: '[data-tour=challenges]', n: 'Weekly challenges', c: 'Four challenges a week, Monday to Sunday, each worth XP.' },
   ],
   profile: [
@@ -299,7 +300,7 @@ function pageDashLite() {
   <div class="grid g4" data-tour="stats" style="margin-bottom:16px">
     <div class="card stat"><div class="lbl">Last 7 days</div><div class="val">${weekMinutes(m)}<small> min</small></div><div class="foot">${fmtMin(total)} in total</div></div>
     <div class="card stat"><div class="lbl">Practice streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div></div>
-  ${flags.game ? `<div style="margin-bottom:16px">${levelCard(true)}</div>` : ''}
+  ${flags.game ? `<div class="grid g2" style="margin-bottom:16px">${levelCard(true)}${streakCard()}</div>` : ''}
   <div class="stack"><div class="card"><div class="card-h"><h2 class="grow">Practice, last 9 months</h2><a class="small" href="#/practice">View log</a></div>${heatmap(m)}</div>${propPlaceholder(p)}</div>`;
 }
 const needCatalog = title => `<div class="page-h"><div><h1>${title}</h1><p>${esc(curProp().name)}</p></div></div>${propPlaceholder(curProp())}`;

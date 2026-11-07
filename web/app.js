@@ -36,6 +36,8 @@ const ICONS = {
   bell: 'M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15L6 16ZM10 20a2 2 0 0 0 4 0',
   send: 'M20 4 4 11l8 2 2 8 6-17ZM12 13l8-9',
   comment: 'M4 6h16v10H9l-5 4V6Z',
+  share: 'M12 4v11M8 8l4-4 4 4M5 14v6h14v-6',
+  download: 'M12 4v11M8 11l4 4 4-4M5 20h14',
   image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01',
   calendar: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
   hands: 'M7 20v-6l-3-4 2-1 3 3V5h2v7M17 20v-6l3-4-2-1-3 3V5h-2v7',
@@ -279,7 +281,7 @@ function pageDashboard() {
     <div class="card stat"><div class="lbl">Practice streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div>
     <div class="card stat"><div class="lbl">Gates passed</div><div class="val">${gates}<small> / ${PHASES.length}</small></div><div class="foot">${phase ? 'Next: ' + esc(phase.name) : 'Roadmap complete'}</div></div>
   </div>
-  ${flags.game ? `<div style="margin-bottom:16px">${levelCard(true)}</div>` : ''}
+  ${flags.game ? `<div class="grid g2" style="margin-bottom:16px">${levelCard(true)}${streakCard()}</div>` : ''}
   <div class="grid g32" style="margin-bottom:16px">
     <div class="stack">
       <div class="card"><div class="card-h"><h2 class="grow">Practice, last 9 months</h2><a class="small" href="#/practice">View log</a></div>${heatmap(m)}</div>

@@ -1,6 +1,6 @@
 'use strict';
-// Gamification: XP and levels, the practice streak across props, weekly challenges
-// and achievements. Everything is worked out from the
+// Gamification: XP and levels, the practice streak across props, weekly challenges,
+// achievements, and the shareable streak overlay. Everything is worked out from the
 // progress documents in the browser; only the unlocked achievements and a few totals for
 // the profile are reported to the server (social.go). Loaded before app.js, which defines
 // the helpers used here (lv, best, variants, comboReady, inProp, ...).
@@ -134,6 +134,7 @@ const ACH = [
   { key: 'combo-ready', name: 'Linked up', desc: 'Get a combo ready: every transition works.', icon: 'link', group: 'Combos', of: 1, n: c => c.ready },
   ...achTiers('runs', n => `Log ${n} clean combo runs.`, 'check', 'Combos', [[10, 'Ten clean runs'], [50, 'Fifty clean runs']], c => c.cleanRuns),
   { key: 'first-post', name: 'Said hello', desc: 'Write your first post on the timeline.', icon: 'comment', group: 'Community', manual: true, of: 1, n: () => 0 },
+  { key: 'share-streak', name: 'Shared the flame', desc: 'Download or share your streak overlay.', icon: 'share', group: 'Community', manual: true, of: 1, n: () => 0 },
 ];
 // Badges for each prop on the profile: its roadmap and each of its branches.
 function propBadges(props = myProps()) {
@@ -225,6 +226,19 @@ function levelCard(compact) {
       <div class="row small muted num" style="margin-top:5px;justify-content:space-between"><span>${xp.total.toLocaleString()} XP</span><span>${L.next.toLocaleString()} XP to level ${L.level + 1}</span></div></div></div>
     ${compact ? '' : `<div class="xp-split num">${[['Skills', xp.skills], ['Practice', xp.practice], ['Gates', xp.gates], ['Combos', xp.combos], ['Challenges', xp.challenges]].map(([n, v]) => `<span><b>${v.toLocaleString()}</b><span class="tiny">${n}</span></span>`).join('')}</div>`}</div>`;
 }
+function weekDots(st, cls = '') {
+  const names = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  return `<div class="week-dots ${cls}" aria-label="This week">${st.week.map((d, i) => `<span class="${d.on ? 'on' : d.future ? 'future' : ''} ${d.key === dayKey() ? 'today' : ''}" title="${esc(fmtDay(d.key))}"><i>${d.on ? icon('check') : ''}</i><u>${names[i]}</u></span>`).join('')}</div>`;
+}
+function streakCard(st = streakInfo()) {
+  const n = st.current;
+  return `<div class="card streak-card ${st.today ? 'lit' : ''}" data-tour="streak">
+    <div class="row" style="gap:14px;align-items:flex-start"><span class="flame ${n ? 'lit' : ''}">${icon('flame')}</span>
+      <div class="grow"><div class="val num">${n}<small> ${n === 1 ? 'day' : 'days'}</small></div><div class="small muted">Practice streak · best ${st.best}</div></div>
+      <button class="btn sm" data-act="share-streak">${icon('share')}Share</button></div>
+    ${weekDots(st)}
+    <p class="tiny" style="margin-top:8px">${st.today ? 'Today is in. See you tomorrow.' : n ? 'Log today’s practice to keep the streak.' : 'Log a session to start a streak. Any prop counts.'}</p></div>`;
+}
 function challengesCard() {
   const list = challenges(), done = list.filter(c => c.done).length;
   return `<div class="card" data-tour="challenges"><div class="card-h"><h2 class="grow">Weekly challenges</h2><span class="sub num">${done} of ${list.length} · ${XP.challenge} XP each</span></div>
@@ -243,14 +257,136 @@ function badgeGrid(list) {
 function pageAchievements() {
   const states = badgeStates(), on = states.filter(b => b.on).length;
   const recent = states.filter(b => b.on && b.at).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 4);
-  return `<div class="page-h"><div class="grow"><h1>Achievements</h1><p>${on} of ${states.length} badges, across all your props. Levels count every prop too.</p></div><a class="btn" href="#/u/${esc(me.username)}">${icon('user')}Public profile</a></div>
-  <div class="grid g2" style="margin-bottom:16px">${levelCard()}${challengesCard()}</div>
-  <div class="card" style="margin-bottom:22px"><div class="card-h"><h2 class="grow">How XP works</h2></div><ul class="steps small">
+  return `<div class="page-h"><div class="grow"><h1>Achievements</h1><p>${on} of ${states.length} badges, across all your props. Level and streak count every prop too.</p></div><a class="btn" href="#/u/${esc(me.username)}">${icon('user')}Public profile</a></div>
+  <div class="grid g2" style="margin-bottom:16px">${levelCard()}${streakCard()}</div>
+  <div class="grid g2" style="margin-bottom:22px">${challengesCard()}
+    <div class="card"><div class="card-h"><h2 class="grow">How XP works</h2></div><ul class="steps small">
       <li>A skill variant earns ${XP_SKILL.slice(1).join(', ')} XP at levels 1 to 4 (per hand or direction where tracked).</li>
       <li>Each session earns ${XP.session} XP plus one per minute, up to ${XP.minuteCap} minutes.</li>
       <li>A phase gate is ${XP.gate} XP; a track week is ${XP.week} XP.</li>
       <li>A ready combo is ${XP.comboReady} XP, and each clean run ${XP.cleanRun} XP, up to ${XP.cleanRunCap} runs.</li>
       <li>Each weekly challenge done is ${XP.challenge} XP.</li></ul>
-      ${recent.length ? `<div class="sec-t" style="margin-top:14px">Latest badges</div><div class="chips">${recent.map(b => `<span class="chip ok">${icon(b.icon)}${esc(b.name)}</span>`).join('')}</div>` : ''}</div>
+      ${recent.length ? `<div class="sec-t" style="margin-top:14px">Latest badges</div><div class="chips">${recent.map(b => `<span class="chip ok">${icon(b.icon)}${esc(b.name)}</span>`).join('')}</div>` : ''}</div></div>
   ${badgeGrid(states)}`;
 }
+
+/* ---------- share the streak: a PNG overlay for stories ---------- */
+// Draws the streak on a transparent canvas (or over a gradient), sized for a story or a
+// square post, so people can lay it over their own photo in Instagram or TikTok.
+function drawFlame(c, x, y, s) {
+  const p = new Path2D('M12 21c-3.5 0-6-2.4-6-5.8 0-2.6 1.6-4.3 2.8-6 .3 1.2.9 2.2 1.9 2.9C10.3 9 10.7 5.8 13 3c.4 3 2.5 4.4 3.8 6.4A7 7 0 0 1 18 15.2C18 18.6 15.5 21 12 21Z');
+  c.save(); c.translate(x - s / 2, y - s / 2); c.scale(s / 24, s / 24);
+  const g = c.createLinearGradient(0, 3, 0, 21); g.addColorStop(0, '#ffd166'); g.addColorStop(.55, '#ff7a3d'); g.addColorStop(1, '#e8402f');
+  c.fillStyle = g; c.fill(p);
+  const inner = new Path2D('M12 20c-1.9 0-3.3-1.3-3.3-3.2 0-1.5 1-2.6 1.7-3.6.3.8.8 1.3 1.3 1.6.1-1.6.6-2.9 1.6-4 .3 1.6 1.4 2.5 2 3.6.4.7.6 1.5.6 2.4 0 1.9-1.6 3.2-3.9 3.2Z');
+  c.fillStyle = '#fff3c4'; c.fill(inner); c.restore();
+}
+function streakCanvas(opts = {}) {
+  const st = streakInfo(), story = opts.format !== 'square', W = 1080, H = story ? 1920 : 1080;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  if (opts.bg) {
+    const g = x.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#15203a'); g.addColorStop(1, '#2a1f4a');
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
+    x.fillStyle = 'rgba(255,255,255,.04)';
+    for (let i = 0; i < 40; i++) { x.beginPath(); x.arc((i * 263) % W, (i * 571) % H, 40 + (i * 37) % 90, 0, 7); x.fill(); }
+  }
+  // The block sits in the lower part of a story, leaving room for a face above it.
+  const cy = story ? 1250 : 540, font = 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const text = (t, y, size, weight = 600, color = '#fff', spacing = 0) => {
+    x.font = `${weight} ${size}px ${font}`; x.textAlign = 'center'; x.textBaseline = 'middle';
+    if ('letterSpacing' in x) x.letterSpacing = spacing + 'px';
+    x.shadowColor = 'rgba(0,0,0,.6)'; x.shadowBlur = size / 5; x.shadowOffsetY = size / 30;
+    x.lineWidth = Math.max(2, size / 22); x.strokeStyle = 'rgba(0,0,0,.35)'; x.strokeText(t, W / 2, y);
+    x.fillStyle = color; x.fillText(t, W / 2, y);
+    x.shadowBlur = 0; x.shadowOffsetY = 0;
+  };
+  x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 30;
+  drawFlame(x, W / 2, cy - 330, 300);
+  x.shadowBlur = 0;
+  text(String(st.current), cy - 40, 320, 800, '#fff', -10);
+  text(st.current === 1 ? 'DAY STREAK' : 'DAY STREAK', cy + 160, 54, 700, '#ffd9a8', 10);
+  // The week, Monday to Sunday.
+  const names = ['M', 'T', 'W', 'T', 'F', 'S', 'S'], gap = 92, x0 = W / 2 - 3 * gap, wy = cy + 290;
+  st.week.forEach((d, i) => {
+    const px = x0 + i * gap;
+    x.beginPath(); x.arc(px, wy, 30, 0, 7);
+    x.fillStyle = d.on ? '#ff8a3d' : 'rgba(255,255,255,.22)'; x.fill();
+    x.lineWidth = 4; x.strokeStyle = d.key === dayKey() ? '#fff' : 'rgba(255,255,255,.55)'; x.stroke();
+    if (d.on) { x.beginPath(); x.moveTo(px - 12, wy); x.lineTo(px - 3, wy + 10); x.lineTo(px + 13, wy - 10); x.lineWidth = 6; x.strokeStyle = '#fff'; x.lineCap = x.lineJoin = 'round'; x.stroke(); }
+    text(names[i], wy + 60, 26, 600, 'rgba(255,255,255,.85)');
+  });
+  const props = myProps().map(p => p.name).join(' · ');
+  text(`@${me.username}${props ? ' · ' + props : ''}`, cy + 450, 40, 600, '#fff');
+  const L = levelInfo(xpAll().total);
+  text(`Level ${L.level} ${L.title} · ${st.best} day best · flowa`, cy + 515, 30, 500, 'rgba(255,255,255,.8)');
+  return c;
+}
+const canvasBlob = (c, type = 'image/png', q) => new Promise(ok => c.toBlob(ok, type, q));
+let shareFmt = 'story';
+function openShare() {
+  const st = streakInfo(), el = $('#modal');
+  el.hidden = false;
+  el.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="share-t">
+    <div class="row"><h2 id="share-t" class="grow">Share your streak</h2><button class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
+    <p class="small muted" style="margin-top:4px">A transparent PNG to lay over your own photo or video, for Instagram, TikTok or anywhere else.</p>
+    <div class="share-body"><div class="share-prev ${shareFmt}"><canvas id="share-cv" aria-label="Streak overlay preview"></canvas></div>
+      <div class="stack" style="gap:10px">
+        <div class="seg" role="group" aria-label="Format" style="width:max-content"><button class="${shareFmt === 'story' ? 'on' : ''}" data-act="share-fmt" data-v="story">Story 9:16</button><button class="${shareFmt === 'square' ? 'on' : ''}" data-act="share-fmt" data-v="square">Square</button></div>
+        <button class="btn primary" data-act="share-do" data-v="download">${icon('download')}Download PNG overlay</button>
+        ${navigator.canShare ? `<button class="btn" data-act="share-do" data-v="share">${icon('share')}Share to an app…</button>` : ''}
+        <button class="btn" data-act="share-do" data-v="post">${icon('send')}Post to the Flowa timeline</button>
+        <div class="row wrap" style="gap:6px"><a class="btn sm" href="https://www.instagram.com/" target="_blank" rel="noopener noreferrer">${icon('instagram')}Open Instagram</a><a class="btn sm" href="https://www.tiktok.com/" target="_blank" rel="noopener noreferrer">${icon('tiktok')}Open TikTok</a><button class="btn sm" data-act="share-do" data-v="copy">Copy caption</button></div>
+        <p class="tiny">${st.current}-day streak, best ${st.best}. The PNG has a transparent background: add it over your own photo or video as a sticker or image layer in the app you post from. Nothing leaves this page until you share or post it.</p>
+      </div></div></div>`;
+  drawSharePreview();
+}
+function drawSharePreview() {
+  const cv = $('#share-cv');
+  if (!cv) return;
+  const src = streakCanvas({ format: shareFmt });
+  cv.width = src.width / 3; cv.height = src.height / 3;
+  cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+}
+const shareCaption = () => { const st = streakInfo(); return `${st.current}-day practice streak on Flowa. ${myProps().map(p => p.name).join(', ')}. #flowarts #practice`; };
+async function shareStreak(how) {
+  const st = streakInfo(), name = `flowa-streak-${st.current}.png`;
+  if (how === 'copy') { try { await navigator.clipboard.writeText(shareCaption()); toast('Caption copied.'); } catch { toast('Could not copy. The caption is in the note below.'); } return; }
+  if (how === 'post') {
+    const c = streakCanvas({ format: 'square', bg: true }), img = c.toDataURL('image/jpeg', 0.82);
+    const r = await api('posts', 'POST', { body: shareCaption().replace(/ #\S+/g, ''), image: img });
+    if (!r.ok) { toast(r.error); return; }
+    closeModal(); grant(['share-streak', 'first-post']); location.hash = '#/timeline'; social.stale = true; render(); toast('Posted to the timeline.');
+    return;
+  }
+  const blob = await canvasBlob(streakCanvas({ format: shareFmt }));
+  if (how === 'share') {
+    const file = new File([blob], name, { type: 'image/png' });
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'My practice streak', text: shareCaption() }); grant(['share-streak']); } catch { /* cancelled */ }
+      return;
+    }
+    toast('Sharing files is not available here. Download the PNG instead.');
+    how = 'download';
+  }
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  grant(['share-streak']);
+  toast('Overlay downloaded. Add it over your photo as a sticker.');
+}
+function closeModal() { const el = $('#modal'); el.hidden = true; el.innerHTML = ''; }
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-act]');
+  if (e.target.id === 'modal') { closeModal(); return; }
+  if (!t) return;
+  const d = t.dataset;
+  switch (d.act) {
+    case 'share-streak': openShare(); break;
+    case 'share-fmt': shareFmt = d.v; openShare(); break;
+    case 'share-do': shareStreak(d.v); break;
+    case 'modal-close': closeModal(); break;
+  }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });
