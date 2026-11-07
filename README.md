@@ -130,5 +130,8 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | `PR summary` | one comment on the PR, kept up to date, with the results, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job above passed |
 
+Working on the repository with Claude Code: see [docs/claude-code-setup.md](docs/claude-code-setup.md)
+(`CLAUDE.md`, path rules, scoped agents and skills in `.claude/`).
+
 A push to the PR cancels the run for the previous commit. Before opening a PR the same checks can
 be run locally with `gofmt -l . && go vet ./... && node test/physics.js` and `test/browser/run.sh combo.py`.

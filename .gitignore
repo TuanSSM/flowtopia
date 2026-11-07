@@ -4,3 +4,4 @@ data/
 tour/node_modules/
 figure/node_modules/
 __pycache__/
+.claude/settings.local.json
