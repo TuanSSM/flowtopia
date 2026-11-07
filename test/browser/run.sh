@@ -18,6 +18,6 @@ rm -rf $W/data; mkdir $W/data
 for i in $(seq 1 30); do curl -fsS -m 2 http://127.0.0.1:3170/healthz >/dev/null 2>&1 && break; sleep 1; done
 timeout "${LIMIT:-500}" python3 -I "$@" > $W/out.txt 2>&1; code=$?
 kill "$(cat $W/dev.pid)" 2>/dev/null
-echo "$(grep -c '^PASS' $W/out.txt) passed, $(grep -c '^FAIL ' $W/out.txt) failed"
+echo "$(grep -c '^PASS' $W/out.txt) passed, $(grep -c '^FAIL ' $W/out.txt) failed, $(grep -c '^SKIP ' $W/out.txt) skipped"
 grep -E '^FAIL|Error|Traceback|FAILURES' -A2 $W/out.txt | cut -c1-300 | head -40
 [ $code -eq 0 ] && grep -q '^FAILURES: none' $W/out.txt

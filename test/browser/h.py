@@ -2,7 +2,7 @@
 import json,socket,subprocess,tempfile,time,base64,urllib.request,http.cookiejar,os,shutil
 BASE='http://127.0.0.1:3170/'
 prof=tempfile.mkdtemp(dir=os.environ.get('RUNNER_TEMP'))  # a snap Firefox (CI) cannot read /tmp
-open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui.systemUsesDarkTheme",1);user_pref("signon.rememberSignons",false);\n')
+open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui.systemUsesDarkTheme",1);user_pref("signon.rememberSignons",false);user_pref("webgl.force-enabled",true);user_pref("webgl.disable-fail-if-major-performance-caveat",true);\n')
 FIREFOX=os.environ.get('FIREFOX') or next((b for b in ('firefox-esr','firefox') if shutil.which(b)),'firefox-esr')
 ff=subprocess.Popen([FIREFOX,'--headless','--marionette','-no-remote','-profile',prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 for _ in range(60):

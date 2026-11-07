@@ -74,7 +74,7 @@ async function load(url) {
       skins.push({ sm: o, n, bind, bnor, idx: g.attributes.skinIndex.array, wt: g.attributes.skinWeight.array, out, norm: g.attributes.skinWeight.normalized });
     });
     F.ready = true;
-  } catch (e) { F.failed = true; console.warn('3D figure not available:', e.message || e); }
+  } catch (e) { F.failed = true; F.reason = String(e.message || e); console.warn('3D figure not available:', F.reason); }
   return F.ready;
 }
 

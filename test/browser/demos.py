@@ -33,7 +33,9 @@ try:
         if js("return !!(window.Figure3D&&(window.Figure3D.ready||window.Figure3D.failed))"): break
         time.sleep(.5)
     solid=js("const D=window.Demo,c=D.clip(),cv=document.createElement('canvas');cv.width=cv.height=360;const x=cv.getContext('2d');let n=0;const o=x.stroke.bind(x);x.stroke=()=>{n++;o()};D.draw(x,360,c,0.2,'angle',false,D.colors(),false);const d=x.getImageData(0,0,360,360).data;const set=new Set();for(let i=0;i<d.length;i+=4*7)set.add(d[i]>>3<<10|d[i+1]>>3<<5|d[i+2]>>3);return [window.Figure3D.ready,n,set.size]")
-    check('the 3D model loads and draws a shaded figure (many tones, few outline strokes)',solid[0] and solid[2]>60 and solid[1]<60,solid)
+    webgl=js("const c=document.createElement('canvas');return !!(c.getContext('webgl2')||c.getContext('webgl'))")
+    if webgl: check('the 3D model loads and draws a shaded figure (many tones, few outline strokes)',solid[0] and solid[2]>60 and solid[1]<60,[solid,js("return window.Figure3D&&window.Figure3D.reason")])
+    else: print('SKIP the 3D model: this browser has no WebGL, so only the drawn figure can be tested',flush=True)
     js("window.Demo.figure(false)")
     flat=js("const D=window.Demo,c=D.clip(),cv=document.createElement('canvas');cv.width=cv.height=360;const x=cv.getContext('2d');let n=0;const o=x.stroke.bind(x);x.stroke=()=>{n++;o()};D.draw(x,360,c,0.2,'angle',false,D.colors(),false);return n")
     check('with the 3D figure off, the drawn figure with fingers and thumbs is used',flat>60,flat)

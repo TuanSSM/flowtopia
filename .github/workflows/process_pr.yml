@@ -31,14 +31,14 @@ env:
 jobs:
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable   # what the Pi builds with; go.mod only sets the language version
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -67,16 +67,16 @@ jobs:
 
   unit:
     name: unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     outputs:
       physics: ${{ steps.physics.outputs.line }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable   # what the Pi builds with; go.mod only sets the language version
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -97,7 +97,7 @@ jobs:
           exit "${code:-0}"
       - name: Upload physics report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: physics-report
           path: physics.txt
@@ -113,7 +113,7 @@ jobs:
 
   integration:
     name: integration tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
       postgres:
@@ -132,8 +132,8 @@ jobs:
       combo: ${{ steps.combo.outputs.line }}
       demos: ${{ steps.demos.outputs.line }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: stable   # what the Pi builds with; go.mod only sets the language version
       - name: Firefox
@@ -154,7 +154,7 @@ jobs:
           exit "${code:-0}"
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: integration-logs
           path: |
@@ -166,7 +166,7 @@ jobs:
 
   pr_summary:
     name: PR summary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [lint, unit, integration]
     if: always() && github.event_name == 'pull_request'
@@ -174,7 +174,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Size of the change
@@ -221,7 +221,7 @@ jobs:
           } > summary.md
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Post or update the PR comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         # Pull requests from forks get a read-only token; the step summary still has the report.
         continue-on-error: true
         with:
@@ -239,7 +239,7 @@ jobs:
   # cancelled or was skipped, so a broken or missing job can never let a PR through.
   process_pr_result:
     name: process_pr_result
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     needs: [lint, unit, integration, pr_summary]
     if: always()
