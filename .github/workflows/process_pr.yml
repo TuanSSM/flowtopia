@@ -194,7 +194,8 @@ jobs:
         with:
           go-version: stable
       - name: Pillow
-        run: python3 -m pip install --quiet --user pillow
+        # run.sh starts Python with -I, which ignores user site-packages, so install it system-wide.
+        run: sudo apt-get install -y -qq --no-install-recommends python3-pil >/dev/null
       - name: Take the screenshots
         run: test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
@@ -230,7 +231,8 @@ jobs:
           # Another PR may have pushed meanwhile: rebase and try again a few times.
           for i in 1 2 3 4; do
             git -C "$d" push -q origin ci-screenshots && break
-            git -C "$d" fetch -q origin ci-screenshots && git -C "$d" rebase -q origin/ci-screenshots || { git -C "$d" rebase --abort; exit 1; }
+            git -C "$d" fetch -q origin ci-screenshots
+            if ! git -C "$d" rebase -q origin/ci-screenshots; then git -C "$d" rebase --abort; exit 1; fi
             sleep $((i * 2))
           done
           echo "base=https://github.com/$REPO/blob/ci-screenshots/$dir" >> "$GITHUB_OUTPUT"
