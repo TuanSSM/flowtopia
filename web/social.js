@@ -120,10 +120,10 @@ function peopleCard() {
     ${list.map((u, i) => { const s = u.stats || {}; return `<a class="person ${u.id === me.id ? 'me' : ''}" href="#/u/${esc(u.username)}"><span class="rank num">${i + 1}</span>${avatarHTML(u)}<span class="grow" style="display:grid"><b>${esc(u.displayName || u.username)}</b><span class="tiny">Level ${s.level || 1}${s.streak ? ` · ${s.streak}-day streak` : ''}</span></span><span class="tiny num">${(s.xp || 0).toLocaleString()} XP</span></a>`; }).join('')}</div>`;
 }
 function pageTimeline(single) {
-  const key = single ? 'post:' + single : 'all';
+  const key = single ? 'post:' + single : 'all', st = streakInfo();
   return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${single ? '<a href="#/timeline">Back to the timeline</a>' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.'}</p></div></div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, single ? 'That post is gone.' : 'Nothing here yet. Share what you worked on today.')}</div>
-    <div class="stack tl-side">${flags.game ? levelCard(true) : ''}${peopleCard()}</div></div>`;
+    <div class="stack tl-side">${!flags.game ? '' : st.atRisk ? `<div class="card risk-card"><span class="flame lit sm">${icon('flame')}</span><span class="grow small"><b>${st.current}-day streak at risk.</b> Log today’s practice to keep it.</span><a class="btn sm" href="#/practice">Log</a></div>` : levelCard(true)}${peopleCard()}</div></div>`;
 }
 
 /* ---------- public profile ---------- */
@@ -166,9 +166,10 @@ function notifText(n) {
 }
 function bellHTML() {
   if (!me || !me.onboarded || !flags.community) return '';
-  const n = social.unread;
+  const st = loaded && flags.game ? streakInfo() : { atRisk: false }, n = social.unread + (st.atRisk ? 1 : 0);
   const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
   const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
+    ${st.atRisk ? `<a class="ntf unread" href="#/practice" data-act="ntf-go"><span class="flame lit sm">${icon('flame')}</span><span class="grow"><span class="small"><b>Your ${st.current}-day streak ends tonight.</b> Log today’s practice to keep it.</span></span></a>` : ''}
     ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, mentions and achievements show up here.</div>'}</div>`;
   return `<button class="icon-btn bell ${n ? 'has' : ''}" data-act="bell" aria-label="Notifications${n ? `, ${n} unread` : ''}" aria-expanded="${social.nOpen}">${icon('bell')}${n ? `<span class="bell-n num">${n > 9 ? '9+' : n}</span>` : ''}</button>${panel}`;
 }

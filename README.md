@@ -25,9 +25,10 @@ named but not described.
   (`#/u/<username>`) with the user's level, streak, badges and posts.
 - **Timeline:** posts with a picture or a tagged skill, likes, comments and @mentions; new badges post
   themselves as milestones (each user can turn that off). A people list ranks everyone by XP.
-- **Notifications:** a bell in the header for likes, comments, mentions and new badges.
-- **Gamification:** XP and levels, weekly challenges, achievements, and the Plan as quests.
-  See [Gamification](#gamification).
+- **Notifications:** a bell in the header for likes, comments, mentions and new badges, plus a warning
+  when today's practice would end a streak.
+- **Gamification:** XP and levels, a practice streak across props, weekly challenges, achievements, and
+  the Plan as quests. See [Gamification](#gamification).
 
 Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Only the guided tour has a build step.
 
@@ -59,8 +60,8 @@ The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only.
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
 on the Admin page. No restart is needed. `signups` opens or closes sign-up, and `tour` turns the guided tour on.
-`community` (timeline, public profiles, people list, notifications) and `game` (XP, levels, challenges,
-achievements, quests) are on by default and can be turned off if they get in the way.
+`community` (timeline, public profiles, people list, notifications) and `game` (XP, levels, streak sharing,
+challenges, achievements, quests) are on by default and can be turned off if they get in the way.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -79,8 +80,12 @@ user reports for their profile and the people list (`social.go`).
   per minute up to 120. A phase gate is 150 XP and a track week 40. A ready combo is 50 XP and each
   clean run 15, up to 20 runs. Each weekly challenge done is 40 XP. XP from every prop adds up to one
   level: reaching level n takes 50 * (n - 1) * n XP, with titles from Beginner to Legend.
-- **Streak.** Consecutive days with a logged session on any prop, for the streak badges and the
-  profile.
+- **Streak.** Consecutive days with a logged session on any prop; the dashboard, Achievements page and
+  bell say when today's session is still missing. **Share** renders a transparent PNG overlay
+  (story 1080 by 1920 or square 1080) with the flame, the count, the week and the user's name, to
+  lay over one's own photo or video in Instagram, TikTok or any other app; it can be downloaded,
+  shared through the Web Share API where the browser offers it, or posted to the timeline with a
+  background.
 - **Weekly challenges.** Monday to Sunday, across props: practise on 4 days, log 120 minutes, raise
   3 skill levels, level up a weak-hand skill.
 - **Achievements.** Badges for sessions, hours, streaks, clean skills, both hands, gates, combos and

@@ -1,5 +1,5 @@
 # Community and gamification: profile bio and links, the timeline with likes, comments and
-# mentions, notifications, and achievements with their milestone post.
+# mentions, notifications, achievements with their milestone post, and the streak overlay.
 import sys,os
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from h import *
@@ -70,11 +70,24 @@ try:
     stats=wait(lambda: get(op,'me')['user'].get('stats') or None)
     check('level, XP and streak are reported for the profile',stats and stats['streak']==1 and stats['xp']>=45 and stats['level']>=1 and stats['sessions']==1,stats)
     nav('#/achievements',2)
-    check('the achievements page shows the badge unlocked, the level and a one-day streak',js("return [...document.querySelectorAll('.badge.on b')].map(b=>b.textContent)").count('First steps')==1 and txt('.level-ring b')=='1')
+    check('the achievements page shows the badge unlocked, the level and a one-day streak',js("return [...document.querySelectorAll('.badge.on b')].map(b=>b.textContent)").count('First steps')==1 and txt('.level-ring b')=='1' and txt('.streak-card .val').startswith('1'))
     check('weekly challenges show progress',js("return document.querySelectorAll('.ch').length")==4 and '1 of 4' in txt('.ch .tiny'))
     # Plan: quests with XP.
     nav('#/plan',2)
     check('the plan shows quests with skill chips and XP on each gate',js("return document.querySelectorAll('.quest').length")==5 and js("return document.querySelectorAll('.quest.on .chip.on').length")==1 and '+150 XP' in txt('.quest .check .chip') and js("return document.querySelectorAll('.quest .qs').length")>20)
     check('the plan has an XP card, challenges and a focus skill',txt('[data-tour=xp] h2')=='Nunchaku XP' and js("return !!document.querySelector('[data-tour=challenges]')") and js("return !!document.querySelector('[data-tour=focus] .sk-row')"))
+    # Streak overlay.
+    nav('#/achievements',1.5);click('[data-act=share-streak]');time.sleep(1.5)
+    size=js("const c=window.streakCanvas({format:'story'});const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let op=0,tr=0;for(let i=3;i<d.length;i+=4*97){if(d[i]>200)op++;else if(d[i]===0)tr++}return [c.width,c.height,op,tr]")
+    check('the story overlay is 1080 by 1920 and mostly transparent with drawn pixels',size[0]==1080 and size[1]==1920 and size[2]>200 and size[3]>size[2]*3,size)
+    sq=js("const c=window.streakCanvas({format:'square',bg:true});const d=c.getContext('2d').getImageData(0,0,4,4).data;return [c.width,c.height,d[3]]")
+    check('the square version with a background is opaque',sq==[1080,1080,255],sq)
+    shot('/tmp/flowa-test/share.png')
+    check('the share dialog previews the overlay with download and post buttons',js("return !document.querySelector('#modal').hidden&&document.querySelector('#share-cv').width>0&&!!document.querySelector('[data-act=share-do][data-v=download]')&&!!document.querySelector('[data-act=share-do][data-v=post]')"))
+    click('[data-act=share-do][data-v=post]');time.sleep(2.5)
+    shared=wait(lambda: [p for p in get(op,'posts')['posts'] if p['image'].startswith('data:image/jpeg') and 'streak' in p['body']])
+    check('posting the streak makes a post with the picture and unlocks Shared the flame',len(shared)==1 and any(a['key']=='share-streak' for a in get(op,'me')['achievements']),len(shared))
+    check('the timeline opens on the new post',js("return location.hash")=='#/timeline' and js("return !!document.querySelector('.post .post-img')"))
+    shot('/tmp/flowa-test/timeline.png')
 finally:
     done()
