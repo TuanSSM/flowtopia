@@ -23,8 +23,10 @@ named but not described.
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
 - **Profiles:** a picture, a bio and Instagram, TikTok and YouTube links, shown on a public profile page
   (`#/u/<username>`) with the user's level, streak, badges and posts.
-- **Timeline:** posts with a picture or a tagged skill, likes, comments and @mentions; new badges post
-  themselves as milestones (each user can turn that off). A people list ranks everyone by XP.
+- **Timeline:** posts with a picture, tagged tricks from any of your props and an attached combo, likes,
+  comments and @mentions; new badges post themselves as milestones (each user can turn that off). A people
+  list ranks everyone by XP. The composer's picker searches every skill map and your combos, and suggests
+  the tricks from today's session and this week's level-ups; a combo's Publish button brings it to the composer.
 - **Notifications:** a bell in the header for likes, comments, mentions and new badges, plus a warning
   when today's practice would end a streak.
 - **Gamification:** XP and levels, a practice streak across props, weekly challenges, achievements, and
@@ -97,7 +99,7 @@ user reports for their profile and the people list (`social.go`).
 ## Community API
 
 All of these need a signed-in user. `GET /api/users` (people, most XP first), `GET /api/users/{name}`
-(profile with achievements), `GET /api/posts?before=&user=`, `POST /api/posts`, `GET|DELETE
+(profile with achievements), `GET /api/posts?before=&user=`, `POST /api/posts` (text, picture, up to 10 `tags` of prop and skill id, one `combo`), `GET|DELETE
 /api/posts/{id}`, `POST /api/posts/{id}/like` (toggle), `POST /api/posts/{id}/comments`,
 `DELETE /api/comments/{id}`, `POST /api/achievements`, `GET /api/notifications`,
 `PUT /api/notifications/read`. Profile fields (`bio`, `links`, `prefs`, `stats`) go through

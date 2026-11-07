@@ -60,3 +60,41 @@ func TestValidStats(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanTags(t *testing.T) {
+	tags, ok := cleanTags([]postTag{{"nunchaku", "F7"}, {"poi", " L2 "}, {"nunchaku", "F7"}})
+	if !ok || len(tags) != 2 || tags[1].Skill != "L2" {
+		t.Errorf("cleanTags should keep two distinct trimmed tags, got %v %v", tags, ok)
+	}
+	for _, bad := range [][]postTag{{{"drums", "F1"}}, {{"poi", ""}}, {{"poi", "<b>"}}} {
+		if _, ok := cleanTags(bad); ok {
+			t.Errorf("cleanTags(%v) should fail", bad)
+		}
+	}
+	many := make([]postTag, 11)
+	for i := range many {
+		many[i] = postTag{"poi", "F" + string(rune('0'+i%10)) + string(rune('a'+i))}
+	}
+	if _, ok := cleanTags(many); ok {
+		t.Errorf("more than %d tags should fail", maxTags)
+	}
+}
+
+func TestCleanCombo(t *testing.T) {
+	good := postCombo{ID: "abc", Name: " Morning loop ", Role: "reliable", Prop: "nunchaku", Seq: []string{"F5", "F7"}, Reps: []int{1, 3}}
+	if !cleanCombo(&good) || good.Name != "Morning loop" {
+		t.Errorf("a valid combo should pass and be trimmed: %+v", good)
+	}
+	bad := []postCombo{
+		{Name: "x", Prop: "nunchaku"},
+		{Name: "x", Prop: "nunchaku", Seq: []string{"F5"}, Role: "epic"},
+		{Name: "x", Prop: "piano", Seq: []string{"F5"}},
+		{Name: "x", Prop: "nunchaku", Seq: []string{"F5"}, Reps: []int{0}},
+		{Name: "x", Prop: "nunchaku", Seq: []string{"F5", "F7"}, Reps: []int{1}},
+	}
+	for _, c := range bad {
+		if cleanCombo(&c) {
+			t.Errorf("cleanCombo(%+v) should fail", c)
+		}
+	}
+}

@@ -30,7 +30,7 @@ try:
     page('practice','Practice','#/practice')
     page('plan','Plan','#/plan')
     # Community: a post with a tagged skill, then the timeline, achievements and the public profile.
-    nav('#/timeline',2);js("const f=document.querySelector('#compose-form');f.body.value='Clean F4 today, finally. On to the figure-8 chain.';f.skill.value='F4';f.requestSubmit()");time.sleep(2)
+    nav('#/timeline',2);js("pickAdd({kind:'skill',prop:'nunchaku',id:'F4'});pickAdd({kind:'skill',prop:'nunchaku',id:'F5'});const f=document.querySelector('#compose-form');f.body.value='Clean F4 today, finally. On to the figure-8 chain.';f.requestSubmit()");time.sleep(2)
     page('timeline','Timeline','#/timeline',wait=2.5)
     page('achievements','Achievements','#/achievements',wait=2)
     page('profile-public','Public profile','#/u/admin',wait=2.5)

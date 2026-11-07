@@ -2,7 +2,8 @@
 // Community: the timeline of posts with likes and comments, notifications, the people
 // list, and public profiles with social links. Talks to the endpoints in social.go.
 
-const social = { posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {} };
+const social = { posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftTags: [], draftCombo: null, pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {} };
+const MAX_TAGS = 10;
 const LINK_KINDS = {
   instagram: { name: 'Instagram', hint: 'instagram.com/…', url: h => `https://www.instagram.com/${h}/` },
   tiktok: { name: 'TikTok', hint: 'tiktok.com/@…', url: h => `https://www.tiktok.com/@${h}` },
@@ -83,15 +84,16 @@ function feedHTML(key, empty) {
 }
 function postCard(p) {
   const u = social.users[p.userId] || {}, mine = p.userId === me.id || me.role === 'admin';
-  const cat = CATALOGS[p.prop], skill = p.skill && cat ? cat.skills.find(s => s.id === p.skill) : null;
-  const chips = (p.prop ? `<span class="chip">${esc(propById(p.prop)?.name || p.prop)}</span>` : '') + (skill ? `<a class="chip" href="#/prop/${p.prop}/${skill.b}/${skill.id}" data-tip="${esc(skill.name)}">${skill.id}</a>` : '');
+  const tags = p.data?.tags || (p.skill ? [{ prop: p.prop, skill: p.skill }] : []);
+  const chips = tags.map(t => trickChip(t.prop, t.skill)).join('');
+  const combo = p.data?.combo ? comboBlock(p.data.combo, p.userId === me.id) : '';
   let body;
   if (p.kind === 'milestone') {
     const keys = p.data?.achievements || [];
     body = `<div class="ms"><div class="row" style="gap:10px"><span class="badge-ic on">${icon('trophy')}</span><b>Unlocked ${keys.length === 1 ? 'an achievement' : keys.length + ' achievements'}</b></div>
       <div class="chips" style="margin-top:10px">${keys.map(k => { const b = badgeByKey(k); return `<span class="chip ok" data-tip="${esc(b?.desc || '')}">${icon(b?.icon || 'medal')}${esc(b?.name || k)}</span>`; }).join('')}</div></div>`;
   } else {
-    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}`;
+    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
   }
   const comments = p.comments.map(c => {
     const cu = social.users[c.userId] || {}, canDel = c.userId === me.id || p.userId === me.id || me.role === 'admin';
@@ -99,19 +101,116 @@ function postCard(p) {
   }).join('');
   const showCmts = social.openCmts.has(p.id) || p.comments.length > 0;
   return `<article class="card post" data-post="${p.id}">
-    <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a></span></span>${chips ? `<span class="row" style="gap:4px">${chips}</span>` : ''}${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}</header>
+    <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a></span></span>${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}</header>
     ${body}
     <footer class="post-acts"><button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.comments.length || ''}</span></button></footer>
     <div class="cmts" ${showCmts ? '' : 'hidden'}>${comments}<form class="cmt-form" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="Write a comment. Use @name to mention someone." autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send comment">${icon('send')}</button></form></div></article>`;
 }
+/* ---------- tricks and combos on posts ---------- */
+const skillOf = (prop, id) => CATALOGS[prop]?.skills.find(s => s.id === id);
+// A chip for a tagged trick: its id and name, linking to the skill; the prop in the tooltip.
+// In the composer the chip is not a link, so its remove button does not open the skill.
+function trickChip(prop, id, extra = '', link = true) {
+  const s = skillOf(prop, id), pn = propById(prop)?.name || prop;
+  const tag = s && link ? `a class="chip trick" href="#/prop/${prop}/${s.b}/${s.id}"` : 'span class="chip trick"';
+  return `<${tag} data-tip="${esc(pn)}${s ? ': ' + esc(s.name) : ''}"><b>${esc(id)}</b>${s ? `<span class="trick-n">${esc(s.name)}</span>` : ''}${extra}</${s && link ? 'a' : 'span'}>`;
+}
+const ROLE_NAMES = { reliable: 'Reliable', signature: 'Signature', stretch: 'Stretch' };
+// A combo attached to a post: name, role and the sequence as chips, in order.
+function comboBlock(c, mine) {
+  const seq = c.seq || [], reps = c.reps || [];
+  return `<div class="post-combo"><div class="row wrap" style="gap:8px"><span class="chip">${icon('link')}Combo</span><b class="grow">${esc(c.name)}</b>${c.role ? `<span class="chip">${esc(ROLE_NAMES[c.role] || c.role)}</span>` : ''}<span class="tiny num">${esc(propById(c.prop)?.name || c.prop)} · ${seq.length} ${seq.length === 1 ? 'skill' : 'skills'}</span>${mine && c.id ? `<a class="small" href="#/combos/${esc(c.id)}">Open</a>` : ''}</div>
+    <div class="combo-seq">${seq.map((id, i) => trickChip(c.prop, id, reps[i] > 1 ? `<i class="num">×${reps[i]}</i>` : '') + (i < seq.length - 1 ? icon('right') : '')).join('')}</div></div>`;
+}
+const tagKey = t => `${t.prop}:${t.skill}`;
+// render() leaves the page alone while a text field has focus (so typing survives a save), so
+// anything that must redraw the composer steps out of its text box first.
+function leaveCompose() { const a = document.activeElement; if (a && a.closest?.('#compose-form') && /^(TEXTAREA|INPUT)$/.test(a.tagName)) a.blur(); }
+const hasTag = t => social.draftTags.some(x => tagKey(x) === tagKey(t));
+// Tricks worth suggesting: the last session's focus and the skills levelled up this week.
+function suggestedTags() {
+  const out = [], seen = new Set(social.draftTags.map(tagKey));
+  const add = (prop, skill, why) => { const t = { prop, skill, why }; if (skillOf(prop, skill) && !seen.has(tagKey(t))) { seen.add(tagKey(t)); out.push(t); } };
+  const last = allSessions().filter(s => (s.focus || []).length).sort((a, b) => b.date.localeCompare(a.date))[0];
+  if (last) for (const id of last.focus) add(last.prop, id, last.date === dayKey() ? 'Today' : 'Last session');
+  const week = Date.now() - 7 * 864e5;
+  for (const e of allEvents()) if (e.to > e.from && new Date(e.t) > week) add(e.prop, e.id, 'Levelled up');
+  return out.slice(0, 6);
+}
+// Everything the picker can offer, filtered by the query: tricks from every prop and the user's combos.
+function pickItems(q) {
+  q = q.trim().toLowerCase();
+  const items = [];
+  if (!q) for (const t of suggestedTags()) items.push({ kind: 'skill', group: 'Suggested', prop: t.prop, id: t.skill, why: t.why });
+  for (const p of myProps()) {
+    const d = docOf(p.id);
+    for (const c of d ? d.state.combos : []) {
+      if ((c.seq || []).length < 2) continue;
+      if (!q || c.name.toLowerCase().includes(q) || c.seq.some(id => id.toLowerCase() === q)) items.push({ kind: 'combo', group: 'Combos', prop: p.id, combo: c });
+    }
+  }
+  for (const p of myProps()) {
+    const cat = CATALOGS[p.id];
+    if (!cat) continue;
+    const hits = cat.skills.filter(s => !q || s.id.toLowerCase().startsWith(q) || s.name.toLowerCase().includes(q));
+    for (const s of (q ? hits : hits.slice(0, 6))) items.push({ kind: 'skill', group: p.name, prop: p.id, id: s.id });
+  }
+  return items.slice(0, 60);
+}
+function pickAdd(item) {
+  const inSearch = document.activeElement?.id === 'pick-q';
+  leaveCompose();
+  if (item.kind === 'combo') {
+    const c = item.combo;
+    social.draftCombo = social.draftCombo?.id === c.id ? null : { id: c.id, name: c.name, role: c.role || '', prop: item.prop, seq: [...c.seq], reps: c.seq.map((_, i) => (c.reps || [])[i] || 1) };
+  } else {
+    const t = { prop: item.prop, skill: item.id };
+    if (hasTag(t)) social.draftTags = social.draftTags.filter(x => tagKey(x) !== tagKey(t));
+    else if (social.draftTags.length < MAX_TAGS) social.draftTags.push(t);
+    else toast(`Up to ${MAX_TAGS} tricks on a post.`);
+  }
+  render();
+  if (inSearch) $('#pick-q')?.focus();
+}
+function pickListHTML() {
+  const items = pickItems(social.pickQ);
+  social.pickIdx = Math.min(social.pickIdx, Math.max(0, items.length - 1));
+  let last = '';
+  const rows = items.map((it, i) => {
+    const head = it.group !== last ? `<div class="pick-h">${esc(it.group)}</div>` : '';
+    last = it.group;
+    const on = it.kind === 'combo' ? social.draftCombo?.id === it.combo.id : hasTag({ prop: it.prop, skill: it.id });
+    const label = it.kind === 'combo'
+      ? `<span class="tag">${icon('link')}</span><span class="grow"><b>${esc(it.combo.name)}</b><span class="tiny"> ${it.combo.seq.join(' ')}</span></span>`
+      : `<span class="tag">${esc(it.id)}</span><span class="grow">${esc(skillOf(it.prop, it.id)?.name || it.id)}${it.why ? `<span class="tiny"> · ${esc(it.why)}</span>` : ''}</span>`;
+    return `${head}<button type="button" class="pick-i ${i === social.pickIdx ? 'on' : ''} ${on ? 'picked' : ''}" data-act="pick-add" data-i="${i}" role="option" aria-selected="${on}">${label}${on ? icon('check') : ''}</button>`;
+  }).join('');
+  return rows || '<div class="empty small">No matches. Tricks come from the skill maps of your props.</div>';
+}
+function picker() {
+  return `<div class="picker" role="dialog" aria-label="Tag tricks and combos"><div class="row" style="gap:6px"><input type="search" id="pick-q" value="${esc(social.pickQ)}" placeholder="Search tricks and combos" autocomplete="off" aria-label="Search tricks and combos"><button type="button" class="btn sm" data-act="pick-close">Done</button></div>
+    <div class="pick-list" role="listbox">${pickListHTML()}</div></div>`;
+}
+function refreshPicker() { const l = $('.pick-list'); if (l) { l.innerHTML = pickListHTML(); $('.pick-i.on')?.scrollIntoView({ block: 'nearest' }); } }
 function composer() {
-  const cat = CATALOGS[ui.prop];
+  const chips = social.draftTags.map(t => trickChip(t.prop, t.skill, `<button type="button" class="x" data-act="tag-rm" data-prop="${t.prop}" data-skill="${esc(t.skill)}" aria-label="Remove ${esc(t.skill)}">${icon('x')}</button>`, false)).join('')
+    + (social.draftCombo ? `<span class="chip trick combo-chip">${icon('link')}<span class="trick-n">${esc(social.draftCombo.name)}</span><button type="button" class="x" data-act="combo-rm-draft" aria-label="Remove combo">${icon('x')}</button></span>` : '');
+  const sugg = social.pickOpen ? [] : suggestedTags();
   return `<form class="card compose" id="compose-form"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
     <textarea name="body" maxlength="2000" rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
     ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt=""><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>` : ''}
+    <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
+    ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
     <div class="row wrap" style="gap:8px"><label class="btn sm">${icon('image')}Picture<input type="file" accept="image/*" data-change="compose-img" hidden></label>
-      ${cat ? `<select name="skill" class="sm" aria-label="Tag a skill"><option value="">Tag a ${esc(curProp().name.toLowerCase())} skill</option>${skillOptions()}</select>` : ''}
       <span class="grow"></span><button class="btn primary sm" type="submit">${icon('send')}Post</button></div></div></div></form>`;
+}
+// The Combos page's Publish button: bring the combo to the composer with a line to edit.
+function publishCombo(c) {
+  social.draftCombo = { id: c.id, name: c.name, role: c.role || '', prop: ui.prop, seq: [...(c.seq || [])], reps: (c.seq || []).map((_, i) => (c.reps || [])[i] || 1) };
+  if (!social.draftBody.trim()) social.draftBody = `New combo: ${c.name}. `;
+  social.pickOpen = false; leaveCompose();
+  if (location.hash === '#/timeline') render(); else location.hash = '#/timeline';
+  setTimeout(() => { const t = $('#compose-form textarea'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 50);
 }
 function peopleCard() {
   if (!social.people) { loadPeople(); return `<div class="card"><div class="card-h"><h2>People</h2></div><div class="empty small">Loading…</div></div>`; }
@@ -206,10 +305,27 @@ document.addEventListener('click', async e => {
       if (confirm('Delete this comment?')) { const r = await api('comments/' + id, 'DELETE'); if (r.ok) refreshPost(Number(d.post)); else toast(r.error); }
       break;
     case 'more-posts': loadFeed(social.key, true); break;
-    case 'compose-img-rm': social.draftImg = ''; render(); break;
+    case 'compose-img-rm': social.draftImg = ''; leaveCompose(); render(); break;
+    case 'pick-open': social.pickOpen = !social.pickOpen; social.pickQ = ''; social.pickIdx = 0; leaveCompose(); render(); if (social.pickOpen) $('#pick-q')?.focus(); break;
+    case 'pick-close': social.pickOpen = false; leaveCompose(); render(); $('#compose-form textarea')?.focus(); break;
+    case 'pick-add': { const it = pickItems(social.pickQ)[Number(d.i)]; if (it) pickAdd(it); $('#pick-q')?.focus(); break; }
+    case 'sugg-add': pickAdd({ kind: 'skill', prop: d.prop, id: d.skill }); break;
+    case 'tag-rm': social.draftTags = social.draftTags.filter(x => tagKey(x) !== `${d.prop}:${d.skill}`); leaveCompose(); render(); break;
+    case 'combo-rm-draft': social.draftCombo = null; leaveCompose(); render(); break;
+    case 'combo-publish': { const c = state.combos.find(x => x.id === d.id); if (c) publishCombo(c); break; }
   }
 });
-document.addEventListener('input', e => { if (e.target.closest('#compose-form') && e.target.name === 'body') social.draftBody = e.target.value; });
+document.addEventListener('input', e => {
+  if (e.target.closest('#compose-form') && e.target.name === 'body') social.draftBody = e.target.value;
+  if (e.target.id === 'pick-q') { social.pickQ = e.target.value; social.pickIdx = 0; refreshPicker(); }
+});
+document.addEventListener('keydown', e => {
+  if (e.target.id !== 'pick-q') return;
+  const items = pickItems(social.pickQ);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { social.pickIdx = (social.pickIdx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; refreshPicker(); } }
+  else if (e.key === 'Enter') { e.preventDefault(); if (items[social.pickIdx]) pickAdd(items[social.pickIdx]); }
+  else if (e.key === 'Escape') { e.preventDefault(); social.pickOpen = false; e.target.blur(); render(); $('#compose-form textarea')?.focus(); }
+});
 document.addEventListener('change', async e => {
   if (e.target.dataset.change !== 'compose-img') return;
   const f = e.target.files[0]; e.target.value = '';
@@ -222,12 +338,12 @@ document.addEventListener('submit', async e => {
   if (f.id === 'compose-form') {
     e.preventDefault();
     const body = f.body.value.trim();
-    if (!body && !social.draftImg) { toast('Write something or add a picture.'); return; }
+    if (!body && !social.draftImg && !social.draftCombo) { toast('Write something, add a picture or attach a combo.'); return; }
     const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
-    const r = await api('posts', 'POST', { body, prop: f.skill?.value ? ui.prop : '', skill: f.skill?.value || '', image: social.draftImg });
+    const r = await api('posts', 'POST', { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo });
     btn.disabled = false;
     if (!r.ok) { toast(r.error); return; }
-    social.draftBody = ''; social.draftImg = '';
+    social.draftBody = ''; social.draftImg = ''; social.draftTags = []; social.draftCombo = null; social.pickOpen = false; leaveCompose();
     Object.assign(social.users, r.data.users);
     if (social.key === 'all') social.posts.unshift(r.data.posts[0]); else social.stale = true;
     render(); grant(['first-post']); toast('Posted.');

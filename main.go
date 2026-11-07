@@ -1119,6 +1119,7 @@ const (
 	pageSize     = 20
 	maxAchKeys   = 60
 	maxNotifList = 40
+	maxTags      = 10
 )
 
 // Social networks a profile can link to. The value stored is the handle, not a URL.
@@ -1643,14 +1644,74 @@ func (a *app) notifyMentions(text string, actor, postID int64, skip ...int64) {
 	}
 }
 
+// A trick tagged on a post, and a combo attached to one. Skill ids are catalog ids such as
+// F7; the browser resolves them to names, so a renamed skill still reads right.
+type postTag struct {
+	Prop  string `json:"prop"`
+	Skill string `json:"skill"`
+}
+type postCombo struct {
+	ID   string   `json:"id"`
+	Name string   `json:"name"`
+	Role string   `json:"role"`
+	Prop string   `json:"prop"`
+	Seq  []string `json:"seq"`
+	Reps []int    `json:"reps"`
+}
+
+var skillIDRE = regexp.MustCompile(`^[A-Za-z0-9]{1,12}$`)
+
+func knownProp(p string) bool { return slices.Contains(knownProps, p) }
+
+// cleanTags drops repeats and anything that is not a known prop and a plausible skill id.
+func cleanTags(in []postTag) ([]postTag, bool) {
+	out := []postTag{}
+	seen := map[string]bool{}
+	for _, t := range in {
+		t.Skill = strings.TrimSpace(t.Skill)
+		if !knownProp(t.Prop) || !skillIDRE.MatchString(t.Skill) {
+			return nil, false
+		}
+		if k := t.Prop + ":" + t.Skill; !seen[k] {
+			seen[k] = true
+			out = append(out, t)
+		}
+	}
+	return out, len(out) <= maxTags
+}
+
+func cleanCombo(c *postCombo) bool {
+	c.Name = strings.TrimSpace(c.Name)
+	if c.Name == "" || len([]rune(c.Name)) > 80 || len(c.ID) > 40 || !knownProp(c.Prop) || len(c.Seq) == 0 || len(c.Seq) > 30 {
+		return false
+	}
+	if !slices.Contains([]string{"", "reliable", "signature", "stretch"}, c.Role) {
+		return false
+	}
+	for _, s := range c.Seq {
+		if !skillIDRE.MatchString(s) {
+			return false
+		}
+	}
+	if len(c.Reps) != 0 && len(c.Reps) != len(c.Seq) {
+		return false
+	}
+	for _, n := range c.Reps {
+		if n < 1 || n > 9 {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) {
 	var in struct {
-		Body  string `json:"body"`
-		Prop  string `json:"prop"`
-		Skill string `json:"skill"`
-		Image string `json:"image"`
+		Body  string     `json:"body"`
+		Image string     `json:"image"`
+		Tags  []postTag  `json:"tags"`
+		Combo *postCombo `json:"combo"`
 	}
-	if !readJSON(w, r, maxImage+4*maxPost+4096, &in) {
+	if !readJSON(w, r, maxImage+4*maxPost+8192, &in) {
 		return
 	}
 	body := strings.TrimSpace(in.Body)
@@ -1662,23 +1723,35 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		fail(w, http.StatusBadRequest, "The picture must be a JPEG or PNG under 300 KB.")
 		return
 	}
-	if body == "" && in.Image == "" {
-		fail(w, http.StatusBadRequest, "Write something or add a picture.")
+	tags, ok := cleanTags(in.Tags)
+	if !ok {
+		fail(w, http.StatusBadRequest, "Tag up to 10 tricks from your props.")
 		return
 	}
-	prop := ""
-	for _, p := range knownProps {
-		if p == in.Prop {
-			prop = p
-		}
+	if in.Combo != nil && !cleanCombo(in.Combo) {
+		fail(w, http.StatusBadRequest, "That combo cannot be attached.")
+		return
 	}
-	skill := strings.TrimSpace(in.Skill)
-	if prop == "" || len(skill) > 12 {
-		skill = ""
+	if body == "" && in.Image == "" && in.Combo == nil {
+		fail(w, http.StatusBadRequest, "Write something, add a picture or attach a combo.")
+		return
+	}
+	data := map[string]any{}
+	if len(tags) > 0 {
+		data["tags"] = tags
+	}
+	if in.Combo != nil {
+		data["combo"] = in.Combo
+	}
+	dataJSON, _ := json.Marshal(data)
+	// The first tag also fills the older prop and skill columns, so earlier clients still read it.
+	prop, skill := "", ""
+	if len(tags) > 0 {
+		prop, skill = tags[0].Prop, tags[0].Skill
 	}
 	var id int64
-	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		u.ID, body, prop, skill, in.Image).Scan(&id); err != nil {
+	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image, data) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		u.ID, body, prop, skill, in.Image, string(dataJSON)).Scan(&id); err != nil {
 		a.serverError(w, err)
 		return
 	}

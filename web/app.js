@@ -476,7 +476,7 @@ function pageCombos() {
           <ol class="cb-steps">${steps || '<li class="small muted" style="padding:8px 2px">Start with two skills you can already do.</li>'}</ol>
           <select data-change="combo-add" data-id="${esc(c.id)}" aria-label="Add skill to ${esc(c.name)}"><option value="">+ Add a skill</option>${skillOptions()}</select>
           <div class="cb-runs"><span class="small muted num grow">${cleanRuns} clean of ${runs} full runs</span>
-            <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button></div>
+            <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button>${flags.community && seq.length >= 2 ? `<button class="btn sm" data-act="combo-publish" data-id="${esc(c.id)}" data-tip="Share this combo on the timeline">${icon('send')}Publish</button>` : ''}</div>
         </div>
       </div></section>`;
   }).join('');
@@ -604,7 +604,7 @@ function pageFor(p, a, b, title) {
   if (p === 'timeline' || p === 'post') return pageTimeline(p === 'post' ? a : '');
   if (p === 'u') return pageUser(a);
   if (p === 'achievements') return pageAchievements();
-  if (p === 'combos') return pageCombos();
+  if (p === 'combos') { if (a) ui.comboOpen = a; return pageCombos(); }
   if (p === 'plan') return pagePlan();
   if (p === 'profile') return pageProfile();
   if (p === 'admin' && me?.role === 'admin') return pageAdmin();
