@@ -186,7 +186,23 @@ const Demo = (() => {
     sc.onload = () => window.Figure3D.load('assets/human.glb').then(ok => { if (ok) { mount(); comboMount(); } });
     document.head.appendChild(sc);
   }
-  const use3d = clip => want3d && !clip.hide && typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready;
+  const use3d = clip => want3d && typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready;
+  // A grip picture has no body of its own. For the model, stand one behind it: the fists in
+  // the picture become the model's hands, held out in front of the chest, and a hand the
+  // picture does not show hangs open. Returns the pose and the hand frames.
+  function closeUp(props, f) {
+    const fists = props.map((p, i) => [p, i]).filter(([p]) => p.kind === 'fist'), K = (i, k) => f[i + '.' + k];
+    const at = fists.length ? mul(fists.reduce((a, [, i]) => add(a, K(i, 'o')), [0, 0, 0]), 1 / fists.length) : [0, 0, 0];
+    // One hand: its shoulder stands straight behind it, the arm out level. Two hands: the body is centred.
+    const one = fists.length === 1 ? (fists[0][0].hand === 'L' ? -0.2 : 0.2) : 0;
+    const pelvis = add(at, [one, -DIM.chest, one ? -0.56 : -0.52]), p = { pelvis, face: [0, 0, 1] };
+    for (const [s, k] of [['L', 1], ['R', -1]]) p['f' + s] = add(pelvis, [DIM.stance * k, DIM.ankle - DIM.pelvis, 0]);
+    const hands = {};
+    for (const [pr, i] of fists) { p['h' + pr.hand] = K(i, 'o'); hands[pr.hand] = { o: K(i, 'o'), x: K(i, 'x'), w: K(i, 'w'), grip: pr.grip || 'closed', r: pr.r || 0.012 }; }
+    const J = rig(p);
+    for (const s of ['L', 'R']) if (!hands[s]) hands[s] = handPose(J, s, [], f);
+    return { J, hands };
+  }
 
   /* ---------- drawing ---------- */
   function draw(ctx, W, clip, ph, view, mir, col, full) {
@@ -217,13 +233,15 @@ const Demo = (() => {
     for (const p of props) if (p.hand) busy[p.hand] = true;
     if (solid) {
       // The model, its props and their shading come from three.js; trails and labels are drawn over it here.
-      const J = rig(f), list = [], R = [cy, 0, k * sy], D = [-k * sy, 0, cy], U = sub([0, cos(tilt), 0], mul(D, sin(tilt)));
-      props.forEach((p, i) => { const pt = parts(p, i, f); for (const [pts, wd, role] of pt.segs) list.push({ pts, w: wd, color: col[role] }); for (const [c, r, role] of pt.balls) list.push({ c, r, color: col[role] }); });
-      const sh = pr([J.pelvis[0], 0, J.pelvis[2]]), g = ctx.createRadialGradient(sh[0], sh[1], 0, sh[0], sh[1], 0.42 * S);
-      g.addColorStop(0, 'rgba(0,0,0,.35)'); g.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.save(); ctx.translate(sh[0], sh[1]); ctx.scale(1, 0.28); ctx.translate(-sh[0], -sh[1]); ctx.fillStyle = g; ctx.fillRect(sh[0] - S, sh[1] - S, 2 * S, 2 * S); ctx.restore();
-      const gl = window.Figure3D.render(W, J, { L: handPose(J, 'L', props, f), R: handPose(J, 'R', props, f) }, list,
-        { right: R, up: U, toward: cross(R, U), cx: (aim ? aim[0] : 0) + 0.3 * k * sy * sy, cy: aim ? aim[1] : (base - W / 2) / S, half: W / (2 * S) });
+      const near = clip.hide ? closeUp(props, f) : null, J = near ? near.J : rig(f), list = [], R = [cy, 0, k * sy], D = [-k * sy, 0, cy], U = sub([0, cos(tilt), 0], mul(D, sin(tilt)));
+      props.forEach((p, i) => { if (p.kind === 'fist') return; const pt = parts(p, i, f); for (const [pts, wd, role] of pt.segs) list.push({ pts, w: wd, color: col[role] }); for (const [c, r, role] of pt.balls) list.push({ c, r, color: col[role] }); });
+      if (!near) {
+        const sh = pr([J.pelvis[0], 0, J.pelvis[2]]), g = ctx.createRadialGradient(sh[0], sh[1], 0, sh[0], sh[1], 0.42 * S);
+        g.addColorStop(0, 'rgba(0,0,0,.35)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.save(); ctx.translate(sh[0], sh[1]); ctx.scale(1, 0.28); ctx.translate(-sh[0], -sh[1]); ctx.fillStyle = g; ctx.fillRect(sh[0] - S, sh[1] - S, 2 * S, 2 * S); ctx.restore();
+      }
+      const gl = window.Figure3D.render(W, J, near ? near.hands : { L: handPose(J, 'L', props, f), R: handPose(J, 'R', props, f) }, list,
+        { right: R, up: U, toward: cross(R, U), cx: (aim ? aim[0] : 0) + 0.3 * k * sy * sy, cy: aim ? aim[1] : (base - W / 2) / S, half: W / (2 * S), cut: near && view !== 'side' ? 0.25 : 0 });
       ctx.drawImage(gl, 0, 0, W, W);
     } else if (!clip.hide) {
       const J = rig(f), HAND = 1.3;

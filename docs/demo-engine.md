@@ -54,6 +54,18 @@ A body movement is a function of the phase of the move: weight from foot to foot
 bending the knees, a full turn in quarter-turn steps with one foot always on the floor. Hands and
 props are carried along, and for simulated props the swing is simulated again on the moving body.
 
+The 3D model (`figure/src/figure.js`) is posed from these joints with the anatomy a skeleton
+imposes on top. Each limb bone is pointed at the next joint and then rolled about its own axis:
+the upper arm so that the elbow bends toward the forearm (a hinge, not a ball joint), the thigh
+so that the knee bends toward the shin and points where the toes point, the shin so that its
+front faces the toes. The forearm is turned to follow the palm (pronation and supination), held
+within 100 degrees of its rest, and whatever is left is wrist flexion and deviation. The
+collarbone lifts as the hand goes above the shoulder. The neck and head take back part of the
+trunk's lean, so the head stays nearer upright. The fingers curl round what is held, less for a
+thick handle. For a close-up grip picture, which has no body, a standing body is placed with its
+shoulder straight behind the fist, and everything beyond a plane 25 cm behind the hand is cut
+away, so the picture shows the model's hand and forearm with the prop.
+
 ## What is checked on every clip
 
 Physics, as before: stick, cord, tether and staff lengths; slack; loops with no seam; free fall in
@@ -113,9 +125,11 @@ same clip. If nothing on the grid is clear, the move gets no demo.
 1. **Nothing wraps or rolls.** Tethers and cords are not colliders and there is no rolling
    contact, so wraps, wrist rolls and all contact staff are still out. This is the largest group
    left (about 110 skills).
-2. **The hand is a ball.** There is no wrist or finger model. The test measures how far a prop
-   turns inside the hand (often 360 degrees or more for staff and buugeng) and the caption says
-   finger work is not shown, but the figure cannot show how the grip changes.
+2. **The hand holds but does not work.** The 3D hand has a thumb and fingers that close round
+   the prop, and the forearm turns with the palm, but there is still no finger model in the
+   physics: the test measures how far a prop turns inside the hand (often 360 degrees or more
+   for staff and buugeng) and the caption says finger work is not shown. The drawn fallback
+   figure's hand is a fist.
 3. **Hand-driven moves have no forces.** They are checked against the body, not against what a
    hand can push. Timing is even, where a real spinner speeds up and slows down.
 4. **The poi hand model only regulates speed.** It cannot steer the plane, which is what blocks
