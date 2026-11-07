@@ -34,6 +34,7 @@ async function loadSession() {
   const r = await api('me');
   if (!r.ok) throw new Error(r.status);
   me = r.data.user; flags = r.data.flags || {};
+  setAchievements(r.data.achievements);
   for (const k in docs) delete docs[k];
   if (!myProps().some(p => p.id === ui.prop)) ui.prop = myProps()[0].id;
   useCatalog(ui.prop);
@@ -94,6 +95,7 @@ const TIPS = {
   plan: ['Plan', ['Tick a gate when you pass its test. Gates decide your current phase.', 'The 12-week track is for turning skills you already have into one routine.']],
   profile: ['Your profile', ['Add a picture, a bio and your social links, and choose the props you use.', 'There is no email on file, so a forgotten password has to be reset by the admin.']],
   timeline: ['Timeline', ['Post what you worked on, with a picture or a tagged skill. Like and comment on others\u2019 posts.', 'Your milestones post themselves; turn that off in your profile.', 'The bell at the top shows likes, comments, mentions and new badges.']],
+  achievements: ['Achievements', ['XP comes from skill levels, sessions, gates, combos and weekly challenges. Levels count every prop.', 'Streak badges count a practice session on any prop.']],
 };
 function tipCard(k) {
   if (flags.tour && !tourBroken) return ''; // the guided tour covers it
@@ -141,6 +143,10 @@ const TOURS = {
     { t: '#compose-form', n: 'Post', c: 'Say what you worked on, add a picture or tag a skill. Use @name to mention someone.' },
     { t: '[data-tour=people]', n: 'People', c: 'Everyone here, by XP. Open a profile to see their bio, links and badges.' },
     { t: '#bell', n: 'Notifications', c: 'Likes, comments, mentions and new badges arrive here.' },
+  ],
+  achievements: [
+    { t: '[data-tour=level]', n: 'Level and XP', c: 'XP from every prop adds up to one level.' },
+    { t: '[data-tour=challenges]', n: 'Weekly challenges', c: 'Four challenges a week, Monday to Sunday, each worth XP.' },
   ],
   profile: [
     { t: '.avatar.big', n: 'Your picture', c: 'Upload a picture. It is cropped to a square and shown in the menu.' },
@@ -242,6 +248,7 @@ function pageProfile() {
       <div class="stack" style="gap:12px">
         <label class="field">Bio<textarea name="bio" maxlength="300" placeholder="What you spin, where you practise, what you are working toward">${esc(me.bio || '')}</textarea></label>
         <div class="grid links-grid">${Object.entries(LINK_KINDS).map(([k, L]) => `<label class="field social-${k}">${icon(k)} ${L.name}<input type="text" name="${k}" maxlength="120" value="${esc((me.links || {})[k] || '')}" placeholder="${L.hint} or just the handle" autocapitalize="none" spellcheck="false"></label>`).join('')}</div>
+        <label class="check" ${flags.community && flags.game ? '' : 'hidden'}><input type="checkbox" name="autoPost" ${(me.prefs || {}).autoPost === false ? '' : 'checked'}><span>Post my milestones to the timeline automatically (new badges)</span></label>
         <p class="form-err" id="about-err" role="alert" hidden></p>
         <div><button class="btn" type="submit">Save</button></div></div></form>
     <form class="card span-2" id="props-form"><div class="card-h"><h2>Your props</h2></div>${propChecks(me.props || [])}
@@ -292,6 +299,7 @@ function pageDashLite() {
   <div class="grid g4" data-tour="stats" style="margin-bottom:16px">
     <div class="card stat"><div class="lbl">Last 7 days</div><div class="val">${weekMinutes(m)}<small> min</small></div><div class="foot">${fmtMin(total)} in total</div></div>
     <div class="card stat"><div class="lbl">Practice streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div></div>
+  ${flags.game ? `<div style="margin-bottom:16px">${levelCard(true)}</div>` : ''}
   <div class="stack"><div class="card"><div class="card-h"><h2 class="grow">Practice, last 9 months</h2><a class="small" href="#/practice">View log</a></div>${heatmap(m)}</div>${propPlaceholder(p)}</div>`;
 }
 const needCatalog = title => `<div class="page-h"><div><h1>${title}</h1><p>${esc(curProp().name)}</p></div></div>${propPlaceholder(curProp())}`;
@@ -375,7 +383,7 @@ document.addEventListener('submit', async e => {
   } else if (f.id === 'about-form') {
     const links = {};
     for (const k in LINK_KINDS) links[k] = f[k].value;
-    const r = await api('me', 'PUT', { bio: f.bio.value, links });
+    const r = await api('me', 'PUT', { bio: f.bio.value, links, prefs: { autoPost: f.autoPost.checked } });
     if (!r.ok) { showErr('about-err', r.error); return; }
     me = r.data.user; showErr('about-err', ''); document.activeElement?.blur?.(); delete social.profile[me.username];
     toast('Profile saved.'); render();

@@ -22,10 +22,12 @@ named but not described.
 - **Dashboard, Practice, Combos, Plan:** per user and per prop.
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
 - **Profiles:** a picture, a bio and Instagram, TikTok and YouTube links, shown on a public profile page
-  (`#/u/<username>`) with the user's posts.
-- **Timeline:** posts with a picture or a tagged skill, likes, comments and @mentions, and a list of
-  everyone here.
-- **Notifications:** a bell in the header for likes, comments and mentions.
+  (`#/u/<username>`) with the user's level, streak, badges and posts.
+- **Timeline:** posts with a picture or a tagged skill, likes, comments and @mentions; new badges post
+  themselves as milestones (each user can turn that off). A people list ranks everyone by XP.
+- **Notifications:** a bell in the header for likes, comments, mentions and new badges.
+- **Gamification:** XP and levels, weekly challenges, achievements, and the Plan as quests.
+  See [Gamification](#gamification).
 
 Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Only the guided tour has a build step.
 
@@ -44,7 +46,7 @@ Changing the admin password in `.env` later does nothing; change it on the Profi
 ## Data
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
-  likes, comments and notifications.
+  likes, comments, notifications and achievements.
 - Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
 - `data/backups/progress-DATE.json` is written before the first change each day, kept 14 days.
   Posts and comments are not in it; the database dump below covers them.
@@ -57,8 +59,8 @@ The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only.
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
 on the Admin page. No restart is needed. `signups` opens or closes sign-up, and `tour` turns the guided tour on.
-`community` (timeline, public profiles, people list, notifications) is on by default and can be turned off
-if it gets in the way.
+`community` (timeline, public profiles, people list, notifications) and `game` (XP, levels, challenges,
+achievements, quests) are on by default and can be turned off if they get in the way.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -67,13 +69,34 @@ if it gets in the way.
 | `references` | Source pages and videos |
 
 
+## Gamification
+
+Everything is worked out in the browser from the progress documents (`web/game.js`); the server
+only records which achievements were unlocked and when, and the level, XP, streak and totals each
+user reports for their profile and the people list (`social.go`).
+
+- **XP.** A skill variant earns 10, 40, 100 or 200 XP at levels 1 to 4. A session is 10 XP plus one
+  per minute up to 120. A phase gate is 150 XP and a track week 40. A ready combo is 50 XP and each
+  clean run 15, up to 20 runs. Each weekly challenge done is 40 XP. XP from every prop adds up to one
+  level: reaching level n takes 50 * (n - 1) * n XP, with titles from Beginner to Legend.
+- **Streak.** Consecutive days with a logged session on any prop, for the streak badges and the
+  profile.
+- **Weekly challenges.** Monday to Sunday, across props: practise on 4 days, log 120 minutes, raise
+  3 skill levels, level up a weak-hand skill.
+- **Achievements.** Badges for sessions, hours, streaks, clean skills, both hands, gates, combos and
+  the community, plus one per branch and one per roadmap for each of the user's props. New badges show
+  an unlock card, a notification and one milestone post per batch.
+- **Plan as quests.** Each phase shows its skills as chips, the skill XP earned of what it holds, and
+  the XP its gate pays; the page opens with the prop's XP, the week's challenges and a focus skill.
+
 ## Community API
 
-All of these need a signed-in user. `GET /api/users` (people), `GET /api/users/{name}` (profile), `GET /api/posts?before=&user=`, `POST /api/posts`, `GET|DELETE
+All of these need a signed-in user. `GET /api/users` (people, most XP first), `GET /api/users/{name}`
+(profile with achievements), `GET /api/posts?before=&user=`, `POST /api/posts`, `GET|DELETE
 /api/posts/{id}`, `POST /api/posts/{id}/like` (toggle), `POST /api/posts/{id}/comments`,
-`DELETE /api/comments/{id}`, `GET /api/notifications`, `PUT /api/notifications/read`.
-Profile fields (`bio`, `links`) go through `PUT /api/me`; links are stored as handles, whether a
-handle or a URL was pasted.
+`DELETE /api/comments/{id}`, `POST /api/achievements`, `GET /api/notifications`,
+`PUT /api/notifications/read`. Profile fields (`bio`, `links`, `prefs`, `stats`) go through
+`PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted.
 
 ## Guided tour
 

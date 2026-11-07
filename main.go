@@ -53,7 +53,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true}
+var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -115,22 +115,24 @@ type user struct {
 	Avatar      string          `json:"avatar"`
 	Bio         string          `json:"bio"`
 	Links       json.RawMessage `json:"links"`
+	Prefs       json.RawMessage `json:"prefs"`
+	Stats       json.RawMessage `json:"stats"`
 	Created     time.Time       `json:"created"`
 }
 
-const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.created_at"
+const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at"
 
 type scanner interface{ Scan(...any) error }
 
 // scanUser reads userCols, followed by any extra columns the query selected.
 func scanUser(row scanner, extra ...any) (*user, error) {
 	var u user
-	var props, seen, links []byte
-	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &u.Created}, extra...)
+	var props, seen, links, prefs, stats []byte
+	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &prefs, &stats, &u.Created}, extra...)
 	if err := row.Scan(dst...); err != nil {
 		return nil, err
 	}
-	u.Props, u.Seen, u.Links = props, seen, links
+	u.Props, u.Seen, u.Links, u.Prefs, u.Stats = props, seen, links, prefs, stats
 	return &u, nil
 }
 
@@ -328,7 +330,15 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": a.currentUser(r), "flags": f, "props": knownProps})
+	u := a.currentUser(r)
+	var ach []achievement
+	if u != nil {
+		if ach, err = a.achievementsOf(u.ID); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach})
 }
 
 type credentials struct {
@@ -474,6 +484,10 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		Bio         *string   `json:"bio"`
 		// Social links, as handles or pasted URLs; see cleanLink.
 		Links *map[string]string `json:"links"`
+		// Preferences: autoPost (share milestones on the timeline).
+		Prefs *map[string]bool `json:"prefs"`
+		// Level, streak and totals the client worked out, shown on profiles.
+		Stats json.RawMessage `json:"stats"`
 	}
 	if !readJSON(w, r, 200<<10, &in) {
 		return
@@ -551,8 +565,27 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		u.Links, _ = json.Marshal(links)
 	}
-	_, err := a.db.Exec(`UPDATE users SET display_name = $2, props = $3, seen = $4, onboarded = $5, avatar = $6, bio = $7, links = $8 WHERE id = $1`,
-		u.ID, u.DisplayName, string(u.Props), string(u.Seen), u.Onboarded, u.Avatar, u.Bio, string(u.Links))
+	if in.Prefs != nil {
+		prefs := map[string]bool{}
+		json.Unmarshal(u.Prefs, &prefs)
+		for k, v := range *in.Prefs {
+			if k != "autoPost" {
+				fail(w, http.StatusBadRequest, "Unknown preference: "+k)
+				return
+			}
+			prefs[k] = v
+		}
+		u.Prefs, _ = json.Marshal(prefs)
+	}
+	if len(in.Stats) > 0 {
+		if !validStats(in.Stats) {
+			fail(w, http.StatusBadRequest, "Stats must be a small object of numbers.")
+			return
+		}
+		u.Stats = in.Stats
+	}
+	_, err := a.db.Exec(`UPDATE users SET display_name = $2, props = $3, seen = $4, onboarded = $5, avatar = $6, bio = $7, links = $8, prefs = $9, stats = $10 WHERE id = $1`,
+		u.ID, u.DisplayName, string(u.Props), string(u.Seen), u.Onboarded, u.Avatar, u.Bio, string(u.Links), string(u.Prefs), string(u.Stats))
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -1025,11 +1058,15 @@ func main() {
 /* ---------- community ----------
 
 Community features: profiles with a bio and social links, a timeline of posts with
-likes and comments, and notifications. */
+likes and comments, notifications, and achievements. Progress stays a client-owned
+document, so achievements and the stats shown on profiles are reported by the client
+and only recorded here. */
 
 const schemaSocial = `
 ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS links JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS prefs JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stats JSONB NOT NULL DEFAULT '{}';
 CREATE TABLE IF NOT EXISTS posts (
 	id BIGSERIAL PRIMARY KEY,
 	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1056,6 +1093,12 @@ CREATE TABLE IF NOT EXISTS comments (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS comments_post ON comments (post_id, id);
+CREATE TABLE IF NOT EXISTS achievements (
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	unlocked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (user_id, key)
+);
 CREATE TABLE IF NOT EXISTS notifications (
 	id BIGSERIAL PRIMARY KEY,
 	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1074,6 +1117,7 @@ const (
 	maxComment   = 1000
 	maxImage     = 400000 // bytes of data URL; the client sends a resized JPEG
 	pageSize     = 20
+	maxAchKeys   = 60
 	maxNotifList = 40
 )
 
@@ -1083,6 +1127,7 @@ var linkKinds = []string{"instagram", "tiktok", "youtube"}
 var (
 	handleRE   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,60}$`)
 	ytHandleRE = regexp.MustCompile(`^[A-Za-z0-9._@/-]{1,80}$`)
+	achKeyRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9:_-]{0,60}$`)
 	mentionRE  = regexp.MustCompile(`(?:^|[^a-z0-9._-])@([a-z0-9][a-z0-9._-]{2,23})`)
 )
 
@@ -1143,6 +1188,29 @@ func mentions(text string) []string {
 	return out
 }
 
+// validStats accepts a small flat object of numbers and booleans, as the client reports
+// its level, streak and totals for the profile and the people list.
+func validStats(raw json.RawMessage) bool {
+	if len(raw) > 2000 {
+		return false
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil || len(m) > 40 {
+		return false
+	}
+	for k, v := range m {
+		if len(k) > 30 {
+			return false
+		}
+		switch v.(type) {
+		case float64, bool:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func validImage(v string) bool {
 	return v == "" || ((strings.HasPrefix(v, "data:image/jpeg;base64,") || strings.HasPrefix(v, "data:image/png;base64,")) && len(v) <= maxImage)
 }
@@ -1158,11 +1226,12 @@ type pubUser struct {
 	Bio         string          `json:"bio"`
 	Links       json.RawMessage `json:"links"`
 	Props       json.RawMessage `json:"props"`
+	Stats       json.RawMessage `json:"stats"`
 	Created     time.Time       `json:"created"`
 }
 
 func (u *user) public() pubUser {
-	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Created}
+	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Stats, u.Created}
 }
 
 func (a *app) usersByID(ids []int64) (map[int64]pubUser, error) {
@@ -1185,7 +1254,14 @@ func (a *app) usersByID(ids []int64) (map[int64]pubUser, error) {
 	return out, rows.Err()
 }
 
-// handleUserList is the people list: everyone, in the order they joined.
+func statNum(raw json.RawMessage, key string) float64 {
+	var m map[string]any
+	json.Unmarshal(raw, &m)
+	f, _ := m[key].(float64)
+	return f
+}
+
+// handleUserList is the people list: everyone, with the stats they reported, most XP first.
 func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
 	rows, err := a.db.Query(`SELECT ` + userCols + ` FROM users u ORDER BY u.id`)
 	if err != nil {
@@ -1202,6 +1278,7 @@ func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
 		}
 		out = append(out, u.public())
 	}
+	sort.SliceStable(out, func(i, j int) bool { return statNum(out[i].Stats, "xp") > statNum(out[j].Stats, "xp") })
 	writeJSON(w, http.StatusOK, map[string]any{"users": out})
 }
 
@@ -1216,6 +1293,11 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user)
 		a.serverError(w, err)
 		return
 	}
+	ach, err := a.achievementsOf(u.ID)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
 	var posts, likes int
 	if err := a.db.QueryRow(`SELECT count(*) FROM posts WHERE user_id = $1`, u.ID).Scan(&posts); err != nil {
 		a.serverError(w, err)
@@ -1225,7 +1307,95 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user)
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u.public(), "posts": posts, "likes": likes})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u.public(), "achievements": ach, "posts": posts, "likes": likes})
+}
+
+/* ---------- achievements ---------- */
+
+type achievement struct {
+	Key string    `json:"key"`
+	At  time.Time `json:"at"`
+}
+
+func (a *app) achievementsOf(id int64) ([]achievement, error) {
+	rows, err := a.db.Query(`SELECT key, unlocked_at FROM achievements WHERE user_id = $1 ORDER BY unlocked_at, key`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []achievement{}
+	for rows.Next() {
+		var x achievement
+		if err := rows.Scan(&x.Key, &x.At); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// handleAchievements records the achievements the client found unlocked. New ones get a
+// notification, and one milestone post for the batch unless the user turned that off.
+func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Keys []string `json:"keys"`
+		Prop string   `json:"prop"`
+		Post *bool    `json:"post"` // false for badges earned by posting or sharing, which need no milestone
+	}
+	if !readJSON(w, r, 8192, &in) {
+		return
+	}
+	if len(in.Keys) > maxAchKeys {
+		fail(w, http.StatusBadRequest, "Too many keys at once.")
+		return
+	}
+	fresh := []string{}
+	for _, k := range in.Keys {
+		if !achKeyRE.MatchString(k) {
+			fail(w, http.StatusBadRequest, "Bad achievement key: "+k)
+			return
+		}
+		var got string
+		err := a.db.QueryRow(`INSERT INTO achievements (user_id, key) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING key`, u.ID, k).Scan(&got)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		fresh = append(fresh, got)
+		a.notify(u.ID, 0, "achievement", 0, got)
+	}
+	var postID int64
+	if len(fresh) > 0 && (in.Post == nil || *in.Post) && a.pref(u, "autoPost", true) {
+		data, _ := json.Marshal(map[string]any{"achievements": fresh})
+		prop := ""
+		for _, p := range knownProps {
+			if p == in.Prop {
+				prop = p
+			}
+		}
+		if err := a.db.QueryRow(`INSERT INTO posts (user_id, kind, prop, data) VALUES ($1, 'milestone', $2, $3) RETURNING id`, u.ID, prop, string(data)).Scan(&postID); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	all, err := a.achievementsOf(u.ID)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"new": fresh, "all": all, "postId": postID})
+}
+
+func (a *app) pref(u *user, key string, def bool) bool {
+	var m map[string]any
+	json.Unmarshal(u.Prefs, &m)
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return def
 }
 
 /* ---------- notifications ---------- */
@@ -1631,6 +1801,7 @@ func (a *app) socialRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/posts/{id}/like", a.authed(false, a.handleLike))
 	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed(false, a.handleComment))
 	mux.HandleFunc("DELETE /api/comments/{id}", a.authed(false, a.handleDeleteComment))
+	mux.HandleFunc("POST /api/achievements", a.authed(false, a.handleAchievements))
 	mux.HandleFunc("GET /api/notifications", a.authed(false, a.handleNotifications))
 	mux.HandleFunc("PUT /api/notifications/read", a.authed(false, a.handleReadNotifications))
 }
