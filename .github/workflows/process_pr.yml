@@ -1,0 +1,255 @@
+# Checks every pull request into main. Branch protection requires the final job,
+# process_pr_result, which passes only when every other job passed. Nothing here deploys.
+#
+#   lint         gofmt, go vet, staticcheck; JS syntax and catalog format; Python syntax; workflow lint
+#   unit         go build + go test; the physics suite over every demo clip; bundles reproducible
+#   integration  real server against Postgres, driven through headless Firefox (test/browser)
+#   pr_summary   one sticky comment on the PR with the results and the size of the change
+name: process_pr
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+# A new push to the same PR cancels the run for the old commit.
+concurrency:
+  group: process_pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # -e and -o pipefail, so a failure under tee still fails the step
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable   # what the Pi builds with; go.mod only sets the language version
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: gofmt
+        run: |
+          bad=$(gofmt -l .)
+          if [ -n "$bad" ]; then echo "::error::not gofmt-ed:"; echo "$bad"; gofmt -d .; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+
+      - name: JavaScript syntax
+        run: |
+          for f in sim/*.js web/*.js test/*.js; do node --check "$f"; done
+      - name: Catalog format
+        run: node test/catalog.js web/catalog/*.json
+      - name: Python syntax
+        run: python3 -m py_compile test/browser/*.py
+
+      - name: Workflow files
+        uses: raven-actions/actionlint@v2
+
+  unit:
+    name: unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      physics: ${{ steps.physics.outputs.line }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable   # what the Pi builds with; go.mod only sets the language version
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            tour/package-lock.json
+            figure/package-lock.json
+
+      - name: go build
+        run: CGO_ENABLED=0 go build -trimpath ./...
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      - name: Physics and anatomy of every demo clip
+        id: physics
+        run: |
+          node test/physics.js | tee physics.txt || code=$?
+          echo "line=$(grep -E '^[0-9]+ clips, problems' physics.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
+      - name: Upload physics report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: physics-report
+          path: physics.txt
+          retention-days: 7
+
+      # web/ is embedded in the binary, so the committed bundles must be the ones the sources build.
+      - name: Bundles are up to date
+        run: |
+          (cd tour && npm ci --silent && npm run --silent build)
+          (cd figure && npm ci --silent && npm run --silent build)
+          git diff --exit-code --stat web/tour.js web/figure3d.js || {
+            echo "::error::web/tour.js or web/figure3d.js is stale; run npm run build in tour/ and figure/ and commit"; exit 1; }
+
+  integration:
+    name: integration tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disable
+    outputs:
+      combo: ${{ steps.combo.outputs.line }}
+      demos: ${{ steps.demos.outputs.line }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable   # what the Pi builds with; go.mod only sets the language version
+      - name: Firefox
+        run: firefox --version
+
+      - name: Combo builder
+        id: combo
+        run: |
+          test/browser/run.sh combo.py | tee combo.txt || code=$?
+          echo "line=$(grep -E 'passed' combo.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
+      - name: Demos and 3D figure
+        id: demos
+        if: always()
+        run: |
+          test/browser/run.sh demos.py | tee demos.txt || code=$?
+          echo "line=$(grep -E 'passed' demos.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: integration-logs
+          path: |
+            /tmp/flowa-test/out.txt
+            /tmp/flowa-test/dev.log
+            combo.txt
+            demos.txt
+          retention-days: 7
+
+  pr_summary:
+    name: PR summary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [lint, unit, integration]
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Size of the change
+        id: size
+        run: |
+          base=${{ github.event.pull_request.base.sha }}
+          echo "stat=$(git diff --shortstat "$base"...HEAD | sed 's/^ *//')" >> "$GITHUB_OUTPUT"
+          { echo 'files<<EOF'; git diff --stat=100 "$base"...HEAD | head -60; echo EOF; } >> "$GITHUB_OUTPUT"
+      - name: Write summary
+        id: md
+        env:
+          LINT: ${{ needs.lint.result }}
+          UNIT: ${{ needs.unit.result }}
+          INTEG: ${{ needs.integration.result }}
+          PHYSICS: ${{ needs.unit.outputs.physics }}
+          COMBO: ${{ needs.integration.outputs.combo }}
+          DEMOS: ${{ needs.integration.outputs.demos }}
+          STAT: ${{ steps.size.outputs.stat }}
+          FILES: ${{ steps.size.outputs.files }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          icon() { case "$1" in success) echo "✅ passed";; failure) echo "❌ failed";; cancelled) echo "⚪ cancelled";; *) echo "⏭️ skipped";; esac; }
+          {
+            echo '<!-- process_pr summary -->'
+            echo "## process_pr · \`${SHA:0:7}\`"
+            echo
+            echo '| Job | Result | Detail |'
+            echo '| --- | --- | --- |'
+            echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
+            echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
+            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a} |"
+            echo
+            echo "**Change:** ${STAT:-no diff}"
+            echo
+            echo '<details><summary>Files</summary>'
+            echo
+            echo '```'
+            echo "$FILES"
+            echo '```'
+            echo '</details>'
+            echo
+            echo "[Run log]($RUN) · merge is gated on \`process_pr_result\`."
+          } > summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Post or update the PR comment
+        uses: actions/github-script@v8
+        # Pull requests from forks get a read-only token; the step summary still has the report.
+        continue-on-error: true
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('summary.md', 'utf8');
+            const { owner, repo } = context.repo, issue_number = context.issue.number;
+            const marker = '<!-- process_pr summary -->';
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
+            const mine = comments.find(c => c.user.type === 'Bot' && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+  # The single check branch protection requires. It fails if any job above failed, was
+  # cancelled or was skipped, so a broken or missing job can never let a PR through.
+  process_pr_result:
+    name: process_pr_result
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    needs: [lint, unit, integration, pr_summary]
+    if: always()
+    steps:
+      - name: Check every job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          # pr_summary is informational and does not run on workflow_dispatch; everything else must pass.
+          bad=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.key != "pr_summary") | select(.value.result != "success") | .key')
+          if [ -n "$bad" ]; then echo "::error::failed or skipped: $bad"; exit 1; fi
+          echo "all checks passed"

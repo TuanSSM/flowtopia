@@ -109,56 +109,18 @@ What the sources say about each nunchaku skill that had no demo is in
 [docs/nunchaku-research.json](docs/nunchaku-research.json) (8 fully described, 44 partly, 38 not at all).
 Browser tests live in `test/browser` (`test/browser/run.sh combo.py`); they use a throwaway database.
 
-## Run
+## Pull requests
 
-```sh
-./deploy.sh                 # builds the binary on the host, rebuilds the image, recreates the containers
-docker logs nunchaku
-```
+`main` is protected: changes arrive by pull request, and `.github/workflows/process_pr.yml`
+runs on every one so the checks do not have to run on the Pi. Its jobs:
 
-Two containers (`compose.yml`): `nunchaku` (the app) and `nunchaku-db` (Postgres 16, data in the
-`pgdata` Docker volume, not exposed outside Docker). Secrets are in `.env` (mode 600):
-the database password, and the admin name and password used to create the admin on first start.
-Changing the admin password in `.env` later does nothing; change it on the Profile page.
-
-## Data
-
-- Postgres holds users, sessions, progress (one JSON document per user and prop) and flags.
-- Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
-- `data/backups/progress-DATE.json` is written before the first change each day, kept 14 days.
-- Full database dump: `docker exec nunchaku-db pg_dump -U flowa flowa > flowa.sql`
-- The files from before accounts existed were imported into the admin account and renamed `*.imported`.
-
-The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only.
-
-## Feature flags
-
-Three features are behind flags, stored in Postgres and changed at runtime by an admin
-on the Admin page. No restart is needed. `signups` opens or closes sign-up, and `tour` turns the guided tour on.
-
-| Flag | What it adds to a skill's panel |
+| Job | What it runs |
 | --- | --- |
-| `details` | Steps, what to watch for, a drill and a foam warning (`web/details.js`) |
-| `demos` | Demos on a jointed figure and labelled pictures, with 3/4, front and side views, hand and speed controls, and GIF download (`web/demo.js`, clips in `web/clips`) |
-| `references` | Source pages and videos |
+| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; Python syntax; actionlint |
+| `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
+| `integration tests` | the real server against a Postgres service, driven through headless Firefox (`test/browser/combo.py`, `demos.py`) |
+| `PR summary` | one comment on the PR, kept up to date, with the results and the size of the change |
+| `process_pr_result` | the one required check: passes only when every job above passed |
 
-
-## Guided tour
-
-New users get a guided tour built with [React Joyride](https://react-joyride.com): one after
-choosing props, and a short one on the first visit to each section. It is behind the `tour`
-flag; when the flag is off, a short note is shown instead. Finished tours are remembered on
-the account, and Profile has a "Replay the tour" button.
-
-The rest of the UI is plain JS, so the tour is a separate React bundle, `web/tour.js`, loaded
-only when a tour starts. Its source is `tour/src/tour.jsx`, and the steps are in `TOURS` in
-`web/account.js`. `./deploy.sh` rebuilds the bundle when `tour/node_modules` exists
-(`cd tour && npm install` once).
-
-Demos are simulated in the browser (`web/demo.js`): the striker is a rigid rod on a cord
-that can go slack, moved by gravity, drag and cord tension, and driven by a wrist model that
-follows the stick. They cover F3 to F7, D4 and D5. `node test/physics.js` checks every clip:
-stick length, cord length, a seamless loop, and that nothing goes through the floor. A move is
-only listed once it passes. Not modelled: body collisions, grip changes, releases, wrist limits.
-
-Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Only the guided tour has a build step.
+A push to the PR cancels the run for the previous commit. Before opening a PR the same checks can
+be run locally with `gofmt -l . && go vet ./... && node test/physics.js` and `test/browser/run.sh combo.py`.
