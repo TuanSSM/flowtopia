@@ -601,7 +601,7 @@ function pageFor(p, a, b, title) {
   if (p === 'practice') return pagePractice();
   if (['timeline', 'post', 'u'].includes(p) && !flags.community) return pageOff('Community');
   if (p === 'achievements' && !flags.game) return pageOff('Gamification');
-  if (p === 'timeline' || p === 'post') return pageTimeline(p === 'post' ? a : '');
+  if (p === 'timeline' || p === 'post') return pageTimeline(p === 'post' ? a : '', p === 'post' ? b : '');
   if (p === 'u') return pageUser(a);
   if (p === 'achievements') return pageAchievements();
   if (p === 'combos') { if (a) ui.comboOpen = a; return pageCombos(); }
@@ -625,7 +625,8 @@ function render() {
   document.title = `${title} · Flowa`;
   const gw = $('.graph-wrap'), sx = gw?.scrollLeft, sy = gw?.scrollTop;
   const key = first ? 'welcome' : `${p}/${a}/${ui.prop}/${me ? me.id : 0}`;
-  if (key !== lastRouteKey) { social.stale = true; social.profile = {}; } // feeds and profiles reload when their page is opened
+  // Feeds, profiles and expanded threads reload when their page is opened.
+  if (key !== lastRouteKey) Object.assign(social, { stale: true, profile: {}, full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0 });
   renderBell();
   // Keep form text when a save re-renders the page; only the panel and shell update.
   const active = document.activeElement;

@@ -128,5 +128,46 @@ try:
     check('posting the streak makes a post with the picture and unlocks Shared the flame',len(shared)==1 and any(a['key']=='share-streak' for a in get(op,'me')['achievements']),len(shared))
     check('the timeline opens on the new post',js("return location.hash")=='#/timeline' and js("return !!document.querySelector('.post .post-img')"))
     shot('/tmp/flowa-test/timeline.png')
+    # Replies and threads.
+    rp=api(op,'posts',{'body':'Thread test post'})['posts'][0]['id']
+    c1=api(sam,f'posts/{rp}/comments',{'body':'How long did F7 take you?'})['comment']['id']
+    nav('#/practice',.8);nav('#/timeline',2.5)
+    js("document.querySelector('[data-act=cmt-reply][data-id=\"'+arguments[0]+'\"]').click()",str(c1));time.sleep(.8)
+    check('Reply opens a box under the thread, prefilled with the name and focused',js("return document.activeElement.closest('.reply-form')!==null&&document.activeElement.value")=='@sam ')
+    js("const i=document.activeElement;i.value+='about three weeks';i.form.requestSubmit()");time.sleep(1.5)
+    th=js("const t=document.getElementById('c-'+arguments[0]).closest('.thr');return [...t.querySelectorAll('.cmt.reply .cmt-body')].map(b=>b.textContent)",str(c1))
+    check('the reply appears under the comment it answers, naming the person',th==['@sam about three weeks'],th)
+    check('the person answered is told it is a reply',get(sam,'notifications')['items'][0]['kind']=='reply')
+    for i in range(5): api(sam,f'posts/{rp}/comments',{'body':f'follow-up {i}','parentId':c1})
+    for i in range(3): api(sam,f'posts/{rp}/comments',{'body':f'top-level {i}'})
+    nav('#/practice',.8);nav('#/timeline',2.5)
+    post_sel=f'.post[data-post="{rp}"]'
+    check('a busy post shows its two newest comments and a button for the rest',js("return document.querySelectorAll(arguments[0]+' .thr').length",post_sel)==2 and 'View all 10 comments' in txt(post_sel+' [data-act=more-comments]'),txt(post_sel+' [data-act=more-comments]'))
+    click(post_sel+' [data-act=more-comments]');time.sleep(1.5)
+    thr=js("return document.getElementById('c-'+arguments[0]).closest('.thr').querySelectorAll('.cmt.reply').length",str(c1))
+    check('View all loads every comment, and a long thread folds to its two newest replies',js("return document.querySelectorAll(arguments[0]+' .thr').length",post_sel)==4 and thr==2 and 'View 4 more replies' in txt(post_sel+' [data-act=more-replies]'),thr)
+    click(post_sel+' [data-act=more-replies]');time.sleep(1.5)
+    check('View more replies shows the whole thread',js("return document.getElementById('c-'+arguments[0]).closest('.thr').querySelectorAll('.cmt.reply').length",str(c1))==6)
+    # Likes and edits on comments.
+    reps=json.loads(op.open(BASE+f'api/comments/{c1}/replies',timeout=20).read())['comments']
+    myrep=[c for c in reps if c['body'].startswith('@sam about')][0]['id'];other=[c for c in reps if c['body']=='follow-up 0'][0]['id']
+    js("document.querySelector('[data-act=cmt-like][data-id=\"'+arguments[0]+'\"]').click()",str(other))
+    likedOf=lambda: [c for c in json.loads(op.open(BASE+f'api/comments/{c1}/replies',timeout=20).read())['comments'] if c['id']==other][0]
+    saved=wait(lambda: likedOf() if likedOf()['liked'] and txt(f'#c-{other} .cmt-a.on .num')=='1' else None,n=20) or likedOf()
+    check('liking a reply counts it, and the like is saved',txt(f'#c-{other} .cmt-a.on .num')=='1' and saved['liked'],(js("const e=document.getElementById('c-'+arguments[0]);return e&&e.querySelector('.cmt-acts').innerHTML.slice(0,90)",str(other)),saved['liked'],saved['likes'],js("let n=0;eachComment(Number(arguments[0]),c=>n++);return n",str(other))))
+    js("document.querySelector('[data-act=cmt-edit][data-id=\"'+arguments[0]+'\"]').click()",str(myrep));time.sleep(.6)
+    js("const t=document.querySelector('.cmt-edit textarea');t.value='@sam about three weeks, slowly';t.form.requestSubmit()");time.sleep(1.2)
+    check('the author can edit a comment, and it is marked edited',txt(f'#c-{myrep} .cmt-body')=='@sam about three weeks, slowly' and 'edited' in txt(f'#c-{myrep} .tiny'))
+    # A deleted comment with replies stays as a placeholder.
+    api(sam,f'comments/{c1}',{},'DELETE')
+    nav('#/practice',.8);nav('#/timeline',2.5);click(post_sel+' [data-act=more-comments]');time.sleep(1.5)
+    check('a deleted comment with replies reads "Comment deleted", with its replies under it',txt(f'#c-{c1} .cmt-gone')=='Comment deleted' and js("return document.getElementById('c-'+arguments[0]).closest('.thr').querySelectorAll('.cmt.reply').length",str(c1))>=2)
+    # The bell opens the thread at the reply.
+    r2=api(sam,f'posts/{rp}/comments',{'body':'good to know','parentId':myrep})['comment']['id']
+    nav('#/practice',.8);js("loadNotifs()");time.sleep(1.2);click('[data-act=bell]');time.sleep(1)
+    check('the bell says someone replied to your comment','replied to your comment' in txt('.ntf-panel'))
+    js("[...document.querySelectorAll('.ntf')].find(a=>a.textContent.includes('replied to your comment')).click()");time.sleep(2.5)
+    inview=js("const e=document.getElementById('c-'+arguments[0]);if(!e)return null;const r=e.getBoundingClientRect();return [location.hash,r.top>=0&&r.bottom<=innerHeight,e.classList.contains('focus')]",str(r2))
+    check('the reply notification opens the post with the reply in view and highlighted',inview==[f'#/post/{rp}/{r2}',True,True],inview)
 finally:
     done()

@@ -24,10 +24,12 @@ named but not described.
 - **Profiles:** a picture, a bio and Instagram, TikTok and YouTube links, shown on a public profile page
   (`#/u/<username>`) with the user's level, streak, badges and posts.
 - **Timeline:** posts with a picture, tagged tricks from any of your props and an attached combo, likes,
-  comments and @mentions; new badges post themselves as milestones (each user can turn that off). A people
+  comments with replies (one level of threading, folded past the two newest, with likes and a 15-minute
+  edit window; a deleted comment with replies stays as "Comment deleted") and @mentions; new badges post themselves as milestones (each user can turn that off). A people
   list ranks everyone by XP. The composer's picker searches every skill map and your combos, and suggests
   the tricks from today's session and this week's level-ups; a combo's Publish button brings it to the composer.
-- **Notifications:** a bell in the header for likes, comments, mentions and new badges, plus a warning
+- **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions and new
+  badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
 - **Gamification:** XP and levels, a practice streak across props, weekly challenges, achievements, and
   the Plan as quests. See [Gamification](#gamification).
@@ -107,8 +109,10 @@ user reports for their profile and the people list (the community section of `ma
 
 All of these need a signed-in user. `GET /api/users` (people, most XP first), `GET /api/users/{name}`
 (profile with achievements), `GET /api/posts?before=&user=`, `POST /api/posts` (text, picture, up to 10 `tags` of prop and skill id, one `combo`), `GET|DELETE
-/api/posts/{id}`, `POST /api/posts/{id}/like` (toggle), `POST /api/posts/{id}/comments`,
-`DELETE /api/comments/{id}`, `POST /api/achievements`, `GET /api/notifications`,
+/api/posts/{id}`, `POST /api/posts/{id}/like` (toggle), `GET /api/posts/{id}/comments?after=` (20 top-level
+comments, each with its two newest replies), `POST /api/posts/{id}/comments` (with `parentId` for a reply),
+`PUT|DELETE /api/comments/{id}`, `GET /api/comments/{id}/replies?after=` (50 at a time),
+`GET /api/comments/{id}/thread`, `POST /api/comments/{id}/like` (toggle), `POST /api/achievements`, `GET /api/notifications`,
 `PUT /api/notifications/read`. Profile fields (`bio`, `links`, `prefs`, `stats`) go through
 `PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted.
 
@@ -190,4 +194,5 @@ Working on the repository with Claude Code: see [docs/claude-code-setup.md](docs
 (`CLAUDE.md`, path rules, scoped agents and skills in `.claude/`).
 
 A push to the PR cancels the run for the previous commit. Before opening a PR the same checks can
-be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/physics.js` and `test/browser/run.sh combo.py social.py`.
+be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/physics.js` (Go tests that need Postgres run when
+`TEST_DATABASE_URL` is set, as in CI's integration job) and `test/browser/run.sh combo.py social.py`.

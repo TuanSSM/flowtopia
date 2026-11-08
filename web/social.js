@@ -2,7 +2,7 @@
 // Community: the timeline of posts with likes and comments, notifications, the people
 // list, and public profiles with social links. Talks to the endpoints in social.go.
 
-const social = { posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftTags: [], draftCombo: null, pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {} };
+const social = { full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftTags: [], draftCombo: null, pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {} };
 const MAX_TAGS = 10;
 const LINK_KINDS = {
   instagram: { name: 'Instagram', hint: 'instagram.com/…', url: h => `https://www.instagram.com/${h}/` },
@@ -95,16 +95,86 @@ function postCard(p) {
   } else {
     body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
   }
-  const comments = p.comments.map(c => {
-    const cu = social.users[c.userId] || {}, canDel = c.userId === me.id || p.userId === me.id || me.role === 'admin';
-    return `<div class="cmt">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row" style="gap:6px"><a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a><span class="tiny">${ago(c.created)}</span><span class="grow"></span>${canDel ? `<button class="icon-btn xs" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}" aria-label="Delete comment">${icon('x')}</button>` : ''}</span><span class="small cmt-body">${richText(c.body)}</span></div></div>`;
-  }).join('');
-  const showCmts = social.openCmts.has(p.id) || p.comments.length > 0;
+  const thread = threadHTML(p);
   return `<article class="card post" data-post="${p.id}">
     <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a></span></span>${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}</header>
     ${body}
-    <footer class="post-acts"><button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.comments.length || ''}</span></button></footer>
-    <div class="cmts" ${showCmts ? '' : 'hidden'}>${comments}<form class="cmt-form" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="Write a comment. Use @name to mention someone." autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send comment">${icon('send')}</button></form></div></article>`;
+    <footer class="post-acts"><button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.commentCount || ''}</span></button></footer>
+    ${thread}</article>`;
+}
+/* ---------- comments and replies ---------- */
+const EDIT_MS = 15 * 60e3;
+// The comments shown for a post: every loaded one when the post was expanded, else the newest.
+const rootsOf = p => social.full[p.id]?.list || p.comments || [];
+const repliesOf = c => social.fullReplies[c.id]?.list || c.replies || [];
+// Every copy of a comment held in the page (the feed's preview and any expanded list).
+function eachComment(id, fn) {
+  const visit = list => { for (const c of list || []) { if (c.id === id) fn(c); visit(c.replies); } };
+  for (const p of social.posts) visit(p.comments);
+  for (const k in social.full) visit(social.full[k].list);
+  for (const k in social.fullReplies) visit(social.fullReplies[k].list);
+}
+function commentHTML(p, c, reply) {
+  const cu = social.users[c.userId] || {}, mine = c.userId === me.id, canDel = !c.deleted && (mine || p.userId === me.id || me.role === 'admin');
+  const canEdit = mine && !c.deleted && Date.now() - new Date(c.created) < EDIT_MS;
+  const editing = social.editing === c.id;
+  const body = c.deleted ? '<span class="small cmt-gone">Comment deleted</span>'
+    : editing ? `<form class="cmt-edit" data-id="${c.id}" data-post="${p.id}"><textarea name="body" maxlength="1000" rows="2" aria-label="Edit comment">${esc(c.body)}</textarea><span class="row" style="gap:6px"><button class="btn sm primary" type="submit">Save</button><button class="btn sm" type="button" data-act="cmt-edit-cancel">Cancel</button></span></form>`
+    : `<span class="small cmt-body">${richText(c.body)}</span>`;
+  const acts = c.deleted || editing ? '' : `<span class="cmt-acts"><button class="cmt-a ${c.liked ? 'on' : ''}" data-act="cmt-like" data-id="${c.id}" aria-pressed="${c.liked}" aria-label="Like comment">${icon('heart')}${c.likes ? `<span class="num">${c.likes}</span>` : ''}</button><button class="cmt-a" data-act="cmt-reply" data-id="${c.id}" data-post="${p.id}" data-root="${reply ? c.parentId : c.id}">Reply</button>${canEdit ? `<button class="cmt-a" data-act="cmt-edit" data-id="${c.id}">Edit</button>` : ''}${canDel ? `<button class="cmt-a" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}">Delete</button>` : ''}</span>`;
+  return `<div class="cmt ${reply ? 'reply' : ''} ${social.focus === c.id ? 'focus' : ''}" id="c-${c.id}">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row" style="gap:6px"><a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a><span class="tiny">${ago(c.created)}${c.edited ? ' · edited' : ''}</span></span>${body}${acts}</div></div>`;
+}
+function replyForm(p, root) {
+  const r = social.replyTo;
+  if (!r || r.root !== root) return '';
+  return `<form class="cmt-form reply-form" data-id="${p.id}" data-parent="${r.parent}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" value="${esc(r.prefill)}" aria-label="Reply to ${esc(r.name)}" autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send reply">${icon('send')}</button><button class="icon-btn" type="button" data-act="reply-cancel" aria-label="Cancel reply">${icon('x')}</button></form>`;
+}
+function threadHTML(p) {
+  const roots = rootsOf(p), full = social.full[p.id];
+  let shown = 0;
+  const items = roots.map(c => {
+    const reps = repliesOf(c), hidden = (c.replyCount || 0) - reps.length, loading = social.fullReplies[c.id]?.loading;
+    shown += 1 + reps.length;
+    return `<div class="thr">${commentHTML(p, c, false)}${reps.map(r => commentHTML(p, r, true)).join('')}${hidden > 0 ? `<button class="more-replies" data-act="more-replies" data-id="${c.id}" ${loading ? 'disabled' : ''}>View ${hidden} more ${hidden === 1 ? 'reply' : 'replies'}</button>` : ''}${replyForm(p, c.id)}</div>`;
+  }).join('');
+  const more = full ? full.more : (p.commentCount || 0) > shown;
+  const open = social.openCmts.has(p.id) || roots.length > 0;
+  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="Write a comment. Use @name to mention someone." autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send comment">${icon('send')}</button></form></div>`;
+}
+// Loads the next page of a post's comments; the first call replaces the feed's preview.
+async function moreComments(postId) {
+  const f = social.full[postId], after = f && !f.thread ? f.list[f.list.length - 1]?.id || 0 : 0;
+  social.full[postId] = { ...(f || { list: [] }), loading: true }; render();
+  const r = await api(`posts/${postId}/comments?after=${after}`);
+  if (!r.ok) { toast(r.error); social.full[postId].loading = false; render(); return; }
+  Object.assign(social.users, r.data.users);
+  const old = f && !f.thread ? f.list : [];
+  social.full[postId] = { list: [...old, ...r.data.comments], more: r.data.more };
+  render();
+}
+async function moreReplies(rootId) {
+  const f = social.fullReplies[rootId], after = f?.list?.length && !f.thread ? f.list[f.list.length - 1].id : 0;
+  social.fullReplies[rootId] = { ...(f || { list: [] }), loading: true }; render();
+  const r = await api(`comments/${rootId}/replies?after=${after}`);
+  if (!r.ok) { toast(r.error); social.fullReplies[rootId].loading = false; render(); return; }
+  Object.assign(social.users, r.data.users);
+  const old = f && !f.thread ? f.list : [];
+  social.fullReplies[rootId] = { list: [...old, ...r.data.comments], more: r.data.more };
+  eachComment(rootId, c => { c.replyCount = Math.max(c.replyCount || 0, social.fullReplies[rootId].list.length + (r.data.more ? 1 : 0)); });
+  render();
+}
+// Opened from a notification: the thread holding the comment, scrolled into view.
+async function loadThread(postId, commentId) {
+  social.focus = commentId;
+  const r = await api(`comments/${commentId}/thread`);
+  if (!r.ok) { toast(r.error); return; }
+  const root = r.data.comments[0];
+  Object.assign(social.users, r.data.users);
+  social.full[postId] = { list: [root], more: true, thread: true };
+  social.fullReplies[root.id] = { list: root.replies || [], more: false, thread: true };
+  social.openCmts.add(postId);
+  render();
+  setTimeout(() => document.getElementById('c-' + commentId)?.scrollIntoView({ block: 'center' }), 60);
 }
 /* ---------- tricks and combos on posts ---------- */
 const skillOf = (prop, id) => CATALOGS[prop]?.skills.find(s => s.id === id);
@@ -218,8 +288,10 @@ function peopleCard() {
   return `<div class="card people" data-tour="people"><div class="card-h"><h2 class="grow">People</h2><span class="sub">Most XP first</span></div>
     ${list.map((u, i) => { const s = u.stats || {}; return `<a class="person ${u.id === me.id ? 'me' : ''}" href="#/u/${esc(u.username)}"><span class="rank num">${i + 1}</span>${avatarHTML(u)}<span class="grow" style="display:grid"><b>${esc(u.displayName || u.username)}</b><span class="tiny">Level ${s.level || 1}${s.streak ? ` · ${s.streak}-day streak` : ''}</span></span><span class="tiny num">${(s.xp || 0).toLocaleString()} XP</span></a>`; }).join('')}</div>`;
 }
-function pageTimeline(single) {
+function pageTimeline(single, focus) {
   const key = single ? 'post:' + single : 'all', st = streakInfo();
+  if (single && focus && social.focus !== Number(focus)) loadThread(Number(single), Number(focus));
+  if (!focus) social.focus = 0;
   return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${single ? '<a href="#/timeline">Back to the timeline</a>' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.'}</p></div></div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, single ? 'That post is gone.' : 'Nothing here yet. Share what you worked on today.')}</div>
     <div class="stack tl-side">${!flags.game ? '' : st.atRisk ? `<div class="card risk-card"><span class="flame lit sm">${icon('flame')}</span><span class="grow small"><b>${st.current}-day streak at risk.</b> Log today’s practice to keep it.</span><a class="btn sm" href="#/practice">Log</a></div>` : levelCard(true)}${peopleCard()}</div></div>`;
@@ -258,7 +330,9 @@ function notifText(n) {
   switch (n.kind) {
     case 'like': return `<b>${who}</b> liked your post`;
     case 'comment': return `<b>${who}</b> commented on your post`;
-    case 'mention': return `<b>${who}</b> mentioned you`;
+    case 'mention': return `<b>${who}</b> mentioned you${n.commentId ? ' in a comment' : ''}`;
+    case 'reply': return `<b>${who}</b> replied to your comment`;
+    case 'comment_like': return `<b>${who}</b> liked your comment`;
     case 'achievement': { const b = badgeByKey(n.text); return `Achievement unlocked: <b>${esc(b?.name || n.text)}</b>`; }
     default: return esc(n.text);
   }
@@ -266,10 +340,10 @@ function notifText(n) {
 function bellHTML() {
   if (!me || !me.onboarded || !flags.community) return '';
   const st = loaded && flags.game ? streakInfo() : { atRisk: false }, n = social.unread + (st.atRisk ? 1 : 0);
-  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
+  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
   const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
     ${st.atRisk ? `<a class="ntf unread" href="#/practice" data-act="ntf-go"><span class="flame lit sm">${icon('flame')}</span><span class="grow"><span class="small"><b>Your ${st.current}-day streak ends tonight.</b> Log today’s practice to keep it.</span></span></a>` : ''}
-    ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, mentions and achievements show up here.</div>'}</div>`;
+    ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, replies, mentions and achievements show up here.</div>'}</div>`;
   return `<button class="icon-btn bell ${n ? 'has' : ''}" data-act="bell" aria-label="Notifications${n ? `, ${n} unread` : ''}" aria-expanded="${social.nOpen}">${icon('bell')}${n ? `<span class="bell-n num">${n > 9 ? '9+' : n}</span>` : ''}</button>${panel}`;
 }
 function renderBell() { const el = $('#bell'); if (el) el.innerHTML = bellHTML(); }
@@ -301,9 +375,43 @@ document.addEventListener('click', async e => {
     case 'post-del':
       if (post && confirm('Delete this post?')) { const r = await api('posts/' + id, 'DELETE'); if (r.ok) { social.posts = social.posts.filter(p => p.id !== id); render(); } else toast(r.error); }
       break;
-    case 'cmt-del':
-      if (confirm('Delete this comment?')) { const r = await api('comments/' + id, 'DELETE'); if (r.ok) refreshPost(Number(d.post)); else toast(r.error); }
+    case 'cmt-del': {
+      if (!confirm('Delete this comment?')) break;
+      const r = await api('comments/' + id, 'DELETE');
+      if (!r.ok) { toast(r.error); break; }
+      // Kept as a placeholder when it has replies; otherwise it leaves every list it is in.
+      if (r.data.placeholder) eachComment(id, c => { c.deleted = true; c.body = ''; c.likes = 0; c.liked = false; });
+      else {
+        const drop = list => list && list.filter(c => c.id !== id).map(c => { const reps = drop(c.replies); const n = reps ? (c.replies.length - reps.length) : 0; return { ...c, replies: reps, replyCount: (c.replyCount || 0) - n }; }).filter(c => !(c.deleted && (c.replyCount || 0) <= 0));
+        for (const k in social.full) social.full[k].list = drop(social.full[k].list);
+        for (const k in social.fullReplies) social.fullReplies[k].list = drop(social.fullReplies[k].list);
+      }
+      refreshPost(Number(d.post));
       break;
+    }
+    case 'cmt-like': {
+      let liked = false;
+      eachComment(id, c => { c.liked = !c.liked; c.likes = (c.likes || 0) + (c.liked ? 1 : -1); liked = c.liked; });
+      render();
+      const r = await api(`comments/${id}/like`, 'POST');
+      if (r.ok) eachComment(id, c => { c.liked = r.data.liked; c.likes = r.data.likes; });
+      else { toast(r.error); eachComment(id, c => { c.liked = !liked; c.likes = (c.likes || 0) + (liked ? -1 : 1); }); }
+      render(); break;
+    }
+    case 'cmt-reply': {
+      let author = null;
+      eachComment(id, c => { author = social.users[c.userId]; });
+      const name = author?.username || '';
+      social.replyTo = { post: Number(d.post), root: Number(d.root), parent: id, name, prefill: name && author.id !== me.id ? `@${name} ` : '' };
+      social.openCmts.add(Number(d.post)); leaveCompose(); render();
+      const inp = $('.reply-form input'); if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+      break;
+    }
+    case 'reply-cancel': social.replyTo = null; leaveCompose(); render(); break;
+    case 'cmt-edit': social.editing = id; leaveCompose(); render(); $('.cmt-edit textarea')?.focus(); break;
+    case 'cmt-edit-cancel': social.editing = 0; leaveCompose(); render(); break;
+    case 'more-comments': moreComments(id); break;
+    case 'more-replies': moreReplies(id); break;
     case 'more-posts': loadFeed(social.key, true); break;
     case 'compose-img-rm': social.draftImg = ''; leaveCompose(); render(); break;
     case 'pick-open': social.pickOpen = !social.pickOpen; social.pickQ = ''; social.pickIdx = 0; leaveCompose(); render(); if (social.pickOpen) $('#pick-q')?.focus(); break;
@@ -349,13 +457,31 @@ document.addEventListener('submit', async e => {
     render(); grant(['first-post']); toast('Posted.');
   } else if (f.classList.contains('cmt-form')) {
     e.preventDefault();
-    const id = Number(f.dataset.id), body = f.body.value.trim();
+    const id = Number(f.dataset.id), parentId = Number(f.dataset.parent || 0), body = f.body.value.trim();
     if (!body) return;
-    const r = await api(`posts/${id}/comments`, 'POST', { body });
+    const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
+    const r = await api(`posts/${id}/comments`, 'POST', { body, parentId });
+    btn.disabled = false;
     if (!r.ok) { toast(r.error); return; }
     Object.assign(social.users, r.data.users);
-    const i = social.posts.findIndex(p => p.id === id);
+    const i = social.posts.findIndex(p => p.id === id), c = r.data.comment;
     if (i >= 0) social.posts[i] = r.data.posts[0];
-    social.openCmts.add(id); render();
+    // An expanded list keeps what was loaded; the new comment joins it in place.
+    if (social.full[id] && !c.parentId) social.full[id].list.push(c);
+    if (c.parentId) {
+      if (social.fullReplies[c.parentId]) social.fullReplies[c.parentId].list.push(c);
+      if (social.full[id]) for (const root of social.full[id].list) if (root.id === c.parentId) { root.replyCount = (root.replyCount || 0) + 1; if (!social.fullReplies[c.parentId]) (root.replies ||= []).push(c); }
+    }
+    f.body.value = ''; social.replyTo = null; social.openCmts.add(id);
+    leaveCompose(); document.activeElement?.blur?.(); render();
+    document.getElementById('c-' + c.id)?.scrollIntoView({ block: 'nearest' });
+  } else if (f.classList.contains('cmt-edit')) {
+    e.preventDefault();
+    const id = Number(f.dataset.id), body = f.body.value.trim();
+    if (!body) return;
+    const r = await api('comments/' + id, 'PUT', { body });
+    if (!r.ok) { toast(r.error); return; }
+    eachComment(id, c => { c.body = r.data.comment.body; c.edited = true; });
+    social.editing = 0; document.activeElement?.blur?.(); render();
   }
 });

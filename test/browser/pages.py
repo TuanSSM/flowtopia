@@ -35,6 +35,11 @@ try:
     page('achievements','Achievements','#/achievements',wait=2)
     page('profile-public','Public profile','#/u/admin',wait=2.5)
     page('timeline-phone','Timeline, phone','#/timeline',w=420,ht=900,wait=2.5)
+    # A post with a short conversation, to show threads.
+    pid=json.loads(js("return fetch('api/posts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:'Which drill fixed your wrist?'})}).then(r=>r.text())"))['posts'][0]['id']
+    cid=json.loads(js("return fetch('api/posts/'+arguments[0]+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:'Slow figure-8s in front of a mirror.'})}).then(r=>r.text())",pid))['comment']['id']
+    js("return fetch('api/posts/'+arguments[0]+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:'And a lighter pair to start.',parentId:arguments[1]})}).then(r=>r.text())",pid,cid)
+    page('replies-phone','Post with replies, phone',f'#/post/{pid}',w=420,ht=900,wait=2.5)
     page('map-phone','Skill map, phone','#/maps',w=420,ht=900)
     page('combos-phone','Combos, phone','#/combos',w=420,ht=900,wait=2.5)
     page('skill-phone','Skill guide, phone','#/prop/nunchaku/F/F5',w=420,ht=900,wait=2.5)

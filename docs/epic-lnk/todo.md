@@ -2,7 +2,7 @@
 
 Why, scope and risks: [epics.md](../epics.md#lnk-instagram-tiktok-and-youtube-links-in-posts).
 Order: [roadmap.md](../roadmap.md); starts after MOD's reports and hiding (M2, M3) are live. Each
-milestone is one pull request. An item is checked only when its DoD holds and the
+milestone is one commit in the epic's pull request ([implementation plan](../implementation-plan.md)). An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
 **Status:** not started. 0 of 15 items done, and one prerequisite in MOD.
