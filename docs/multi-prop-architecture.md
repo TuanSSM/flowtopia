@@ -10,9 +10,12 @@ general knowledge. It has not been researched against sources the way the nuncha
 
 All five props now have researched catalogs, loaded per prop (`web/catalogs.js`), and
 progress is recorded per variant (`one`, `LR`, `FR`). Plans and gates come from each catalog.
-Still open from the list below: shared concepts across props (4), demos for the new props (5),
-cross-prop views (7), storage growth (8) and a catalog editor (9). The table below describes
-the state before this work.
+Demos now cover all five props (5). Still open from the list below: shared concepts across props
+(4), cross-prop views (7), storage growth (8) and a catalog editor (9). The catalog editor is
+planned in the MOD epic ([epic-mod/todo.md](epic-mod/todo.md), milestones M5 and M6), and the
+shared motion fields that would support shared concepts in the GEO epic
+([epic-geo/todo.md](epic-geo/todo.md), M3). See [roadmap.md](roadmap.md) for the order. The table
+below describes the state before this work.
 
 ## Where things stood
 

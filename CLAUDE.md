@@ -5,7 +5,9 @@ A progress tracker for flow arts props: a Go server (`main.go`) with the UI embe
 at build time (`sim/`), checked (`test/`), baked to `web/clips`, and played in the browser on a 3D
 humanoid (`figure/` → `web/figure3d.js`) with a drawn 2D fallback.
 
-Start with `README.md`, then the doc for the area you are in (`docs/`). The rules in
+Start with `README.md`, then the doc for the area you are in (`docs/`). Planned work is in
+`docs/roadmap.md` and `docs/epics.md`; when a change completes an item in a
+`docs/epic-<code>/todo.md`, tick it in the same PR and update the status line. The rules in
 `.claude/rules/` apply by path; the agents in `.claude/agents/` are specialists for each area;
 the skills in `.claude/skills/` are the recurring workflows.
 
