@@ -36,7 +36,8 @@ if (!process.env.ONLY) {
   console.log(`contact geometry: ${cases.length} special cases and 2000 random pairs, ${wrong} wrong`);
 }
 
-const { shapes, overlaps, anatomy } = require('../sim/check.js'), R = { ROD: E.ROD, BALL: E.BALL };
+const { shapes, floorErrors, bodyErrors } = require('../sim/check.js'), R = { ROD: E.ROD, BALL: E.BALL }, P = require('../sim/presets.js');
+const presetFile = P.load(), perPreset = Object.fromEntries(P.PRESETS.map(p => [p.id, { ok: 0, no: 0 }])); let stale = 0;
 
 console.log('clip'.padEnd(46) + 'frames  checks');
 for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) {
@@ -55,18 +56,15 @@ for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) 
       if (stick > 1e-3) errs.push(`stick length off by ${mm(stick)}`);
       // The swing that recovers after a catch is briefly faster, and the cord solver gives a little more.
       if (cord > LINK + (m.air || m.bounce ? 3.5e-3 : 1.5e-3)) errs.push(`cord stretched to ${(cord * 1000).toFixed(1)} mm`);
-      if (Math.min(...fr.map(f => Math.min(K(f, 'T')[1], K(f, 'B')[1]))) < 0.02) errs.push('goes through the floor');
     } else if (p.kind === 'poi') {
       const t = fr.map(f => len(sub(K(f, 'P'), K(f, 'o') || f['h' + p.hand]))), slack = t.filter(x => x < TETHER * 0.97).length / N;
       if (!K(fr[0], 'q1')) {
         if (Math.max(...t) > TETHER + 1.5e-3) errs.push(`tether stretched to ${(Math.max(...t) * 1000).toFixed(1)} mm`);
         if (slack > 0.02 && !sp.slack) errs.push(`tether slack ${(slack * 100).toFixed(0)}% of the time`);
       }
-      if (Math.min(...fr.map(f => K(f, 'P')[1])) < 0.08) errs.push('head hits the floor');
     } else if (p.kind === 'staff') {
       const full = fr.map(f => len(sub(K(f, 'a'), K(f, 'b'))));
       if (Math.max(...full) - Math.min(...full) > 2e-4) errs.push('staff length changes');
-      if (Math.min(...fr.map(f => Math.min(K(f, 'a')[1], K(f, 'b')[1]))) < 0.03) errs.push('staff hits the floor');
       // Outside a throw, some hand is always on the staff.
       const off = Math.max(...fr.map((f, i) => m.air && i / N >= m.air.from - 0.01 && i / N <= m.air.to + 0.01 ? 0 : Math.min(...['hL', 'hR'].filter(h => f[h]).map(h => { const q = E.closest(f[h], f[h], K(f, 'a'), K(f, 'b')); return len(sub(q.c1, q.c2)); }))));
       if (off > 0.056 && !sp.free) errs.push(`no hand on the staff (nearest is ${mm(off)} away)`); // the staff lies in the palm, up to a hand's thickness from the wrist
@@ -126,13 +124,16 @@ for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) 
     if (perStep > R.ROD * 0.5) errs.push(`moves ${mm(perStep)} per step at ${fastest.toFixed(1)} m/s: fast enough to tunnel through a stick`);
   }
   // Nothing may pass through the body or through another prop, and the limbs stay out of the body.
-  if (c.hide) { console.log(`ok  ${name}`.padEnd(46) + String(N).padEnd(8) + 'still picture, close-up'); continue; }
-  const o = overlaps(c), tol = c.method === 'sim' || c.method === 'flight' ? 0.008 : 0.003;
-  if (o.prop[0] > tol && !(sp.contact && o.prop[0] < 0.02)) errs.push(`${mm(o.prop[0])} ${o.prop[1]}`);
-  if (o.grip[0] > 0.02 && !sp.fingers) errs.push(`${mm(o.grip[0])} ${o.grip[1]}`);
-  if (o.limb[0] > 0.012) errs.push(`${mm(o.limb[0])} ${o.limb[1]}`);
-  const an = anatomy(c, sp);
+  if (c.hide) { for (const p of P.PRESETS) perPreset[p.id].ok++; console.log(`ok  ${name}`.padEnd(46) + String(N).padEnd(8) + 'still picture, close-up'); continue; }
+  errs.push(...floorErrors(c));
+  const an = bodyErrors(c, sp);
   errs.push(...an.errs);
+  // The same checks on every body preset. A clip that fails on one is not offered on it (the demo
+  // plays it on the standard body and says why); web/clips/presets.json must say the same.
+  const fails = P.check(c, sp), f = B.fileOf(c).f, had = presetFile.fail[f] || {};
+  for (const p of P.PRESETS) perPreset[p.id][fails[p.id] ? 'no' : 'ok']++;
+  if (B.baked(f) && JSON.stringify(Object.keys(fails).sort()) !== JSON.stringify(Object.keys(had).sort())) { stale++; errs.push('web/clips/presets.json is stale for this clip: run node sim/bake.js'); }
+  if (Object.keys(fails).length) notes.push(`not on ${Object.keys(fails).length} of ${P.PRESETS.length} body presets`);
   // The figure's hand is a closed fist with no wrist, so how the prop turns inside it is measured, not enforced.
   if (an.twist > 3.6) notes.push(`${deg(an.twist)} degrees of turn inside the hand, which the figure does not show`);
   // A move that is not about contact should not touch anything while it is recorded.
@@ -155,5 +156,8 @@ for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) 
   if (errs.length) bad++;
   console.log(`${errs.length ? 'BAD' : 'ok '} ${name}`.padEnd(46) + String(N).padEnd(8) + (errs.length ? errs.join('; ') : notes.join(', ')));
 }
+console.log('\nbody preset'.padEnd(20) + 'offered  not offered');
+for (const p of P.PRESETS) console.log(p.id.padEnd(19) + String(perPreset[p.id].ok).padEnd(9) + perPreset[p.id].no);
+if (stale) console.log(`${stale} clips disagree with web/clips/presets.json`);
 console.log(`${total} clips, problems: ${bad}`);
 process.exit(bad ? 1 : 0);

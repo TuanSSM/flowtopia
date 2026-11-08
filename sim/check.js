@@ -1,7 +1,9 @@
 'use strict';
 // Measurements on a finished scene: how far props and limbs overlap, and what the body is
 // asked to do. Used by the tests, and by the search for a posture that keeps a prop clear.
-const E = require('./engine.js'), { Demo } = E, { GRIP } = E, { REACH, THIGH, SHIN } = Demo.dim;
+const E = require('./engine.js'), { Demo } = E, { GRIP } = E;
+// Body lengths are read on each call: they change when a body preset is checked (sim/presets.js).
+const D = () => Demo.dim;
 const { add, sub, mul, dot, cross, len, norm } = Demo.v;
 const mm = v => (v * 1000).toFixed(0) + ' mm', deg = r => (r * 180 / Math.PI).toFixed(0);
 
@@ -82,12 +84,12 @@ function overlaps(sc) {
 function anatomy(sc, sp) {
   const errs = [], N = sc.fr.length, dt = sc.dur / N, js = sc.fr.map(f => Demo.rig(f)), air = sc.meta && sc.meta.air;
   for (const s of ['L', 'R']) {
-    const far = Math.max(...js.map(J => len(sub(J['h' + s], J['sh' + s])))), limit = air ? 0.66 : REACH + 0.03;
+    const REACH = D().REACH, far = Math.max(...js.map(J => len(sub(J['h' + s], J['sh' + s])))), limit = air ? REACH + 0.07 : REACH + 0.03;
     if (far > limit) errs.push(`${s} hand ${far.toFixed(2)} m from its shoulder, and an arm is ${REACH.toFixed(2)} m`);
     const sp1 = i => len(sub(js[(i + 1) % N]['h' + s], js[i]['h' + s])) / dt, fast = Math.max(...js.map((_, i) => i < N - 1 || sc.loop ? sp1(i) : 0));
     if (fast > 9) errs.push(`${s} hand moves at ${fast.toFixed(1)} m/s`);
     const leg = Math.max(...js.map(J => len(sub(J['f' + s], J['hip' + s]))));
-    if (leg > THIGH + SHIN + 0.012) errs.push(`${s} leg stretched to ${leg.toFixed(2)} m`);
+    if (leg > D().THIGH + D().SHIN + 0.012) errs.push(`${s} leg stretched to ${leg.toFixed(2)} m`);
     if (Math.min(...js.map(J => J['f' + s][1])) < 0.03) errs.push(`${s} foot goes into the floor`);
   }
   // Balance: the pelvis stays over the feet (within a hand's width of the line between them).
@@ -114,4 +116,28 @@ function anatomy(sc, sp) {
   return { errs, twist };
 }
 
-module.exports = { shapes, holder, overlaps, anatomy, mm, deg };
+// The floor: how low each prop may go (metres).
+function floorErrors(c) {
+  const errs = [];
+  c.props.forEach((p, j) => {
+    const lo = k => Math.min(...c.fr.map(f => f[j + '.' + k][1]));
+    if (p.kind === 'nunchaku' && Math.min(lo('T'), lo('B')) < 0.02) errs.push('goes through the floor');
+    if (p.kind === 'poi' && lo('P') < 0.08) errs.push('head hits the floor');
+    if (p.kind === 'staff' && Math.min(lo('a'), lo('b')) < 0.03) errs.push('staff hits the floor');
+  });
+  return errs;
+}
+// What the body checks find wrong with a clip that shows the body: props through the body or each
+// other, a held stick through its own arm, limbs through the body, and anatomy. sp is the clip's spec
+// (contact and fingers relax two of them). Used by test/physics.js and, per body preset, sim/presets.js.
+function bodyErrors(c, sp) {
+  const errs = [], o = overlaps(c), tol = c.method === 'sim' || c.method === 'flight' ? 0.008 : 0.003;
+  if (o.prop[0] > tol && !(sp.contact && o.prop[0] < 0.02)) errs.push(`${mm(o.prop[0])} ${o.prop[1]}`);
+  if (o.grip[0] > 0.02 && !sp.fingers) errs.push(`${mm(o.grip[0])} ${o.grip[1]}`);
+  if (o.limb[0] > 0.012) errs.push(`${mm(o.limb[0])} ${o.limb[1]}`);
+  const an = anatomy(c, sp);
+  errs.push(...an.errs);
+  return { errs, twist: an.twist };
+}
+
+module.exports = { shapes, holder, overlaps, anatomy, floorErrors, bodyErrors, mm, deg };
