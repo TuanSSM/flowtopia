@@ -53,7 +53,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true}
+var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -118,9 +118,15 @@ type user struct {
 	Prefs       json.RawMessage `json:"prefs"`
 	Stats       json.RawMessage `json:"stats"`
 	Created     time.Time       `json:"created"`
+	// Moderation state: set only while a mute or suspension runs.
+	MutedUntil     *time.Time `json:"mutedUntil,omitempty"`
+	MuteReason     string     `json:"muteReason,omitempty"`
+	SuspendedUntil *time.Time `json:"suspendedUntil,omitempty"`
+	SuspendReason  string     `json:"suspendReason,omitempty"`
+	StatsHidden    bool       `json:"statsHidden,omitempty"`
 }
 
-const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at"
+const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden"
 
 type scanner interface{ Scan(...any) error }
 
@@ -128,9 +134,22 @@ type scanner interface{ Scan(...any) error }
 func scanUser(row scanner, extra ...any) (*user, error) {
 	var u user
 	var props, seen, links, prefs, stats []byte
-	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &prefs, &stats, &u.Created}, extra...)
+	var muted, suspended sql.NullTime
+	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &prefs, &stats, &u.Created,
+		&muted, &u.MuteReason, &suspended, &u.SuspendReason, &u.StatsHidden}, extra...)
 	if err := row.Scan(dst...); err != nil {
 		return nil, err
+	}
+	// Only a mute or suspension still running is reported.
+	if muted.Valid && muted.Time.After(time.Now()) {
+		u.MutedUntil = &muted.Time
+	} else {
+		u.MuteReason = ""
+	}
+	if suspended.Valid && suspended.Time.After(time.Now()) {
+		u.SuspendedUntil = &suspended.Time
+	} else {
+		u.SuspendReason = ""
 	}
 	u.Props, u.Seen, u.Links, u.Prefs, u.Stats = props, seen, links, prefs, stats
 	return &u, nil
@@ -188,7 +207,7 @@ func (a *app) currentUser(r *http.Request) *user {
 	}
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash(c.Value)))
-	if err != nil {
+	if err != nil || u.SuspendedUntil != nil {
 		return nil
 	}
 	return u
@@ -246,21 +265,63 @@ func guard(next http.Handler) http.Handler {
 	})
 }
 
-// authed wraps a handler that needs a signed-in user, or an admin.
-func (a *app) authed(admin bool, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+// authed wraps a handler that needs a signed-in user and, unless perm is empty, that permission.
+func (a *app) authed(perm string, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := a.currentUser(r)
 		if u == nil {
 			fail(w, http.StatusUnauthorized, "Sign in first.")
 			return
 		}
-		if admin && u.Role != "admin" {
-			fail(w, http.StatusForbidden, "Admins only.")
+		if perm != "" && !can(u, perm) {
+			fail(w, http.StatusForbidden, "You do not have permission to do that.")
 			return
 		}
 		h(w, r, u)
 	}
 }
+
+/* ---------- roles and permissions ---------- */
+
+// Permissions. Handlers ask for these, never for a role, so the table below is the one place
+// that says who may do what.
+const (
+	permContentDelete  = "content.delete"  // delete anyone's post or comment
+	permPostHide       = "post.hide"       // hide and restore posts and comments
+	permUserMute       = "user.mute"       // stop someone posting and commenting for a time
+	permUserSuspend    = "user.suspend"    // sign someone out and keep them out for a time
+	permReportResolve  = "report.resolve"  // work the moderation queue
+	permBadgeRevoke    = "badge.revoke"    // revoke a badge, hide reported stats
+	permDashboard      = "dashboard.read"  // the admin dashboard and the accounts panel
+	permAudit          = "audit.read"      // the audit log
+	permCatalogEdit    = "catalog.edit"    // draft changes to skill maps
+	permCatalogPublish = "catalog.publish" // publish and roll back skill maps
+	permFlagsEdit      = "flags.edit"      // feature flags
+	permUserRole       = "user.role"       // change roles
+	permUserManage     = "user.manage"     // reset passwords, delete accounts
+)
+
+var roleRank = map[string]int{"user": 0, "moderator": 1, "admin": 2}
+
+var rolePerms = map[string][]string{
+	"user":      {},
+	"moderator": {permContentDelete, permPostHide, permUserMute, permUserSuspend, permReportResolve, permBadgeRevoke, permDashboard, permCatalogEdit},
+	"admin": {permContentDelete, permPostHide, permUserMute, permUserSuspend, permReportResolve, permBadgeRevoke, permDashboard, permAudit,
+		permCatalogEdit, permCatalogPublish, permFlagsEdit, permUserRole, permUserManage},
+}
+
+func can(u *user, perm string) bool { return u != nil && slices.Contains(rolePerms[u.Role], perm) }
+
+// permsOf lists what a user may do, for the interface to show only what the server allows.
+func permsOf(u *user) []string {
+	if u == nil {
+		return []string{}
+	}
+	return append([]string{}, rolePerms[u.Role]...)
+}
+
+// outranks reports whether someone with role a may act on someone with role b.
+func outranks(a, b string) bool { return roleRank[a] > roleRank[b] }
 
 /* ---------- flags ---------- */
 
@@ -297,7 +358,7 @@ func (a *app) setFlags(in map[string]bool) error {
 	return nil
 }
 
-func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, _ *user) {
+func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, u *user) {
 	var in struct {
 		Flags map[string]bool `json:"flags"`
 	}
@@ -311,6 +372,14 @@ func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, _ *user) {
 		}
 	}
 	if err := a.setFlags(in.Flags); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	changed := map[string]any{}
+	for k, v := range in.Flags {
+		changed[k] = v
+	}
+	if err := a.audit(a.db, u.ID, "flags", "", 0, 0, "", changed); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -338,7 +407,7 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": permsOf(u)})
 }
 
 type credentials struct {
@@ -458,6 +527,14 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !checkPassword(hash, in.Password) {
 		a.noteFail(key)
 		fail(w, http.StatusUnauthorized, "Wrong username or password.")
+		return
+	}
+	if u.SuspendedUntil != nil {
+		msg := "Your account is suspended until " + u.SuspendedUntil.UTC().Format("2 January 2006, 15:04 UTC") + "."
+		if u.SuspendReason != "" {
+			msg += " Reason: " + u.SuspendReason
+		}
+		fail(w, http.StatusForbidden, msg)
 		return
 	}
 	if err := a.startSession(w, r, u.ID); err != nil {
@@ -802,20 +879,43 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 		fail(w, http.StatusBadRequest, "You cannot delete your own account here.")
 		return
 	}
-	a.backup()
-	res, err := a.db.Exec(`DELETE FROM users WHERE id = $1`, id)
+	// Only user.manage reaches here (admins); the last admin is protected below.
+	var name string
+	err := a.db.QueryRow(`SELECT username FROM users WHERE id = $1`, id).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		fail(w, http.StatusNotFound, "No such user.")
+	a.backup()
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 0 {
+			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
+			return
+		}
+		err = a.audit(tx, u.ID, "delete_user", "user", id, 0, "", map[string]any{"username": name})
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, _ *user) {
+func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Next string `json:"next"`
@@ -833,7 +933,562 @@ func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, _ *use
 		return
 	}
 	a.db.Exec(`DELETE FROM sessions WHERE user_id = $1`, id)
+	if err := a.audit(a.db, u.ID, "reset_password", "user", id, id, "", nil); err != nil {
+		a.serverError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleSetRole changes someone's role. Nobody changes their own, and Flowa always keeps an admin.
+func (a *app) handleSetRole(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var in struct {
+		Role   string `json:"role"`
+		Reason string `json:"reason"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if _, ok := roleRank[in.Role]; !ok {
+		fail(w, http.StatusBadRequest, "The role must be user, moderator or admin.")
+		return
+	}
+	if id == u.ID {
+		fail(w, http.StatusBadRequest, "You cannot change your own role.")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var old string
+	err = tx.QueryRow(`SELECT role FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&old)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	next := in.Role
+	if old == "admin" && next != "admin" {
+		var admins int
+		if err := tx.QueryRow(`SELECT count(*) FROM (SELECT 1 FROM users WHERE role = 'admin' FOR UPDATE) x`).Scan(&admins); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if admins <= 1 {
+			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
+			return
+		}
+	}
+	if old == in.Role {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": old})
+		return
+	}
+	if _, err := tx.Exec(`UPDATE users SET role = $2 WHERE id = $1`, id, in.Role); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "role", "user", id, id, strings.TrimSpace(in.Reason), map[string]any{"from": old, "to": in.Role}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.notify(id, u.ID, "moderation", 0, "Your role is now "+in.Role+".")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": in.Role})
+}
+
+/* ---------- moderation: reports, the queue, actions ---------- */
+
+var reportReasons = []string{"spam", "harassment", "unsafe", "offtopic", "other"}
+
+const (
+	maxReportsPerDay = 10
+	maxModReason     = 300
+	maxModUntil      = 366 * 24 * time.Hour
+)
+
+// flagged answers 404 while a feature flag is off, so its endpoints do not exist until it is on.
+func (a *app) flagged(name string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f, err := a.flags()
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if !f[name] {
+			http.NotFound(w, r)
+			return
+		}
+		h(w, r)
+	}
+}
+
+// targetOwner finds who a report or action is about: the author of a post or comment, or the
+// user themself. Hidden content counts as missing to someone who may not see it.
+func (a *app) targetOwner(kind string, id int64, viewer *user) (int64, error) {
+	var owner int64
+	var err error
+	switch kind {
+	case "post":
+		err = a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1 AND (hidden_at IS NULL OR user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+	case "comment":
+		err = a.db.QueryRow(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
+			AND ((c.hidden_at IS NULL AND p.hidden_at IS NULL) OR c.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+	case "user":
+		err = a.db.QueryRow(`SELECT id FROM users WHERE id = $1`, id).Scan(&owner)
+	default:
+		return 0, errBadKind
+	}
+	return owner, err
+}
+
+var errBadKind = errors.New("unknown kind")
+
+func (a *app) handleReport(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Kind   string `json:"kind"`
+		ID     int64  `json:"id"`
+		Reason string `json:"reason"`
+		Note   string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if !slices.Contains(reportReasons, in.Reason) {
+		fail(w, http.StatusBadRequest, "Choose a reason for the report.")
+		return
+	}
+	note := strings.TrimSpace(in.Note)
+	if len([]rune(note)) > 500 {
+		fail(w, http.StatusBadRequest, "Keep the note under 500 characters.")
+		return
+	}
+	owner, err := a.targetOwner(in.Kind, in.ID, u)
+	if errors.Is(err, errBadKind) {
+		fail(w, http.StatusBadRequest, "You can report a post, a comment or a person.")
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "That is gone already.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if owner == u.ID {
+		fail(w, http.StatusBadRequest, "You cannot report yourself or your own posts.")
+		return
+	}
+	var today int
+	if err := a.db.QueryRow(`SELECT count(*) FROM reports WHERE reporter_id = $1 AND created_at > now() - interval '1 day'`, u.ID).Scan(&today); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if today >= maxReportsPerDay {
+		fail(w, http.StatusTooManyRequests, "You have sent 10 reports today. Thank you; the moderators will get to them.")
+		return
+	}
+	_, err = a.db.Exec(`INSERT INTO reports (reporter_id, target_kind, target_id, reason, note) VALUES ($1, $2, $3, $4, $5)`, u.ID, in.Kind, in.ID, in.Reason, note)
+	var pe *pq.Error
+	if errors.As(err, &pe) && pe.Code == "23505" {
+		fail(w, http.StatusConflict, "You already reported this. A moderator will look at it.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// A group of open reports about one thing, as the queue shows it.
+type queueItem struct {
+	Kind    string           `json:"kind"`
+	ID      int64            `json:"id"`
+	Target  map[string]any   `json:"target"`
+	Author  map[string]any   `json:"author"`
+	Reports []map[string]any `json:"reports"`
+	Oldest  time.Time        `json:"oldest"`
+	History []map[string]any `json:"history"`
+}
+
+func (a *app) handleQueue(w http.ResponseWriter, r *http.Request, u *user) {
+	status := "open"
+	if r.URL.Query().Get("status") == "resolved" {
+		status = "resolved"
+	}
+	q := `SELECT r.id, r.target_kind, r.target_id, r.reason, r.note, r.created_at, r.status, r.resolution, ru.username, COALESCE(rv.username, '')
+		FROM reports r JOIN users ru ON ru.id = r.reporter_id LEFT JOIN users rv ON rv.id = r.resolver_id
+		WHERE ` + map[string]string{"open": `r.status = 'open' ORDER BY r.id`, "resolved": `r.status <> 'open' ORDER BY r.resolved_at DESC LIMIT 200`}[status]
+	rows, err := a.db.Query(q)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	items := []*queueItem{}
+	byKey := map[string]*queueItem{}
+	for rows.Next() {
+		var id, tid int64
+		var kind, reason, note, st, res, reporter, resolver string
+		var at time.Time
+		if err := rows.Scan(&id, &kind, &tid, &reason, &note, &at, &st, &res, &reporter, &resolver); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		k := fmt.Sprintf("%s:%d", kind, tid)
+		it := byKey[k]
+		if it == nil {
+			it = &queueItem{Kind: kind, ID: tid, Oldest: at}
+			byKey[k] = it
+			items = append(items, it)
+		}
+		it.Reports = append(it.Reports, map[string]any{"id": id, "reason": reason, "note": note, "at": at, "by": reporter, "status": st, "resolution": res, "resolver": resolver})
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	for _, it := range items {
+		if err := a.fillQueueItem(it); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// fillQueueItem adds the reported content, its author and the author's moderation history.
+func (a *app) fillQueueItem(it *queueItem) error {
+	var author int64
+	switch it.Kind {
+	case "post":
+		var body, image, reason string
+		var data []byte
+		var hidden bool
+		err := a.db.QueryRow(`SELECT user_id, body, image, data, hidden_at IS NOT NULL, hidden_reason FROM posts WHERE id = $1`, it.ID).Scan(&author, &body, &image, &data, &hidden, &reason)
+		if errors.Is(err, sql.ErrNoRows) {
+			it.Target = map[string]any{"gone": true}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		it.Target = map[string]any{"body": body, "image": image, "data": json.RawMessage(data), "hidden": hidden, "hiddenReason": reason}
+	case "comment":
+		var body, reason string
+		var post int64
+		var hidden, deleted bool
+		err := a.db.QueryRow(`SELECT user_id, post_id, body, hidden_at IS NOT NULL, hidden_reason, deleted FROM comments WHERE id = $1`, it.ID).Scan(&author, &post, &body, &hidden, &reason, &deleted)
+		if errors.Is(err, sql.ErrNoRows) || deleted {
+			it.Target = map[string]any{"gone": true}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		it.Target = map[string]any{"body": body, "postId": post, "hidden": hidden, "hiddenReason": reason}
+	case "user":
+		author = it.ID
+		it.Target = map[string]any{}
+	}
+	tu, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.id = $1`, author))
+	if errors.Is(err, sql.ErrNoRows) {
+		it.Target = map[string]any{"gone": true}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var posts, actions int
+	if err := a.db.QueryRow(`SELECT (SELECT count(*) FROM posts WHERE user_id = $1), (SELECT count(*) FROM mod_actions WHERE target_user_id = $1)`, author).Scan(&posts, &actions); err != nil {
+		return err
+	}
+	it.Author = map[string]any{"id": tu.ID, "username": tu.Username, "displayName": tu.DisplayName, "role": tu.Role, "avatar": tu.Avatar, "bio": tu.Bio,
+		"posts": posts, "actions": actions, "mutedUntil": tu.MutedUntil, "suspendedUntil": tu.SuspendedUntil, "statsHidden": tu.StatsHidden}
+	hist, err := a.auditRows(`WHERE m.target_user_id = $1 ORDER BY m.id DESC LIMIT 5`, author)
+	it.History = hist
+	return err
+}
+
+// handleModAction hides or restores content, mutes or suspends a person, revokes a badge, or
+// hides reported stats. Each action is logged and the person affected is told.
+func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Action string `json:"action"`
+		Kind   string `json:"kind"`
+		ID     int64  `json:"id"`
+		Reason string `json:"reason"`
+		Until  string `json:"until"`
+		Key    string `json:"key"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if len([]rune(reason)) > maxModReason {
+		fail(w, http.StatusBadRequest, "Keep the reason under 300 characters.")
+		return
+	}
+	perm := map[string]string{"hide": permPostHide, "restore": permPostHide, "mute": permUserMute, "unmute": permUserMute,
+		"suspend": permUserSuspend, "unsuspend": permUserSuspend, "revoke_badge": permBadgeRevoke, "hide_stats": permBadgeRevoke, "show_stats": permBadgeRevoke}[in.Action]
+	if perm == "" {
+		fail(w, http.StatusBadRequest, "Unknown action.")
+		return
+	}
+	if !can(u, perm) {
+		fail(w, http.StatusForbidden, "You do not have permission to do that.")
+		return
+	}
+	kind := in.Kind
+	if in.Action != "hide" && in.Action != "restore" {
+		kind = "user"
+	}
+	if (in.Action == "hide" || in.Action == "mute" || in.Action == "suspend" || in.Action == "revoke_badge") && reason == "" {
+		fail(w, http.StatusBadRequest, "Give a reason. The person affected will see it.")
+		return
+	}
+	owner, err := a.targetOwner(kind, in.ID, u)
+	if errors.Is(err, errBadKind) {
+		fail(w, http.StatusBadRequest, "You can hide a post or a comment.")
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "That is gone already.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if owner == u.ID {
+		fail(w, http.StatusBadRequest, "You cannot moderate yourself.")
+		return
+	}
+	var role string
+	if err := a.db.QueryRow(`SELECT role FROM users WHERE id = $1`, owner).Scan(&role); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// Moderators act on users; admins on users and moderators. Nobody acts on an admin.
+	if !outranks(u.Role, role) {
+		fail(w, http.StatusForbidden, "You cannot moderate someone with the same role as yours or higher.")
+		return
+	}
+	var until time.Time
+	if in.Action == "mute" || in.Action == "suspend" {
+		until, err = time.Parse(time.RFC3339, in.Until)
+		if err != nil || !until.After(time.Now().Add(time.Minute)) || until.After(time.Now().Add(maxModUntil)) {
+			fail(w, http.StatusBadRequest, "Choose an end time between now and a year from now.")
+			return
+		}
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var res sql.Result
+	detail := map[string]any{}
+	msg := ""
+	table := map[string]string{"post": "posts", "comment": "comments"}[kind]
+	switch in.Action {
+	case "hide":
+		res, err = tx.Exec(`UPDATE `+table+` SET hidden_at = now(), hidden_reason = $2 WHERE id = $1 AND hidden_at IS NULL`, in.ID, reason)
+		msg = "A moderator hid your " + kind + ". Reason: " + reason
+	case "restore":
+		res, err = tx.Exec(`UPDATE `+table+` SET hidden_at = NULL, hidden_reason = '' WHERE id = $1 AND hidden_at IS NOT NULL`, in.ID)
+		msg = "A moderator restored your " + kind + "."
+	case "mute":
+		res, err = tx.Exec(`UPDATE users SET muted_until = $2, mute_reason = $3 WHERE id = $1`, owner, until, reason)
+		detail["until"] = until
+		msg = "You are muted until " + until.UTC().Format("2 January 2006, 15:04 UTC") + ", so you cannot post or comment. Reason: " + reason
+	case "unmute":
+		res, err = tx.Exec(`UPDATE users SET muted_until = NULL, mute_reason = '' WHERE id = $1 AND muted_until > now()`, owner)
+		msg = "You can post and comment again."
+	case "suspend":
+		res, err = tx.Exec(`UPDATE users SET suspended_until = $2, suspend_reason = $3 WHERE id = $1`, owner, until, reason)
+		if err == nil {
+			_, err = tx.Exec(`DELETE FROM sessions WHERE user_id = $1`, owner)
+		}
+		detail["until"] = until
+		msg = "Your account was suspended until " + until.UTC().Format("2 January 2006, 15:04 UTC") + ". Reason: " + reason
+	case "unsuspend":
+		res, err = tx.Exec(`UPDATE users SET suspended_until = NULL, suspend_reason = '' WHERE id = $1 AND suspended_until > now()`, owner)
+		msg = "Your suspension was lifted."
+	case "revoke_badge":
+		if !achKeyRE.MatchString(in.Key) {
+			fail(w, http.StatusBadRequest, "Unknown badge.")
+			return
+		}
+		res, err = tx.Exec(`DELETE FROM achievements WHERE user_id = $1 AND key = $2`, owner, in.Key)
+		if err == nil {
+			_, err = tx.Exec(`INSERT INTO badge_blocks (user_id, key) VALUES ($1, $2) ON CONFLICT DO NOTHING`, owner, in.Key)
+		}
+		detail["key"] = in.Key
+		msg = "A moderator removed one of your badges (" + in.Key + "). Reason: " + reason
+	case "hide_stats":
+		res, err = tx.Exec(`UPDATE users SET stats_hidden = true WHERE id = $1 AND NOT stats_hidden`, owner)
+		msg = "A moderator hid your level and XP from other people."
+		if reason != "" {
+			msg += " Reason: " + reason
+		}
+	case "show_stats":
+		res, err = tx.Exec(`UPDATE users SET stats_hidden = false WHERE id = $1 AND stats_hidden`, owner)
+		msg = "Your level and XP are shown to other people again."
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(w, http.StatusConflict, "Nothing to change: it is already that way.")
+		return
+	}
+	if err := a.audit(tx, u.ID, in.Action, kind, in.ID, owner, reason, detail); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.notify(owner, u.ID, "moderation", 0, msg)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleResolve closes every open report about one thing, and tells each reporter.
+func (a *app) handleResolve(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Kind    string `json:"kind"`
+		ID      int64  `json:"id"`
+		Outcome string `json:"outcome"`
+		Note    string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if in.Outcome != "actioned" && in.Outcome != "dismissed" {
+		fail(w, http.StatusBadRequest, "The outcome is actioned or dismissed.")
+		return
+	}
+	note := strings.TrimSpace(in.Note)
+	if len([]rune(note)) > maxModReason {
+		fail(w, http.StatusBadRequest, "Keep the note under 300 characters.")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`UPDATE reports SET status = $3, resolver_id = $4, resolution = $5, resolved_at = now()
+		WHERE target_kind = $1 AND target_id = $2 AND status = 'open' RETURNING reporter_id`, in.Kind, in.ID, in.Outcome, u.ID, note)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	reporters := []int64{}
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			reporters = append(reporters, id)
+		}
+	}
+	rows.Close()
+	if len(reporters) == 0 {
+		fail(w, http.StatusNotFound, "There are no open reports about that.")
+		return
+	}
+	if err := a.audit(tx, u.ID, "resolve", in.Kind, in.ID, 0, note, map[string]any{"outcome": in.Outcome, "reports": len(reporters)}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	msg := "Thank you for your report. A moderator looked at it and left it up."
+	if in.Outcome == "actioned" {
+		msg = "Thank you for your report. A moderator took action."
+	}
+	for _, id := range reporters {
+		a.notify(id, u.ID, "moderation", 0, msg)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resolved": len(reporters)})
+}
+
+// auditRows reads the audit log with usernames; where adds conditions over m (mod_actions).
+func (a *app) auditRows(where string, args ...any) ([]map[string]any, error) {
+	rows, err := a.db.Query(`SELECT m.id, m.action, m.target_kind, m.target_id, m.reason, m.detail, m.created_at, COALESCE(ua.username, ''), COALESCE(ut.username, '')
+		FROM mod_actions m LEFT JOIN users ua ON ua.id = m.actor_id LEFT JOIN users ut ON ut.id = m.target_user_id `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, tid int64
+		var action, kind, reason, actor, target string
+		var detail []byte
+		var at time.Time
+		if err := rows.Scan(&id, &action, &kind, &tid, &reason, &detail, &at, &actor, &target); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{"id": id, "action": action, "kind": kind, "targetId": tid, "reason": reason, "detail": json.RawMessage(detail), "at": at, "actor": actor, "target": target})
+	}
+	return out, rows.Err()
+}
+
+// handleAudit pages through the audit log, newest first, filtered by who acted and what they did.
+func (a *app) handleAudit(w http.ResponseWriter, r *http.Request, _ *user) {
+	q := r.URL.Query()
+	before := queryID(r, "before")
+	list, err := a.auditRows(`WHERE ($1 = 0 OR m.id < $1) AND ($2 = '' OR ua.username = $2) AND ($3 = '' OR m.action = $3) ORDER BY m.id DESC LIMIT 51`,
+		before, strings.ToLower(q.Get("actor")), q.Get("action"))
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	more := len(list) > 50
+	if more {
+		list = list[:50]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": list, "more": more})
+}
+
+/* ---------- audit log ---------- */
+
+type execer interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
+// audit records one moderation or admin action. Every such handler calls it exactly once, inside
+// the same transaction as the action where there is one, so an action cannot happen unlogged.
+func (a *app) audit(x execer, actor int64, action, kind string, targetID, targetUser int64, reason string, detail map[string]any) error {
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	d, _ := json.Marshal(detail)
+	var tu any
+	if targetUser != 0 {
+		tu = targetUser
+	}
+	_, err := x.Exec(`INSERT INTO mod_actions (actor_id, action, target_kind, target_id, target_user_id, reason, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		actor, action, kind, targetID, tu, reason, string(d))
+	return err
 }
 
 /* ---------- start-up ---------- */
@@ -983,17 +1638,23 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 		io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("GET /api/me", a.handleMe)
-	mux.HandleFunc("PUT /api/me", a.authed(false, a.handlePutMe))
-	mux.HandleFunc("PUT /api/me/password", a.authed(false, a.handlePassword))
+	mux.HandleFunc("PUT /api/me", a.authed("", a.handlePutMe))
+	mux.HandleFunc("PUT /api/me/password", a.authed("", a.handlePassword))
 	mux.HandleFunc("POST /api/signup", a.handleSignup)
 	mux.HandleFunc("POST /api/signin", a.handleSignin)
 	mux.HandleFunc("POST /api/signout", a.handleSignout)
-	mux.HandleFunc("GET /api/progress/{prop}", a.authed(false, a.handleGetProgress))
-	mux.HandleFunc("PUT /api/progress/{prop}", a.authed(false, a.handlePutProgress))
-	mux.HandleFunc("PUT /api/flags", a.authed(true, a.handlePutFlags))
-	mux.HandleFunc("GET /api/admin/users", a.authed(true, a.handleUsers))
-	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(true, a.handleDeleteUser))
-	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(true, a.handleResetPassword))
+	mux.HandleFunc("GET /api/progress/{prop}", a.authed("", a.handleGetProgress))
+	mux.HandleFunc("PUT /api/progress/{prop}", a.authed("", a.handlePutProgress))
+	mux.HandleFunc("PUT /api/flags", a.authed(permFlagsEdit, a.handlePutFlags))
+	mux.HandleFunc("GET /api/admin/users", a.authed(permDashboard, a.handleUsers))
+	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(permUserManage, a.handleDeleteUser))
+	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(permUserManage, a.handleResetPassword))
+	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.authed(permUserRole, a.handleSetRole))
+	mux.HandleFunc("GET /api/admin/audit", a.authed(permAudit, a.handleAudit))
+	mux.HandleFunc("POST /api/reports", a.flagged("moderation", a.authed("", a.handleReport)))
+	mux.HandleFunc("GET /api/mod/queue", a.flagged("moderation", a.authed(permReportResolve, a.handleQueue)))
+	mux.HandleFunc("POST /api/mod/resolve", a.flagged("moderation", a.authed(permReportResolve, a.handleResolve)))
+	mux.HandleFunc("POST /api/mod/actions", a.flagged("moderation", a.authed("", a.handleModAction)))
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /", handleStatic(assets))
 	return guard(mux)
@@ -1125,7 +1786,48 @@ CREATE TABLE IF NOT EXISTS comment_likes (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	PRIMARY KEY (comment_id, user_id)
 );
-ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE;`
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE;
+CREATE TABLE IF NOT EXISTS mod_actions (
+	id BIGSERIAL PRIMARY KEY,
+	actor_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	action TEXT NOT NULL,
+	target_kind TEXT NOT NULL DEFAULT '',
+	target_id BIGINT NOT NULL DEFAULT 0,
+	target_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	reason TEXT NOT NULL DEFAULT '',
+	detail JSONB NOT NULL DEFAULT '{}',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mod_actions_time ON mod_actions (id DESC);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspend_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stats_hidden BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS hidden_reason TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS reports (
+	id BIGSERIAL PRIMARY KEY,
+	reporter_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	target_kind TEXT NOT NULL,
+	target_id BIGINT NOT NULL,
+	reason TEXT NOT NULL,
+	note TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'open',
+	resolver_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	resolution TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	resolved_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS reports_open_once ON reports (reporter_id, target_kind, target_id) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS reports_status ON reports (status, id);
+CREATE TABLE IF NOT EXISTS badge_blocks (
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	PRIMARY KEY (user_id, key)
+);`
 
 const (
 	maxBio       = 300
@@ -1255,6 +1957,11 @@ type pubUser struct {
 }
 
 func (u *user) public() pubUser {
+	if u.StatsHidden {
+		v := *u
+		v.Stats = json.RawMessage("{}")
+		u = &v
+	}
 	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Stats, u.Created}
 }
 
@@ -1306,7 +2013,7 @@ func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"users": out})
 }
 
-func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user) {
+func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *user) {
 	name := strings.ToLower(r.PathValue("username"))
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.username = $1`, name))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1323,7 +2030,7 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user)
 		return
 	}
 	var posts, likes int
-	if err := a.db.QueryRow(`SELECT count(*) FROM posts WHERE user_id = $1`, u.ID).Scan(&posts); err != nil {
+	if err := a.db.QueryRow(`SELECT count(*) FROM posts WHERE user_id = $1 AND (hidden_at IS NULL OR $1 = $2 OR $3)`, u.ID, viewer.ID, can(viewer, permPostHide)).Scan(&posts); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -1380,7 +2087,8 @@ func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user
 			return
 		}
 		var got string
-		err := a.db.QueryRow(`INSERT INTO achievements (user_id, key) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING key`, u.ID, k).Scan(&got)
+		err := a.db.QueryRow(`INSERT INTO achievements (user_id, key) SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM badge_blocks WHERE user_id = $1 AND key = $2)
+			ON CONFLICT DO NOTHING RETURNING key`, u.ID, k).Scan(&got)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -1499,7 +2207,17 @@ func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *use
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "unread": unread, "users": users})
+	out := map[string]any{"items": items, "unread": unread, "users": users}
+	if can(u, permReportResolve) {
+		// Moderators see how many reports wait, beside the menu entry.
+		var queue int
+		if err := a.db.QueryRow(`SELECT count(DISTINCT (target_kind, target_id)) FROM reports WHERE status = 'open'`).Scan(&queue); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out["queue"] = queue
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *app) handleReadNotifications(w http.ResponseWriter, r *http.Request, u *user) {
@@ -1535,6 +2253,8 @@ type comment struct {
 	Created    time.Time `json:"created"`
 	Edited     bool      `json:"edited,omitempty"`
 	Deleted    bool      `json:"deleted,omitempty"`
+	Removed    bool      `json:"removed,omitempty"` // a placeholder for a comment a moderator hid
+	Hidden     string    `json:"hidden,omitempty"`  // the reason, for its author and moderators
 	Likes      int       `json:"likes"`
 	Liked      bool      `json:"liked"`
 	ReplyCount int       `json:"replyCount"`
@@ -1557,16 +2277,20 @@ type post struct {
 	// load on demand. CommentCount counts every comment and reply that is not deleted.
 	Comments     []comment `json:"comments"`
 	CommentCount int       `json:"commentCount"`
+	// Hidden is the moderator's reason when the post is hidden; only its author and moderators see it.
+	Hidden string `json:"hidden,omitempty"`
 }
 
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
 // liked each one, every comment, and the users involved.
-func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, error) {
+func (a *app) loadPosts(viewer *user, before, byUser, only int64) (map[string]any, error) {
+	// Hidden posts are seen only by their author and by those who may hide posts.
 	rows, err := a.db.Query(`SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
-		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted)
-		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) ORDER BY p.id DESC LIMIT $5`,
-		viewer, before, byUser, only, pageSize+1)
+		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL), p.hidden_reason
+		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4)
+		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) ORDER BY p.id DESC LIMIT $5`,
+		viewer.ID, before, byUser, only, pageSize+1, can(viewer, permPostHide))
 	if err != nil {
 		return nil, err
 	}
@@ -1577,7 +2301,7 @@ func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, err
 	for rows.Next() {
 		p := &post{Comments: []comment{}}
 		var data []byte
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden); err != nil {
 			return nil, err
 		}
 		p.Data = data
@@ -1637,7 +2361,7 @@ func (a *app) handleGetPosts(w http.ResponseWriter, r *http.Request, u *user) {
 			return
 		}
 	}
-	out, err := a.loadPosts(u.ID, queryID(r, "before"), byUser, 0)
+	out, err := a.loadPosts(u, queryID(r, "before"), byUser, 0)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -1645,7 +2369,7 @@ func (a *app) handleGetPosts(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (a *app) writePost(w http.ResponseWriter, viewer, id int64) {
+func (a *app) writePost(w http.ResponseWriter, viewer *user, id int64) {
 	out, err := a.loadPosts(viewer, 0, 0, id)
 	if err != nil {
 		a.serverError(w, err)
@@ -1660,7 +2384,7 @@ func (a *app) writePost(w http.ResponseWriter, viewer, id int64) {
 
 func (a *app) handleGetPost(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	a.writePost(w, u.ID, id)
+	a.writePost(w, u, id)
 }
 
 // notifyMentions tells each @named user, except the actor and anyone already told.
@@ -1754,7 +2478,23 @@ func cleanCombo(c *postCombo) bool {
 	return true
 }
 
+// muted answers the request when the user is muted, and reports whether they were.
+func muted(w http.ResponseWriter, u *user) bool {
+	if u.MutedUntil == nil {
+		return false
+	}
+	msg := "You are muted until " + u.MutedUntil.UTC().Format("2 January 2006, 15:04 UTC") + ", so you cannot post or comment."
+	if u.MuteReason != "" {
+		msg += " Reason: " + u.MuteReason
+	}
+	fail(w, http.StatusForbidden, msg)
+	return true
+}
+
 func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) {
+	if muted(w, u) {
+		return
+	}
 	var in struct {
 		Body  string     `json:"body"`
 		Image string     `json:"image"`
@@ -1806,27 +2546,35 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	a.notifyMentions(body, u.ID, id, 0)
-	a.writePost(w, u.ID, id)
+	a.writePost(w, u, id)
 }
 
 func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	res, err := a.db.Exec(`DELETE FROM posts WHERE id = $1 AND (user_id = $2 OR $3)`, id, u.ID, u.Role == "admin")
+	var author int64
+	err := a.db.QueryRow(`DELETE FROM posts WHERE id = $1 AND (user_id = $2 OR $3) RETURNING user_id`, id, u.ID, can(u, permContentDelete)).Scan(&author)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such post, or it is not yours.")
+		return
+	}
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		fail(w, http.StatusNotFound, "No such post, or it is not yours.")
-		return
+	if author != u.ID {
+		if err := a.audit(a.db, u.ID, "delete_post", "post", id, author, "", nil); err != nil {
+			a.serverError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// postOwner finds who wrote a post, answering the request itself when it cannot.
-func (a *app) postOwner(w http.ResponseWriter, id int64) (int64, bool) {
+// postOwner finds who wrote a post the viewer may see, answering the request itself when it
+// cannot. A hidden post is "gone" to everyone but its author and moderators.
+func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, bool) {
 	var owner int64
-	err := a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1`, id).Scan(&owner)
+	err := a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1 AND (hidden_at IS NULL OR user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such post.")
 		return 0, false
@@ -1840,7 +2588,7 @@ func (a *app) postOwner(w http.ResponseWriter, id int64) (int64, bool) {
 
 func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	owner, ok := a.postOwner(w, id)
+	owner, ok := a.postOwner(w, id, u)
 	if !ok {
 		return
 	}
@@ -1878,12 +2626,14 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 
 const commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
 	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
-	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id)`
+	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL`
 
 // queryComments runs inner, a query over the comments table whose first parameter is $2, and
 // returns its rows oldest first, with likes and reply counts as seen by viewer ($1).
-func (a *app) queryComments(viewer int64, inner string, args ...any) ([]*comment, error) {
-	rows, err := a.db.Query(`SELECT `+commentCols+` FROM (`+inner+`) c ORDER BY c.id`, append([]any{viewer}, args...)...)
+// A hidden comment is shown in full to its author and moderators; to everyone else it is left
+// out, or kept as an empty placeholder when it has replies that are still shown.
+func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment, error) {
+	rows, err := a.db.Query(`SELECT `+commentCols+` FROM (`+inner+`) c ORDER BY c.id`, append([]any{viewer.ID}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1891,8 +2641,19 @@ func (a *app) queryComments(viewer int64, inner string, args ...any) ([]*comment
 	out := []*comment{}
 	for rows.Next() {
 		c := &comment{}
-		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.ParentID, &c.Body, &c.Created, &c.Edited, &c.Deleted, &c.Likes, &c.Liked, &c.ReplyCount); err != nil {
+		var reason string
+		var hidden bool
+		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.ParentID, &c.Body, &c.Created, &c.Edited, &c.Deleted, &c.Likes, &c.Liked, &c.ReplyCount, &reason, &hidden); err != nil {
 			return nil, err
+		}
+		if hidden {
+			if c.UserID == viewer.ID || can(viewer, permPostHide) {
+				c.Hidden = reason
+			} else if c.ReplyCount > 0 {
+				c.Deleted, c.Removed = true, true
+			} else {
+				continue
+			}
 		}
 		if c.Deleted {
 			c.Body, c.Likes, c.Liked, c.Edited = "", 0, false, false
@@ -1903,7 +2664,7 @@ func (a *app) queryComments(viewer int64, inner string, args ...any) ([]*comment
 }
 
 // attachReplies gives each top-level comment its newest replies, oldest first.
-func (a *app) attachReplies(viewer int64, roots []*comment) error {
+func (a *app) attachReplies(viewer *user, roots []*comment) error {
 	if len(roots) == 0 {
 		return nil
 	}
@@ -1957,12 +2718,12 @@ func (a *app) writeComments(w http.ResponseWriter, list []*comment, page int, ex
 // newest replies.
 func (a *app) handleGetComments(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if _, ok := a.postOwner(w, id); !ok {
+	if _, ok := a.postOwner(w, id, u); !ok {
 		return
 	}
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE post_id = $2 AND parent_id IS NULL AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), commentPage+1)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE post_id = $2 AND parent_id IS NULL AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), commentPage+1)
 	if err == nil {
-		err = a.attachReplies(u.ID, list)
+		err = a.attachReplies(u, list)
 	}
 	if err != nil {
 		a.serverError(w, err)
@@ -1979,11 +2740,12 @@ type commentRow struct {
 	body                                string
 }
 
-func (a *app) commentRow(w http.ResponseWriter, id int64) (commentRow, bool) {
+func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (commentRow, bool) {
 	var c commentRow
 	var secs float64
 	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
-		FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1`, id).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+		FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1
+		AND ((c.hidden_at IS NULL AND p.hidden_at IS NULL) OR c.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "That comment is gone.")
 		return c, false
@@ -1999,14 +2761,14 @@ func (a *app) commentRow(w http.ResponseWriter, id int64) (commentRow, bool) {
 // handleGetReplies pages through the replies to one top-level comment, oldest first.
 func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
 	if c.parentID != 0 {
 		id = c.parentID
 	}
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE parent_id = $2 AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), replyPage+1)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE parent_id = $2 AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), replyPage+1)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -2017,7 +2779,7 @@ func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) 
 // handleThread returns the whole thread a comment belongs to, for a notification to open.
 func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
@@ -2025,12 +2787,12 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 	if c.parentID != 0 {
 		root = c.parentID
 	}
-	roots, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, root)
+	roots, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, root)
 	if err != nil || len(roots) == 0 {
 		a.serverError(w, fmt.Errorf("thread %d: %v", root, err))
 		return
 	}
-	reps, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE parent_id = $2 ORDER BY id LIMIT $3`, root, maxThread)
+	reps, err := a.queryComments(u, `SELECT * FROM comments WHERE parent_id = $2 ORDER BY id LIMIT $3`, root, maxThread)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -2050,6 +2812,9 @@ func startsWithMention(text, name string) bool {
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
+	if muted(w, u) {
+		return
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Body     string `json:"body"`
@@ -2063,7 +2828,7 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusBadRequest, "A comment needs 1 to 1000 characters.")
 		return
 	}
-	owner, ok := a.postOwner(w, id)
+	owner, ok := a.postOwner(w, id, u)
 	if !ok {
 		return
 	}
@@ -2077,8 +2842,11 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 	if in.ParentID != 0 {
 		// Lock the comment being answered, so it cannot be deleted while the reply is written.
 		var postID, parent int64
-		var deleted bool
-		err := tx.QueryRow(`SELECT post_id, user_id, COALESCE(parent_id, 0), deleted FROM comments WHERE id = $1 FOR SHARE`, in.ParentID).Scan(&postID, &answered, &parent, &deleted)
+		var deleted, hidden bool
+		err := tx.QueryRow(`SELECT post_id, user_id, COALESCE(parent_id, 0), deleted, hidden_at IS NOT NULL FROM comments WHERE id = $1 FOR SHARE`, in.ParentID).Scan(&postID, &answered, &parent, &deleted, &hidden)
+		if err == nil && hidden && answered != u.ID && !can(u, permPostHide) {
+			err = sql.ErrNoRows
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			fail(w, http.StatusNotFound, "That comment is gone.")
 			return
@@ -2132,12 +2900,12 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		a.notifyAt(owner, u.ID, "comment", id, cid, "")
 	}
 	a.notifyMentions(body, u.ID, id, cid, owner, answered)
-	out, err := a.loadPosts(u.ID, 0, 0, id)
+	out, err := a.loadPosts(u, 0, 0, id)
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, cid)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, cid)
 	if err != nil || len(list) == 0 {
 		a.serverError(w, fmt.Errorf("new comment %d: %v", cid, err))
 		return
@@ -2149,6 +2917,9 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 // handleEditComment lets the author change a comment within the edit window. People newly
 // @mentioned are told; people mentioned before are not told again.
 func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user) {
+	if muted(w, u) {
+		return
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Body string `json:"body"`
@@ -2156,7 +2927,7 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 	if !readJSON(w, r, 8192, &in) {
 		return
 	}
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
@@ -2192,7 +2963,7 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 		}
 	}
 	a.notifyNames(added, u.ID, c.postID, id, c.postOwner)
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, id)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, id)
 	if err != nil || len(list) == 0 {
 		a.serverError(w, fmt.Errorf("edited comment %d: %v", id, err))
 		return
@@ -2212,7 +2983,7 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 	defer tx.Rollback()
 	var author, owner, parent int64
 	err = tx.QueryRow(`SELECT c.user_id, p.user_id, COALESCE(c.parent_id, 0) FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 FOR UPDATE OF c`, id).Scan(&author, &owner, &parent)
-	if err == nil && author != u.ID && owner != u.ID && u.Role != "admin" {
+	if err == nil && author != u.ID && owner != u.ID && !can(u, permContentDelete) {
 		err = sql.ErrNoRows
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2241,6 +3012,9 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 			_, err = tx.Exec(`DELETE FROM comments WHERE id = $1 AND deleted AND NOT EXISTS (SELECT 1 FROM comments WHERE parent_id = $1)`, parent)
 		}
 	}
+	if err == nil && author != u.ID && owner != u.ID {
+		err = a.audit(tx, u.ID, "delete_comment", "comment", id, author, "", nil)
+	}
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -2254,7 +3028,7 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 // handleLikeComment toggles a like on a comment in one statement either way.
 func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
@@ -2291,21 +3065,21 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 }
 
 func (a *app) socialRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/users", a.authed(false, a.handleUserList))
-	mux.HandleFunc("GET /api/users/{username}", a.authed(false, a.handleUserProfile))
-	mux.HandleFunc("GET /api/posts", a.authed(false, a.handleGetPosts))
-	mux.HandleFunc("POST /api/posts", a.authed(false, a.handleCreatePost))
-	mux.HandleFunc("GET /api/posts/{id}", a.authed(false, a.handleGetPost))
-	mux.HandleFunc("DELETE /api/posts/{id}", a.authed(false, a.handleDeletePost))
-	mux.HandleFunc("POST /api/posts/{id}/like", a.authed(false, a.handleLike))
-	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed(false, a.handleComment))
-	mux.HandleFunc("GET /api/posts/{id}/comments", a.authed(false, a.handleGetComments))
-	mux.HandleFunc("DELETE /api/comments/{id}", a.authed(false, a.handleDeleteComment))
-	mux.HandleFunc("PUT /api/comments/{id}", a.authed(false, a.handleEditComment))
-	mux.HandleFunc("GET /api/comments/{id}/replies", a.authed(false, a.handleGetReplies))
-	mux.HandleFunc("GET /api/comments/{id}/thread", a.authed(false, a.handleThread))
-	mux.HandleFunc("POST /api/comments/{id}/like", a.authed(false, a.handleLikeComment))
-	mux.HandleFunc("POST /api/achievements", a.authed(false, a.handleAchievements))
-	mux.HandleFunc("GET /api/notifications", a.authed(false, a.handleNotifications))
-	mux.HandleFunc("PUT /api/notifications/read", a.authed(false, a.handleReadNotifications))
+	mux.HandleFunc("GET /api/users", a.authed("", a.handleUserList))
+	mux.HandleFunc("GET /api/users/{username}", a.authed("", a.handleUserProfile))
+	mux.HandleFunc("GET /api/posts", a.authed("", a.handleGetPosts))
+	mux.HandleFunc("POST /api/posts", a.authed("", a.handleCreatePost))
+	mux.HandleFunc("GET /api/posts/{id}", a.authed("", a.handleGetPost))
+	mux.HandleFunc("DELETE /api/posts/{id}", a.authed("", a.handleDeletePost))
+	mux.HandleFunc("POST /api/posts/{id}/like", a.authed("", a.handleLike))
+	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed("", a.handleComment))
+	mux.HandleFunc("GET /api/posts/{id}/comments", a.authed("", a.handleGetComments))
+	mux.HandleFunc("DELETE /api/comments/{id}", a.authed("", a.handleDeleteComment))
+	mux.HandleFunc("PUT /api/comments/{id}", a.authed("", a.handleEditComment))
+	mux.HandleFunc("GET /api/comments/{id}/replies", a.authed("", a.handleGetReplies))
+	mux.HandleFunc("GET /api/comments/{id}/thread", a.authed("", a.handleThread))
+	mux.HandleFunc("POST /api/comments/{id}/like", a.authed("", a.handleLikeComment))
+	mux.HandleFunc("POST /api/achievements", a.authed("", a.handleAchievements))
+	mux.HandleFunc("GET /api/notifications", a.authed("", a.handleNotifications))
+	mux.HandleFunc("PUT /api/notifications/read", a.authed("", a.handleReadNotifications))
 }
