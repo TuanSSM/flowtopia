@@ -78,12 +78,27 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # the release notes preview reads every commit and tag
       - uses: actions/setup-go@v6
         with:
           go-version: stable   # what the Pi builds with; go.mod only sets the language version
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      # The version release_tag would pick if this pull request were merged, and the notes, from
+      # cliff.toml. A broken cliff.toml fails here, before it can break a release. Keep the git-cliff
+      # version the same as GIT_CLIFF_VERSION in release_tag.yml.
+      - name: Release notes preview (git-cliff)
+        run: |
+          pipx install "git-cliff==2.14.2"
+          next=$(git-cliff --bumped-version)
+          [[ "$next" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::git-cliff gave '$next', not a version like v1.2.3"; exit 1; }
+          git-cliff --unreleased --tag "$next" --strip all > notes.md
+          [ -s notes.md ] || { echo "::error::git-cliff wrote no release notes"; exit 1; }
+          cat notes.md
+          { echo "### If released now: $next"; echo; cat notes.md; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: gofmt
         run: |
