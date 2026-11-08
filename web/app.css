@@ -629,3 +629,23 @@ tr[hidden] { display: none; }
 .dc-axis { fill: var(--ink-3); font-size: 10.5px; }
 .dash-table summary { cursor: pointer; color: var(--ink-2); }
 .dash-table[open] summary { margin-bottom: 10px; }
+
+/* Skill map editor */
+.ed-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 12px; }
+.ed-views { margin-bottom: 12px; flex-wrap: wrap; }
+.ed-split { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.ed-list { display: grid; gap: 10px; max-height: 75vh; overflow-y: auto; padding-right: 4px; }
+.ed-branch { display: grid; gap: 2px; }
+.ed-skill { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 8px; text-align: left; color: var(--ink); font-size: 13px; }
+.ed-skill:hover { background: var(--card-2); }
+.ed-skill.on { background: var(--accent-soft); }
+.ed-skill.retired { color: var(--ink-3); }
+.ed-skill.has-err .tag { color: var(--bad); }
+.ed-skill.has-err::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); flex: none; }
+.ed-form { display: grid; gap: 12px; }
+.ed-msg { display: grid; gap: 2px; font-size: 12px; font-weight: 500; }
+.ed-msg:empty { display: none; }
+.ed-msg .bad { color: var(--bad); } .ed-msg .warn { color: var(--warn); }
+.ed-row { grid-template-columns: 30px minmax(0, 1fr) minmax(0, 2fr); gap: 10px; align-items: start; }
+.mono { font: 12px/1.45 ui-monospace, monospace; }
+@media (max-width: 860px) { .ed-split { grid-template-columns: 1fr; } .ed-list { max-height: 260px; } .ed-row { grid-template-columns: 30px 1fr; } .ed-row label:last-child { grid-column: 2; } }

@@ -43,8 +43,11 @@ async function loadSession() {
     const d = await api('progress/' + p.id);
     if (!d.ok) throw new Error(d.status);
     docs[p.id] = { rev: d.data.rev, state: normalize(d.data.state) };
+    docs[p.id].migrated = applyAliases(docs[p.id].state, p.id);
   }));
   state = docs[ui.prop].state; rev = docs[ui.prop].rev;
+  // Progress moved from renamed skill ids is saved for the prop in use; others save on their next change.
+  if (docs[ui.prop].migrated) setTimeout(commit, 0);
 }
 async function switchProp(id) {
   if (id === ui.prop || !propById(id)) return;
@@ -55,8 +58,10 @@ async function switchProp(id) {
       const d = await api('progress/' + id);
       if (!d.ok) { toast(d.error); return; }
       docs[id] = { rev: d.data.rev, state: normalize(d.data.state) };
+      docs[id].migrated = applyAliases(docs[id].state, id);
     }
     state = docs[id].state; rev = docs[id].rev;
+    if (docs[id].migrated) { docs[id].migrated = false; setTimeout(commit, 0); }
   }
   ui.prop = id; ui.draftFocus = [];
   useCatalog(id);

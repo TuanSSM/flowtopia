@@ -52,6 +52,8 @@ try:
     page('mod','Moderation queue','#/mod',wait=4)
     page('admin-dashboard','Admin dashboard','#/admin/dashboard',wait=5)
     page('admin-dashboard-phone','Admin dashboard, phone','#/admin/dashboard',w=420,ht=900,wait=5)
+    api(op,'flags',{'flags':{'catalogEditor':True}},'PUT');cmd('WebDriver:Refresh');time.sleep(3)
+    page('editor','Skill map editor','#/admin/maps/nunchaku',wait=5)
     page('map-phone','Skill map, phone','#/maps',w=420,ht=900)
     page('combos-phone','Combos, phone','#/combos',w=420,ht=900,wait=2.5)
     page('skill-phone','Skill guide, phone','#/prop/nunchaku/F/F5',w=420,ht=900,wait=2.5)

@@ -1,0 +1,2912 @@
+{
+ "id": "nunchaku",
+ "name": "Nunchaku",
+ "about": "Technique names come from the Freestyle Nunchaku Wiki and the sources in the roadmap. Prerequisites and tiers are coaching proposals, not rules of the art.",
+ "careNote": "Learn this on foam. It passes close to the head, neck or face, or leaves the hand.",
+ "branches": [
+  {
+   "k": "F",
+   "name": "Foundations",
+   "blurb": "Grips, planes, swings and control"
+  },
+  {
+   "k": "R",
+   "name": "Spin",
+   "blurb": "Hand, wrist, finger and limb rolls, the wheel"
+  },
+  {
+   "k": "S",
+   "name": "Hand switches",
+   "blurb": "Passes and swaps"
+  },
+  {
+   "k": "C",
+   "name": "Contact",
+   "blurb": "Bounces, traps and wraps"
+  },
+  {
+   "k": "B",
+   "name": "Balances",
+   "blurb": "Placement and contact paths"
+  },
+  {
+   "k": "A",
+   "name": "Throw & catch",
+   "blurb": "Throws, rebounds and catches"
+  },
+  {
+   "k": "N",
+   "name": "Finger pivots",
+   "blurb": "The supported route into finger rolls"
+  },
+  {
+   "k": "M",
+   "name": "Body movement",
+   "blurb": "Shifts, steps, travel and levels"
+  },
+  {
+   "k": "G",
+   "name": "Visual geometry",
+   "blurb": "Path control and contrast"
+  },
+  {
+   "k": "L",
+   "name": "Flow",
+   "blurb": "Linking, composition and routines"
+  },
+  {
+   "k": "D",
+   "name": "Double nunchaku",
+   "blurb": "Timing, crossing and two-stick throws"
+  }
+ ],
+ "skills": [
+  {
+   "id": "F1",
+   "tier": 1,
+   "name": "Front and back grip",
+   "desc": "Thumb toward the top, or little finger toward the top.",
+   "needs": [],
+   "track": "LR",
+   "steps": [
+    "Front grip: hold one stick like a hammer, thumb toward the link. The link leaves the top of your fist.",
+    "Back grip: turn the stick over so the little finger is toward the link. The link leaves the bottom of your fist.",
+    "Hold near the link end for control, or near the tail for reach.",
+    "Squeeze only as hard as the move needs, and keep the wrist loose."
+   ],
+   "watch": [
+    "A tight grip that locks the wrist and tires the forearm",
+    "Holding the middle of the stick, which gives neither control nor reach"
+   ],
+   "drill": "Let the free stick hang still. Change between front and back grip 20 times per hand without looking.",
+   "refs": [
+    "grip",
+    "vGrips"
+   ]
+  },
+  {
+   "id": "F2",
+   "tier": 1,
+   "name": "Open grip",
+   "desc": "Stick held against the palm by the thumb; used for rolls and aerials.",
+   "needs": [
+    "F1"
+   ],
+   "track": "LR",
+   "steps": [
+    "From a front grip, pin the stick against your palm with the thumb.",
+    "Open the four fingers flat while the thumb keeps the stick in place.",
+    "Close the fingers again without the stick shifting."
+   ],
+   "watch": [
+    "Fingers curling back out of habit, which blocks rolls and releases",
+    "Pinching near the stick tip, so it levers out of the hand"
+   ],
+   "drill": "Swing a slow circle. Open the fingers for one turn, close for one turn, 20 times.",
+   "refs": [
+    "grip",
+    "vGrips"
+   ]
+  },
+  {
+   "id": "F3",
+   "tier": 1,
+   "name": "Plane map",
+   "desc": "Near and far walls, face, back, table, core, cavity: the language for describing a path.",
+   "needs": [],
+   "track": "one",
+   "steps": [
+    "Walls are the planes at your sides. The near wall is on the side of the holding hand, the far wall on the other.",
+    "Face is in front of you, back is behind, roof is above and floor is below.",
+    "Table is a flat plane at waist height. High table is at the shoulders, low table at the knees.",
+    "Core runs down your centre line, and the cavity is the gap between arm and body."
+   ],
+   "watch": [
+    "Mixing up near and far after changing hands: they swap with the hand"
+   ],
+   "drill": "Call a plane out loud, then swing one slow circle on it. Go through all of them on each hand.",
+   "refs": [
+    "plane",
+    "clocks"
+   ]
+  },
+  {
+   "id": "F4",
+   "tier": 1,
+   "name": "Point and pivot circle swings",
+   "desc": "Striker circles with the hand still (point), or with the wrist circling too (pivot).",
+   "needs": [
+    "F1",
+    "F3"
+   ],
+   "track": "LR",
+   "steps": [
+    "Point swing: keep the hand and handle still and let only the striker circle from the handle tip.",
+    "Pivot swing: let the wrist and handle circle too, in a small circle, with the striker following.",
+    "Keep the circle flat on one plane and the speed even."
+   ],
+   "watch": [
+    "The circle wobbling off its plane",
+    "Driving from the shoulder: the wrist should do the work"
+   ],
+   "drill": "Ten point circles, then ten pivot circles, on the near wall. Repeat on the face and table planes.",
+   "refs": [
+    "swing",
+    "vSwings"
+   ]
+  },
+  {
+   "id": "F5",
+   "tier": 1,
+   "name": "Six directions",
+   "desc": "Upspin, downspin, outspin, inspin, nearspin, farspin. Practise the overhead helicopter spin here too.",
+   "needs": [
+    "F4"
+   ],
+   "track": "LR",
+   "steps": [
+    "On the wall plane: upspin rises at the front, as if striking upward. Downspin falls at the front.",
+    "On the face plane: outspin heads toward the near wall, inspin toward your centre.",
+    "On the table plane: nearspin heads toward the near wall, farspin toward the far wall.",
+    "For the overhead helicopter, raise the hand and circle on a flat plane above your head."
+   ],
+   "watch": [
+    "Learning only your comfortable direction on each plane",
+    "Looking up at the nunchaku during overhead spins: keep your eyes forward"
+   ],
+   "drill": "Ten slow circles in each of the six directions, on each hand, naming the direction as you go.",
+   "refs": [
+    "swing",
+    "vSwings",
+    "sportsrec"
+   ]
+  },
+  {
+   "id": "F6",
+   "tier": 2,
+   "name": "Fades and stops",
+   "desc": "Slow the swing, then down stop, side stop, and the hardest, up stop.",
+   "needs": [
+    "F5"
+   ],
+   "track": "LR",
+   "steps": [
+    "Fade: take speed out of a swing by letting the hand travel with the striker and easing off the wrist.",
+    "Down stop: fade until the striker hangs at 6 o'clock.",
+    "Side stop: stop the stick pointing out sideways, at 3 or 9 o'clock.",
+    "Up stop: stop at 12 o'clock. It is the hardest, because the stick must arrive with no speed left."
+   ],
+   "watch": [
+    "Grabbing or tensing to kill the swing: a fade is gradual",
+    "The striker bouncing back after the stop, which means it arrived too fast"
+   ],
+   "drill": "From a downspin circle, fade to a down stop within two turns. Then side stops, then up stops, 10 each.",
+   "refs": [
+    "swing",
+    "clocks",
+    "vSwings"
+   ]
+  },
+  {
+   "id": "F7",
+   "tier": 2,
+   "name": "Six basic figure-8s",
+   "desc": "Nearspin and farspin V8, upspin and downspin H8, inspin and outspin H8.",
+   "needs": [
+    "F5"
+   ],
+   "track": "LR",
+   "steps": [
+    "A figure-8 is two circles joined by a crossing, so the striker changes plane each half.",
+    "H8 traces an 8 lying on its side, wall to wall. Learn it with upspin, downspin, inspin and outspin.",
+    "V8 traces an upright 8, floor to roof. Learn it with nearspin and farspin.",
+    "Steer with small wrist movements and keep the arm quiet."
+   ],
+   "watch": [
+    "Big arm swings instead of wrist work",
+    "One side of the 8 smaller or faster than the other"
+   ],
+   "drill": "Think \"over, under\". Do 20 continuous 8s of one type, then reverse its direction for 20.",
+   "refs": [
+    "f8",
+    "swing",
+    "vSwings"
+   ]
+  },
+  {
+   "id": "F8",
+   "tier": 2,
+   "name": "12 basic F8s",
+   "desc": "All six figure-8s in both front grip and back grip.",
+   "needs": [
+    "F7",
+    "F1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Take each of the six figure-8s you know in front grip.",
+    "Repeat each one in back grip. The path is the same but the wrist leads differently.",
+    "That gives the 12 basic figure-8s."
+   ],
+   "watch": [
+    "Avoiding back grip because it feels weak at first",
+    "The back-grip path drifting closer to the body"
+   ],
+   "drill": "Pick one figure-8. Do 10 in front grip, change grip at a down stop, then 10 in back grip.",
+   "refs": [
+    "f8",
+    "grip"
+   ]
+  },
+  {
+   "id": "F9",
+   "tier": 3,
+   "name": "Stretched and twisted F8",
+   "desc": "A wider gap between the two planes (stretch), or an angled path (T8).",
+   "needs": [
+    "F8"
+   ],
+   "track": "LR",
+   "steps": [
+    "Stretch: move the two circles further apart, so the crossing covers more distance.",
+    "Twist: tilt the whole 8 to an angle between horizontal and vertical. This is the T8.",
+    "Change one thing at a time and keep the rhythm of the basic 8."
+   ],
+   "watch": [
+    "Losing the crossing point, so the 8 becomes one big circle",
+    "Stretching with the shoulders hunched"
+   ],
+   "drill": "Do five basic 8s, five stretched, five basic, five twisted, without stopping.",
+   "refs": [
+    "f8"
+   ]
+  },
+  {
+   "id": "F10",
+   "tier": 3,
+   "name": "Stalls",
+   "desc": "Turn the nunchaku to pause mid-swing and change direction; adapted from poi.",
+   "needs": [
+    "F6"
+   ],
+   "track": "LR",
+   "steps": [
+    "A stall turns the nunchaku so it pauses during a swing, with its momentum gone.",
+    "Fade the swing first, then guide the stick to rest at the turning point.",
+    "Leave the pause in the opposite direction."
+   ],
+   "watch": [
+    "Forcing the pause with a tight grip",
+    "Stalling at full speed: fade first"
+   ],
+   "drill": "Swing, fade, stall at 3 o'clock, then leave in the other direction. Alternate sides for 20.",
+   "refs": [
+    "stall"
+   ]
+  },
+  {
+   "id": "F11",
+   "tier": 4,
+   "name": "BTB, BTH and UTL F8",
+   "desc": "Crossing moves behind the back, behind the head, or under a leg.",
+   "needs": [
+    "F8"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Behind-the-back F8: circle on the near and far walls, with the crossing behind your back.",
+    "Behind-the-head F8: the same two walls, crossing behind the head.",
+    "Under-the-leg F8: crossing under the lifted far leg.",
+    "Walk the path slowly with the stick held in both hands before swinging it."
+   ],
+   "watch": [
+    "Leaning forward to make room, which brings the head into the path",
+    "Rushing the crossing, where you cannot see the stick"
+   ],
+   "drill": "On foam, do one basic 8 then one behind-the-back crossing, alternating, for 20.",
+   "refs": [
+    "f8"
+   ]
+  },
+  {
+   "id": "F12",
+   "tier": 5,
+   "name": "Straightjacket, sunshine, sweeper",
+   "desc": "Harder crossing paths through the far cavity, over the head, or between the legs.",
+   "needs": [
+    "F11"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Straightjacket: behind the back, through the far cavity, then an 8 in front between the far wall and the core.",
+    "Sunshine: the crossing travels over the head, between the face and back planes.",
+    "Sweeper: the crossing passes between the legs.",
+    "Learn each as a slow walk-through first."
+   ],
+   "watch": [
+    "Attempting these before behind-the-back 8s are reliable"
+   ],
+   "drill": "Choose one. Alternate it with a behind-the-back 8 until you can do five in a row.",
+   "refs": [
+    "f8"
+   ]
+  },
+  {
+   "id": "R1",
+   "tier": 2,
+   "name": "F2B and B2F hand roll",
+   "desc": "180° over the fingers; the most common way to change grip mid-spin.",
+   "needs": [
+    "F2",
+    "F5"
+   ],
+   "track": "LR",
+   "steps": [
+    "Start in an open front grip and flip the nunchaku over the hand, so the link crosses the back of the fingers.",
+    "Release the stick you hold and catch the other one as it comes around. That is front-to-back (F2B).",
+    "Flip it back the other way to return: back-to-front (B2F).",
+    "It travels 180° over the fingers and never touches the wrist."
+   ],
+   "watch": [
+    "Throwing the roll upward instead of letting it travel around the hand",
+    "Closing the fingers too early and blocking the link"
+   ],
+   "drill": "F2B, pause, B2F, pause. 20 clean pairs per hand before you remove the pauses.",
+   "refs": [
+    "wrist",
+    "roll",
+    "vWrist",
+    "vRolls",
+    "sportsrec"
+   ]
+  },
+  {
+   "id": "R2",
+   "tier": 2,
+   "name": "F8 hand-roll chain",
+   "desc": "F2B and B2F linked into a continuous loop.",
+   "needs": [
+    "R1",
+    "F7"
+   ],
+   "track": "LR",
+   "steps": [
+    "Do a front-to-back hand roll on one side of the body.",
+    "Carry the swing across and do a back-to-front roll on the other side.",
+    "Join them so the rolls replace the two circles of a figure-8."
+   ],
+   "watch": [
+    "Pausing between the two rolls",
+    "The second roll starting before the first is caught"
+   ],
+   "drill": "Count \"roll, cross, roll, cross\" at a slow, even tempo for one minute.",
+   "refs": [
+    "wrist",
+    "f8",
+    "vWrist"
+   ]
+  },
+  {
+   "id": "R3",
+   "tier": 2,
+   "name": "B2B wrist roll",
+   "desc": "360° around the wrist, back grip to back grip.",
+   "needs": [
+    "R1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Start in a back grip with the hand open.",
+    "Send the striker around the wrist for a full 360° and release the handle as it wraps.",
+    "Catch back in a back grip as the stick comes around.",
+    "Grip near the link end for tight control."
+   ],
+   "watch": [
+    "The roll riding up the forearm: keep it at the wrist",
+    "Catching the wrong stick"
+   ],
+   "drill": "Single roll, catch, reset. 20 per hand, then try two in a row.",
+   "refs": [
+    "wrist",
+    "roll",
+    "vWrist",
+    "vRolls"
+   ]
+  },
+  {
+   "id": "R4",
+   "tier": 3,
+   "name": "F2F wrist roll",
+   "desc": "360° around the wrist, front grip to front grip.",
+   "needs": [
+    "R1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Start in a front grip with the hand open.",
+    "Send the striker around the wrist for a full 360° and release as it wraps.",
+    "Catch back in a front grip."
+   ],
+   "watch": [
+    "Using a 180° hand roll and calling it done: this one goes all the way around the wrist",
+    "The elbow flaring out"
+   ],
+   "drill": "Alternate one B2B roll and one F2F roll with a swing between, 10 pairs per hand.",
+   "refs": [
+    "wrist",
+    "roll",
+    "vWrist",
+    "vRolls"
+   ]
+  },
+  {
+   "id": "R5",
+   "tier": 3,
+   "name": "Continuous B2B and F2F chains",
+   "desc": "Loop the same roll without a break.",
+   "needs": [
+    "R3",
+    "R4"
+   ],
+   "track": "LR",
+   "steps": [
+    "Catch each roll in the same grip it started in, and send it straight into the next roll.",
+    "Add a little wrist drive each turn to replace the speed the roll loses.",
+    "Learn the continuous back-to-back chain first, then front-to-front."
+   ],
+   "watch": [
+    "Speed dying after two or three rolls",
+    "Rolls drifting off the wrist as the chain goes on"
+   ],
+   "drill": "Count your longest chain. Aim for 5, then 10, then 20 on each hand.",
+   "refs": [
+    "wrist",
+    "roll",
+    "vWrist"
+   ]
+  },
+  {
+   "id": "R6",
+   "tier": 4,
+   "name": "540° wrist roll",
+   "desc": "A grip switch with extra rotation.",
+   "needs": [
+    "R5"
+   ],
+   "track": "LR",
+   "steps": [
+    "Start as for a 360° wrist roll, with more speed behind the release.",
+    "Let it travel one and a half turns.",
+    "Catch in the opposite grip: front becomes back, or back becomes front."
+   ],
+   "watch": [
+    "Catching early at 360° out of habit",
+    "Adding height instead of rotation"
+   ],
+   "drill": "Alternate a 360° roll and a 540° roll so you feel the difference in release speed.",
+   "refs": [
+    "wrist",
+    "roll"
+   ]
+  },
+  {
+   "id": "R7",
+   "tier": 5,
+   "name": "720° and 1080° rolls",
+   "desc": "Named by degrees; needs more momentum behind the release.",
+   "needs": [
+    "R6"
+   ],
+   "track": "LR",
+   "steps": [
+    "Build on the 540° roll with still more momentum.",
+    "720° is two full turns and 1080° is three.",
+    "Higher rolls depend on release speed more than on anything the hand does afterwards."
+   ],
+   "watch": [
+    "Chasing rotation count before the 540° is reliable"
+   ],
+   "drill": "Ten attempts at 720° per session. Log how many you catch.",
+   "refs": [
+    "roll"
+   ]
+  },
+  {
+   "id": "R8",
+   "tier": 3,
+   "name": "Finger roll",
+   "desc": "Roll around one or more fingers, often from a midgrip over the join.",
+   "needs": [
+    "R3"
+   ],
+   "track": "LR",
+   "steps": [
+    "Take a midgrip, with the link or stick passing between two fingers.",
+    "Let the nunchaku roll around one or more fingers.",
+    "Catch as it completes the turn. Any finger works; on the thumb it is a thumb spin."
+   ],
+   "watch": [
+    "A stiff finger: keep it relaxed but straight",
+    "Sore knuckles from wood sticks: learn on foam"
+   ],
+   "drill": "One finger roll, catch, reset. 20 per hand, starting with the index finger.",
+   "refs": [
+    "finger",
+    "roll",
+    "grip",
+    "vRolls"
+   ]
+  },
+  {
+   "id": "R9",
+   "tier": 3,
+   "name": "Thumb spin",
+   "desc": "A finger roll performed on the thumb.",
+   "needs": [
+    "R8"
+   ],
+   "track": "LR",
+   "steps": [
+    "Set up as for a finger roll, with the thumb as the axis.",
+    "Roll the nunchaku around the thumb and catch."
+   ],
+   "watch": [
+    "The stick sliding off the end of the thumb",
+    "Tucking the thumb in, which stops the roll"
+   ],
+   "drill": "Alternate one index-finger roll and one thumb spin, 10 pairs.",
+   "refs": [
+    "finger"
+   ]
+  },
+  {
+   "id": "R10",
+   "tier": 4,
+   "name": "Round The Back Finger Spin",
+   "desc": "A finger spin path taken around the back.",
+   "needs": [
+    "R8",
+    "F11"
+   ],
+   "track": "LR",
+   "star": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The name suggests a finger spin whose path travels around the back.",
+    "Have reliable finger rolls and a behind-the-back figure-8 before trying it."
+   ],
+   "watch": [
+    "Guessing the mechanics and building a habit you later have to undo"
+   ],
+   "drill": "Watch a demonstration frame by frame, then walk the path with the stick held still.",
+   "refs": [
+    "finger"
+   ]
+  },
+  {
+   "id": "R11",
+   "tier": 4,
+   "name": "Intercept",
+   "desc": "After a trick in the main hand, the other arm or a finger is put in the path of the chain to intercept it, often into a finger spin.",
+   "needs": [
+    "R8",
+    "A2"
+   ],
+   "track": "LR",
+   "star": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "In the snippets I found, the opposite arm, or a single finger of it, is placed in the path of the chain after a trick in the main hand, to intercept it into a finger spin."
+   ],
+   "watch": [
+    "Putting a finger into a fast link on wood or chain: use foam and cord"
+   ],
+   "drill": "With a slow swing on foam, practise placing one finger against the link and letting it wrap.",
+   "refs": [
+    "finger"
+   ]
+  },
+  {
+   "id": "R12",
+   "tier": 3,
+   "name": "Wheel",
+   "desc": "Spun on the link with one finger from each hand; easier on cord than chain.",
+   "needs": [
+    "R8"
+   ],
+   "track": "LR",
+   "steps": [
+    "Place one finger of each hand on opposite sides of the link.",
+    "Spin the nunchaku between the two fingers. Only the link is touched.",
+    "It can turn upward or downward, named by the direction it rotates toward you.",
+    "Use a cord link of 3 to 4 inches: it is smoother than chain, and a short link makes the wheel very hard."
+   ],
+   "watch": [
+    "Fingers drifting apart, which drops the nunchaku",
+    "Trying it on chain first"
+   ],
+   "drill": "Hold the wheel for 5 turns, then 10, then 20, in each direction.",
+   "refs": [
+    "wheel",
+    "vWheel",
+    "vWheels"
+   ]
+  },
+  {
+   "id": "R13",
+   "tier": 4,
+   "name": "Horizontal and disconnected wheel",
+   "desc": "A flat plane, or lifting one finger into a brief finger roll.",
+   "needs": [
+    "R12"
+   ],
+   "track": "LR",
+   "steps": [
+    "Horizontal wheel: turn the wheel onto a flat, horizontal plane.",
+    "Disconnected wheel: lift one finger away for a moment, so it becomes a finger roll, then put it back."
+   ],
+   "watch": [
+    "Losing speed during the tilt to horizontal"
+   ],
+   "drill": "Five upright turns, tilt to horizontal for five, and back. Then add one finger lift.",
+   "refs": [
+    "wheel",
+    "vWheels"
+   ]
+  },
+  {
+   "id": "R14",
+   "tier": 5,
+   "name": "360 horizontal and orbital wheel",
+   "desc": "Turn the body 360°, or revolve the wheel around the body.",
+   "needs": [
+    "R13"
+   ],
+   "track": "LR",
+   "steps": [
+    "360 horizontal wheel: keep a horizontal wheel going while your body turns a full circle.",
+    "Orbital wheel: carry the wheel around your body while it spins."
+   ],
+   "watch": [
+    "Watching your feet instead of the wheel during the turn"
+   ],
+   "drill": "Quarter turn, then half, then full, keeping the wheel alive each time.",
+   "refs": [
+    "wheel",
+    "vWheels"
+   ]
+  },
+  {
+   "id": "R15",
+   "tier": 3,
+   "name": "Arm and leg rolls",
+   "desc": "The same roll mechanics moved along the limb.",
+   "needs": [
+    "R5"
+   ],
+   "track": "LR",
+   "steps": [
+    "Use the same release and catch as a wrist roll, with the forearm, upper arm or leg as the axis.",
+    "A larger axis takes longer to wrap, so release with more speed.",
+    "Catch with the same hand, or the other one."
+   ],
+   "watch": [
+    "Bending the limb mid-roll, which changes the wrap",
+    "Catching too early"
+   ],
+   "drill": "Forearm rolls first: 20 per arm. Then upper arm, then thigh.",
+   "refs": [
+    "roll",
+    "vRolls"
+   ]
+  },
+  {
+   "id": "R16",
+   "tier": 4,
+   "name": "Neck roll",
+   "desc": "Roll around the neck. Learn it on foam only.",
+   "needs": [
+    "R15"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "A roll with the neck as the axis.",
+    "Keep the chin level and the release slow.",
+    "Use foam only, and cord, not chain."
+   ],
+   "watch": [
+    "Any speed at all on wood or chain",
+    "Tilting the head into the stick"
+   ],
+   "drill": "Drape and unwrap by hand first. Add a slow release only when the path is certain.",
+   "refs": [
+    "roll"
+   ]
+  },
+  {
+   "id": "R17",
+   "tier": 4,
+   "name": "Isolations",
+   "desc": "Tail and hand both rotate around the stick head; harder and less clean than in poi.",
+   "needs": [
+    "F7"
+   ],
+   "track": "LR",
+   "steps": [
+    "In an isolation, the stick turns around its own head: the tail and your hand both circle that point.",
+    "Move the hand in a small circle that exactly cancels the stick's travel, so the head appears fixed in space.",
+    "It is harder and less clean than with poi, because the nunchaku has more points of rotation."
+   ],
+   "watch": [
+    "The fixed point drifting",
+    "Expecting poi-level cleanness"
+   ],
+   "drill": "In a mirror, pick a spot on the wall behind the stick head and keep the head on it for 10 turns.",
+   "refs": [
+    "iso",
+    "vIso"
+   ]
+  },
+  {
+   "id": "S1",
+   "tier": 1,
+   "name": "Swap",
+   "desc": "The handle moves between hands.",
+   "needs": [
+    "F1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Hold one stick with the other hanging still.",
+    "Place the stick you hold into the other hand and let go.",
+    "A swap moves the handle; a pass catches the striker."
+   ],
+   "watch": [
+    "Swapping while the striker is still swinging"
+   ],
+   "drill": "Swing, down stop, swap, swing on the new hand. 20 times.",
+   "refs": [
+    "swap"
+   ]
+  },
+  {
+   "id": "S2",
+   "tier": 2,
+   "name": "Shoulder pass (arm switch)",
+   "desc": "Flip over the shoulder, catch under the arm with the other hand. Done wrong it can strike your head.",
+   "needs": [
+    "F5"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Hold one stick and flip the other backward over the same-side shoulder.",
+    "Reach the empty hand under that arm and catch the stick behind you.",
+    "Release the first hand and swing forward on the new side.",
+    "Repeat on the other side and speed up gradually."
+   ],
+   "watch": [
+    "The stick clipping the head: send it over the shoulder, not past the ear",
+    "Catching too high. Keep the catching hand low"
+   ],
+   "drill": "20 slow passes alternating shoulders on foam, with a pause at each catch.",
+   "refs": [
+    "pass",
+    "sportsrec",
+    "vPasses"
+   ]
+  },
+  {
+   "id": "S3",
+   "tier": 2,
+   "name": "Waist pass",
+   "desc": "A catch at waist height. The wiki lists it without a description.",
+   "needs": [
+    "S2"
+   ],
+   "track": "LR",
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "By its name, the catch happens at waist height.",
+    "Passes on the same plane flow together, so link it with other low passes."
+   ],
+   "watch": [
+    "Catching in front of the body where the hands collide"
+   ],
+   "drill": "Swing around the waist slowly and find where the empty hand meets the striker comfortably.",
+   "refs": [
+    "pass",
+    "vPasses"
+   ]
+  },
+  {
+   "id": "S4",
+   "tier": 2,
+   "name": "Slick and gritch pass",
+   "desc": "Catch in the same grip as the handle (slick), or a different one (gritch).",
+   "needs": [
+    "S2",
+    "F1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Slick pass: catch the striker in the same grip you hold the handle in, front to front or back to back.",
+    "Gritch pass (grip switch): catch in the other grip, front to back or back to front.",
+    "Decide the catching grip before the pass starts."
+   ],
+   "watch": [
+    "Catching in whatever grip happens, without choosing"
+   ],
+   "drill": "Shoulder passes: 10 slick, then 10 gritch, calling the catch grip out loud.",
+   "refs": [
+    "pass",
+    "vPasses"
+   ]
+  },
+  {
+   "id": "S5",
+   "tier": 3,
+   "name": "Mirror pass",
+   "desc": "From one pass stance to its mirror, such as left shoulder to right shoulder.",
+   "needs": [
+    "S2"
+   ],
+   "track": "LR",
+   "steps": [
+    "A pass stance is the position with a stick in each hand.",
+    "A mirror pass takes you from one stance to its mirror image, such as left shoulder to right shoulder."
+   ],
+   "watch": [
+    "Uneven stances: the mirror should look the same on both sides"
+   ],
+   "drill": "Hold each stance for a second in a mirror. 20 mirror passes.",
+   "refs": [
+    "pass",
+    "vPasses"
+   ]
+  },
+  {
+   "id": "S6",
+   "tier": 3,
+   "name": "Back pass",
+   "desc": "Hand change behind the back. Keep the empty hand near the shoulder and the swinging hand at the lower back.",
+   "needs": [
+    "S2"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Swing the striker behind your back.",
+    "Keep the empty hand close to the shoulder to catch.",
+    "Keep the swinging hand in line with the lower back.",
+    "Release and bring the nunchaku forward on the other side."
+   ],
+   "watch": [
+    "Grabbing too high",
+    "Tight shoulders. If flexibility limits you, practise sliding the catching hand down from the shoulder"
+   ],
+   "drill": "Without swinging, place the stick behind your back and change hands 20 times. Then add a slow swing.",
+   "refs": [
+    "gmau",
+    "pass",
+    "vPasses"
+   ]
+  },
+  {
+   "id": "S7",
+   "tier": 3,
+   "name": "Under-the-leg pass",
+   "desc": "Swing under one leg and catch on the other side; start with a wide stance.",
+   "needs": [
+    "S3"
+   ],
+   "track": "LR",
+   "steps": [
+    "Take a wide stance or lift one leg.",
+    "Swing the nunchaku under the leg.",
+    "Catch with the other hand on the far side."
+   ],
+   "watch": [
+    "A narrow stance that leaves no room",
+    "Looking down and losing balance"
+   ],
+   "drill": "Do the motion with an empty hand first, then 20 slow passes on foam.",
+   "refs": [
+    "fan",
+    "pass"
+   ]
+  },
+  {
+   "id": "S8",
+   "tier": 3,
+   "name": "Flip switch",
+   "desc": "Release one handle mid-spin and catch the other as it wraps around the hand.",
+   "needs": [
+    "R1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Practise the throw first: swing the arm up a few inches and flick the wrist, so the link wraps the back of the hand.",
+    "Release one handle mid-spin.",
+    "Catch the other handle as it comes around the hand.",
+    "I could read only a summary of this tutorial, so check the steps against it."
+   ],
+   "watch": [
+    "Flicking too hard, so the stick flies off"
+   ],
+   "drill": "The practice throw alone, 20 per hand, before adding the catch.",
+   "refs": [
+    "wrist"
+   ]
+  },
+  {
+   "id": "S9",
+   "tier": 4,
+   "name": "Elbow pass",
+   "desc": "Listed by the wiki without a description.",
+   "needs": [
+    "S6"
+   ],
+   "track": "LR",
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "Have a reliable back pass first: the wiki lists both in the same family."
+   ],
+   "watch": [
+    "Elbow strikes on wood. Use foam"
+   ],
+   "drill": "Watch a demonstration, then walk the path slowly with the stick held in both hands.",
+   "refs": [
+    "pass",
+    "vPasses"
+   ]
+  },
+  {
+   "id": "S10",
+   "tier": 4,
+   "name": "Neck pass",
+   "desc": "Listed by the wiki without a description. Train on foam only.",
+   "needs": [
+    "S6"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "It passes around the neck, so treat it as a foam-only move."
+   ],
+   "watch": [
+    "Speed, chain or wood anywhere near the neck"
+   ],
+   "drill": "Drape the nunchaku around the neck and change hands by hand, with no swing, until the path is automatic.",
+   "refs": [
+    "pass",
+    "vPasses"
+   ]
+  },
+  {
+   "id": "S11",
+   "tier": 4,
+   "name": "Side bounce pass",
+   "desc": "A pass entered from a bounce at the side.",
+   "needs": [
+    "S2",
+    "C2"
+   ],
+   "track": "LR",
+   "star": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "By its name, a bounce at your side redirects the striker into the pass.",
+    "Have a reliable limb bounce and shoulder pass first."
+   ],
+   "watch": [
+    "Bouncing at full speed: fade into the bounce"
+   ],
+   "drill": "Side bounce, pause, pass. Remove the pause once both halves are clean.",
+   "refs": [
+    "bounce",
+    "pass"
+   ]
+  },
+  {
+   "id": "S12",
+   "tier": 4,
+   "name": "Opposite arm spin",
+   "desc": "The main hand sends the nunchaku around the opposite wrist. Add more spins as you improve.",
+   "needs": [
+    "S11",
+    "R15"
+   ],
+   "track": "LR",
+   "star": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "In the snippets I found, the main hand propels the nunchaku around the opposite wrist. It follows a side bounce pass: one spin, then more as you improve."
+   ],
+   "watch": [
+    "Adding spins before one is clean"
+   ],
+   "drill": "One spin and catch, 10 times, before trying two.",
+   "refs": [
+    "roll"
+   ]
+  },
+  {
+   "id": "S13",
+   "tier": 4,
+   "name": "Drop pass",
+   "desc": "Trap the striker in a reverse armpit trap, drop the handle into the hand at the back, then free the striker.",
+   "needs": [
+    "S6",
+    "C4"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Swing the striker over the shoulder and around to the back.",
+    "Catch it in a reverse armpit trap.",
+    "Place the other hand behind the back, as for an upward back pass.",
+    "Drop the handle from above the shoulder into that hand, then free the striker from the trap."
+   ],
+   "watch": [
+    "Dropping before the lower hand is in place",
+    "A loose trap that lets the striker slip"
+   ],
+   "drill": "Do it in four counted stages: trap, place, drop, free.",
+   "refs": [
+    "drop"
+   ]
+  },
+  {
+   "id": "S14",
+   "tier": 4,
+   "name": "Pinwheel",
+   "desc": "A back pass and an over-the-head pass in one circular motion; adapted from staff.",
+   "needs": [
+    "S6"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Do a behind-the-back pass.",
+    "Follow it with an over-the-head pass.",
+    "Join the two in one circular motion. It is adapted from staff spinning."
+   ],
+   "watch": [
+    "A flat spot between the two passes",
+    "The overhead pass dipping toward the head"
+   ],
+   "drill": "Back pass, pause, overhead pass, pause. Shorten the pauses over 20 repetitions.",
+   "refs": [
+    "pinwheel"
+   ]
+  },
+  {
+   "id": "S15",
+   "tier": 5,
+   "name": "One-handed pass",
+   "desc": "The wiki lists it as a roll type but does not describe it.",
+   "needs": [
+    "R5",
+    "S4"
+   ],
+   "track": "LR",
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The wiki files it under rolls: the nunchaku changes grip or position using one hand only."
+   ],
+   "watch": [
+    "Assuming it is the same as a hand roll"
+   ],
+   "drill": "Look for a demonstration before training it.",
+   "refs": [
+    "roll"
+   ]
+  },
+  {
+   "id": "C1",
+   "tier": 1,
+   "name": "Armpit trap",
+   "desc": "The most common trap; catch the loose stick under the arm.",
+   "needs": [
+    "F5"
+   ],
+   "track": "LR",
+   "steps": [
+    "Swing the nunchaku up and back beside the body.",
+    "Close the upper arm against the ribs to catch the loose stick under the arm.",
+    "Open the arm to release and swing again."
+   ],
+   "watch": [
+    "Clamping late, so the stick bounces out",
+    "Raising the shoulder"
+   ],
+   "drill": "Swing, trap, hold for a second, release. 20 per side.",
+   "refs": [
+    "trap",
+    "fan"
+   ]
+  },
+  {
+   "id": "C2",
+   "tier": 2,
+   "name": "Hand, wrist, arm, shoulder bounce",
+   "desc": "Rebound the striker off the limb to change direction. Fade the swing into it.",
+   "needs": [
+    "F5",
+    "F6"
+   ],
+   "track": "LR",
+   "steps": [
+    "Fade the swing as the striker approaches the hand, wrist, arm or shoulder.",
+    "Let it meet the body with little or no impact, and let the body absorb what speed is left.",
+    "Send it back the way it came."
+   ],
+   "watch": [
+    "Hitting yourself at speed and calling it a bounce",
+    "A stiff arm that cannot absorb"
+   ],
+   "drill": "Forearm bounces on foam, 20 per side, at a speed where they are silent.",
+   "refs": [
+    "bounce",
+    "vBounces"
+   ]
+  },
+  {
+   "id": "C3",
+   "tier": 2,
+   "name": "Wrist, elbow and waist trap",
+   "desc": "Hold the nunchaku with a body part other than the hand.",
+   "needs": [
+    "C1"
+   ],
+   "track": "LR",
+   "steps": [
+    "A trap holds the nunchaku with a body part other than the hand.",
+    "Wrist trap: catch against the wrist. Elbow trap: close the elbow on the stick. Waist trap: pin it against the waist.",
+    "Fade before the trap so it arrives slowly."
+   ],
+   "watch": [
+    "Trapping at speed",
+    "Looking down at the trap"
+   ],
+   "drill": "One trap type per session: swing, trap, hold, release, 20 times.",
+   "refs": [
+    "trap"
+   ]
+  },
+  {
+   "id": "C4",
+   "tier": 3,
+   "name": "Reverse armpit trap",
+   "desc": "Striker goes over the shoulder and around to the back; used in the drop pass.",
+   "needs": [
+    "C1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Swing the striker over the shoulder and around to the back.",
+    "Catch it under the arm from behind.",
+    "It is the trap used in the drop pass."
+   ],
+   "watch": [
+    "Swinging past the shoulder blade instead of into the armpit"
+   ],
+   "drill": "Over the shoulder, trap, hold, release forward. 20 per side.",
+   "refs": [
+    "drop",
+    "trap"
+   ]
+  },
+  {
+   "id": "C5",
+   "tier": 3,
+   "name": "Chest, waist and leg bounce",
+   "desc": "The same fade and redirect on larger body areas.",
+   "needs": [
+    "C2"
+   ],
+   "track": "LR",
+   "steps": [
+    "Use the same fade and redirect as a limb bounce.",
+    "The chest, waist and legs are larger and softer targets, so they absorb more.",
+    "Send the striker back along its path."
+   ],
+   "watch": [
+    "Low bounces drifting toward the groin or knee cap"
+   ],
+   "drill": "Thigh bounces first, 20 per side, then waist, then chest.",
+   "refs": [
+    "bounce",
+    "vBounces"
+   ]
+  },
+  {
+   "id": "C6",
+   "tier": 3,
+   "name": "Knee and chin trap",
+   "desc": "Smaller, less forgiving targets. Chin on foam only.",
+   "needs": [
+    "C3"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Knee trap: catch the stick behind the bent knee.",
+    "Chin trap: pin the stick between chin and chest.",
+    "Both targets are small, so arrive slowly."
+   ],
+   "watch": [
+    "Any speed toward the chin on wood"
+   ],
+   "drill": "Place the stick in the trap by hand, release into a swing, and work backwards from there.",
+   "refs": [
+    "trap"
+   ]
+  },
+  {
+   "id": "C7",
+   "tier": 3,
+   "name": "Straight swing into bounce",
+   "desc": "Straight swings are not continuous, and most can end in a bounce. Chain them.",
+   "needs": [
+    "C2"
+   ],
+   "track": "LR",
+   "steps": [
+    "Swing in a straight lane: a broad curve that starts in one place and ends in another.",
+    "End the swing in a bounce.",
+    "Use the rebound as the start of the next straight swing."
+   ],
+   "watch": [
+    "Losing rhythm between swing and bounce"
+   ],
+   "drill": "Chain four straight swings with four different bounce points.",
+   "refs": [
+    "swing",
+    "bounce",
+    "vBounces"
+   ]
+  },
+  {
+   "id": "C8",
+   "tier": 4,
+   "name": "Neck, knee and foot bounce",
+   "desc": "The hardest contact points on the wiki list.",
+   "needs": [
+    "C5"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "These are the hardest contact points on the wiki's list.",
+    "The fade must be nearly complete before contact.",
+    "Neck on foam only."
+   ],
+   "watch": [
+    "Bouncing off the knee cap: use the muscle above or below it",
+    "Any neck contact on wood or chain"
+   ],
+   "drill": "Foot bounces: fade to almost a stop, then tap. 20 per side.",
+   "refs": [
+    "bounce",
+    "vBounces"
+   ]
+  },
+  {
+   "id": "C9",
+   "tier": 4,
+   "name": "Opposite-arm hook",
+   "desc": "A hook around the opposite arm above the elbow, from behind the body.",
+   "needs": [
+    "C2",
+    "S6"
+   ],
+   "track": "LR",
+   "star": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "In the snippets I found, the striker hooks around the opposite arm above the elbow, coming from behind the body."
+   ],
+   "watch": [
+    "Elbow impact"
+   ],
+   "drill": "Find a demonstration first, then place the hook by hand before swinging into it.",
+   "refs": [
+    "bounce"
+   ]
+  },
+  {
+   "id": "C10",
+   "tier": 5,
+   "name": "Contact-staff style flow",
+   "desc": "Continuous body-led movement. The wiki names this only as a style influence.",
+   "needs": [
+    "C8",
+    "C7"
+   ],
+   "track": "LR",
+   "steps": [
+    "Link contact moves so the body leads the movement and free swings become rare.",
+    "The wiki names this only as a style influence from contact staff, so there is no set technique list."
+   ],
+   "watch": [
+    "Forcing contact where a swing flows better"
+   ],
+   "drill": "Improvise 30 seconds using only bounces, traps and rolls.",
+   "refs": [
+    "style"
+   ]
+  },
+  {
+   "id": "C11",
+   "tier": 3,
+   "name": "Wrap and release",
+   "desc": "Capture the link around the hand, then release back into a swing.",
+   "needs": [
+    "C1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Let the link wrap around the back of the hand so both stick heads cross in the palm. The wiki calls this grip a handwrap.",
+    "Hold it for a beat.",
+    "Unwrap by releasing one stick back into a swing."
+   ],
+   "watch": [
+    "Wrapping too tightly to release"
+   ],
+   "drill": "Swing, wrap, hold, release, 20 per hand.",
+   "refs": [
+    "grip"
+   ]
+  },
+  {
+   "id": "B1",
+   "tier": 2,
+   "name": "Supported placement",
+   "desc": "Rest a stick on the body with a hand still close enough to save it.",
+   "needs": [
+    "C1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Fade to a stop.",
+    "Rest one stick on the forearm, shoulder or thigh.",
+    "Keep a hand within reach to save it."
+   ],
+   "watch": [
+    "Placing while the nunchaku still has speed"
+   ],
+   "drill": "Place, count three seconds, pick up into a swing. Five body positions.",
+   "refs": []
+  },
+  {
+   "id": "B2",
+   "tier": 3,
+   "name": "Short contact path",
+   "desc": "Let the stick travel a short way along the body before it leaves.",
+   "needs": [
+    "B1",
+    "C2"
+   ],
+   "track": "LR",
+   "steps": [
+    "From a placement, tilt the body part so the stick travels a short distance along it.",
+    "Catch it at the end of the path or let it drop into a swing."
+   ],
+   "watch": [
+    "The path being left to chance: decide where it ends"
+   ],
+   "drill": "Forearm: let the stick travel from wrist toward elbow and back, 10 times.",
+   "refs": []
+  },
+  {
+   "id": "B3",
+   "tier": 4,
+   "name": "Connected contact phrase",
+   "desc": "Several contact moves in a row, with no free swing between them.",
+   "needs": [
+    "B2",
+    "C7"
+   ],
+   "track": "LR",
+   "steps": [
+    "Join a placement, a short path and a bounce or trap.",
+    "Allow no free swing between them."
+   ],
+   "watch": [
+    "Speeding up to hide gaps"
+   ],
+   "drill": "Write down a three-move contact sequence and repeat it 10 times without a drop.",
+   "refs": []
+  },
+  {
+   "id": "A1",
+   "tier": 3,
+   "name": "Low toss and catch",
+   "desc": "Throw one stick up, let it flip, catch it. Start low and slow, over a bed.",
+   "needs": [
+    "F2",
+    "F6"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Hold one stick in an open grip.",
+    "Toss the nunchaku a short way up and let it flip.",
+    "Catch one stick as it comes down.",
+    "Start low and slow, on foam, over a bed."
+   ],
+   "watch": [
+    "Throwing high before the catch is reliable",
+    "Reaching up for the catch: let it come to the hand"
+   ],
+   "drill": "20 tosses at chest height. Raise the height only after 18 of 20 are caught.",
+   "refs": [
+    "fan",
+    "aerial",
+    "vAerials"
+   ]
+  },
+  {
+   "id": "A2",
+   "tier": 3,
+   "name": "Spin/aerial hybrid (SAH)",
+   "desc": "A cross between a roll and an aerial; exact mechanics unconfirmed.",
+   "needs": [
+    "A1",
+    "R1"
+   ],
+   "track": "LR",
+   "star": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The name describes a cross between a roll and an aerial, and the snippets mention front-to-back and back-to-back versions."
+   ],
+   "watch": [
+    "Inventing the mechanics from the name"
+   ],
+   "drill": "Find a demonstration, then compare it with your hand roll and low toss.",
+   "refs": [
+    "aerial",
+    "roll"
+   ]
+  },
+  {
+   "id": "A3",
+   "tier": 3,
+   "name": "One-rotation aerial",
+   "desc": "Released in the air and caught after at least one full rotation, on each hand.",
+   "needs": [
+    "A1"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Release the nunchaku into the air.",
+    "Let it make at least one full rotation.",
+    "Catch it cleanly, then learn it on the other hand.",
+    "This is what the WNA rules count as a high-risk technique."
+   ],
+   "watch": [
+    "Counting a half rotation",
+    "Training only the strong hand: a routine needs it on both"
+   ],
+   "drill": "10 attempts per hand per session. Log catches, and aim for 8 of 10.",
+   "refs": [
+    "rules",
+    "aerial",
+    "vAerials"
+   ]
+  },
+  {
+   "id": "A4",
+   "tier": 4,
+   "name": "Grip-change catch",
+   "desc": "Launch an aerial and catch it in the grip you want.",
+   "needs": [
+    "A3",
+    "F1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Throw a one-rotation aerial.",
+    "Choose the catching grip, front or back, before you release.",
+    "Catch in that grip."
+   ],
+   "watch": [
+    "Accepting whichever grip arrives"
+   ],
+   "drill": "Call \"front\" or \"back\" before each throw. 10 of each.",
+   "refs": [
+    "grip",
+    "aerial"
+   ]
+  },
+  {
+   "id": "A5",
+   "tier": 4,
+   "name": "Pop and catapult",
+   "desc": "Throw and catch types the wiki lists but does not describe.",
+   "needs": [
+    "A3"
+   ],
+   "track": "LR",
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The wiki lists pop and catapult as both throw types and catch types."
+   ],
+   "watch": [
+    "Training from the name alone"
+   ],
+   "drill": "Watch the aerials video and note how each release differs from a plain throw.",
+   "refs": [
+    "aerial",
+    "vAerials"
+   ]
+  },
+  {
+   "id": "A6",
+   "tier": 4,
+   "name": "Hang catch",
+   "desc": "A catch type the wiki lists but does not describe.",
+   "needs": [
+    "A3"
+   ],
+   "track": "LR",
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The wiki lists hang as a type of catch."
+   ],
+   "watch": [
+    "Training from the name alone"
+   ],
+   "drill": "Watch the aerials video for catches that end with the nunchaku hanging.",
+   "refs": [
+    "aerial",
+    "vAerials"
+   ]
+  },
+  {
+   "id": "A7",
+   "tier": 4,
+   "name": "Clock-call releases",
+   "desc": "Name the clock position of the release and of the catch.",
+   "needs": [
+    "A3",
+    "F3"
+   ],
+   "track": "LR",
+   "steps": [
+    "Picture the swing as a clock face: 12 is the top of a vertical circle, or the far point of a horizontal one.",
+    "The numbers follow the direction of spin.",
+    "Name the release position and the catch position for each aerial."
+   ],
+   "watch": [
+    "Forgetting that the clock flips when the spin direction changes"
+   ],
+   "drill": "Release at 3 and catch at 9, then change one number at a time.",
+   "refs": [
+    "clocks",
+    "aerial"
+   ]
+  },
+  {
+   "id": "A8",
+   "tier": 5,
+   "name": "Matrix Aerial",
+   "desc": "Bend forward, throw around the back, rise and catch on the opposite side with the same hand.",
+   "needs": [
+    "A3",
+    "F11"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Bend the torso forward to look at the ground.",
+    "Cross the throwing hand to the opposite side and throw the nunchaku around your back.",
+    "Rise to standing.",
+    "Catch on the opposite side with the same hand."
+   ],
+   "watch": [
+    "Rising before the throw has left the hand",
+    "Trying it on wood"
+   ],
+   "drill": "Rehearse the bend, cross and rise with no nunchaku, then with a foam pair at low speed.",
+   "refs": [
+    "matrix"
+   ]
+  },
+  {
+   "id": "A9",
+   "tier": 5,
+   "name": "Reverse rebound",
+   "desc": "Tap the nunchaku in the air so it stalls and reverses direction.",
+   "needs": [
+    "A5",
+    "A7"
+   ],
+   "track": "LR",
+   "steps": [
+    "Throw an aerial.",
+    "Tap the nunchaku while it is in the air.",
+    "It stalls, then reverses its spin direction.",
+    "Catch it."
+   ],
+   "watch": [
+    "Hitting instead of tapping, which knocks it away"
+   ],
+   "drill": "Low toss, one tap, catch. Count how often the spin reverses.",
+   "refs": [
+    "rebound",
+    "vConcept"
+   ]
+  },
+  {
+   "id": "A10",
+   "tier": 5,
+   "name": "Partial reverse rebound",
+   "desc": "Only one stick reverses; the other keeps its direction.",
+   "needs": [
+    "A9"
+   ],
+   "track": "LR",
+   "steps": [
+    "Set up as for a reverse rebound.",
+    "Tap so that only one stick reverses, while the other keeps its direction."
+   ],
+   "watch": [
+    "Expecting it before the full reverse rebound is consistent"
+   ],
+   "drill": "Alternate full and partial attempts, and note where on the stick each tap landed.",
+   "refs": [
+    "rebound",
+    "vConcept"
+   ]
+  },
+  {
+   "id": "A11",
+   "tier": 5,
+   "name": "Siteswap aerials",
+   "desc": "Plan aerials with juggling notation.",
+   "needs": [
+    "A7"
+   ],
+   "track": "LR",
+   "steps": [
+    "Siteswap is a juggling notation that writes throws as numbers.",
+    "One performer on the wiki uses it to describe nunchaku aerials.",
+    "Use it to plan sequences of throws, once clock-call releases are reliable."
+   ],
+   "watch": [
+    "Using notation to plan throws you cannot yet catch"
+   ],
+   "drill": "Write a two-throw pattern, perform it 10 times, then change one throw.",
+   "refs": [
+    "aerial"
+   ]
+  },
+  {
+   "id": "A12",
+   "tier": 4,
+   "name": "Opposite-hand catch",
+   "desc": "Throw with one hand and catch with the other, turning an aerial into a hand switch.",
+   "needs": [
+    "A3",
+    "S2"
+   ],
+   "track": "LR",
+   "care": true,
+   "steps": [
+    "Throw a one-rotation aerial from one hand.",
+    "Move the other hand under the falling nunchaku.",
+    "Catch with that hand."
+   ],
+   "watch": [
+    "Both hands going for the catch",
+    "Throwing across the body too hard"
+   ],
+   "drill": "Low throws from right to left and back, 20 times.",
+   "refs": [
+    "aerial",
+    "pass"
+   ]
+  },
+  {
+   "id": "N1",
+   "tier": 3,
+   "name": "Supported finger pivot",
+   "desc": "Pivot the stick around a finger while the thumb or palm still guards it. Leads into R8.",
+   "needs": [
+    "F2",
+    "R1"
+   ],
+   "track": "LR",
+   "steps": [
+    "Hold the stick in an open grip.",
+    "Let it pivot around one finger while the thumb or palm stays close as a guard.",
+    "Remove the guard a little at a time. It leads into the finger roll."
+   ],
+   "watch": [
+    "Taking the guard away too soon"
+   ],
+   "drill": "Quarter pivot, then half, then a full turn, 10 each.",
+   "refs": [
+    "finger",
+    "grip"
+   ]
+  },
+  {
+   "id": "M1",
+   "tier": 1,
+   "name": "Weight shifts",
+   "desc": "Move weight between the feet in time with the swing.",
+   "needs": [
+    "F5"
+   ],
+   "track": "one",
+   "steps": [
+    "Stand with the feet shoulder width apart.",
+    "Shift your weight toward the side the nunchaku is on as it swings.",
+    "Shift back as it crosses."
+   ],
+   "watch": [
+    "Locked knees",
+    "Shifting late"
+   ],
+   "drill": "Figure-8s for one minute with a visible weight shift on every crossing.",
+   "refs": []
+  },
+  {
+   "id": "M2",
+   "tier": 2,
+   "name": "Steps and pivots",
+   "desc": "Step and turn without breaking the circle.",
+   "needs": [
+    "M1"
+   ],
+   "track": "one",
+   "steps": [
+    "Step in time with the swing, one step per circle.",
+    "Pivot on the ball of the foot to change facing.",
+    "Keep the circle on its plane as you turn."
+   ],
+   "watch": [
+    "The swing stalling while the feet move"
+   ],
+   "drill": "Four steps forward, pivot, four steps back, on a continuous figure-8.",
+   "refs": [
+    "belt"
+   ]
+  },
+  {
+   "id": "M3",
+   "tier": 3,
+   "name": "Travel",
+   "desc": "Cross the floor while linking moves.",
+   "needs": [
+    "M2",
+    "L1"
+   ],
+   "track": "one",
+   "steps": [
+    "Link steps so you cross the floor while swinging.",
+    "Change direction with a pivot or a turn.",
+    "The WNA rules score use of the whole competition area."
+   ],
+   "watch": [
+    "Performing on one spot"
+   ],
+   "drill": "Mark a 3 metre square and visit all four corners in one unbroken sequence.",
+   "refs": [
+    "rules"
+   ]
+  },
+  {
+   "id": "M4",
+   "tier": 3,
+   "name": "Level changes",
+   "desc": "Drop and rise during a move.",
+   "needs": [
+    "M2"
+   ],
+   "track": "one",
+   "steps": [
+    "Bend the knees to drop during a move.",
+    "Rise during the next.",
+    "Keep the swing plane level relative to your body."
+   ],
+   "watch": [
+    "Bending at the waist instead of the knees"
+   ],
+   "drill": "Down for four counts, up for four counts, on a continuous overhead spin.",
+   "refs": []
+  },
+  {
+   "id": "M5",
+   "tier": 4,
+   "name": "Choreography",
+   "desc": "Set movement to the music.",
+   "needs": [
+    "M3",
+    "M4",
+    "L6"
+   ],
+   "track": "one",
+   "steps": [
+    "Choose a piece of music.",
+    "Set steps, pivots, travel and level changes to its phrases.",
+    "Rehearse the movement with no nunchaku, then add it."
+   ],
+   "watch": [
+    "Choreographing tricks first and movement last"
+   ],
+   "drill": "Walk the floor pattern for 30 seconds of music with empty hands.",
+   "refs": [
+    "rules"
+   ]
+  },
+  {
+   "id": "G1",
+   "tier": 2,
+   "name": "Path control",
+   "desc": "Trace a chosen shape cleanly at slow speed, in a mirror or on video.",
+   "needs": [
+    "F6",
+    "F7"
+   ],
+   "track": "one",
+   "steps": [
+    "Pick a shape: a circle, an 8 or a straight lane.",
+    "Trace it slowly in a mirror or on video.",
+    "Compare what you traced with what you intended."
+   ],
+   "watch": [
+    "Judging by feel alone"
+   ],
+   "drill": "Film 10 slow circles from the front. Check that every one sits on the same plane.",
+   "refs": [
+    "swing"
+   ]
+  },
+  {
+   "id": "G2",
+   "tier": 4,
+   "name": "Isolation-like accents",
+   "desc": "Brief moments where the stick appears fixed while the hand moves.",
+   "needs": [
+    "G1",
+    "R17"
+   ],
+   "track": "one",
+   "steps": [
+    "Take one beat of an isolation.",
+    "Place it inside a normal swing as a brief accent.",
+    "Return to the swing."
+   ],
+   "watch": [
+    "Holding the accent so long that the momentum dies"
+   ],
+   "drill": "Three swings, one isolation beat, repeat for one minute.",
+   "refs": [
+    "iso",
+    "vIso"
+   ]
+  },
+  {
+   "id": "G3",
+   "tier": 4,
+   "name": "Body and prop contrast",
+   "desc": "One moves sharply while the other stays calm.",
+   "needs": [
+    "G2",
+    "M2"
+   ],
+   "track": "one",
+   "steps": [
+    "Move the body sharply while the nunchaku turns slowly, or the reverse.",
+    "Hold the contrast for a few beats.",
+    "Swap which one is calm."
+   ],
+   "watch": [
+    "Body and prop always moving at the same speed"
+   ],
+   "drill": "Slow overhead spin with a fast step sequence, then a still body with a fast figure-8.",
+   "refs": []
+  },
+  {
+   "id": "L1",
+   "tier": 2,
+   "name": "Lane linking",
+   "desc": "Move between swing pockets without losing the circle.",
+   "needs": [
+    "F7"
+   ],
+   "track": "one",
+   "steps": [
+    "A pocket is the space the striker circles in around your hand. A lane is a path that links two pockets.",
+    "Swing in one pocket.",
+    "Follow a lane to a second pocket without breaking the circle."
+   ],
+   "watch": [
+    "Stopping between pockets"
+   ],
+   "drill": "Near wall, overhead, far wall, and back, with no pause.",
+   "refs": [
+    "swing",
+    "vSwings"
+   ]
+  },
+  {
+   "id": "L2",
+   "tier": 3,
+   "name": "Rolling figure-8",
+   "desc": "Figure-8 paths performed with wrist and hand rolls.",
+   "needs": [
+    "R2",
+    "F8"
+   ],
+   "track": "one",
+   "steps": [
+    "Trace a figure-8.",
+    "Replace the circle on each side with a hand roll or wrist roll.",
+    "Keep the 8 the same shape as the plain version."
+   ],
+   "watch": [
+    "The rolls shrinking the 8"
+   ],
+   "drill": "Two plain 8s, two rolling 8s, alternating for one minute.",
+   "refs": [
+    "f8",
+    "wrist"
+   ]
+  },
+  {
+   "id": "L3",
+   "tier": 3,
+   "name": "Horizontal-to-vertical bridge",
+   "desc": "A simple linking move between a flat path and an upright one.",
+   "needs": [
+    "L1"
+   ],
+   "track": "one",
+   "star": true,
+   "steps": [
+    "The sources I could read name this move but do not describe it, so find a demonstration before training it.",
+    "The snippet I found calls it a simple way to bridge a horizontal path and a vertical one."
+   ],
+   "watch": [
+    "Forcing the plane change with the arm"
+   ],
+   "drill": "From an overhead spin, find the gentlest way down into a wall-plane circle, and repeat it.",
+   "refs": []
+  },
+  {
+   "id": "L4",
+   "tier": 3,
+   "name": "Trick progression drill",
+   "desc": "Start with a side bounce pass into one opposite arm spin, then add one element at a time.",
+   "needs": [
+    "S11",
+    "S12"
+   ],
+   "track": "one",
+   "star": true,
+   "steps": [
+    "Start with a side bounce pass into one opposite arm spin.",
+    "Add one element at a time, such as a second spin.",
+    "This structure comes from a snippet I could not read in full."
+   ],
+   "watch": [
+    "Adding before the current version is clean"
+   ],
+   "drill": "Repeat the current version five times clean before each addition.",
+   "refs": []
+  },
+  {
+   "id": "L5",
+   "tier": 3,
+   "name": "Turns",
+   "desc": "Rotate the body during a freestyle, which also covers more area.",
+   "needs": [
+    "L1",
+    "S2"
+   ],
+   "track": "one",
+   "steps": [
+    "Use a pass or a crossing as the moment to rotate the body.",
+    "Turn with the swing, not against it.",
+    "I could read only a summary of this tutorial."
+   ],
+   "watch": [
+    "Getting dizzy: spot a point on the wall"
+   ],
+   "drill": "Quarter turns on every shoulder pass, then half turns.",
+   "refs": []
+  },
+  {
+   "id": "L6",
+   "tier": 4,
+   "name": "Tempo changes",
+   "desc": "Slow and fast sections that follow changes of pace in the music.",
+   "needs": [
+    "L2",
+    "F6"
+   ],
+   "track": "one",
+   "steps": [
+    "Use fades to slow a section.",
+    "Use wrist drive to speed one up.",
+    "Match the changes to the music. The WNA rules score tempo and rhythm."
+   ],
+   "watch": [
+    "One speed throughout"
+   ],
+   "drill": "Eight counts slow, eight counts fast, on one repeated move.",
+   "refs": [
+    "rules"
+   ]
+  },
+  {
+   "id": "L7",
+   "tier": 4,
+   "name": "Flairs",
+   "desc": "Novelty moves that fit no other group.",
+   "needs": [
+    "L1"
+   ],
+   "track": "one",
+   "steps": [
+    "A flair is any novelty move that fits no other group.",
+    "Collect ideas from other props and from your own mistakes.",
+    "Place one where the routine needs surprise."
+   ],
+   "watch": [
+    "Stacking flairs so nothing stands out"
+   ],
+   "drill": "Invent one new flair a week and film it.",
+   "refs": [
+    "flair"
+   ]
+  },
+  {
+   "id": "L8",
+   "tier": 4,
+   "name": "Gap filling",
+   "desc": "Fit extra tricks, often digit tricks, into gaps between moves.",
+   "needs": [
+    "L2",
+    "R8"
+   ],
+   "track": "one",
+   "star": true,
+   "steps": [
+    "Find a gap between two moves.",
+    "Fit a small trick, often a finger trick, into it.",
+    "This approach is described in snippets I could not read in full."
+   ],
+   "watch": [
+    "Filling every gap, which leaves no breathing room"
+   ],
+   "drill": "Take a loop you know and add one finger roll at its slowest point.",
+   "refs": [
+    "finger"
+   ]
+  },
+  {
+   "id": "L9",
+   "tier": 5,
+   "name": "Personal style",
+   "desc": "Pick a direction: fast and aggressive, or slow and fluid with poi, dance or contact influence.",
+   "needs": [
+    "L6",
+    "L7"
+   ],
+   "track": "one",
+   "steps": [
+    "Watch performers with contrasting styles.",
+    "Decide between fast and aggressive, or slow and fluid.",
+    "Choose moves, tempo and link type to suit: chain for fast styles, cord for fluid ones."
+   ],
+   "watch": [
+    "Copying one performer move for move"
+   ],
+   "drill": "Film one minute of freestyle each month and note what looks like you.",
+   "refs": [
+    "style"
+   ]
+  },
+  {
+   "id": "L10",
+   "tier": 5,
+   "name": "Competition routine",
+   "desc": "90 to 180 seconds under WNA rules, to music, using the whole area.",
+   "needs": [
+    "L9",
+    "A3",
+    "D16"
+   ],
+   "track": "one",
+   "steps": [
+    "Build a piece of 90 to 180 seconds to music.",
+    "Include single and double sections: leaving either out costs 2.0 points.",
+    "Include a one-rotation aerial on each hand, and one with both nunchaku in the air.",
+    "Use the whole area, and avoid drops and freezes of 3 seconds or more."
+   ],
+   "watch": [
+    "Building for a different event's rules: confirm yours first"
+   ],
+   "drill": "Run the full piece and log drops. Aim for four clean runs in five.",
+   "refs": [
+    "rules"
+   ]
+  },
+  {
+   "id": "L11",
+   "tier": 2,
+   "name": "Two-skill bridge",
+   "desc": "Join two known moves, tested in both directions where possible.",
+   "needs": [
+    "L1"
+   ],
+   "track": "one",
+   "steps": [
+    "Choose two moves you can do.",
+    "Find where the first ends: hand, grip, plane and direction.",
+    "Start the second from exactly there."
+   ],
+   "watch": [
+    "Resetting between the moves"
+   ],
+   "drill": "A to B, 10 times, then B to A.",
+   "refs": []
+  },
+  {
+   "id": "L12",
+   "tier": 3,
+   "name": "Loop",
+   "desc": "A bridge that returns to its start, so it can repeat.",
+   "needs": [
+    "L11"
+   ],
+   "track": "one",
+   "steps": [
+    "Take a bridge.",
+    "Add a link from the end back to the start.",
+    "Repeat it without stopping."
+   ],
+   "watch": [
+    "A hidden reset inside the loop"
+   ],
+   "drill": "Run the loop for one minute.",
+   "refs": []
+  },
+  {
+   "id": "L13",
+   "tier": 4,
+   "name": "Signature phrase",
+   "desc": "A complete personal sequence with a clean entry and exit.",
+   "needs": [
+    "L12",
+    "L6"
+   ],
+   "track": "one",
+   "steps": [
+    "Choose a loop or bridge that feels like yours.",
+    "Give it a clean entry and a clean exit.",
+    "Vary its tempo."
+   ],
+   "watch": [
+    "A phrase that only works from one starting position"
+   ],
+   "drill": "Enter the phrase from three different moves.",
+   "refs": []
+  },
+  {
+   "id": "D1",
+   "tier": 2,
+   "name": "Two-stick handling",
+   "desc": "Includes \"adjust the chucks\", and swinging one stick while the other stays controlled.",
+   "needs": [
+    "F7!"
+   ],
+   "track": "one",
+   "steps": [
+    "Hold one nunchaku in each hand.",
+    "Swing one while the other stays trapped or hanging still.",
+    "Change over.",
+    "Practise re-gripping both to the same hold. The belt sheet calls this \"adjust the chucks\"."
+   ],
+   "watch": [
+    "Both sticks drifting toward the centre line"
+   ],
+   "drill": "Ten circles on the right with the left still, then swap. Repeat with figure-8s.",
+   "refs": [
+    "doubles",
+    "belt"
+   ]
+  },
+  {
+   "id": "D2",
+   "tier": 3,
+   "name": "Double, side and diagonal strikes",
+   "desc": "Traditional basics from a green belt sheet; a good timing drill.",
+   "needs": [
+    "D1"
+   ],
+   "track": "one",
+   "steps": [
+    "Double strikes: both nunchaku strike together.",
+    "Alternating side strikes: one after the other.",
+    "Downward diagonal strikes, on each side.",
+    "These come from a green belt testing sheet."
+   ],
+   "watch": [
+    "The sticks meeting in the middle"
+   ],
+   "drill": "Ten of each, front view and side view in a mirror.",
+   "refs": [
+    "belt"
+   ]
+  },
+  {
+   "id": "D3",
+   "tier": 3,
+   "name": "Alternating outward figure-8",
+   "desc": "One stick after the other, at a fixed offset.",
+   "needs": [
+    "D1"
+   ],
+   "track": "one",
+   "steps": [
+    "Do an outward figure-8 with one hand.",
+    "Start the same figure-8 with the other hand half a beat later.",
+    "Keep the offset fixed."
+   ],
+   "watch": [
+    "The offset closing until the sticks collide"
+   ],
+   "drill": "Count \"one and two and\", right hand on the numbers and left on the \"and\".",
+   "refs": [
+    "belt"
+   ]
+  },
+  {
+   "id": "D4",
+   "tier": 3,
+   "name": "Synchronized mode",
+   "desc": "The same technique on both sides, at the same moment.",
+   "needs": [
+    "D1"
+   ],
+   "track": "one",
+   "steps": [
+    "Choose one move.",
+    "Do it with both hands at the same moment.",
+    "Keep the nunchaku on separate planes at each side."
+   ],
+   "watch": [
+    "One hand leading the other"
+   ],
+   "drill": "Synchronized wall-plane circles for one minute, then figure-8s.",
+   "refs": [
+    "doubles"
+   ]
+  },
+  {
+   "id": "D5",
+   "tier": 3,
+   "name": "Unsynchronized mode",
+   "desc": "The same technique with one hand delayed.",
+   "needs": [
+    "D3"
+   ],
+   "track": "one",
+   "steps": [
+    "Choose one move.",
+    "Start one hand, then start the other half a cycle later.",
+    "Hold the delay steady."
+   ],
+   "watch": [
+    "Drifting back into sync"
+   ],
+   "drill": "Swap between synchronized and unsynchronized circles every eight counts.",
+   "refs": [
+    "doubles"
+   ]
+  },
+  {
+   "id": "D6",
+   "tier": 3,
+   "name": "Three-beat downward weave",
+   "desc": "Sticks and wrists cross alternately, like two figure-8s.",
+   "needs": [
+    "D5"
+   ],
+   "track": "one",
+   "steps": [
+    "The two nunchaku and the two wrists cross over each other in turn, like two separate figure-8s.",
+    "Spinning downward, count three beats on each side.",
+    "It is adapted from poi, and the three-beat downward weave is the basic version."
+   ],
+   "watch": [
+    "Hands too far apart to cross",
+    "The sticks colliding when the timing slips"
+   ],
+   "drill": "Learn it with both sticks held in one hand as a single figure-8, then split the hands.",
+   "refs": [
+    "weave"
+   ]
+  },
+  {
+   "id": "D7",
+   "tier": 4,
+   "name": "Upward; four- and five-beat weaves",
+   "desc": "Reversed direction, or more beats on each side.",
+   "needs": [
+    "D6"
+   ],
+   "track": "one",
+   "steps": [
+    "Upward weave: the same crossing with the spin reversed.",
+    "Four-beat and five-beat weaves: more beats on each side."
+   ],
+   "watch": [
+    "Losing count of the beats"
+   ],
+   "drill": "Three-beat for eight cycles, then one cycle of four-beat.",
+   "refs": [
+    "weave"
+   ]
+  },
+  {
+   "id": "D8",
+   "tier": 4,
+   "name": "Butterfly",
+   "desc": "Poi-derived. In poi, the two move in opposite directions.",
+   "needs": [
+    "D4"
+   ],
+   "track": "one",
+   "steps": [
+    "It is adapted from poi, where the two props move in opposite directions.",
+    "The hands stay close together.",
+    "The wiki names the move without describing it."
+   ],
+   "watch": [
+    "The sticks meeting at the top and bottom of the circles"
+   ],
+   "drill": "Find a poi butterfly tutorial and work through it slowly with foam.",
+   "refs": [
+    "doubles"
+   ]
+  },
+  {
+   "id": "D9",
+   "tier": 4,
+   "name": "Windmill",
+   "desc": "Poi-derived. In poi, the two follow each other the same way on an upright plane, passing above the head.",
+   "needs": [
+    "D6"
+   ],
+   "track": "one",
+   "steps": [
+    "It is adapted from poi, where a windmill is a reel in which the props pass above the head, following each other in the same direction on an upright plane.",
+    "The wiki names the move without describing it."
+   ],
+   "watch": [
+    "Dipping the circles toward the head"
+   ],
+   "drill": "Find a poi windmill tutorial and work through it with foam.",
+   "refs": [
+    "doubles"
+   ]
+  },
+  {
+   "id": "D10",
+   "tier": 4,
+   "name": "Double wrist rolls",
+   "desc": "Keep hips fixed, then move them with intent, and work the full range.",
+   "needs": [
+    "R5!",
+    "D4"
+   ],
+   "track": "one",
+   "steps": [
+    "Learn the wrist roll on one nunchaku first.",
+    "Do it on both hands, with the hips kept still.",
+    "Then move the hips deliberately.",
+    "Work through the full range: wider and higher rolls lead into other moves."
+   ],
+   "watch": [
+    "The weak hand falling behind"
+   ],
+   "drill": "Synchronized back-to-back rolls, counting pairs caught.",
+   "refs": [
+    "dblog",
+    "wrist"
+   ]
+  },
+  {
+   "id": "D11",
+   "tier": 4,
+   "name": "Double bounces and traps",
+   "desc": "Single-stick contact moves with a stick in each hand.",
+   "needs": [
+    "C2",
+    "C3",
+    "D4"
+   ],
+   "track": "one",
+   "steps": [
+    "Take a bounce or trap you know on one nunchaku.",
+    "Do it on both sides together.",
+    "Then do it alternately."
+   ],
+   "watch": [
+    "Crossing arms into the other stick's path"
+   ],
+   "drill": "Double armpit traps and releases, 20 times.",
+   "refs": [
+    "doubles",
+    "bounce",
+    "trap"
+   ]
+  },
+  {
+   "id": "D12",
+   "tier": 4,
+   "name": "Double Dragons kata",
+   "desc": "An optional traditional track: a set form with footwork.",
+   "needs": [
+    "D2",
+    "D3"
+   ],
+   "track": "one",
+   "steps": [
+    "A set form for two nunchaku, with footwork.",
+    "It is tested on the green belt sheet, which does not list its moves.",
+    "Learn it from an instructor or the programme it belongs to."
+   ],
+   "watch": [
+    "Learning the form from a description alone"
+   ],
+   "drill": "Practise the sheet's doubles footwork exercise.",
+   "refs": [
+    "belt"
+   ]
+  },
+  {
+   "id": "D13",
+   "tier": 4,
+   "name": "Different move on each hand",
+   "desc": "The third doubles mode, and the hardest for timing.",
+   "needs": [
+    "D5",
+    "D10"
+   ],
+   "track": "one",
+   "steps": [
+    "Give each hand a different move.",
+    "Start with a simple pairing: a circle on one side and a figure-8 on the other.",
+    "Timing keeps the sticks apart."
+   ],
+   "watch": [
+    "Both hands drifting toward the same move"
+   ],
+   "drill": "Hold the pairing for 20 counts, then swap hands.",
+   "refs": [
+    "doubles"
+   ]
+  },
+  {
+   "id": "D14",
+   "tier": 4,
+   "name": "One-stick aerial, other spinning",
+   "desc": "The step that makes doubles passes possible.",
+   "needs": [
+    "A3",
+    "D5"
+   ],
+   "track": "one",
+   "care": true,
+   "steps": [
+    "Keep one nunchaku circling.",
+    "Throw a one-rotation aerial with the other.",
+    "Catch it without the circle changing."
+   ],
+   "watch": [
+    "The circling hand freezing during the throw"
+   ],
+   "drill": "10 throws per hand, with the other hand keeping a steady count.",
+   "refs": []
+  },
+  {
+   "id": "D15",
+   "tier": 5,
+   "name": "Air pass or swap",
+   "desc": "A pass or swap done while one nunchaku is in the air.",
+   "needs": [
+    "D14",
+    "S4"
+   ],
+   "track": "one",
+   "care": true,
+   "steps": [
+    "Passes and swaps normally need a free hand, so with two nunchaku they only work while one is in the air.",
+    "Throw one nunchaku.",
+    "Pass or swap the other before the first comes down, then catch."
+   ],
+   "watch": [
+    "Rushing the pass and missing the catch"
+   ],
+   "drill": "Throw, clap, catch first. Then replace the clap with a swap.",
+   "refs": [
+    "doubles"
+   ]
+  },
+  {
+   "id": "D16",
+   "tier": 5,
+   "name": "Both sticks in the air",
+   "desc": "Both airborne at once for at least one full rotation.",
+   "needs": [
+    "D14",
+    "A3!"
+   ],
+   "track": "one",
+   "care": true,
+   "steps": [
+    "Release both nunchaku.",
+    "Each must make at least one full rotation while both are in the air together.",
+    "Catch both.",
+    "The WNA rules require this in the two-nunchaku part of a routine."
+   ],
+   "watch": [
+    "Throwing them into each other: keep each on its own side"
+   ],
+   "drill": "Low synchronized throws. Aim for 5 of 10, then 8 of 10.",
+   "refs": [
+    "rules"
+   ]
+  },
+  {
+   "id": "D17",
+   "tier": 5,
+   "name": "Double isolations",
+   "desc": "Possible only to a limited extent.",
+   "needs": [
+    "R17",
+    "D6"
+   ],
+   "track": "one",
+   "steps": [
+    "Do an isolation with each hand.",
+    "The wiki says this is possible only to a limited extent, and that poi gives a better effect."
+   ],
+   "watch": [
+    "Spending much time here before the single isolation is clean"
+   ],
+   "drill": "One hand isolating while the other circles normally.",
+   "refs": [
+    "doubles",
+    "iso",
+    "vIso"
+   ]
+  }
+ ],
+ "refs": {
+  "grip": [
+   "Wiki: Grip",
+   "https://nunchaku.fandom.com/wiki/Grip"
+  ],
+  "plane": [
+   "Wiki: Plane",
+   "https://nunchaku.fandom.com/wiki/Plane"
+  ],
+  "clocks": [
+   "Wiki: Clocks",
+   "https://nunchaku.fandom.com/wiki/Clocks"
+  ],
+  "swing": [
+   "Wiki: Swing",
+   "https://nunchaku.fandom.com/wiki/Swing"
+  ],
+  "f8": [
+   "Wiki: Figure-8",
+   "https://nunchaku.fandom.com/wiki/Figure-8"
+  ],
+  "stall": [
+   "Wiki: Stall",
+   "https://nunchaku.fandom.com/wiki/Stall"
+  ],
+  "wrist": [
+   "Wiki: Wrist roll",
+   "https://nunchaku.fandom.com/wiki/Wrist_roll"
+  ],
+  "roll": [
+   "Wiki: Roll",
+   "https://nunchaku.fandom.com/wiki/Roll"
+  ],
+  "finger": [
+   "Wiki: Finger roll",
+   "https://nunchaku.fandom.com/wiki/Finger_roll"
+  ],
+  "wheel": [
+   "Wiki: Wheel",
+   "https://nunchaku.fandom.com/wiki/Wheel"
+  ],
+  "iso": [
+   "Wiki: Isolations",
+   "https://nunchaku.fandom.com/wiki/Isolations"
+  ],
+  "pass": [
+   "Wiki: Pass",
+   "https://nunchaku.fandom.com/wiki/Pass"
+  ],
+  "swap": [
+   "Wiki: Swap",
+   "https://nunchaku.fandom.com/wiki/Swap"
+  ],
+  "drop": [
+   "Wiki: Drop pass",
+   "https://nunchaku.fandom.com/wiki/Drop_pass"
+  ],
+  "pinwheel": [
+   "Wiki: Pinwheel",
+   "https://nunchaku.fandom.com/wiki/Pinwheel"
+  ],
+  "bounce": [
+   "Wiki: Bounce",
+   "https://nunchaku.fandom.com/wiki/Bounce"
+  ],
+  "trap": [
+   "Wiki: Trap",
+   "https://nunchaku.fandom.com/wiki/Trap"
+  ],
+  "aerial": [
+   "Wiki: Aerial",
+   "https://nunchaku.fandom.com/wiki/Aerial"
+  ],
+  "matrix": [
+   "Wiki: Matrix Aerial",
+   "https://nunchaku.fandom.com/wiki/Matrix_Aerial"
+  ],
+  "rebound": [
+   "Wiki: Reverse rebound",
+   "https://nunchaku.fandom.com/wiki/Reverse_rebound"
+  ],
+  "flair": [
+   "Wiki: Flair",
+   "https://nunchaku.fandom.com/wiki/Flair"
+  ],
+  "style": [
+   "Wiki: Style",
+   "https://nunchaku.fandom.com/wiki/Style"
+  ],
+  "doubles": [
+   "Wiki: Double nunchaku",
+   "https://nunchaku.fandom.com/wiki/Double_nunchaku"
+  ],
+  "weave": [
+   "Wiki: Weave",
+   "https://nunchaku.fandom.com/wiki/Weave"
+  ],
+  "rules": [
+   "WNA kata and freestyle regulations, January 2026 (PDF)",
+   "https://nunchaku.org/wp-content/uploads/2026/01/Nunchaku-do-kata-and-freestyle-regulations-January-2026.pdf"
+  ],
+  "belt": [
+   "VirtualNunchaku green belt testing sheet (PDF)",
+   "https://virtualnunchaku.com/wp-content/uploads/2021/11/Green-Belt-Testing-Sheet.pdf"
+  ],
+  "gmau": [
+   "GMAU: tips for the back-switch",
+   "https://globalmartialarts.university/?p=10511"
+  ],
+  "sportsrec": [
+   "SportsRec: list of nunchuck techniques",
+   "https://www.sportsrec.com/345159-list-nunchuck-techniques.html"
+  ],
+  "fan": [
+   "Nunchaku Fan: Learn Cool Tricks",
+   "https://nunchaku-fan.pages.dev/fun"
+  ],
+  "dblog": [
+   "How to Learn Nunchaku: doubles tutorial no. 2",
+   "https://how-to-learn-nunchaku.blogspot.com/2010/01/basic-freestyle-nunchaku-doubles.html"
+  ],
+  "vGrips": [
+   "Video: Nunchaku Theory, Grips (NunchakuKriztov)",
+   "https://www.youtube.com/watch?v=ptH0Rmq-Bvg"
+  ],
+  "vSwings": [
+   "Video: Nunchaku Theory, Swings (NunchakuKriztov)",
+   "https://www.youtube.com/watch?v=OyIu9FvAtqE"
+  ],
+  "vBounces": [
+   "Video: Nunchaku Theory, Bounces (NunchakuKriztov)",
+   "https://www.youtube.com/watch?v=HGICYdFn27s"
+  ],
+  "vPasses": [
+   "Video: Nunchaku Theory, Passes 1 (NunchakuKriztov)",
+   "https://www.youtube.com/watch?v=DFplTYLjQio"
+  ],
+  "vRolls": [
+   "Video: Nunchaku Theory, Rolls (NunchakuKriztov)",
+   "https://www.youtube.com/watch?v=joNSYh6RPOg"
+  ],
+  "vAerials": [
+   "Video: Nunchaku Theory, Aerials (NunchakuKriztov)",
+   "https://www.youtube.com/watch?v=RAGFcIwK6pw"
+  ],
+  "vWheel": [
+   "Video: Nunchaku Wheel (NunchakuKriztov)",
+   "https://www.youtube.com/watch?v=rR24yKQh5b8"
+  ],
+  "vWheels": [
+   "Video: Wheels Demo (MattChez)",
+   "https://www.youtube.com/watch?v=SQkGXtp-kkc"
+  ],
+  "vConcept": [
+   "Video: Nunchaku Concept moves (MattChez)",
+   "https://www.youtube.com/watch?v=KpMXj71FtZU"
+  ],
+  "vIso": [
+   "Video: How to Learn Isolations, poi (playpoi)",
+   "https://www.youtube.com/watch?v=q5TfLSMr8QE"
+  ],
+  "vWrist": [
+   "Video: How to Learn Wrist Rolls in 3 Minutes (Linus Nunchaku)",
+   "https://www.youtube.com/watch?v=mCHFXs0X5q0"
+  ]
+ },
+ "phases": [
+  {
+   "id": "p1",
+   "name": "Swing control",
+   "time": "1 to 2 months",
+   "skills": "F1 F2 F3 F4 F5 F6 F7 S1 C1 M1",
+   "gate": "All six figure-8s on the strong hand, plus a side stop on demand",
+   "req": [
+    "F7",
+    "F6"
+   ]
+  },
+  {
+   "id": "p2",
+   "name": "Core flow",
+   "time": "2 to 4 months",
+   "skills": "R1 R2 R3 S2 S3 S4 C2 C3 L1 L11",
+   "gate": "One minute without a drop, linking a hand-roll chain, a shoulder pass and a limb bounce",
+   "req": [
+    "R2",
+    "S2",
+    "C2"
+   ]
+  },
+  {
+   "id": "p3",
+   "name": "Branch entry",
+   "time": "4 to 6 months",
+   "skills": "R4 R5 R8 S5 S6 S7 S8 C4 C5 C6 C7 A1 A2 A3",
+   "gate": "A back pass, continuous wrist rolls, and a one-rotation aerial on each hand",
+   "req": [
+    "S6",
+    "R5",
+    "A3!"
+   ]
+  },
+  {
+   "id": "p4",
+   "name": "Doubles entry",
+   "time": "6 to 12 months",
+   "skills": "D1 D2 D3 D4 D5 D6 A4 A5 A6 A7 R12 M3 M4",
+   "gate": "F7 and R5 on the weak hand, then a three-beat weave for one minute without collisions",
+   "req": [
+    "F7!",
+    "R5!",
+    "D6"
+   ]
+  },
+  {
+   "id": "p5",
+   "name": "Routine",
+   "time": "Open-ended",
+   "skills": "L9 L10 D14 D15 D16",
+   "gate": "A 90-second piece to music, with single and double sections and all required risk moves",
+   "req": [
+    "L10"
+   ]
+  }
+ ],
+ "weeks": [
+  {
+   "id": "w1",
+   "from": 1,
+   "to": 1,
+   "label": "Week 1",
+   "focus": "Assess repertoire and equipment",
+   "result": "Skill inventory, unknowns, first bottleneck",
+   "gate": "Inventory written"
+  },
+  {
+   "id": "w2",
+   "from": 2,
+   "to": 3,
+   "label": "Weeks 2-3",
+   "focus": "Improve foundations and existing connections",
+   "result": "Three short loops with tested transitions",
+   "gate": "Each loop 8 of 10 clean"
+  },
+  {
+   "id": "w4",
+   "from": 4,
+   "to": 5,
+   "label": "Weeks 4-5",
+   "focus": "Develop two selected branches",
+   "result": "Two signature candidates with usable entries and exits",
+   "gate": "Entries and exits tested"
+  },
+  {
+   "id": "w6",
+   "from": 6,
+   "to": 7,
+   "label": "Weeks 6-7",
+   "focus": "Build phrases and meaningful alternatives",
+   "result": "Three complete combo candidates",
+   "gate": "Each runs start to finish"
+  },
+  {
+   "id": "w8",
+   "from": 8,
+   "to": 8,
+   "label": "Week 8",
+   "focus": "Compare reliability, style and rule fit",
+   "result": "Primary combo plus a simpler alternate",
+   "gate": "Rules checked for your event"
+  },
+  {
+   "id": "w9",
+   "from": 9,
+   "to": 10,
+   "label": "Weeks 9-10",
+   "focus": "Debug transitions and rehearse complete runs",
+   "result": "Repeatable performance under representative conditions",
+   "gate": "4 of 5 full runs clean"
+  },
+  {
+   "id": "w11",
+   "from": 11,
+   "to": 12,
+   "label": "Weeks 11-12",
+   "focus": "Simulate, stabilize and finalize",
+   "result": "Contest-ready routine and capture or performance plan",
+   "gate": "Clean run in a mock contest"
+  }
+ ]
+}

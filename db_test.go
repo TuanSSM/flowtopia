@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -621,4 +622,174 @@ func TestDBDashboard(t *testing.T) {
 	if sessions != 3 || posts != 2 {
 		t.Fatalf("12-week totals: %d sessions, %d posts", sessions, posts)
 	}
+}
+
+// renameIn changes a skill id everywhere a catalog mentions it: the skill, needs and phases.
+func renameIn(cat map[string]any, from, to string) {
+	for _, x := range cat["skills"].([]any) {
+		sk := x.(map[string]any)
+		if sk["id"] == from {
+			sk["id"], sk["name"] = to, "Renamed skill"
+		}
+		for i, n := range sk["needs"].([]any) {
+			if strings.TrimSuffix(n.(string), "!") == from {
+				sk["needs"].([]any)[i] = to + strings.TrimPrefix(n.(string), from)
+			}
+		}
+	}
+	for _, x := range cat["phases"].([]any) {
+		p := x.(map[string]any)
+		f := strings.Fields(p["skills"].(string))
+		for i := range f {
+			if f[i] == from {
+				f[i] = to
+			}
+		}
+		p["skills"] = strings.Join(f, " ")
+		for i, r := range p["req"].([]any) {
+			if strings.TrimSuffix(r.(string), "!") == from {
+				p["req"].([]any)[i] = to + strings.TrimPrefix(r.(string), from)
+			}
+		}
+	}
+}
+
+func TestDBCatalogs(t *testing.T) {
+	e := newEnv(t)
+	if err := e.a.seedCatalogs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.seedCatalogs(); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM catalog_revisions WHERE status = 'published'`); n != 5 {
+		t.Fatalf("%d revisions after seeding twice, want 5", n)
+	}
+	_, admin := e.user("boss", "admin")
+	modID, mod := e.user("mo", "moderator")
+	userID, member := e.user("sam", "user")
+	// Served from the database, with an ETag.
+	code, cat := e.do("", "GET", "/catalog/poi.json", nil)
+	if code != 200 || cat["id"] != "poi" {
+		t.Fatalf("catalog file: %d", code)
+	}
+	e.must(404, "", "GET", "/catalog/drums.json", nil)
+	// The editor is off until its flag is on, and needs catalog.edit.
+	e.must(404, admin, "GET", "/api/admin/catalog/poi", nil)
+	e.setFlag("catalogEditor", true)
+	e.must(403, member, "GET", "/api/admin/catalog/poi", nil)
+	ed := e.must(200, mod, "GET", "/api/admin/catalog/poi", nil)
+	if num(ed["rev"]) != 1 || ed["shippedUpdate"] != false {
+		t.Fatalf("editor state: rev %v, shippedUpdate %v", ed["rev"], ed["shippedUpdate"])
+	}
+	pub := ed["published"].(map[string]any)
+	leaf := pub["skills"].([]any)[1].(map[string]any)["id"].(string)
+	// Someone has progress on the leaf skill.
+	e.a.db.Exec(`INSERT INTO progress (user_id, prop, rev, state) VALUES ($1, 'poi', 1, $2)`, userID, fmt.Sprintf(`{"skills":{"%s":{"O":2}}}`, leaf))
+	// A draft with a problem is saved, with the problem reported; publishing it is refused.
+	broken := cloneJSON(pub)
+	broken["skills"].([]any)[0].(map[string]any)["tier"] = 9
+	out := e.must(200, mod, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": broken})
+	if len(out["errors"].([]any)) == 0 {
+		t.Fatal("a broken draft should report errors")
+	}
+	e.must(403, mod, "POST", "/api/admin/catalog/poi/publish", map[string]any{})
+	e.must(400, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{})
+	// Removing a skill with progress is blocked, and the diff says how many people it touches.
+	removed := cloneJSON(pub)
+	keep := []any{}
+	for _, x := range removed["skills"].([]any) {
+		if x.(map[string]any)["id"] != leaf {
+			keep = append(keep, x)
+		}
+	}
+	removed["skills"] = keep
+	e.must(200, mod, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": removed})
+	diff := e.must(200, mod, "GET", "/api/admin/catalog/poi/diff", nil)
+	ch := diff["changes"].([]any)
+	if len(ch) != 1 || ch[0].(map[string]any)["kind"] != "removed" || num(ch[0].(map[string]any)["people"]) != 1 || len(diff["blocked"].([]any)) == 0 {
+		t.Fatalf("diff: %v", diff["_raw"])
+	}
+	e.must(400, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{})
+	// Renaming it with an alias is safe; publishing makes revision 2 and is logged.
+	renamed := cloneJSON(pub)
+	newID := leaf[:1] + "99"
+	renameIn(renamed, leaf, newID)
+	renamed["aliases"] = map[string]any{leaf: newID}
+	e.must(200, mod, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": renamed})
+	diff = e.must(200, mod, "GET", "/api/admin/catalog/poi/diff", nil)
+	kinds := []string{}
+	for _, c := range diff["changes"].([]any) {
+		kinds = append(kinds, c.(map[string]any)["kind"].(string))
+	}
+	sort.Strings(kinds)
+	if !strings.Contains(strings.Join(kinds, ","), "renamed") || strings.Contains(strings.Join(kinds, ","), "added") || len(diff["blocked"].([]any)) != 0 {
+		t.Fatalf("rename diff: %v", diff["_raw"])
+	}
+	if out := e.must(200, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{"note": "clearer name"}); num(out["rev"]) != 2 {
+		t.Fatalf("publish: %v", out)
+	}
+	_, cat = e.do("", "GET", "/catalog/poi.json", nil)
+	if cat["aliases"].(map[string]any)[leaf] != newID {
+		t.Fatalf("published catalog lacks the alias: %v", cat["aliases"])
+	}
+	if e.count(`SELECT count(*) FROM catalog_revisions WHERE status = 'draft'`) != 0 || e.count(`SELECT count(*) FROM mod_actions WHERE action = 'catalog_publish' AND actor_id IS NOT NULL`) != 1 {
+		t.Fatal("publishing should clear the draft and be logged once")
+	}
+	// The old id cannot come back as a skill while it is an alias.
+	reuse := cloneJSON(renamed)
+	delete(reuse, "aliases")
+	reuse["skills"] = append(reuse["skills"].([]any), skillLike(reuse, leaf))
+	e.must(200, mod, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": reuse})
+	e.must(400, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{})
+	e.must(200, mod, "DELETE", "/api/admin/catalog/poi/draft", nil)
+	// Once progress has moved to the new id, restoring revision 1 would orphan it, so it is refused.
+	e.a.db.Exec(`UPDATE progress SET state = $2 WHERE user_id = $1`, userID, fmt.Sprintf(`{"skills":{"%s":{"O":2}}}`, newID))
+	e.must(400, admin, "POST", "/api/admin/catalog/poi/revisions/1/restore", nil)
+	e.a.db.Exec(`DELETE FROM progress WHERE user_id = $1`, userID)
+	if out := e.must(200, admin, "POST", "/api/admin/catalog/poi/revisions/1/restore", nil); num(out["rev"]) != 3 {
+		t.Fatalf("restore: %v", out)
+	}
+	// Export: the catalog format, as a download that passes validation.
+	r := httptest.NewRequest("GET", "/api/admin/catalog/poi/revisions/2", nil)
+	r.AddCookie(&http.Cookie{Name: cookieName, Value: mod})
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	if errs, _ := validateCatalog(w.Body.Bytes()); w.Code != 200 || len(errs) > 0 || !strings.Contains(w.Header().Get("Content-Disposition"), "poi-revision-2.json") {
+		t.Fatalf("export: %d %v %s", w.Code, errs, w.Header().Get("Content-Disposition"))
+	}
+	_ = modID
+	// A newer shipped file is imported by itself while nobody has edited the catalog, and only offered
+	// once someone has.
+	e.a.db.Exec(`UPDATE catalog_revisions SET shipped_hash = 'older' WHERE prop = 'staff'`)
+	e.a.seedCatalogs()
+	if e.count(`SELECT max(rev) FROM catalog_revisions WHERE prop = 'staff'`) != 2 {
+		t.Fatal("a changed shipped file should be imported as revision 2")
+	}
+	e.a.db.Exec(`UPDATE catalog_revisions SET shipped_hash = 'older' WHERE prop = 'poi'`)
+	e.a.seedCatalogs()
+	if e.count(`SELECT max(rev) FROM catalog_revisions WHERE prop = 'poi'`) != 3 {
+		t.Fatal("an edited catalog must not be replaced by a shipped one")
+	}
+	if ed := e.must(200, admin, "GET", "/api/admin/catalog/poi", nil); ed["shippedUpdate"] != true {
+		t.Fatal("the editor should offer the shipped version")
+	}
+	e.must(200, admin, "POST", "/api/admin/catalog/poi/shipped", nil)
+	e.must(200, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{})
+	if ed := e.must(200, admin, "GET", "/api/admin/catalog/poi", nil); ed["shippedUpdate"] != false {
+		t.Fatal("once published, the shipped version is no longer offered")
+	}
+}
+
+func cloneJSON(v map[string]any) map[string]any {
+	b, _ := json.Marshal(v)
+	out := map[string]any{}
+	json.Unmarshal(b, &out)
+	return out
+}
+
+func skillLike(cat map[string]any, id string) map[string]any {
+	s := cloneJSON(cat["skills"].([]any)[0].(map[string]any))
+	s["id"], s["needs"] = id, []any{}
+	return s
 }

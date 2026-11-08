@@ -1476,6 +1476,848 @@ func (a *app) handleAudit(w http.ResponseWriter, r *http.Request, _ *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": list, "more": more})
 }
 
+/* ---------- skill map catalogs ---------- */
+
+// catalogIssue is one problem in a catalog, with the path of the field it is about.
+type catalogIssue struct {
+	Path string `json:"path"`
+	Msg  string `json:"msg"`
+}
+
+var (
+	branchKeyRE = regexp.MustCompile(`^[A-Z]$`)
+	catSkillRE  = regexp.MustCompile(`^[A-Z][1-9][0-9]?$`)
+	weekIDRE    = regexp.MustCompile(`^w[0-9]{1,2}$`)
+	httpsRE     = regexp.MustCompile(`^https://[^\s]+$`)
+)
+
+// validateCatalog checks a catalog against docs/catalog-format.md with the same rules as
+// web/catalog-check.js; test/catalog-fixtures holds cases both must judge the same way.
+func validateCatalog(raw []byte) (errs, warns []catalogIssue) {
+	errs, warns = []catalogIssue{}, []catalogIssue{}
+	E := func(path, f string, a ...any) { errs = append(errs, catalogIssue{path, fmt.Sprintf(f, a...)}) }
+	W := func(path, f string, a ...any) { warns = append(warns, catalogIssue{path, fmt.Sprintf(f, a...)}) }
+	var any_ any
+	if err := json.Unmarshal(raw, &any_); err != nil {
+		E("", "not valid JSON: %v", err)
+		return
+	}
+	c, ok := any_.(map[string]any)
+	if !ok {
+		E("", "not a catalog object")
+		return
+	}
+	// u16 counts length the way JavaScript does, so both validators measure text alike.
+	u16 := func(s string) int {
+		n := 0
+		for _, r := range s {
+			n++
+			if r > 0xFFFF {
+				n++
+			}
+		}
+		return n
+	}
+	str := func(v any, lo, hi int) bool {
+		t, ok := v.(string)
+		return ok && u16(strings.TrimSpace(t)) >= lo && u16(t) <= hi
+	}
+	list := func(v any) []any { l, _ := v.([]any); return l }
+	obj := func(v any) map[string]any { m, _ := v.(map[string]any); return m }
+	intIn := func(v any, lo, hi int) (int, bool) {
+		f, ok := v.(float64)
+		if !ok || f != float64(int(f)) || int(f) < lo || int(f) > hi {
+			return 0, false
+		}
+		return int(f), true
+	}
+	isList := func(v any) bool { _, ok := v.([]any); return ok }
+	for _, k := range []string{"id", "name", "about", "careNote"} {
+		if !str(c[k], 1, 600) {
+			E(k, `missing or bad "%s"`, k)
+		}
+	}
+	branches, skills := list(c["branches"]), list(c["skills"])
+	refs := obj(c["refs"])
+	if refs == nil {
+		refs = map[string]any{}
+	}
+	if len(branches) < 5 || len(branches) > 11 {
+		E("branches", "needs 5 to 11 branches, has %d", len(branches))
+	}
+	bk := map[string]bool{}
+	for i, x := range branches {
+		b := obj(x)
+		at := fmt.Sprintf("branches.%d", i)
+		k, _ := b["k"].(string)
+		if !branchKeyRE.MatchString(k) {
+			E(at+".k", `branch key "%v" is not one capital letter`, b["k"])
+		} else if bk[k] {
+			E(at+".k", "duplicate branch %s", k)
+		}
+		if branchKeyRE.MatchString(k) {
+			bk[k] = true
+		}
+		if b == nil || !str(b["name"], 1, 40) {
+			E(at+".name", "branch %s: bad name", k)
+		}
+		if b == nil || !str(b["blurb"], 1, 120) {
+			E(at+".blurb", "branch %s: bad blurb", k)
+		}
+	}
+	ids := map[string]map[string]any{}
+	order := []string{}
+	strs := func(v any) ([]string, bool) {
+		l, ok := v.([]any)
+		if !ok {
+			return nil, false
+		}
+		out := []string{}
+		for _, x := range l {
+			out = append(out, fmt.Sprint(x))
+		}
+		return out, true
+	}
+	for i, x := range skills {
+		sk := obj(x)
+		at := fmt.Sprintf("skills.%d", i)
+		id, _ := sk["id"].(string)
+		if sk == nil || !catSkillRE.MatchString(id) {
+			E(at+".id", "skill %v: bad id", sk["id"])
+			continue
+		}
+		who := "skill " + id
+		if ids[id] != nil {
+			E(at+".id", "%s: duplicate", who)
+		} else {
+			order = append(order, id)
+		}
+		ids[id] = sk
+		if !bk[id[:1]] {
+			E(at+".id", "%s: no branch %s", who, id[:1])
+		}
+		if _, ok := intIn(sk["tier"], 1, 5); !ok {
+			E(at+".tier", "%s: tier must be 1 to 5", who)
+		}
+		if !str(sk["name"], 2, 60) {
+			E(at+".name", "%s: bad name", who)
+		}
+		if !str(sk["desc"], 10, 260) {
+			E(at+".desc", "%s: bad desc", who)
+		}
+		if t, _ := sk["track"].(string); t != "one" && t != "LR" && t != "FR" {
+			E(at+".track", "%s: track must be one, LR or FR", who)
+		}
+		if !isList(sk["needs"]) {
+			E(at+".needs", "%s: needs must be a list", who)
+		}
+		allStr := func(l []any, lo, hi int) bool {
+			for _, v := range l {
+				if !str(v, lo, hi) {
+					return false
+				}
+			}
+			return true
+		}
+		if st := list(sk["steps"]); !isList(sk["steps"]) || len(st) < 1 || len(st) > 5 || !allStr(st, 5, 320) {
+			E(at+".steps", "%s: needs 1 to 5 steps", who)
+		}
+		if wl := list(sk["watch"]); !isList(sk["watch"]) || len(wl) < 1 || len(wl) > 3 || !allStr(wl, 5, 240) {
+			E(at+".watch", "%s: needs 1 to 3 watch items", who)
+		}
+		if !str(sk["drill"], 10, 320) {
+			E(at+".drill", "%s: needs a drill", who)
+		}
+		if rl, ok := strs(sk["refs"]); !ok {
+			E(at+".refs", "%s: refs must be a list", who)
+		} else {
+			for _, r := range rl {
+				if _, ok := refs[r]; !ok {
+					E(at+".refs", `%s: unknown ref "%s"`, who, r)
+				}
+			}
+			if len(rl) == 0 && sk["retired"] != true {
+				W(at+".refs", "%s: no refs", who)
+			}
+		}
+		for _, k := range []string{"star", "care", "retired"} {
+			if v, ok := sk[k]; ok {
+				if _, isBool := v.(bool); !isBool {
+					E(at+"."+k, "%s: %s must be true or false", who, k)
+				}
+			}
+		}
+		text := []string{}
+		for _, k := range []string{"name", "desc", "drill"} {
+			text = append(text, fmt.Sprint(sk[k]))
+		}
+		for _, k := range []string{"steps", "watch"} {
+			for _, v := range list(sk[k]) {
+				text = append(text, fmt.Sprint(v))
+			}
+		}
+		if strings.ContainsAny(strings.Join(text, " "), "—–") {
+			E(at, "%s: contains a long dash; use plain punctuation", who)
+		}
+	}
+	live := func(id string) bool { sk := ids[id]; return sk != nil && sk["retired"] != true }
+	tier := func(sk map[string]any) float64 { f, _ := sk["tier"].(float64); return f }
+	for i, x := range skills {
+		sk := obj(x)
+		id, _ := sk["id"].(string)
+		needs, ok := strs(sk["needs"])
+		if ids[id] == nil || !ok {
+			continue
+		}
+		at := fmt.Sprintf("skills.%d.needs", i)
+		for _, n := range needs {
+			nid := strings.TrimSuffix(n, "!")
+			switch {
+			case ids[nid] == nil:
+				E(at, "skill %s: needs unknown %s", id, n)
+			case nid == id:
+				E(at, "skill %s: needs itself", id)
+			case sk["retired"] != true && !live(nid):
+				E(at, "skill %s: needs %s, which is retired", id, nid)
+			case tier(ids[nid]) > tier(sk):
+				W(at, "skill %s (T%v) needs %s (T%v), a higher tier", id, sk["tier"], nid, ids[nid]["tier"])
+			}
+		}
+	}
+	state := map[string]int{}
+	var visit func(id string, path []string)
+	visit = func(id string, path []string) {
+		if state[id] == 2 {
+			return
+		}
+		if state[id] == 1 {
+			E("skills", "cycle: %s", strings.Join(append(path, id), " > "))
+			return
+		}
+		state[id] = 1
+		needs, _ := strs(ids[id]["needs"])
+		for _, n := range needs {
+			k := strings.TrimSuffix(n, "!")
+			if ids[k] != nil && k != id {
+				visit(k, append(append([]string{}, path...), id))
+			}
+		}
+		state[id] = 2
+	}
+	for _, id := range order {
+		visit(id, nil)
+	}
+	for b := range bk {
+		has := false
+		for _, x := range skills {
+			sk := obj(x)
+			if id, _ := sk["id"].(string); id != "" && id[:1] == b && sk["retired"] != true {
+				has = true
+			}
+		}
+		if !has {
+			E("branches", "branch %s has no skills", b)
+		}
+	}
+	used := map[string]bool{}
+	for _, x := range skills {
+		rl, _ := strs(obj(x)["refs"])
+		for _, r := range rl {
+			used[r] = true
+		}
+	}
+	for k, v := range refs {
+		l := list(v)
+		u := ""
+		if len(l) > 1 {
+			u, _ = l[1].(string)
+		}
+		if len(l) == 0 || !str(l[0], 3, 140) || !httpsRE.MatchString(u) {
+			E("refs."+k, "ref %s: needs [label, https url]", k)
+		}
+		if !used[k] {
+			W("refs."+k, "ref %s is never used", k)
+		}
+	}
+	phases := list(c["phases"])
+	if len(phases) < 3 || len(phases) > 6 {
+		E("phases", "needs 3 to 6 phases, has %d", len(phases))
+	}
+	for i, x := range phases {
+		p := obj(x)
+		at := fmt.Sprintf("phases.%d", i)
+		pid, _ := p["id"].(string)
+		if pid != fmt.Sprintf("p%d", i+1) {
+			E(at+".id", "phase %d: id must be p%d", i+1, i+1)
+		}
+		if !str(p["name"], 2, 40) || !str(p["time"], 2, 40) || !str(p["gate"], 10, 260) {
+			E(at, "phase %s: bad name, time or gate", pid)
+		}
+		sks, _ := p["skills"].(string)
+		for _, id := range strings.Fields(sks) {
+			if !live(id) {
+				E(at+".skills", "phase %s: unknown or retired skill %s", pid, id)
+			}
+		}
+		req, ok := strs(p["req"])
+		if !ok || len(req) == 0 {
+			E(at+".req", "phase %s: needs req", pid)
+		}
+		for _, r := range req {
+			if !live(strings.TrimSuffix(r, "!")) {
+				E(at+".req", "phase %s: unknown or retired req %s", pid, r)
+			}
+		}
+	}
+	if v, ok := c["weeks"]; ok {
+		if !isList(v) {
+			E("weeks", "weeks must be a list")
+		} else {
+			seen := map[string]bool{}
+			for i, x := range list(v) {
+				wk := obj(x)
+				at := fmt.Sprintf("weeks.%d", i)
+				wid, _ := wk["id"].(string)
+				if !weekIDRE.MatchString(wid) || seen[wid] {
+					E(at+".id", "week %d: id must be w and a number, unique", i+1)
+				}
+				seen[wid] = true
+				from, ok1 := intIn(wk["from"], 1, 52)
+				to, ok2 := intIn(wk["to"], 1, 52)
+				if !ok1 || !ok2 || to < from {
+					E(at, "week %s: from and to must be weeks 1 to 52, from first", wid)
+				}
+				for _, k := range []string{"label", "focus", "result", "gate"} {
+					if !str(wk[k], 2, 160) {
+						E(at+"."+k, "week %s: bad %s", wid, k)
+					}
+				}
+			}
+		}
+	}
+	if v, ok := c["aliases"]; ok {
+		al := obj(v)
+		if al == nil {
+			E("aliases", "aliases must be an object of old id to new id")
+		} else {
+			for from, to := range al {
+				if !catSkillRE.MatchString(from) {
+					E("aliases."+from, "alias %s: bad id", from)
+				} else if ids[from] != nil {
+					E("aliases."+from, "alias %s: that id is a skill, so it cannot also be an alias", from)
+				}
+				if t, _ := to.(string); !live(t) {
+					E("aliases."+from, "alias %s: points at %v, which is not a current skill", from, to)
+				}
+			}
+		}
+	}
+	return errs, warns
+}
+
+// Catalogs live in catalog_revisions: numbered published revisions and at most one draft per prop.
+// The files shipped in web/catalog seed revision 1, and a later deploy that ships a changed file
+// publishes it automatically, unless an admin has published edits since; then the editor offers it.
+
+type catalogRev struct {
+	Rev     int             `json:"rev"`
+	Status  string          `json:"status"`
+	Body    json.RawMessage `json:"body,omitempty"`
+	Source  string          `json:"source"`
+	Author  string          `json:"author"`
+	Note    string          `json:"note"`
+	Created time.Time       `json:"created"`
+}
+
+func shippedCatalog(prop string) ([]byte, bool) {
+	b, err := webFS.ReadFile("web/catalog/" + prop + ".json")
+	return b, err == nil
+}
+
+func hashOf(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:8]) }
+
+// canonHash hashes JSON after re-encoding it, so formatting and key order (which Postgres changes
+// when it stores JSONB) do not count as a change.
+func canonHash(b []byte) string {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return hashOf(b)
+	}
+	c, _ := json.Marshal(v)
+	return hashOf(c)
+}
+
+// seedCatalogs imports each shipped catalog that is new or changed since it was last imported.
+func (a *app) seedCatalogs() error {
+	for _, prop := range knownProps {
+		raw, ok := shippedCatalog(prop)
+		if !ok {
+			continue
+		}
+		h := canonHash(raw)
+		var rev int
+		var source, last string
+		err := a.db.QueryRow(`SELECT rev, source, shipped_hash FROM catalog_revisions WHERE prop = $1 AND status = 'published' ORDER BY rev DESC LIMIT 1`, prop).Scan(&rev, &source, &last)
+		if errors.Is(err, sql.ErrNoRows) {
+			rev, source = 0, "shipped"
+		} else if err != nil {
+			return err
+		}
+		if source != "shipped" || last == h {
+			continue // edited since, or already current
+		}
+		if _, err := a.db.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, source, shipped_hash, note) VALUES ($1, $2, 'published', $3, 'shipped', $4, 'The version shipped with Flowa')`,
+			prop, rev+1, string(raw), h); err != nil {
+			return err
+		}
+		log.Printf("catalog %s: imported the shipped version as revision %d", prop, rev+1)
+	}
+	return nil
+}
+
+func (a *app) latestCatalog(prop string) (json.RawMessage, int, error) {
+	var body []byte
+	var rev int
+	err := a.db.QueryRow(`SELECT body, rev FROM catalog_revisions WHERE prop = $1 AND status = 'published' ORDER BY rev DESC LIMIT 1`, prop).Scan(&body, &rev)
+	return body, rev, err
+}
+
+// handleCatalogFile serves /catalog/<prop>.json from the latest published revision, or the shipped
+// file when the database has none.
+func (a *app) handleCatalogFile(w http.ResponseWriter, r *http.Request) {
+	prop := strings.TrimSuffix(r.PathValue("file"), ".json")
+	if !slices.Contains(knownProps, prop) || !strings.HasSuffix(r.PathValue("file"), ".json") {
+		http.NotFound(w, r)
+		return
+	}
+	body, _, err := a.latestCatalog(prop)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("catalog %s: %v", prop, err)
+		}
+		raw, ok := shippedCatalog(prop)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		body = raw
+	}
+	tag := `"` + hashOf(body) + `"`
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", tag)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Header.Get("If-None-Match") == tag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Write(body)
+}
+
+func catalogProp(w http.ResponseWriter, r *http.Request) (string, bool) {
+	p := r.PathValue("prop")
+	if !slices.Contains(knownProps, p) {
+		fail(w, http.StatusNotFound, "Unknown prop.")
+		return "", false
+	}
+	return p, true
+}
+
+func (a *app) catalogRevs(prop string) ([]catalogRev, error) {
+	rows, err := a.db.Query(`SELECT c.rev, c.status, c.source, COALESCE(u.username, ''), c.note, c.created_at FROM catalog_revisions c LEFT JOIN users u ON u.id = c.author_id
+		WHERE c.prop = $1 ORDER BY c.status = 'draft' DESC, c.rev DESC`, prop)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []catalogRev{}
+	for rows.Next() {
+		var x catalogRev
+		if err := rows.Scan(&x.Rev, &x.Status, &x.Source, &x.Author, &x.Note, &x.Created); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// handleCatalogAdmin returns what the editor needs: the published catalog, the draft if there is
+// one, the list of revisions, and whether a newer shipped version waits.
+func (a *app) handleCatalogAdmin(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	pub, rev, err := a.latestCatalog(prop)
+	if errors.Is(err, sql.ErrNoRows) {
+		raw, _ := shippedCatalog(prop)
+		pub, rev, err = raw, 0, nil
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var draft []byte
+	if err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop).Scan(&draft); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
+	revs, err := a.catalogRevs(prop)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	shipped := false
+	if raw, ok := shippedCatalog(prop); ok {
+		var n int
+		a.db.QueryRow(`SELECT count(*) FROM catalog_revisions WHERE prop = $1 AND shipped_hash = $2`, prop, canonHash(raw)).Scan(&n)
+		shipped = n == 0
+	}
+	out := map[string]any{"published": json.RawMessage(pub), "rev": rev, "revisions": revs, "shippedUpdate": shipped}
+	if draft != nil {
+		out["draft"] = json.RawMessage(draft)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// progressOn counts, for each skill id, the people with progress or notes recorded under it.
+func (a *app) progressOn(prop string) (map[string]int, error) {
+	rows, err := a.db.Query(`SELECT k, count(DISTINCT p.user_id) FROM progress p, jsonb_object_keys(CASE WHEN jsonb_typeof(p.state->'skills') = 'object' THEN p.state->'skills' ELSE '{}' END) k
+		WHERE p.prop = $1 GROUP BY k`, prop)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var k string
+		var n int
+		if err := rows.Scan(&k, &n); err != nil {
+			return nil, err
+		}
+		out[k] = n
+	}
+	return out, rows.Err()
+}
+
+// catShape is the part of a catalog the editor's checks need.
+type catShape struct {
+	ID      string            `json:"id"`
+	Aliases map[string]string `json:"aliases"`
+	Skills  []map[string]any  `json:"skills"`
+}
+
+func parseShape(raw []byte) catShape {
+	var c catShape
+	json.Unmarshal(raw, &c)
+	return c
+}
+
+func (c catShape) skillMap() map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, s := range c.Skills {
+		if id, ok := s["id"].(string); ok {
+			out[id] = s
+		}
+	}
+	return out
+}
+
+// safeToPublish refuses a catalog that would orphan progress (an id with progress that is neither a
+// skill nor an alias in it) or, unless restoring an earlier revision (which brings back the same
+// skills), reuse an id that the published catalog keeps as an alias.
+func (a *app) safeToPublish(prop string, next []byte, restoring bool) []catalogIssue {
+	issues := []catalogIssue{}
+	n := parseShape(next)
+	if n.ID != prop {
+		return append(issues, catalogIssue{"id", fmt.Sprintf("the catalog id must be %q", prop)})
+	}
+	sk := n.skillMap()
+	if cur, _, err := a.latestCatalog(prop); err == nil && !restoring {
+		for from := range parseShape(cur).Aliases {
+			if sk[from] != nil {
+				issues = append(issues, catalogIssue{"skills", fmt.Sprintf("%s is an old id kept as an alias, so it cannot be used for a skill again", from)})
+			}
+		}
+	}
+	prog, err := a.progressOn(prop)
+	if err != nil {
+		return append(issues, catalogIssue{"", "could not check progress: " + err.Error()})
+	}
+	ids := make([]string, 0, len(prog))
+	for id := range prog {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if sk[id] == nil && n.Aliases[id] == "" {
+			issues = append(issues, catalogIssue{"skills", fmt.Sprintf("%s has progress for %d %s; retire it or alias it instead of removing it", id, prog[id], map[bool]string{true: "person", false: "people"}[prog[id] == 1])})
+		}
+	}
+	return issues
+}
+
+func (a *app) handleCatalogDraft(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Body json.RawMessage `json:"body"`
+	}
+	if !readJSON(w, r, 4<<20, &in) {
+		return
+	}
+	var probe map[string]any
+	if json.Unmarshal(in.Body, &probe) != nil {
+		fail(w, http.StatusBadRequest, "The draft must be a catalog object.")
+		return
+	}
+	if probe["id"] != prop {
+		fail(w, http.StatusBadRequest, fmt.Sprintf("The draft's id must be %q.", prop))
+		return
+	}
+	// A draft may be incomplete while it is being edited; its problems are returned, not refused.
+	if _, err := a.db.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, author_id) VALUES ($1, 0, 'draft', $2, $3)
+		ON CONFLICT (prop) WHERE status = 'draft' DO UPDATE SET body = EXCLUDED.body, author_id = EXCLUDED.author_id, created_at = now()`, prop, string(in.Body), u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	errs, warns := validateCatalog(in.Body)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "errors": errs, "warnings": warns})
+}
+
+func (a *app) handleCatalogDiscard(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleCatalogDiff compares the draft with the published catalog, skill by skill, with the number
+// of people whose progress each change touches.
+func (a *app) handleCatalogDiff(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	var draft []byte
+	err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop).Scan(&draft)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "There is no draft.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	pub, _, err := a.latestCatalog(prop)
+	if errors.Is(err, sql.ErrNoRows) {
+		pub, _ = shippedCatalog(prop)
+	} else if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	prog, err := a.progressOn(prop)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	old, next := parseShape(pub), parseShape(draft)
+	om, nm := old.skillMap(), next.skillMap()
+	// A renamed skill shows once, as renamed, not also as a new skill under its new id.
+	renamedTo := map[string]bool{}
+	for from, to := range next.Aliases {
+		if om[from] != nil && nm[from] == nil {
+			renamedTo[to] = true
+		}
+	}
+	type change struct {
+		ID     string   `json:"id"`
+		Kind   string   `json:"kind"`
+		Fields []string `json:"fields,omitempty"`
+		To     string   `json:"to,omitempty"`
+		People int      `json:"people"`
+	}
+	changes := []change{}
+	for _, s := range next.Skills {
+		id, _ := s["id"].(string)
+		o := om[id]
+		switch {
+		case o == nil && renamedTo[id]:
+		case o == nil:
+			changes = append(changes, change{ID: id, Kind: "added"})
+		case s["retired"] == true && o["retired"] != true:
+			changes = append(changes, change{ID: id, Kind: "retired", People: prog[id]})
+		default:
+			fields := []string{}
+			keys := map[string]bool{}
+			for k := range s {
+				keys[k] = true
+			}
+			for k := range o {
+				keys[k] = true
+			}
+			for k := range keys {
+				a, _ := json.Marshal(s[k])
+				b, _ := json.Marshal(o[k])
+				if string(a) != string(b) {
+					fields = append(fields, k)
+				}
+			}
+			sort.Strings(fields)
+			if len(fields) > 0 {
+				changes = append(changes, change{ID: id, Kind: "changed", Fields: fields, People: prog[id]})
+			}
+		}
+	}
+	for _, s := range old.Skills {
+		id, _ := s["id"].(string)
+		if nm[id] == nil {
+			if to := next.Aliases[id]; to != "" {
+				changes = append(changes, change{ID: id, Kind: "renamed", To: to, People: prog[id]})
+			} else {
+				changes = append(changes, change{ID: id, Kind: "removed", People: prog[id]})
+			}
+		}
+	}
+	errs, warns := validateCatalog(draft)
+	writeJSON(w, http.StatusOK, map[string]any{"changes": changes, "errors": errs, "warnings": warns, "blocked": a.safeToPublish(prop, draft, false)})
+}
+
+// publishCatalog makes body the next published revision, after the same checks the editor shows.
+func (a *app) publishCatalog(w http.ResponseWriter, u *user, prop string, body []byte, note, action string, detail map[string]any) {
+	if errs, _ := validateCatalog(body); len(errs) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Fix the problems in the catalog first.", "errors": errs})
+		return
+	}
+	if issues := a.safeToPublish(prop, body, action == "catalog_restore"); len(issues) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": issues[0].Msg, "errors": issues})
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var rev int
+	if err := tx.QueryRow(`SELECT COALESCE(max(rev), 0) + 1 FROM catalog_revisions WHERE prop = $1 AND status = 'published'`, prop).Scan(&rev); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// Publishing the shipped version records its hash, so it is not offered again.
+	shipped := ""
+	if raw, ok := shippedCatalog(prop); ok && canonHash(raw) == canonHash(body) {
+		shipped = canonHash(raw)
+	}
+	_, err = tx.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, source, shipped_hash, author_id, note) VALUES ($1, $2, 'published', $3, 'editor', $4, $5, $6)`, prop, rev, string(body), shipped, u.ID, note)
+	if err == nil {
+		_, err = tx.Exec(`DELETE FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop)
+	}
+	if err == nil {
+		detail["prop"], detail["rev"] = prop, rev
+		err = a.audit(tx, u.ID, action, "catalog", int64(rev), 0, note, detail)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rev": rev})
+}
+
+func (a *app) handleCatalogPublish(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	var draft []byte
+	err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop).Scan(&draft)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "There is no draft to publish.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.publishCatalog(w, u, prop, draft, strings.TrimSpace(in.Note), "catalog_publish", map[string]any{})
+}
+
+func (a *app) catalogRevision(w http.ResponseWriter, r *http.Request) (string, int, []byte, bool) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return "", 0, nil, false
+	}
+	rev, _ := strconv.Atoi(r.PathValue("rev"))
+	var body []byte
+	err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND rev = $2 AND status = 'published'`, prop, rev).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such revision.")
+		return "", 0, nil, false
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return "", 0, nil, false
+	}
+	return prop, rev, body, true
+}
+
+// handleCatalogExport downloads a revision in the catalog format, ready to commit to web/catalog.
+func (a *app) handleCatalogExport(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, rev, body, ok := a.catalogRevision(w, r)
+	if !ok {
+		return
+	}
+	var v any
+	json.Unmarshal(body, &v)
+	pretty, _ := json.MarshalIndent(v, "", " ")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-revision-%d.json"`, prop, rev))
+	w.Write(append(pretty, '\n'))
+}
+
+func (a *app) handleCatalogRestore(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, rev, body, ok := a.catalogRevision(w, r)
+	if !ok {
+		return
+	}
+	a.publishCatalog(w, u, prop, body, fmt.Sprintf("Restored revision %d", rev), "catalog_restore", map[string]any{"from": rev})
+}
+
+// handleCatalogShipped loads the shipped version of a catalog as the draft, for an admin to review.
+func (a *app) handleCatalogShipped(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	raw, ok := shippedCatalog(prop)
+	if !ok {
+		fail(w, http.StatusNotFound, "No shipped version.")
+		return
+	}
+	if _, err := a.db.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, author_id, note) VALUES ($1, 0, 'draft', $2, $3, 'The version shipped with Flowa')
+		ON CONFLICT (prop) WHERE status = 'draft' DO UPDATE SET body = EXCLUDED.body, author_id = EXCLUDED.author_id, created_at = now()`, prop, string(raw), u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 /* ---------- admin dashboard ---------- */
 
 const dashWeeks = 12
@@ -1714,6 +2556,18 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.authed(permUserRole, a.handleSetRole))
 	mux.HandleFunc("GET /api/admin/audit", a.authed(permAudit, a.handleAudit))
 	mux.HandleFunc("GET /api/admin/dashboard", a.authed(permDashboard, a.handleDashboard))
+	mux.HandleFunc("GET /catalog/{file}", a.handleCatalogFile)
+	ed := func(perm string, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+		return a.flagged("catalogEditor", a.authed(perm, h))
+	}
+	mux.HandleFunc("GET /api/admin/catalog/{prop}", ed(permCatalogEdit, a.handleCatalogAdmin))
+	mux.HandleFunc("PUT /api/admin/catalog/{prop}/draft", ed(permCatalogEdit, a.handleCatalogDraft))
+	mux.HandleFunc("DELETE /api/admin/catalog/{prop}/draft", ed(permCatalogEdit, a.handleCatalogDiscard))
+	mux.HandleFunc("GET /api/admin/catalog/{prop}/diff", ed(permCatalogEdit, a.handleCatalogDiff))
+	mux.HandleFunc("POST /api/admin/catalog/{prop}/publish", ed(permCatalogPublish, a.handleCatalogPublish))
+	mux.HandleFunc("POST /api/admin/catalog/{prop}/shipped", ed(permCatalogEdit, a.handleCatalogShipped))
+	mux.HandleFunc("GET /api/admin/catalog/{prop}/revisions/{rev}", ed(permCatalogEdit, a.handleCatalogExport))
+	mux.HandleFunc("POST /api/admin/catalog/{prop}/revisions/{rev}/restore", ed(permCatalogPublish, a.handleCatalogRestore))
 	mux.HandleFunc("POST /api/reports", a.flagged("moderation", a.authed("", a.handleReport)))
 	mux.HandleFunc("GET /api/mod/queue", a.flagged("moderation", a.authed(permReportResolve, a.handleQueue)))
 	mux.HandleFunc("POST /api/mod/resolve", a.flagged("moderation", a.authed(permReportResolve, a.handleResolve)))
@@ -1761,6 +2615,9 @@ func main() {
 		log.Fatal(err)
 	}
 	a.importLegacy(adminID)
+	if err := a.seedCatalogs(); err != nil {
+		log.Fatal(err)
+	}
 	db.Exec(`DELETE FROM sessions WHERE expires_at < now()`)
 
 	assets, err := loadAssets()
@@ -1886,6 +2743,20 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS reports_open_once ON reports (reporter_id, target_kind, target_id) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS reports_status ON reports (status, id);
+CREATE TABLE IF NOT EXISTS catalog_revisions (
+	id BIGSERIAL PRIMARY KEY,
+	prop TEXT NOT NULL,
+	rev INT NOT NULL,
+	status TEXT NOT NULL,
+	body JSONB NOT NULL,
+	source TEXT NOT NULL DEFAULT 'editor',
+	shipped_hash TEXT NOT NULL DEFAULT '',
+	author_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	note TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS catalog_published ON catalog_revisions (prop, rev) WHERE status = 'published';
+CREATE UNIQUE INDEX IF NOT EXISTS catalog_draft ON catalog_revisions (prop) WHERE status = 'draft';
 CREATE TABLE IF NOT EXISTS badge_blocks (
 	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	key TEXT NOT NULL,
