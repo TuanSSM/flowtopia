@@ -39,7 +39,7 @@ def api(op,path,body,method='POST'):
     return json.loads(op.open(urllib.request.Request(BASE+'api/'+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'},method=method),timeout=20).read() or b'null')
 def admin():
     op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    api(op,'signin',{'username':'admin','password':'flowa-test-only'});api(op,'flags',{'flags':{'details':True,'references':True,'demos':True}},'PUT')
+    api(op,'signin',{'username':'admin','password':'flowa-test-only'});api(op,'flags',{'flags':{'details':True,'references':True,'demos':True,'tour':False}},'PUT')  # every flag is on by default; the guided tour would cover the pages under test
     # FLOWA_AVATARS=1 runs a suite with avatars on and the admin wearing a tall, broad avatar.
     if os.environ.get('FLOWA_AVATARS'):
         api(op,'flags',{'flags':{'avatars':True}},'PUT')

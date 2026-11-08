@@ -27,7 +27,7 @@ try:
     if not os.environ.get('FLOWA_PREVIEW_BASE'): print('SKIP link cards: FLOWA_PREVIEW_BASE is not set, so the server cannot reach the stub')
     else:
         srv=stub.start()
-        op=admin();api(op,'me',{'props':['nunchaku']},'PUT');api(op,'flags',{'flags':{'moderation':True}},'PUT')
+        op=admin();api(op,'me',{'props':['nunchaku']},'PUT');api(op,'flags',{'flags':{'moderation':True,'videoEmbeds':False}},'PUT')  # play in place is on by default; the test turns it on itself
         start();signin();nav('#/timeline',2.5)
         compose('New drill video https://youtu.be/dQw4w9WgXcQ?si=share123 have a look')
         check('a pasted YouTube link is offered as a card',js("return !document.querySelector('.link-offer').hidden") and 'YouTube link found' in txt('.link-offer'))

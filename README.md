@@ -79,6 +79,16 @@ names (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`, `.t
 by any other name, list it in `FLOWA_HOSTS` in `.env` (comma-separated). This stops a website from
 pointing its own name at the Pi and talking to Flowa from a visitor's browser (DNS rebinding).
 
+Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
+proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from
+`X-Forwarded-For` (or `X-Real-IP`), but only when the connection comes from a trusted proxy, and it reads
+the header from the right, so a visitor cannot choose their address by sending it. Trusted by default:
+loopback and Docker networks (`127.0.0.0/8`, `::1`, `172.16.0.0/12`), which covers a proxy on the same
+host or in Docker. Set `FLOWA_TRUSTED_PROXIES` in `.env` (addresses or ranges, comma-separated) for any
+other setup: for example add Cloudflare's ranges when Cloudflare sits in front of your proxy, or `none`
+when visitors connect directly. The proxy must send `X-Forwarded-For` (Traefik, Caddy and Cloudflare do;
+in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
+
 ## Data
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
@@ -112,13 +122,14 @@ is [docs/hardening-plan.md](docs/hardening-plan.md).
 ## Feature flags
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
-on the Admin page. No restart is needed. `signups` opens or closes sign-up, and `tour` turns the guided tour on.
-`community` (timeline, public profiles, people list, notifications) and `game` (XP, levels, streak sharing,
-challenges, achievements, quests) are on by default and can be turned off if they get in the way.
-`moderation` (reports, the queue, hiding, mutes and suspensions) and `catalogEditor` (the skill map editor)
-are off until an admin turns them on. `linkCards` (cards for Instagram, TikTok and YouTube links) is on;
-`videoEmbeds` (play YouTube in place) is off. `suggest` (next-trick suggestions) and `avatars` (avatars,
-body presets and stickers) are off until an admin turns them on.
+on the Admin page. No restart is needed. Every flag is on by default; an admin turns off what gets in the
+way, and a flag an admin has set keeps that setting. `signups` opens or closes sign-up, `tour` runs the
+guided tour, `community` is the timeline, public profiles, people list and notifications, `game` is XP,
+levels, streak sharing, challenges, achievements and quests, `moderation` is reports, the queue, hiding,
+mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and
+YouTube links into cards, `videoEmbeds` plays YouTube in place (it adds youtube-nocookie.com frames to
+the page security policy), `suggest` is next-trick suggestions, and `avatars` is avatars, body presets
+and stickers.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |

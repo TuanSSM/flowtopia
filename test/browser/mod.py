@@ -55,7 +55,8 @@ try:
     check('a moderator has Moderation (with the count) and Admin',bool(m) and m[0].endswith('1') and 'Admin' in menu(),menu())
     nav('#/admin',2)
     tabs=js("return [...document.querySelectorAll('.admin-tabs a')].map(a=>a.textContent)")
-    check('a moderator sees the dashboard and accounts, not features or the audit log',tabs==['Dashboard','Accounts'],tabs)
+    # The skill map editor is on by default and moderators may draft maps, so they also see Skill maps.
+    check('a moderator sees the dashboard, accounts and skill maps, not features or the audit log',tabs==['Dashboard','Accounts','Skill maps'],tabs)
     nav('#/mod',2.5)
     check('the queue shows the report, its reason and the author',js("return document.querySelectorAll('.mq').length")==1 and 'Harassment' in txt('.mq') and '@sam' in txt('.mq-author') and 'mocking people' in txt('.mq'))
     click('.mq [data-act=mod-open][data-do=hide]');time.sleep(.8)
@@ -89,7 +90,8 @@ try:
     tabs=js("return [...document.querySelectorAll('.admin-tabs a')].map(a=>a.textContent)")
     check('an admin sees every admin section',tabs[:4]==['Dashboard','Accounts','Features','Audit log'],(tabs,js("return location.hash+' | '+document.querySelector('#main').innerText.slice(0,160)")))
     wait(lambda: js("return document.querySelectorAll('.dash-chart svg').length")==4)
-    check('the dashboard has four headline numbers and four weekly charts with labelled values',js("return document.querySelectorAll('.stat').length")==4 and js("return document.querySelectorAll('.dash-chart svg').length")==4 and js("return document.querySelectorAll('.dash-chart .dc-val').length")>=2)
+    # Four headline numbers, plus two for next-trick suggestions, which are on by default.
+    check('the dashboard has four headline numbers, two for suggestions, and four weekly charts with labelled values',js("return document.querySelectorAll('.stat').length")==6 and 'Suggestions' in txt('#main') and js("return document.querySelectorAll('.dash-chart svg').length")==4 and js("return document.querySelectorAll('.dash-chart .dc-val').length")>=2)
     js("document.querySelector('.dash-table summary').click()");time.sleep(.3)
     check('the weekly numbers are also a table',js("return document.querySelectorAll('.dash-table tbody tr').length")==12)
     nav('#/admin/audit',2.5)

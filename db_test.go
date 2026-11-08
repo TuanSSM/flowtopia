@@ -458,7 +458,8 @@ func TestDBReports(t *testing.T) {
 	_, owner := e.user("owner", "user")
 	_, b := e.user("bea", "user")
 	p := e.post(owner, "buy cheap nunchaku at spam.example")
-	// Off by default: the endpoints do not exist.
+	// With the flag off the endpoints do not exist.
+	e.setFlag("moderation", false)
 	e.must(404, b, "POST", "/api/reports", map[string]any{"kind": "post", "id": p, "reason": "spam"})
 	e.setFlag("moderation", true)
 	e.must(200, b, "POST", "/api/reports", map[string]any{"kind": "post", "id": p, "reason": "spam", "note": "link farm"})
@@ -706,7 +707,8 @@ func TestDBCatalogs(t *testing.T) {
 		t.Fatalf("catalog file: %d", code)
 	}
 	e.must(404, "", "GET", "/catalog/drums.json", nil)
-	// The editor is off until its flag is on, and needs catalog.edit.
+	// With its flag off the editor does not exist; it needs catalog.edit.
+	e.setFlag("catalogEditor", false)
 	e.must(404, admin, "GET", "/api/admin/catalog/poi", nil)
 	e.setFlag("catalogEditor", true)
 	e.must(403, member, "GET", "/api/admin/catalog/poi", nil)
@@ -918,6 +920,7 @@ func TestDBStaticCSP(t *testing.T) {
 		e.h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 		return w.Header().Get("Content-Security-Policy")
 	}
+	e.setFlag("videoEmbeds", false)
 	off := get()
 	e.setFlag("videoEmbeds", true)
 	e.a.flagsAt = time.Time{}
@@ -932,6 +935,7 @@ func TestDBTransitionCounts(t *testing.T) {
 	bID, b := e.user("bea", "user")
 	_, c := e.user("cal", "user")
 	label := map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "untested", "to": "works"}}}
+	e.setFlag("suggest", false)
 	e.must(404, b, "POST", "/api/suggest/labels", label)
 	e.setFlag("suggest", true)
 	// Without consent, nothing is accepted.
@@ -1000,6 +1004,7 @@ func TestDBAvatars(t *testing.T) {
 		t.Fatal("a refused avatar must leave the saved one")
 	}
 	// Clean skills are listed only with avatars on, and not for someone whose stats were hidden.
+	e.setFlag("avatars", false)
 	e.must(200, b, "PUT", "/api/progress/nunchaku", map[string]any{"rev": 0, "state": map[string]any{"skills": map[string]any{
 		"F5": map[string]any{"O": 2}, "F3": map[string]any{"O": 1}, "F4": map[string]any{"L": 0, "R": 3}, "F6": map[string]any{"note": "x"}}}})
 	if _, ok := e.must(200, c, "GET", "/api/users/bea", nil)["clean"]; ok {
@@ -1197,4 +1202,39 @@ func TestDBSigninLimits(t *testing.T) {
 		e.must(403, tok, "PUT", "/api/me/password", map[string]any{"current": "nope nope", "next": "another password"})
 	}
 	e.must(429, tok, "PUT", "/api/me/password", map[string]any{"current": "the right password", "next": "another password"})
+}
+
+// Behind a reverse proxy every connection comes from the proxy; the limits must still count each
+// visitor on their own (the feedback after the first server deploy).
+func TestDBLimitsBehindProxy(t *testing.T) {
+	e := newEnv(t)
+	via := func(visitor, method, path string, body any) int {
+		b, _ := json.Marshal(body)
+		r := httptest.NewRequest(method, path, bytes.NewReader(b))
+		r.RemoteAddr = "172.18.0.2:41000" // the proxy, in the Docker network
+		r.Header.Set("X-Forwarded-For", visitor)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, r)
+		return w.Code
+	}
+	e.a.lim.signup = newLimiter(1, time.Hour)
+	if via("203.0.113.1", "POST", "/api/signup", map[string]any{"username": "first", "password": "long enough pw"}) != 200 ||
+		via("203.0.113.2", "POST", "/api/signup", map[string]any{"username": "second", "password": "long enough pw"}) != 200 {
+		t.Fatal("two visitors behind one proxy each get their own sign-up allowance")
+	}
+	if via("203.0.113.1", "POST", "/api/signup", map[string]any{"username": "third", "password": "long enough pw"}) != 429 {
+		t.Fatal("the same visitor is still limited")
+	}
+	// One visitor guessing passwords does not lock everyone else out.
+	e.a.lim.signinIP = newLimiter(3, failWindow)
+	for _, n := range []string{"amy", "ben", "cat", "dan"} {
+		via("198.51.100.66", "POST", "/api/signin", map[string]any{"username": n, "password": "guess guess"})
+	}
+	if via("198.51.100.66", "POST", "/api/signin", map[string]any{"username": "first", "password": "long enough pw"}) != 429 {
+		t.Fatal("the guessing visitor is blocked")
+	}
+	if via("203.0.113.2", "POST", "/api/signin", map[string]any{"username": "second", "password": "long enough pw"}) != 200 {
+		t.Fatal("another visitor still signs in")
+	}
 }
