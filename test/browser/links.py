@@ -20,6 +20,7 @@ def reload(url,t=3.5):
     # A full load replaces the page, so the error watcher from start() is put back.
     cmd('WebDriver:Navigate',url=url);time.sleep(t);js(HOOK)
 def compose(text):
+    wait(lambda: js("return !!document.querySelector('#compose-form textarea')"),n=40)
     js("const t=document.querySelector('#compose-form textarea');t.focus();t.value=arguments[0];t.dispatchEvent(new Event('input',{bubbles:true}))",text);time.sleep(.6)
 SITES=('youtube.com','youtu.be','ytimg.com','tiktok','instagram','cdninstagram','fbcdn')
 try:
@@ -54,6 +55,7 @@ try:
         check('the flag adds youtube-nocookie as a frame source and nothing else','frame-src https://www.youtube-nocookie.com' in csp and csp.count('https://')==1,csp)
         reload(BASE+'?embeds=1#/timeline')
         check('before pressing play there is no frame',js("return document.querySelectorAll('iframe').length")==0)
+        wait(lambda: js("return !!document.querySelector('.post[data-post=\"'+arguments[0]+'\"] [data-act=yt-play]')",str(pid)),n=40)
         js("document.querySelector('.post[data-post=\"'+arguments[0]+'\"] [data-act=yt-play]').click()",str(pid));time.sleep(1)
         src=js("const f=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] iframe');return f&&[f.getAttribute('src'),f.getAttribute('referrerpolicy')]",str(pid))
         check('pressing play loads the video from youtube-nocookie',src==['https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1','no-referrer'],src)
