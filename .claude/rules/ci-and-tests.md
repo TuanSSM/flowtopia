@@ -9,6 +9,9 @@ paths:
 - `process_pr.yml` is the one workflow that checks pull requests; `release_tag.yml` only tags releases,
   started by hand (workflow_dispatch), with versions from `cliff.toml`. Keep the git-cliff version the
   same in both files.
+- PR titles are Conventional Commits titles (the `changes` job checks them): with squash merges the
+  title is the commit `cliff.toml` reads. When adding a commit type, change the list in CLAUDE.md, the
+  title check in `process_pr.yml` and the parsers in `cliff.toml` together.
 - `process_pr.yml`: `process_pr_result` is the required check and must
   `need` every job and fail when any job failed, was cancelled or skipped. Never path-filter the
   workflow: a required check that does not run blocks the PR.

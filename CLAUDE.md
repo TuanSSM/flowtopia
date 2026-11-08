@@ -18,8 +18,11 @@ the skills in `.claude/skills/` are the recurring workflows.
   integration (headless Firefox under Xvfb) and screenshots; the PR gets one sticky comment with
   the results and the screenshots inline.
 - Keep the Pi cheap: run the quick checks locally (`/pr-checks`) and let CI do the rest.
-- Commit messages: a short title, then plain prose on what changed and why. No model names, no
-  tool names, no emoji. End with the Co-Authored-By line the session gives you.
+- Commit messages and pull request titles follow [Conventional Commits](https://www.conventionalcommits.org):
+  `type(scope): summary`, then a body in plain prose on what changed and why. A squash merge makes the
+  PR title the commit on `main`, and `cliff.toml` reads it to choose the next version, so the type
+  matters (see "Commit types" below). No model names, no tool names, no emoji. End the body with the
+  Co-Authored-By line the session gives you.
 - Never put the real admin password in a file. Tests use `flowa-test-only` against a throwaway
   database. `.env` is secret; do not read or print it.
 - `./deploy.sh` touches the running service on the Pi. Only run it when asked.
@@ -62,3 +65,28 @@ node sim/bake.js                           # rebake web/clips after changing sim
 test/browser/run.sh combo.py               # browser tests (throwaway DB in Docker, server on :3170)
 test/browser/run.sh pages.py /tmp/shots    # the screenshots CI takes
 ```
+
+## Commit types
+
+| Type | For | Release |
+| --- | --- | --- |
+| `feat` | something new a person can use | minor |
+| `fix` | a bug fixed | patch |
+| `perf` | faster or lighter, same behaviour | patch |
+| `refactor` | code changed, behaviour not | patch |
+| `docs` | documentation only | patch |
+| `test` | tests only | patch |
+| `build`, `ci` | the build, deploy scripts or workflows | patch |
+| `chore` | anything else (dependencies: `chore(deps)`) | patch |
+| `revert` | undoing an earlier commit | patch |
+
+- The scope is optional and names the area: `server`, `ui`, `demos`, `sim`, `figure`, `avatars`,
+  `social`, `mod`, `suggest`, `links`, `ci`, `docs`. Example: `fix(server): count each visitor behind a proxy`.
+- The summary is lower case, imperative, without a full stop, and the whole title stays under 70
+  characters.
+- A change that breaks something people or deployments rely on (an endpoint, a setting, data that
+  cannot be rolled back) adds `!` after the type or scope and a `BREAKING CHANGE:` line in the body
+  saying what to do. That makes a major release.
+- CI checks the pull request title (`changes` job). After renaming a PR, run the checks again
+  (`gh run rerun <id>` or push a commit).
+

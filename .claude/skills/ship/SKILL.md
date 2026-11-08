@@ -6,12 +6,16 @@ description: Take the current work from a dirty tree to a merge-ready pull reque
 
 1. `git status --short` and `git diff --stat`. Make sure nothing secret or accidental is staged
    (`.env`, `__pycache__`, `/tmp` paths, the real admin password).
-2. If on `main`, create a branch named for the change (`area/short-name`); otherwise stay.
+2. If on `main`, create a branch named for the change (`type/short-name`, like `fix/proxy-addresses`);
+   otherwise stay.
 3. Run `/pr-checks` unless the user said to skip it.
-4. Commit with a title under 70 characters and a body in plain prose: what changed, why, what was
-   verified. No model names, no emoji. End with the Co-Authored-By line from the session.
+4. Commit with a Conventional Commits title under 70 characters (`type(scope): summary`, types in
+   CLAUDE.md) and a body in plain prose: what changed, why, what was verified. Breaking changes get
+   `!` and a `BREAKING CHANGE:` line. No model names, no emoji. End with the Co-Authored-By line
+   from the session.
 5. `git push -u origin <branch>`; on a network error retry with 2, 4, 8, 16 s waits.
-6. `gh pr create` with a body that has: Why, What (grouped by area), how it was verified, and
+6. `gh pr create` with a Conventional Commits title (it becomes the squash commit on `main`, which
+   sets the next version) and a body that has: Why, What (grouped by area), how it was verified, and
    anything the reviewer must do after merging (for example a ruleset change). End with the
    "Generated with Claude Code" line.
 7. Watch: `id=$(gh run list --branch <branch> --workflow process_pr --limit 1 --json databaseId -q '.[0].databaseId'); gh run watch "$id" --exit-status`.
