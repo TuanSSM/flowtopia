@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
@@ -16,6 +17,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"io/fs"
 	"log"
@@ -53,7 +58,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false}
+var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false, "linkCards": true, "videoEmbeds": false}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -93,10 +98,13 @@ CREATE TABLE IF NOT EXISTS flags (
 );`
 
 type app struct {
-	db      *sql.DB
-	dataDir string
-	mu      sync.Mutex
-	fails   map[string]*failCount
+	db        *sql.DB
+	dataDir   string
+	mu        sync.Mutex
+	fails     map[string]*failCount
+	fetch     *fetcher // link previews; nil means no fetching
+	flagCache map[string]bool
+	flagsAt   time.Time
 }
 
 type failCount struct {
@@ -2318,6 +2326,492 @@ func (a *app) handleCatalogShipped(w http.ResponseWriter, r *http.Request, u *us
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+/* ---------- link cards: Instagram, TikTok and YouTube ---------- */
+
+// A link to a post on another site, as stored on a Flowa post.
+type postLink struct {
+	URL  string `json:"url"`  // canonical, without tracking parameters
+	Site string `json:"site"` // instagram, tiktok or youtube
+	Kind string `json:"kind"` // post, reel, video, short, or shortlink (not yet resolved)
+	ID   string `json:"id"`
+}
+
+// linkCard is a postLink with what the server learned about it, as the feed shows it.
+type linkCard struct {
+	postLink
+	Title  string `json:"title,omitempty"`
+	Author string `json:"author,omitempty"`
+	Thumb  string `json:"thumb,omitempty"` // a Flowa URL, never the site's
+	Ratio  string `json:"ratio,omitempty"` // "9:16" for shorts and reels, else "16:9"
+	Status string `json:"status"`          // pending, ok or failed
+}
+
+const maxLinks = 4
+
+var (
+	ytIDRE   = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+	igCodeRE = regexp.MustCompile(`^[A-Za-z0-9_-]{5,40}$`)
+	ttIDRE   = regexp.MustCompile(`^[0-9]{8,25}$`)
+	ttUserRE = regexp.MustCompile(`^@[A-Za-z0-9._]{1,40}$`)
+	ttShort  = regexp.MustCompile(`^[A-Za-z0-9]{5,20}$`)
+)
+
+// parseLink recognises a link to an Instagram post or reel, a TikTok video, or a YouTube video or
+// short, and returns it in canonical form. Anything else is refused.
+func parseLink(raw string) (postLink, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Port() != "" {
+		return postLink{}, false
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	host = strings.TrimPrefix(host, "m.")
+	parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+	switch host {
+	case "youtube.com", "music.youtube.com":
+		id, kind := "", "video"
+		switch {
+		case len(parts) == 1 && parts[0] == "watch":
+			id = u.Query().Get("v")
+		case len(parts) == 2 && (parts[0] == "shorts" || parts[0] == "live" || parts[0] == "embed"):
+			id = parts[1]
+			if parts[0] == "shorts" {
+				kind = "short"
+			}
+		}
+		if !ytIDRE.MatchString(id) {
+			return postLink{}, false
+		}
+		if kind == "short" {
+			return postLink{"https://www.youtube.com/shorts/" + id, "youtube", kind, id}, true
+		}
+		return postLink{"https://www.youtube.com/watch?v=" + id, "youtube", kind, id}, true
+	case "youtu.be":
+		if len(parts) == 1 && ytIDRE.MatchString(parts[0]) {
+			return postLink{"https://www.youtube.com/watch?v=" + parts[0], "youtube", "video", parts[0]}, true
+		}
+	case "instagram.com":
+		// /p/CODE, /reel/CODE, /reels/CODE, /tv/CODE, optionally after the account name.
+		if len(parts) >= 3 && parts[1] != "" && (parts[1] == "p" || parts[1] == "reel" || parts[1] == "reels" || parts[1] == "tv") {
+			parts = parts[1:]
+		}
+		if len(parts) >= 2 && igCodeRE.MatchString(parts[1]) {
+			switch parts[0] {
+			case "p", "tv":
+				return postLink{"https://www.instagram.com/p/" + parts[1] + "/", "instagram", "post", parts[1]}, true
+			case "reel", "reels":
+				return postLink{"https://www.instagram.com/reel/" + parts[1] + "/", "instagram", "reel", parts[1]}, true
+			}
+		}
+	case "tiktok.com":
+		if len(parts) == 3 && ttUserRE.MatchString(parts[0]) && parts[1] == "video" && ttIDRE.MatchString(parts[2]) {
+			return postLink{"https://www.tiktok.com/" + parts[0] + "/video/" + parts[2], "tiktok", "video", parts[2]}, true
+		}
+		if len(parts) == 2 && parts[0] == "v" && ttIDRE.MatchString(strings.TrimSuffix(parts[1], ".html")) {
+			id := strings.TrimSuffix(parts[1], ".html")
+			return postLink{"https://m.tiktok.com/v/" + id + ".html", "tiktok", "video", id}, true
+		}
+		if len(parts) == 2 && parts[0] == "t" && ttShort.MatchString(parts[1]) {
+			return postLink{"https://www.tiktok.com/t/" + parts[1] + "/", "tiktok", "shortlink", parts[1]}, true
+		}
+	case "vm.tiktok.com", "vt.tiktok.com":
+		if len(parts) == 1 && ttShort.MatchString(parts[0]) {
+			return postLink{"https://" + host + "/" + parts[0] + "/", "tiktok", "shortlink", parts[0]}, true
+		}
+	}
+	return postLink{}, false
+}
+
+// The fetcher asks the three sites about a link from the server, never from a visitor's browser.
+// It only talks to the hosts below, follows redirects only between them, refuses private addresses,
+// gives up after 3 s and reads at most 256 KB of an answer (2 MB of a thumbnail).
+var (
+	previewHosts = []string{"youtube.com", "www.youtube.com", "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "instagram.com", "www.instagram.com"}
+	thumbHosts   = []string{"ytimg.com", "tiktokcdn.com", "tiktokcdn-us.com", "cdninstagram.com", "fbcdn.net"}
+)
+
+const (
+	fetchTimeout = 3 * time.Second
+	maxMeta      = 256 << 10
+	maxThumbIn   = 2 << 20
+	maxThumbOut  = 60 << 10
+	thumbSide    = 640
+	refreshAfter = 7 * 24 * time.Hour
+)
+
+type fetcher struct {
+	client *http.Client
+	// base, set only by tests (FLOWA_PREVIEW_BASE), sends every request to one stub server instead.
+	base string
+	mu   sync.Mutex
+	busy map[string]*sync.Mutex // one fetch at a time per host
+	off  bool                   // FLOWA_PREVIEW_FETCH=off: never fetch
+}
+
+func hostAllowed(host string, list []string) bool {
+	host = strings.ToLower(host)
+	for _, h := range list {
+		if host == h || strings.HasSuffix(host, "."+h) {
+			return true
+		}
+	}
+	return false
+}
+
+func publicIP(ip net.IP) bool {
+	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast())
+}
+
+func newFetcher(base string, allowPrivate bool) *fetcher {
+	dialer := &net.Dialer{Timeout: fetchTimeout, Control: func(network, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		if ip := net.ParseIP(host); ip == nil || (!allowPrivate && !publicIP(ip)) {
+			return fmt.Errorf("refusing to connect to %s", host)
+		}
+		return nil
+	}}
+	tr := &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: fetchTimeout, ResponseHeaderTimeout: fetchTimeout, MaxIdleConns: 4, DisableCompression: false}
+	f := &fetcher{base: strings.TrimRight(base, "/"), busy: map[string]*sync.Mutex{}}
+	f.client = &http.Client{Transport: tr, Timeout: fetchTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return errors.New("too many redirects")
+		}
+		host := req.URL.Hostname()
+		if f.base != "" {
+			// Tests: a redirect must stay on the stub, and name an allowed host as its first segment.
+			if !strings.HasPrefix(req.URL.String(), f.base+"/") {
+				return fmt.Errorf("redirect off the stub refused")
+			}
+			host, _, _ = strings.Cut(strings.TrimPrefix(req.URL.Path, "/"), "/")
+		}
+		if !hostAllowed(host, append(append([]string{}, previewHosts...), thumbHosts...)) {
+			return fmt.Errorf("redirect to %s refused", host)
+		}
+		return nil
+	}}
+	return f
+}
+
+// get fetches an allowed URL and returns at most limit bytes of the body.
+func (f *fetcher) get(ctx context.Context, target string, hosts []string, limit int64) ([]byte, *url.URL, error) {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "https" || !hostAllowed(u.Hostname(), hosts) {
+		return nil, nil, fmt.Errorf("not an allowed URL: %s", target)
+	}
+	reqURL := target
+	if f.base != "" {
+		// Tests: the stub serves /<host><path>?<query>.
+		reqURL = f.base + "/" + u.Hostname() + u.EscapedPath()
+		if u.RawQuery != "" {
+			reqURL += "?" + u.RawQuery
+		}
+	}
+	f.mu.Lock()
+	lock := f.busy[u.Hostname()]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		f.busy[u.Hostname()] = lock
+	}
+	f.mu.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("User-Agent", "Flowa link preview (+self-hosted)")
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, nil, fmt.Errorf("%s answered %d", u.Hostname(), resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, nil, fmt.Errorf("answer from %s is too large", u.Hostname())
+	}
+	return body, resp.Request.URL, nil
+}
+
+var (
+	ogTitleRE = regexp.MustCompile(`<meta[^>]+property="og:title"[^>]+content="([^"]*)"`)
+	ogImageRE = regexp.MustCompile(`<meta[^>]+property="og:image"[^>]+content="([^"]*)"`)
+)
+
+type previewMeta struct {
+	Title, Author, Thumb string
+}
+
+// lookup asks the site about a link: its public oEmbed answer where there is one (YouTube, TikTok),
+// otherwise the page's Open Graph tags (Instagram, which may answer with nothing without a login).
+func (f *fetcher) lookup(ctx context.Context, l postLink) (previewMeta, postLink, error) {
+	var m previewMeta
+	if l.Kind == "shortlink" {
+		// Follow the short link to the video it stands for, within the allowed hosts.
+		_, final, err := f.get(ctx, l.URL, previewHosts, maxMeta)
+		if err != nil {
+			return m, l, err
+		}
+		target := final.String()
+		if f.base != "" {
+			target = "https://" + strings.TrimPrefix(final.Path, "/")
+		}
+		nl, ok := parseLink(target)
+		if !ok || nl.Kind == "shortlink" {
+			return m, l, fmt.Errorf("short link did not lead to a video")
+		}
+		l = nl
+	}
+	var endpoint string
+	switch l.Site {
+	case "youtube":
+		endpoint = "https://www.youtube.com/oembed?format=json&url=" + url.QueryEscape(l.URL)
+	case "tiktok":
+		endpoint = "https://www.tiktok.com/oembed?url=" + url.QueryEscape(l.URL)
+	case "instagram":
+		body, _, err := f.get(ctx, l.URL, previewHosts, maxMeta)
+		if err != nil {
+			return m, l, err
+		}
+		if t := ogTitleRE.FindSubmatch(body); t != nil {
+			m.Title = htmlUnescape(string(t[1]))
+		}
+		if t := ogImageRE.FindSubmatch(body); t != nil {
+			m.Thumb = htmlUnescape(string(t[1]))
+		}
+		return m, l, nil
+	}
+	body, _, err := f.get(ctx, endpoint, previewHosts, maxMeta)
+	if err != nil {
+		return m, l, err
+	}
+	var o struct {
+		Title        string `json:"title"`
+		AuthorName   string `json:"author_name"`
+		ThumbnailURL string `json:"thumbnail_url"`
+	}
+	if err := json.Unmarshal(body, &o); err != nil {
+		return m, l, err
+	}
+	return previewMeta{o.Title, o.AuthorName, o.ThumbnailURL}, l, nil
+}
+
+func htmlUnescape(s string) string {
+	return strings.NewReplacer("&amp;", "&", "&quot;", `"`, "&#39;", "'", "&#x27;", "'", "&lt;", "<", "&gt;", ">").Replace(s)
+}
+
+// shrinkThumb decodes a JPEG or PNG, scales it to at most 640 px on its longer side and re-encodes
+// it as a JPEG of at most 60 KB, so what Flowa serves is its own small copy.
+func shrinkThumb(raw []byte) ([]byte, int, int, error) {
+	src, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w == 0 || h == 0 {
+		return nil, 0, 0, errors.New("empty image")
+	}
+	scale := min(1, float64(thumbSide)/float64(max(w, h)))
+	nw, nh := max(1, int(float64(w)*scale)), max(1, int(float64(h)*scale))
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	// Box filter: each output pixel averages the source pixels it covers.
+	for y := 0; y < nh; y++ {
+		y0, y1 := b.Min.Y+y*h/nh, b.Min.Y+max((y+1)*h/nh, y*h/nh+1)
+		for x := 0; x < nw; x++ {
+			x0, x1 := b.Min.X+x*w/nw, b.Min.X+max((x+1)*w/nw, x*w/nw+1)
+			var r, g, bl, n uint64
+			for sy := y0; sy < y1; sy++ {
+				for sx := x0; sx < x1; sx++ {
+					cr, cg, cb, _ := src.At(sx, sy).RGBA()
+					r, g, bl, n = r+uint64(cr), g+uint64(cg), bl+uint64(cb), n+1
+				}
+			}
+			i := dst.PixOffset(x, y)
+			dst.Pix[i], dst.Pix[i+1], dst.Pix[i+2], dst.Pix[i+3] = uint8(r/n>>8), uint8(g/n>>8), uint8(bl/n>>8), 255
+		}
+	}
+	for q := 82; q >= 35; q -= 12 {
+		var out bytes.Buffer
+		if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: q}); err != nil {
+			return nil, 0, 0, err
+		}
+		if out.Len() <= maxThumbOut {
+			return out.Bytes(), nw, nh, nil
+		}
+	}
+	return nil, 0, 0, errors.New("thumbnail too large even at low quality")
+}
+
+// preview fetches and stores what the site says about a link, once; failures are stored too, so a
+// broken link does not cause a fetch on every view. Runs in the background.
+func (a *app) preview(l postLink) {
+	if a.fetch == nil || a.fetch.off {
+		return
+	}
+	var fetched sql.NullTime
+	var status string
+	err := a.db.QueryRow(`SELECT status, fetched_at FROM link_previews WHERE url = $1`, l.URL).Scan(&status, &fetched)
+	if err == nil && (status == "pending" || (fetched.Valid && time.Since(fetched.Time) < refreshAfter)) {
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := a.db.Exec(`INSERT INTO link_previews (url, site, kind, status) VALUES ($1, $2, $3, 'pending') ON CONFLICT (url) DO NOTHING`, l.URL, l.Site, l.Kind); err != nil {
+			log.Printf("preview: %v", err)
+			return
+		}
+	} else if err != nil {
+		log.Printf("preview: %v", err)
+		return
+	} else {
+		a.db.Exec(`UPDATE link_previews SET status = 'pending' WHERE url = $1`, l.URL)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*fetchTimeout)
+	defer cancel()
+	m, resolved, err := a.fetch.lookup(ctx, l)
+	var thumb []byte
+	var tw, th int
+	if err == nil && m.Thumb != "" {
+		if raw, _, terr := a.fetch.get(ctx, m.Thumb, thumbHosts, maxThumbIn); terr == nil {
+			thumb, tw, th, _ = shrinkThumb(raw)
+		} else {
+			log.Printf("preview thumbnail %s: %v", l.URL, terr)
+		}
+	}
+	if err != nil {
+		log.Printf("preview %s: %v", l.URL, err)
+		a.db.Exec(`UPDATE link_previews SET status = 'failed', fetched_at = now() WHERE url = $1`, l.URL)
+		return
+	}
+	trunc := func(s string, n int) string {
+		if r := []rune(s); len(r) > n {
+			return string(r[:n])
+		}
+		return s
+	}
+	if _, err := a.db.Exec(`UPDATE link_previews SET status = 'ok', title = $2, author = $3, thumb = $4, thumb_w = $5, thumb_h = $6, resolved = $7, fetched_at = now() WHERE url = $1`,
+		l.URL, trunc(m.Title, 200), trunc(m.Author, 80), thumb, tw, th, resolved.URL); err != nil {
+		log.Printf("preview: %v", err)
+	}
+}
+
+// attachLinks gives each post's links the previews stored for them.
+func (a *app) attachLinks(posts []*post) error {
+	urls := []string{}
+	for _, p := range posts {
+		var d struct {
+			Links []postLink `json:"links"`
+		}
+		json.Unmarshal(p.Data, &d)
+		for _, l := range d.Links {
+			p.Links = append(p.Links, linkCard{postLink: l, Status: "pending"})
+			urls = append(urls, l.URL)
+		}
+	}
+	if len(urls) == 0 {
+		return nil
+	}
+	rows, err := a.db.Query(`SELECT id, url, status, title, author, thumb IS NOT NULL, thumb_w, thumb_h, fetched_at FROM link_previews WHERE url = ANY($1)`, pq.Array(urls))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type pv struct {
+		id            int64
+		status, t, au string
+		thumb         bool
+		w, h          int
+		at            sql.NullTime
+	}
+	got := map[string]pv{}
+	for rows.Next() {
+		var x pv
+		var u string
+		if err := rows.Scan(&x.id, &u, &x.status, &x.t, &x.au, &x.thumb, &x.w, &x.h, &x.at); err != nil {
+			return err
+		}
+		got[u] = x
+	}
+	for _, p := range posts {
+		for i := range p.Links {
+			c := &p.Links[i]
+			c.Ratio = "16:9"
+			if c.Kind == "short" || c.Kind == "reel" || c.Site == "tiktok" {
+				c.Ratio = "9:16"
+			}
+			x, ok := got[c.URL]
+			if !ok {
+				continue
+			}
+			c.Status, c.Title, c.Author = x.status, x.t, x.au
+			if x.thumb {
+				c.Thumb = fmt.Sprintf("api/previews/%d.jpg", x.id)
+			}
+			if x.status == "ok" && x.at.Valid && time.Since(x.at.Time) > refreshAfter {
+				go a.preview(c.postLink) // refreshed at most weekly, in the background
+			}
+		}
+	}
+	return rows.Err()
+}
+
+// handlePreviewImage serves a stored thumbnail, only while a post the viewer may see links to it.
+func (a *app) handlePreviewImage(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(strings.TrimSuffix(r.PathValue("file"), ".jpg"), 10, 64)
+	var img []byte
+	err := a.db.QueryRow(`SELECT lp.thumb FROM link_previews lp WHERE lp.id = $1 AND lp.thumb IS NOT NULL AND EXISTS (
+		SELECT 1 FROM posts p WHERE p.data->'links' @> jsonb_build_array(jsonb_build_object('url', lp.url)) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3))`,
+		id, u.ID, can(u, permPostHide)).Scan(&img)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Write(img)
+}
+
+// flagsCached reads the flags at most every two seconds, for the security header on every file.
+func (a *app) flagsCached() map[string]bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if time.Since(a.flagsAt) < 2*time.Second && a.flagCache != nil {
+		return a.flagCache
+	}
+	f, err := a.flags()
+	if err != nil {
+		return map[string]bool{}
+	}
+	a.flagCache, a.flagsAt = f, time.Now()
+	return f
+}
+
+// csp is the Content-Security-Policy. The one exception to "self", a YouTube frame, exists only
+// while the videoEmbeds flag is on.
+func csp(embeds bool) string {
+	p := "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'self'"
+	if embeds {
+		p += "; frame-src https://www.youtube-nocookie.com"
+	}
+	return p
+}
+
 /* ---------- admin dashboard ---------- */
 
 const dashWeeks = 12
@@ -2506,28 +3000,28 @@ func loadAssets() (map[string]asset, error) {
 	return out, err
 }
 
-func handleStatic(assets map[string]asset) http.HandlerFunc {
+func (a *app) handleStatic(assets map[string]asset) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		if p == "/" {
 			p = "/index.html"
 		}
-		a, ok := assets[p]
+		f, ok := assets[p]
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", a.ctype)
+		w.Header().Set("Content-Type", f.ctype)
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("ETag", a.etag)
+		w.Header().Set("ETag", f.etag)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'self'")
-		if r.Header.Get("If-None-Match") == a.etag {
+		w.Header().Set("Content-Security-Policy", csp(a.flagsCached()["videoEmbeds"]))
+		if r.Header.Get("If-None-Match") == f.etag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		w.Write(a.body)
+		w.Write(f.body)
 	}
 }
 
@@ -2573,7 +3067,8 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("POST /api/mod/resolve", a.flagged("moderation", a.authed(permReportResolve, a.handleResolve)))
 	mux.HandleFunc("POST /api/mod/actions", a.flagged("moderation", a.authed("", a.handleModAction)))
 	a.socialRoutes(mux)
-	mux.HandleFunc("GET /", handleStatic(assets))
+	mux.HandleFunc("GET /api/previews/{file}", a.authed("", a.handlePreviewImage))
+	mux.HandleFunc("GET /", a.handleStatic(assets))
 	return guard(mux)
 }
 
@@ -2610,6 +3105,9 @@ func main() {
 		log.Fatal(err)
 	}
 	a := &app{db: db, dataDir: *dataDir, fails: map[string]*failCount{}}
+	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
+	a.fetch = newFetcher(os.Getenv("FLOWA_PREVIEW_BASE"), os.Getenv("FLOWA_PREVIEW_BASE") != "")
+	a.fetch.off = os.Getenv("FLOWA_PREVIEW_FETCH") == "off"
 	adminID, err := a.seedAdmin(os.Getenv("ADMIN_USER"), os.Getenv("ADMIN_PASSWORD"))
 	if err != nil {
 		log.Fatal(err)
@@ -2757,6 +3255,20 @@ CREATE TABLE IF NOT EXISTS catalog_revisions (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS catalog_published ON catalog_revisions (prop, rev) WHERE status = 'published';
 CREATE UNIQUE INDEX IF NOT EXISTS catalog_draft ON catalog_revisions (prop) WHERE status = 'draft';
+CREATE TABLE IF NOT EXISTS link_previews (
+	id BIGSERIAL PRIMARY KEY,
+	url TEXT NOT NULL UNIQUE,
+	site TEXT NOT NULL,
+	kind TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'pending',
+	title TEXT NOT NULL DEFAULT '',
+	author TEXT NOT NULL DEFAULT '',
+	thumb BYTEA,
+	thumb_w INT NOT NULL DEFAULT 0,
+	thumb_h INT NOT NULL DEFAULT 0,
+	resolved TEXT NOT NULL DEFAULT '',
+	fetched_at TIMESTAMPTZ
+);
 CREATE TABLE IF NOT EXISTS badge_blocks (
 	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	key TEXT NOT NULL,
@@ -3213,6 +3725,8 @@ type post struct {
 	CommentCount int       `json:"commentCount"`
 	// Hidden is the moderator's reason when the post is hidden; only its author and moderators see it.
 	Hidden string `json:"hidden,omitempty"`
+	// Links are the Instagram, TikTok and YouTube links on the post, with their previews.
+	Links []linkCard `json:"links,omitempty"`
 }
 
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
@@ -3269,6 +3783,9 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64) (map[string]an
 			}
 			uids = append(uids, commentUsers(*c)...)
 		}
+	}
+	if err := a.attachLinks(posts); err != nil {
+		return nil, err
 	}
 	users, err := a.usersByID(uids)
 	if err != nil {
@@ -3434,6 +3951,7 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		Image string     `json:"image"`
 		Tags  []postTag  `json:"tags"`
 		Combo *postCombo `json:"combo"`
+		Links []string   `json:"links"`
 	}
 	if !readJSON(w, r, maxImage+4*maxPost+8192, &in) {
 		return
@@ -3456,11 +3974,37 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		fail(w, http.StatusBadRequest, "That combo cannot be attached.")
 		return
 	}
-	if body == "" && in.Image == "" && in.Combo == nil {
+	// Links become cards only while the linkCards flag is on; otherwise they stay in the text.
+	links := []postLink{}
+	if len(in.Links) > 0 {
+		if !a.flagsCached()["linkCards"] {
+			in.Links = nil
+		}
+		if len(in.Links) > maxLinks {
+			fail(w, http.StatusBadRequest, "Attach up to 4 links.")
+			return
+		}
+		seen := map[string]bool{}
+		for _, raw := range in.Links {
+			l, ok := parseLink(raw)
+			if !ok {
+				fail(w, http.StatusBadRequest, "Links can be Instagram posts and reels, TikTok videos, and YouTube videos and shorts.")
+				return
+			}
+			if !seen[l.URL] {
+				seen[l.URL] = true
+				links = append(links, l)
+			}
+		}
+	}
+	if body == "" && in.Image == "" && in.Combo == nil && len(links) == 0 {
 		fail(w, http.StatusBadRequest, "Write something, add a picture or attach a combo.")
 		return
 	}
 	data := map[string]any{}
+	if len(links) > 0 {
+		data["links"] = links
+	}
 	if len(tags) > 0 {
 		data["tags"] = tags
 	}
@@ -3480,6 +4024,9 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	a.notifyMentions(body, u.ID, id, 0)
+	for _, l := range links {
+		go a.preview(l) // in the background: posting never waits for another site
+	}
 	a.writePost(w, u, id)
 }
 
