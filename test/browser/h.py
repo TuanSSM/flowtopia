@@ -33,7 +33,12 @@ def api(op,path,body,method='POST'):
     return json.loads(op.open(urllib.request.Request(BASE+'api/'+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'},method=method),timeout=20).read() or b'null')
 def admin():
     op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    api(op,'signin',{'username':'admin','password':'flowa-test-only'});api(op,'flags',{'flags':{'details':True,'references':True,'demos':True}},'PUT');return op
+    api(op,'signin',{'username':'admin','password':'flowa-test-only'});api(op,'flags',{'flags':{'details':True,'references':True,'demos':True}},'PUT')
+    # FLOWA_AVATARS=1 runs a suite with avatars on and the admin wearing a tall, broad avatar.
+    if os.environ.get('FLOWA_AVATARS'):
+        api(op,'flags',{'flags':{'avatars':True}},'PUT')
+        api(op,'me',{'avatarCfg':{'v':1,'body':'tall','build':'broad','skin':'#72422a','hair':'bun','hairColor':'#1c1714','eyes':'round','brows':'straight','mouth':'smile','top':'hoodie','topColor':'#5b3f8c','bottoms':'shorts','bottomsColor':'#1f2a44','shoes':'hightops','shoesColor':'#f2f0e9','hat':'cap','hatColor':'#c4572e','glasses':'none','wristbands':'yes','wristColor':'#d9a441','props':{}}},'PUT')
+    return op
 started=False
 def start(w=1440,h=1100):
     global started;started=True

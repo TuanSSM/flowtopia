@@ -20,3 +20,6 @@ paths:
   figure from front, angle and side.
 - The model file is the three.js "X Bot"; any Mixamo-rigged GLB can replace it. Textures are
   blocked by the CSP (`connect-src 'self'`), so use neutral materials.
+- Avatar parts (outfits, head parts, wristbands) and body presets are made in code in
+  `figure/src/figure.js` ([docs/avatars.md](../../docs/avatars.md)). After changing them, run
+  `FRAME_BUDGET_MS=80 test/browser/run.sh avatar.py` on the Pi (CI uses 33 ms).

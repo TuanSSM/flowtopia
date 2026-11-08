@@ -90,7 +90,9 @@ function postCard(p) {
   let body;
   if (p.kind === 'milestone') {
     const keys = p.data?.achievements || [];
-    body = `<div class="ms"><div class="row" style="gap:10px"><span class="badge-ic on">${icon('trophy')}</span><b>Unlocked ${keys.length === 1 ? 'an achievement' : keys.length + ' achievements'}</b></div>
+    // With avatars on, the author's avatar in a pose that matches the first badge's group.
+    const stk = stickerImg(badgeByKey(keys[0])?.group, u.avatarCfg, p.prop, 'sticker ms-sticker');
+    body = `<div class="ms ${stk ? 'has-sticker' : ''}">${stk}<div class="row" style="gap:10px"><span class="badge-ic on">${icon('trophy')}</span><b>Unlocked ${keys.length === 1 ? 'an achievement' : keys.length + ' achievements'}</b></div>
       <div class="chips" style="margin-top:10px">${keys.map(k => { const b = badgeByKey(k); return `<span class="chip ok" data-tip="${esc(b?.desc || '')}">${icon(b?.icon || 'medal')}${esc(b?.name || k)}</span>`; }).join('')}</div></div>`;
   } else {
     body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${(p.links || []).map(c => linkCardHTML(p, c)).join('')}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
@@ -338,7 +340,8 @@ function pageUser(name) {
       ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}${canReport(u.id) ? `<button class="btn sm" data-act="report" data-kind="user" data-id="${u.id}" data-what="@${esc(u.username)}">${icon('flag')}Report</button>` : ''}</div>
     ${flags.game ? `<div class="grid g4 prof-stats">${[['Level', `${L}<small> ${title}</small>`], ['XP', (s.xp || 0).toLocaleString()], ['Streak', `${s.streak || 0}<small> ${s.streak === 1 ? 'day' : 'days'} · best ${s.best || 0}</small>`], ['Clean skills', s.clean || 0]].map(([n, v]) => `<div class="stat"><div class="lbl">${n}</div><div class="val num">${v}</div></div>`).join('')}</div>` : ''}</div>
   <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2><span class="sub num">${pr.posts} ${pr.posts === 1 ? 'post' : 'posts'} · ${pr.likes} ${pr.likes === 1 ? 'like' : 'likes'} received</span></div>${feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.')}</div>
-    ${!flags.game ? '' : `<div class="card"><div class="card-h"><h2 class="grow">Badges</h2><span class="sub num">${keys.length}</span></div>${keys.length ? `<div class="badge-grid one">${keys.map(a => { const b = badgeByKey(a.key); return `<div class="badge on" data-tip="${esc(b?.desc || '')}"><span class="badge-ic on">${icon(b?.icon || 'medal')}</span><span class="grow"><b>${esc(b?.name || a.key)}</b><span class="tiny">${esc(new Date(a.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</span></span></div>`; }).join('')}</div>` : '<div class="empty small">No badges yet.</div>'}</div>`}</div>`;
+    <div class="stack">${avatarOnProfile(u, pr.clean)}
+    ${!flags.game ? '' : `<div class="card"><div class="card-h"><h2 class="grow">Badges</h2><span class="sub num">${keys.length}</span></div>${keys.length ? `<div class="badge-grid one">${keys.map(a => { const b = badgeByKey(a.key); return `<div class="badge on" data-tip="${esc(b?.desc || '')}"><span class="badge-ic on">${icon(b?.icon || 'medal')}</span><span class="grow"><b>${esc(b?.name || a.key)}</b><span class="tiny">${esc(new Date(a.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</span></span></div>`; }).join('')}</div>` : '<div class="empty small">No badges yet.</div>'}</div>`}</div></div>`;
 }
 
 /* ---------- notifications ---------- */
