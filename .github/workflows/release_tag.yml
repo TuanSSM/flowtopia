@@ -1,0 +1,120 @@
+# release_tag: tag a release of main and publish its notes. Run it by hand from the Actions tab
+# (release_tag, Run workflow), or: gh workflow run release_tag -f bump=auto
+#
+# The next version follows semantic versioning from the commits since the last vX.Y.Z tag, as
+# cliff.toml reads them: a breaking change bumps major, a feature minor, anything else patch. The
+# first release is v1.0.0. The bump can also be chosen by hand, or an exact version given.
+# With dry_run, it only shows the version and the notes. Nothing is committed: the notes go into
+# the GitHub release, so protected main needs no push.
+name: release_tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump: auto (from the commits), patch, minor or major"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      version:
+        description: "Exact version instead, like v1.4.0 (leave empty to use the bump)"
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: "Only show the next version and the notes; tag and publish nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One release at a time; a second run waits instead of racing for the same tag.
+concurrency:
+  group: release_tag
+  cancel-in-progress: false
+
+env:
+  GIT_CLIFF_VERSION: "2.14.2"
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write   # to push the tag and create the GitHub release
+    steps:
+      - name: Releases come from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are tagged from main. Run this workflow on main, not ${GITHUB_REF_NAME}."
+          exit 1
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # every commit and tag, to find the last release and what came after it
+      - name: git-cliff ${{ env.GIT_CLIFF_VERSION }}
+        run: |
+          pipx install "git-cliff==${GIT_CLIFF_VERSION}"
+          git-cliff --version
+
+      - name: Next version
+        id: next
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)
+          if [ -n "$last" ] && [ -z "$(git log --format=%H "$last..HEAD")" ]; then
+            echo "::error::Nothing to release: main has no commits since $last."
+            exit 1
+          fi
+          if [ -n "$VERSION" ]; then
+            next="$VERSION"
+          elif [ "$BUMP" = auto ]; then
+            next=$(git-cliff --bumped-version)
+          else
+            next=$(git-cliff --bump "$BUMP" --bumped-version)
+          fi
+          if ! [[ "$next" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$next' is not a version like v1.2.3."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
+            echo "::error::$next is already tagged."
+            exit 1
+          fi
+          if [ -n "$last" ] && [ "$(printf '%s\n%s\n' "$last" "$next" | sort -V | tail -1)" != "$next" ]; then
+            echo "::error::$next does not come after the last release, $last."
+            exit 1
+          fi
+          echo "last=${last:-none}" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Last release: ${last:-none}. Next: $next."
+
+      - name: Release notes
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          git-cliff --unreleased --tag "$NEXT" --strip all > notes.md
+          [ -s notes.md ] || { echo "::error::git-cliff wrote no notes."; exit 1; }
+          cat notes.md
+          {
+            echo "# Flowa $NEXT${{ inputs.dry_run && ' (dry run: nothing tagged)' || '' }}"
+            echo
+            echo "Last release: ${{ steps.next.outputs.last }}"
+            echo
+            cat notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tag and publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEXT" -m "Flowa $NEXT"
+          git push origin "refs/tags/$NEXT"
+          gh release create "$NEXT" --title "Flowa $NEXT" --notes-file notes.md --verify-tag

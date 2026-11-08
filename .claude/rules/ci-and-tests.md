@@ -6,7 +6,10 @@ paths:
 ---
 # CI and browser tests
 
-- `process_pr.yml` is the one workflow. `process_pr_result` is the required check and must
+- `process_pr.yml` is the one workflow that checks pull requests; `release_tag.yml` only tags releases,
+  started by hand (workflow_dispatch), with versions from `cliff.toml`. Keep the git-cliff version the
+  same in both files.
+- `process_pr.yml`: `process_pr_result` is the required check and must
   `need` every job and fail when any job failed, was cancelled or skipped. Never path-filter the
   workflow: a required check that does not run blocks the PR.
 - Pin runners (`ubuntu-24.04`) and use the Node 24 releases of actions. Permissions are

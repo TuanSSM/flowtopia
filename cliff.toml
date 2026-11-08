@@ -1,0 +1,61 @@
+# git-cliff: the next semantic version and the release notes, for .github/workflows/release_tag.yml.
+# https://git-cliff.org/docs/configuration
+#
+# This repository writes commit titles in plain words ("Link cards for Instagram ... (#15)"), not
+# Conventional Commits, so the preprocessors below give each title a type before git-cliff reads it:
+#   - a title that is already conventional ("fix: ...", "feat(ui)!: ...") is left as it is;
+#   - "Fix ...", "Fixes ...", "Fixed ...", "Repair ...", "Correct ..." become fixes (a patch release);
+#   - "Docs: ...", "CI: ...", "Build: ...", "Deps: ...", "Revert ..." keep that meaning;
+#   - every other title is a feature (a minor release).
+# A commit whose message contains a line starting "BREAKING CHANGE:" makes a major release.
+
+[changelog]
+header = ""
+body = """
+{% if version %}## {{ version }} ({{ timestamp | date(format="%Y-%m-%d") }}){% else %}## Unreleased{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | split(pat="\n") | first | trim }}\
+{% endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
+commit_preprocessors = [
+  { pattern = '^(?:Fix|Fixes|Fixed|Repair|Correct)\b', replace = 'fix: $0' },
+  { pattern = '^Docs?:\s*', replace = 'docs: ' },
+  { pattern = '^CI:\s*', replace = 'ci: ' },
+  { pattern = '^Build:\s*', replace = 'build: ' },
+  { pattern = '^Deps:\s*', replace = 'chore(deps): ' },
+  { pattern = '^Revert\b', replace = 'revert: $0' },
+  # Anything else that starts like a sentence is a feature. Conventional titles start in lower case.
+  { pattern = '^([A-Z])', replace = 'feat: ${1}' },
+]
+commit_parsers = [
+  # Merge commits (GitHub's test merge on a pull request, or a merge of main into a branch) are not changes.
+  { message = '^feat: Merge ', skip = true },
+  { message = '^feat', group = '<!-- 0 -->Features' },
+  { message = '^fix', group = '<!-- 1 -->Fixes' },
+  { message = '^revert', group = '<!-- 2 -->Reverts' },
+  { message = '^docs', group = '<!-- 3 -->Documentation' },
+  { message = '^(ci|build)', group = '<!-- 4 -->CI and build' },
+  { message = '^chore\(deps\)', group = '<!-- 5 -->Dependencies' },
+  { message = '.*', group = '<!-- 6 -->Other' },
+]
+
+[bump]
+# Semantic versioning: a breaking change bumps major, a feature minor, anything else patch, also
+# below 1.0.0. The first release is v1.0.0: the app already runs in production.
+features_always_bump_minor = true
+breaking_always_bump_major = true
+initial_tag = "v1.0.0"
