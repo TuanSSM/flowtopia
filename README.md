@@ -322,7 +322,7 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | decides whether the PR touches code; a PR of Markdown, `docs/`, `.claude/` or `.gitignore` only runs just `docs`, and the required check accepts the skipped jobs in that case, so it can auto-merge |
+| `changes` | checks that the PR title is a Conventional Commits title; decides whether the PR touches code; a PR of Markdown, `docs/`, `.claude/` or `.gitignore` only runs just `docs`, and the required check accepts the skipped jobs in that case, so it can auto-merge |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
@@ -343,12 +343,12 @@ gh workflow run release_tag -f dry_run=true       # show the version and the not
 ```
 
 The version follows semantic versioning from the commits since the last `vX.Y.Z` tag, read by
-[git-cliff](https://git-cliff.org) with [cliff.toml](cliff.toml): a breaking change (a line starting
-`BREAKING CHANGE:` in the commit message) bumps major, a feature minor, and a fix, documentation or CI
-change patch. Commit titles here are plain words, so `cliff.toml` reads a title starting "Fix",
-"Fixes", "Fixed", "Repair" or "Correct" as a fix, "Docs:", "CI:", "Build:" and "Deps:" as what they say,
-"Revert" as a revert, and any other title as a feature; a Conventional Commits title (`fix: ...`) is
-read as it is. The first release is `v1.0.0`. The workflow refuses to run from another branch, to
+[git-cliff](https://git-cliff.org) with [cliff.toml](cliff.toml). Commits follow
+[Conventional Commits](https://www.conventionalcommits.org) (types in [CLAUDE.md](CLAUDE.md)): a breaking
+change (`feat!: ...`, or a `BREAKING CHANGE:` line) bumps major, `feat` minor, and every other type patch.
+Pull requests are squash-merged, so the PR title is the commit on `main`; the `changes` job fails a PR
+whose title is not a Conventional Commits title. Commits from before the convention appear in the notes
+as earlier changes. The first release is `v1.0.0`. The workflow refuses to run from another branch, to
 release when nothing changed, to reuse a tag, or to go backwards; nothing is committed, so protected
 `main` needs no push. Every pull request's lint job shows the version and notes a release would get.
 

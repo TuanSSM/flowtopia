@@ -45,6 +45,23 @@ jobs:
       code: ${{ steps.classify.outputs.code }}
       files: ${{ steps.classify.outputs.files }}
     steps:
+      # The PR title becomes the squash commit on main, which cliff.toml reads for the next version,
+      # so it must be a Conventional Commits title (types in CLAUDE.md). Renamed? Re-run the checks.
+      - name: Pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          re='^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$'
+          if [[ ! "$TITLE" =~ $re ]]; then
+            echo "::error::The title '$TITLE' is not a Conventional Commits title. Use 'type(scope): summary', for example 'fix(server): count each visitor behind a proxy'. Types: feat, fix, perf, refactor, docs, test, build, ci, chore, revert."
+            exit 1
+          fi
+          if [ "${#TITLE}" -gt 72 ]; then
+            echo "::error::The title is ${#TITLE} characters; keep it under 72 (CLAUDE.md asks for under 70)."
+            exit 1
+          fi
+          echo "title ok: $TITLE"
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
