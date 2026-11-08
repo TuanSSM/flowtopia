@@ -322,14 +322,14 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; decides whether the PR touches code; a PR of Markdown, `docs/`, `.claude/` or `.gitignore` only runs just `docs`, and the required check accepts the skipped jobs in that case, so it can auto-merge |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration tests` | the real server against a Postgres service, driven through headless Firefox (`test/browser/combo.py`, `demos.py`, `social.py`) |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on |
 | `screenshots` | `test/browser/pages.py`: the main pages at desktop and phone width and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the screenshots inline, and the size of the change |
-| `process_pr_result` | the one required check: passes only when every job above passed |
+| `process_pr_result` | the one required check: passes only when every job the plan needed passed |
 
 ## Releases
 
@@ -355,6 +355,7 @@ release when nothing changed, to reuse a tag, or to go backwards; nothing is com
 Working on the repository with Claude Code: see [docs/claude-code-setup.md](docs/claude-code-setup.md)
 (`CLAUDE.md`, path rules, scoped agents and skills in `.claude/`).
 
-A push to the PR cancels the run for the previous commit. Before opening a PR the same checks can
+A push to the PR cancels the run for the previous commit, and a cancelled run stops at once (no
+step uses `always()`, which would keep starting suites after the cancel). Before opening a PR the same checks can
 be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/physics.js` (Go tests that need Postgres run when
 `TEST_DATABASE_URL` is set, as in CI's integration job) and `test/browser/run.sh combo.py social.py`.
