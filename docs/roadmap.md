@@ -65,22 +65,19 @@ next. Sizes are rough: S is a few PRs, M is a few weeks of PRs, L is a quarter o
 | 4 | GEO | [Next-trick suggestions from the geometry of moves](epic-geo/todo.md) | L | Flowa's distinctive feature: the combo builder knows which trick flows out of the last one. |
 | 5 | AVT | [Customisable avatars in demos, combos and stickers](epic-avt/todo.md) | L | The most delightful and the most expensive. Builds on GEO's work on clips and on a stable figure. |
 
-### Now: RPL, then the first half of MOD
+### Now: everything the stage audit found
 
-Replies are small and self-contained. The moderator role, reports and the moderation queue follow
-straight after, because LNK and any wider opening of sign-ups depend on them.
+All five epics have shipped (RPL in #13, MOD in #14, LNK in #15, GEO in #16, AVT in #17), followed
+by a security and tech debt review (#18) and a release process (#20, #21). An end-to-end audit of a
+stage copy found 46 items; [audit-plan.md](audit-plan.md) fixes them in six pull requests, the root
+certificates in the container first, then limits, then what the client can lose, then the admin
+pages, phones and copy.
 
-### Next: the skill map editor (MOD), LNK and GEO's feature extraction
+### Next: the structure questions
 
-The editor turns skill-map fixes from a code change into an admin task. LNK adds link cards with
-privacy-preserving previews. GEO starts at build time, measuring every baked clip, so its numbers
-can be checked long before a suggestion is shown to anyone.
-
-### Later: GEO in the combo builder, then AVT
-
-Suggestions ship only once they beat a simple baseline on the transitions people have already
-marked. Avatars start with cosmetic parts (no physics impact), then body presets that the physics
-suite has checked.
+The audit also raised four questions about the shape of the app (the current prop as a hidden mode,
+repeated progress widgets, the account pages, the maps' five entry points). They are written up at
+the end of the audit plan for a product decision before any of them is scheduled.
 
 ### Dependencies
 
