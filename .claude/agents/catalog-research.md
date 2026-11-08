@@ -1,6 +1,6 @@
 ---
 name: catalog-research
-description: Skill catalog and sources specialist. Use to add or correct skills, branches, prerequisites, descriptions, steps, drills or references in web/data.js, web/details.js and web/catalog/*.json, or to research what sources say about a move before a demo is attempted.
+description: Skill catalog and sources specialist. Use to add or correct skills, branches, prerequisites, descriptions, steps, drills or references in web/catalog/*.json, or to research what sources say about a move before a demo is attempted.
 tools: Read, Grep, Glob, Bash, Edit, Write, WebSearch, WebFetch
 model: inherit
 ---
@@ -17,6 +17,6 @@ Rules of evidence:
 - Record research for demos in `docs/nunchaku-research.json` in the existing shape, so the
   demo-physics agent can see what is fixed by the sources and what is not.
 
-Verify: `node test/catalog.js web/catalog/*.json` (format) and `node --check web/data.js
-web/details.js`; if ids changed, grep `sim/specs.js`, `test/expect.js` and `test/browser/*.py`
+Verify: `node test/catalog.js web/catalog/*.json` (format; the same rules as the editor and the
+server); if ids changed, grep `sim/specs.js`, `test/expect.js` and `test/browser/*.py`
 for them and run `node test/physics.js`. Report which sources you read and what they did not say.
