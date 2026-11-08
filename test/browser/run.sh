@@ -10,7 +10,8 @@ export PATH="$HOME/.local/go/bin:$PATH"
 [ -f $W/dev.pid ] && kill "$(cat $W/dev.pid)" 2>/dev/null; sleep .5
 if [ -z "${DATABASE_URL:-}" ]; then
   docker ps --format '{{.Names}}' | grep -q '^flowa-test-db$' || { docker run -d --rm --name flowa-test-db -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 --tmpfs /var/lib/postgresql/data postgres:16-alpine >/dev/null; for i in $(seq 1 30); do docker exec flowa-test-db pg_isready -U postgres -q && break; sleep 1; done; sleep 1; }
-  docker exec flowa-test-db psql -U postgres -q -c "drop table if exists notifications, comments, likes, posts, achievements, sessions, progress, flags, users cascade" >/dev/null 2>&1
+  # Start from an empty public schema, whatever tables earlier runs or branches created.
+  docker exec flowa-test-db psql -U postgres -q -c "drop schema if exists public cascade; create schema public" >/dev/null 2>&1
   DATABASE_URL='postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disable'
 fi
 rm -rf $W/data; mkdir $W/data

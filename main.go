@@ -972,6 +972,33 @@ func handleStatic(assets map[string]asset) http.HandlerFunc {
 	}
 }
 
+// routes builds the HTTP handler: every API route, the static files, and the write guard.
+func (a *app) routes(assets map[string]asset) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if err := a.db.Ping(); err != nil {
+			http.Error(w, "database down", http.StatusServiceUnavailable)
+			return
+		}
+		io.WriteString(w, "ok\n")
+	})
+	mux.HandleFunc("GET /api/me", a.handleMe)
+	mux.HandleFunc("PUT /api/me", a.authed(false, a.handlePutMe))
+	mux.HandleFunc("PUT /api/me/password", a.authed(false, a.handlePassword))
+	mux.HandleFunc("POST /api/signup", a.handleSignup)
+	mux.HandleFunc("POST /api/signin", a.handleSignin)
+	mux.HandleFunc("POST /api/signout", a.handleSignout)
+	mux.HandleFunc("GET /api/progress/{prop}", a.authed(false, a.handleGetProgress))
+	mux.HandleFunc("PUT /api/progress/{prop}", a.authed(false, a.handlePutProgress))
+	mux.HandleFunc("PUT /api/flags", a.authed(true, a.handlePutFlags))
+	mux.HandleFunc("GET /api/admin/users", a.authed(true, a.handleUsers))
+	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(true, a.handleDeleteUser))
+	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(true, a.handleResetPassword))
+	a.socialRoutes(mux)
+	mux.HandleFunc("GET /", handleStatic(assets))
+	return guard(mux)
+}
+
 func main() {
 	listen := flag.String("listen", ":3169", "listen address")
 	dataDir := flag.String("data", "/data", "directory for backups")
@@ -1016,30 +1043,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if err := db.Ping(); err != nil {
-			http.Error(w, "database down", http.StatusServiceUnavailable)
-			return
-		}
-		io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("GET /api/me", a.handleMe)
-	mux.HandleFunc("PUT /api/me", a.authed(false, a.handlePutMe))
-	mux.HandleFunc("PUT /api/me/password", a.authed(false, a.handlePassword))
-	mux.HandleFunc("POST /api/signup", a.handleSignup)
-	mux.HandleFunc("POST /api/signin", a.handleSignin)
-	mux.HandleFunc("POST /api/signout", a.handleSignout)
-	mux.HandleFunc("GET /api/progress/{prop}", a.authed(false, a.handleGetProgress))
-	mux.HandleFunc("PUT /api/progress/{prop}", a.authed(false, a.handlePutProgress))
-	mux.HandleFunc("PUT /api/flags", a.authed(true, a.handlePutFlags))
-	mux.HandleFunc("GET /api/admin/users", a.authed(true, a.handleUsers))
-	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(true, a.handleDeleteUser))
-	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(true, a.handleResetPassword))
-	a.socialRoutes(mux)
-	mux.HandleFunc("GET /", handleStatic(assets))
 
-	srv := &http.Server{Addr: *listen, Handler: guard(mux), ReadHeaderTimeout: 5 * time.Second,
+	srv := &http.Server{Addr: *listen, Handler: a.routes(assets), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -1109,7 +1114,18 @@ CREATE TABLE IF NOT EXISTS notifications (
 	read BOOLEAN NOT NULL DEFAULT false,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, id DESC);`
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications (user_id, id DESC);
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_id BIGINT REFERENCES comments(id) ON DELETE CASCADE;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS comments_parent ON comments (parent_id, id);
+CREATE TABLE IF NOT EXISTS comment_likes (
+	comment_id BIGINT NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (comment_id, user_id)
+);
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE;`
 
 const (
 	maxBio       = 300
@@ -1120,6 +1136,13 @@ const (
 	maxAchKeys   = 60
 	maxNotifList = 40
 	maxTags      = 10
+	// Comments: how many the feed carries per post and per thread, page sizes, and the edit window.
+	previewComments = 2
+	previewReplies  = 2
+	commentPage     = 20
+	replyPage       = 50
+	maxThread       = 500
+	editWindow      = 15 * time.Minute
 )
 
 // Social networks a profile can link to. The value stored is the handle, not a URL.
@@ -1402,35 +1425,48 @@ func (a *app) pref(u *user, key string, def bool) bool {
 /* ---------- notifications ---------- */
 
 type notification struct {
-	ID      int64     `json:"id"`
-	Kind    string    `json:"kind"`
-	ActorID int64     `json:"actorId"`
-	PostID  int64     `json:"postId"`
-	Text    string    `json:"text"`
-	Read    bool      `json:"read"`
-	Created time.Time `json:"created"`
+	ID      int64  `json:"id"`
+	Kind    string `json:"kind"`
+	ActorID int64  `json:"actorId"`
+	PostID  int64  `json:"postId"`
+	// CommentID is the comment the event is about; RootID is the top of its thread.
+	CommentID int64     `json:"commentId,omitempty"`
+	RootID    int64     `json:"rootId,omitempty"`
+	Text      string    `json:"text"`
+	Read      bool      `json:"read"`
+	Created   time.Time `json:"created"`
 }
 
 // notify records an event for a user. Nothing is recorded for one's own actions.
 func (a *app) notify(userID, actorID int64, kind string, postID int64, text string) {
+	a.notifyAt(userID, actorID, kind, postID, 0, text)
+}
+
+// notifyAt records an event about a comment, so the notification can open that comment.
+func (a *app) notifyAt(userID, actorID int64, kind string, postID, commentID int64, text string) {
 	if userID == 0 || userID == actorID {
 		return
 	}
-	var actor, post any
+	var actor, post, cmt any
 	if actorID != 0 {
 		actor = actorID
 	}
 	if postID != 0 {
 		post = postID
 	}
-	if _, err := a.db.Exec(`INSERT INTO notifications (user_id, actor_id, kind, post_id, text) VALUES ($1, $2, $3, $4, $5)`, userID, actor, kind, post, text); err != nil {
+	if commentID != 0 {
+		cmt = commentID
+	}
+	if _, err := a.db.Exec(`INSERT INTO notifications (user_id, actor_id, kind, post_id, comment_id, text) VALUES ($1, $2, $3, $4, $5, $6)`, userID, actor, kind, post, cmt, text); err != nil {
 		log.Printf("notify: %v", err)
 	}
 }
 
 func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *user) {
-	rows, err := a.db.Query(`SELECT id, kind, COALESCE(actor_id, 0), COALESCE(post_id, 0), text, read, created_at FROM notifications
-		WHERE user_id = $1 ORDER BY id DESC LIMIT $2`, u.ID, maxNotifList)
+	rows, err := a.db.Query(`SELECT n.id, n.kind, COALESCE(n.actor_id, 0), COALESCE(n.post_id, 0), COALESCE(n.comment_id, 0),
+		COALESCE(c.parent_id, c.id, 0), n.text, n.read, n.created_at
+		FROM notifications n LEFT JOIN comments c ON c.id = n.comment_id
+		WHERE n.user_id = $1 ORDER BY n.id DESC LIMIT $2`, u.ID, maxNotifList)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -1440,7 +1476,7 @@ func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *use
 	ids := []int64{}
 	for rows.Next() {
 		var n notification
-		if err := rows.Scan(&n.ID, &n.Kind, &n.ActorID, &n.PostID, &n.Text, &n.Read, &n.Created); err != nil {
+		if err := rows.Scan(&n.ID, &n.Kind, &n.ActorID, &n.PostID, &n.CommentID, &n.RootID, &n.Text, &n.Read, &n.Created); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -1488,34 +1524,47 @@ func (a *app) handleReadNotifications(w http.ResponseWriter, r *http.Request, u 
 
 /* ---------- posts, likes and comments ---------- */
 
+// A comment, or a reply when ParentID is set. Threads are one level deep: a reply's parent is
+// always a top-level comment. A deleted comment that still has replies is kept, with no text.
 type comment struct {
-	ID      int64     `json:"id"`
-	PostID  int64     `json:"postId"`
-	UserID  int64     `json:"userId"`
-	Body    string    `json:"body"`
-	Created time.Time `json:"created"`
+	ID         int64     `json:"id"`
+	PostID     int64     `json:"postId"`
+	UserID     int64     `json:"userId"`
+	ParentID   int64     `json:"parentId,omitempty"`
+	Body       string    `json:"body"`
+	Created    time.Time `json:"created"`
+	Edited     bool      `json:"edited,omitempty"`
+	Deleted    bool      `json:"deleted,omitempty"`
+	Likes      int       `json:"likes"`
+	Liked      bool      `json:"liked"`
+	ReplyCount int       `json:"replyCount"`
+	Replies    []comment `json:"replies,omitempty"`
 }
 
 type post struct {
-	ID       int64           `json:"id"`
-	UserID   int64           `json:"userId"`
-	Kind     string          `json:"kind"`
-	Body     string          `json:"body"`
-	Prop     string          `json:"prop"`
-	Skill    string          `json:"skill"`
-	Image    string          `json:"image"`
-	Data     json.RawMessage `json:"data"`
-	Created  time.Time       `json:"created"`
-	Likes    int             `json:"likes"`
-	Liked    bool            `json:"liked"`
-	Comments []comment       `json:"comments"`
+	ID      int64           `json:"id"`
+	UserID  int64           `json:"userId"`
+	Kind    string          `json:"kind"`
+	Body    string          `json:"body"`
+	Prop    string          `json:"prop"`
+	Skill   string          `json:"skill"`
+	Image   string          `json:"image"`
+	Data    json.RawMessage `json:"data"`
+	Created time.Time       `json:"created"`
+	Likes   int             `json:"likes"`
+	Liked   bool            `json:"liked"`
+	// Comments holds the newest top-level comments, each with its newest replies; the rest
+	// load on demand. CommentCount counts every comment and reply that is not deleted.
+	Comments     []comment `json:"comments"`
+	CommentCount int       `json:"commentCount"`
 }
 
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
 // liked each one, every comment, and the users involved.
 func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, error) {
 	rows, err := a.db.Query(`SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
-		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1)
+		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
+		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted)
 		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) ORDER BY p.id DESC LIMIT $5`,
 		viewer, before, byUser, only, pageSize+1)
 	if err != nil {
@@ -1528,7 +1577,7 @@ func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, err
 	for rows.Next() {
 		p := &post{Comments: []comment{}}
 		var data []byte
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount); err != nil {
 			return nil, err
 		}
 		p.Data = data
@@ -1547,23 +1596,20 @@ func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, err
 		ids = ids[:pageSize]
 	}
 	if len(ids) > 0 {
-		crows, err := a.db.Query(`SELECT id, post_id, user_id, body, created_at FROM comments WHERE post_id = ANY($1) ORDER BY id`, pq.Array(ids))
+		// The newest top-level comments of each post, shown oldest first.
+		roots, err := a.queryComments(viewer, `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
+			FROM comments c WHERE c.post_id = ANY($2) AND c.parent_id IS NULL) c WHERE c.rn <= $3 ORDER BY c.id`, pq.Array(ids), previewComments)
 		if err != nil {
 			return nil, err
 		}
-		defer crows.Close()
-		for crows.Next() {
-			var c comment
-			if err := crows.Scan(&c.ID, &c.PostID, &c.UserID, &c.Body, &c.Created); err != nil {
-				return nil, err
-			}
-			if p := byID[c.PostID]; p != nil {
-				p.Comments = append(p.Comments, c)
-				uids = append(uids, c.UserID)
-			}
-		}
-		if err := crows.Err(); err != nil {
+		if err := a.attachReplies(viewer, roots); err != nil {
 			return nil, err
+		}
+		for _, c := range roots {
+			if p := byID[c.PostID]; p != nil {
+				p.Comments = append(p.Comments, *c)
+			}
+			uids = append(uids, commentUsers(*c)...)
 		}
 	}
 	users, err := a.usersByID(uids)
@@ -1618,8 +1664,12 @@ func (a *app) handleGetPost(w http.ResponseWriter, r *http.Request, u *user) {
 }
 
 // notifyMentions tells each @named user, except the actor and anyone already told.
-func (a *app) notifyMentions(text string, actor, postID int64, skip ...int64) {
-	names := mentions(text)
+func (a *app) notifyMentions(text string, actor, postID, commentID int64, skip ...int64) {
+	a.notifyNames(mentions(text), actor, postID, commentID, skip...)
+}
+
+// notifyNames tells each named user, except the actor and anyone in skip.
+func (a *app) notifyNames(names []string, actor, postID, commentID int64, skip ...int64) {
 	if len(names) == 0 {
 		return
 	}
@@ -1639,7 +1689,7 @@ func (a *app) notifyMentions(text string, actor, postID int64, skip ...int64) {
 			told = told || id == s
 		}
 		if !told {
-			a.notify(id, actor, "mention", postID, "")
+			a.notifyAt(id, actor, "mention", postID, commentID, "")
 		}
 	}
 }
@@ -1755,7 +1805,7 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		a.serverError(w, err)
 		return
 	}
-	a.notifyMentions(body, u.ID, id)
+	a.notifyMentions(body, u.ID, id, 0)
 	a.writePost(w, u.ID, id)
 }
 
@@ -1824,10 +1874,186 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
 }
 
+/* ---------- comments and replies ---------- */
+
+const commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
+	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
+	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id)`
+
+// queryComments runs inner, a query over the comments table whose first parameter is $2, and
+// returns its rows oldest first, with likes and reply counts as seen by viewer ($1).
+func (a *app) queryComments(viewer int64, inner string, args ...any) ([]*comment, error) {
+	rows, err := a.db.Query(`SELECT `+commentCols+` FROM (`+inner+`) c ORDER BY c.id`, append([]any{viewer}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*comment{}
+	for rows.Next() {
+		c := &comment{}
+		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.ParentID, &c.Body, &c.Created, &c.Edited, &c.Deleted, &c.Likes, &c.Liked, &c.ReplyCount); err != nil {
+			return nil, err
+		}
+		if c.Deleted {
+			c.Body, c.Likes, c.Liked, c.Edited = "", 0, false, false
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// attachReplies gives each top-level comment its newest replies, oldest first.
+func (a *app) attachReplies(viewer int64, roots []*comment) error {
+	if len(roots) == 0 {
+		return nil
+	}
+	ids, byID := make([]int64, len(roots)), map[int64]*comment{}
+	for i, c := range roots {
+		ids[i], byID[c.ID] = c.ID, c
+	}
+	reps, err := a.queryComments(viewer, `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
+		FROM comments c WHERE c.parent_id = ANY($2)) c WHERE c.rn <= $3`, pq.Array(ids), previewReplies)
+	if err != nil {
+		return err
+	}
+	for _, r := range reps {
+		if p := byID[r.ParentID]; p != nil {
+			p.Replies = append(p.Replies, *r)
+		}
+	}
+	return nil
+}
+
+func commentUsers(c comment) []int64 {
+	out := []int64{c.UserID}
+	for _, r := range c.Replies {
+		out = append(out, r.UserID)
+	}
+	return out
+}
+
+func (a *app) writeComments(w http.ResponseWriter, list []*comment, page int, extra map[string]any) {
+	more := len(list) > page
+	if more {
+		list = list[:page]
+	}
+	uids := []int64{}
+	for _, c := range list {
+		uids = append(uids, commentUsers(*c)...)
+	}
+	users, err := a.usersByID(uids)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out := map[string]any{"comments": list, "users": users, "more": more}
+	for k, v := range extra {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleGetComments pages through a post's top-level comments, oldest first, each with its
+// newest replies.
+func (a *app) handleGetComments(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if _, ok := a.postOwner(w, id); !ok {
+		return
+	}
+	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE post_id = $2 AND parent_id IS NULL AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), commentPage+1)
+	if err == nil {
+		err = a.attachReplies(u.ID, list)
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.writeComments(w, list, commentPage, nil)
+}
+
+// commentRow is what the handlers need to know about one comment and its post.
+type commentRow struct {
+	postID, userID, parentID, postOwner int64
+	deleted                             bool
+	age                                 time.Duration
+	body                                string
+}
+
+func (a *app) commentRow(w http.ResponseWriter, id int64) (commentRow, bool) {
+	var c commentRow
+	var secs float64
+	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
+		FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1`, id).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "That comment is gone.")
+		return c, false
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return c, false
+	}
+	c.age = time.Duration(secs * float64(time.Second))
+	return c, true
+}
+
+// handleGetReplies pages through the replies to one top-level comment, oldest first.
+func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	c, ok := a.commentRow(w, id)
+	if !ok {
+		return
+	}
+	if c.parentID != 0 {
+		id = c.parentID
+	}
+	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE parent_id = $2 AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), replyPage+1)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.writeComments(w, list, replyPage, nil)
+}
+
+// handleThread returns the whole thread a comment belongs to, for a notification to open.
+func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	c, ok := a.commentRow(w, id)
+	if !ok {
+		return
+	}
+	root := id
+	if c.parentID != 0 {
+		root = c.parentID
+	}
+	roots, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, root)
+	if err != nil || len(roots) == 0 {
+		a.serverError(w, fmt.Errorf("thread %d: %v", root, err))
+		return
+	}
+	reps, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE parent_id = $2 ORDER BY id LIMIT $3`, root, maxThread)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	for _, x := range reps {
+		roots[0].Replies = append(roots[0].Replies, *x)
+	}
+	a.writeComments(w, roots, 1, map[string]any{"postId": c.postID, "focus": id})
+}
+
+var leadMentionRE = regexp.MustCompile(`^@([a-z0-9][a-z0-9._-]{2,23})\b`)
+
+// startsWithMention reports whether text opens with @name.
+func startsWithMention(text, name string) bool {
+	m := leadMentionRE.FindStringSubmatch(strings.ToLower(text))
+	return m != nil && m[1] == name
+}
+
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
-		Body string `json:"body"`
+		Body     string `json:"body"`
+		ParentID int64  `json:"parentId"`
 	}
 	if !readJSON(w, r, 8192, &in) {
 		return
@@ -1841,27 +2067,227 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 	if !ok {
 		return
 	}
-	if _, err := a.db.Exec(`INSERT INTO comments (post_id, user_id, body) VALUES ($1, $2, $3)`, id, u.ID, body); err != nil {
-		a.serverError(w, err)
-		return
-	}
-	a.notify(owner, u.ID, "comment", id, "")
-	a.notifyMentions(body, u.ID, id, owner)
-	a.writePost(w, u.ID, id)
-}
-
-func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *user) {
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	res, err := a.db.Exec(`DELETE FROM comments c USING posts p WHERE c.id = $1 AND p.id = c.post_id AND (c.user_id = $2 OR p.user_id = $2 OR $3)`, id, u.ID, u.Role == "admin")
+	tx, err := a.db.Begin()
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer tx.Rollback()
+	var root, answered int64
+	if in.ParentID != 0 {
+		// Lock the comment being answered, so it cannot be deleted while the reply is written.
+		var postID, parent int64
+		var deleted bool
+		err := tx.QueryRow(`SELECT post_id, user_id, COALESCE(parent_id, 0), deleted FROM comments WHERE id = $1 FOR SHARE`, in.ParentID).Scan(&postID, &answered, &parent, &deleted)
+		if errors.Is(err, sql.ErrNoRows) {
+			fail(w, http.StatusNotFound, "That comment is gone.")
+			return
+		}
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if postID != id {
+			fail(w, http.StatusBadRequest, "That comment is on another post.")
+			return
+		}
+		if deleted {
+			fail(w, http.StatusBadRequest, "That comment was deleted, so it cannot be answered.")
+			return
+		}
+		root = in.ParentID
+		if parent != 0 {
+			root = parent // one level of threading: a reply to a reply joins the same thread
+		}
+		if answered != u.ID {
+			var name string
+			if err := tx.QueryRow(`SELECT username FROM users WHERE id = $1`, answered).Scan(&name); err != nil {
+				a.serverError(w, err)
+				return
+			}
+			if !startsWithMention(body, name) {
+				body = "@" + name + " " + body
+			}
+		}
+	}
+	var parentArg any
+	if root != 0 {
+		parentArg = root
+	}
+	var cid int64
+	if err := tx.QueryRow(`INSERT INTO comments (post_id, user_id, body, parent_id) VALUES ($1, $2, $3, $4) RETURNING id`, id, u.ID, body, parentArg).Scan(&cid); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// The person answered hears about a reply; the post owner hears about a comment unless they
+	// were the one answered; anyone else @mentioned hears once.
+	if answered != 0 {
+		a.notifyAt(answered, u.ID, "reply", id, cid, "")
+	}
+	if owner != answered {
+		a.notifyAt(owner, u.ID, "comment", id, cid, "")
+	}
+	a.notifyMentions(body, u.ID, id, cid, owner, answered)
+	out, err := a.loadPosts(u.ID, 0, 0, id)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, cid)
+	if err != nil || len(list) == 0 {
+		a.serverError(w, fmt.Errorf("new comment %d: %v", cid, err))
+		return
+	}
+	out["comment"] = list[0]
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleEditComment lets the author change a comment within the edit window. People newly
+// @mentioned are told; people mentioned before are not told again.
+func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var in struct {
+		Body string `json:"body"`
+	}
+	if !readJSON(w, r, 8192, &in) {
+		return
+	}
+	c, ok := a.commentRow(w, id)
+	if !ok {
+		return
+	}
+	if c.userID != u.ID {
+		fail(w, http.StatusForbidden, "Only the author can edit a comment.")
+		return
+	}
+	if c.deleted {
+		fail(w, http.StatusBadRequest, "That comment was deleted.")
+		return
+	}
+	if c.age > editWindow {
+		fail(w, http.StatusForbidden, "Comments can be edited for 15 minutes after posting.")
+		return
+	}
+	body := strings.TrimSpace(in.Body)
+	if body == "" || len([]rune(body)) > maxComment {
+		fail(w, http.StatusBadRequest, "A comment needs 1 to 1000 characters.")
+		return
+	}
+	if _, err := a.db.Exec(`UPDATE comments SET body = $2, edited_at = now() WHERE id = $1`, id, body); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	before := map[string]bool{}
+	for _, n := range mentions(c.body) {
+		before[n] = true
+	}
+	added := []string{}
+	for _, n := range mentions(body) {
+		if !before[n] {
+			added = append(added, n)
+		}
+	}
+	a.notifyNames(added, u.ID, c.postID, id, c.postOwner)
+	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, id)
+	if err != nil || len(list) == 0 {
+		a.serverError(w, fmt.Errorf("edited comment %d: %v", id, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comment": list[0]})
+}
+
+// handleDeleteComment removes a comment. One that has replies is kept as a placeholder with no
+// text, so the thread still reads; the placeholder goes when its last reply does.
+func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var author, owner, parent int64
+	err = tx.QueryRow(`SELECT c.user_id, p.user_id, COALESCE(c.parent_id, 0) FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 FOR UPDATE OF c`, id).Scan(&author, &owner, &parent)
+	if err == nil && author != u.ID && owner != u.ID && u.Role != "admin" {
+		err = sql.ErrNoRows
+	}
+	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such comment, or it is not yours.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var hasReplies bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM comments WHERE parent_id = $1)`, id).Scan(&hasReplies); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	how := "removed"
+	if hasReplies {
+		how = "kept"
+		_, err = tx.Exec(`UPDATE comments SET deleted = true, body = '', edited_at = NULL WHERE id = $1`, id)
+		if err == nil {
+			_, err = tx.Exec(`DELETE FROM comment_likes WHERE comment_id = $1`, id)
+		}
+	} else {
+		_, err = tx.Exec(`DELETE FROM comments WHERE id = $1`, id)
+		if err == nil && parent != 0 {
+			_, err = tx.Exec(`DELETE FROM comments WHERE id = $1 AND deleted AND NOT EXISTS (SELECT 1 FROM comments WHERE parent_id = $1)`, parent)
+		}
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "placeholder": how == "kept"})
+}
+
+// handleLikeComment toggles a like on a comment in one statement either way.
+func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	c, ok := a.commentRow(w, id)
+	if !ok {
+		return
+	}
+	if c.deleted {
+		fail(w, http.StatusBadRequest, "That comment was deleted.")
+		return
+	}
+	res, err := a.db.Exec(`INSERT INTO comment_likes (comment_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, id, u.ID)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	liked := n == 1
+	if liked {
+		var told bool
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM notifications WHERE user_id = $1 AND actor_id = $2 AND comment_id = $3 AND kind = 'comment_like')`, c.userID, u.ID, id).Scan(&told); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if !told {
+			a.notifyAt(c.userID, u.ID, "comment_like", c.postID, id, "")
+		}
+	} else if _, err := a.db.Exec(`DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2`, id, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var likes int
+	if err := a.db.QueryRow(`SELECT count(*) FROM comment_likes WHERE comment_id = $1`, id).Scan(&likes); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
 }
 
 func (a *app) socialRoutes(mux *http.ServeMux) {
@@ -1873,7 +2299,12 @@ func (a *app) socialRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/posts/{id}", a.authed(false, a.handleDeletePost))
 	mux.HandleFunc("POST /api/posts/{id}/like", a.authed(false, a.handleLike))
 	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed(false, a.handleComment))
+	mux.HandleFunc("GET /api/posts/{id}/comments", a.authed(false, a.handleGetComments))
 	mux.HandleFunc("DELETE /api/comments/{id}", a.authed(false, a.handleDeleteComment))
+	mux.HandleFunc("PUT /api/comments/{id}", a.authed(false, a.handleEditComment))
+	mux.HandleFunc("GET /api/comments/{id}/replies", a.authed(false, a.handleGetReplies))
+	mux.HandleFunc("GET /api/comments/{id}/thread", a.authed(false, a.handleThread))
+	mux.HandleFunc("POST /api/comments/{id}/like", a.authed(false, a.handleLikeComment))
 	mux.HandleFunc("POST /api/achievements", a.authed(false, a.handleAchievements))
 	mux.HandleFunc("GET /api/notifications", a.authed(false, a.handleNotifications))
 	mux.HandleFunc("PUT /api/notifications/read", a.authed(false, a.handleReadNotifications))

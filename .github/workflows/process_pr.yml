@@ -189,6 +189,10 @@ jobs:
       - name: Firefox
         run: firefox --version
 
+      # Go tests that need Postgres (db_test.go); each runs in its own schema, so the browser
+      # tests below still start from an empty public schema.
+      - name: Database tests
+        run: TEST_DATABASE_URL="$DATABASE_URL" go test -race -count=1 -run DB -v ./... | tee dbtests.txt
       - name: Combo builder
         id: combo
         run: |
@@ -220,6 +224,7 @@ jobs:
             combo.txt
             demos.txt
             social.txt
+            dbtests.txt
           retention-days: 7
 
   # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
