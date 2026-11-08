@@ -83,8 +83,8 @@ results.
 - [x] **Labels, with consent.** A profile setting "Help improve suggestions" (off by default) lets
   the browser send anonymous counts of transition marks: skill pair, prop, and Works, Needs bridge
   or Blocked. No user id is stored with the counts.
-  DoD: Go test that the counts table has no user column and that the endpoint refuses when the
-  setting is off.
+  DoD: Go test that the counts table has no user column and that, with the setting off, the endpoint
+  refuses everything except taking a mark back out (the page sends those after the setting is saved).
 - [x] **Fit at build time.** A script fits the weights by logistic regression on the counts and
   reports the area under the curve (AUC) for Works against Blocked, on held-out pairs.
   DoD: the script is deterministic for the same counts; the report is committed with the weights.
