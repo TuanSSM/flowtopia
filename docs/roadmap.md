@@ -2,6 +2,7 @@
 
 Where Flowa is going, in what order, and why. The epics themselves are described in
 [epics.md](epics.md); each has a checklist with a definition of done in `docs/epic-<code>/todo.md`.
+How they are built, branch by branch, is in [implementation-plan.md](implementation-plan.md).
 
 Last reviewed: 8 November 2026.
 

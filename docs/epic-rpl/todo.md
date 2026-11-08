@@ -1,7 +1,7 @@
 # RPL: Replies and threaded comments
 
 Why, scope and risks: [epics.md](../epics.md#rpl-replies-and-threaded-comments). Order:
-[roadmap.md](../roadmap.md). Each milestone is one pull request. An item is checked only when its
+[roadmap.md](../roadmap.md). Each milestone is one commit in the epic's pull request ([implementation plan](../implementation-plan.md)). An item is checked only when its
 DoD holds and the [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item)
 is met.
 

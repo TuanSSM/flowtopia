@@ -1,7 +1,7 @@
 # GEO: Next-trick suggestions from the geometry of moves
 
 Why, scope and risks: [epics.md](../epics.md#geo-next-trick-suggestions-from-the-geometry-of-moves).
-Order: [roadmap.md](../roadmap.md). Each milestone is one pull request. An item is checked only when
+Order: [roadmap.md](../roadmap.md). Each milestone is one commit in the epic's pull request ([implementation plan](../implementation-plan.md)). An item is checked only when
 its DoD holds and the [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item)
 is met. All measurement runs at build time in `sim/`, like the physics; the browser only reads the
 results.
