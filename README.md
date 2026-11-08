@@ -92,7 +92,7 @@ in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
 ## Data
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
-  likes, comments, bookmarks, notifications, achievements, reports, the audit log and catalog revisions.
+  likes, comments, notifications, achievements, reports, the audit log and catalog revisions.
 - Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
 - `data/backups/progress-DATE.json` is written by the app before the first change each day, kept
   14 days. It holds progress documents only.
@@ -103,8 +103,7 @@ in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
   `docker exec -i nunchaku-db pg_restore -U flowa -d flowa --clean --if-exists < data/backups/flowa-DATE.dump`
 - The schema changes through numbered migrations (`migrations` in `main.go`, recorded in
   `schema_migrations`), each applied once at start. An hourly job removes expired or unused
-  sessions, notifications read more than 180 days ago, link previews no post uses, and bookmarks of
-  posts that were deleted.
+  sessions, notifications read more than 180 days ago, and link previews no post uses.
 
 The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
@@ -114,7 +113,7 @@ forbids framing by other sites and MIME sniffing and sends no referrer.
 Limits: at most two password hashes run at once; failed sign-ins are counted per address and username
 (8 in 10 minutes), per address (30) and per account (20); 10 sign-ups per address per hour; 5 wrong
 current passwords per member in 10 minutes; and per member per hour, 30 posts, 120 comments, 600 likes,
-60 badge updates, 120 suggestion updates and 300 bookmark changes (at most 500 bookmarks each). A post or comment notifies at most 10 mentioned people.
+60 badge updates and 120 suggestion updates. A post or comment notifies at most 10 mentioned people.
 Pictures are decoded and encoded again on upload, which keeps only the pixels (no camera location),
 and other people's pictures are fetched by URL rather than carried in every list. Sessions end after
 30 days, or after 14 days unused; the profile can sign out every other device. The review behind these
@@ -129,8 +128,8 @@ guided tour, `community` is the timeline, public profiles, people list and notif
 levels, streak sharing, challenges, achievements and quests, `moderation` is reports, the queue, hiding,
 mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and
 YouTube links into cards, `videoEmbeds` plays YouTube in place (it adds youtube-nocookie.com frames to
-the page security policy), `suggest` is next-trick suggestions, `avatars` is avatars, body presets
-and stickers, and `bookmarks` is the Bookmarks page.
+the page security policy), `suggest` is next-trick suggestions, and `avatars` is avatars, body presets
+and stickers.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -163,18 +162,6 @@ user reports for their profile and the people list (the community section of `ma
   an unlock card, a notification and one milestone post per batch.
 - **Plan as quests.** Each phase shows its skills as chips, the skill XP earned of what it holds, and
   the XP its gate pays; the page opens with the prop's XP, the week's challenges and a focus skill.
-
-## Bookmarks
-
-A member can bookmark a skill (the bookmark button in its details panel; the skill's node in the
-dependency tree then carries a small marker), a combo (the button in its header) and a post (the
-third button under it, with like and comment). The Bookmarks page in the navigation lists all three,
-newest first: skills with their prop and level, combos with their skills (a combo on another of the
-member's props opens on that prop; a deleted one says so and can be dropped), and the posts in full,
-so they can be liked and commented on there. Bookmarks are private. `GET /api/bookmarks` lists them
-and `POST /api/bookmarks` with `{kind, ref}` toggles one; `kind` is `skill` (`ref` like `nunchaku:F5`),
-`combo` (the combo's id) or `post` (the post id). The `bookmarks` flag turns the page and the buttons
-off.
 
 ## Community API
 
@@ -335,14 +322,14 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; decides whether the PR touches code; a PR of Markdown, `docs/`, `.claude/` or `.gitignore` only runs just `docs`, and the required check accepts the skipped jobs in that case, so it can auto-merge |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration tests` | the real server against a Postgres service, driven through headless Firefox (`test/browser/combo.py`, `demos.py`, `social.py`) |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on |
 | `screenshots` | `test/browser/pages.py`: the main pages at desktop and phone width and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the screenshots inline, and the size of the change |
-| `process_pr_result` | the one required check: passes only when every job above passed |
+| `process_pr_result` | the one required check: passes only when every job the plan needed passed |
 
 ## Releases
 
@@ -368,6 +355,7 @@ release when nothing changed, to reuse a tag, or to go backwards; nothing is com
 Working on the repository with Claude Code: see [docs/claude-code-setup.md](docs/claude-code-setup.md)
 (`CLAUDE.md`, path rules, scoped agents and skills in `.claude/`).
 
-A push to the PR cancels the run for the previous commit. Before opening a PR the same checks can
+A push to the PR cancels the run for the previous commit, and a cancelled run stops at once (no
+step uses `always()`, which would keep starting suites after the cancel). Before opening a PR the same checks can
 be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/physics.js` (Go tests that need Postgres run when
 `TEST_DATABASE_URL` is set, as in CI's integration job) and `test/browser/run.sh combo.py social.py`.
