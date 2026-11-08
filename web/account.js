@@ -46,8 +46,9 @@ async function loadSession() {
     docs[p.id].migrated = applyAliases(docs[p.id].state, p.id);
   }));
   state = docs[ui.prop].state; rev = docs[ui.prop].rev;
-  // Progress moved from renamed skill ids is saved for the prop in use; others save on their next change.
-  if (docs[ui.prop].migrated) setTimeout(commit, 0);
+  // Progress moved from renamed skill ids is saved for the prop in use now, and for the others when
+  // they are switched to (switchProp).
+  if (docs[ui.prop].migrated) { docs[ui.prop].migrated = false; setTimeout(commit, 0); }
 }
 async function switchProp(id) {
   if (id === ui.prop || !propById(id)) return;
@@ -61,6 +62,7 @@ async function switchProp(id) {
       docs[id].migrated = applyAliases(docs[id].state, id);
     }
     state = docs[id].state; rev = docs[id].rev;
+    // Progress moved from renamed skill ids at load is saved once this prop is the one in use.
     if (docs[id].migrated) { docs[id].migrated = false; setTimeout(commit, 0); }
   }
   ui.prop = id; ui.draftFocus = [];
