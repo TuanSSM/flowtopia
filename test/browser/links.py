@@ -58,15 +58,17 @@ try:
         src=js("const f=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] iframe');return f&&[f.getAttribute('src'),f.getAttribute('referrerpolicy')]",str(pid))
         check('pressing play loads the video from youtube-nocookie',src==['https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1','no-referrer'],src)
         # Hiding a post stops its preview being served to others.
-        other=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-        api(other,'signup',{'username':'viewer','password':'flowa-test-only'})
-        thumb=get(op,f'api/posts/{pid}')['posts'][0]['links'][0]['thumb']
-        before=code(other,thumb)
-        api(op,'flags',{'flags':{'moderation':True}},'PUT')
-        mo=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-        api(mo,'signup',{'username':'moe','password':'flowa-test-only'});api(op,f"admin/users/{get(mo,'api/me')['user']['id']}/role",{'role':'moderator'},'PUT')
-        api(mo,'mod/actions',{'action':'hide','kind':'post','id':pid,'reason':'spam'})
-        check('a hidden post’s preview is no longer served to others',before==200 and code(other,thumb)==404)
+        def account(name):
+            o=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            api(o,'signup',{'username':name,'password':'flowa-test-only'});api(o,'me',{'props':['nunchaku']},'PUT');return o
+        poster,viewer,mo=account('poster'),account('viewer'),account('moe')
+        api(op,f"admin/users/{get(mo,'api/me')['user']['id']}/role",{'role':'moderator'},'PUT')
+        hp=api(poster,'posts',{'body':'my clip','links':['https://youtu.be/aBcDeFgHiJk']})['posts'][0]['id']
+        card=wait(lambda: (lambda c: c if c and c[0]['status']=='ok' else None)(get(poster,f'api/posts/{hp}')['posts'][0].get('links')),n=40)
+        thumb=card[0]['thumb'] if card else ''
+        before=code(viewer,thumb) if thumb else 0
+        api(mo,'mod/actions',{'action':'hide','kind':'post','id':hp,'reason':'spam'})
+        check('a hidden post’s preview is no longer served to others',before==200 and code(viewer,thumb)==404,(before,code(viewer,thumb) if thumb else None))
         # With link cards off, the composer offers nothing.
         api(op,'flags',{'flags':{'linkCards':False}},'PUT');time.sleep(2.2)
         reload(BASE+'?off=1#/timeline')
