@@ -21,7 +21,9 @@ named but not described.
 - **Accounts:** sign up with a username and password (no email). Each user picks their props
   and has their own progress. Three roles: member, moderator and admin.
 - **Without an account:** browse the skill maps, guides, demos and references.
-- **Dashboard, Practice, Combos, Plan:** per user and per prop.
+- **Dashboard, Practice, Combos, Plan:** per user and per prop. With `suggest` on, the combo builder
+  suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links
+  directly ([docs/suggestions.md](docs/suggestions.md)).
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
 - **Profiles:** a picture, a bio and Instagram, TikTok and YouTube links, shown on a public profile page
   (`#/u/<username>`) with the user's level, streak, badges and posts.
@@ -83,7 +85,7 @@ on the Admin page. No restart is needed. `signups` opens or closes sign-up, and 
 challenges, achievements, quests) are on by default and can be turned off if they get in the way.
 `moderation` (reports, the queue, hiding, mutes and suspensions) and `catalogEditor` (the skill map editor)
 are off until an admin turns them on. `linkCards` (cards for Instagram, TikTok and YouTube links) is on;
-`videoEmbeds` (play YouTube in place) is off.
+`videoEmbeds` (play YouTube in place) is off. `suggest` (next-trick suggestions) is off until an admin turns it on.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |

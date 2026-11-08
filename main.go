@@ -58,7 +58,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false, "linkCards": true, "videoEmbeds": false}
+var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false, "linkCards": true, "videoEmbeds": false, "suggest": false}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -655,7 +655,8 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		prefs := map[string]bool{}
 		json.Unmarshal(u.Prefs, &prefs)
 		for k, v := range *in.Prefs {
-			if k != "autoPost" {
+			// autoPost: share milestones; shareTransitions: send anonymous transition marks for suggestions.
+			if k != "autoPost" && k != "shareTransitions" {
 				fail(w, http.StatusBadRequest, "Unknown preference: "+k)
 				return
 			}
@@ -1492,6 +1493,9 @@ type catalogIssue struct {
 	Msg  string `json:"msg"`
 }
 
+var motionValues = map[string][]string{"plane": {"wall", "face", "table", "mixed", "unknown"}, "direction": {"forward", "reverse", "either", "unknown"},
+	"hands": {"one", "both", "unknown"}, "grip": {"handle", "end", "middle", "unknown"}, "source": {"clip", "description", "unknown"}}
+
 var (
 	branchKeyRE = regexp.MustCompile(`^[A-Z]$`)
 	catSkillRE  = regexp.MustCompile(`^[A-Z][1-9][0-9]?$`)
@@ -1652,6 +1656,22 @@ func validateCatalog(raw []byte) (errs, warns []catalogIssue) {
 			if v, ok := sk[k]; ok {
 				if _, isBool := v.(bool); !isBool {
 					E(at+"."+k, "%s: %s must be true or false", who, k)
+				}
+			}
+		}
+		if mv, ok := sk["motion"]; ok {
+			// How the move travels, for next-trick suggestions: each value from a fixed list, or unknown.
+			if m := obj(mv); m == nil {
+				E(at+".motion", "%s: motion must be an object", who)
+			} else {
+				for k, v := range m {
+					allowed, known := motionValues[k]
+					s, _ := v.(string)
+					if !known {
+						E(at+".motion."+k, `%s: motion has no field "%s"`, who, k)
+					} else if !slices.Contains(allowed, s) {
+						E(at+".motion."+k, "%s: motion %s must be one of %s", who, k, strings.Join(allowed, ", "))
+					}
 				}
 			}
 		}
@@ -2812,6 +2832,128 @@ func csp(embeds bool) string {
 	return p
 }
 
+/* ---------- next-trick suggestions: shared transition marks and usage ---------- */
+
+// Transition marks are counted per pair of skills with no user attached. A browser that has the user's
+// consent sends changes as they happen (from one mark to another), so a later change or a withdrawal
+// of consent subtracts what it added, and no row ever says who marked what.
+
+var transitionMarks = []string{"untested", "works", "bridge", "blocked"}
+
+func (a *app) handleTransitionLabels(w http.ResponseWriter, r *http.Request, u *user) {
+	// Without consent only withdrawals are taken: a browser takes its marks back out after the
+	// profile has turned sharing off, so the change back to untested must still be accepted.
+	sharing := a.pref(u, "shareTransitions", false)
+	var in struct {
+		Prop   string `json:"prop"`
+		Deltas []struct {
+			A    string `json:"a"`
+			B    string `json:"b"`
+			From string `json:"from"`
+			To   string `json:"to"`
+		} `json:"deltas"`
+	}
+	if !readJSON(w, r, 64<<10, &in) {
+		return
+	}
+	if !knownProp(in.Prop) || len(in.Deltas) > 500 {
+		fail(w, http.StatusBadRequest, "Send up to 500 changes for one prop.")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	for _, d := range in.Deltas {
+		if !skillIDRE.MatchString(d.A) || !skillIDRE.MatchString(d.B) || !slices.Contains(transitionMarks, d.From) || !slices.Contains(transitionMarks, d.To) {
+			fail(w, http.StatusBadRequest, "Each change names two skill ids and two marks.")
+			return
+		}
+		if !sharing && d.To != "untested" {
+			fail(w, http.StatusForbidden, "Sharing transition marks is off in your profile.")
+			return
+		}
+		if d.From == d.To {
+			continue
+		}
+		inc := func(col string, by int) error {
+			if col == "untested" {
+				return nil
+			}
+			_, err := tx.Exec(`INSERT INTO transition_counts (prop, a, b, `+col+`) VALUES ($1, $2, $3, GREATEST($4, 0))
+				ON CONFLICT (prop, a, b) DO UPDATE SET `+col+` = GREATEST(transition_counts.`+col+` + $4, 0)`, in.Prop, d.A, d.B, by)
+			return err
+		}
+		if err := inc(d.From, -1); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if err := inc(d.To, 1); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleTransitionCounts returns the shared counts for one prop, or for every prop to an admin
+// exporting them for sim/fit-suggest.js.
+func (a *app) handleTransitionCounts(w http.ResponseWriter, r *http.Request, u *user) {
+	prop := r.URL.Query().Get("prop")
+	if prop == "" && !can(u, permDashboard) {
+		fail(w, http.StatusBadRequest, "Name a prop.")
+		return
+	}
+	if prop != "" && !knownProp(prop) {
+		fail(w, http.StatusNotFound, "Unknown prop.")
+		return
+	}
+	rows, err := a.db.Query(`SELECT prop, a, b, works, bridge, blocked FROM transition_counts WHERE ($1 = '' OR prop = $1) AND works + bridge + blocked > 0 ORDER BY prop, a, b`, prop)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var p, x, y string
+		var wk, br, bl int
+		if err := rows.Scan(&p, &x, &y, &wk, &br, &bl); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out = append(out, map[string]any{"prop": p, "a": x, "b": y, "works": wk, "bridge": br, "blocked": bl})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"counts": out})
+}
+
+// handleSuggestUsage adds to this week's counts of suggestions shown, added to a combo, and later
+// marked Works. No user is recorded.
+func (a *app) handleSuggestUsage(w http.ResponseWriter, r *http.Request, _ *user) {
+	var in struct {
+		Shown, Added, Worked int
+	}
+	if !readJSON(w, r, 1024, &in) {
+		return
+	}
+	if in.Shown < 0 || in.Added < 0 || in.Worked < 0 || in.Shown > 1000 || in.Added > 100 || in.Worked > 100 {
+		fail(w, http.StatusBadRequest, "Counts out of range.")
+		return
+	}
+	if _, err := a.db.Exec(`INSERT INTO suggest_usage (week, shown, added, worked) VALUES (date_trunc('week', now())::date, $1, $2, $3)
+		ON CONFLICT (week) DO UPDATE SET shown = suggest_usage.shown + $1, added = suggest_usage.added + $2, worked = suggest_usage.worked + $3`, in.Shown, in.Added, in.Worked); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 /* ---------- admin dashboard ---------- */
 
 const dashWeeks = 12
@@ -2864,6 +3006,13 @@ func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 		return
 	}
 	out["weeks"] = weeks
+	// Suggestions over the same 12 weeks: how many were added to a combo, and how many of those later worked.
+	var shown, added, worked int
+	if err := a.db.QueryRow(`SELECT COALESCE(sum(shown), 0), COALESCE(sum(added), 0), COALESCE(sum(worked), 0) FROM suggest_usage WHERE week >= (date_trunc('week', now()) - ($1 - 1) * interval '1 week')::date`, dashWeeks).Scan(&shown, &added, &worked); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["suggest"] = map[string]int{"shown": shown, "added": added, "worked": worked}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -3051,6 +3200,9 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("GET /api/admin/audit", a.authed(permAudit, a.handleAudit))
 	mux.HandleFunc("GET /api/admin/dashboard", a.authed(permDashboard, a.handleDashboard))
 	mux.HandleFunc("GET /catalog/{file}", a.handleCatalogFile)
+	mux.HandleFunc("POST /api/suggest/labels", a.flagged("suggest", a.authed("", a.handleTransitionLabels)))
+	mux.HandleFunc("GET /api/suggest/counts", a.flagged("suggest", a.authed("", a.handleTransitionCounts)))
+	mux.HandleFunc("POST /api/suggest/usage", a.flagged("suggest", a.authed("", a.handleSuggestUsage)))
 	ed := func(perm string, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
 		return a.flagged("catalogEditor", a.authed(perm, h))
 	}
@@ -3268,6 +3420,21 @@ CREATE TABLE IF NOT EXISTS link_previews (
 	thumb_h INT NOT NULL DEFAULT 0,
 	resolved TEXT NOT NULL DEFAULT '',
 	fetched_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS transition_counts (
+	prop TEXT NOT NULL,
+	a TEXT NOT NULL,
+	b TEXT NOT NULL,
+	works INT NOT NULL DEFAULT 0,
+	bridge INT NOT NULL DEFAULT 0,
+	blocked INT NOT NULL DEFAULT 0,
+	PRIMARY KEY (prop, a, b)
+);
+CREATE TABLE IF NOT EXISTS suggest_usage (
+	week DATE PRIMARY KEY,
+	shown INT NOT NULL DEFAULT 0,
+	added INT NOT NULL DEFAULT 0,
+	worked INT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS badge_blocks (
 	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -38,6 +38,8 @@ if (require.main === module) {
   fs.writeFileSync(file, JSON.stringify(index));
   const size = fs.readdirSync(dir).reduce((a, f) => a + fs.statSync(path.join(dir, f)).size, 0);
   console.log(`${n} clips for ${Object.keys(index).length} moves written in ${((Date.now() - t0) / 1000).toFixed(0)} s, ${(size / 1e6).toFixed(1)} MB${failed ? `, ${failed} FAILED` : ''}`);
+  // The measurements next-trick suggestions use, from the clips just written (sim/features.js).
+  require('child_process').execFileSync(process.execPath, [path.join(__dirname, 'features.js')], { stdio: 'inherit' });
   process.exit(failed ? 1 : 0);
 }
 module.exports = { build, scene, SPECS, NOTES };

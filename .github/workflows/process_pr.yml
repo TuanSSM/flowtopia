@@ -150,6 +150,14 @@ jobs:
           path: physics.txt
           retention-days: 7
 
+      - name: Geometry of the clips
+        run: |
+          node test/geometry.js
+          node test/suggest.js
+          node test/suggest-gate.js
+          node sim/features.js
+          git diff --exit-code --stat web/clips/features.json || {
+            echo "::error::web/clips/features.json is stale; run node sim/features.js and commit"; exit 1; }
       # web/ is embedded in the binary, so the committed bundles must be the ones the sources build.
       - name: Bundles are up to date
         run: |
@@ -184,6 +192,7 @@ jobs:
       mod: ${{ steps.mod.outputs.line }}
       editor: ${{ steps.editor.outputs.line }}
       links: ${{ steps.links.outputs.line }}
+      suggest: ${{ steps.suggest.outputs.line }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -232,6 +241,13 @@ jobs:
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh editor.py | tee editor.txt || code=$?
           echo "line=$(grep -E 'passed' editor.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
+      - name: Next-trick suggestions
+        id: suggest
+        if: always()
+        run: |
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh suggest.py | tee suggest.txt || code=$?
+          echo "line=$(grep -E 'passed' suggest.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
       # The server asks a stand-in for Instagram, TikTok and YouTube (test/browser/stub.py), never the real sites.
       - name: Link cards
         id: links
@@ -257,6 +273,7 @@ jobs:
             mod.txt
             editor.txt
             links.txt
+            suggest.txt
           retention-days: 7
 
   # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
@@ -402,6 +419,7 @@ jobs:
           MODS: ${{ needs.integration.outputs.mod }}
           EDITOR: ${{ needs.integration.outputs.editor }}
           LINKS: ${{ needs.integration.outputs.links }}
+          SUGGEST: ${{ needs.integration.outputs.suggest }}
           STAT: ${{ steps.size.outputs.stat }}
           FILES: ${{ steps.size.outputs.files }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -418,7 +436,7 @@ jobs:
             echo "| docs | $(icon "$DOCS") | Markdown links, Claude Code front matter |"
             echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
-            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a}; links: ${LINKS:-n/a} |"
+            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a}; links: ${LINKS:-n/a}; suggestions: ${SUGGEST:-n/a} |"
             echo "| screenshots | $(icon "$SCREENS") | pages at desktop and phone width, demo sheet |"
             echo
             echo "$SHOTS_MD"

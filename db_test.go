@@ -894,3 +894,59 @@ func TestDBStaticCSP(t *testing.T) {
 		t.Fatalf("CSP:\n%s\n%s", off, on)
 	}
 }
+
+func TestDBTransitionCounts(t *testing.T) {
+	e := newEnv(t)
+	_, admin := e.user("boss", "admin")
+	bID, b := e.user("bea", "user")
+	_, c := e.user("cal", "user")
+	label := map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "untested", "to": "works"}}}
+	e.must(404, b, "POST", "/api/suggest/labels", label)
+	e.setFlag("suggest", true)
+	// Without consent, nothing is accepted.
+	e.must(403, b, "POST", "/api/suggest/labels", label)
+	e.must(200, b, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"shareTransitions": true}})
+	e.must(200, c, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"shareTransitions": true}})
+	e.must(200, b, "POST", "/api/suggest/labels", label)
+	e.must(200, c, "POST", "/api/suggest/labels", label)
+	// bea changes her mind; then withdraws (her browser sends the reverse change).
+	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "works", "to": "blocked"}}})
+	got := e.must(200, c, "GET", "/api/suggest/counts?prop=nunchaku", nil)["counts"].([]any)
+	if len(got) != 1 || num(got[0].(map[string]any)["works"]) != 1 || num(got[0].(map[string]any)["blocked"]) != 1 {
+		t.Fatalf("counts: %v", got)
+	}
+	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "blocked", "to": "untested"}}})
+	// Counts never go below zero, whatever a client sends.
+	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "blocked", "to": "untested"}}})
+	if n := e.count(`SELECT blocked FROM transition_counts WHERE a = 'F5' AND b = 'F7'`); n != 0 {
+		t.Fatalf("blocked = %d", n)
+	}
+	// No column of the table can say who marked what.
+	cols := e.count(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'transition_counts' AND table_schema = current_schema() AND column_name LIKE '%user%'`)
+	if cols != 0 {
+		t.Fatal("transition_counts must not have a user column")
+	}
+	e.must(400, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "<b>", "from": "untested", "to": "works"}}})
+	e.must(400, b, "GET", "/api/suggest/counts", nil)
+	if all := e.must(200, admin, "GET", "/api/suggest/counts", nil)["counts"].([]any); len(all) != 1 {
+		t.Fatalf("export: %v", all)
+	}
+	// Turning sharing off first and then withdrawing (what the profile page does) takes the mark out;
+	// without consent nothing else is accepted.
+	e.must(200, c, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"shareTransitions": false}})
+	e.must(403, c, "POST", "/api/suggest/labels", label)
+	e.must(403, c, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "works", "to": "untested"}, {"a": "F5", "b": "F8", "from": "untested", "to": "works"}}})
+	e.must(200, c, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "works", "to": "untested"}}})
+	if got := e.must(200, c, "GET", "/api/suggest/counts?prop=nunchaku", nil)["counts"].([]any); len(got) != 0 {
+		t.Fatalf("after withdrawal: %v", got)
+	}
+	_ = bID
+	// Usage counters feed the dashboard.
+	e.must(200, b, "POST", "/api/suggest/usage", map[string]any{"shown": 5, "added": 2, "worked": 1})
+	e.must(200, c, "POST", "/api/suggest/usage", map[string]any{"shown": 3, "added": 1, "worked": 0})
+	e.must(400, c, "POST", "/api/suggest/usage", map[string]any{"shown": -1})
+	sug := e.must(200, admin, "GET", "/api/admin/dashboard", nil)["suggest"].(map[string]any)
+	if num(sug["shown"]) != 8 || num(sug["added"]) != 3 || num(sug["worked"]) != 1 {
+		t.Fatalf("usage: %v", sug)
+	}
+}

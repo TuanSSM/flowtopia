@@ -3,6 +3,7 @@
 // browser and by `node test/catalog.js`; main.go has the same rules in Go (validateCatalog), and
 // both must agree on test/catalog-fixtures. Returns errors (the catalog cannot be used) and
 // warnings (worth a look), each with the path of the field it is about, for the editor to show.
+const MOTION = { plane: ['wall', 'face', 'table', 'mixed', 'unknown'], direction: ['forward', 'reverse', 'either', 'unknown'], hands: ['one', 'both', 'unknown'], grip: ['handle', 'end', 'middle', 'unknown'], source: ['clip', 'description', 'unknown'] };
 function checkCatalog(c) {
   const errs = [], warn = [], E = (path, msg) => errs.push({ path, msg }), W = (path, msg) => warn.push({ path, msg });
   if (!c || typeof c !== 'object' || Array.isArray(c)) { E('', 'not a catalog object'); return { errs, warn }; }
@@ -38,6 +39,14 @@ function checkCatalog(c) {
     if (!Array.isArray(s.refs)) E(at + '.refs', `${who}: refs must be a list`);
     else { for (const r of s.refs) if (!Object.prototype.hasOwnProperty.call(refs, r)) E(at + '.refs', `${who}: unknown ref "${r}"`); if (!s.refs.length && !s.retired) W(at + '.refs', `${who}: no refs`); }
     for (const k of ['star', 'care', 'retired']) if (s[k] !== undefined && typeof s[k] !== 'boolean') E(`${at}.${k}`, `${who}: ${k} must be true or false`);
+    if (s.motion !== undefined) {
+      // How the move travels, for next-trick suggestions: each value from a fixed list, or unknown.
+      if (!s.motion || typeof s.motion !== 'object' || Array.isArray(s.motion)) E(at + '.motion', `${who}: motion must be an object`);
+      else for (const [k, v] of Object.entries(s.motion)) {
+        if (!MOTION[k]) E(`${at}.motion.${k}`, `${who}: motion has no field "${k}"`);
+        else if (!MOTION[k].includes(v)) E(`${at}.motion.${k}`, `${who}: motion ${k} must be one of ${MOTION[k].join(', ')}`);
+      }
+    }
     const text = [s.name, s.desc, s.drill, ...(Array.isArray(s.steps) ? s.steps : []), ...(Array.isArray(s.watch) ? s.watch : [])].join(' ');
     if (/[—–]/.test(text)) E(at, `${who}: contains a long dash; use plain punctuation`);
   });
@@ -99,4 +108,4 @@ function checkCatalog(c) {
   }
   return { errs, warn };
 }
-if (typeof module !== 'undefined') module.exports = { checkCatalog };
+if (typeof module !== 'undefined') module.exports = { checkCatalog, MOTION };

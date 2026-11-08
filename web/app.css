@@ -666,3 +666,21 @@ tr[hidden] { display: none; }
 .lc-open svg.i { width: 12px; height: 12px; }
 .link-offer { padding: 6px 10px; border-radius: 9px; background: var(--accent-soft); }
 .link-offer[hidden] { display: none; }
+
+/* Next-trick suggestions */
+.nt { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); }
+.nt-early { color: var(--warn); }
+.nt-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.nt-i { display: flex; align-items: center; gap: 4px; }
+.nt-add { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; text-align: left; color: var(--ink); font-size: 13px; }
+.nt-add:hover { background: var(--hover); }
+.nt-add .grow { display: grid; gap: 1px; }
+.nt-add b { font-weight: 560; }
+.nt-why { font-size: 12px; color: var(--ink-2); }
+.nt-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.nt-labels i { font-style: normal; font-size: 11px; color: var(--ink-3); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; }
+.nt-no { width: 28px; height: 28px; color: var(--ink-3); }
+.nt-bridge { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.nt-bridge svg.i { width: 12px; height: 12px; color: var(--ink-3); }
+.ed-motion { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px 12px; margin: 0; }
+.ed-motion legend { color: var(--ink-2); padding: 0 4px; }

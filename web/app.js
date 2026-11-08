@@ -74,6 +74,7 @@ const FLAGS = [
   ['community', 'Community', 'The timeline with posts, likes and comments, public profiles, the people list and the notification bell.'],
   ['linkCards', 'Link cards', 'Instagram, TikTok and YouTube links in posts become cards with a preview the server fetches, so visitors never contact those sites until they open a link.'],
   ['videoEmbeds', 'Play YouTube in place', 'A play button on YouTube cards that loads the video from youtube-nocookie.com inside Flowa. Adds that one site to the page security policy while on.'],
+  ['suggest', 'Next-trick suggestions', 'The combo builder suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links directly. Members can share their transition marks anonymously to improve it.'],
   ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and the Plan as quests.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
@@ -125,7 +126,7 @@ async function save() {
     }
     docs[prop] = { rev, state };
     setSync(dirty ? 'saving' : 'ok');
-    if (!dirty && flags.game) syncGame();
+    if (!dirty) { if (flags.game) syncGame(); ntSyncAll(false); }
   } catch {
     dirty = true; setSync('err');
     clearTimeout(saveTimer); saveTimer = setTimeout(save, 5000);
@@ -146,6 +147,7 @@ async function load() {
   await loadSession();
   loaded = true;
   if (flags.game) syncGame();
+  ntSyncAll(false); // marks made before consent changed elsewhere, or while offline
   if (flags.community) loadNotifs();
   return mark() !== before;
 }
@@ -478,6 +480,7 @@ function pageCombos() {
         ${flags.demos ? Demo.comboStage(c.id, CID, seq, reps, id => SK[id]?.name || id, state.settings.dominant, esc) : ''}
         <div class="cb-side">
           <ol class="cb-steps">${steps || '<li class="small muted" style="padding:8px 2px">Start with two skills you can already do.</li>'}</ol>
+          ${nextTrickHTML(c)}
           <select data-change="combo-add" data-id="${esc(c.id)}" aria-label="Add skill to ${esc(c.name)}"><option value="">+ Add a skill</option>${skillOptions()}</select>
           <div class="cb-runs"><span class="small muted num grow">${cleanRuns} clean of ${runs} full runs</span>
             <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button>${flags.community && seq.length >= 2 ? `<button class="btn sm" data-act="combo-publish" data-id="${esc(c.id)}" data-tip="Share this combo on the timeline">${icon('send')}Publish</button>` : ''}</div>
@@ -719,7 +722,9 @@ document.addEventListener('click', e => {
       if (combo) {
         combo.tr ||= {};
         const n = TR_ORDER[(TR_ORDER.indexOf(combo.tr[d.k] || 'untested') + 1) % TR_ORDER.length];
-        combo.tr[d.k] = n; commit();
+        combo.tr[d.k] = n;
+        if (n === 'works' && (combo.suggested || []).includes(d.k)) NT.usage.worked++; // a suggestion that turned out to work
+        commit();
       }
       break;
     case 'combo-run':
