@@ -16,7 +16,7 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | striptags | trim }}
 {% for commit in commits %}
-- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | split(pat="\n") | first | trim }}\
+- {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | split(pat="\n") | first | trim | upper_first }}\
 {% endfor %}
 {% endfor %}
 """
@@ -38,8 +38,9 @@ commit_preprocessors = [
   { pattern = '^Build:\s*', replace = 'build: ' },
   { pattern = '^Deps:\s*', replace = 'chore(deps): ' },
   { pattern = '^Revert\b', replace = 'revert: $0' },
-  # Anything else that starts like a sentence is a feature. Conventional titles start in lower case.
-  { pattern = '^([A-Z])', replace = 'feat: ${1}' },
+  # Anything else that starts like a sentence or a number ("3D figure: ...") is a feature.
+  # Conventional titles start with a lower-case type, so they are left alone.
+  { pattern = '^([A-Z0-9])', replace = 'feat: ${1}' },
 ]
 commit_parsers = [
   # Merge commits (GitHub's test merge on a pull request, or a merge of main into a branch) are not changes.
