@@ -44,7 +44,7 @@ async function shrinkImage(file, max = 1280, q = 0.82) {
 }
 
 /* ---------- feed ---------- */
-const feedPath = key => key.startsWith('post:') ? `posts/${key.slice(5)}` : key.startsWith('user:') ? `posts?user=${encodeURIComponent(key.slice(5))}` : 'posts';
+const feedPath = key => key.startsWith('post:') ? `posts/${key.slice(5)}` : key.startsWith('user:') ? `posts?user=${encodeURIComponent(key.slice(5))}` : key === 'bookmarks' ? 'bookmarks' : 'posts';
 async function loadFeed(key, append) {
   if (social.loading) return;
   social.loading = true; social.key = key; social.stale = false;
@@ -102,7 +102,7 @@ function postCard(p) {
     <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a></span></span>${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}${canReport(p.userId) ? `<button class="icon-btn" data-act="report" data-kind="post" data-id="${p.id}" data-what="this post" aria-label="Report post" data-tip="Report">${icon('flag')}</button>` : ''}</header>
     ${p.hidden ? `<p class="notice warn">${icon('lock')} Hidden by a moderator: ${esc(p.hidden)}${p.userId === me.id ? '. Only you and the moderators can see it.' : ''}${canDo('post.hide') && p.userId !== me.id ? ` <button class="btn sm" data-act="mod-do" data-do="restore" data-kind="post" data-id="${p.id}">Restore</button>` : ''}</p>` : ''}
     ${body}
-    <footer class="post-acts"><button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.commentCount || ''}</span></button></footer>
+    <footer class="post-acts"><button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.commentCount || ''}</span></button>${bmButton('post', String(p.id), true)}</footer>
     ${thread}</article>`;
 }
 /* ---------- comments and replies ---------- */
@@ -378,6 +378,59 @@ function bellHTML() {
 function renderBell() { const el = $('#bell'); if (el) el.innerHTML = bellHTML(); }
 setInterval(() => { if (me && flags.community && document.visibilityState === 'visible' && !social.nOpen) loadNotifs(); }, 60000);
 
+/* ---------- bookmarks: skills, combos and posts to come back to ---------- */
+// What the signed-in user bookmarked, as kind and ref keys, loaded once per user (load in app.js) and
+// changed on the page before the server answers. The Bookmarks page lists them; its posts are a feed
+// (key 'bookmarks'), so likes and comments work there as on the timeline.
+const BM = { set: new Set(), loaded: false, user: 0, skills: [], combos: [] };
+const bmKey = (kind, ref) => kind + '|' + ref;
+const bmHas = (kind, ref) => BM.set.has(bmKey(kind, ref));
+function resetBookmarks() { Object.assign(BM, { set: new Set(), loaded: false, user: 0, skills: [], combos: [] }); }
+async function loadBookmarks() {
+  const r = await api('bookmarks');
+  if (!r.ok) { if (r.status !== 404) toast(r.error); return; }
+  BM.skills = r.data.skills; BM.combos = r.data.combos; BM.loaded = true;
+  BM.set = new Set([...r.data.skills.map(s => bmKey('skill', s)), ...r.data.combos.map(c => bmKey('combo', c)), ...r.data.postIds.map(id => bmKey('post', String(id)))]);
+  render();
+}
+// The toggle: an icon button for a skill or a combo, and with act an action button like the like button under a post.
+function bmButton(kind, ref, act = false) {
+  if (!me || !flags.bookmarks) return '';
+  const on = bmHas(kind, ref);
+  return `<button class="${act ? 'act' : 'icon-btn'} bm ${on ? 'on' : ''}" data-act="bookmark" data-kind="${kind}" data-ref="${esc(ref)}" aria-pressed="${on}" aria-label="${on ? 'Remove bookmark' : 'Bookmark this ' + kind}" data-tip="${on ? 'Bookmarked' : 'Bookmark'}">${icon('bookmark')}</button>`;
+}
+async function toggleBookmark(kind, ref) {
+  const k = bmKey(kind, ref), was = BM.set.has(k);
+  if (was) BM.set.delete(k); else BM.set.add(k);
+  if (kind === 'skill') BM.skills = was ? BM.skills.filter(s => s !== ref) : [ref, ...BM.skills];
+  if (kind === 'combo') BM.combos = was ? BM.combos.filter(c => c !== ref) : [ref, ...BM.combos];
+  // On the Bookmarks page a post that loses its bookmark leaves the list.
+  if (kind === 'post' && was && social.key === 'bookmarks') social.posts = social.posts.filter(p => p.id !== Number(ref));
+  render();
+  const r = await api('bookmarks', 'POST', { kind, ref });
+  if (!r.ok) { toast(r.error); loadBookmarks(); return; }
+  if (r.data.on) BM.set.add(k); else BM.set.delete(k);
+  render();
+}
+function pageBookmarks() {
+  if (!BM.loaded) { loadBookmarks(); return '<div class="empty small">Loading…</div>'; }
+  const skills = BM.skills.map(ref => {
+    const [prop, id] = ref.split(':'), s = CATALOGS[prop]?.skills.find(x => x.id === id), st = s && inProp(prop, () => statusLabel(id));
+    return `<div class="bm-row"><a class="grow row" href="${s ? `#/prop/${prop}/${s.b}/${id}` : `#/prop/${prop}`}"><span class="tag">${esc(id)}</span><span class="grow"><b>${esc(s?.name || 'A skill that is no longer in the map')}</b><span class="tiny">${esc(propById(prop)?.name || prop)}${st ? ' · ' + esc(st) : ''}</span></span></a>${bmButton('skill', ref)}</div>`;
+  }).join('');
+  const combos = BM.combos.map(ref => {
+    let c = null, prop = null;
+    for (const p of myProps()) { const d = p.id === ui.prop ? state : docs[p.id]?.state, hit = d?.combos.find(x => x.id === ref); if (hit) { c = hit; prop = p; break; } }
+    const seq = c?.seq || [];
+    return `<div class="bm-row">${c ? `<a class="grow row" href="#/combos/${esc(ref)}"><span class="tag">${icon('link')}</span><span class="grow"><b>${esc(c.name)}</b><span class="tiny">${esc(prop.name)} · ${seq.length} ${seq.length === 1 ? 'skill' : 'skills'}</span></span><span class="cb-mini">${seq.slice(0, 6).map(id => `<i>${esc(id)}</i>`).join('')}</span></a>`
+      : `<span class="grow row"><span class="tag">${icon('link')}</span><span class="grow"><b>A combo that was deleted</b><span class="tiny">Remove this bookmark</span></span></span>`}${bmButton('combo', ref)}</div>`;
+  }).join('');
+  return `<div class="page-h"><div class="grow"><h1>Bookmarks</h1><p>Skills, combos and posts you kept to come back to. The bookmark button on each adds or removes it.</p></div></div>
+  <div class="grid g32 tl"><div class="stack">${flags.community ? `<div class="card-h" style="margin:0"><h2 class="grow">Posts</h2></div>${feedHTML('bookmarks', 'No bookmarked posts yet. The bookmark button under a post keeps it here.')}` : ''}</div>
+    <div class="stack"><div class="card"><div class="card-h"><h2 class="grow">Skills</h2><span class="sub num">${BM.skills.length}</span></div>${skills || '<p class="small muted">No skills yet. Open a skill and use the bookmark button in its details.</p>'}</div>
+    <div class="card"><div class="card-h"><h2 class="grow">Combos</h2><span class="sub num">${BM.combos.length}</span></div>${combos || '<p class="small muted">No combos yet. Open a combo and use the bookmark button in its header.</p>'}</div></div></div>`;
+}
+
 /* ---------- events ---------- */
 document.addEventListener('click', async e => {
   if (social.nOpen && !e.target.closest('#bell')) { social.nOpen = false; renderBell(); }
@@ -386,6 +439,7 @@ document.addEventListener('click', async e => {
   const d = t.dataset, id = Number(d.id), post = social.posts.find(p => p.id === id);
   switch (d.act) {
     case 'bell': social.nOpen = !social.nOpen; renderBell(); if (social.nOpen) loadNotifs(); break;
+    case 'bookmark': toggleBookmark(d.kind, d.ref); break;
     case 'ntf-go':
       social.nOpen = false;
       if (d.id) { const n = social.notifs.find(x => x.id === id); if (n && !n.read) { n.read = true; social.unread = Math.max(0, social.unread - 1); api('notifications/read', 'PUT', { ids: [id] }); } }

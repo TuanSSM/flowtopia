@@ -32,6 +32,7 @@ const ICONS = {
   play: 'M8 5v14l11-7L8 5Z',
   flame: 'M12 21c-3.5 0-6-2.4-6-5.8 0-2.6 1.6-4.3 2.8-6 .3 1.2.9 2.2 1.9 2.9C10.3 9 10.7 5.8 13 3c.4 3 2.5 4.4 3.8 6.4A7 7 0 0 1 18 15.2C18 18.6 15.5 21 12 21Z',
   trophy: 'M8 4h8v5a4 4 0 0 1-8 0V4ZM8 6H5v1a3 3 0 0 0 3 3M16 6h3v1a3 3 0 0 1-3 3M12 13v4M9 20h6M10 17h4',
+  bookmark: 'M7 4h10v16l-5-3.5L7 20V4Z',
   medal: 'M12 15a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9ZM9 14l-1.5 6 4.5-2 4.5 2L15 14',
   bolt: 'M13 3 5 14h6l-1 7 8-11h-6l1-7Z',
   heart: 'M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10Z',
@@ -72,6 +73,7 @@ const FLAGS = [
   ['tour', 'Guided tour', 'A step-by-step tour for new users, on first sign-in and the first visit to each section. When off, a short note is shown instead.'],
   ['signups', 'Open sign-ups', 'Let anyone who can open this page create an account. Turn it off once everyone has one.'],
   ['community', 'Community', 'The timeline with posts, likes and comments, public profiles, the people list and the notification bell.'],
+  ['bookmarks', 'Bookmarks', 'Members keep skills, combos and posts to come back to, on a Bookmarks page.'],
   ['linkCards', 'Link cards', 'Instagram, TikTok and YouTube links in posts become cards with a preview the server fetches, so visitors never contact those sites until they open a link.'],
   ['videoEmbeds', 'Play YouTube in place', 'A play button on YouTube cards that loads the video from youtube-nocookie.com inside Flowa. Adds that one site to the page security policy while on.'],
   ['suggest', 'Next-trick suggestions', 'The combo builder suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links directly. Members can share their transition marks anonymously to improve it.'],
@@ -147,6 +149,8 @@ async function load() {
   const before = mark();
   await loadSession();
   loaded = true;
+  if (!me || BM.user !== me.id) resetBookmarks();
+  if (me && flags.bookmarks && !BM.loaded) { BM.user = me.id; loadBookmarks(); }
   if (flags.game) syncGame();
   ntSyncAll(false); // marks made before consent changed elsewhere, or while offline
   if (flags.community) loadNotifs();
@@ -382,7 +386,7 @@ function pageBranch(k, sel) {
       const st = status(s.id), { x, y } = L.xy[s.id];
       const ext = s.needs.map(n => n.replace('!', '')).filter(n => SK[n].b !== k);
       return `<a class="node ${st === 'locked' || st === 'ready' ? st : ''} ${sel === s.id ? 'sel' : ''}" style="left:${x}px;top:${y}px" href="${skillHref(s.id)}" aria-label="${s.id} ${esc(s.name)}, ${statusLabel(s.id)}">
-        <span class="nh">${s.id} · T${s.tier}${ext.length ? `<span style="font-weight:500;overflow:hidden;text-overflow:ellipsis">needs ${ext.join(', ')}</span>` : ''}<span class="stateic">${st === 'locked' ? icon('lock') : ''}</span></span>
+        <span class="nh">${s.id} · T${s.tier}${ext.length ? `<span style="font-weight:500;overflow:hidden;text-overflow:ellipsis">needs ${ext.join(', ')}</span>` : ''}<span class="stateic">${bmHas('skill', CID + ':' + s.id) ? `<span class="bm-mark" data-tip="Bookmarked">${icon('bookmark')}</span>` : ''}${st === 'locked' ? icon('lock') : ''}</span></span>
         <span class="nm">${esc(s.name)}</span><span class="nf">${skillPips(s)}</span></a>`;
     }).join('');
     body = `<div class="graph-wrap"><div class="graph ${sel ? 'focus' : ''}" style="width:${L.width}px;height:${L.height}px"><svg width="${L.width}" height="${L.height}" aria-hidden="true">${edges}</svg>${nodes}</div></div>${graphKey()}`;
@@ -407,7 +411,7 @@ function renderPanel(id) {
   const locked = !unlocked(id);
   const refs = s.refs.filter(k => REFS[k]).map(k => REFS[k]);
   refs.push([`Search YouTube for "${s.name}"`, 'https://www.youtube.com/results?search_query=' + encodeURIComponent(`${curProp().name} ${s.name} tutorial`)]);
-  el.innerHTML = `<div class="row"><span class="tiny grow">${esc(BR[s.b].name)} · ${s.id} · Tier ${s.tier}</span><a class="icon-btn" href="#/prop/${CID}/${s.b}" aria-label="Close details">${icon('x')}</a></div>
+  el.innerHTML = `<div class="row"><span class="tiny grow">${esc(BR[s.b].name)} · ${s.id} · Tier ${s.tier}</span>${bmButton('skill', CID + ':' + id)}<a class="icon-btn" href="#/prop/${CID}/${s.b}" aria-label="Close details">${icon('x')}</a></div>
   <h2 style="margin-top:4px">${esc(s.name)}</h2><p class="muted small" style="margin-top:6px">${esc(s.desc)}</p>
   ${s.star ? `<p class="notice warn" style="margin-top:10px">Unconfirmed: no source I could open confirms this name or how it is done. Check it against a video or instructor.</p>` : ''}
   ${locked && me ? `<p class="notice" style="margin-top:10px">Prerequisites are not Clean yet. They are a suggested order, so you can still log progress.</p>` : ''}
@@ -476,7 +480,7 @@ function pageCombos() {
       </li>${trKey ? `<li class="cb-link"><button class="tr ${t}" data-act="combo-tr" data-id="${esc(c.id)}" data-k="${esc(trKey)}" data-tip="Transition ${esc(trKey.replace('>', ' to '))}. Click to change.">${icon(TR[t].i)}${TR[t].n}</button></li>` : ''}`;
     }).join('');
     return `<section class="card cb" aria-label="${esc(c.name)}">
-      <header class="cb-head"><h2 class="grow">${esc(c.name)}</h2>${meta}<button class="icon-btn" data-act="combo-del" data-id="${esc(c.id)}" aria-label="Delete combo">${icon('trash')}</button></header>
+      <header class="cb-head"><h2 class="grow">${esc(c.name)}</h2>${meta}${bmButton('combo', c.id)}<button class="icon-btn" data-act="combo-del" data-id="${esc(c.id)}" aria-label="Delete combo">${icon('trash')}</button></header>
       <div class="cb-body">
         ${flags.demos ? Demo.comboStage(c.id, CID, seq, reps, id => SK[id]?.name || id, state.settings.dominant, esc) : ''}
         <div class="cb-side">
@@ -582,6 +586,7 @@ function renderSide(route) {
     ${a('#/practice', 'log', 'Practice', curId === 'practice')}
     ${a('#/combos', 'link', 'Combos', curId === 'combos')}
     ${a('#/plan', 'flag', 'Plan', curId === 'plan')}
+    ${me && flags.bookmarks ? a('#/bookmarks', 'bookmark', 'Bookmarks', curId === 'bookmarks') : ''}
     ${me && flags.game ? a('#/achievements', 'trophy', 'Achievements', curId === 'achievements') : ''}
     <div class="nav-h">Props</div>
     ${props}
@@ -598,15 +603,16 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation', avatar: 'Avatar' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation', avatar: 'Avatar', bookmarks: 'Bookmarks' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
   if (p === 'branch') return pageBranch(a, b);
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
-  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements', 'avatar'].includes(p) && !me) return pageNeedAccount(title);
+  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements', 'avatar', 'bookmarks'].includes(p) && !me) return pageNeedAccount(title);
   if (p === 'avatar') return pageAvatar(a);
+  if (p === 'bookmarks') return flags.bookmarks ? pageBookmarks() : pageOff('Bookmarks');
   if (p === 'practice') return pagePractice();
   if (['timeline', 'post', 'u'].includes(p) && !flags.community) return pageOff('Community');
   if (p === 'achievements' && !flags.game) return pageOff('Gamification');
@@ -625,6 +631,11 @@ function render() {
   const route = parseRoute(), [p, a, b, rp] = route;
   if (p === 'branch' && rp !== ui.prop && propById(rp)) { switchProp(rp); return; }
   if (p === 'prop' && a !== ui.prop && propById(a)) { switchProp(a); return; }
+  // A bookmarked combo can belong to another of the user's props: switch to that prop first.
+  if (p === 'combos' && a && me && !state.combos.some(c => c.id === a)) {
+    const owner = myProps().find(q => q.id !== ui.prop && docs[q.id]?.state.combos.some(c => c.id === a));
+    if (owner) { ui.comboOpen = a; switchProp(owner.id); return; }
+  }
   if (me && (p === 'signin' || p === 'signup')) { location.hash = '#/'; return; }
   // A new user picks their props before anything else.
   const first = !!me && !me.onboarded;
@@ -671,7 +682,7 @@ function toast(msg) {
 }
 
 /* ---------- command palette ---------- */
-const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars && me ? [['Avatar', '#/avatar']] : []), ['Settings', '#/settings'],
+const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars && me ? [['Avatar', '#/avatar']] : []), ...(flags.bookmarks && me ? [['Bookmarks', '#/bookmarks']] : []), ['Settings', '#/settings'],
   ...myProps().filter(p => p.id !== ui.prop).map(p => [p.name + ' map', `#/prop/${p.id}`]), ...BRANCHES.map(b => [`${curProp().name}: ${b.name}`, `#/prop/${CID}/${b.k}`])];
 function palItems(q) {
   q = q.trim().toLowerCase();
