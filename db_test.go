@@ -630,7 +630,11 @@ func TestDBDashboard(t *testing.T) {
 	e.a.db.Exec(`UPDATE posts SET created_at = now() - interval '28 days' WHERE id = $1`, old2)
 	e.a.db.Exec(`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES ($1, 'post', $2, 'spam')`, adminID, p)
 	e.must(403, e.session(cID), "GET", "/api/admin/dashboard", nil)
+	e.a.version = "main.abc1234"
 	out := e.must(200, b, "GET", "/api/admin/dashboard", nil)
+	if out["version"] != "main.abc1234" {
+		t.Fatalf("version: %v", out["version"])
+	}
 	tot := out["totals"].(map[string]any)
 	if num(tot["users"]) != 3 || num(tot["moderators"]) != 1 || num(tot["admins"]) != 1 || num(tot["openReports"]) != 1 {
 		t.Fatalf("totals: %v", tot)

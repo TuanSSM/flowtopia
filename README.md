@@ -89,6 +89,10 @@ other setup: for example add Cloudflare's ranges when Cloudflare sits in front o
 when visitors connect directly. The proxy must send `X-Forwarded-For` (Traefik, Caddy and Cloudflare do;
 in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
 
+The admin dashboard shows the running version, from `VERSION` in the container's environment.
+`deploy.sh` sets it to `main.<short commit hash>` of the checkout it deploys (the Pi is the staging
+host); production passes the release tag, such as `v1.2.0`. Unset, it reads `dev`.
+
 ## Data
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
@@ -355,6 +359,7 @@ gh workflow run release_tag -f version=v1.4.0     # an exact version
 gh workflow run release_tag -f dry_run=true       # show the version and the notes, tag nothing
 ```
 
+That tag is the `VERSION` to pass to the production container (the Pi shows `main.<commit>` instead).
 The version follows semantic versioning from the commits since the last `vX.Y.Z` tag, read by
 [git-cliff](https://git-cliff.org) with [cliff.toml](cliff.toml). Commits follow
 [Conventional Commits](https://www.conventionalcommits.org) (types in [CLAUDE.md](CLAUDE.md)): a breaking
