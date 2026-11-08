@@ -185,7 +185,8 @@ let adminDashboard = () => {
   ${flags.suggest && mod.dash.suggest ? (() => { const u = mod.dash.suggest, pct = (a, b) => b ? Math.round(100 * a / b) + '%' : 'none yet'; return `<div class="grid g2" style="margin-bottom:16px">${tile('Suggestions added to a combo', u.added, `of ${u.shown} shown in 12 weeks (${pct(u.added, u.shown)})`)}${tile('Added suggestions later marked Works', u.worked, `of ${u.added} added (${pct(u.worked, u.added)})`)}</div>`; })() : ''}
   <div class="grid g2 dash-charts">${charts}</div>
   <details class="card dash-table"><summary class="small">Show the weekly numbers as a table</summary><div class="table-wrap"><table class="table"><thead><tr><th>Week of</th><th>Sessions</th><th>Posts</th><th>Comments</th><th>Reports</th></tr></thead><tbody>
-    ${W.map(w => `<tr><td>${esc(fmtWeek(w.week))}</td><td class="num">${w.sessions}</td><td class="num">${w.posts}</td><td class="num">${w.comments}</td><td class="num">${w.reports}</td></tr>`).join('')}</tbody></table></div></details>`;
+    ${W.map(w => `<tr><td>${esc(fmtWeek(w.week))}</td><td class="num">${w.sessions}</td><td class="num">${w.posts}</td><td class="num">${w.comments}</td><td class="num">${w.reports}</td></tr>`).join('')}</tbody></table></div></details>
+  <p class="tiny dash-version" style="margin-top:12px">Flowa version <span class="num">${esc(mod.dash.version || 'dev')}</span>: what VERSION in the environment says this build is.</p>`;
 };
 const fmtWeek = k => parseDay(k).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 async function loadDash() {

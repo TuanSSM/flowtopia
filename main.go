@@ -107,13 +107,14 @@ type app struct {
 	hosts     []string     // names the server answers to besides addresses and private names (FLOWA_HOSTS)
 	proxies   []*net.IPNet // reverse proxies whose forwarding headers are believed (FLOWA_TRUSTED_PROXIES)
 	fetch     *fetcher     // link previews; nil means no fetching
+	version   string       // what VERSION says this build is (main.<commit> on the Pi, a release tag in production); "dev" if unset
 	flagCache map[string]bool
 	flagsAt   time.Time
 }
 
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: "dev"}
 }
 
 // defaultProxies are where a reverse proxy connects from when it runs on the same host (loopback,
@@ -3341,7 +3342,7 @@ const dashWeeks = 12
 // handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
 // for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
 func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
-	out := map[string]any{}
+	out := map[string]any{"version": a.version}
 	var users, mods, admins, active7, active30, open int
 	err := a.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`).Scan(&users, &mods, &admins)
 	if err == nil {
@@ -3692,6 +3693,12 @@ func main() {
 		log.Fatal(err)
 	}
 	a := newApp(db, *dataDir)
+	// VERSION names the build for the admin dashboard: the deploy script passes main.<commit> on the Pi,
+	// production passes the release tag. The app only shows it.
+	if v := strings.TrimSpace(os.Getenv("VERSION")); v != "" {
+		a.version = v
+	}
+	log.Printf("version %s", a.version)
 	if v, ok := os.LookupEnv("FLOWA_TRUSTED_PROXIES"); ok && strings.TrimSpace(v) != "" {
 		p, err := parseProxies(v)
 		if err != nil {

@@ -94,6 +94,7 @@ try:
     check('the dashboard has four headline numbers, two for suggestions, and four weekly charts with labelled values',js("return document.querySelectorAll('.stat').length")==6 and 'Suggestions' in txt('#main') and js("return document.querySelectorAll('.dash-chart svg').length")==4 and js("return document.querySelectorAll('.dash-chart .dc-val').length")>=2)
     js("document.querySelector('.dash-table summary').click()");time.sleep(.3)
     check('the weekly numbers are also a table',js("return document.querySelectorAll('.dash-table tbody tr').length")==12)
+    check('the dashboard shows the running version (dev here, where VERSION is not set)',txt('.dash-version').startswith('Flowa version dev'),txt('.dash-version'))
     nav('#/admin/audit',2.5)
     acts=js("return [...document.querySelectorAll('tbody tr')].map(r=>r.cells[2].textContent)")
     check('the audit log lists the hide, the resolve, the mute and the role change',any(a.startswith('Hid ') for a in acts) and any(a.startswith('Muted') for a in acts) and any(a.startswith('Resolved') for a in acts) and any(a.startswith('Changed role') for a in acts),acts[:6])

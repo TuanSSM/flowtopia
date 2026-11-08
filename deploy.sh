@@ -8,6 +8,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/.local/go/bin:$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
+# The version the admin dashboard shows (compose.yml passes it to the container): the checkout's commit
+# here on the Pi, unless the environment already says, as production does with the release tag.
+export VERSION="${VERSION:-main.$(git rev-parse --short HEAD)}"
 
 healthy() {
   for _ in $(seq 1 90); do
