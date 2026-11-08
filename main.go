@@ -20,7 +20,7 @@ import (
 	"image"
 	_ "image/gif"
 	"image/jpeg"
-	_ "image/png"
+	"image/png"
 	"io"
 	"io/fs"
 	"log"
@@ -47,9 +47,10 @@ import (
 var webFS embed.FS
 
 const (
-	maxBody     = 5 << 20
+	maxProgress = 512 << 10 // one progress document; a full map of notes is far smaller
 	keepBackups = 14
 	sessionTTL  = 30 * 24 * time.Hour
+	sessionIdle = "14 days" // a session unused this long ends (a Postgres interval)
 	cookieName  = "flowa_session"
 	// PBKDF2-SHA256 rounds. 200,000 takes about 0.7 s on this Pi 4; raise it on faster hardware.
 	pwRounds   = 200000
@@ -100,16 +101,94 @@ CREATE TABLE IF NOT EXISTS flags (
 type app struct {
 	db        *sql.DB
 	dataDir   string
-	mu        sync.Mutex
-	fails     map[string]*failCount
+	backupMu  sync.Mutex // one backup at a time
+	flagMu    sync.Mutex // guards flagCache and flagsAt
+	lim       limits
+	hosts     []string // names the server answers to besides addresses and private names (FLOWA_HOSTS)
 	fetch     *fetcher // link previews; nil means no fetching
 	flagCache map[string]bool
 	flagsAt   time.Time
 }
 
+func newApp(db *sql.DB, dataDir string) *app {
+	return &app{db: db, dataDir: dataDir, lim: newLimits()}
+}
+
 type failCount struct {
 	n     int
 	reset time.Time
+}
+
+// limiter counts events per key in a fixed window, under its own lock. It holds at most maxKeys
+// keys: when full it drops expired ones, and if it is still full a new key counts as over the
+// limit, so a flood of new keys cannot make it grow without bound.
+type limiter struct {
+	mu      sync.Mutex
+	n       int
+	window  time.Duration
+	maxKeys int
+	m       map[string]*failCount
+}
+
+func newLimiter(n int, window time.Duration) *limiter {
+	return &limiter{n: n, window: window, maxKeys: 20000, m: map[string]*failCount{}}
+}
+
+// over reports whether key has used its n events in the current window, without counting one.
+func (l *limiter) over(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := l.m[key]
+	return f != nil && time.Now().Before(f.reset) && f.n >= l.n
+}
+
+// add counts one event for key and reports whether it is still within the limit.
+func (l *limiter) add(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	f := l.m[key]
+	if f == nil || now.After(f.reset) {
+		if f == nil && len(l.m) >= l.maxKeys {
+			for k, g := range l.m {
+				if now.After(g.reset) {
+					delete(l.m, k)
+				}
+			}
+			if len(l.m) >= l.maxKeys {
+				return false
+			}
+		}
+		f = &failCount{reset: now.Add(l.window)}
+		l.m[key] = f
+	}
+	f.n++
+	return f.n <= l.n
+}
+
+// limits are the allowances: failed sign-ins (per address and username, per address, per account),
+// sign-ups per address, wrong current passwords per member, and writes per member per hour.
+type limits struct {
+	signin, signinIP, account, signup, password *limiter
+	posts, comments, likes, badges, marks       *limiter
+}
+
+func newLimits() limits {
+	return limits{
+		signin: newLimiter(maxFails, failWindow), signinIP: newLimiter(30, failWindow), account: newLimiter(20, failWindow),
+		signup: newLimiter(10, time.Hour), password: newLimiter(5, failWindow),
+		posts: newLimiter(30, time.Hour), comments: newLimiter(120, time.Hour), likes: newLimiter(600, time.Hour),
+		badges: newLimiter(60, time.Hour), marks: newLimiter(120, time.Hour),
+	}
+}
+
+// allowed counts a write by u against l and answers 429 when the allowance is used up.
+func allowed(w http.ResponseWriter, l *limiter, u *user, what string) bool {
+	if l.add(strconv.FormatInt(u.ID, 10)) {
+		return true
+	}
+	fail(w, http.StatusTooManyRequests, "That is more "+what+" than Flowa takes in an hour. Wait a while and try again.")
+	return false
 }
 
 type user struct {
@@ -170,10 +249,21 @@ func scanUser(row scanner, extra ...any) (*user, error) {
 
 /* ---------- passwords and sessions ---------- */
 
+// hashSlots lets at most two password hashes run at once: each costs most of a second of CPU on
+// the Pi, which also runs the printer.
+var hashSlots = make(chan struct{}, 2)
+
+func pbkdf2Key(pw string, salt []byte, rounds, n int) []byte {
+	hashSlots <- struct{}{}
+	defer func() { <-hashSlots }()
+	key, _ := pbkdf2.Key(sha256.New, pw, salt, rounds, n)
+	return key
+}
+
 func hashPassword(pw string) string {
 	salt := make([]byte, 16)
 	rand.Read(salt)
-	key, _ := pbkdf2.Key(sha256.New, pw, salt, pwRounds, 32)
+	key := pbkdf2Key(pw, salt, pwRounds, 32)
 	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", pwRounds, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
 }
 
@@ -188,7 +278,7 @@ func checkPassword(hash, pw string) bool {
 	if err != nil || err2 != nil || err3 != nil || rounds < 1 {
 		return false
 	}
-	got, _ := pbkdf2.Key(sha256.New, pw, salt, rounds, len(want))
+	got := pbkdf2Key(pw, salt, rounds, len(want))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
@@ -218,10 +308,16 @@ func (a *app) currentUser(r *http.Request) *user {
 	if err != nil || c.Value == "" {
 		return nil
 	}
-	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash(c.Value)))
+	// A session ends at expires_at, or after sessionIdle without use; use is noted once an hour.
+	th := tokenHash(c.Value)
+	var stale bool
+	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, s.last_seen < now() - interval '1 hour' FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1 AND s.expires_at > now() AND s.last_seen > now() - $2::interval`, th, sessionIdle), &stale)
 	if err != nil || u.SuspendedUntil != nil {
 		return nil
+	}
+	if stale {
+		a.db.Exec(`UPDATE sessions SET last_seen = now() WHERE token_hash = $1`, th)
 	}
 	return u
 }
@@ -259,6 +355,52 @@ func sameOrigin(r *http.Request) bool {
 	}
 	u, err := url.Parse(o)
 	return err == nil && u.Host == r.Host
+}
+
+// privateSuffixes are name endings that only resolve inside a home network or a private VPN.
+var privateSuffixes = []string{".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".ts.net"}
+
+// allowedHost reports whether the Host of a request names this server the way someone on the
+// home network would: an IP address, localhost, a single-label name ("raspi"), a private name, or
+// one listed in FLOWA_HOSTS. Any other name is refused, which stops a website from pointing its
+// own name at the Pi (DNS rebinding) and talking to Flowa from a visitor's browser.
+func allowedHost(host string, extra []string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil || host == "localhost" || !strings.Contains(host, ".") || slices.Contains(extra, host) {
+		return true
+	}
+	for _, s := range privateSuffixes {
+		if strings.HasSuffix(host, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// secure checks the Host and sets the headers every response carries: no framing by other sites,
+// no MIME sniffing, no referrer, a separate browsing context, and no powerful browser features.
+// API responses get a CSP that allows nothing; pages set their own (handleStatic).
+func (a *app) secure(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if !allowedHost(r.Host, a.hosts) {
+			http.Error(w, "Flowa does not answer to this address. Add it to FLOWA_HOSTS to use it.", http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // guard refuses writes that a foreign page or a plain HTML form could send.
@@ -336,6 +478,18 @@ func permsOf(u *user) []string {
 // outranks reports whether someone with role a may act on someone with role b.
 func outranks(a, b string) bool { return roleRank[a] > roleRank[b] }
 
+// below lists the roles a member of role r outranks, for queries.
+func below(r string) []string {
+	out := []string{}
+	for k := range roleRank {
+		if outranks(r, k) {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 /* ---------- flags ---------- */
 
 func (a *app) flags() (map[string]bool, error) {
@@ -369,9 +523,9 @@ func (a *app) setFlags(in map[string]bool) error {
 		}
 	}
 	// The next request reads the new flags, not the cached ones.
-	a.mu.Lock()
+	a.flagMu.Lock()
 	a.flagCache = nil
-	a.mu.Unlock()
+	a.flagMu.Unlock()
 	return nil
 }
 
@@ -451,6 +605,10 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "New sign-ups are turned off. Ask the admin for an account.")
 		return
 	}
+	if !a.lim.signup.add(clientIP(r)) {
+		fail(w, http.StatusTooManyRequests, "Too many new accounts from this address. Try again in an hour.")
+		return
+	}
 	var in credentials
 	if !readJSON(w, r, 4096, &in) {
 		return
@@ -497,39 +655,17 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// blocked reports whether this address has failed too often for this username.
-func (a *app) blocked(key string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	f := a.fails[key]
-	return f != nil && time.Now().Before(f.reset) && f.n >= maxFails
-}
-
-func (a *app) noteFail(key string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := time.Now()
-	for k, f := range a.fails {
-		if now.After(f.reset) {
-			delete(a.fails, k)
-		}
-	}
-	f := a.fails[key]
-	if f == nil {
-		f = &failCount{reset: now.Add(failWindow)}
-		a.fails[key] = f
-	}
-	f.n++
-}
-
 func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	var in credentials
 	if !readJSON(w, r, 4096, &in) {
 		return
 	}
 	name := strings.ToLower(strings.TrimSpace(in.Username))
-	key := clientIP(r) + "|" + name
-	if a.blocked(key) {
+	ip := clientIP(r)
+	key := ip + "|" + name
+	// Failures are counted per address and username, per address (guessing across many accounts)
+	// and per account (guessing from many addresses).
+	if a.lim.signin.over(key) || a.lim.signinIP.over(ip) || a.lim.account.over(name) {
 		fail(w, http.StatusTooManyRequests, "Too many failed attempts. Wait ten minutes and try again.")
 		return
 	}
@@ -542,7 +678,9 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil || !checkPassword(hash, in.Password) {
-		a.noteFail(key)
+		a.lim.signin.add(key)
+		a.lim.signinIP.add(ip)
+		a.lim.account.add(name)
 		fail(w, http.StatusUnauthorized, "Wrong username or password.")
 		return
 	}
@@ -624,10 +762,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		u.Seen, _ = json.Marshal(*in.Seen)
 	}
 	if in.Avatar != nil {
-		v := *in.Avatar
-		ok := v == "" || strings.HasPrefix(v, "data:image/jpeg;base64,") || strings.HasPrefix(v, "data:image/png;base64,")
-		if !ok || len(v) > 120000 {
-			fail(w, http.StatusBadRequest, "The picture must be a JPEG or PNG under 90 KB.")
+		v, err := cleanImage(*in.Avatar, 1024, maxAvatar)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "That picture cannot be used: "+err.Error()+".")
 			return
 		}
 		u.Avatar = v
@@ -710,7 +847,13 @@ func (a *app) handlePassword(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
+	uid := strconv.FormatInt(u.ID, 10)
+	if a.lim.password.over(uid) {
+		fail(w, http.StatusTooManyRequests, "Too many wrong passwords. Wait ten minutes and try again.")
+		return
+	}
 	if !checkPassword(hash, in.Current) {
+		a.lim.password.add(uid)
 		fail(w, http.StatusForbidden, "The current password is wrong.")
 		return
 	}
@@ -728,6 +871,21 @@ func (a *app) handlePassword(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	a.db.Exec(`DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`, u.ID, keep)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleSignoutOthers ends every session of the member except the one making the request.
+func (a *app) handleSignoutOthers(w http.ResponseWriter, r *http.Request, u *user) {
+	keep := ""
+	if c, err := r.Cookie(cookieName); err == nil {
+		keep = tokenHash(c.Value)
+	}
+	res, err := a.db.Exec(`DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`, u.ID, keep)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	writeJSON(w, http.StatusOK, map[string]int64{"ended": n})
 }
 
 /* ---------- progress ---------- */
@@ -776,7 +934,7 @@ func (a *app) handlePutProgress(w http.ResponseWriter, r *http.Request, u *user)
 		return
 	}
 	var in document
-	if !readJSON(w, r, maxBody, &in) {
+	if !readJSON(w, r, maxProgress, &in) {
 		return
 	}
 	if t := strings.TrimSpace(string(in.State)); t == "" || t[0] != '{' {
@@ -836,8 +994,8 @@ func writeAtomic(path string, data []byte) error {
 
 // backup writes everyone's progress to a file once per day, before the day's first change.
 func (a *app) backup() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.backupMu.Lock()
+	defer a.backupMu.Unlock()
 	dir := filepath.Join(a.dataDir, "backups")
 	day := filepath.Join(dir, "progress-"+time.Now().Format("2006-01-02")+".json")
 	if _, err := os.Stat(day); err == nil {
@@ -901,6 +1059,7 @@ func (a *app) handleUsers(w http.ResponseWriter, _ *http.Request, _ *user) {
 		if last.Valid {
 			u.LastActive = &last.Time
 		}
+		u.Avatar = u.avatarURL()
 		out = append(out, u)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": out})
@@ -913,14 +1072,19 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	// Only user.manage reaches here (admins); the last admin is protected below.
-	var name string
-	err := a.db.QueryRow(`SELECT username FROM users WHERE id = $1`, id).Scan(&name)
+	var name, role string
+	err := a.db.QueryRow(`SELECT username, role FROM users WHERE id = $1`, id).Scan(&name, &role)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return
 	}
 	if err != nil {
 		a.serverError(w, err)
+		return
+	}
+	// Admins are peers: one cannot delete another (change their role first, which is audited).
+	if !outranks(u.Role, role) {
+		fail(w, http.StatusForbidden, "You cannot delete the account of someone with your role or higher. Change their role first.")
 		return
 	}
 	a.backup()
@@ -956,13 +1120,19 @@ func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, u *use
 	if !readJSON(w, r, 4096, &in) || !validPassword(w, in.Next) {
 		return
 	}
-	res, err := a.db.Exec(`UPDATE users SET pw_hash = $2 WHERE id = $1`, id, hashPassword(in.Next))
+	// Your own password changes on the profile, with the current one; another admin's never here,
+	// or one admin could sign in as another.
+	if id == u.ID {
+		fail(w, http.StatusBadRequest, "Change your own password on your profile.")
+		return
+	}
+	res, err := a.db.Exec(`UPDATE users SET pw_hash = $2 WHERE id = $1 AND role = ANY($3)`, id, hashPassword(in.Next), pq.Array(below(u.Role)))
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		fail(w, http.StatusNotFound, "No such user.")
+		fail(w, http.StatusNotFound, "No such user, or their role is the same as yours or higher.")
 		return
 	}
 	a.db.Exec(`DELETE FROM sessions WHERE user_id = $1`, id)
@@ -1075,7 +1245,7 @@ func (a *app) targetOwner(kind string, id int64, viewer *user) (int64, error) {
 		err = a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1 AND (hidden_at IS NULL OR user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "comment":
 		err = a.db.QueryRow(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
-			AND ((c.hidden_at IS NULL AND p.hidden_at IS NULL) OR c.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+			AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "user":
 		err = a.db.QueryRow(`SELECT id FROM users WHERE id = $1`, id).Scan(&owner)
 	default:
@@ -1162,7 +1332,7 @@ func (a *app) handleQueue(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	q := `SELECT r.id, r.target_kind, r.target_id, r.reason, r.note, r.created_at, r.status, r.resolution, ru.username, COALESCE(rv.username, '')
 		FROM reports r JOIN users ru ON ru.id = r.reporter_id LEFT JOIN users rv ON rv.id = r.resolver_id
-		WHERE ` + map[string]string{"open": `r.status = 'open' ORDER BY r.id`, "resolved": `r.status <> 'open' ORDER BY r.resolved_at DESC LIMIT 200`}[status]
+		WHERE ` + map[string]string{"open": `r.status = 'open' ORDER BY r.id LIMIT 500`, "resolved": `r.status <> 'open' ORDER BY r.resolved_at DESC LIMIT 200`}[status]
 	rows, err := a.db.Query(q)
 	if err != nil {
 		a.serverError(w, err)
@@ -2498,8 +2668,28 @@ func hostAllowed(host string, list []string) bool {
 	return false
 }
 
+// reservedNets are ranges that are not the public internet, beyond what net.IP's methods cover:
+// shared address space (carrier-grade NAT and VPNs), IETF protocol assignments, benchmarking,
+// "this network", the reserved class E block, and NAT64, which can lead back to a private IPv4.
+var reservedNets = func() []*net.IPNet {
+	out := []*net.IPNet{}
+	for _, c := range []string{"100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "0.0.0.0/8", "240.0.0.0/4", "64:ff9b::/96", "64:ff9b:1::/48"} {
+		_, n, _ := net.ParseCIDR(c)
+		out = append(out, n)
+	}
+	return out
+}()
+
 func publicIP(ip net.IP) bool {
-	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast())
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
+		return false
+	}
+	for _, n := range reservedNets {
+		if n.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 func newFetcher(base string, allowPrivate bool) *fetcher {
@@ -2651,6 +2841,14 @@ func htmlUnescape(s string) string {
 // shrinkThumb decodes a JPEG or PNG, scales it to at most 640 px on its longer side and re-encodes
 // it as a JPEG of at most 60 KB, so what Flowa serves is its own small copy.
 func shrinkThumb(raw []byte) ([]byte, int, int, error) {
+	// The size first: a small file can declare a huge image, which would take all memory to decode.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if cfg.Width > 4096 || cfg.Height > 4096 {
+		return nil, 0, 0, errors.New("image too large")
+	}
 	src, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil, 0, 0, err
@@ -2697,22 +2895,19 @@ func (a *app) preview(l postLink) {
 	if a.fetch == nil || a.fetch.off {
 		return
 	}
-	var fetched sql.NullTime
-	var status string
-	err := a.db.QueryRow(`SELECT status, fetched_at FROM link_previews WHERE url = $1`, l.URL).Scan(&status, &fetched)
-	if err == nil && (status == "pending" || (fetched.Valid && time.Since(fetched.Time) < refreshAfter)) {
+	// Claim the link in one statement: a new link, or one neither pending nor fetched recently.
+	// Two feed loads at once cannot both claim it, so a link is fetched once at a time.
+	var id int64
+	err := a.db.QueryRow(`INSERT INTO link_previews (url, site, kind, status) VALUES ($1, $2, $3, 'pending')
+		ON CONFLICT (url) DO UPDATE SET status = 'pending'
+		WHERE link_previews.status <> 'pending' AND (link_previews.fetched_at IS NULL OR link_previews.fetched_at < now() - $4::interval)
+		RETURNING id`, l.URL, l.Site, l.Kind, fmt.Sprintf("%d seconds", int(refreshAfter.Seconds()))).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, err := a.db.Exec(`INSERT INTO link_previews (url, site, kind, status) VALUES ($1, $2, $3, 'pending') ON CONFLICT (url) DO NOTHING`, l.URL, l.Site, l.Kind); err != nil {
-			log.Printf("preview: %v", err)
-			return
-		}
-	} else if err != nil {
+	if err != nil {
 		log.Printf("preview: %v", err)
 		return
-	} else {
-		a.db.Exec(`UPDATE link_previews SET status = 'pending' WHERE url = $1`, l.URL)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*fetchTimeout)
 	defer cancel()
@@ -2826,8 +3021,8 @@ func (a *app) handlePreviewImage(w http.ResponseWriter, r *http.Request, u *user
 
 // flagsCached reads the flags at most every two seconds, for the security header on every file.
 func (a *app) flagsCached() map[string]bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.flagMu.Lock()
+	defer a.flagMu.Unlock()
 	if time.Since(a.flagsAt) < 2*time.Second && a.flagCache != nil {
 		return a.flagCache
 	}
@@ -2842,7 +3037,7 @@ func (a *app) flagsCached() map[string]bool {
 // csp is the Content-Security-Policy. The one exception to "self", a YouTube frame, exists only
 // while the videoEmbeds flag is on.
 func csp(embeds bool) string {
-	p := "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'self'"
+	p := "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 	if embeds {
 		p += "; frame-src https://www.youtube-nocookie.com"
 	}
@@ -2861,6 +3056,9 @@ func (a *app) handleTransitionLabels(w http.ResponseWriter, r *http.Request, u *
 	// Without consent only withdrawals are taken: a browser takes its marks back out after the
 	// profile has turned sharing off, so the change back to untested must still be accepted.
 	sharing := a.pref(u, "shareTransitions", false)
+	if !allowed(w, a.lim.marks, u, "suggestion updates") {
+		return
+	}
 	var in struct {
 		Prop   string `json:"prop"`
 		Deltas []struct {
@@ -2952,7 +3150,10 @@ func (a *app) handleTransitionCounts(w http.ResponseWriter, r *http.Request, u *
 
 // handleSuggestUsage adds to this week's counts of suggestions shown, added to a combo, and later
 // marked Works. No user is recorded.
-func (a *app) handleSuggestUsage(w http.ResponseWriter, r *http.Request, _ *user) {
+func (a *app) handleSuggestUsage(w http.ResponseWriter, r *http.Request, u *user) {
+	if !allowed(w, a.lim.marks, u, "suggestion updates") {
+		return
+	}
 	var in struct {
 		Shown, Added, Worked int
 	}
@@ -3151,11 +3352,98 @@ func openDB(dsn string) (*sql.DB, error) {
 		}
 		time.Sleep(time.Second)
 	}
-	if _, err = db.Exec(schema); err != nil {
-		return nil, err
+	return db, migrate(db)
+}
+
+// migrations change the schema in order, each exactly once, and are recorded in schema_migrations.
+// Append new ones; never edit or reorder one that has shipped. The first two are the schema as it
+// stood before versioning, written with IF NOT EXISTS, so a database from before versioning runs
+// them again harmlessly and is then recorded at version 2.
+var migrations = []string{schema, schemaSocial,
+	// 3: sessions also end when unused for sessionIdle.
+	`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ NOT NULL DEFAULT now()`,
+}
+
+// migrate brings the database up to the latest migration. An advisory lock keeps two starting
+// servers from migrating at once; each migration and its record commit together.
+func migrate(db *sql.DB) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
 	}
-	_, err = db.Exec(schemaSocial)
-	return db, err
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock(7130651)`); err != nil {
+		return err
+	}
+	defer conn.ExecContext(ctx, `SELECT pg_advisory_unlock(7130651)`)
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
+		return err
+	}
+	var have int
+	if err := conn.QueryRowContext(ctx, `SELECT COALESCE(max(version), 0) FROM schema_migrations`).Scan(&have); err != nil {
+		return err
+	}
+	for v := have + 1; v <= len(migrations); v++ {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[v-1]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d: %w", v, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES ($1)`, v); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if have > 0 {
+			log.Printf("schema: applied migration %d", v)
+		}
+	}
+	return nil
+}
+
+// housekeep removes rows nothing needs any more: expired sessions, notifications read and older
+// than 180 days, and link previews no post refers to (fetched over a day ago, so a preview for a
+// post being written now is kept). It returns how many rows each step removed.
+func (a *app) housekeep() (map[string]int64, error) {
+	steps := []struct{ name, sql string }{
+		{"sessions", `DELETE FROM sessions WHERE expires_at < now() OR last_seen < now() - interval '` + sessionIdle + `'`},
+		{"notifications", `DELETE FROM notifications WHERE read AND created_at < now() - interval '180 days'`},
+		{"previews", `DELETE FROM link_previews lp WHERE COALESCE(lp.fetched_at, now() - interval '2 days') < now() - interval '1 day'
+			AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.data->'links' @> jsonb_build_array(jsonb_build_object('url', lp.url)))`},
+	}
+	out := map[string]int64{}
+	for _, st := range steps {
+		res, err := a.db.Exec(st.sql)
+		if err != nil {
+			return out, fmt.Errorf("housekeeping %s: %w", st.name, err)
+		}
+		out[st.name], _ = res.RowsAffected()
+	}
+	return out, nil
+}
+
+// housekeeping runs housekeep at start and then every interval until ctx ends.
+func (a *app) housekeeping(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		if n, err := a.housekeep(); err != nil {
+			log.Print(err)
+		} else if n["sessions"]+n["notifications"]+n["previews"] > 0 {
+			log.Printf("housekeeping: removed %d expired sessions, %d old notifications, %d unused link previews", n["sessions"], n["notifications"], n["previews"])
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // seedAdmin creates the admin account once. It never resets an existing password.
@@ -3174,47 +3462,6 @@ func (a *app) seedAdmin(name, pw string) (int64, error) {
 		}
 	}
 	return id, err
-}
-
-// importLegacy moves the single-user files from before accounts existed into the
-// admin's account, once. The files are renamed, not deleted.
-func (a *app) importLegacy(adminID int64) {
-	if adminID == 0 {
-		return
-	}
-	state := filepath.Join(a.dataDir, "state.json")
-	if b, err := os.ReadFile(state); err == nil {
-		var doc document
-		if json.Unmarshal(b, &doc) == nil && len(doc.State) > 2 {
-			res, err := a.db.Exec(`INSERT INTO progress (user_id, prop, rev, state) VALUES ($1, 'nunchaku', $2, $3) ON CONFLICT DO NOTHING`,
-				adminID, max(doc.Rev, 1), string(doc.State))
-			if err != nil {
-				log.Printf("import: %v", err)
-				return
-			}
-			if n, _ := res.RowsAffected(); n == 1 {
-				log.Printf("imported earlier progress into the admin account")
-			}
-		}
-		os.Rename(state, state+".imported")
-	}
-	flagsFile := filepath.Join(a.dataDir, "flags.json")
-	if b, err := os.ReadFile(flagsFile); err == nil {
-		old := map[string]bool{}
-		if json.Unmarshal(b, &old) == nil {
-			keep := map[string]bool{}
-			for k, v := range old {
-				if _, ok := flagDefaults[k]; ok {
-					keep[k] = v
-				}
-			}
-			if err := a.setFlags(keep); err != nil {
-				log.Printf("import: %v", err)
-				return
-			}
-		}
-		os.Rename(flagsFile, flagsFile+".imported")
-	}
 }
 
 type asset struct {
@@ -3258,8 +3505,6 @@ func (a *app) handleStatic(assets map[string]asset) http.HandlerFunc {
 		w.Header().Set("Content-Type", f.ctype)
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("ETag", f.etag)
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", csp(a.flagsCached()["videoEmbeds"]))
 		if r.Header.Get("If-None-Match") == f.etag {
 			w.WriteHeader(http.StatusNotModified)
@@ -3282,6 +3527,7 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("GET /api/me", a.handleMe)
 	mux.HandleFunc("PUT /api/me", a.authed("", a.handlePutMe))
 	mux.HandleFunc("PUT /api/me/password", a.authed("", a.handlePassword))
+	mux.HandleFunc("POST /api/me/signout-others", a.authed("", a.handleSignoutOthers))
 	mux.HandleFunc("POST /api/signup", a.handleSignup)
 	mux.HandleFunc("POST /api/signin", a.handleSignin)
 	mux.HandleFunc("POST /api/signout", a.handleSignout)
@@ -3316,7 +3562,7 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /api/previews/{file}", a.authed("", a.handlePreviewImage))
 	mux.HandleFunc("GET /", a.handleStatic(assets))
-	return guard(mux)
+	return a.secure(guard(mux))
 }
 
 func main() {
@@ -3351,19 +3597,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a := &app{db: db, dataDir: *dataDir, fails: map[string]*failCount{}}
+	a := newApp(db, *dataDir)
+	for _, h := range strings.Split(os.Getenv("FLOWA_HOSTS"), ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			a.hosts = append(a.hosts, h)
+		}
+	}
 	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
 	a.fetch = newFetcher(os.Getenv("FLOWA_PREVIEW_BASE"), os.Getenv("FLOWA_PREVIEW_BASE") != "")
 	a.fetch.off = os.Getenv("FLOWA_PREVIEW_FETCH") == "off"
-	adminID, err := a.seedAdmin(os.Getenv("ADMIN_USER"), os.Getenv("ADMIN_PASSWORD"))
-	if err != nil {
+	if _, err := a.seedAdmin(os.Getenv("ADMIN_USER"), os.Getenv("ADMIN_PASSWORD")); err != nil {
 		log.Fatal(err)
 	}
-	a.importLegacy(adminID)
 	if err := a.seedCatalogs(); err != nil {
 		log.Fatal(err)
 	}
-	db.Exec(`DELETE FROM sessions WHERE expires_at < now()`)
 
 	assets, err := loadAssets()
 	if err != nil {
@@ -3374,6 +3622,7 @@ func main() {
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go a.housekeeping(ctx, time.Hour)
 	go func() {
 		<-ctx.Done()
 		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3543,6 +3792,7 @@ const (
 	maxPost      = 2000
 	maxComment   = 1000
 	maxImage     = 400000 // bytes of data URL; the client sends a resized JPEG
+	maxAvatar    = 120000 // the same for a profile picture
 	pageSize     = 20
 	maxAchKeys   = 60
 	maxNotifList = 40
@@ -3611,11 +3861,14 @@ func cleanLink(kind, v string) (string, bool) {
 }
 
 // mentions lists the usernames written as @name in a text, without repeats.
+// maxMentions is how many people one post or comment can notify; further names stay plain text.
+const maxMentions = 10
+
 func mentions(text string) []string {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, m := range mentionRE.FindAllStringSubmatch(strings.ToLower(text), -1) {
-		if !seen[m[1]] {
+		if !seen[m[1]] && len(out) < maxMentions {
 			seen[m[1]] = true
 			out = append(out, m[1])
 		}
@@ -3646,8 +3899,60 @@ func validStats(raw json.RawMessage) bool {
 	return true
 }
 
-func validImage(v string) bool {
-	return v == "" || ((strings.HasPrefix(v, "data:image/jpeg;base64,") || strings.HasPrefix(v, "data:image/png;base64,")) && len(v) <= maxImage)
+// cleanImage checks a picture sent as a data URL and encodes it again: JPEG or PNG only, at most
+// maxSide pixels a side, and at most maxLen characters as a data URL. Encoding it again keeps only
+// the pixels, so whatever else the file carried (the location a phone camera records, anything
+// hidden after the image data) is gone. An empty string stays empty.
+func cleanImage(v string, maxSide, maxLen int) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	kind := ""
+	for _, k := range []string{"jpeg", "png"} {
+		if strings.HasPrefix(v, "data:image/"+k+";base64,") {
+			kind = k
+		}
+	}
+	if kind == "" {
+		return "", errors.New("it must be a JPEG or PNG")
+	}
+	if len(v) > maxLen*2 {
+		return "", errors.New("it is too large")
+	}
+	raw, err := base64.StdEncoding.DecodeString(v[strings.IndexByte(v, ',')+1:])
+	if err != nil {
+		return "", errors.New("it is not valid base64")
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil || format != kind {
+		return "", errors.New("it is not a readable " + strings.ToUpper(kind))
+	}
+	if cfg.Width < 1 || cfg.Height < 1 || cfg.Width > maxSide || cfg.Height > maxSide {
+		return "", fmt.Errorf("it must be at most %d pixels on each side", maxSide)
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return "", errors.New("it is not a readable " + strings.ToUpper(kind))
+	}
+	for _, q := range []int{88, 78, 68} {
+		var buf bytes.Buffer
+		if kind == "png" {
+			err = png.Encode(&buf, img)
+		} else {
+			err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: q})
+		}
+		if err != nil {
+			return "", err
+		}
+		out := "data:image/" + kind + ";base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+		if len(out) <= maxLen {
+			return out, nil
+		}
+		if kind == "png" {
+			break
+		}
+	}
+	return "", errors.New("it is too large")
 }
 
 /* ---------- public view of a user ---------- */
@@ -3672,7 +3977,41 @@ func (u *user) public() pubUser {
 		v.Stats = json.RawMessage("{}")
 		u = &v
 	}
-	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Stats, u.Created, u.AvatarCfg}
+	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.avatarURL(), u.Bio, u.Links, u.Props, u.Stats, u.Created, u.AvatarCfg}
+}
+
+// avatarURL is where someone else's profile picture is fetched from, with a version that changes
+// with the picture. Lists and feeds carry this short URL instead of the whole picture.
+func (u *user) avatarURL() string {
+	if u.Avatar == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(u.Avatar))
+	return fmt.Sprintf("api/users/%d/avatar?v=%x", u.ID, sum[:6])
+}
+
+// handleAvatar serves a profile picture. The URL carries a version, so it can be cached.
+func (a *app) handleAvatar(w http.ResponseWriter, r *http.Request, _ *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var v string
+	err := a.db.QueryRow(`SELECT avatar FROM users WHERE id = $1`, id).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && v == "") {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	comma := strings.IndexByte(v, ',')
+	raw, err := base64.StdEncoding.DecodeString(v[comma+1:])
+	if comma < 0 || err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", strings.TrimSuffix(strings.TrimPrefix(v[:comma], "data:"), ";base64"))
+	w.Header().Set("Cache-Control", "private, max-age=604800")
+	w.Write(raw)
 }
 
 func (a *app) usersByID(ids []int64) (map[int64]pubUser, error) {
@@ -3703,8 +4042,10 @@ func statNum(raw json.RawMessage, key string) float64 {
 }
 
 // handleUserList is the people list: everyone, with the stats they reported, most XP first.
+// handleUserList is the people list: the 100 members with the most XP (hidden stats count as none).
 func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
-	rows, err := a.db.Query(`SELECT ` + userCols + ` FROM users u ORDER BY u.id`)
+	rows, err := a.db.Query(`SELECT ` + userCols + ` FROM users u
+		ORDER BY CASE WHEN NOT u.stats_hidden AND jsonb_typeof(u.stats->'xp') = 'number' THEN (u.stats->>'xp')::numeric ELSE 0 END DESC, u.id LIMIT 100`)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -3827,7 +4168,45 @@ func (a *app) achievementsOf(id int64) ([]achievement, error) {
 
 // handleAchievements records the achievements the client found unlocked. New ones get a
 // notification, and one milestone post for the batch unless the user turned that off.
+// badgeKeys are the badges the page awards (the registry in web/game.js); test/badges.js keeps the
+// two lists equal. Anything else is refused, so a client cannot invent badges.
+var badgeKeys = map[string]bool{
+	"sessions-1":   true,
+	"sessions-10":  true,
+	"sessions-50":  true,
+	"sessions-200": true,
+	"hours-10":     true,
+	"hours-50":     true,
+	"hours-100":    true,
+	"streak-3":     true,
+	"streak-7":     true,
+	"streak-30":    true,
+	"streak-100":   true,
+	"challenges-1": true,
+	"challenges-4": true,
+	"clean-1":      true,
+	"clean-10":     true,
+	"clean-50":     true,
+	"clean-100":    true,
+	"both-5":       true,
+	"both-20":      true,
+	"gates-1":      true,
+	"gates-5":      true,
+	"runs-10":      true,
+	"runs-50":      true,
+	"props-2":      true,
+	"week-5":       true,
+	"perf-1":       true,
+	"notes-10":     true,
+	"combo-1":      true,
+	"combo-ready":  true,
+	"first-post":   true,
+	"share-streak": true}
+
 func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user) {
+	if muted(w, u) || !allowed(w, a.lim.badges, u, "badge updates") {
+		return
+	}
 	var in struct {
 		Keys []string `json:"keys"`
 		Prop string   `json:"prop"`
@@ -3842,8 +4221,8 @@ func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user
 	}
 	fresh := []string{}
 	for _, k := range in.Keys {
-		if !achKeyRE.MatchString(k) {
-			fail(w, http.StatusBadRequest, "Bad achievement key: "+k)
+		if !badgeKeys[k] {
+			fail(w, http.StatusBadRequest, "There is no badge called "+strconv.Quote(k)+".")
 			return
 		}
 		var got string
@@ -4257,7 +4636,7 @@ func muted(w http.ResponseWriter, u *user) bool {
 }
 
 func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) {
-	if muted(w, u) {
+	if muted(w, u) || !allowed(w, a.lim.posts, u, "posts") {
 		return
 	}
 	var in struct {
@@ -4275,10 +4654,12 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		fail(w, http.StatusBadRequest, "Keep a post under 2000 characters.")
 		return
 	}
-	if !validImage(in.Image) {
-		fail(w, http.StatusBadRequest, "The picture must be a JPEG or PNG under 300 KB.")
+	img, err := cleanImage(in.Image, 2048, maxImage)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "That picture cannot be used: "+err.Error()+".")
 		return
 	}
+	in.Image = img
 	tags, ok := cleanTags(in.Tags)
 	if !ok {
 		fail(w, http.StatusBadRequest, "Tag up to 10 tricks from your props.")
@@ -4347,7 +4728,9 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var author int64
-	err := a.db.QueryRow(`DELETE FROM posts WHERE id = $1 AND (user_id = $2 OR $3) RETURNING user_id`, id, u.ID, can(u, permContentDelete)).Scan(&author)
+	// Authors delete their own posts; deleting someone else's needs the permission and a higher role.
+	err := a.db.QueryRow(`DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
+		AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.user_id`, id, u.ID, can(u, permContentDelete), pq.Array(below(u.Role))).Scan(&author)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such post, or it is not yours.")
 		return
@@ -4382,6 +4765,9 @@ func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, b
 }
 
 func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
+	if !allowed(w, a.lim.likes, u, "likes") {
+		return
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	owner, ok := a.postOwner(w, id, u)
 	if !ok {
@@ -4540,7 +4926,7 @@ func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (comment
 	var secs float64
 	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
 		FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1
-		AND ((c.hidden_at IS NULL AND p.hidden_at IS NULL) OR c.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+		AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "That comment is gone.")
 		return c, false
@@ -4607,7 +4993,7 @@ func startsWithMention(text, name string) bool {
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
-	if muted(w, u) {
+	if muted(w, u) || !allowed(w, a.lim.comments, u, "comments") {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -4777,8 +5163,11 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 	}
 	defer tx.Rollback()
 	var author, owner, parent int64
-	err = tx.QueryRow(`SELECT c.user_id, p.user_id, COALESCE(c.parent_id, 0) FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 FOR UPDATE OF c`, id).Scan(&author, &owner, &parent)
-	if err == nil && author != u.ID && owner != u.ID && !can(u, permContentDelete) {
+	var authorRole string
+	err = tx.QueryRow(`SELECT c.user_id, p.user_id, COALESCE(c.parent_id, 0), au.role FROM comments c JOIN posts p ON p.id = c.post_id JOIN users au ON au.id = c.user_id
+		WHERE c.id = $1 FOR UPDATE OF c`, id).Scan(&author, &owner, &parent, &authorRole)
+	// The author and the post's owner may delete; anyone else needs the permission and a higher role.
+	if err == nil && author != u.ID && owner != u.ID && !(can(u, permContentDelete) && outranks(u.Role, authorRole)) {
 		err = sql.ErrNoRows
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -4822,6 +5211,9 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 
 // handleLikeComment toggles a like on a comment in one statement either way.
 func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user) {
+	if !allowed(w, a.lim.likes, u, "likes") {
+		return
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	c, ok := a.commentRow(w, id, u)
 	if !ok {
@@ -4861,6 +5253,7 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 
 func (a *app) socialRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/users", a.authed("", a.handleUserList))
+	mux.HandleFunc("GET /api/users/{id}/avatar", a.authed("", a.handleAvatar))
 	mux.HandleFunc("GET /api/users/{username}", a.authed("", a.handleUserProfile))
 	mux.HandleFunc("GET /api/posts", a.authed("", a.handleGetPosts))
 	mux.HandleFunc("POST /api/posts", a.authed("", a.handleCreatePost))

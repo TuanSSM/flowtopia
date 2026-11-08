@@ -252,7 +252,7 @@ function pageProfile() {
       <label class="field">Current password<input type="password" name="current" autocomplete="current-password" required></label>
       <label class="field">New password<input type="password" name="next" autocomplete="new-password" minlength="8" maxlength="200" required></label>
       <p class="form-err" id="pw-err" role="alert" hidden></p>
-      <div><button class="btn" type="submit">Change password</button></div><p class="tiny">Changing it signs out your other devices.</p></div></form>
+      <div class="row wrap" style="gap:8px"><button class="btn" type="submit">Change password</button><button class="btn" type="button" data-act="signout-others">Sign out other devices</button></div><p class="tiny">Changing the password also signs out your other devices. A device unused for 14 days is signed out by itself.</p></div></form>
     <form class="card span-2" id="about-form"><div class="card-h"><h2 class="grow">About you</h2>${flags.community ? `<a class="small" href="#/u/${esc(me.username)}">View your public profile</a>` : ''}</div>
       <div class="stack" style="gap:12px">
         <label class="field">Bio<textarea name="bio" maxlength="300" placeholder="What you spin, where you practise, what you are working toward">${esc(me.bio || '')}</textarea></label>
@@ -308,6 +308,11 @@ document.addEventListener('click', async e => {
     case 'tip-ok': await updateMe({ seen: [...new Set([...(me.seen || []), d.k])] }); render(); break;
     case 'tour-replay': ui.replay = true; if (location.hash === '#/') render(); else location.hash = '#/'; break;
     case 'avatar-remove': await updateMe({ avatar: '' }, 'Picture removed.'); render(); break;
+    case 'signout-others': {
+      const r = await api('me/signout-others', 'POST');
+      toast(r.ok ? (r.data.ended ? `Signed out ${r.data.ended} other ${r.data.ended === 1 ? 'device' : 'devices'}.` : 'No other device was signed in.') : r.error);
+      break;
+    }
     case 'signout':
       if (dirty) { clearTimeout(saveTimer); await save(); }
       await api('signout', 'POST');

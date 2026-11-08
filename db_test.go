@@ -57,7 +57,8 @@ func newEnv(t *testing.T) *tenv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	a := &app{db: db, dataDir: t.TempDir(), fails: map[string]*failCount{}}
+	a := newApp(db, t.TempDir())
+	a.hosts = []string{"example.com"} // the Host httptest gives requests
 	return &tenv{t: t, a: a, h: a.routes(map[string]asset{})}
 }
 
@@ -168,6 +169,35 @@ func TestDBSchemaTwice(t *testing.T) {
 	}
 }
 
+func TestDBMigrations(t *testing.T) {
+	e := newEnv(t)
+	// newEnv migrated a fresh schema: every migration is recorded once.
+	if n := e.count(`SELECT count(*) FROM schema_migrations`); n != len(migrations) {
+		t.Fatalf("recorded %d of %d migrations", n, len(migrations))
+	}
+	// A second start applies nothing.
+	if err := migrate(e.a.db); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM schema_migrations`); n != len(migrations) {
+		t.Fatalf("after a second start: %d", n)
+	}
+	// A database from before versioning (tables, no record) takes the old schema again harmlessly.
+	if _, err := e.a.db.Exec(`DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := e.user("kept", "user")
+	if err := migrate(e.a.db); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM schema_migrations`); n != len(migrations) {
+		t.Fatalf("baseline: %d", n)
+	}
+	if got := e.must(200, tok, "GET", "/api/me", nil)["user"].(map[string]any)["username"]; got != "kept" {
+		t.Fatalf("data must survive: %v", got)
+	}
+}
+
 func TestDBReplies(t *testing.T) {
 	e := newEnv(t)
 	ownerID, owner := e.user("owner", "user")
@@ -261,6 +291,7 @@ func TestDBDeleteKeepsThread(t *testing.T) {
 
 func TestDBCommentPaging(t *testing.T) {
 	e := newEnv(t)
+	e.a.lim.comments = newLimiter(1000, time.Hour) // this test writes 200 comments as one member
 	_, owner := e.user("owner", "user")
 	p := e.post(owner, "busy post")
 	var first int64
@@ -988,4 +1019,182 @@ func TestDBAvatars(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM users WHERE id = $1 AND avatar_cfg = '{}'`, bID); n != 1 {
 		t.Fatal("the avatar was not removed")
 	}
+}
+
+func TestDBHousekeeping(t *testing.T) {
+	e := newEnv(t)
+	uid, tok := e.user("hana", "user")
+	e.a.db.Exec(`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ('old', $1, now() - interval '1 hour')`, uid)
+	e.a.db.Exec(`INSERT INTO notifications (user_id, kind, read, created_at) VALUES ($1, 'like', true, now() - interval '200 days'), ($1, 'like', false, now() - interval '200 days'), ($1, 'like', true, now())`, uid)
+	pid := e.post(tok, "with a link")
+	e.a.db.Exec(`UPDATE posts SET data = '{"links":[{"url":"https://youtu.be/kept"}]}' WHERE id = $1`, pid)
+	e.a.db.Exec(`INSERT INTO link_previews (url, site, kind, fetched_at) VALUES ('https://youtu.be/kept', 'youtube', 'video', now() - interval '3 days'),
+		('https://youtu.be/gone', 'youtube', 'video', now() - interval '3 days'), ('https://youtu.be/new', 'youtube', 'video', now())`)
+	n, err := e.a.housekeep()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n["sessions"] != 1 || n["notifications"] != 1 || n["previews"] != 1 {
+		t.Fatalf("removed: %v", n)
+	}
+	// The live session, unread and recent notifications, and previews in use or just fetched stay.
+	e.must(200, tok, "GET", "/api/me", nil)
+	if c := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1`, uid); c != 2 {
+		t.Fatalf("notifications left: %d", c)
+	}
+	if c := e.count(`SELECT count(*) FROM link_previews WHERE url IN ('https://youtu.be/kept', 'https://youtu.be/new')`); c != 2 {
+		t.Fatalf("previews left: %d", c)
+	}
+}
+
+func TestDBHardening(t *testing.T) {
+	e := newEnv(t)
+	adminID, admin := e.user("boss", "admin")
+	admin2ID, admin2 := e.user("boss2", "admin")
+	modID, mod := e.user("mona", "moderator")
+	_, mod2 := e.user("milo", "moderator")
+	userID, member := e.user("una", "user")
+
+	// Deleting someone else's post or comment needs a higher role (S2).
+	adminPost := e.post(admin, "admin's post")
+	e.must(404, mod, "DELETE", fmt.Sprintf("/api/posts/%d", adminPost), nil)
+	modPost := e.post(mod2, "a moderator's post")
+	e.must(404, mod, "DELETE", fmt.Sprintf("/api/posts/%d", modPost), nil)
+	e.must(200, admin, "DELETE", fmt.Sprintf("/api/posts/%d", modPost), nil)
+	memberPost := e.post(member, "a member's post")
+	adminComment := num(e.comment(admin, memberPost, 0, "from the admin")["id"])
+	e.must(404, mod, "DELETE", fmt.Sprintf("/api/comments/%d", adminComment), nil)
+	e.must(200, member, "DELETE", fmt.Sprintf("/api/comments/%d", adminComment), nil) // the post's owner may
+	memberComment := num(e.comment(member, adminPost, 0, "from a member")["id"])
+	e.must(200, mod, "DELETE", fmt.Sprintf("/api/comments/%d", memberComment), nil)
+	ownPost := e.post(mod, "mine")
+	e.must(200, mod, "DELETE", fmt.Sprintf("/api/posts/%d", ownPost), nil)
+
+	// One admin cannot reset another's password, delete them, or reset their own here (S3).
+	pw := map[string]any{"next": "a new password 123"}
+	e.must(404, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/password", admin2ID), pw)
+	e.must(400, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/password", adminID), pw)
+	e.must(200, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/password", modID), pw)
+	e.must(403, admin, "DELETE", fmt.Sprintf("/api/admin/users/%d", admin2ID), nil)
+	e.must(200, admin2, "GET", "/api/me", nil)
+
+	// A commenter cannot keep reading or writing in a thread on a hidden post (S10).
+	p := e.post(member, "soon hidden")
+	_, carl := e.user("carl", "user")
+	root := num(e.comment(carl, p, 0, "first")["id"])
+	e.comment(member, p, root, "reply")
+	e.a.db.Exec(`UPDATE posts SET hidden_at = now(), hidden_reason = 'spam' WHERE id = $1`, p)
+	e.must(404, carl, "GET", fmt.Sprintf("/api/comments/%d/replies", root), nil)
+	e.must(404, carl, "POST", fmt.Sprintf("/api/comments/%d/like", root), nil)
+	e.must(200, member, "GET", fmt.Sprintf("/api/comments/%d/replies", root), nil)
+
+	// Only known badges, and not while muted (S7).
+	e.must(400, member, "POST", "/api/achievements", map[string]any{"keys": []string{"made-up-badge"}, "prop": "nunchaku"})
+	e.must(200, member, "POST", "/api/achievements", map[string]any{"keys": []string{"sessions-1"}, "prop": "nunchaku"})
+	e.a.db.Exec(`UPDATE users SET muted_until = now() + interval '1 hour' WHERE id = $1`, userID)
+	e.must(403, member, "POST", "/api/achievements", map[string]any{"keys": []string{"sessions-10"}, "prop": "nunchaku"})
+	e.a.db.Exec(`UPDATE users SET muted_until = NULL WHERE id = $1`, userID)
+
+	// Allowances per hour (S8).
+	e.a.lim.posts = newLimiter(2, time.Hour)
+	_, fast := e.user("fast", "user")
+	e.post(fast, "one")
+	e.post(fast, "two")
+	e.must(429, fast, "POST", "/api/posts", map[string]any{"body": "three"})
+
+	// Progress documents up to 512 KB (S6).
+	big := strings.Repeat("x", maxProgress)
+	if code, _ := e.do(member, "PUT", "/api/progress/nunchaku", map[string]any{"rev": 0, "state": map[string]any{"notes": big}}); code < 400 {
+		t.Fatalf("a progress document over the limit was taken (%d)", code)
+	}
+
+	// Pictures: cleaned on the way in, and served by URL to others (S9, S6).
+	pic := dataURL(t, "jpeg", 40, 40, []byte("GPS 1,2"))
+	e.must(200, member, "PUT", "/api/me", map[string]any{"avatar": pic})
+	e.must(400, member, "PUT", "/api/me", map[string]any{"avatar": "data:image/svg+xml;base64,PHN2Zy8+"})
+	list := e.must(200, admin, "GET", "/api/users", nil)["users"].([]any)
+	var url string
+	for _, x := range list {
+		if m := x.(map[string]any); m["username"] == "una" {
+			url = m["avatar"].(string)
+		}
+	}
+	if !strings.HasPrefix(url, fmt.Sprintf("api/users/%d/avatar?v=", userID)) {
+		t.Fatalf("the people list should carry a picture URL, got %.40q", url)
+	}
+	r := httptest.NewRequest("GET", "/"+url, nil)
+	r.AddCookie(&http.Cookie{Name: cookieName, Value: admin})
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	if w.Code != 200 || w.Header().Get("Content-Type") != "image/jpeg" || bytes.Contains(w.Body.Bytes(), []byte("GPS")) {
+		t.Fatalf("picture: %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
+
+	// Headers on API responses, and the Host check (S4, S11).
+	r = httptest.NewRequest("GET", "/api/me", nil)
+	w = httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	for k, v := range map[string]string{"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cross-Origin-Opener-Policy": "same-origin"} {
+		if w.Header().Get(k) != v {
+			t.Errorf("%s: %q", k, w.Header().Get(k))
+		}
+	}
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+		t.Error("API responses need frame-ancestors 'none'")
+	}
+	r = httptest.NewRequest("POST", "/api/signup", strings.NewReader(`{"username":"rebind","password":"long enough pw"}`))
+	r.Host = "rebind.attacker.example"
+	r.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	if w.Code != http.StatusMisdirectedRequest || e.count(`SELECT count(*) FROM users WHERE username = 'rebind'`) != 0 {
+		t.Fatalf("a request for a foreign name must be refused: %d", w.Code)
+	}
+
+	// Sessions: sign out other devices, and an unused session ends (S12).
+	other := e.session(userID)
+	got := e.must(200, member, "POST", "/api/me/signout-others", nil)
+	if num(got["ended"]) < 1 {
+		t.Fatalf("ended: %v", got)
+	}
+	signedIn := func(tok string) bool { return e.must(200, tok, "GET", "/api/me", nil)["user"] != nil }
+	if signedIn(other) || !signedIn(member) {
+		t.Fatal("only the other device is signed out")
+	}
+	idle := e.session(userID)
+	e.a.db.Exec(`UPDATE sessions SET last_seen = now() - interval '15 days' WHERE token_hash = $1`, tokenHash(idle))
+	if signedIn(idle) {
+		t.Fatal("a session unused for 15 days must end")
+	}
+	_ = adminID
+}
+
+func TestDBSigninLimits(t *testing.T) {
+	e := newEnv(t)
+	e.must(200, "", "POST", "/api/signup", map[string]any{"username": "vic", "password": "the right password"})
+	bad := map[string]any{"username": "vic", "password": "wrong password"}
+	// Per address and username: 8 failures, then even the right password waits (S5).
+	for i := 0; i < maxFails; i++ {
+		e.must(401, "", "POST", "/api/signin", bad)
+	}
+	e.must(429, "", "POST", "/api/signin", map[string]any{"username": "vic", "password": "the right password"})
+	// Per address across usernames: spraying many accounts is limited too.
+	e.a.lim.signin = newLimiter(maxFails, failWindow)
+	e.a.lim.signinIP = newLimiter(3, failWindow)
+	for _, n := range []string{"amy", "ben", "cat"} {
+		e.must(401, "", "POST", "/api/signin", map[string]any{"username": n, "password": "guess guess"})
+	}
+	e.must(429, "", "POST", "/api/signin", map[string]any{"username": "dan", "password": "guess guess"})
+	// Sign-ups per address.
+	e.a.lim.signup = newLimiter(1, time.Hour)
+	e.must(200, "", "POST", "/api/signup", map[string]any{"username": "one1", "password": "long enough pw"})
+	e.must(429, "", "POST", "/api/signup", map[string]any{"username": "two2", "password": "long enough pw"})
+	// Wrong current passwords on the profile.
+	vid := int64(e.count(`SELECT id FROM users WHERE username = 'vic'`))
+	tok := e.session(vid)
+	e.a.lim.password = newLimiter(2, failWindow)
+	for i := 0; i < 2; i++ {
+		e.must(403, tok, "PUT", "/api/me/password", map[string]any{"current": "nope nope", "next": "another password"})
+	}
+	e.must(429, tok, "PUT", "/api/me/password", map[string]any{"current": "the right password", "next": "another password"})
 }

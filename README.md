@@ -57,28 +57,57 @@ under `docs/epic-<code>/todo.md`.
 ## Run
 
 ```sh
-./deploy.sh                 # builds the binary on the host, rebuilds the image, recreates the containers
+./deploy.sh                 # runs the Go tests, builds the binary, rebuilds the image, recreates the containers
+./deploy.sh --rollback      # back to the image that ran before the last deploy
+./backup.sh                 # a full database dump to data/backups (see Data)
 docker logs nunchaku
 ```
+
+`deploy.sh` keeps the image that was running as `nunchaku:previous` and goes back to it by itself if
+the new container does not become healthy within 90 seconds. Both containers have CPU, memory and
+process limits in `compose.yml`, so the app cannot starve the printer stack on the same Pi.
 
 Two containers (`compose.yml`): `nunchaku` (the app) and `nunchaku-db` (Postgres 16, data in the
 `pgdata` Docker volume, not exposed outside Docker). Secrets are in `.env` (mode 600):
 the database password, and the admin name and password used to create the admin on first start.
-Changing the admin password in `.env` later does nothing; change it on the Profile page.
+Changing the admin password in `.env` later does nothing; change it on the Profile page. Once the
+admin exists, remove `ADMIN_PASSWORD` from `.env`: it is otherwise kept in the container's
+environment, where `docker inspect` shows it.
+
+The app answers only to IP addresses, `localhost`, single-label names such as `raspi`, and private
+names (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`, `.ts.net`). To reach it
+by any other name, list it in `FLOWA_HOSTS` in `.env` (comma-separated). This stops a website from
+pointing its own name at the Pi and talking to Flowa from a visitor's browser (DNS rebinding).
 
 ## Data
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
   likes, comments, notifications, achievements, reports, the audit log and catalog revisions.
 - Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
-- `data/backups/progress-DATE.json` is written before the first change each day, kept 14 days.
-  Posts and comments are not in it; the database dump below covers them.
-- Full database dump: `docker exec nunchaku-db pg_dump -U flowa flowa > flowa.sql`
-- The files from before accounts existed were imported into the admin account and renamed `*.imported`.
+- `data/backups/progress-DATE.json` is written by the app before the first change each day, kept
+  14 days. It holds progress documents only.
+- `./backup.sh` writes a full, compressed dump of the database (accounts, posts, comments, progress,
+  catalogs, everything) to `data/backups/flowa-DATE.dump`, checks it can be read back, and keeps 14.
+  Run it daily from cron: `17 3 * * * /home/pi/nunchaku/backup.sh >> /home/pi/nunchaku/data/backups/backup.log 2>&1`.
+  Restore into an empty database with the app stopped:
+  `docker exec -i nunchaku-db pg_restore -U flowa -d flowa --clean --if-exists < data/backups/flowa-DATE.dump`
+- The schema changes through numbered migrations (`migrations` in `main.go`, recorded in
+  `schema_migrations`), each applied once at start. An hourly job removes expired or unused
+  sessions, notifications read more than 180 days ago, and link previews no post uses.
 
 The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
-outbound requests the server makes are link previews to Instagram, TikTok and YouTube.
+outbound requests the server makes are link previews to Instagram, TikTok and YouTube. Every response
+forbids framing by other sites and MIME sniffing and sends no referrer.
+
+Limits: at most two password hashes run at once; failed sign-ins are counted per address and username
+(8 in 10 minutes), per address (30) and per account (20); 10 sign-ups per address per hour; 5 wrong
+current passwords per member in 10 minutes; and per member per hour, 30 posts, 120 comments, 600 likes,
+60 badge updates and 120 suggestion updates. A post or comment notifies at most 10 mentioned people.
+Pictures are decoded and encoded again on upload, which keeps only the pixels (no camera location),
+and other people's pictures are fetched by URL rather than carried in every list. Sessions end after
+30 days, or after 14 days unused; the profile can sign out every other device. The review behind these
+is [docs/hardening-plan.md](docs/hardening-plan.md).
 
 ## Feature flags
 
@@ -169,6 +198,10 @@ returns the signed-in user's permissions so the interface shows only what the se
 | Admin | Also: change roles, feature flags, reset passwords, delete accounts, read the audit log, publish and restore skill maps |
 
 Nobody acts on someone of their own role or higher, or on themself, and Flowa always keeps one admin.
+That covers deleting someone's posts and comments: a moderator cannot delete an admin's or another
+moderator's. Admins are peers for roles (an admin can change another admin's role, which is audited),
+but no admin can reset another admin's password or delete their account, and an admin changes their
+own password on the Profile page, with the current one.
 
 - **Reports** (behind `moderation`): on a post, comment or profile, with a reason (spam, harassment, unsafe
   advice, not about flow arts, other) and a note; one open report per person and target, ten a day.

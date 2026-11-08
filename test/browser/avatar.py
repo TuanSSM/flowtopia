@@ -91,7 +91,9 @@ try:
     js("const t=document.querySelector('#compose-form textarea');t.value='My avatar is here';t.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#compose-form').requestSubmit()");time.sleep(2)
     pid=wait(lambda: js("return document.querySelector('.post')?.dataset.post"))
     js("const f=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .cmt-form');if(f){f.body.value='And here';f.requestSubmit()}",pid);time.sleep(2)
-    check('the headshot shows on the post and on the comment',js("const p=document.querySelector('.post[data-post=\"'+arguments[0]+'\"]');return !!p&&!!p.querySelector('header img.avatar')?.src.startsWith('data:image/jpeg')&&[...p.querySelectorAll('.cmt img.avatar')].some(i=>i.src.startsWith('data:image/jpeg'))",pid))
+    # Others see the picture by URL (lists and feeds do not carry it inline); it must load.
+    time.sleep(1)
+    check('the headshot shows on the post and on the comment',js("const p=document.querySelector('.post[data-post=\"'+arguments[0]+'\"]'),ok=i=>!!i&&i.src.includes('/api/users/')&&i.complete&&i.naturalWidth>0;return !!p&&ok(p.querySelector('header img.avatar'))&&[...p.querySelectorAll('.cmt img.avatar')].some(ok)",pid))
     # ---- Someone else's avatar plays a skill they have clean, on their profile.
     bea=account('bea');api(bea,'me',{'avatarCfg':HEAVY},'PUT')
     api(bea,'progress/nunchaku',{'rev':0,'state':{'skills':{'F5':{'O':2},'F3':{'O':1}}}},'PUT')

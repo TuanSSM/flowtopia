@@ -19,6 +19,10 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
+    # Bounds, so a flood of requests cannot take the CPU or memory the printer stack needs.
+    cpus: "1.5"
+    mem_limit: 384m
+    pids_limit: 128
     logging:
       driver: json-file
       options: { max-size: 1m, max-file: "2" }
@@ -37,11 +41,17 @@ services:
       # The admin account is created on first start only. Changing these later does nothing.
       ADMIN_USER: ${ADMIN_USER:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # Extra names the app answers to, comma-separated (IP addresses, localhost and private
+      # names such as raspi or raspi.local always work).
+      FLOWA_HOSTS: ${FLOWA_HOSTS:-}
     volumes:
       - ./data:/data
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    cpus: "2"
+    mem_limit: 384m
+    pids_limit: 256
     logging:
       driver: json-file
       options: { max-size: 1m, max-file: "2" }
