@@ -2841,10 +2841,9 @@ func csp(embeds bool) string {
 var transitionMarks = []string{"untested", "works", "bridge", "blocked"}
 
 func (a *app) handleTransitionLabels(w http.ResponseWriter, r *http.Request, u *user) {
-	if !a.pref(u, "shareTransitions", false) {
-		fail(w, http.StatusForbidden, "Sharing transition marks is off in your profile.")
-		return
-	}
+	// Without consent only withdrawals are taken: a browser takes its marks back out after the
+	// profile has turned sharing off, so the change back to untested must still be accepted.
+	sharing := a.pref(u, "shareTransitions", false)
 	var in struct {
 		Prop   string `json:"prop"`
 		Deltas []struct {
@@ -2870,6 +2869,10 @@ func (a *app) handleTransitionLabels(w http.ResponseWriter, r *http.Request, u *
 	for _, d := range in.Deltas {
 		if !skillIDRE.MatchString(d.A) || !skillIDRE.MatchString(d.B) || !slices.Contains(transitionMarks, d.From) || !slices.Contains(transitionMarks, d.To) {
 			fail(w, http.StatusBadRequest, "Each change names two skill ids and two marks.")
+			return
+		}
+		if !sharing && d.To != "untested" {
+			fail(w, http.StatusForbidden, "Sharing transition marks is off in your profile.")
 			return
 		}
 		if d.From == d.To {

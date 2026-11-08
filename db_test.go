@@ -931,6 +931,15 @@ func TestDBTransitionCounts(t *testing.T) {
 	if all := e.must(200, admin, "GET", "/api/suggest/counts", nil)["counts"].([]any); len(all) != 1 {
 		t.Fatalf("export: %v", all)
 	}
+	// Turning sharing off first and then withdrawing (what the profile page does) takes the mark out;
+	// without consent nothing else is accepted.
+	e.must(200, c, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"shareTransitions": false}})
+	e.must(403, c, "POST", "/api/suggest/labels", label)
+	e.must(403, c, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "works", "to": "untested"}, {"a": "F5", "b": "F8", "from": "untested", "to": "works"}}})
+	e.must(200, c, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "works", "to": "untested"}}})
+	if got := e.must(200, c, "GET", "/api/suggest/counts?prop=nunchaku", nil)["counts"].([]any); len(got) != 0 {
+		t.Fatalf("after withdrawal: %v", got)
+	}
 	_ = bID
 	// Usage counters feed the dashboard.
 	e.must(200, b, "POST", "/api/suggest/usage", map[string]any{"shown": 5, "added": 2, "worked": 1})

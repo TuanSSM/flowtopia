@@ -64,6 +64,8 @@ clean, never through a transition they marked Blocked (Dijkstra over the transit
 People who tick "Help improve next-trick suggestions" in their profile share their transition marks.
 The browser keeps what it last shared in the progress document and sends only the difference, so a
 changed mark moves a count, a deleted combo takes its marks back, and unticking takes everything back.
+Without consent the server accepts only those withdrawals (a change back to untested), since the page
+sends them after the profile has already turned sharing off.
 The server keeps counts per pair of skills (`transition_counts`) with no user column; a test checks the
 table has none. "Not a good fit" on a suggestion counts as Blocked when sharing is on.
 
