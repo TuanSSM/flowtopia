@@ -33,15 +33,38 @@ try:
     # Timeline: post, mention, like, comment.
     nav('#/timeline',2)
     check('the people list has both users, with a level each',js("return [...document.querySelectorAll('.person b')].map(b=>b.textContent).sort().join()")=='Admin,Sam Spins' and 'Level' in txt('.person .tiny'))
-    js("const f=document.querySelector('#compose-form');f.body.value='Worked on F7 today. Thanks @sam for the tip!';f.skill.value='F7';f.requestSubmit()");time.sleep(1.5)
+    # Trick chips: the picker searches every prop's skills and the user's combos.
+    click('[data-act=pick-open]');time.sleep(.8)
+    check('the trick picker opens with a search box and the props of the user',js("return document.activeElement.id")=='pick-q' and 'Nunchaku' in txt('.pick-list'))
+    js("const q=document.querySelector('#pick-q');q.value='six dir';q.dispatchEvent(new Event('input',{bubbles:true}))");time.sleep(.5)
+    check('typing filters to the matching trick',js("return [...document.querySelectorAll('.pick-i .tag')].map(t=>t.textContent)")==['F5'],js("return [...document.querySelectorAll('.pick-i .tag')].map(t=>t.textContent)"))
+    js("document.querySelector('#pick-q').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))");time.sleep(.8)
+    js("const q=document.querySelector('#pick-q');q.value='F7';q.dispatchEvent(new Event('input',{bubbles:true}))");time.sleep(.5);click('.pick-i');time.sleep(.8)
+    check('Enter and a click each add a chip, and the picker stays open for more',js("return [...document.querySelectorAll('.draft-chips .chip.trick b')].map(b=>b.textContent)")==['F5','F7'] and js("return !!document.querySelector('#pick-q')"))
+    click('[data-act=pick-close]');time.sleep(.5)
+    click('[data-act=tag-rm][data-skill=F5]');time.sleep(.5)
+    check('a chip can be removed',js("return [...document.querySelectorAll('.draft-chips .chip.trick b')].map(b=>b.textContent)")==['F7'])
+    js("const f=document.querySelector('#compose-form');f.body.value='Worked on F7 today. Thanks @sam for the tip!';f.requestSubmit()");time.sleep(1.5)
     post=wait(lambda: js("return [...document.querySelectorAll('.post')].find(p=>p.textContent.includes('Worked on F7'))?.dataset.post"))
-    check('a post appears at once, with the skill tag and the mention linked',bool(post) and js("return document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .chip[href=\"#/prop/nunchaku/F/F7\"]')!==null&&document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .post-body a[href=\"#/u/sam\"]')!==null",post))
+    check('a post appears at once, with the trick chip and the mention linked',bool(post) and js("return document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .post-tags .chip[href=\"#/prop/nunchaku/F/F7\"]')!==null&&document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .post-body a[href=\"#/u/sam\"]')!==null",post))
+    check('the tags are saved on the post',get(op,f'posts/{post}')['posts'][0]['data']=={'tags':[{'prop':'nunchaku','skill':'F7'}]})
+    check('bad tags and combos are refused',refused(op,'posts',{'body':'x','tags':[{'prop':'drums','skill':'F1'}]}) and refused(op,'posts',{'body':'x','combo':{'name':'c','prop':'nunchaku','seq':[]}}))
+    # Publish a combo from the Combos page.
+    nav('#/combos',2);js("const f=document.querySelector('#combo-form');f.name.value='Morning loop';f.requestSubmit()");time.sleep(1.2)
+    for sid in ['F5','F7','R1']: js("const s=document.querySelector('[data-change=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}))",sid);time.sleep(1)
+    click('[data-act=combo-publish]');time.sleep(1.5)
+    check('Publish opens the composer with the combo attached and a line to edit',js("return location.hash")=='#/timeline' and 'Morning loop' in txt('.draft-chips .combo-chip') and js("return document.querySelector('#compose-form textarea').value").startswith('New combo: Morning loop'))
+    js("document.querySelector('#compose-form').requestSubmit()");time.sleep(1.5)
+    cpost=wait(lambda: js("return [...document.querySelectorAll('.post')].find(p=>p.textContent.includes('New combo'))?.dataset.post"))
+    check('the post shows the combo with its skills in order, each linking to the skill',js("return [...document.querySelectorAll('.post[data-post=\"'+arguments[0]+'\"] .combo-seq a')].map(a=>a.getAttribute('href'))",cpost)==['#/prop/nunchaku/F/F5','#/prop/nunchaku/F/F7','#/prop/nunchaku/R/R1'] and 'Reliable' in txt(f'.post[data-post="{cpost}"] .post-combo'))
+    check('the owner can open the combo from the post',js("return document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .post-combo a.small')?.getAttribute('href')",cpost).startswith('#/combos/'))
+    api(op,f'posts/{cpost}',{},'DELETE')
     n2=get(sam,'notifications')
     check('the mentioned user is notified',n2['unread']==1 and n2['items'][0]['kind']=='mention',n2)
     first=get(op,'me')
     check('the first post unlocks a badge',any(a['key']=='first-post' for a in first['achievements']),[a['key'] for a in first['achievements']])
     api(sam,f'posts/{post}/like',{});api(sam,f'posts/{post}/comments',{'body':'Nice one @admin, keep it up'})
-    sp=api(sam,'posts',{'body':'Poi flowers all evening','prop':'poi','skill':'F2'})['posts'][0]['id']
+    sp=api(sam,'posts',{'body':'Poi flowers all evening','tags':[{'prop':'poi','skill':'F2'}]})['posts'][0]['id']
     api(sam,f'posts/{post}/like',{});api(sam,f'posts/{post}/like',{})  # unlike and like again: still one notification
     # Earlier suites on the same database may already have unlocked badges, so count kinds, not items.
     mine=get(op,'notifications');kinds=[i['kind'] for i in mine['items']];unread=mine['unread']
@@ -60,6 +83,7 @@ try:
     check('only the author or an admin can delete a post',refused(sam,f'posts/{post}',{},'DELETE') and not refused(op,f'posts/{sp}',{},'DELETE'))
     # Achievements: a session unlocks badges, which post a milestone and show in the bell.
     nav('#/practice',1.5)
+    js("const s=document.querySelector('[data-change=focus-add]');s.value='F7';s.dispatchEvent(new Event('change',{bubbles:true}))");time.sleep(.6)
     js("const f=document.querySelector('#log-form');f.minutes.value='35';f.requestSubmit()");time.sleep(1)
     ach=wait(lambda: [a['key'] for a in get(op,'me')['achievements'] if a['key']=='sessions-1'])
     check('logging a session unlocks First steps',ach==['sessions-1'],ach)
@@ -69,6 +93,11 @@ try:
     check('the user is notified of the badge',any(i['kind']=='achievement' and i['text']=='sessions-1' for i in get(op,'notifications')['items']))
     stats=wait(lambda: get(op,'me')['user'].get('stats') or None)
     check('level, XP and streak are reported for the profile',stats and stats['streak']==1 and stats['xp']>=45 and stats['level']>=1 and stats['sessions']==1,stats)
+    nav('#/timeline',2)
+    check("today's session suggests its tricks with one tap",'Today' in txt('.sugg') and js("return [...document.querySelectorAll('.sugg .chip')].map(c=>c.textContent)")==['F7'])
+    click('.sugg .chip');time.sleep(.6)
+    check('a suggested trick becomes a chip',js("return [...document.querySelectorAll('.draft-chips .chip.trick b')].map(b=>b.textContent)")==['F7'])
+    js("document.querySelector('[data-act=tag-rm]').click()");time.sleep(.3)
     nav('#/achievements',2)
     check('the achievements page shows the badge unlocked, the level and a one-day streak',js("return [...document.querySelectorAll('.badge.on b')].map(b=>b.textContent)").count('First steps')==1 and txt('.level-ring b')=='1' and txt('.streak-card .val').startswith('1'))
     check('weekly challenges show progress',js("return document.querySelectorAll('.ch').length")==4 and '1 of 4' in txt('.ch .tiny'))
