@@ -4,7 +4,8 @@
 # Commits on main follow Conventional Commits (CLAUDE.md, "Commit types"): with squash merges the
 # PR title is the commit, and CI checks the title. A breaking change (`feat!: ...`, or a line
 # starting `BREAKING CHANGE:`) makes a major release, `feat` a minor one, and every other type a
-# patch. Commits from before the repository used Conventional Commits are listed as earlier changes.
+# patch. Commits from before the repository used Conventional Commits are listed as earlier changes,
+# with their full title (a title like "Profiles: ..." would otherwise lose its first word).
 
 [changelog]
 header = ""
@@ -13,7 +14,11 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | striptags | trim }}
 {% for commit in commits %}
+{% if group is containing("Earlier") -%}
+- {{ commit.raw_message | split(pat="\n") | first | trim }}\
+{% else -%}
 - {% if commit.breaking %}**Breaking:** {% endif %}{% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | split(pat="\n") | first | trim | upper_first }}\
+{% endif -%}
 {% endfor %}
 {% endfor %}
 """
