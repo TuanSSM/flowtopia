@@ -92,7 +92,7 @@ in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
 ## Data
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
-  likes, comments, notifications, achievements, reports, the audit log and catalog revisions.
+  likes, comments, bookmarks, notifications, achievements, reports, the audit log and catalog revisions.
 - Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
 - `data/backups/progress-DATE.json` is written by the app before the first change each day, kept
   14 days. It holds progress documents only.
@@ -103,7 +103,8 @@ in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
   `docker exec -i nunchaku-db pg_restore -U flowa -d flowa --clean --if-exists < data/backups/flowa-DATE.dump`
 - The schema changes through numbered migrations (`migrations` in `main.go`, recorded in
   `schema_migrations`), each applied once at start. An hourly job removes expired or unused
-  sessions, notifications read more than 180 days ago, and link previews no post uses.
+  sessions, notifications read more than 180 days ago, link previews no post uses, and bookmarks of
+  posts that were deleted.
 
 The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
@@ -113,7 +114,7 @@ forbids framing by other sites and MIME sniffing and sends no referrer.
 Limits: at most two password hashes run at once; failed sign-ins are counted per address and username
 (8 in 10 minutes), per address (30) and per account (20); 10 sign-ups per address per hour; 5 wrong
 current passwords per member in 10 minutes; and per member per hour, 30 posts, 120 comments, 600 likes,
-60 badge updates and 120 suggestion updates. A post or comment notifies at most 10 mentioned people.
+60 badge updates, 120 suggestion updates and 300 bookmark changes (at most 500 bookmarks each). A post or comment notifies at most 10 mentioned people.
 Pictures are decoded and encoded again on upload, which keeps only the pixels (no camera location),
 and other people's pictures are fetched by URL rather than carried in every list. Sessions end after
 30 days, or after 14 days unused; the profile can sign out every other device. The review behind these
@@ -128,8 +129,8 @@ guided tour, `community` is the timeline, public profiles, people list and notif
 levels, streak sharing, challenges, achievements and quests, `moderation` is reports, the queue, hiding,
 mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and
 YouTube links into cards, `videoEmbeds` plays YouTube in place (it adds youtube-nocookie.com frames to
-the page security policy), `suggest` is next-trick suggestions, and `avatars` is avatars, body presets
-and stickers.
+the page security policy), `suggest` is next-trick suggestions, `avatars` is avatars, body presets
+and stickers, and `bookmarks` is the Bookmarks page.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -162,6 +163,18 @@ user reports for their profile and the people list (the community section of `ma
   an unlock card, a notification and one milestone post per batch.
 - **Plan as quests.** Each phase shows its skills as chips, the skill XP earned of what it holds, and
   the XP its gate pays; the page opens with the prop's XP, the week's challenges and a focus skill.
+
+## Bookmarks
+
+A member can bookmark a skill (the bookmark button in its details panel; the skill's node in the
+dependency tree then carries a small marker), a combo (the button in its header) and a post (the
+third button under it, with like and comment). The Bookmarks page in the navigation lists all three,
+newest first: skills with their prop and level, combos with their skills (a combo on another of the
+member's props opens on that prop; a deleted one says so and can be dropped), and the posts in full,
+so they can be liked and commented on there. Bookmarks are private. `GET /api/bookmarks` lists them
+and `POST /api/bookmarks` with `{kind, ref}` toggles one; `kind` is `skill` (`ref` like `nunchaku:F5`),
+`combo` (the combo's id) or `post` (the post id). The `bookmarks` flag turns the page and the buttons
+off.
 
 ## Community API
 
