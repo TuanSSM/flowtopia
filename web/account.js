@@ -1,6 +1,6 @@
 'use strict';
 // Accounts, props and onboarding. Loaded before app.js, which calls into it.
-let me = null;
+let me = null, perms = []; // perms: what the signed-in user may do, from the server
 const docs = {}; // progress per prop for the signed-in user: { rev, state }
 
 async function api(path, method = 'GET', body) {
@@ -33,7 +33,7 @@ function inProp(id, fn) {
 async function loadSession() {
   const r = await api('me');
   if (!r.ok) throw new Error(r.status);
-  me = r.data.user; flags = r.data.flags || {};
+  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || [];
   setAchievements(r.data.achievements);
   for (const k in docs) delete docs[k];
   if (!myProps().some(p => p.id === ui.prop)) ui.prop = myProps()[0].id;
@@ -234,7 +234,8 @@ function pageChooser() {
     <div class="row" style="margin-top:16px"><button class="btn primary" type="submit">Continue</button></div></form>`;
 }
 function pageProfile() {
-  return `<div class="page-h"><div class="grow"><h1>Profile</h1><p>@${esc(me.username)} · ${me.role === 'admin' ? 'Admin · ' : ''}joined ${esc(new Date(me.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p></div>
+  const status = [me.mutedUntil && `You are muted until ${new Date(me.mutedUntil).toLocaleString()}${me.muteReason ? `. Reason: ${me.muteReason}` : ''}. You can read and like, but not post or comment.`, me.statsHidden && 'A moderator hid your level and XP from other people.'].filter(Boolean);
+  return `${status.map(s => `<p class="notice warn" style="margin-bottom:12px">${esc(s)}</p>`).join('')}<div class="page-h"><div class="grow"><h1>Profile</h1><p>@${esc(me.username)} · ${me.role !== 'user' ? RANK_NAMES[me.role] + ' · ' : ''}joined ${esc(new Date(me.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p></div>
     ${flags.tour ? '<button class="btn" data-act="tour-replay">Replay the tour</button>' : ''}<button class="btn" data-act="signout">Sign out</button></div>
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Picture and name</h2></div>
@@ -255,26 +256,6 @@ function pageProfile() {
     <form class="card span-2" id="props-form"><div class="card-h"><h2>Your props</h2></div>${propChecks(me.props || [])}
       <p class="form-err" id="props-err" role="alert" hidden></p><div class="row" style="margin-top:14px"><button class="btn" type="submit">Save props</button></div></form>
   </div>`;
-}
-function pageAdmin() {
-  if (!ui.users) { loadUsers(); }
-  const rows = (ui.users || []).map(u => `<tr><td><span class="row" style="gap:8px">${avatarHTML(u)}<span><b style="font-weight:560">${esc(u.displayName)}</b><br><span class="tiny">@${esc(u.username)}</span></span></span></td>
-    <td>${u.role === 'admin' ? '<span class="chip ok">Admin</span>' : 'User'}</td><td class="small">${(u.props || []).map(id => esc(propById(id)?.name || id)).join(', ') || '<span class="tiny">Not chosen</span>'}</td>
-    <td class="small" style="white-space:nowrap">${esc(new Date(u.created).toLocaleDateString())}</td>
-    <td><span class="row" style="gap:6px;justify-content:flex-end"><button class="btn sm" data-act="user-pw" data-id="${u.id}" data-name="${esc(u.username)}">Reset password</button>${u.id === me.id ? '' : `<button class="btn sm danger" data-act="user-del" data-id="${u.id}" data-name="${esc(u.username)}">Delete</button>`}</span></td></tr>`).join('');
-  return `<div class="page-h"><div><h1>Admin</h1><p>Features and accounts for everyone on this Pi.</p></div></div>
-  <div class="stack">
-    <div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every user, straight away</span></div>
-      <div class="stack" style="gap:8px">${FLAGS.map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>
-    <div class="card"><div class="card-h"><h2 class="grow">Accounts</h2><span class="sub">${ui.users ? ui.users.length : '…'} in total</span></div>
-      ${ui.users ? `<div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Props</th><th>Joined</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty small">Loading accounts…</div>'}</div>
-  </div>`;
-}
-async function loadUsers() {
-  const r = await api('admin/users');
-  if (!r.ok) { toast(r.error); return; }
-  ui.users = r.data.users;
-  render();
 }
 function propPlaceholder(p) {
   return `<div class="card"><div class="card-h"><h2>${esc(p.name)}: skill map not built yet</h2></div>
@@ -326,19 +307,6 @@ document.addEventListener('click', async e => {
       try { await load(); } catch { /* render shows the guest view */ }
       render(); toast('Signed out.');
       break;
-    case 'user-del':
-      if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.`)) {
-        const r = await api('admin/users/' + d.id, 'DELETE');
-        if (r.ok) { toast('Account deleted.'); await loadUsers(); } else toast(r.error);
-      }
-      break;
-    case 'user-pw': {
-      const next = prompt(`New password for @${d.name} (at least 8 characters). They will be signed out everywhere.`);
-      if (!next) break;
-      const r = await api(`admin/users/${d.id}/password`, 'PUT', { next });
-      toast(r.ok ? 'Password changed.' : r.error);
-      break;
-    }
   }
 });
 document.addEventListener('change', async e => {

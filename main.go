@@ -124,6 +124,7 @@ type user struct {
 	SuspendedUntil *time.Time `json:"suspendedUntil,omitempty"`
 	SuspendReason  string     `json:"suspendReason,omitempty"`
 	StatsHidden    bool       `json:"statsHidden,omitempty"`
+	LastActive     *time.Time `json:"lastActive,omitempty"` // filled only in the admin accounts list
 }
 
 const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden"
@@ -855,7 +856,9 @@ func (a *app) backup() {
 /* ---------- admin ---------- */
 
 func (a *app) handleUsers(w http.ResponseWriter, _ *http.Request, _ *user) {
-	rows, err := a.db.Query(`SELECT ` + userCols + ` FROM users u ORDER BY u.id`)
+	// Last active: the latest sign-in or progress save.
+	rows, err := a.db.Query(`SELECT ` + userCols + `, GREATEST((SELECT max(created_at) FROM sessions s WHERE s.user_id = u.id), (SELECT max(updated_at) FROM progress p WHERE p.user_id = u.id))
+		FROM users u ORDER BY u.id`)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -863,10 +866,14 @@ func (a *app) handleUsers(w http.ResponseWriter, _ *http.Request, _ *user) {
 	defer rows.Close()
 	out := []*user{}
 	for rows.Next() {
-		u, err := scanUser(rows)
+		var last sql.NullTime
+		u, err := scanUser(rows, &last)
 		if err != nil {
 			a.serverError(w, err)
 			return
+		}
+		if last.Valid {
+			u.LastActive = &last.Time
 		}
 		out = append(out, u)
 	}
@@ -1469,6 +1476,61 @@ func (a *app) handleAudit(w http.ResponseWriter, r *http.Request, _ *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": list, "more": more})
 }
 
+/* ---------- admin dashboard ---------- */
+
+const dashWeeks = 12
+
+// handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
+// for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
+func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
+	out := map[string]any{}
+	var users, mods, admins, active7, active30, open int
+	err := a.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`).Scan(&users, &mods, &admins)
+	if err == nil {
+		// Active: signed in or saved progress within the window.
+		err = a.db.QueryRow(`WITH act AS (SELECT user_id, created_at AS t FROM sessions UNION ALL SELECT user_id, updated_at FROM progress)
+			SELECT count(DISTINCT user_id) FILTER (WHERE t > now() - interval '7 days'), count(DISTINCT user_id) FILTER (WHERE t > now() - interval '30 days') FROM act`).Scan(&active7, &active30)
+	}
+	if err == nil {
+		err = a.db.QueryRow(`SELECT count(DISTINCT (target_kind, target_id)) FROM reports WHERE status = 'open'`).Scan(&open)
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["totals"] = map[string]int{"users": users, "moderators": mods, "admins": admins, "active7": active7, "active30": active30, "openReports": open}
+	rows, err := a.db.Query(`WITH weeks AS (SELECT generate_series(date_trunc('week', now()) - ($1 - 1) * interval '1 week', date_trunc('week', now()), interval '1 week') AS w),
+		sess AS (SELECT CASE WHEN s->>'date' ~ '^\d{4}-\d{2}-\d{2}$' THEN date_trunc('week', (s->>'date')::date) END AS w
+			FROM progress, jsonb_array_elements(CASE WHEN jsonb_typeof(state->'sessions') = 'array' THEN state->'sessions' ELSE '[]' END) s)
+		SELECT weeks.w,
+			(SELECT count(*) FROM sess WHERE sess.w = weeks.w),
+			(SELECT count(*) FROM posts p WHERE date_trunc('week', p.created_at) = weeks.w),
+			(SELECT count(*) FROM comments c WHERE date_trunc('week', c.created_at) = weeks.w),
+			(SELECT count(*) FROM reports r WHERE date_trunc('week', r.created_at) = weeks.w)
+		FROM weeks ORDER BY weeks.w`, dashWeeks)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	weeks := []map[string]any{}
+	for rows.Next() {
+		var wk time.Time
+		var sessions, posts, comments, reports int
+		if err := rows.Scan(&wk, &sessions, &posts, &comments, &reports); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		weeks = append(weeks, map[string]any{"week": wk.Format("2006-01-02"), "sessions": sessions, "posts": posts, "comments": comments, "reports": reports})
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["weeks"] = weeks
+	writeJSON(w, http.StatusOK, out)
+}
+
 /* ---------- audit log ---------- */
 
 type execer interface {
@@ -1651,6 +1713,7 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(permUserManage, a.handleResetPassword))
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.authed(permUserRole, a.handleSetRole))
 	mux.HandleFunc("GET /api/admin/audit", a.authed(permAudit, a.handleAudit))
+	mux.HandleFunc("GET /api/admin/dashboard", a.authed(permDashboard, a.handleDashboard))
 	mux.HandleFunc("POST /api/reports", a.flagged("moderation", a.authed("", a.handleReport)))
 	mux.HandleFunc("GET /api/mod/queue", a.flagged("moderation", a.authed(permReportResolve, a.handleQueue)))
 	mux.HandleFunc("POST /api/mod/resolve", a.flagged("moderation", a.authed(permReportResolve, a.handleResolve)))

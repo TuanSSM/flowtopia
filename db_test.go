@@ -574,3 +574,51 @@ func TestDBModeration(t *testing.T) {
 }
 
 func mustDur(s string) time.Duration { d, _ := time.ParseDuration(s); return d }
+
+func TestDBDashboard(t *testing.T) {
+	e := newEnv(t)
+	adminID, admin := e.user("boss", "admin")
+	bID, b := e.user("bea", "moderator")
+	cID, _ := e.user("cal", "user")
+	// cal has not been active for 20 days; bea and the admin just signed in (their sessions).
+	e.a.db.Exec(`UPDATE sessions SET created_at = now() - interval '20 days' WHERE user_id = $1`, cID)
+	// Practice sessions: two this week and one three weeks ago, plus a malformed date that must be ignored.
+	today := time.Now().Format("2006-01-02")
+	old := time.Now().AddDate(0, 0, -21).Format("2006-01-02")
+	doc := fmt.Sprintf(`{"sessions":[{"date":"%s","minutes":20},{"date":"%s","minutes":10},{"date":"%s","minutes":5},{"date":"soon","minutes":1}]}`, today, today, old)
+	if _, err := e.a.db.Exec(`INSERT INTO progress (user_id, prop, rev, state) VALUES ($1, 'nunchaku', 1, $2)`, bID, doc); err != nil {
+		t.Fatal(err)
+	}
+	e.a.db.Exec(`INSERT INTO progress (user_id, prop, rev, state, updated_at) VALUES ($1, 'poi', 1, '{"sessions":"broken"}', now() - interval '20 days')`, cID)
+	p := e.post(b, "this week")
+	e.comment(admin, p, 0, "hi")
+	old2 := e.post(b, "a month ago")
+	e.a.db.Exec(`UPDATE posts SET created_at = now() - interval '28 days' WHERE id = $1`, old2)
+	e.a.db.Exec(`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES ($1, 'post', $2, 'spam')`, adminID, p)
+	e.must(403, e.session(cID), "GET", "/api/admin/dashboard", nil)
+	out := e.must(200, b, "GET", "/api/admin/dashboard", nil)
+	tot := out["totals"].(map[string]any)
+	if num(tot["users"]) != 3 || num(tot["moderators"]) != 1 || num(tot["admins"]) != 1 || num(tot["openReports"]) != 1 {
+		t.Fatalf("totals: %v", tot)
+	}
+	// cal's fresh session from e.session above makes three active in the week.
+	if num(tot["active7"]) != 3 || num(tot["active30"]) != 3 {
+		t.Fatalf("active: %v", tot)
+	}
+	weeks := out["weeks"].([]any)
+	if len(weeks) != 12 {
+		t.Fatalf("%d weeks", len(weeks))
+	}
+	last := weeks[11].(map[string]any)
+	if num(last["sessions"]) != 2 || num(last["posts"]) != 1 || num(last["comments"]) != 1 || num(last["reports"]) != 1 {
+		t.Fatalf("this week: %v", last)
+	}
+	var sessions, posts int64
+	for _, x := range weeks {
+		sessions += num(x.(map[string]any)["sessions"])
+		posts += num(x.(map[string]any)["posts"])
+	}
+	if sessions != 3 || posts != 2 {
+		t.Fatalf("12-week totals: %d sessions, %d posts", sessions, posts)
+	}
+}
