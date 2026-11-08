@@ -32,7 +32,13 @@ named but not described.
 - **Gamification:** XP and levels, a practice streak across props, weekly challenges, achievements, and
   the Plan as quests. See [Gamification](#gamification).
 
-Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Only the guided tour has a build step.
+Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the
+guided tour (`tour/`) and the 3D figure (`figure/`).
+
+**What comes next** is in [docs/roadmap.md](docs/roadmap.md): replies, moderators and a skill map editor,
+link cards for Instagram, TikTok and YouTube, next-trick suggestions from the geometry of moves, and
+customisable avatars. Each epic is described in [docs/epics.md](docs/epics.md) and tracked in a checklist
+under `docs/epic-<code>/todo.md`.
 
 ## Run
 
@@ -76,7 +82,7 @@ challenges, achievements, quests) are on by default and can be turned off if the
 
 Everything is worked out in the browser from the progress documents (`web/game.js`); the server
 only records which achievements were unlocked and when, and the level, XP, streak and totals each
-user reports for their profile and the people list (`social.go`).
+user reports for their profile and the people list (the community section of `main.go`).
 
 - **XP.** A skill variant earns 10, 40, 100 or 200 XP at levels 1 to 4. A session is 10 XP plus one
   per minute up to 120. A phase gate is 150 XP and a track week 40. A ready combo is 50 XP and each

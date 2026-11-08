@@ -15,8 +15,8 @@ paths:
 - Passwords: PBKDF2-SHA256 with a per-user salt. Sessions: random tokens in HttpOnly cookies.
 - Keep the CSP strict (`script-src 'self'`): no inline scripts, no CDN. If a feature needs a new
   source, say so in the PR; do not loosen the policy quietly.
-- `go test ./...` is in CI and currently has no tests. New logic that is not a thin handler
-  (parsing, scoring, migrations) gets a `_test.go` next to it.
+- `go test ./...` is in CI; `main_test.go` covers link cleaning, mentions, stats, tags and
+  combos. New logic that is not a thin handler (parsing, scoring, migrations) gets a test there.
 - The binary is built on the host (`CGO_ENABLED=0`), the image is `FROM scratch`: no cgo, no
   files read from disk except `-data` for backups.
 - Before pushing: `gofmt -l . && go vet ./...`. CI also runs staticcheck; treat its findings as
