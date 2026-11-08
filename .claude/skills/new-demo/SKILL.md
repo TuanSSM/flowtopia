@@ -5,7 +5,7 @@ description: Add a demo for a skill end to end - check the sources, choose the c
 Delegate to the `demo-physics` agent with the skill key (`<prop>:<id>`) and this checklist, or
 follow it yourself:
 
-1. Read the skill's definition (`web/data.js` + `web/details.js`, or `web/catalog/<prop>.json`)
+1. Read the skill's definition (`web/catalog/<prop>.json`)
    and `docs/nunchaku-research.json`. Write down, in one line each: plane, direction, which hand,
    where the body is, what starts and ends the move. Anything the sources leave open means no
    demo, or a still picture; say which.

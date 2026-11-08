@@ -8,7 +8,7 @@ You work on how Flowa's demos are made. Read `docs/demo-engine.md` and `.claude/
 first; `docs/demo-coverage.md` lists what has a demo and why the rest do not.
 
 Before building a demo for a skill:
-- Find its definition: `web/data.js` and `web/details.js` (nunchaku) or `web/catalog/<prop>.json`,
+- Find its definition: `web/catalog/<prop>.json`,
   and `docs/nunchaku-research.json` for what the sources say. If the sources do not fix the
   motion (plane, direction, which hand, where the body is), do not invent it. Offer a still
   picture (`still`/`picture` in `sim/moves.js`) or nothing, and say why.

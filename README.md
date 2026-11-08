@@ -4,20 +4,22 @@ A progress tracker for flow arts props, on port 3169. Five props have researched
 
 | Prop | Skills | Branches | Unconfirmed | Catalog |
 | --- | --- | --- | --- | --- |
-| Nunchaku | 109 | 11 | 15 | `web/data.js`, `web/details.js` |
+| Nunchaku | 109 | 11 | 15 | `web/catalog/nunchaku.json` |
 | Poi | 90 | 10 | 3 | `web/catalog/poi.json` |
 | Staff | 84 | 9 | 4 | `web/catalog/staff.json` |
 | Double staff | 72 | 9 | 6 | `web/catalog/doublestaff.json` |
 | Buugeng | 56 | 7 | 7 | `web/catalog/buugeng.json` |
 
 Catalogs follow [docs/catalog-format.md](docs/catalog-format.md) and are checked with
-`node test/catalog.js web/catalog/*.json`. Names and definitions come from the sources listed
+`node test/catalog.js web/catalog/*.json`. The files in `web/catalog` seed the catalogs; once running,
+Flowa serves each prop's latest published revision from Postgres, and admins correct maps in the
+skill map editor without a redeploy (see [Moderation, roles and the skill map editor](#moderation-roles-and-the-skill-map-editor)). Names and definitions come from the sources listed
 on each skill; prerequisites, tiers and plans are coaching proposals. Skills whose name or
 mechanics no opened source confirms are marked unconfirmed, and guides say so when a move is
 named but not described.
 
 - **Accounts:** sign up with a username and password (no email). Each user picks their props
-  and has their own progress. An admin manages features and accounts.
+  and has their own progress. Three roles: member, moderator and admin.
 - **Without an account:** browse the skill maps, guides, demos and references.
 - **Dashboard, Practice, Combos, Plan:** per user and per prop.
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
@@ -57,7 +59,7 @@ Changing the admin password in `.env` later does nothing; change it on the Profi
 ## Data
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
-  likes, comments, notifications and achievements.
+  likes, comments, notifications, achievements, reports, the audit log and catalog revisions.
 - Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
 - `data/backups/progress-DATE.json` is written before the first change each day, kept 14 days.
   Posts and comments are not in it; the database dump below covers them.
@@ -72,10 +74,12 @@ Several features are behind flags, stored in Postgres and changed at runtime by 
 on the Admin page. No restart is needed. `signups` opens or closes sign-up, and `tour` turns the guided tour on.
 `community` (timeline, public profiles, people list, notifications) and `game` (XP, levels, streak sharing,
 challenges, achievements, quests) are on by default and can be turned off if they get in the way.
+`moderation` (reports, the queue, hiding, mutes and suspensions) and `catalogEditor` (the skill map editor)
+are off until an admin turns them on.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
-| `details` | Steps, what to watch for, a drill and a foam warning (`web/details.js`) |
+| `details` | Steps, what to watch for, a drill and a foam warning (from each prop's catalog) |
 | `demos` | Demos on a jointed figure and labelled pictures, with 3/4, front and side views, hand and speed controls, and GIF download (`web/demo.js`, clips in `web/clips`) |
 | `references` | Source pages and videos |
 
@@ -115,6 +119,45 @@ comments, each with its two newest replies), `POST /api/posts/{id}/comments` (wi
 `GET /api/comments/{id}/thread`, `POST /api/comments/{id}/like` (toggle), `POST /api/achievements`, `GET /api/notifications`,
 `PUT /api/notifications/read`. Profile fields (`bio`, `links`, `prefs`, `stats`) go through
 `PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted.
+
+## Moderation, roles and the skill map editor
+
+Handlers ask for permissions, never roles; the table is `rolePerms` in `main.go`, and `GET /api/me`
+returns the signed-in user's permissions so the interface shows only what the server allows.
+
+| Role | May |
+| --- | --- |
+| Member | Post, comment, like, report |
+| Moderator | Also: delete and hide others' content, mute and suspend members, work the report queue, revoke badges and hide reported stats, see the dashboard and accounts, draft skill map changes |
+| Admin | Also: change roles, feature flags, reset passwords, delete accounts, read the audit log, publish and restore skill maps |
+
+Nobody acts on someone of their own role or higher, or on themself, and Flowa always keeps one admin.
+
+- **Reports** (behind `moderation`): on a post, comment or profile, with a reason (spam, harassment, unsafe
+  advice, not about flow arts, other) and a note; one open report per person and target, ten a day.
+- **The queue** groups open reports by what they are about, with the content, its author, their status
+  and earlier actions. Moderators hide or restore (with a reason the author sees), mute (no posting or
+  commenting) or suspend (signed out, no sign-in) until a chosen time within a year, then resolve or
+  dismiss; the reporters are thanked. Hidden content is filtered in every query and seen only by its
+  author and moderators.
+- **Audit log:** every moderation and admin action (including flags, roles, account deletion, password
+  resets and catalog publishing) is written by one helper in the same transaction, and admins can filter it.
+- **Dashboard:** members, people active in 7 and 30 days, open reports, and 12 weeks of practice sessions,
+  posts, comments and reports as small charts with a table view.
+- **Skill map editor** (behind `catalogEditor`): edit skills, branches and phases, or the whole catalog as
+  JSON, in a draft. Every field shows the validator's messages as you type (`web/catalog-check.js`; the
+  server runs the same rules in Go, `validateCatalog`, and both must agree on `test/catalog-fixtures`).
+  The review lists each change and how many people have progress on it. Publishing (admins) makes a new
+  revision live for everyone; earlier revisions can be exported as catalog files or restored.
+  Ids are never reused: renaming a published skill keeps its old id as an alias, and progress moves to the
+  new id when it next loads; retired skills leave the maps but keep their progress. Publishing or restoring
+  anything that would leave progress with no skill to belong to is refused.
+
+Admin API (permission in brackets): `PUT /api/admin/users/{id}/role` (user.role), `GET /api/admin/audit`
+(audit.read), `GET /api/admin/dashboard` (dashboard.read), `POST /api/reports`, `GET /api/mod/queue`,
+`POST /api/mod/resolve` (report.resolve), `POST /api/mod/actions` (the action's own permission),
+`GET|PUT|DELETE /api/admin/catalog/{prop}[/draft]`, `GET .../diff`, `POST .../publish` (catalog.publish),
+`POST .../shipped`, `GET .../revisions/{rev}`, `POST .../revisions/{rev}/restore` (catalog.publish).
 
 ## Guided tour
 

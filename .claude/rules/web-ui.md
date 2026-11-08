@@ -10,7 +10,8 @@ paths:
   `data-change` attributes handled in one place. Follow that pattern rather than adding
   listeners per element.
 - Everything the user reads is plain language, no long dashes, numbers with units. Catalog text
-  (`web/catalog/*.json`, `web/data.js`, `web/details.js`) must pass `node test/catalog.js`.
+  (`web/catalog/*.json`) must pass `node test/catalog.js`; once published, catalogs are edited in
+  the skill map editor and exported back to these files.
 - `web/demo.js` is the player only: it reads baked clips and draws. Physics or posture logic
   belongs in `sim/`.
 - Keep pages usable at 420 px wide (CI screenshots a phone width) and with

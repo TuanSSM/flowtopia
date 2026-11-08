@@ -40,6 +40,20 @@ try:
     cid=json.loads(js("return fetch('api/posts/'+arguments[0]+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:'Slow figure-8s in front of a mirror.'})}).then(r=>r.text())",pid))['comment']['id']
     js("return fetch('api/posts/'+arguments[0]+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:'And a lighter pair to start.',parentId:arguments[1]})}).then(r=>r.text())",pid,cid)
     page('replies-phone','Post with replies, phone',f'#/post/{pid}',w=420,ht=900,wait=2.5)
+    # Moderation: another member reports the post above; the queue and the admin dashboard.
+    api(op,'flags',{'flags':{'moderation':True}},'PUT');js("return fetch('api/me').then(r=>r.json()).then(d=>{flags=d.flags})");time.sleep(.5)
+    other=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    api(other,'signup',{'username':'reporter','password':'flowa-test-only'});api(other,'me',{'props':['nunchaku']},'PUT')
+    newbie=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    api(newbie,'signup',{'username':'newbie','password':'flowa-test-only'});api(newbie,'me',{'props':['nunchaku']},'PUT')
+    np=api(newbie,'posts',{'body':'Selling cheap foam nunchaku, message me'})['posts'][0]['id']
+    api(other,'reports',{'kind':'post','id':np,'reason':'spam','note':'Same post in three groups'})
+    cmd('WebDriver:Refresh');time.sleep(3)
+    page('mod','Moderation queue','#/mod',wait=4)
+    page('admin-dashboard','Admin dashboard','#/admin/dashboard',wait=5)
+    page('admin-dashboard-phone','Admin dashboard, phone','#/admin/dashboard',w=420,ht=900,wait=5)
+    api(op,'flags',{'flags':{'catalogEditor':True}},'PUT');cmd('WebDriver:Refresh');time.sleep(3)
+    page('editor','Skill map editor','#/admin/maps/nunchaku',wait=5)
     page('map-phone','Skill map, phone','#/maps',w=420,ht=900)
     page('combos-phone','Combos, phone','#/combos',w=420,ht=900,wait=2.5)
     page('skill-phone','Skill guide, phone','#/prop/nunchaku/F/F5',w=420,ht=900,wait=2.5)

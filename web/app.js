@@ -28,6 +28,7 @@ const ICONS = {
   right: 'M9 6l6 6-6 6',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20c1-4 4-5.5 7.5-5.5s6.5 1.5 7.5 5.5',
   shield: 'M12 3l7 3v5.5c0 4.5-3 8-7 9.5-4-1.5-7-5-7-9.5V6z',
+  inbox: 'M4 13h4l2 3h4l2-3h4M4 13l2-8h12l2 8v6H4z',
   flame: 'M12 21c-3.5 0-6-2.4-6-5.8 0-2.6 1.6-4.3 2.8-6 .3 1.2.9 2.2 1.9 2.9C10.3 9 10.7 5.8 13 3c.4 3 2.5 4.4 3.8 6.4A7 7 0 0 1 18 15.2C18 18.6 15.5 21 12 21Z',
   trophy: 'M8 4h8v5a4 4 0 0 1-8 0V4ZM8 6H5v1a3 3 0 0 0 3 3M16 6h3v1a3 3 0 0 1-3 3M12 13v4M9 20h6M10 17h4',
   medal: 'M12 15a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9ZM9 14l-1.5 6 4.5-2 4.5 2L15 14',
@@ -577,7 +578,7 @@ function renderSide(route) {
     ${me && flags.game ? a('#/achievements', 'trophy', 'Achievements', curId === 'achievements') : ''}
     <div class="nav-h">Props</div>
     ${props}
-    <div class="side-foot">${me?.role === 'admin' ? a('#/admin', 'shield', 'Admin', curId === 'admin') : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}
+    <div class="side-foot">${me && flags.moderation && canDo('report.resolve') ? a('#/mod', 'inbox', `Moderation${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : ''}${me && adminTabs().length ? a('#/admin', 'shield', 'Admin', curId === 'admin') : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}
     <a class="nav-a" href="${esc(HOME_URL)}">${icon('ext')}Raspi home</a>
     ${me ? `<div id="sync" class="sync ${syncState === 'ok' ? '' : syncState}"><span class="dot"></span><span>${{ ok: 'All changes saved', saving: 'Saving…', err: 'Not saved, retrying' }[syncState]}</span></div>` : ''}</div>`;
 }
@@ -590,7 +591,7 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
@@ -607,7 +608,8 @@ function pageFor(p, a, b, title) {
   if (p === 'combos') { if (a) ui.comboOpen = a; return pageCombos(); }
   if (p === 'plan') return pagePlan();
   if (p === 'profile') return pageProfile();
-  if (p === 'admin' && me?.role === 'admin') return pageAdmin();
+  if (p === 'admin' && me) return pageAdmin(a);
+  if (p === 'mod' && me) return pageMod(a);
   return notFound();
 }
 let lastRouteKey = '';

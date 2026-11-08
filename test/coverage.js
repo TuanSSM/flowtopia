@@ -2,13 +2,15 @@
 // Reads the baked list of demos (web/clips/index.json), so run sim/bake.js first.
 //   node test/coverage.js
 const fs = require('fs'), path = require('path'), web = path.join(__dirname, '..', 'web');
-const run = (files, tail) => (0, eval)(files.map(f => fs.readFileSync(path.join(web, f), 'utf8')).join('\n').replace('const Demo =', 'globalThis.Demo =') + tail);
 const INDEX = JSON.parse(fs.readFileSync(path.join(web, 'clips', 'index.json'), 'utf8'));
 const Demo = { has: (p, id) => !!INDEX[p + ':' + id] };
 const KIND = { sim: 'simulated', flight: 'simulated', solved: 'solved', hand: 'hand-driven', roll: 'rolling', still: 'picture' };
-const nun = run(['data.js', 'details.js'], ';({SKILLS, BRANCHES, DETAILS})');
-const cats = { nunchaku: { name: 'Nunchaku', branches: nun.BRANCHES, skills: nun.SKILLS.map(s => ({ ...s, steps: (nun.DETAILS[s.id] || {}).s || [] })) } };
-for (const p of ['poi', 'staff', 'doublestaff', 'buugeng']) cats[p] = JSON.parse(fs.readFileSync(path.join(web, 'catalog', p + '.json'), 'utf8'));
+const cats = {};
+for (const p of ['nunchaku', 'poi', 'staff', 'doublestaff', 'buugeng']) {
+  const c = JSON.parse(fs.readFileSync(path.join(web, 'catalog', p + '.json'), 'utf8'));
+  c.skills = c.skills.filter(s => !s.retired);
+  cats[p] = c;
+}
 // Why a described skill still has no demo, judged from its branch and name.
 const NEEDS = [
   [/throw|toss|aerial|catch|rebound|shower|swap|suicide|kick-up|release/i, 'the prop leaving the hand (release and catch physics)'],

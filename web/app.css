@@ -591,3 +591,61 @@ select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
   .prof-stats.g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ntf-panel { position: fixed; top: 56px; right: 12px; }
 }
+
+/* Moderation and admin */
+.modal-box.narrow { max-width: 480px; }
+.seg a { padding: 3px 11px; border-radius: 6px; font-size: 12.5px; color: var(--ink-2); font-weight: 520; min-height: 26px; display: inline-flex; align-items: center; }
+.seg a:hover { text-decoration: none; color: var(--ink); }
+.seg a.on { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+.seg-r { display: inline-flex; } .seg-r input { position: absolute; opacity: 0; pointer-events: none; }
+.seg-r span { padding: 3px 11px; border-radius: 6px; font-size: 12.5px; color: var(--ink-2); font-weight: 520; cursor: pointer; }
+.seg-r input:checked + span { background: var(--card-2); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+.seg-r input:focus-visible + span { outline: 2px solid var(--accent); }
+.admin-tabs { margin-bottom: 16px; flex-wrap: wrap; }
+.nav-count { background: var(--bad); color: #fff; border-radius: 8px; padding: 0 6px; font-weight: 700; }
+.mq { display: grid; gap: 12px; }
+.mq-author { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; background: var(--card-2); }
+.mq-author .grow { display: grid; gap: 2px; }
+.mq-hist { margin-top: 6px; line-height: 1.5; }
+.mq-target { display: grid; gap: 8px; padding: 10px 12px; border-left: 3px solid var(--line-2); }
+.mq-reports { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.mq-acts { gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.cmt-hidden { display: flex; align-items: center; gap: 4px; color: var(--warn); margin-top: 2px; }
+.cmt-hidden svg.i, .notice svg.i { width: 13px; height: 13px; vertical-align: -2px; }
+.post .notice { margin: 0; }
+tr[hidden] { display: none; }
+/* Admin dashboard: single-series weekly columns in the accent colour */
+.dash-charts { margin-bottom: 16px; }
+.dash-chart { margin: 0; }
+.dash-chart figcaption { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.dash-chart figcaption h2 { flex: 1; }
+.dash-chart svg { display: block; width: 100%; max-width: 420px; height: auto; overflow: visible; }
+.dc-bar { fill: var(--accent); opacity: .72; }
+.dc-bar.now { opacity: 1; }
+.dc-col:hover .dc-bar { opacity: 1; }
+.dc-hit { fill: transparent; }
+.dc-base { stroke: var(--line-2); stroke-width: 1; }
+.dc-val { fill: var(--ink); font-size: 11px; font-weight: 600; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.dc-axis { fill: var(--ink-3); font-size: 10.5px; }
+.dash-table summary { cursor: pointer; color: var(--ink-2); }
+.dash-table[open] summary { margin-bottom: 10px; }
+
+/* Skill map editor */
+.ed-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 12px; }
+.ed-views { margin-bottom: 12px; flex-wrap: wrap; }
+.ed-split { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.ed-list { display: grid; gap: 10px; max-height: 75vh; overflow-y: auto; padding-right: 4px; }
+.ed-branch { display: grid; gap: 2px; }
+.ed-skill { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 8px; text-align: left; color: var(--ink); font-size: 13px; }
+.ed-skill:hover { background: var(--card-2); }
+.ed-skill.on { background: var(--accent-soft); }
+.ed-skill.retired { color: var(--ink-3); }
+.ed-skill.has-err .tag { color: var(--bad); }
+.ed-skill.has-err::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); flex: none; }
+.ed-form { display: grid; gap: 12px; }
+.ed-msg { display: grid; gap: 2px; font-size: 12px; font-weight: 500; }
+.ed-msg:empty { display: none; }
+.ed-msg .bad { color: var(--bad); } .ed-msg .warn { color: var(--warn); }
+.ed-row { grid-template-columns: 30px minmax(0, 1fr) minmax(0, 2fr); gap: 10px; align-items: start; }
+.mono { font: 12px/1.45 ui-monospace, monospace; }
+@media (max-width: 860px) { .ed-split { grid-template-columns: 1fr; } .ed-list { max-height: 260px; } .ed-row { grid-template-columns: 30px 1fr; } .ed-row label:last-child { grid-column: 2; } }

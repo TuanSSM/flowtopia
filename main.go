@@ -53,7 +53,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true}
+var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -118,9 +118,16 @@ type user struct {
 	Prefs       json.RawMessage `json:"prefs"`
 	Stats       json.RawMessage `json:"stats"`
 	Created     time.Time       `json:"created"`
+	// Moderation state: set only while a mute or suspension runs.
+	MutedUntil     *time.Time `json:"mutedUntil,omitempty"`
+	MuteReason     string     `json:"muteReason,omitempty"`
+	SuspendedUntil *time.Time `json:"suspendedUntil,omitempty"`
+	SuspendReason  string     `json:"suspendReason,omitempty"`
+	StatsHidden    bool       `json:"statsHidden,omitempty"`
+	LastActive     *time.Time `json:"lastActive,omitempty"` // filled only in the admin accounts list
 }
 
-const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at"
+const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden"
 
 type scanner interface{ Scan(...any) error }
 
@@ -128,9 +135,22 @@ type scanner interface{ Scan(...any) error }
 func scanUser(row scanner, extra ...any) (*user, error) {
 	var u user
 	var props, seen, links, prefs, stats []byte
-	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &prefs, &stats, &u.Created}, extra...)
+	var muted, suspended sql.NullTime
+	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &prefs, &stats, &u.Created,
+		&muted, &u.MuteReason, &suspended, &u.SuspendReason, &u.StatsHidden}, extra...)
 	if err := row.Scan(dst...); err != nil {
 		return nil, err
+	}
+	// Only a mute or suspension still running is reported.
+	if muted.Valid && muted.Time.After(time.Now()) {
+		u.MutedUntil = &muted.Time
+	} else {
+		u.MuteReason = ""
+	}
+	if suspended.Valid && suspended.Time.After(time.Now()) {
+		u.SuspendedUntil = &suspended.Time
+	} else {
+		u.SuspendReason = ""
 	}
 	u.Props, u.Seen, u.Links, u.Prefs, u.Stats = props, seen, links, prefs, stats
 	return &u, nil
@@ -188,7 +208,7 @@ func (a *app) currentUser(r *http.Request) *user {
 	}
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash(c.Value)))
-	if err != nil {
+	if err != nil || u.SuspendedUntil != nil {
 		return nil
 	}
 	return u
@@ -246,21 +266,63 @@ func guard(next http.Handler) http.Handler {
 	})
 }
 
-// authed wraps a handler that needs a signed-in user, or an admin.
-func (a *app) authed(admin bool, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+// authed wraps a handler that needs a signed-in user and, unless perm is empty, that permission.
+func (a *app) authed(perm string, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := a.currentUser(r)
 		if u == nil {
 			fail(w, http.StatusUnauthorized, "Sign in first.")
 			return
 		}
-		if admin && u.Role != "admin" {
-			fail(w, http.StatusForbidden, "Admins only.")
+		if perm != "" && !can(u, perm) {
+			fail(w, http.StatusForbidden, "You do not have permission to do that.")
 			return
 		}
 		h(w, r, u)
 	}
 }
+
+/* ---------- roles and permissions ---------- */
+
+// Permissions. Handlers ask for these, never for a role, so the table below is the one place
+// that says who may do what.
+const (
+	permContentDelete  = "content.delete"  // delete anyone's post or comment
+	permPostHide       = "post.hide"       // hide and restore posts and comments
+	permUserMute       = "user.mute"       // stop someone posting and commenting for a time
+	permUserSuspend    = "user.suspend"    // sign someone out and keep them out for a time
+	permReportResolve  = "report.resolve"  // work the moderation queue
+	permBadgeRevoke    = "badge.revoke"    // revoke a badge, hide reported stats
+	permDashboard      = "dashboard.read"  // the admin dashboard and the accounts panel
+	permAudit          = "audit.read"      // the audit log
+	permCatalogEdit    = "catalog.edit"    // draft changes to skill maps
+	permCatalogPublish = "catalog.publish" // publish and roll back skill maps
+	permFlagsEdit      = "flags.edit"      // feature flags
+	permUserRole       = "user.role"       // change roles
+	permUserManage     = "user.manage"     // reset passwords, delete accounts
+)
+
+var roleRank = map[string]int{"user": 0, "moderator": 1, "admin": 2}
+
+var rolePerms = map[string][]string{
+	"user":      {},
+	"moderator": {permContentDelete, permPostHide, permUserMute, permUserSuspend, permReportResolve, permBadgeRevoke, permDashboard, permCatalogEdit},
+	"admin": {permContentDelete, permPostHide, permUserMute, permUserSuspend, permReportResolve, permBadgeRevoke, permDashboard, permAudit,
+		permCatalogEdit, permCatalogPublish, permFlagsEdit, permUserRole, permUserManage},
+}
+
+func can(u *user, perm string) bool { return u != nil && slices.Contains(rolePerms[u.Role], perm) }
+
+// permsOf lists what a user may do, for the interface to show only what the server allows.
+func permsOf(u *user) []string {
+	if u == nil {
+		return []string{}
+	}
+	return append([]string{}, rolePerms[u.Role]...)
+}
+
+// outranks reports whether someone with role a may act on someone with role b.
+func outranks(a, b string) bool { return roleRank[a] > roleRank[b] }
 
 /* ---------- flags ---------- */
 
@@ -297,7 +359,7 @@ func (a *app) setFlags(in map[string]bool) error {
 	return nil
 }
 
-func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, _ *user) {
+func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, u *user) {
 	var in struct {
 		Flags map[string]bool `json:"flags"`
 	}
@@ -311,6 +373,14 @@ func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, _ *user) {
 		}
 	}
 	if err := a.setFlags(in.Flags); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	changed := map[string]any{}
+	for k, v := range in.Flags {
+		changed[k] = v
+	}
+	if err := a.audit(a.db, u.ID, "flags", "", 0, 0, "", changed); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -338,7 +408,7 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": permsOf(u)})
 }
 
 type credentials struct {
@@ -458,6 +528,14 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !checkPassword(hash, in.Password) {
 		a.noteFail(key)
 		fail(w, http.StatusUnauthorized, "Wrong username or password.")
+		return
+	}
+	if u.SuspendedUntil != nil {
+		msg := "Your account is suspended until " + u.SuspendedUntil.UTC().Format("2 January 2006, 15:04 UTC") + "."
+		if u.SuspendReason != "" {
+			msg += " Reason: " + u.SuspendReason
+		}
+		fail(w, http.StatusForbidden, msg)
 		return
 	}
 	if err := a.startSession(w, r, u.ID); err != nil {
@@ -778,7 +856,9 @@ func (a *app) backup() {
 /* ---------- admin ---------- */
 
 func (a *app) handleUsers(w http.ResponseWriter, _ *http.Request, _ *user) {
-	rows, err := a.db.Query(`SELECT ` + userCols + ` FROM users u ORDER BY u.id`)
+	// Last active: the latest sign-in or progress save.
+	rows, err := a.db.Query(`SELECT ` + userCols + `, GREATEST((SELECT max(created_at) FROM sessions s WHERE s.user_id = u.id), (SELECT max(updated_at) FROM progress p WHERE p.user_id = u.id))
+		FROM users u ORDER BY u.id`)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -786,10 +866,14 @@ func (a *app) handleUsers(w http.ResponseWriter, _ *http.Request, _ *user) {
 	defer rows.Close()
 	out := []*user{}
 	for rows.Next() {
-		u, err := scanUser(rows)
+		var last sql.NullTime
+		u, err := scanUser(rows, &last)
 		if err != nil {
 			a.serverError(w, err)
 			return
+		}
+		if last.Valid {
+			u.LastActive = &last.Time
 		}
 		out = append(out, u)
 	}
@@ -802,20 +886,43 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 		fail(w, http.StatusBadRequest, "You cannot delete your own account here.")
 		return
 	}
-	a.backup()
-	res, err := a.db.Exec(`DELETE FROM users WHERE id = $1`, id)
+	// Only user.manage reaches here (admins); the last admin is protected below.
+	var name string
+	err := a.db.QueryRow(`SELECT username FROM users WHERE id = $1`, id).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		fail(w, http.StatusNotFound, "No such user.")
+	a.backup()
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 0 {
+			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
+			return
+		}
+		err = a.audit(tx, u.ID, "delete_user", "user", id, 0, "", map[string]any{"username": name})
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, _ *user) {
+func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Next string `json:"next"`
@@ -833,7 +940,1459 @@ func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, _ *use
 		return
 	}
 	a.db.Exec(`DELETE FROM sessions WHERE user_id = $1`, id)
+	if err := a.audit(a.db, u.ID, "reset_password", "user", id, id, "", nil); err != nil {
+		a.serverError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleSetRole changes someone's role. Nobody changes their own, and Flowa always keeps an admin.
+func (a *app) handleSetRole(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var in struct {
+		Role   string `json:"role"`
+		Reason string `json:"reason"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if _, ok := roleRank[in.Role]; !ok {
+		fail(w, http.StatusBadRequest, "The role must be user, moderator or admin.")
+		return
+	}
+	if id == u.ID {
+		fail(w, http.StatusBadRequest, "You cannot change your own role.")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var old string
+	err = tx.QueryRow(`SELECT role FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&old)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	next := in.Role
+	if old == "admin" && next != "admin" {
+		var admins int
+		if err := tx.QueryRow(`SELECT count(*) FROM (SELECT 1 FROM users WHERE role = 'admin' FOR UPDATE) x`).Scan(&admins); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if admins <= 1 {
+			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
+			return
+		}
+	}
+	if old == in.Role {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": old})
+		return
+	}
+	if _, err := tx.Exec(`UPDATE users SET role = $2 WHERE id = $1`, id, in.Role); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "role", "user", id, id, strings.TrimSpace(in.Reason), map[string]any{"from": old, "to": in.Role}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.notify(id, u.ID, "moderation", 0, "Your role is now "+in.Role+".")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": in.Role})
+}
+
+/* ---------- moderation: reports, the queue, actions ---------- */
+
+var reportReasons = []string{"spam", "harassment", "unsafe", "offtopic", "other"}
+
+const (
+	maxReportsPerDay = 10
+	maxModReason     = 300
+	maxModUntil      = 366 * 24 * time.Hour
+)
+
+// flagged answers 404 while a feature flag is off, so its endpoints do not exist until it is on.
+func (a *app) flagged(name string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f, err := a.flags()
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if !f[name] {
+			http.NotFound(w, r)
+			return
+		}
+		h(w, r)
+	}
+}
+
+// targetOwner finds who a report or action is about: the author of a post or comment, or the
+// user themself. Hidden content counts as missing to someone who may not see it.
+func (a *app) targetOwner(kind string, id int64, viewer *user) (int64, error) {
+	var owner int64
+	var err error
+	switch kind {
+	case "post":
+		err = a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1 AND (hidden_at IS NULL OR user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+	case "comment":
+		err = a.db.QueryRow(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
+			AND ((c.hidden_at IS NULL AND p.hidden_at IS NULL) OR c.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+	case "user":
+		err = a.db.QueryRow(`SELECT id FROM users WHERE id = $1`, id).Scan(&owner)
+	default:
+		return 0, errBadKind
+	}
+	return owner, err
+}
+
+var errBadKind = errors.New("unknown kind")
+
+func (a *app) handleReport(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Kind   string `json:"kind"`
+		ID     int64  `json:"id"`
+		Reason string `json:"reason"`
+		Note   string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if !slices.Contains(reportReasons, in.Reason) {
+		fail(w, http.StatusBadRequest, "Choose a reason for the report.")
+		return
+	}
+	note := strings.TrimSpace(in.Note)
+	if len([]rune(note)) > 500 {
+		fail(w, http.StatusBadRequest, "Keep the note under 500 characters.")
+		return
+	}
+	owner, err := a.targetOwner(in.Kind, in.ID, u)
+	if errors.Is(err, errBadKind) {
+		fail(w, http.StatusBadRequest, "You can report a post, a comment or a person.")
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "That is gone already.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if owner == u.ID {
+		fail(w, http.StatusBadRequest, "You cannot report yourself or your own posts.")
+		return
+	}
+	var today int
+	if err := a.db.QueryRow(`SELECT count(*) FROM reports WHERE reporter_id = $1 AND created_at > now() - interval '1 day'`, u.ID).Scan(&today); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if today >= maxReportsPerDay {
+		fail(w, http.StatusTooManyRequests, "You have sent 10 reports today. Thank you; the moderators will get to them.")
+		return
+	}
+	_, err = a.db.Exec(`INSERT INTO reports (reporter_id, target_kind, target_id, reason, note) VALUES ($1, $2, $3, $4, $5)`, u.ID, in.Kind, in.ID, in.Reason, note)
+	var pe *pq.Error
+	if errors.As(err, &pe) && pe.Code == "23505" {
+		fail(w, http.StatusConflict, "You already reported this. A moderator will look at it.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// A group of open reports about one thing, as the queue shows it.
+type queueItem struct {
+	Kind    string           `json:"kind"`
+	ID      int64            `json:"id"`
+	Target  map[string]any   `json:"target"`
+	Author  map[string]any   `json:"author"`
+	Reports []map[string]any `json:"reports"`
+	Oldest  time.Time        `json:"oldest"`
+	History []map[string]any `json:"history"`
+}
+
+func (a *app) handleQueue(w http.ResponseWriter, r *http.Request, u *user) {
+	status := "open"
+	if r.URL.Query().Get("status") == "resolved" {
+		status = "resolved"
+	}
+	q := `SELECT r.id, r.target_kind, r.target_id, r.reason, r.note, r.created_at, r.status, r.resolution, ru.username, COALESCE(rv.username, '')
+		FROM reports r JOIN users ru ON ru.id = r.reporter_id LEFT JOIN users rv ON rv.id = r.resolver_id
+		WHERE ` + map[string]string{"open": `r.status = 'open' ORDER BY r.id`, "resolved": `r.status <> 'open' ORDER BY r.resolved_at DESC LIMIT 200`}[status]
+	rows, err := a.db.Query(q)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	items := []*queueItem{}
+	byKey := map[string]*queueItem{}
+	for rows.Next() {
+		var id, tid int64
+		var kind, reason, note, st, res, reporter, resolver string
+		var at time.Time
+		if err := rows.Scan(&id, &kind, &tid, &reason, &note, &at, &st, &res, &reporter, &resolver); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		k := fmt.Sprintf("%s:%d", kind, tid)
+		it := byKey[k]
+		if it == nil {
+			it = &queueItem{Kind: kind, ID: tid, Oldest: at}
+			byKey[k] = it
+			items = append(items, it)
+		}
+		it.Reports = append(it.Reports, map[string]any{"id": id, "reason": reason, "note": note, "at": at, "by": reporter, "status": st, "resolution": res, "resolver": resolver})
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	for _, it := range items {
+		if err := a.fillQueueItem(it); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// fillQueueItem adds the reported content, its author and the author's moderation history.
+func (a *app) fillQueueItem(it *queueItem) error {
+	var author int64
+	switch it.Kind {
+	case "post":
+		var body, image, reason string
+		var data []byte
+		var hidden bool
+		err := a.db.QueryRow(`SELECT user_id, body, image, data, hidden_at IS NOT NULL, hidden_reason FROM posts WHERE id = $1`, it.ID).Scan(&author, &body, &image, &data, &hidden, &reason)
+		if errors.Is(err, sql.ErrNoRows) {
+			it.Target = map[string]any{"gone": true}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		it.Target = map[string]any{"body": body, "image": image, "data": json.RawMessage(data), "hidden": hidden, "hiddenReason": reason}
+	case "comment":
+		var body, reason string
+		var post int64
+		var hidden, deleted bool
+		err := a.db.QueryRow(`SELECT user_id, post_id, body, hidden_at IS NOT NULL, hidden_reason, deleted FROM comments WHERE id = $1`, it.ID).Scan(&author, &post, &body, &hidden, &reason, &deleted)
+		if errors.Is(err, sql.ErrNoRows) || deleted {
+			it.Target = map[string]any{"gone": true}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		it.Target = map[string]any{"body": body, "postId": post, "hidden": hidden, "hiddenReason": reason}
+	case "user":
+		author = it.ID
+		it.Target = map[string]any{}
+	}
+	tu, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.id = $1`, author))
+	if errors.Is(err, sql.ErrNoRows) {
+		it.Target = map[string]any{"gone": true}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var posts, actions int
+	if err := a.db.QueryRow(`SELECT (SELECT count(*) FROM posts WHERE user_id = $1), (SELECT count(*) FROM mod_actions WHERE target_user_id = $1)`, author).Scan(&posts, &actions); err != nil {
+		return err
+	}
+	it.Author = map[string]any{"id": tu.ID, "username": tu.Username, "displayName": tu.DisplayName, "role": tu.Role, "avatar": tu.Avatar, "bio": tu.Bio,
+		"posts": posts, "actions": actions, "mutedUntil": tu.MutedUntil, "suspendedUntil": tu.SuspendedUntil, "statsHidden": tu.StatsHidden}
+	hist, err := a.auditRows(`WHERE m.target_user_id = $1 ORDER BY m.id DESC LIMIT 5`, author)
+	it.History = hist
+	return err
+}
+
+// handleModAction hides or restores content, mutes or suspends a person, revokes a badge, or
+// hides reported stats. Each action is logged and the person affected is told.
+func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Action string `json:"action"`
+		Kind   string `json:"kind"`
+		ID     int64  `json:"id"`
+		Reason string `json:"reason"`
+		Until  string `json:"until"`
+		Key    string `json:"key"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if len([]rune(reason)) > maxModReason {
+		fail(w, http.StatusBadRequest, "Keep the reason under 300 characters.")
+		return
+	}
+	perm := map[string]string{"hide": permPostHide, "restore": permPostHide, "mute": permUserMute, "unmute": permUserMute,
+		"suspend": permUserSuspend, "unsuspend": permUserSuspend, "revoke_badge": permBadgeRevoke, "hide_stats": permBadgeRevoke, "show_stats": permBadgeRevoke}[in.Action]
+	if perm == "" {
+		fail(w, http.StatusBadRequest, "Unknown action.")
+		return
+	}
+	if !can(u, perm) {
+		fail(w, http.StatusForbidden, "You do not have permission to do that.")
+		return
+	}
+	kind := in.Kind
+	if in.Action != "hide" && in.Action != "restore" {
+		kind = "user"
+	}
+	if (in.Action == "hide" || in.Action == "mute" || in.Action == "suspend" || in.Action == "revoke_badge") && reason == "" {
+		fail(w, http.StatusBadRequest, "Give a reason. The person affected will see it.")
+		return
+	}
+	owner, err := a.targetOwner(kind, in.ID, u)
+	if errors.Is(err, errBadKind) {
+		fail(w, http.StatusBadRequest, "You can hide a post or a comment.")
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "That is gone already.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if owner == u.ID {
+		fail(w, http.StatusBadRequest, "You cannot moderate yourself.")
+		return
+	}
+	var role string
+	if err := a.db.QueryRow(`SELECT role FROM users WHERE id = $1`, owner).Scan(&role); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// Moderators act on users; admins on users and moderators. Nobody acts on an admin.
+	if !outranks(u.Role, role) {
+		fail(w, http.StatusForbidden, "You cannot moderate someone with the same role as yours or higher.")
+		return
+	}
+	var until time.Time
+	if in.Action == "mute" || in.Action == "suspend" {
+		until, err = time.Parse(time.RFC3339, in.Until)
+		if err != nil || !until.After(time.Now().Add(time.Minute)) || until.After(time.Now().Add(maxModUntil)) {
+			fail(w, http.StatusBadRequest, "Choose an end time between now and a year from now.")
+			return
+		}
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var res sql.Result
+	detail := map[string]any{}
+	msg := ""
+	table := map[string]string{"post": "posts", "comment": "comments"}[kind]
+	switch in.Action {
+	case "hide":
+		res, err = tx.Exec(`UPDATE `+table+` SET hidden_at = now(), hidden_reason = $2 WHERE id = $1 AND hidden_at IS NULL`, in.ID, reason)
+		msg = "A moderator hid your " + kind + ". Reason: " + reason
+	case "restore":
+		res, err = tx.Exec(`UPDATE `+table+` SET hidden_at = NULL, hidden_reason = '' WHERE id = $1 AND hidden_at IS NOT NULL`, in.ID)
+		msg = "A moderator restored your " + kind + "."
+	case "mute":
+		res, err = tx.Exec(`UPDATE users SET muted_until = $2, mute_reason = $3 WHERE id = $1`, owner, until, reason)
+		detail["until"] = until
+		msg = "You are muted until " + until.UTC().Format("2 January 2006, 15:04 UTC") + ", so you cannot post or comment. Reason: " + reason
+	case "unmute":
+		res, err = tx.Exec(`UPDATE users SET muted_until = NULL, mute_reason = '' WHERE id = $1 AND muted_until > now()`, owner)
+		msg = "You can post and comment again."
+	case "suspend":
+		res, err = tx.Exec(`UPDATE users SET suspended_until = $2, suspend_reason = $3 WHERE id = $1`, owner, until, reason)
+		if err == nil {
+			_, err = tx.Exec(`DELETE FROM sessions WHERE user_id = $1`, owner)
+		}
+		detail["until"] = until
+		msg = "Your account was suspended until " + until.UTC().Format("2 January 2006, 15:04 UTC") + ". Reason: " + reason
+	case "unsuspend":
+		res, err = tx.Exec(`UPDATE users SET suspended_until = NULL, suspend_reason = '' WHERE id = $1 AND suspended_until > now()`, owner)
+		msg = "Your suspension was lifted."
+	case "revoke_badge":
+		if !achKeyRE.MatchString(in.Key) {
+			fail(w, http.StatusBadRequest, "Unknown badge.")
+			return
+		}
+		res, err = tx.Exec(`DELETE FROM achievements WHERE user_id = $1 AND key = $2`, owner, in.Key)
+		if err == nil {
+			_, err = tx.Exec(`INSERT INTO badge_blocks (user_id, key) VALUES ($1, $2) ON CONFLICT DO NOTHING`, owner, in.Key)
+		}
+		detail["key"] = in.Key
+		msg = "A moderator removed one of your badges (" + in.Key + "). Reason: " + reason
+	case "hide_stats":
+		res, err = tx.Exec(`UPDATE users SET stats_hidden = true WHERE id = $1 AND NOT stats_hidden`, owner)
+		msg = "A moderator hid your level and XP from other people."
+		if reason != "" {
+			msg += " Reason: " + reason
+		}
+	case "show_stats":
+		res, err = tx.Exec(`UPDATE users SET stats_hidden = false WHERE id = $1 AND stats_hidden`, owner)
+		msg = "Your level and XP are shown to other people again."
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(w, http.StatusConflict, "Nothing to change: it is already that way.")
+		return
+	}
+	if err := a.audit(tx, u.ID, in.Action, kind, in.ID, owner, reason, detail); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.notify(owner, u.ID, "moderation", 0, msg)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleResolve closes every open report about one thing, and tells each reporter.
+func (a *app) handleResolve(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Kind    string `json:"kind"`
+		ID      int64  `json:"id"`
+		Outcome string `json:"outcome"`
+		Note    string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if in.Outcome != "actioned" && in.Outcome != "dismissed" {
+		fail(w, http.StatusBadRequest, "The outcome is actioned or dismissed.")
+		return
+	}
+	note := strings.TrimSpace(in.Note)
+	if len([]rune(note)) > maxModReason {
+		fail(w, http.StatusBadRequest, "Keep the note under 300 characters.")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`UPDATE reports SET status = $3, resolver_id = $4, resolution = $5, resolved_at = now()
+		WHERE target_kind = $1 AND target_id = $2 AND status = 'open' RETURNING reporter_id`, in.Kind, in.ID, in.Outcome, u.ID, note)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	reporters := []int64{}
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			reporters = append(reporters, id)
+		}
+	}
+	rows.Close()
+	if len(reporters) == 0 {
+		fail(w, http.StatusNotFound, "There are no open reports about that.")
+		return
+	}
+	if err := a.audit(tx, u.ID, "resolve", in.Kind, in.ID, 0, note, map[string]any{"outcome": in.Outcome, "reports": len(reporters)}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	msg := "Thank you for your report. A moderator looked at it and left it up."
+	if in.Outcome == "actioned" {
+		msg = "Thank you for your report. A moderator took action."
+	}
+	for _, id := range reporters {
+		a.notify(id, u.ID, "moderation", 0, msg)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resolved": len(reporters)})
+}
+
+// auditRows reads the audit log with usernames; where adds conditions over m (mod_actions).
+func (a *app) auditRows(where string, args ...any) ([]map[string]any, error) {
+	rows, err := a.db.Query(`SELECT m.id, m.action, m.target_kind, m.target_id, m.reason, m.detail, m.created_at, COALESCE(ua.username, ''), COALESCE(ut.username, '')
+		FROM mod_actions m LEFT JOIN users ua ON ua.id = m.actor_id LEFT JOIN users ut ON ut.id = m.target_user_id `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, tid int64
+		var action, kind, reason, actor, target string
+		var detail []byte
+		var at time.Time
+		if err := rows.Scan(&id, &action, &kind, &tid, &reason, &detail, &at, &actor, &target); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{"id": id, "action": action, "kind": kind, "targetId": tid, "reason": reason, "detail": json.RawMessage(detail), "at": at, "actor": actor, "target": target})
+	}
+	return out, rows.Err()
+}
+
+// handleAudit pages through the audit log, newest first, filtered by who acted and what they did.
+func (a *app) handleAudit(w http.ResponseWriter, r *http.Request, _ *user) {
+	q := r.URL.Query()
+	before := queryID(r, "before")
+	list, err := a.auditRows(`WHERE ($1 = 0 OR m.id < $1) AND ($2 = '' OR ua.username = $2) AND ($3 = '' OR m.action = $3) ORDER BY m.id DESC LIMIT 51`,
+		before, strings.ToLower(q.Get("actor")), q.Get("action"))
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	more := len(list) > 50
+	if more {
+		list = list[:50]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": list, "more": more})
+}
+
+/* ---------- skill map catalogs ---------- */
+
+// catalogIssue is one problem in a catalog, with the path of the field it is about.
+type catalogIssue struct {
+	Path string `json:"path"`
+	Msg  string `json:"msg"`
+}
+
+var (
+	branchKeyRE = regexp.MustCompile(`^[A-Z]$`)
+	catSkillRE  = regexp.MustCompile(`^[A-Z][1-9][0-9]?$`)
+	weekIDRE    = regexp.MustCompile(`^w[0-9]{1,2}$`)
+	httpsRE     = regexp.MustCompile(`^https://[^\s]+$`)
+)
+
+// validateCatalog checks a catalog against docs/catalog-format.md with the same rules as
+// web/catalog-check.js; test/catalog-fixtures holds cases both must judge the same way.
+func validateCatalog(raw []byte) (errs, warns []catalogIssue) {
+	errs, warns = []catalogIssue{}, []catalogIssue{}
+	E := func(path, f string, a ...any) { errs = append(errs, catalogIssue{path, fmt.Sprintf(f, a...)}) }
+	W := func(path, f string, a ...any) { warns = append(warns, catalogIssue{path, fmt.Sprintf(f, a...)}) }
+	var any_ any
+	if err := json.Unmarshal(raw, &any_); err != nil {
+		E("", "not valid JSON: %v", err)
+		return
+	}
+	c, ok := any_.(map[string]any)
+	if !ok {
+		E("", "not a catalog object")
+		return
+	}
+	// u16 counts length the way JavaScript does, so both validators measure text alike.
+	u16 := func(s string) int {
+		n := 0
+		for _, r := range s {
+			n++
+			if r > 0xFFFF {
+				n++
+			}
+		}
+		return n
+	}
+	str := func(v any, lo, hi int) bool {
+		t, ok := v.(string)
+		return ok && u16(strings.TrimSpace(t)) >= lo && u16(t) <= hi
+	}
+	list := func(v any) []any { l, _ := v.([]any); return l }
+	obj := func(v any) map[string]any { m, _ := v.(map[string]any); return m }
+	intIn := func(v any, lo, hi int) (int, bool) {
+		f, ok := v.(float64)
+		if !ok || f != float64(int(f)) || int(f) < lo || int(f) > hi {
+			return 0, false
+		}
+		return int(f), true
+	}
+	isList := func(v any) bool { _, ok := v.([]any); return ok }
+	for _, k := range []string{"id", "name", "about", "careNote"} {
+		if !str(c[k], 1, 600) {
+			E(k, `missing or bad "%s"`, k)
+		}
+	}
+	branches, skills := list(c["branches"]), list(c["skills"])
+	refs := obj(c["refs"])
+	if refs == nil {
+		refs = map[string]any{}
+	}
+	if len(branches) < 5 || len(branches) > 11 {
+		E("branches", "needs 5 to 11 branches, has %d", len(branches))
+	}
+	bk := map[string]bool{}
+	for i, x := range branches {
+		b := obj(x)
+		at := fmt.Sprintf("branches.%d", i)
+		k, _ := b["k"].(string)
+		if !branchKeyRE.MatchString(k) {
+			E(at+".k", `branch key "%v" is not one capital letter`, b["k"])
+		} else if bk[k] {
+			E(at+".k", "duplicate branch %s", k)
+		}
+		if branchKeyRE.MatchString(k) {
+			bk[k] = true
+		}
+		if b == nil || !str(b["name"], 1, 40) {
+			E(at+".name", "branch %s: bad name", k)
+		}
+		if b == nil || !str(b["blurb"], 1, 120) {
+			E(at+".blurb", "branch %s: bad blurb", k)
+		}
+	}
+	ids := map[string]map[string]any{}
+	order := []string{}
+	strs := func(v any) ([]string, bool) {
+		l, ok := v.([]any)
+		if !ok {
+			return nil, false
+		}
+		out := []string{}
+		for _, x := range l {
+			out = append(out, fmt.Sprint(x))
+		}
+		return out, true
+	}
+	for i, x := range skills {
+		sk := obj(x)
+		at := fmt.Sprintf("skills.%d", i)
+		id, _ := sk["id"].(string)
+		if sk == nil || !catSkillRE.MatchString(id) {
+			E(at+".id", "skill %v: bad id", sk["id"])
+			continue
+		}
+		who := "skill " + id
+		if ids[id] != nil {
+			E(at+".id", "%s: duplicate", who)
+		} else {
+			order = append(order, id)
+		}
+		ids[id] = sk
+		if !bk[id[:1]] {
+			E(at+".id", "%s: no branch %s", who, id[:1])
+		}
+		if _, ok := intIn(sk["tier"], 1, 5); !ok {
+			E(at+".tier", "%s: tier must be 1 to 5", who)
+		}
+		if !str(sk["name"], 2, 60) {
+			E(at+".name", "%s: bad name", who)
+		}
+		if !str(sk["desc"], 10, 260) {
+			E(at+".desc", "%s: bad desc", who)
+		}
+		if t, _ := sk["track"].(string); t != "one" && t != "LR" && t != "FR" {
+			E(at+".track", "%s: track must be one, LR or FR", who)
+		}
+		if !isList(sk["needs"]) {
+			E(at+".needs", "%s: needs must be a list", who)
+		}
+		allStr := func(l []any, lo, hi int) bool {
+			for _, v := range l {
+				if !str(v, lo, hi) {
+					return false
+				}
+			}
+			return true
+		}
+		if st := list(sk["steps"]); !isList(sk["steps"]) || len(st) < 1 || len(st) > 5 || !allStr(st, 5, 320) {
+			E(at+".steps", "%s: needs 1 to 5 steps", who)
+		}
+		if wl := list(sk["watch"]); !isList(sk["watch"]) || len(wl) < 1 || len(wl) > 3 || !allStr(wl, 5, 240) {
+			E(at+".watch", "%s: needs 1 to 3 watch items", who)
+		}
+		if !str(sk["drill"], 10, 320) {
+			E(at+".drill", "%s: needs a drill", who)
+		}
+		if rl, ok := strs(sk["refs"]); !ok {
+			E(at+".refs", "%s: refs must be a list", who)
+		} else {
+			for _, r := range rl {
+				if _, ok := refs[r]; !ok {
+					E(at+".refs", `%s: unknown ref "%s"`, who, r)
+				}
+			}
+			if len(rl) == 0 && sk["retired"] != true {
+				W(at+".refs", "%s: no refs", who)
+			}
+		}
+		for _, k := range []string{"star", "care", "retired"} {
+			if v, ok := sk[k]; ok {
+				if _, isBool := v.(bool); !isBool {
+					E(at+"."+k, "%s: %s must be true or false", who, k)
+				}
+			}
+		}
+		text := []string{}
+		for _, k := range []string{"name", "desc", "drill"} {
+			text = append(text, fmt.Sprint(sk[k]))
+		}
+		for _, k := range []string{"steps", "watch"} {
+			for _, v := range list(sk[k]) {
+				text = append(text, fmt.Sprint(v))
+			}
+		}
+		if strings.ContainsAny(strings.Join(text, " "), "—–") {
+			E(at, "%s: contains a long dash; use plain punctuation", who)
+		}
+	}
+	live := func(id string) bool { sk := ids[id]; return sk != nil && sk["retired"] != true }
+	tier := func(sk map[string]any) float64 { f, _ := sk["tier"].(float64); return f }
+	for i, x := range skills {
+		sk := obj(x)
+		id, _ := sk["id"].(string)
+		needs, ok := strs(sk["needs"])
+		if ids[id] == nil || !ok {
+			continue
+		}
+		at := fmt.Sprintf("skills.%d.needs", i)
+		for _, n := range needs {
+			nid := strings.TrimSuffix(n, "!")
+			switch {
+			case ids[nid] == nil:
+				E(at, "skill %s: needs unknown %s", id, n)
+			case nid == id:
+				E(at, "skill %s: needs itself", id)
+			case sk["retired"] != true && !live(nid):
+				E(at, "skill %s: needs %s, which is retired", id, nid)
+			case tier(ids[nid]) > tier(sk):
+				W(at, "skill %s (T%v) needs %s (T%v), a higher tier", id, sk["tier"], nid, ids[nid]["tier"])
+			}
+		}
+	}
+	state := map[string]int{}
+	var visit func(id string, path []string)
+	visit = func(id string, path []string) {
+		if state[id] == 2 {
+			return
+		}
+		if state[id] == 1 {
+			E("skills", "cycle: %s", strings.Join(append(path, id), " > "))
+			return
+		}
+		state[id] = 1
+		needs, _ := strs(ids[id]["needs"])
+		for _, n := range needs {
+			k := strings.TrimSuffix(n, "!")
+			if ids[k] != nil && k != id {
+				visit(k, append(append([]string{}, path...), id))
+			}
+		}
+		state[id] = 2
+	}
+	for _, id := range order {
+		visit(id, nil)
+	}
+	for b := range bk {
+		has := false
+		for _, x := range skills {
+			sk := obj(x)
+			if id, _ := sk["id"].(string); id != "" && id[:1] == b && sk["retired"] != true {
+				has = true
+			}
+		}
+		if !has {
+			E("branches", "branch %s has no skills", b)
+		}
+	}
+	used := map[string]bool{}
+	for _, x := range skills {
+		rl, _ := strs(obj(x)["refs"])
+		for _, r := range rl {
+			used[r] = true
+		}
+	}
+	for k, v := range refs {
+		l := list(v)
+		u := ""
+		if len(l) > 1 {
+			u, _ = l[1].(string)
+		}
+		if len(l) == 0 || !str(l[0], 3, 140) || !httpsRE.MatchString(u) {
+			E("refs."+k, "ref %s: needs [label, https url]", k)
+		}
+		if !used[k] {
+			W("refs."+k, "ref %s is never used", k)
+		}
+	}
+	phases := list(c["phases"])
+	if len(phases) < 3 || len(phases) > 6 {
+		E("phases", "needs 3 to 6 phases, has %d", len(phases))
+	}
+	for i, x := range phases {
+		p := obj(x)
+		at := fmt.Sprintf("phases.%d", i)
+		pid, _ := p["id"].(string)
+		if pid != fmt.Sprintf("p%d", i+1) {
+			E(at+".id", "phase %d: id must be p%d", i+1, i+1)
+		}
+		if !str(p["name"], 2, 40) || !str(p["time"], 2, 40) || !str(p["gate"], 10, 260) {
+			E(at, "phase %s: bad name, time or gate", pid)
+		}
+		sks, _ := p["skills"].(string)
+		for _, id := range strings.Fields(sks) {
+			if !live(id) {
+				E(at+".skills", "phase %s: unknown or retired skill %s", pid, id)
+			}
+		}
+		req, ok := strs(p["req"])
+		if !ok || len(req) == 0 {
+			E(at+".req", "phase %s: needs req", pid)
+		}
+		for _, r := range req {
+			if !live(strings.TrimSuffix(r, "!")) {
+				E(at+".req", "phase %s: unknown or retired req %s", pid, r)
+			}
+		}
+	}
+	if v, ok := c["weeks"]; ok {
+		if !isList(v) {
+			E("weeks", "weeks must be a list")
+		} else {
+			seen := map[string]bool{}
+			for i, x := range list(v) {
+				wk := obj(x)
+				at := fmt.Sprintf("weeks.%d", i)
+				wid, _ := wk["id"].(string)
+				if !weekIDRE.MatchString(wid) || seen[wid] {
+					E(at+".id", "week %d: id must be w and a number, unique", i+1)
+				}
+				seen[wid] = true
+				from, ok1 := intIn(wk["from"], 1, 52)
+				to, ok2 := intIn(wk["to"], 1, 52)
+				if !ok1 || !ok2 || to < from {
+					E(at, "week %s: from and to must be weeks 1 to 52, from first", wid)
+				}
+				for _, k := range []string{"label", "focus", "result", "gate"} {
+					if !str(wk[k], 2, 160) {
+						E(at+"."+k, "week %s: bad %s", wid, k)
+					}
+				}
+			}
+		}
+	}
+	if v, ok := c["aliases"]; ok {
+		al := obj(v)
+		if al == nil {
+			E("aliases", "aliases must be an object of old id to new id")
+		} else {
+			for from, to := range al {
+				if !catSkillRE.MatchString(from) {
+					E("aliases."+from, "alias %s: bad id", from)
+				} else if ids[from] != nil {
+					E("aliases."+from, "alias %s: that id is a skill, so it cannot also be an alias", from)
+				}
+				if t, _ := to.(string); !live(t) {
+					E("aliases."+from, "alias %s: points at %v, which is not a current skill", from, to)
+				}
+			}
+		}
+	}
+	return errs, warns
+}
+
+// Catalogs live in catalog_revisions: numbered published revisions and at most one draft per prop.
+// The files shipped in web/catalog seed revision 1, and a later deploy that ships a changed file
+// publishes it automatically, unless an admin has published edits since; then the editor offers it.
+
+type catalogRev struct {
+	Rev     int             `json:"rev"`
+	Status  string          `json:"status"`
+	Body    json.RawMessage `json:"body,omitempty"`
+	Source  string          `json:"source"`
+	Author  string          `json:"author"`
+	Note    string          `json:"note"`
+	Created time.Time       `json:"created"`
+}
+
+func shippedCatalog(prop string) ([]byte, bool) {
+	b, err := webFS.ReadFile("web/catalog/" + prop + ".json")
+	return b, err == nil
+}
+
+func hashOf(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:8]) }
+
+// canonHash hashes JSON after re-encoding it, so formatting and key order (which Postgres changes
+// when it stores JSONB) do not count as a change.
+func canonHash(b []byte) string {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return hashOf(b)
+	}
+	c, _ := json.Marshal(v)
+	return hashOf(c)
+}
+
+// seedCatalogs imports each shipped catalog that is new or changed since it was last imported.
+func (a *app) seedCatalogs() error {
+	for _, prop := range knownProps {
+		raw, ok := shippedCatalog(prop)
+		if !ok {
+			continue
+		}
+		h := canonHash(raw)
+		var rev int
+		var source, last string
+		err := a.db.QueryRow(`SELECT rev, source, shipped_hash FROM catalog_revisions WHERE prop = $1 AND status = 'published' ORDER BY rev DESC LIMIT 1`, prop).Scan(&rev, &source, &last)
+		if errors.Is(err, sql.ErrNoRows) {
+			rev, source = 0, "shipped"
+		} else if err != nil {
+			return err
+		}
+		if source != "shipped" || last == h {
+			continue // edited since, or already current
+		}
+		if _, err := a.db.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, source, shipped_hash, note) VALUES ($1, $2, 'published', $3, 'shipped', $4, 'The version shipped with Flowa')`,
+			prop, rev+1, string(raw), h); err != nil {
+			return err
+		}
+		log.Printf("catalog %s: imported the shipped version as revision %d", prop, rev+1)
+	}
+	return nil
+}
+
+func (a *app) latestCatalog(prop string) (json.RawMessage, int, error) {
+	var body []byte
+	var rev int
+	err := a.db.QueryRow(`SELECT body, rev FROM catalog_revisions WHERE prop = $1 AND status = 'published' ORDER BY rev DESC LIMIT 1`, prop).Scan(&body, &rev)
+	return body, rev, err
+}
+
+// handleCatalogFile serves /catalog/<prop>.json from the latest published revision, or the shipped
+// file when the database has none.
+func (a *app) handleCatalogFile(w http.ResponseWriter, r *http.Request) {
+	prop := strings.TrimSuffix(r.PathValue("file"), ".json")
+	if !slices.Contains(knownProps, prop) || !strings.HasSuffix(r.PathValue("file"), ".json") {
+		http.NotFound(w, r)
+		return
+	}
+	body, _, err := a.latestCatalog(prop)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("catalog %s: %v", prop, err)
+		}
+		raw, ok := shippedCatalog(prop)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		body = raw
+	}
+	tag := `"` + hashOf(body) + `"`
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", tag)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Header.Get("If-None-Match") == tag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Write(body)
+}
+
+func catalogProp(w http.ResponseWriter, r *http.Request) (string, bool) {
+	p := r.PathValue("prop")
+	if !slices.Contains(knownProps, p) {
+		fail(w, http.StatusNotFound, "Unknown prop.")
+		return "", false
+	}
+	return p, true
+}
+
+func (a *app) catalogRevs(prop string) ([]catalogRev, error) {
+	rows, err := a.db.Query(`SELECT c.rev, c.status, c.source, COALESCE(u.username, ''), c.note, c.created_at FROM catalog_revisions c LEFT JOIN users u ON u.id = c.author_id
+		WHERE c.prop = $1 ORDER BY c.status = 'draft' DESC, c.rev DESC`, prop)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []catalogRev{}
+	for rows.Next() {
+		var x catalogRev
+		if err := rows.Scan(&x.Rev, &x.Status, &x.Source, &x.Author, &x.Note, &x.Created); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// handleCatalogAdmin returns what the editor needs: the published catalog, the draft if there is
+// one, the list of revisions, and whether a newer shipped version waits.
+func (a *app) handleCatalogAdmin(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	pub, rev, err := a.latestCatalog(prop)
+	if errors.Is(err, sql.ErrNoRows) {
+		raw, _ := shippedCatalog(prop)
+		pub, rev, err = raw, 0, nil
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var draft []byte
+	if err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop).Scan(&draft); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
+	revs, err := a.catalogRevs(prop)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	shipped := false
+	if raw, ok := shippedCatalog(prop); ok {
+		var n int
+		a.db.QueryRow(`SELECT count(*) FROM catalog_revisions WHERE prop = $1 AND shipped_hash = $2`, prop, canonHash(raw)).Scan(&n)
+		shipped = n == 0
+	}
+	out := map[string]any{"published": json.RawMessage(pub), "rev": rev, "revisions": revs, "shippedUpdate": shipped}
+	if draft != nil {
+		out["draft"] = json.RawMessage(draft)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// progressOn counts, for each skill id, the people with progress or notes recorded under it.
+func (a *app) progressOn(prop string) (map[string]int, error) {
+	rows, err := a.db.Query(`SELECT k, count(DISTINCT p.user_id) FROM progress p, jsonb_object_keys(CASE WHEN jsonb_typeof(p.state->'skills') = 'object' THEN p.state->'skills' ELSE '{}' END) k
+		WHERE p.prop = $1 GROUP BY k`, prop)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var k string
+		var n int
+		if err := rows.Scan(&k, &n); err != nil {
+			return nil, err
+		}
+		out[k] = n
+	}
+	return out, rows.Err()
+}
+
+// catShape is the part of a catalog the editor's checks need.
+type catShape struct {
+	ID      string            `json:"id"`
+	Aliases map[string]string `json:"aliases"`
+	Skills  []map[string]any  `json:"skills"`
+}
+
+func parseShape(raw []byte) catShape {
+	var c catShape
+	json.Unmarshal(raw, &c)
+	return c
+}
+
+func (c catShape) skillMap() map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, s := range c.Skills {
+		if id, ok := s["id"].(string); ok {
+			out[id] = s
+		}
+	}
+	return out
+}
+
+// safeToPublish refuses a catalog that would orphan progress (an id with progress that is neither a
+// skill nor an alias in it) or, unless restoring an earlier revision (which brings back the same
+// skills), reuse an id that the published catalog keeps as an alias.
+func (a *app) safeToPublish(prop string, next []byte, restoring bool) []catalogIssue {
+	issues := []catalogIssue{}
+	n := parseShape(next)
+	if n.ID != prop {
+		return append(issues, catalogIssue{"id", fmt.Sprintf("the catalog id must be %q", prop)})
+	}
+	sk := n.skillMap()
+	if cur, _, err := a.latestCatalog(prop); err == nil && !restoring {
+		for from := range parseShape(cur).Aliases {
+			if sk[from] != nil {
+				issues = append(issues, catalogIssue{"skills", fmt.Sprintf("%s is an old id kept as an alias, so it cannot be used for a skill again", from)})
+			}
+		}
+	}
+	prog, err := a.progressOn(prop)
+	if err != nil {
+		return append(issues, catalogIssue{"", "could not check progress: " + err.Error()})
+	}
+	ids := make([]string, 0, len(prog))
+	for id := range prog {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if sk[id] == nil && n.Aliases[id] == "" {
+			issues = append(issues, catalogIssue{"skills", fmt.Sprintf("%s has progress for %d %s; retire it or alias it instead of removing it", id, prog[id], map[bool]string{true: "person", false: "people"}[prog[id] == 1])})
+		}
+	}
+	return issues
+}
+
+func (a *app) handleCatalogDraft(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Body json.RawMessage `json:"body"`
+	}
+	if !readJSON(w, r, 4<<20, &in) {
+		return
+	}
+	var probe map[string]any
+	if json.Unmarshal(in.Body, &probe) != nil {
+		fail(w, http.StatusBadRequest, "The draft must be a catalog object.")
+		return
+	}
+	if probe["id"] != prop {
+		fail(w, http.StatusBadRequest, fmt.Sprintf("The draft's id must be %q.", prop))
+		return
+	}
+	// A draft may be incomplete while it is being edited; its problems are returned, not refused.
+	if _, err := a.db.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, author_id) VALUES ($1, 0, 'draft', $2, $3)
+		ON CONFLICT (prop) WHERE status = 'draft' DO UPDATE SET body = EXCLUDED.body, author_id = EXCLUDED.author_id, created_at = now()`, prop, string(in.Body), u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	errs, warns := validateCatalog(in.Body)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "errors": errs, "warnings": warns})
+}
+
+func (a *app) handleCatalogDiscard(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleCatalogDiff compares the draft with the published catalog, skill by skill, with the number
+// of people whose progress each change touches.
+func (a *app) handleCatalogDiff(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	var draft []byte
+	err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop).Scan(&draft)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "There is no draft.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	pub, _, err := a.latestCatalog(prop)
+	if errors.Is(err, sql.ErrNoRows) {
+		pub, _ = shippedCatalog(prop)
+	} else if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	prog, err := a.progressOn(prop)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	old, next := parseShape(pub), parseShape(draft)
+	om, nm := old.skillMap(), next.skillMap()
+	// A renamed skill shows once, as renamed, not also as a new skill under its new id.
+	renamedTo := map[string]bool{}
+	for from, to := range next.Aliases {
+		if om[from] != nil && nm[from] == nil {
+			renamedTo[to] = true
+		}
+	}
+	type change struct {
+		ID     string   `json:"id"`
+		Kind   string   `json:"kind"`
+		Fields []string `json:"fields,omitempty"`
+		To     string   `json:"to,omitempty"`
+		People int      `json:"people"`
+	}
+	changes := []change{}
+	for _, s := range next.Skills {
+		id, _ := s["id"].(string)
+		o := om[id]
+		switch {
+		case o == nil && renamedTo[id]:
+		case o == nil:
+			changes = append(changes, change{ID: id, Kind: "added"})
+		case s["retired"] == true && o["retired"] != true:
+			changes = append(changes, change{ID: id, Kind: "retired", People: prog[id]})
+		default:
+			fields := []string{}
+			keys := map[string]bool{}
+			for k := range s {
+				keys[k] = true
+			}
+			for k := range o {
+				keys[k] = true
+			}
+			for k := range keys {
+				a, _ := json.Marshal(s[k])
+				b, _ := json.Marshal(o[k])
+				if string(a) != string(b) {
+					fields = append(fields, k)
+				}
+			}
+			sort.Strings(fields)
+			if len(fields) > 0 {
+				changes = append(changes, change{ID: id, Kind: "changed", Fields: fields, People: prog[id]})
+			}
+		}
+	}
+	for _, s := range old.Skills {
+		id, _ := s["id"].(string)
+		if nm[id] == nil {
+			if to := next.Aliases[id]; to != "" {
+				changes = append(changes, change{ID: id, Kind: "renamed", To: to, People: prog[id]})
+			} else {
+				changes = append(changes, change{ID: id, Kind: "removed", People: prog[id]})
+			}
+		}
+	}
+	errs, warns := validateCatalog(draft)
+	writeJSON(w, http.StatusOK, map[string]any{"changes": changes, "errors": errs, "warnings": warns, "blocked": a.safeToPublish(prop, draft, false)})
+}
+
+// publishCatalog makes body the next published revision, after the same checks the editor shows.
+func (a *app) publishCatalog(w http.ResponseWriter, u *user, prop string, body []byte, note, action string, detail map[string]any) {
+	if errs, _ := validateCatalog(body); len(errs) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Fix the problems in the catalog first.", "errors": errs})
+		return
+	}
+	if issues := a.safeToPublish(prop, body, action == "catalog_restore"); len(issues) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": issues[0].Msg, "errors": issues})
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var rev int
+	if err := tx.QueryRow(`SELECT COALESCE(max(rev), 0) + 1 FROM catalog_revisions WHERE prop = $1 AND status = 'published'`, prop).Scan(&rev); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// Publishing the shipped version records its hash, so it is not offered again.
+	shipped := ""
+	if raw, ok := shippedCatalog(prop); ok && canonHash(raw) == canonHash(body) {
+		shipped = canonHash(raw)
+	}
+	_, err = tx.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, source, shipped_hash, author_id, note) VALUES ($1, $2, 'published', $3, 'editor', $4, $5, $6)`, prop, rev, string(body), shipped, u.ID, note)
+	if err == nil {
+		_, err = tx.Exec(`DELETE FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop)
+	}
+	if err == nil {
+		detail["prop"], detail["rev"] = prop, rev
+		err = a.audit(tx, u.ID, action, "catalog", int64(rev), 0, note, detail)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rev": rev})
+}
+
+func (a *app) handleCatalogPublish(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	var draft []byte
+	err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'draft'`, prop).Scan(&draft)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "There is no draft to publish.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.publishCatalog(w, u, prop, draft, strings.TrimSpace(in.Note), "catalog_publish", map[string]any{})
+}
+
+func (a *app) catalogRevision(w http.ResponseWriter, r *http.Request) (string, int, []byte, bool) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return "", 0, nil, false
+	}
+	rev, _ := strconv.Atoi(r.PathValue("rev"))
+	var body []byte
+	err := a.db.QueryRow(`SELECT body FROM catalog_revisions WHERE prop = $1 AND rev = $2 AND status = 'published'`, prop, rev).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such revision.")
+		return "", 0, nil, false
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return "", 0, nil, false
+	}
+	return prop, rev, body, true
+}
+
+// handleCatalogExport downloads a revision in the catalog format, ready to commit to web/catalog.
+func (a *app) handleCatalogExport(w http.ResponseWriter, r *http.Request, _ *user) {
+	prop, rev, body, ok := a.catalogRevision(w, r)
+	if !ok {
+		return
+	}
+	var v any
+	json.Unmarshal(body, &v)
+	pretty, _ := json.MarshalIndent(v, "", " ")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-revision-%d.json"`, prop, rev))
+	w.Write(append(pretty, '\n'))
+}
+
+func (a *app) handleCatalogRestore(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, rev, body, ok := a.catalogRevision(w, r)
+	if !ok {
+		return
+	}
+	a.publishCatalog(w, u, prop, body, fmt.Sprintf("Restored revision %d", rev), "catalog_restore", map[string]any{"from": rev})
+}
+
+// handleCatalogShipped loads the shipped version of a catalog as the draft, for an admin to review.
+func (a *app) handleCatalogShipped(w http.ResponseWriter, r *http.Request, u *user) {
+	prop, ok := catalogProp(w, r)
+	if !ok {
+		return
+	}
+	raw, ok := shippedCatalog(prop)
+	if !ok {
+		fail(w, http.StatusNotFound, "No shipped version.")
+		return
+	}
+	if _, err := a.db.Exec(`INSERT INTO catalog_revisions (prop, rev, status, body, author_id, note) VALUES ($1, 0, 'draft', $2, $3, 'The version shipped with Flowa')
+		ON CONFLICT (prop) WHERE status = 'draft' DO UPDATE SET body = EXCLUDED.body, author_id = EXCLUDED.author_id, created_at = now()`, prop, string(raw), u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+/* ---------- admin dashboard ---------- */
+
+const dashWeeks = 12
+
+// handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
+// for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
+func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
+	out := map[string]any{}
+	var users, mods, admins, active7, active30, open int
+	err := a.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`).Scan(&users, &mods, &admins)
+	if err == nil {
+		// Active: signed in or saved progress within the window.
+		err = a.db.QueryRow(`WITH act AS (SELECT user_id, created_at AS t FROM sessions UNION ALL SELECT user_id, updated_at FROM progress)
+			SELECT count(DISTINCT user_id) FILTER (WHERE t > now() - interval '7 days'), count(DISTINCT user_id) FILTER (WHERE t > now() - interval '30 days') FROM act`).Scan(&active7, &active30)
+	}
+	if err == nil {
+		err = a.db.QueryRow(`SELECT count(DISTINCT (target_kind, target_id)) FROM reports WHERE status = 'open'`).Scan(&open)
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["totals"] = map[string]int{"users": users, "moderators": mods, "admins": admins, "active7": active7, "active30": active30, "openReports": open}
+	rows, err := a.db.Query(`WITH weeks AS (SELECT generate_series(date_trunc('week', now()) - ($1 - 1) * interval '1 week', date_trunc('week', now()), interval '1 week') AS w),
+		sess AS (SELECT CASE WHEN s->>'date' ~ '^\d{4}-\d{2}-\d{2}$' THEN date_trunc('week', (s->>'date')::date) END AS w
+			FROM progress, jsonb_array_elements(CASE WHEN jsonb_typeof(state->'sessions') = 'array' THEN state->'sessions' ELSE '[]' END) s)
+		SELECT weeks.w,
+			(SELECT count(*) FROM sess WHERE sess.w = weeks.w),
+			(SELECT count(*) FROM posts p WHERE date_trunc('week', p.created_at) = weeks.w),
+			(SELECT count(*) FROM comments c WHERE date_trunc('week', c.created_at) = weeks.w),
+			(SELECT count(*) FROM reports r WHERE date_trunc('week', r.created_at) = weeks.w)
+		FROM weeks ORDER BY weeks.w`, dashWeeks)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	weeks := []map[string]any{}
+	for rows.Next() {
+		var wk time.Time
+		var sessions, posts, comments, reports int
+		if err := rows.Scan(&wk, &sessions, &posts, &comments, &reports); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		weeks = append(weeks, map[string]any{"week": wk.Format("2006-01-02"), "sessions": sessions, "posts": posts, "comments": comments, "reports": reports})
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["weeks"] = weeks
+	writeJSON(w, http.StatusOK, out)
+}
+
+/* ---------- audit log ---------- */
+
+type execer interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
+// audit records one moderation or admin action. Every such handler calls it exactly once, inside
+// the same transaction as the action where there is one, so an action cannot happen unlogged.
+func (a *app) audit(x execer, actor int64, action, kind string, targetID, targetUser int64, reason string, detail map[string]any) error {
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	d, _ := json.Marshal(detail)
+	var tu any
+	if targetUser != 0 {
+		tu = targetUser
+	}
+	_, err := x.Exec(`INSERT INTO mod_actions (actor_id, action, target_kind, target_id, target_user_id, reason, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		actor, action, kind, targetID, tu, reason, string(d))
+	return err
 }
 
 /* ---------- start-up ---------- */
@@ -983,17 +2542,36 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 		io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("GET /api/me", a.handleMe)
-	mux.HandleFunc("PUT /api/me", a.authed(false, a.handlePutMe))
-	mux.HandleFunc("PUT /api/me/password", a.authed(false, a.handlePassword))
+	mux.HandleFunc("PUT /api/me", a.authed("", a.handlePutMe))
+	mux.HandleFunc("PUT /api/me/password", a.authed("", a.handlePassword))
 	mux.HandleFunc("POST /api/signup", a.handleSignup)
 	mux.HandleFunc("POST /api/signin", a.handleSignin)
 	mux.HandleFunc("POST /api/signout", a.handleSignout)
-	mux.HandleFunc("GET /api/progress/{prop}", a.authed(false, a.handleGetProgress))
-	mux.HandleFunc("PUT /api/progress/{prop}", a.authed(false, a.handlePutProgress))
-	mux.HandleFunc("PUT /api/flags", a.authed(true, a.handlePutFlags))
-	mux.HandleFunc("GET /api/admin/users", a.authed(true, a.handleUsers))
-	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(true, a.handleDeleteUser))
-	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(true, a.handleResetPassword))
+	mux.HandleFunc("GET /api/progress/{prop}", a.authed("", a.handleGetProgress))
+	mux.HandleFunc("PUT /api/progress/{prop}", a.authed("", a.handlePutProgress))
+	mux.HandleFunc("PUT /api/flags", a.authed(permFlagsEdit, a.handlePutFlags))
+	mux.HandleFunc("GET /api/admin/users", a.authed(permDashboard, a.handleUsers))
+	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(permUserManage, a.handleDeleteUser))
+	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(permUserManage, a.handleResetPassword))
+	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.authed(permUserRole, a.handleSetRole))
+	mux.HandleFunc("GET /api/admin/audit", a.authed(permAudit, a.handleAudit))
+	mux.HandleFunc("GET /api/admin/dashboard", a.authed(permDashboard, a.handleDashboard))
+	mux.HandleFunc("GET /catalog/{file}", a.handleCatalogFile)
+	ed := func(perm string, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+		return a.flagged("catalogEditor", a.authed(perm, h))
+	}
+	mux.HandleFunc("GET /api/admin/catalog/{prop}", ed(permCatalogEdit, a.handleCatalogAdmin))
+	mux.HandleFunc("PUT /api/admin/catalog/{prop}/draft", ed(permCatalogEdit, a.handleCatalogDraft))
+	mux.HandleFunc("DELETE /api/admin/catalog/{prop}/draft", ed(permCatalogEdit, a.handleCatalogDiscard))
+	mux.HandleFunc("GET /api/admin/catalog/{prop}/diff", ed(permCatalogEdit, a.handleCatalogDiff))
+	mux.HandleFunc("POST /api/admin/catalog/{prop}/publish", ed(permCatalogPublish, a.handleCatalogPublish))
+	mux.HandleFunc("POST /api/admin/catalog/{prop}/shipped", ed(permCatalogEdit, a.handleCatalogShipped))
+	mux.HandleFunc("GET /api/admin/catalog/{prop}/revisions/{rev}", ed(permCatalogEdit, a.handleCatalogExport))
+	mux.HandleFunc("POST /api/admin/catalog/{prop}/revisions/{rev}/restore", ed(permCatalogPublish, a.handleCatalogRestore))
+	mux.HandleFunc("POST /api/reports", a.flagged("moderation", a.authed("", a.handleReport)))
+	mux.HandleFunc("GET /api/mod/queue", a.flagged("moderation", a.authed(permReportResolve, a.handleQueue)))
+	mux.HandleFunc("POST /api/mod/resolve", a.flagged("moderation", a.authed(permReportResolve, a.handleResolve)))
+	mux.HandleFunc("POST /api/mod/actions", a.flagged("moderation", a.authed("", a.handleModAction)))
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /", handleStatic(assets))
 	return guard(mux)
@@ -1037,6 +2615,9 @@ func main() {
 		log.Fatal(err)
 	}
 	a.importLegacy(adminID)
+	if err := a.seedCatalogs(); err != nil {
+		log.Fatal(err)
+	}
 	db.Exec(`DELETE FROM sessions WHERE expires_at < now()`)
 
 	assets, err := loadAssets()
@@ -1125,7 +2706,62 @@ CREATE TABLE IF NOT EXISTS comment_likes (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	PRIMARY KEY (comment_id, user_id)
 );
-ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE;`
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE;
+CREATE TABLE IF NOT EXISTS mod_actions (
+	id BIGSERIAL PRIMARY KEY,
+	actor_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	action TEXT NOT NULL,
+	target_kind TEXT NOT NULL DEFAULT '',
+	target_id BIGINT NOT NULL DEFAULT 0,
+	target_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	reason TEXT NOT NULL DEFAULT '',
+	detail JSONB NOT NULL DEFAULT '{}',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mod_actions_time ON mod_actions (id DESC);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspend_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS stats_hidden BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS hidden_reason TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS reports (
+	id BIGSERIAL PRIMARY KEY,
+	reporter_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	target_kind TEXT NOT NULL,
+	target_id BIGINT NOT NULL,
+	reason TEXT NOT NULL,
+	note TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'open',
+	resolver_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	resolution TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	resolved_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS reports_open_once ON reports (reporter_id, target_kind, target_id) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS reports_status ON reports (status, id);
+CREATE TABLE IF NOT EXISTS catalog_revisions (
+	id BIGSERIAL PRIMARY KEY,
+	prop TEXT NOT NULL,
+	rev INT NOT NULL,
+	status TEXT NOT NULL,
+	body JSONB NOT NULL,
+	source TEXT NOT NULL DEFAULT 'editor',
+	shipped_hash TEXT NOT NULL DEFAULT '',
+	author_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+	note TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS catalog_published ON catalog_revisions (prop, rev) WHERE status = 'published';
+CREATE UNIQUE INDEX IF NOT EXISTS catalog_draft ON catalog_revisions (prop) WHERE status = 'draft';
+CREATE TABLE IF NOT EXISTS badge_blocks (
+	user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	PRIMARY KEY (user_id, key)
+);`
 
 const (
 	maxBio       = 300
@@ -1255,6 +2891,11 @@ type pubUser struct {
 }
 
 func (u *user) public() pubUser {
+	if u.StatsHidden {
+		v := *u
+		v.Stats = json.RawMessage("{}")
+		u = &v
+	}
 	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Stats, u.Created}
 }
 
@@ -1306,7 +2947,7 @@ func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"users": out})
 }
 
-func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user) {
+func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *user) {
 	name := strings.ToLower(r.PathValue("username"))
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.username = $1`, name))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1323,7 +2964,7 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, _ *user)
 		return
 	}
 	var posts, likes int
-	if err := a.db.QueryRow(`SELECT count(*) FROM posts WHERE user_id = $1`, u.ID).Scan(&posts); err != nil {
+	if err := a.db.QueryRow(`SELECT count(*) FROM posts WHERE user_id = $1 AND (hidden_at IS NULL OR $1 = $2 OR $3)`, u.ID, viewer.ID, can(viewer, permPostHide)).Scan(&posts); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -1380,7 +3021,8 @@ func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user
 			return
 		}
 		var got string
-		err := a.db.QueryRow(`INSERT INTO achievements (user_id, key) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING key`, u.ID, k).Scan(&got)
+		err := a.db.QueryRow(`INSERT INTO achievements (user_id, key) SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM badge_blocks WHERE user_id = $1 AND key = $2)
+			ON CONFLICT DO NOTHING RETURNING key`, u.ID, k).Scan(&got)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -1499,7 +3141,17 @@ func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *use
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "unread": unread, "users": users})
+	out := map[string]any{"items": items, "unread": unread, "users": users}
+	if can(u, permReportResolve) {
+		// Moderators see how many reports wait, beside the menu entry.
+		var queue int
+		if err := a.db.QueryRow(`SELECT count(DISTINCT (target_kind, target_id)) FROM reports WHERE status = 'open'`).Scan(&queue); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out["queue"] = queue
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *app) handleReadNotifications(w http.ResponseWriter, r *http.Request, u *user) {
@@ -1535,6 +3187,8 @@ type comment struct {
 	Created    time.Time `json:"created"`
 	Edited     bool      `json:"edited,omitempty"`
 	Deleted    bool      `json:"deleted,omitempty"`
+	Removed    bool      `json:"removed,omitempty"` // a placeholder for a comment a moderator hid
+	Hidden     string    `json:"hidden,omitempty"`  // the reason, for its author and moderators
 	Likes      int       `json:"likes"`
 	Liked      bool      `json:"liked"`
 	ReplyCount int       `json:"replyCount"`
@@ -1557,16 +3211,20 @@ type post struct {
 	// load on demand. CommentCount counts every comment and reply that is not deleted.
 	Comments     []comment `json:"comments"`
 	CommentCount int       `json:"commentCount"`
+	// Hidden is the moderator's reason when the post is hidden; only its author and moderators see it.
+	Hidden string `json:"hidden,omitempty"`
 }
 
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
 // liked each one, every comment, and the users involved.
-func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, error) {
+func (a *app) loadPosts(viewer *user, before, byUser, only int64) (map[string]any, error) {
+	// Hidden posts are seen only by their author and by those who may hide posts.
 	rows, err := a.db.Query(`SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
-		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted)
-		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) ORDER BY p.id DESC LIMIT $5`,
-		viewer, before, byUser, only, pageSize+1)
+		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL), p.hidden_reason
+		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4)
+		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) ORDER BY p.id DESC LIMIT $5`,
+		viewer.ID, before, byUser, only, pageSize+1, can(viewer, permPostHide))
 	if err != nil {
 		return nil, err
 	}
@@ -1577,7 +3235,7 @@ func (a *app) loadPosts(viewer, before, byUser, only int64) (map[string]any, err
 	for rows.Next() {
 		p := &post{Comments: []comment{}}
 		var data []byte
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden); err != nil {
 			return nil, err
 		}
 		p.Data = data
@@ -1637,7 +3295,7 @@ func (a *app) handleGetPosts(w http.ResponseWriter, r *http.Request, u *user) {
 			return
 		}
 	}
-	out, err := a.loadPosts(u.ID, queryID(r, "before"), byUser, 0)
+	out, err := a.loadPosts(u, queryID(r, "before"), byUser, 0)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -1645,7 +3303,7 @@ func (a *app) handleGetPosts(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (a *app) writePost(w http.ResponseWriter, viewer, id int64) {
+func (a *app) writePost(w http.ResponseWriter, viewer *user, id int64) {
 	out, err := a.loadPosts(viewer, 0, 0, id)
 	if err != nil {
 		a.serverError(w, err)
@@ -1660,7 +3318,7 @@ func (a *app) writePost(w http.ResponseWriter, viewer, id int64) {
 
 func (a *app) handleGetPost(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	a.writePost(w, u.ID, id)
+	a.writePost(w, u, id)
 }
 
 // notifyMentions tells each @named user, except the actor and anyone already told.
@@ -1754,7 +3412,23 @@ func cleanCombo(c *postCombo) bool {
 	return true
 }
 
+// muted answers the request when the user is muted, and reports whether they were.
+func muted(w http.ResponseWriter, u *user) bool {
+	if u.MutedUntil == nil {
+		return false
+	}
+	msg := "You are muted until " + u.MutedUntil.UTC().Format("2 January 2006, 15:04 UTC") + ", so you cannot post or comment."
+	if u.MuteReason != "" {
+		msg += " Reason: " + u.MuteReason
+	}
+	fail(w, http.StatusForbidden, msg)
+	return true
+}
+
 func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) {
+	if muted(w, u) {
+		return
+	}
 	var in struct {
 		Body  string     `json:"body"`
 		Image string     `json:"image"`
@@ -1806,27 +3480,35 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	a.notifyMentions(body, u.ID, id, 0)
-	a.writePost(w, u.ID, id)
+	a.writePost(w, u, id)
 }
 
 func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	res, err := a.db.Exec(`DELETE FROM posts WHERE id = $1 AND (user_id = $2 OR $3)`, id, u.ID, u.Role == "admin")
+	var author int64
+	err := a.db.QueryRow(`DELETE FROM posts WHERE id = $1 AND (user_id = $2 OR $3) RETURNING user_id`, id, u.ID, can(u, permContentDelete)).Scan(&author)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such post, or it is not yours.")
+		return
+	}
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		fail(w, http.StatusNotFound, "No such post, or it is not yours.")
-		return
+	if author != u.ID {
+		if err := a.audit(a.db, u.ID, "delete_post", "post", id, author, "", nil); err != nil {
+			a.serverError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// postOwner finds who wrote a post, answering the request itself when it cannot.
-func (a *app) postOwner(w http.ResponseWriter, id int64) (int64, bool) {
+// postOwner finds who wrote a post the viewer may see, answering the request itself when it
+// cannot. A hidden post is "gone" to everyone but its author and moderators.
+func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, bool) {
 	var owner int64
-	err := a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1`, id).Scan(&owner)
+	err := a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1 AND (hidden_at IS NULL OR user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such post.")
 		return 0, false
@@ -1840,7 +3522,7 @@ func (a *app) postOwner(w http.ResponseWriter, id int64) (int64, bool) {
 
 func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	owner, ok := a.postOwner(w, id)
+	owner, ok := a.postOwner(w, id, u)
 	if !ok {
 		return
 	}
@@ -1878,12 +3560,14 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 
 const commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
 	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
-	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id)`
+	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL`
 
 // queryComments runs inner, a query over the comments table whose first parameter is $2, and
 // returns its rows oldest first, with likes and reply counts as seen by viewer ($1).
-func (a *app) queryComments(viewer int64, inner string, args ...any) ([]*comment, error) {
-	rows, err := a.db.Query(`SELECT `+commentCols+` FROM (`+inner+`) c ORDER BY c.id`, append([]any{viewer}, args...)...)
+// A hidden comment is shown in full to its author and moderators; to everyone else it is left
+// out, or kept as an empty placeholder when it has replies that are still shown.
+func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment, error) {
+	rows, err := a.db.Query(`SELECT `+commentCols+` FROM (`+inner+`) c ORDER BY c.id`, append([]any{viewer.ID}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1891,8 +3575,19 @@ func (a *app) queryComments(viewer int64, inner string, args ...any) ([]*comment
 	out := []*comment{}
 	for rows.Next() {
 		c := &comment{}
-		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.ParentID, &c.Body, &c.Created, &c.Edited, &c.Deleted, &c.Likes, &c.Liked, &c.ReplyCount); err != nil {
+		var reason string
+		var hidden bool
+		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.ParentID, &c.Body, &c.Created, &c.Edited, &c.Deleted, &c.Likes, &c.Liked, &c.ReplyCount, &reason, &hidden); err != nil {
 			return nil, err
+		}
+		if hidden {
+			if c.UserID == viewer.ID || can(viewer, permPostHide) {
+				c.Hidden = reason
+			} else if c.ReplyCount > 0 {
+				c.Deleted, c.Removed = true, true
+			} else {
+				continue
+			}
 		}
 		if c.Deleted {
 			c.Body, c.Likes, c.Liked, c.Edited = "", 0, false, false
@@ -1903,7 +3598,7 @@ func (a *app) queryComments(viewer int64, inner string, args ...any) ([]*comment
 }
 
 // attachReplies gives each top-level comment its newest replies, oldest first.
-func (a *app) attachReplies(viewer int64, roots []*comment) error {
+func (a *app) attachReplies(viewer *user, roots []*comment) error {
 	if len(roots) == 0 {
 		return nil
 	}
@@ -1957,12 +3652,12 @@ func (a *app) writeComments(w http.ResponseWriter, list []*comment, page int, ex
 // newest replies.
 func (a *app) handleGetComments(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if _, ok := a.postOwner(w, id); !ok {
+	if _, ok := a.postOwner(w, id, u); !ok {
 		return
 	}
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE post_id = $2 AND parent_id IS NULL AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), commentPage+1)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE post_id = $2 AND parent_id IS NULL AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), commentPage+1)
 	if err == nil {
-		err = a.attachReplies(u.ID, list)
+		err = a.attachReplies(u, list)
 	}
 	if err != nil {
 		a.serverError(w, err)
@@ -1979,11 +3674,12 @@ type commentRow struct {
 	body                                string
 }
 
-func (a *app) commentRow(w http.ResponseWriter, id int64) (commentRow, bool) {
+func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (commentRow, bool) {
 	var c commentRow
 	var secs float64
 	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
-		FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1`, id).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+		FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1
+		AND ((c.hidden_at IS NULL AND p.hidden_at IS NULL) OR c.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "That comment is gone.")
 		return c, false
@@ -1999,14 +3695,14 @@ func (a *app) commentRow(w http.ResponseWriter, id int64) (commentRow, bool) {
 // handleGetReplies pages through the replies to one top-level comment, oldest first.
 func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
 	if c.parentID != 0 {
 		id = c.parentID
 	}
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE parent_id = $2 AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), replyPage+1)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE parent_id = $2 AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), replyPage+1)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -2017,7 +3713,7 @@ func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) 
 // handleThread returns the whole thread a comment belongs to, for a notification to open.
 func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
@@ -2025,12 +3721,12 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 	if c.parentID != 0 {
 		root = c.parentID
 	}
-	roots, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, root)
+	roots, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, root)
 	if err != nil || len(roots) == 0 {
 		a.serverError(w, fmt.Errorf("thread %d: %v", root, err))
 		return
 	}
-	reps, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE parent_id = $2 ORDER BY id LIMIT $3`, root, maxThread)
+	reps, err := a.queryComments(u, `SELECT * FROM comments WHERE parent_id = $2 ORDER BY id LIMIT $3`, root, maxThread)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -2050,6 +3746,9 @@ func startsWithMention(text, name string) bool {
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
+	if muted(w, u) {
+		return
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Body     string `json:"body"`
@@ -2063,7 +3762,7 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusBadRequest, "A comment needs 1 to 1000 characters.")
 		return
 	}
-	owner, ok := a.postOwner(w, id)
+	owner, ok := a.postOwner(w, id, u)
 	if !ok {
 		return
 	}
@@ -2077,8 +3776,11 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 	if in.ParentID != 0 {
 		// Lock the comment being answered, so it cannot be deleted while the reply is written.
 		var postID, parent int64
-		var deleted bool
-		err := tx.QueryRow(`SELECT post_id, user_id, COALESCE(parent_id, 0), deleted FROM comments WHERE id = $1 FOR SHARE`, in.ParentID).Scan(&postID, &answered, &parent, &deleted)
+		var deleted, hidden bool
+		err := tx.QueryRow(`SELECT post_id, user_id, COALESCE(parent_id, 0), deleted, hidden_at IS NOT NULL FROM comments WHERE id = $1 FOR SHARE`, in.ParentID).Scan(&postID, &answered, &parent, &deleted, &hidden)
+		if err == nil && hidden && answered != u.ID && !can(u, permPostHide) {
+			err = sql.ErrNoRows
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			fail(w, http.StatusNotFound, "That comment is gone.")
 			return
@@ -2132,12 +3834,12 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		a.notifyAt(owner, u.ID, "comment", id, cid, "")
 	}
 	a.notifyMentions(body, u.ID, id, cid, owner, answered)
-	out, err := a.loadPosts(u.ID, 0, 0, id)
+	out, err := a.loadPosts(u, 0, 0, id)
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, cid)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, cid)
 	if err != nil || len(list) == 0 {
 		a.serverError(w, fmt.Errorf("new comment %d: %v", cid, err))
 		return
@@ -2149,6 +3851,9 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 // handleEditComment lets the author change a comment within the edit window. People newly
 // @mentioned are told; people mentioned before are not told again.
 func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user) {
+	if muted(w, u) {
+		return
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Body string `json:"body"`
@@ -2156,7 +3861,7 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 	if !readJSON(w, r, 8192, &in) {
 		return
 	}
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
@@ -2192,7 +3897,7 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 		}
 	}
 	a.notifyNames(added, u.ID, c.postID, id, c.postOwner)
-	list, err := a.queryComments(u.ID, `SELECT * FROM comments WHERE id = $2`, id)
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, id)
 	if err != nil || len(list) == 0 {
 		a.serverError(w, fmt.Errorf("edited comment %d: %v", id, err))
 		return
@@ -2212,7 +3917,7 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 	defer tx.Rollback()
 	var author, owner, parent int64
 	err = tx.QueryRow(`SELECT c.user_id, p.user_id, COALESCE(c.parent_id, 0) FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 FOR UPDATE OF c`, id).Scan(&author, &owner, &parent)
-	if err == nil && author != u.ID && owner != u.ID && u.Role != "admin" {
+	if err == nil && author != u.ID && owner != u.ID && !can(u, permContentDelete) {
 		err = sql.ErrNoRows
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2241,6 +3946,9 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 			_, err = tx.Exec(`DELETE FROM comments WHERE id = $1 AND deleted AND NOT EXISTS (SELECT 1 FROM comments WHERE parent_id = $1)`, parent)
 		}
 	}
+	if err == nil && author != u.ID && owner != u.ID {
+		err = a.audit(tx, u.ID, "delete_comment", "comment", id, author, "", nil)
+	}
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -2254,7 +3962,7 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 // handleLikeComment toggles a like on a comment in one statement either way.
 func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	c, ok := a.commentRow(w, id)
+	c, ok := a.commentRow(w, id, u)
 	if !ok {
 		return
 	}
@@ -2291,21 +3999,21 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 }
 
 func (a *app) socialRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/users", a.authed(false, a.handleUserList))
-	mux.HandleFunc("GET /api/users/{username}", a.authed(false, a.handleUserProfile))
-	mux.HandleFunc("GET /api/posts", a.authed(false, a.handleGetPosts))
-	mux.HandleFunc("POST /api/posts", a.authed(false, a.handleCreatePost))
-	mux.HandleFunc("GET /api/posts/{id}", a.authed(false, a.handleGetPost))
-	mux.HandleFunc("DELETE /api/posts/{id}", a.authed(false, a.handleDeletePost))
-	mux.HandleFunc("POST /api/posts/{id}/like", a.authed(false, a.handleLike))
-	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed(false, a.handleComment))
-	mux.HandleFunc("GET /api/posts/{id}/comments", a.authed(false, a.handleGetComments))
-	mux.HandleFunc("DELETE /api/comments/{id}", a.authed(false, a.handleDeleteComment))
-	mux.HandleFunc("PUT /api/comments/{id}", a.authed(false, a.handleEditComment))
-	mux.HandleFunc("GET /api/comments/{id}/replies", a.authed(false, a.handleGetReplies))
-	mux.HandleFunc("GET /api/comments/{id}/thread", a.authed(false, a.handleThread))
-	mux.HandleFunc("POST /api/comments/{id}/like", a.authed(false, a.handleLikeComment))
-	mux.HandleFunc("POST /api/achievements", a.authed(false, a.handleAchievements))
-	mux.HandleFunc("GET /api/notifications", a.authed(false, a.handleNotifications))
-	mux.HandleFunc("PUT /api/notifications/read", a.authed(false, a.handleReadNotifications))
+	mux.HandleFunc("GET /api/users", a.authed("", a.handleUserList))
+	mux.HandleFunc("GET /api/users/{username}", a.authed("", a.handleUserProfile))
+	mux.HandleFunc("GET /api/posts", a.authed("", a.handleGetPosts))
+	mux.HandleFunc("POST /api/posts", a.authed("", a.handleCreatePost))
+	mux.HandleFunc("GET /api/posts/{id}", a.authed("", a.handleGetPost))
+	mux.HandleFunc("DELETE /api/posts/{id}", a.authed("", a.handleDeletePost))
+	mux.HandleFunc("POST /api/posts/{id}/like", a.authed("", a.handleLike))
+	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed("", a.handleComment))
+	mux.HandleFunc("GET /api/posts/{id}/comments", a.authed("", a.handleGetComments))
+	mux.HandleFunc("DELETE /api/comments/{id}", a.authed("", a.handleDeleteComment))
+	mux.HandleFunc("PUT /api/comments/{id}", a.authed("", a.handleEditComment))
+	mux.HandleFunc("GET /api/comments/{id}/replies", a.authed("", a.handleGetReplies))
+	mux.HandleFunc("GET /api/comments/{id}/thread", a.authed("", a.handleThread))
+	mux.HandleFunc("POST /api/comments/{id}/like", a.authed("", a.handleLikeComment))
+	mux.HandleFunc("POST /api/achievements", a.authed("", a.handleAchievements))
+	mux.HandleFunc("GET /api/notifications", a.authed("", a.handleNotifications))
+	mux.HandleFunc("PUT /api/notifications/read", a.authed("", a.handleReadNotifications))
 }

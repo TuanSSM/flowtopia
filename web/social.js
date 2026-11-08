@@ -83,7 +83,7 @@ function feedHTML(key, empty) {
   return social.posts.map(postCard).join('') + (social.more ? `<button class="btn" data-act="more-posts" style="justify-self:center">Load more</button>` : '');
 }
 function postCard(p) {
-  const u = social.users[p.userId] || {}, mine = p.userId === me.id || me.role === 'admin';
+  const u = social.users[p.userId] || {}, mine = p.userId === me.id || canDo('content.delete');
   const tags = p.data?.tags || (p.skill ? [{ prop: p.prop, skill: p.skill }] : []);
   const chips = tags.map(t => trickChip(t.prop, t.skill)).join('');
   const combo = p.data?.combo ? comboBlock(p.data.combo, p.userId === me.id) : '';
@@ -97,7 +97,8 @@ function postCard(p) {
   }
   const thread = threadHTML(p);
   return `<article class="card post" data-post="${p.id}">
-    <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a></span></span>${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}</header>
+    <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a></span></span>${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}${canReport(p.userId) ? `<button class="icon-btn" data-act="report" data-kind="post" data-id="${p.id}" data-what="this post" aria-label="Report post" data-tip="Report">${icon('flag')}</button>` : ''}</header>
+    ${p.hidden ? `<p class="notice warn">${icon('lock')} Hidden by a moderator: ${esc(p.hidden)}${p.userId === me.id ? '. Only you and the moderators can see it.' : ''}${canDo('post.hide') && p.userId !== me.id ? ` <button class="btn sm" data-act="mod-do" data-do="restore" data-kind="post" data-id="${p.id}">Restore</button>` : ''}</p>` : ''}
     ${body}
     <footer class="post-acts"><button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.commentCount || ''}</span></button></footer>
     ${thread}</article>`;
@@ -115,13 +116,13 @@ function eachComment(id, fn) {
   for (const k in social.fullReplies) visit(social.fullReplies[k].list);
 }
 function commentHTML(p, c, reply) {
-  const cu = social.users[c.userId] || {}, mine = c.userId === me.id, canDel = !c.deleted && (mine || p.userId === me.id || me.role === 'admin');
+  const cu = social.users[c.userId] || {}, mine = c.userId === me.id, canDel = !c.deleted && (mine || p.userId === me.id || canDo('content.delete'));
   const canEdit = mine && !c.deleted && Date.now() - new Date(c.created) < EDIT_MS;
   const editing = social.editing === c.id;
-  const body = c.deleted ? '<span class="small cmt-gone">Comment deleted</span>'
+  const body = c.deleted ? `<span class="small cmt-gone">${c.removed ? 'Comment removed by a moderator' : 'Comment deleted'}</span>`
     : editing ? `<form class="cmt-edit" data-id="${c.id}" data-post="${p.id}"><textarea name="body" maxlength="1000" rows="2" aria-label="Edit comment">${esc(c.body)}</textarea><span class="row" style="gap:6px"><button class="btn sm primary" type="submit">Save</button><button class="btn sm" type="button" data-act="cmt-edit-cancel">Cancel</button></span></form>`
     : `<span class="small cmt-body">${richText(c.body)}</span>`;
-  const acts = c.deleted || editing ? '' : `<span class="cmt-acts"><button class="cmt-a ${c.liked ? 'on' : ''}" data-act="cmt-like" data-id="${c.id}" aria-pressed="${c.liked}" aria-label="Like comment">${icon('heart')}${c.likes ? `<span class="num">${c.likes}</span>` : ''}</button><button class="cmt-a" data-act="cmt-reply" data-id="${c.id}" data-post="${p.id}" data-root="${reply ? c.parentId : c.id}">Reply</button>${canEdit ? `<button class="cmt-a" data-act="cmt-edit" data-id="${c.id}">Edit</button>` : ''}${canDel ? `<button class="cmt-a" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}">Delete</button>` : ''}</span>`;
+  const acts = c.deleted || editing ? '' : `<span class="cmt-acts"><button class="cmt-a ${c.liked ? 'on' : ''}" data-act="cmt-like" data-id="${c.id}" aria-pressed="${c.liked}" aria-label="Like comment">${icon('heart')}${c.likes ? `<span class="num">${c.likes}</span>` : ''}</button><button class="cmt-a" data-act="cmt-reply" data-id="${c.id}" data-post="${p.id}" data-root="${reply ? c.parentId : c.id}">Reply</button>${canEdit ? `<button class="cmt-a" data-act="cmt-edit" data-id="${c.id}">Edit</button>` : ''}${canDel ? `<button class="cmt-a" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}">Delete</button>` : ''}${canReport(c.userId) ? `<button class="cmt-a" data-act="report" data-kind="comment" data-id="${c.id}" data-what="this comment">Report</button>` : ''}${c.hidden && canDo('post.hide') && !mine ? `<button class="cmt-a" data-act="mod-do" data-do="restore" data-kind="comment" data-id="${c.id}">Restore</button>` : ''}</span>${c.hidden ? `<span class="tiny cmt-hidden">${icon('lock')} Hidden by a moderator: ${esc(c.hidden)}</span>` : ''}`;
   return `<div class="cmt ${reply ? 'reply' : ''} ${social.focus === c.id ? 'focus' : ''}" id="c-${c.id}">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row" style="gap:6px"><a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a><span class="tiny">${ago(c.created)}${c.edited ? ' · edited' : ''}</span></span>${body}${acts}</div></div>`;
 }
 function replyForm(p, root) {
@@ -139,7 +140,7 @@ function threadHTML(p) {
   }).join('');
   const more = full ? full.more : (p.commentCount || 0) > shown;
   const open = social.openCmts.has(p.id) || roots.length > 0;
-  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="Write a comment. Use @name to mention someone." autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send comment">${icon('send')}</button></form></div>`;
+  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment">${icon('send')}</button></form></div>`;
 }
 // Loads the next page of a post's comments; the first call replaces the feed's preview.
 async function moreComments(postId) {
@@ -262,7 +263,9 @@ function picker() {
     <div class="pick-list" role="listbox">${pickListHTML()}</div></div>`;
 }
 function refreshPicker() { const l = $('.pick-list'); if (l) { l.innerHTML = pickListHTML(); $('.pick-i.on')?.scrollIntoView({ block: 'nearest' }); } }
+const mutedNote = () => me.mutedUntil ? `You are muted until ${new Date(me.mutedUntil).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${me.muteReason ? `: ${me.muteReason}` : ''}. You can still read and like.` : '';
 function composer() {
+  if (me.mutedUntil) return `<div class="card notice warn muted-note">${icon('lock')} ${esc(mutedNote())}</div>`;
   const chips = social.draftTags.map(t => trickChip(t.prop, t.skill, `<button type="button" class="x" data-act="tag-rm" data-prop="${t.prop}" data-skill="${esc(t.skill)}" aria-label="Remove ${esc(t.skill)}">${icon('x')}</button>`, false)).join('')
     + (social.draftCombo ? `<span class="chip trick combo-chip">${icon('link')}<span class="trick-n">${esc(social.draftCombo.name)}</span><button type="button" class="x" data-act="combo-rm-draft" aria-label="Remove combo">${icon('x')}</button></span>` : '');
   const sugg = social.pickOpen ? [] : suggestedTags();
@@ -308,10 +311,10 @@ function pageUser(name) {
   const links = Object.keys(LINK_KINDS).filter(k => (u.links || {})[k]).map(k => `<a class="btn sm social-${k}" href="${esc(linkURL(k, u.links[k]))}" target="_blank" rel="noopener noreferrer">${icon(k)}${esc(LINK_KINDS[k].name)}</a>`).join('');
   const keys = (pr.achievements || []).slice().reverse();
   return `<div class="card prof-head"><div class="row wrap" style="gap:18px;align-items:flex-start">${avatarHTML(u, 'big')}
-      <div class="grow" style="min-width:220px"><h1>${esc(u.displayName || u.username)}</h1><p class="muted">@${esc(u.username)}${u.role === 'admin' ? ' · Admin' : ''} · joined ${esc(new Date(u.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p>
+      <div class="grow" style="min-width:220px"><h1>${esc(u.displayName || u.username)}</h1><p class="muted">@${esc(u.username)}${u.role !== 'user' ? ' · ' + RANK_NAMES[u.role] : ''} · joined ${esc(new Date(u.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p>
         ${u.bio ? `<p class="prof-bio">${richText(u.bio)}</p>` : mine ? '<p class="tiny" style="margin-top:6px">Add a bio and your social links in your profile settings.</p>' : ''}
         <div class="row wrap" style="gap:6px;margin-top:12px">${(u.props || []).map(id => `<span class="chip">${esc(propById(id)?.name || id)}</span>`).join('')}${links}</div></div>
-      ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}</div>
+      ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}${canReport(u.id) ? `<button class="btn sm" data-act="report" data-kind="user" data-id="${u.id}" data-what="@${esc(u.username)}">${icon('flag')}Report</button>` : ''}</div>
     ${flags.game ? `<div class="grid g4 prof-stats">${[['Level', `${L}<small> ${title}</small>`], ['XP', (s.xp || 0).toLocaleString()], ['Streak', `${s.streak || 0}<small> ${s.streak === 1 ? 'day' : 'days'} · best ${s.best || 0}</small>`], ['Clean skills', s.clean || 0]].map(([n, v]) => `<div class="stat"><div class="lbl">${n}</div><div class="val num">${v}</div></div>`).join('')}</div>` : ''}</div>
   <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2><span class="sub num">${pr.posts} ${pr.posts === 1 ? 'post' : 'posts'} · ${pr.likes} ${pr.likes === 1 ? 'like' : 'likes'} received</span></div>${feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.')}</div>
     ${!flags.game ? '' : `<div class="card"><div class="card-h"><h2 class="grow">Badges</h2><span class="sub num">${keys.length}</span></div>${keys.length ? `<div class="badge-grid one">${keys.map(a => { const b = badgeByKey(a.key); return `<div class="badge on" data-tip="${esc(b?.desc || '')}"><span class="badge-ic on">${icon(b?.icon || 'medal')}</span><span class="grow"><b>${esc(b?.name || a.key)}</b><span class="tiny">${esc(new Date(a.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</span></span></div>`; }).join('')}</div>` : '<div class="empty small">No badges yet.</div>'}</div>`}</div>`;
@@ -323,6 +326,8 @@ async function loadNotifs() {
   const r = await api('notifications');
   if (!r.ok) return;
   social.notifs = r.data.items; social.nUsers = r.data.users; social.unread = r.data.unread;
+  const q = r.data.queue || 0;
+  if (q !== social.queue) { social.queue = q; mod.count = q; renderSide(parseRoute()); }
   renderBell();
 }
 function notifText(n) {
@@ -340,7 +345,7 @@ function notifText(n) {
 function bellHTML() {
   if (!me || !me.onboarded || !flags.community) return '';
   const st = loaded && flags.game ? streakInfo() : { atRisk: false }, n = social.unread + (st.atRisk ? 1 : 0);
-  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
+  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : n.kind === 'moderation' ? '#/profile' : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : n.kind === 'moderation' ? `<span class="badge-ic sm">${icon('shield')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
   const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
     ${st.atRisk ? `<a class="ntf unread" href="#/practice" data-act="ntf-go"><span class="flame lit sm">${icon('flame')}</span><span class="grow"><span class="small"><b>Your ${st.current}-day streak ends tonight.</b> Log today’s practice to keep it.</span></span></a>` : ''}
     ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, replies, mentions and achievements show up here.</div>'}</div>`;

@@ -101,7 +101,9 @@ jobs:
         run: |
           for f in sim/*.js web/*.js test/*.js; do node --check "$f"; done
       - name: Catalog format
-        run: node test/catalog.js web/catalog/*.json
+        run: |
+          node test/catalog.js web/catalog/*.json
+          node test/catalog-fixtures/check.js   # the Go validator runs on the same files in go test
       - name: Python syntax
         run: python3 -m py_compile test/browser/*.py
 
@@ -179,6 +181,8 @@ jobs:
       combo: ${{ steps.combo.outputs.line }}
       demos: ${{ steps.demos.outputs.line }}
       social: ${{ steps.social.outputs.line }}
+      mod: ${{ steps.mod.outputs.line }}
+      editor: ${{ steps.editor.outputs.line }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -213,6 +217,20 @@ jobs:
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh social.py | tee social.txt || code=$?
           echo "line=$(grep -E 'passed' social.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
+      - name: Moderation, roles and the admin dashboard
+        id: mod
+        if: always()
+        run: |
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh mod.py | tee mod.txt || code=$?
+          echo "line=$(grep -E 'passed' mod.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
+      - name: Skill map editor
+        id: editor
+        if: always()
+        run: |
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh editor.py | tee editor.txt || code=$?
+          echo "line=$(grep -E 'passed' editor.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v5
@@ -225,6 +243,8 @@ jobs:
             demos.txt
             social.txt
             dbtests.txt
+            mod.txt
+            editor.txt
           retention-days: 7
 
   # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
@@ -365,6 +385,8 @@ jobs:
           COMBO: ${{ needs.integration.outputs.combo }}
           DEMOS: ${{ needs.integration.outputs.demos }}
           SOCIAL: ${{ needs.integration.outputs.social }}
+          MODS: ${{ needs.integration.outputs.mod }}
+          EDITOR: ${{ needs.integration.outputs.editor }}
           STAT: ${{ steps.size.outputs.stat }}
           FILES: ${{ steps.size.outputs.files }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -381,7 +403,7 @@ jobs:
             echo "| docs | $(icon "$DOCS") | Markdown links, Claude Code front matter |"
             echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
-            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a} |"
+            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a} |"
             echo "| screenshots | $(icon "$SCREENS") | pages at desktop and phone width, demo sheet |"
             echo
             echo "$SHOTS_MD"

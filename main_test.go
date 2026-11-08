@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -95,6 +98,37 @@ func TestCleanCombo(t *testing.T) {
 	for _, c := range bad {
 		if cleanCombo(&c) {
 			t.Errorf("cleanCombo(%+v) should fail", c)
+		}
+	}
+}
+
+func TestCatalogFixtures(t *testing.T) {
+	files, _ := filepath.Glob("test/catalog-fixtures/*.json")
+	if len(files) < 20 {
+		t.Fatalf("expected at least 20 fixtures, found %d", len(files))
+	}
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		errs, _ := validateCatalog(raw)
+		want := strings.HasPrefix(filepath.Base(f), "good-")
+		if (len(errs) == 0) != want {
+			t.Errorf("%s: want pass=%v, got errors %v", f, want, errs)
+		}
+	}
+}
+
+func TestShippedCatalogsValid(t *testing.T) {
+	files, _ := filepath.Glob("web/catalog/*.json")
+	if len(files) != 5 {
+		t.Fatalf("expected 5 catalogs, found %d", len(files))
+	}
+	for _, f := range files {
+		raw, _ := os.ReadFile(f)
+		if errs, _ := validateCatalog(raw); len(errs) > 0 {
+			t.Errorf("%s: %v", f, errs[:min(len(errs), 5)])
 		}
 	}
 }

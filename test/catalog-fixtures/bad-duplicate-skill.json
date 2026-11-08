@@ -1,0 +1,193 @@
+{
+ "id": "fixture",
+ "name": "Fixture",
+ "about": "A small catalog for testing the validators.",
+ "careNote": "Learn this on foam.",
+ "branches": [
+  {
+   "k": "A",
+   "name": "Branch A",
+   "blurb": "Fixture branch"
+  },
+  {
+   "k": "B",
+   "name": "Branch B",
+   "blurb": "Fixture branch"
+  },
+  {
+   "k": "C",
+   "name": "Branch C",
+   "blurb": "Fixture branch"
+  },
+  {
+   "k": "D",
+   "name": "Branch D",
+   "blurb": "Fixture branch"
+  },
+  {
+   "k": "E",
+   "name": "Branch E",
+   "blurb": "Fixture branch"
+  }
+ ],
+ "skills": [
+  {
+   "id": "A1",
+   "tier": 1,
+   "name": "Skill A1",
+   "desc": "A move used only in the fixture catalogs.",
+   "needs": [],
+   "track": "one",
+   "steps": [
+    "Do the first part.",
+    "Do the second part."
+   ],
+   "watch": [
+    "Keep the plane flat."
+   ],
+   "drill": "Ten slow repetitions a side.",
+   "refs": [
+    "src"
+   ]
+  },
+  {
+   "id": "A2",
+   "tier": 2,
+   "name": "Skill A2",
+   "desc": "A move used only in the fixture catalogs.",
+   "needs": [
+    "A1"
+   ],
+   "track": "one",
+   "steps": [
+    "Do the first part.",
+    "Do the second part."
+   ],
+   "watch": [
+    "Keep the plane flat."
+   ],
+   "drill": "Ten slow repetitions a side.",
+   "refs": [
+    "src"
+   ]
+  },
+  {
+   "id": "A1",
+   "tier": 1,
+   "name": "Skill B1",
+   "desc": "A move used only in the fixture catalogs.",
+   "needs": [],
+   "track": "one",
+   "steps": [
+    "Do the first part.",
+    "Do the second part."
+   ],
+   "watch": [
+    "Keep the plane flat."
+   ],
+   "drill": "Ten slow repetitions a side.",
+   "refs": [
+    "src"
+   ]
+  },
+  {
+   "id": "C1",
+   "tier": 2,
+   "name": "Skill C1",
+   "desc": "A move used only in the fixture catalogs.",
+   "needs": [
+    "A1!"
+   ],
+   "track": "one",
+   "steps": [
+    "Do the first part.",
+    "Do the second part."
+   ],
+   "watch": [
+    "Keep the plane flat."
+   ],
+   "drill": "Ten slow repetitions a side.",
+   "refs": [
+    "src"
+   ]
+  },
+  {
+   "id": "D1",
+   "tier": 3,
+   "name": "Skill D1",
+   "desc": "A move used only in the fixture catalogs.",
+   "needs": [
+    "C1"
+   ],
+   "track": "one",
+   "steps": [
+    "Do the first part.",
+    "Do the second part."
+   ],
+   "watch": [
+    "Keep the plane flat."
+   ],
+   "drill": "Ten slow repetitions a side.",
+   "refs": [
+    "src"
+   ]
+  },
+  {
+   "id": "E1",
+   "tier": 1,
+   "name": "Skill E1",
+   "desc": "A move used only in the fixture catalogs.",
+   "needs": [],
+   "track": "one",
+   "steps": [
+    "Do the first part.",
+    "Do the second part."
+   ],
+   "watch": [
+    "Keep the plane flat."
+   ],
+   "drill": "Ten slow repetitions a side.",
+   "refs": [
+    "src"
+   ]
+  }
+ ],
+ "refs": {
+  "src": [
+   "Fixture source",
+   "https://example.org/fixture"
+  ]
+ },
+ "phases": [
+  {
+   "id": "p1",
+   "name": "Phase 1",
+   "time": "1 month",
+   "skills": "A1 B1",
+   "gate": "A test you can pass or fail.",
+   "req": [
+    "A1"
+   ]
+  },
+  {
+   "id": "p2",
+   "name": "Phase 2",
+   "time": "1 month",
+   "skills": "A1 B1",
+   "gate": "A test you can pass or fail.",
+   "req": [
+    "A1"
+   ]
+  },
+  {
+   "id": "p3",
+   "name": "Phase 3",
+   "time": "1 month",
+   "skills": "A1 B1",
+   "gate": "A test you can pass or fail.",
+   "req": [
+    "A1"
+   ]
+  }
+ ]
+}
