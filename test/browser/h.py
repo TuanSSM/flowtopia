@@ -34,14 +34,19 @@ def api(op,path,body,method='POST'):
 def admin():
     op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     api(op,'signin',{'username':'admin','password':'flowa-test-only'});api(op,'flags',{'flags':{'details':True,'references':True,'demos':True}},'PUT');return op
+started=False
 def start(w=1440,h=1100):
+    global started;started=True
     cmd('WebDriver:NewSession',capabilities={});cmd('WebDriver:SetWindowRect',width=w,height=h)
     cmd('WebDriver:Navigate',url=BASE);time.sleep(2.5)
     js("window.__e=[];window.addEventListener('error',e=>__e.push(e.message+' @'+(e.filename||'').split('/').pop()+':'+e.lineno));window.addEventListener('unhandledrejection',e=>__e.push('rej '+String(e.reason)));document.addEventListener('securitypolicyviolation',e=>__e.push('CSP '+e.violatedDirective))")
 def signin():
     nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value='admin';f.elements.password.value='flowa-test-only';f.requestSubmit()");time.sleep(2.5)
 def done():
-    e=js("return window.__e");check('no page errors',not e,e)
+    # A suite that skipped never opened a page; Firefox is closed either way, so none is left running.
+    try:
+        if started: e=js("return window.__e");check('no page errors',not e,e)
+    except Exception as x: check('no page errors',False,x)
     try: cmd('Marionette:Quit')
     except Exception: pass
     try: ff.wait(10)
