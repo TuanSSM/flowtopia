@@ -6,10 +6,11 @@ done (`docs/epic-<code>/todo.md`); this page explains how.
 
 ## Delivery
 
-- **One pull request per epic, one commit per milestone.** The checklists said one PR per
-  milestone; with about 30 milestones that would mean 30 stacked PRs to review and merge in order.
-  An epic is the unit worth reviewing, and each milestone stays a separate commit with its own
-  message, so it can still be read or reverted on its own.
+- **One pull request per epic, split into commits.** The checklists said one PR per milestone;
+  with about 30 milestones that would mean 30 stacked PRs to review and merge in order. An epic is
+  the unit worth reviewing. Within it, commits follow milestones where they stand apart and layers
+  (server, interface, docs) where milestones share the same code, so each commit still reads on
+  its own.
 - **Stacked branches**, because every epic touches `main.go`, `web/social.js` and the README:
   `epic/rpl` from `main`, `epic/mod` from `epic/rpl`, then `epic/lnk`, `epic/geo`, `epic/avt`. Each PR
   targets the branch below it; when one merges, the next is rebased onto `main` and retargeted.
