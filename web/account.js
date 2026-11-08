@@ -258,6 +258,7 @@ function pageProfile() {
         <label class="field">Bio<textarea name="bio" maxlength="300" placeholder="What you spin, where you practise, what you are working toward">${esc(me.bio || '')}</textarea></label>
         <div class="grid links-grid">${Object.entries(LINK_KINDS).map(([k, L]) => `<label class="field social-${k}">${icon(k)} ${L.name}<input type="text" name="${k}" maxlength="120" value="${esc((me.links || {})[k] || '')}" placeholder="${L.hint} or just the handle" autocapitalize="none" spellcheck="false"></label>`).join('')}</div>
         <label class="check" ${flags.community && flags.game ? '' : 'hidden'}><input type="checkbox" name="autoPost" ${(me.prefs || {}).autoPost === false ? '' : 'checked'}><span>Post my milestones to the timeline automatically (new badges)</span></label>
+        <label class="check" ${flags.suggest ? '' : 'hidden'}><input type="checkbox" name="shareTransitions" ${(me.prefs || {}).shareTransitions ? 'checked' : ''}><span>Help improve next-trick suggestions: share which transitions work, are blocked or need a bridge in my combos. Only counts per pair of skills are kept, with no name. Turning it off takes my marks back out.</span></label>
         <p class="form-err" id="about-err" role="alert" hidden></p>
         <div><button class="btn" type="submit">Save</button></div></div></form>
     <form class="card span-2" id="props-form"><div class="card-h"><h2>Your props</h2></div>${propChecks(me.props || [])}
@@ -359,9 +360,11 @@ document.addEventListener('submit', async e => {
   } else if (f.id === 'about-form') {
     const links = {};
     for (const k in LINK_KINDS) links[k] = f[k].value;
-    const r = await api('me', 'PUT', { bio: f.bio.value, links, prefs: { autoPost: f.autoPost.checked } });
+    const before = !!(me.prefs || {}).shareTransitions;
+    const r = await api('me', 'PUT', { bio: f.bio.value, links, prefs: { autoPost: f.autoPost.checked, shareTransitions: f.shareTransitions.checked } });
     if (!r.ok) { showErr('about-err', r.error); return; }
     me = r.data.user; showErr('about-err', ''); document.activeElement?.blur?.(); delete social.profile[me.username];
+    if (before !== !!me.prefs?.shareTransitions) await ntSyncAll(true); // share every mark, or take them all back
     toast('Profile saved.'); render();
   } else if (f.id === 'profile-form') {
     document.activeElement?.blur?.();

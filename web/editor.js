@@ -66,6 +66,8 @@ function edSkillsView() {
       ${area('watch', 'Watch for, one per line (1 to 3)', (s.watch || []).join('\n'), 2)}
       ${area('drill', 'Drill', s.drill, 2)}
       ${field('refs', `References (keys of the catalog's refs: ${esc(Object.keys(ed.draft.refs || {}).slice(0, 8).join(', '))}${Object.keys(ed.draft.refs || {}).length > 8 ? ', …' : ''})`, `<input type="text" data-ed="refs" data-words="1" value="${esc((s.refs || []).join(' '))}">`)}
+      <fieldset class="ed-motion"><legend class="small">How it moves (for next-trick suggestions; unknown unless the clip or the text says)</legend>
+        <div class="grid g3">${Object.entries(MOTION).map(([k, vals]) => `<label class="field">${k[0].toUpperCase() + k.slice(1)}<select data-edm="${k}">${vals.map(v => `<option ${(s.motion || {})[k] === v ? 'selected' : ''}>${v}</option>`).join('')}</select>${msgHTML(`${at}.motion.${k}`)}</label>`).join('')}</div>${msgHTML(`${at}.motion`)}</fieldset>
       <div class="row wrap" style="gap:14px">${[['star', 'Unconfirmed by a source'], ['care', 'Needs the safety note'], ['retired', 'Retired (hidden; progress kept)']].map(([k, n]) => `<label class="check"><input type="checkbox" data-ed="${k}" data-bool="1" ${s[k] ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>
     </form></div>`;
 }
@@ -220,6 +222,10 @@ document.addEventListener('input', e => {
     else s[d.ed] = t.value;
     if (s[d.ed] === undefined) delete s[d.ed];
     edTouch();
+  } else if (d.edm !== undefined && t.closest('#ed-skill')) {
+    const s = ed.draft.skills[Number(t.closest('#ed-skill').dataset.i)];
+    s.motion = { ...(s.motion || {}), [d.edm]: t.value };
+    edTouch();
   } else if (d.edb !== undefined) { ed.draft.branches[Number(d.i)][d.edb] = t.value; edTouch(); }
   else if (d.edp !== undefined) { const p = ed.draft.phases[Number(d.i)]; p[d.edp] = d.words ? words(t.value) : t.value; edTouch(); }
 });
@@ -229,6 +235,8 @@ document.addEventListener('change', e => {
     const i = Number(t.closest('#ed-skill').dataset.i), ok = renameSkill(i, t.value.trim().toUpperCase());
     if (ok !== true) { toast(ok); t.value = ed.draft.skills[i].id; return; }
     edTouch(); render();
+  } else if (t.dataset.edm !== undefined) {
+    t.dispatchEvent(new Event('input', { bubbles: true }));
   } else if (t.dataset.ed !== undefined && t.closest('#ed-skill') && (t.tagName === 'SELECT' || t.type === 'checkbox')) {
     t.dispatchEvent(new Event('input', { bubbles: true })); render();
   }
