@@ -82,7 +82,14 @@
    "refs": [
     "grip",
     "vGrips"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "F2",
@@ -106,7 +113,14 @@
    "refs": [
     "grip",
     "vGrips"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "F3",
@@ -128,7 +142,14 @@
    "refs": [
     "plane",
     "clocks"
-   ]
+   ],
+   "motion": {
+    "plane": "mixed",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "F4",
@@ -153,7 +174,14 @@
    "refs": [
     "swing",
     "vSwings"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "F5",
@@ -179,7 +207,14 @@
     "swing",
     "vSwings",
     "sportsrec"
-   ]
+   ],
+   "motion": {
+    "plane": "mixed",
+    "direction": "either",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "F6",
@@ -205,7 +240,14 @@
     "swing",
     "clocks",
     "vSwings"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "F7",
@@ -231,7 +273,14 @@
     "f8",
     "swing",
     "vSwings"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "either",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "F8",
@@ -256,7 +305,14 @@
    "refs": [
     "f8",
     "grip"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "F9",
@@ -279,7 +335,14 @@
    "drill": "Do five basic 8s, five stretched, five basic, five twisted, without stopping.",
    "refs": [
     "f8"
-   ]
+   ],
+   "motion": {
+    "plane": "mixed",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "F10",
@@ -302,7 +365,14 @@
    "drill": "Swing, fade, stall at 3 o'clock, then leave in the other direction. Alternate sides for 20.",
    "refs": [
     "stall"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "F11",
@@ -327,7 +397,14 @@
    "drill": "On foam, do one basic 8 then one behind-the-back crossing, alternating, for 20.",
    "refs": [
     "f8"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "F12",
@@ -351,7 +428,14 @@
    "drill": "Choose one. Alternate it with a behind-the-back 8 until you can do five in a row.",
    "refs": [
     "f8"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "R1",
@@ -380,7 +464,14 @@
     "vWrist",
     "vRolls",
     "sportsrec"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R2",
@@ -406,7 +497,14 @@
     "wrist",
     "f8",
     "vWrist"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R3",
@@ -433,7 +531,14 @@
     "roll",
     "vWrist",
     "vRolls"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R4",
@@ -459,7 +564,14 @@
     "roll",
     "vWrist",
     "vRolls"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R5",
@@ -485,7 +597,14 @@
     "wrist",
     "roll",
     "vWrist"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R6",
@@ -509,7 +628,14 @@
    "refs": [
     "wrist",
     "roll"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R7",
@@ -531,7 +657,14 @@
    "drill": "Ten attempts at 720° per session. Log how many you catch.",
    "refs": [
     "roll"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R8",
@@ -557,7 +690,14 @@
     "roll",
     "grip",
     "vRolls"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R9",
@@ -579,7 +719,14 @@
    "drill": "Alternate one index-finger roll and one thumb spin, 10 pairs.",
    "refs": [
     "finger"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R10",
@@ -603,7 +750,14 @@
    "drill": "Watch a demonstration frame by frame, then walk the path with the stick held still.",
    "refs": [
     "finger"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "R11",
@@ -626,7 +780,14 @@
    "drill": "With a slow swing on foam, practise placing one finger against the link and letting it wrap.",
    "refs": [
     "finger"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R12",
@@ -652,7 +813,14 @@
     "wheel",
     "vWheel",
     "vWheels"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R13",
@@ -674,7 +842,14 @@
    "refs": [
     "wheel",
     "vWheels"
-   ]
+   ],
+   "motion": {
+    "plane": "mixed",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R14",
@@ -696,7 +871,14 @@
    "refs": [
     "wheel",
     "vWheels"
-   ]
+   ],
+   "motion": {
+    "plane": "table",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "R15",
@@ -720,7 +902,14 @@
    "refs": [
     "roll",
     "vRolls"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "one",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R16",
@@ -744,7 +933,14 @@
    "drill": "Drape and unwrap by hand first. Add a slow release only when the path is certain.",
    "refs": [
     "roll"
-   ]
+   ],
+   "motion": {
+    "plane": "table",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "R17",
@@ -768,7 +964,14 @@
    "refs": [
     "iso",
     "vIso"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "S1",
@@ -790,7 +993,14 @@
    "drill": "Swing, down stop, swap, swing on the new hand. 20 times.",
    "refs": [
     "swap"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S2",
@@ -817,7 +1027,14 @@
     "pass",
     "sportsrec",
     "vPasses"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "either",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "S3",
@@ -840,7 +1057,14 @@
    "refs": [
     "pass",
     "vPasses"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S4",
@@ -864,7 +1088,14 @@
    "refs": [
     "pass",
     "vPasses"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S5",
@@ -886,7 +1117,14 @@
    "refs": [
     "pass",
     "vPasses"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S6",
@@ -913,7 +1151,14 @@
     "gmau",
     "pass",
     "vPasses"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "forward",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "S7",
@@ -937,7 +1182,14 @@
    "refs": [
     "fan",
     "pass"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S8",
@@ -960,7 +1212,14 @@
    "drill": "The practice throw alone, 20 per hand, before adding the catch.",
    "refs": [
     "wrist"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S9",
@@ -982,7 +1241,14 @@
    "refs": [
     "pass",
     "vPasses"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S10",
@@ -1005,7 +1271,14 @@
    "refs": [
     "pass",
     "vPasses"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S11",
@@ -1030,7 +1303,14 @@
    "refs": [
     "bounce",
     "pass"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S12",
@@ -1053,7 +1333,14 @@
    "drill": "One spin and catch, 10 times, before trying two.",
    "refs": [
     "roll"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S13",
@@ -1079,7 +1366,14 @@
    "drill": "Do it in four counted stages: trap, place, drop, free.",
    "refs": [
     "drop"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "reverse",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "S14",
@@ -1103,7 +1397,14 @@
    "drill": "Back pass, pause, overhead pass, pause. Shorten the pauses over 20 repetitions.",
    "refs": [
     "pinwheel"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "S15",
@@ -1125,7 +1426,14 @@
    "drill": "Look for a demonstration before training it.",
    "refs": [
     "roll"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C1",
@@ -1149,7 +1457,14 @@
    "refs": [
     "trap",
     "fan"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C2",
@@ -1174,7 +1489,14 @@
    "refs": [
     "bounce",
     "vBounces"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "C3",
@@ -1197,7 +1519,14 @@
    "drill": "One trap type per session: swing, trap, hold, release, 20 times.",
    "refs": [
     "trap"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C4",
@@ -1220,7 +1549,14 @@
    "refs": [
     "drop",
     "trap"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "reverse",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "C5",
@@ -1243,7 +1579,14 @@
    "refs": [
     "bounce",
     "vBounces"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C6",
@@ -1266,7 +1609,14 @@
    "drill": "Place the stick in the trap by hand, release into a swing, and work backwards from there.",
    "refs": [
     "trap"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C7",
@@ -1290,7 +1640,14 @@
     "swing",
     "bounce",
     "vBounces"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C8",
@@ -1315,7 +1672,14 @@
    "refs": [
     "bounce",
     "vBounces"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C9",
@@ -1338,7 +1702,14 @@
    "drill": "Find a demonstration first, then place the hook by hand before swinging into it.",
    "refs": [
     "bounce"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C10",
@@ -1360,7 +1731,14 @@
    "drill": "Improvise 30 seconds using only bounces, traps and rolls.",
    "refs": [
     "style"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "C11",
@@ -1382,7 +1760,14 @@
    "drill": "Swing, wrap, hold, release, 20 per hand.",
    "refs": [
     "grip"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "B1",
@@ -1402,7 +1787,14 @@
     "Placing while the nunchaku still has speed"
    ],
    "drill": "Place, count three seconds, pick up into a swing. Five body positions.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "B2",
@@ -1422,7 +1814,14 @@
     "The path being left to chance: decide where it ends"
    ],
    "drill": "Forearm: let the stick travel from wrist toward elbow and back, 10 times.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "B3",
@@ -1442,7 +1841,14 @@
     "Speeding up to hide gaps"
    ],
    "drill": "Write down a three-move contact sequence and repeat it 10 times without a drop.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "A1",
@@ -1470,7 +1876,14 @@
     "fan",
     "aerial",
     "vAerials"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "A2",
@@ -1494,7 +1907,14 @@
    "refs": [
     "aerial",
     "roll"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "A3",
@@ -1521,7 +1941,14 @@
     "rules",
     "aerial",
     "vAerials"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "A4",
@@ -1545,7 +1972,14 @@
    "refs": [
     "grip",
     "aerial"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "A5",
@@ -1567,7 +2001,14 @@
    "refs": [
     "aerial",
     "vAerials"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "A6",
@@ -1589,7 +2030,14 @@
    "refs": [
     "aerial",
     "vAerials"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "A7",
@@ -1613,7 +2061,14 @@
    "refs": [
     "clocks",
     "aerial"
-   ]
+   ],
+   "motion": {
+    "plane": "table",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "A8",
@@ -1639,7 +2094,14 @@
    "drill": "Rehearse the bend, cross and rise with no nunchaku, then with a foam pair at low speed.",
    "refs": [
     "matrix"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "forward",
+    "hands": "one",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "A9",
@@ -1664,7 +2126,14 @@
    "refs": [
     "rebound",
     "vConcept"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "reverse",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "A10",
@@ -1686,7 +2155,14 @@
    "refs": [
     "rebound",
     "vConcept"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "reverse",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "A11",
@@ -1708,7 +2184,14 @@
    "drill": "Write a two-throw pattern, perform it 10 times, then change one throw.",
    "refs": [
     "aerial"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "A12",
@@ -1734,7 +2217,14 @@
    "refs": [
     "aerial",
     "pass"
-   ]
+   ],
+   "motion": {
+    "plane": "face",
+    "direction": "unknown",
+    "hands": "one",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "N1",
@@ -1758,7 +2248,14 @@
    "refs": [
     "finger",
     "grip"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "M1",
@@ -1779,7 +2276,14 @@
     "Shifting late"
    ],
    "drill": "Figure-8s for one minute with a visible weight shift on every crossing.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "M2",
@@ -1801,7 +2305,14 @@
    "drill": "Four steps forward, pivot, four steps back, on a continuous figure-8.",
    "refs": [
     "belt"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "M3",
@@ -1824,7 +2335,14 @@
    "drill": "Mark a 3 metre square and visit all four corners in one unbroken sequence.",
    "refs": [
     "rules"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "M4",
@@ -1844,7 +2362,14 @@
     "Bending at the waist instead of the knees"
    ],
    "drill": "Down for four counts, up for four counts, on a continuous overhead spin.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "M5",
@@ -1868,7 +2393,14 @@
    "drill": "Walk the floor pattern for 30 seconds of music with empty hands.",
    "refs": [
     "rules"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "G1",
@@ -1891,7 +2423,14 @@
    "drill": "Film 10 slow circles from the front. Check that every one sits on the same plane.",
    "refs": [
     "swing"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "G2",
@@ -1915,7 +2454,14 @@
    "refs": [
     "iso",
     "vIso"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "G3",
@@ -1936,7 +2482,14 @@
     "Body and prop always moving at the same speed"
    ],
    "drill": "Slow overhead spin with a fast step sequence, then a still body with a fast figure-8.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "reverse",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "L1",
@@ -1959,7 +2512,14 @@
    "refs": [
     "swing",
     "vSwings"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L2",
@@ -1983,7 +2543,14 @@
    "refs": [
     "f8",
     "wrist"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L3",
@@ -2003,7 +2570,14 @@
     "Forcing the plane change with the arm"
    ],
    "drill": "From an overhead spin, find the gentlest way down into a wall-plane circle, and repeat it.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "table",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "L4",
@@ -2025,7 +2599,14 @@
     "Adding before the current version is clean"
    ],
    "drill": "Repeat the current version five times clean before each addition.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L5",
@@ -2046,7 +2627,14 @@
     "Getting dizzy: spot a point on the wall"
    ],
    "drill": "Quarter turns on every shoulder pass, then half turns.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L6",
@@ -2069,7 +2657,14 @@
    "drill": "Eight counts slow, eight counts fast, on one repeated move.",
    "refs": [
     "rules"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L7",
@@ -2091,7 +2686,14 @@
    "drill": "Invent one new flair a week and film it.",
    "refs": [
     "flair"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L8",
@@ -2115,7 +2717,14 @@
    "drill": "Take a loop you know and add one finger roll at its slowest point.",
    "refs": [
     "finger"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L9",
@@ -2138,7 +2747,14 @@
    "drill": "Film one minute of freestyle each month and note what looks like you.",
    "refs": [
     "style"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L10",
@@ -2163,7 +2779,14 @@
    "drill": "Run the full piece and log drops. Aim for four clean runs in five.",
    "refs": [
     "rules"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L11",
@@ -2183,7 +2806,14 @@
     "Resetting between the moves"
    ],
    "drill": "A to B, 10 times, then B to A.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "either",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "description"
+   }
   },
   {
    "id": "L12",
@@ -2203,7 +2833,14 @@
     "A hidden reset inside the loop"
    ],
    "drill": "Run the loop for one minute.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "L13",
@@ -2224,7 +2861,14 @@
     "A phrase that only works from one starting position"
    ],
    "drill": "Enter the phrase from three different moves.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "unknown",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D1",
@@ -2248,7 +2892,14 @@
    "refs": [
     "doubles",
     "belt"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D2",
@@ -2271,7 +2922,14 @@
    "drill": "Ten of each, front view and side view in a mirror.",
    "refs": [
     "belt"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D3",
@@ -2293,7 +2951,14 @@
    "drill": "Count \"one and two and\", right hand on the numbers and left on the \"and\".",
    "refs": [
     "belt"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D4",
@@ -2315,7 +2980,14 @@
    "drill": "Synchronized wall-plane circles for one minute, then figure-8s.",
    "refs": [
     "doubles"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "D5",
@@ -2337,7 +3009,14 @@
    "drill": "Swap between synchronized and unsynchronized circles every eight counts.",
    "refs": [
     "doubles"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "D6",
@@ -2360,7 +3039,14 @@
    "drill": "Learn it with both sticks held in one hand as a single figure-8, then split the hands.",
    "refs": [
     "weave"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D7",
@@ -2381,7 +3067,14 @@
    "drill": "Three-beat for eight cycles, then one cycle of four-beat.",
    "refs": [
     "weave"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D8",
@@ -2403,7 +3096,14 @@
    "drill": "Find a poi butterfly tutorial and work through it slowly with foam.",
    "refs": [
     "doubles"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D9",
@@ -2424,7 +3124,14 @@
    "drill": "Find a poi windmill tutorial and work through it with foam.",
    "refs": [
     "doubles"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D10",
@@ -2449,7 +3156,14 @@
    "refs": [
     "dblog",
     "wrist"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D11",
@@ -2475,7 +3189,14 @@
     "doubles",
     "bounce",
     "trap"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D12",
@@ -2498,7 +3219,14 @@
    "drill": "Practise the sheet's doubles footwork exercise.",
    "refs": [
     "belt"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D13",
@@ -2521,7 +3249,14 @@
    "drill": "Hold the pairing for 20 counts, then swap hands.",
    "refs": [
     "doubles"
-   ]
+   ],
+   "motion": {
+    "plane": "mixed",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "D14",
@@ -2543,7 +3278,14 @@
     "The circling hand freezing during the throw"
    ],
    "drill": "10 throws per hand, with the other hand keeping a steady count.",
-   "refs": []
+   "refs": [],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "D15",
@@ -2567,7 +3309,14 @@
    "drill": "Throw, clap, catch first. Then replace the clap with a swap.",
    "refs": [
     "doubles"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   },
   {
    "id": "D16",
@@ -2592,7 +3341,14 @@
    "drill": "Low synchronized throws. Aim for 5 of 10, then 8 of 10.",
    "refs": [
     "rules"
-   ]
+   ],
+   "motion": {
+    "plane": "wall",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "clip"
+   }
   },
   {
    "id": "D17",
@@ -2616,7 +3372,14 @@
     "doubles",
     "iso",
     "vIso"
-   ]
+   ],
+   "motion": {
+    "plane": "unknown",
+    "direction": "unknown",
+    "hands": "both",
+    "grip": "unknown",
+    "source": "unknown"
+   }
   }
  ],
  "refs": {

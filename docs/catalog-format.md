@@ -40,6 +40,11 @@ Rules:
   "result", "gate" }`, ids `w` and a number, weeks 1 to 52 with `from` first.
 - **retired: true** (optional, on a skill): hidden from maps, plans and totals; progress on it is kept.
   No current skill or phase may need a retired skill. A branch needs at least one skill that is not retired.
+- **motion** (optional, on a skill): how the move travels, for next-trick suggestions. `plane`: wall, face,
+  table, mixed (variants in several planes) or unknown; `direction`: forward, reverse, either or unknown;
+  `hands`: one, both or unknown; `grip`: handle, end, middle or unknown; `source`: where plane and direction
+  came from, clip, description or unknown. Values come from the skill's clip or its own text
+  (`node sim/motion.js` proposes them), never from general knowledge; unknown is a valid answer.
 - **aliases** (optional): `{ "OLD": "NEW" }` from an id a skill used to have to its current id. An alias
   cannot also be a skill, and must point at a current skill. Progress recorded under the old id moves to
   the new one when it loads. Ids are never reused for a different skill.

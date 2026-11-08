@@ -1,0 +1,1 @@
+{"early":true,"pairs":0,"weights":{"plane":2,"sense":1.2,"hand":1.5,"omega":0.4,"grip":1},"auc":null,"baseline":null,"note":"Starting weights from the physics. Fewer than 30 marked transitions have been shared, so nothing has been fitted or measured yet."}
