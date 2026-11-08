@@ -44,6 +44,9 @@ services:
       # Extra names the app answers to, comma-separated (IP addresses, localhost and private
       # names such as raspi or raspi.local always work).
       FLOWA_HOSTS: ${FLOWA_HOSTS:-}
+      # Reverse proxies whose X-Forwarded-For is believed, as addresses or ranges, comma-separated;
+      # "none" for none. Unset: loopback and Docker networks (127.0.0.0/8, ::1, 172.16.0.0/12).
+      FLOWA_TRUSTED_PROXIES: ${FLOWA_TRUSTED_PROXIES:-}
     volumes:
       - ./data:/data
     read_only: true

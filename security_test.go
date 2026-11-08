@@ -10,6 +10,8 @@ import (
 	"image/jpeg"
 	"image/png"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -136,5 +138,65 @@ func TestMentionsAndRanks(t *testing.T) {
 	}
 	if strings.Join(below("admin"), ",") != "moderator,user" || strings.Join(below("moderator"), ",") != "user" || len(below("user")) != 0 {
 		t.Fatalf("below: %v %v %v", below("admin"), below("moderator"), below("user"))
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	def, _ := parseProxies(defaultProxies)
+	cf, _ := parseProxies("173.245.48.0/20, 172.16.0.0/12")
+	none, _ := parseProxies("none")
+	req := func(remote, xff, real string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		if real != "" {
+			r.Header.Set("X-Real-IP", real)
+		}
+		return r
+	}
+	cases := []struct {
+		name    string
+		proxies []*net.IPNet
+		r       *http.Request
+		want    string
+	}{
+		{"direct visitor, header ignored", def, req("203.0.113.9:5000", "1.2.3.4", ""), "203.0.113.9"},
+		{"through a proxy in Docker", def, req("172.18.0.2:5000", "203.0.113.5", ""), "203.0.113.5"},
+		{"through a proxy on the host", def, req("127.0.0.1:5000", "198.51.100.7", ""), "198.51.100.7"},
+		{"a visitor's own header is left of the proxy's", def, req("172.18.0.2:5000", "1.1.1.1, 203.0.113.5", ""), "203.0.113.5"},
+		{"two proxies", def, req("172.18.0.2:5000", "203.0.113.5, 172.18.0.3", ""), "203.0.113.5"},
+		{"header split over two lines", def, func() *http.Request {
+			r := req("172.18.0.2:5000", "", "")
+			r.Header.Add("X-Forwarded-For", "1.1.1.1")
+			r.Header.Add("X-Forwarded-For", "203.0.113.5")
+			return r
+		}(), "203.0.113.5"},
+		{"a device on the home LAN cannot pick its address", def, req("192.168.1.20:5000", "8.8.8.8", ""), "192.168.1.20"},
+		{"X-Real-IP from a proxy", def, req("172.18.0.2:5000", "", "203.0.113.8"), "203.0.113.8"},
+		{"X-Real-IP from a visitor is ignored", def, req("203.0.113.9:5000", "", "1.2.3.4"), "203.0.113.9"},
+		{"malformed header", def, req("172.18.0.2:5000", "not-an-address", ""), "172.18.0.2"},
+		{"no header from a proxy", def, req("172.18.0.2:5000", "", ""), "172.18.0.2"},
+		{"IPv6 visitor", def, req("[::1]:5000", "2001:db8::42", ""), "2001:db8::42"},
+		{"trusting none", none, req("172.18.0.2:5000", "203.0.113.5", ""), "172.18.0.2"},
+		{"behind Cloudflare and a Docker proxy", cf, req("172.18.0.2:5000", "203.0.113.5, 173.245.48.10", ""), "203.0.113.5"},
+	}
+	for _, c := range cases {
+		a := &app{proxies: c.proxies}
+		if got := a.clientIP(c.r); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+	a := &app{proxies: def}
+	https := req("172.18.0.2:5000", "", "")
+	https.Header.Set("X-Forwarded-Proto", "https")
+	spoof := req("203.0.113.9:5000", "", "")
+	spoof.Header.Set("X-Forwarded-Proto", "https")
+	if !a.viaHTTPS(https) || a.viaHTTPS(spoof) {
+		t.Error("X-Forwarded-Proto counts only from a trusted proxy")
+	}
+	if _, err := parseProxies("10.0.0.0/8, bogus"); err == nil {
+		t.Error("a bad entry in FLOWA_TRUSTED_PROXIES must be refused")
 	}
 }

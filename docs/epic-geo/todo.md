@@ -90,7 +90,8 @@ results.
   DoD: the script is deterministic for the same counts; the report is committed with the weights.
 - [x] **Gate.** With at least 30 shared pairs, the fitted AUC must be at least 0.75 and beat a baseline
   that uses only the prerequisite graph. With fewer, as at launch, there is nothing to fit or measure, so
-  the weights must be the physics defaults marked early, the flag stays off by default, and the
+  the weights must be the physics defaults marked early, the flag stays off by default (since changed:
+  every flag is on by default, so early suggestions show, labelled as early), and the
   interface labels every suggestion as not yet checked against real combos.
   DoD: `test/suggest-gate.js` in CI fails the build when the committed weights break either rule.
 - [x] **Bridges.** When no next trick scores above a threshold, the shortest path through tricks the

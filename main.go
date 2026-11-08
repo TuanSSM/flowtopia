@@ -59,7 +59,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false, "linkCards": true, "videoEmbeds": false, "suggest": false, "avatars": false}
+var flagDefaults = map[string]bool{"details": true, "demos": true, "references": true, "signups": true, "tour": true, "model3d": true, "community": true, "game": true, "moderation": true, "catalogEditor": true, "linkCards": true, "videoEmbeds": true, "suggest": true, "avatars": true}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -104,14 +104,58 @@ type app struct {
 	backupMu  sync.Mutex // one backup at a time
 	flagMu    sync.Mutex // guards flagCache and flagsAt
 	lim       limits
-	hosts     []string // names the server answers to besides addresses and private names (FLOWA_HOSTS)
-	fetch     *fetcher // link previews; nil means no fetching
+	hosts     []string     // names the server answers to besides addresses and private names (FLOWA_HOSTS)
+	proxies   []*net.IPNet // reverse proxies whose forwarding headers are believed (FLOWA_TRUSTED_PROXIES)
+	fetch     *fetcher     // link previews; nil means no fetching
 	flagCache map[string]bool
 	flagsAt   time.Time
 }
 
 func newApp(db *sql.DB, dataDir string) *app {
-	return &app{db: db, dataDir: dataDir, lim: newLimits()}
+	p, _ := parseProxies(defaultProxies)
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p}
+}
+
+// defaultProxies are where a reverse proxy connects from when it runs on the same host (loopback,
+// or Docker's bridge gateway) or in a Docker network beside the app. Docker networks use
+// 172.16.0.0/12; a home LAN (192.168.x.x) is not in the list, so a device there cannot pick its own
+// address by sending forwarding headers.
+const defaultProxies = "127.0.0.0/8,::1/128,172.16.0.0/12"
+
+// parseProxies reads FLOWA_TRUSTED_PROXIES: addresses or CIDR ranges separated by commas, or
+// "none" to trust no proxy (every visitor connects directly).
+func parseProxies(s string) ([]*net.IPNet, error) {
+	out := []*net.IPNet{}
+	if strings.TrimSpace(s) == "none" {
+		return out, nil
+	}
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		if !strings.Contains(p, "/") {
+			if ip := net.ParseIP(p); ip != nil && ip.To4() != nil {
+				p += "/32"
+			} else {
+				p += "/128"
+			}
+		}
+		_, n, err := net.ParseCIDR(p)
+		if err != nil {
+			return nil, fmt.Errorf("FLOWA_TRUSTED_PROXIES: %q is not an address or range", p)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func (a *app) trustedProxy(ip net.IP) bool {
+	for _, n := range a.proxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 type failCount struct {
@@ -299,7 +343,7 @@ func (a *app) startSession(w http.ResponseWriter, r *http.Request, id int64) err
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", Expires: exp, HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"})
+		SameSite: http.SameSiteLaxMode, Secure: a.viaHTTPS(r)})
 	return nil
 }
 
@@ -605,7 +649,7 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "New sign-ups are turned off. Ask the admin for an account.")
 		return
 	}
-	if !a.lim.signup.add(clientIP(r)) {
+	if !a.lim.signup.add(a.clientIP(r)) {
 		fail(w, http.StatusTooManyRequests, "Too many new accounts from this address. Try again in an hour.")
 		return
 	}
@@ -647,12 +691,50 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
 }
 
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientIP is the visitor's address, which the sign-in and sign-up limits count by. Behind a reverse
+// proxy the connection comes from the proxy, so when it does (a trusted proxy), the visitor is the
+// nearest address in X-Forwarded-For that is not itself a trusted proxy, read from the right: each
+// proxy appends the address it saw, so only the right-hand end is trustworthy and a visitor cannot
+// choose their address by sending the header. Without X-Forwarded-For, X-Real-IP is used.
+func (a *app) clientIP(r *http.Request) string {
+	remote, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		remote = r.RemoteAddr
 	}
-	return host
+	ip := net.ParseIP(remote)
+	if ip == nil || !a.trustedProxy(ip) {
+		return remote
+	}
+	var hops []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(v, ",")...)
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := net.ParseIP(strings.TrimSpace(hops[i]))
+		if hop == nil {
+			return remote // a malformed entry: nothing to its left can be believed
+		}
+		if !a.trustedProxy(hop) {
+			return hop.String()
+		}
+	}
+	if xr := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); xr != nil {
+		return xr.String()
+	}
+	if len(hops) > 0 {
+		return net.ParseIP(strings.TrimSpace(hops[0])).String() // every hop is a trusted proxy
+	}
+	return remote
+}
+
+// viaHTTPS reports whether the visitor's connection is encrypted: directly, or as a trusted proxy says.
+func (a *app) viaHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	remote, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(remote)
+	return ip != nil && a.trustedProxy(ip) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
@@ -661,7 +743,7 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.ToLower(strings.TrimSpace(in.Username))
-	ip := clientIP(r)
+	ip := a.clientIP(r)
 	key := ip + "|" + name
 	// Failures are counted per address and username, per address (guessing across many accounts)
 	// and per account (guessing from many addresses).
@@ -3598,6 +3680,14 @@ func main() {
 		log.Fatal(err)
 	}
 	a := newApp(db, *dataDir)
+	if v, ok := os.LookupEnv("FLOWA_TRUSTED_PROXIES"); ok && strings.TrimSpace(v) != "" {
+		p, err := parseProxies(v)
+		if err != nil {
+			log.Fatal(err)
+		}
+		a.proxies = p
+	}
+	log.Printf("visitor addresses: forwarding headers believed from %d trusted proxy ranges", len(a.proxies))
 	for _, h := range strings.Split(os.Getenv("FLOWA_HOSTS"), ",") {
 		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
 			a.hosts = append(a.hosts, h)

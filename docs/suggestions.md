@@ -1,7 +1,7 @@
 # Next-trick suggestions
 
 How the combo builder decides what can follow the last trick, what it measures, what data it uses,
-and where it is weak. Behind the `suggest` flag, off by default.
+and where it is weak. Behind the `suggest` flag, on by default (until enough marks are shared, every suggestion says it is early).
 
 ## What is measured, and where
 

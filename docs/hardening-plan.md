@@ -42,6 +42,15 @@ filesystem and no capabilities.
 | D7 | Shell scripts are not linted. | `shellcheck` in the lint job. |
 | D8 | Every browser test run left its Firefox profile (about 100 MB) in `/tmp`. Found when the Pi's disk filled up during this work: 140 profiles, 8.5 GB. | `test/browser/h.py` removes the profile when the suite ends, however it ends. |
 
+## After the first server deploy
+
+Feedback: behind the server's reverse proxy every visitor had the proxy's address, so the limits in S1
+and S5 counted everyone together: 10 sign-ups an hour in total, and 30 wrong passwords from anyone
+locked everyone out for 10 minutes. The limits now count the visitor's address from `X-Forwarded-For`
+when the connection comes from a trusted proxy (`FLOWA_TRUSTED_PROXIES`, loopback and Docker networks by
+default), read from the right so it cannot be forged; `X-Forwarded-Proto` is believed only from such a
+proxy too. `TestClientIP` and `TestDBLimitsBehindProxy` cover it.
+
 ## Left for later, with the reason
 
 - **Publishing the port on one address, TLS, and pinning Postgres by digest.** These depend on the

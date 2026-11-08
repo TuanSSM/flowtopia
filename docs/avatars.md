@@ -2,7 +2,7 @@
 
 Members build an avatar that plays their demos and combos, shows on their profile, and appears on
 stickers: the badge unlock card, milestone posts and the streak overlay. The `avatars` flag turns it
-all on (off by default); it needs the 3D figure (`model3d`). Signed-out visitors, members without an
+all on (on by default); it needs the 3D figure (`model3d`). Signed-out visitors, members without an
 avatar and anyone where the flag is off see the standard figure.
 
 ## What an avatar is
