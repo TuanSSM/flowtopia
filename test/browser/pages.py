@@ -35,6 +35,12 @@ try:
     page('achievements','Achievements','#/achievements',wait=2)
     page('profile-public','Public profile','#/u/admin',wait=2.5)
     page('timeline-phone','Timeline, phone','#/timeline',w=420,ht=900,wait=2.5)
+    # Link cards, with previews from the stand-in for the three sites when the server can reach it.
+    if os.environ.get('FLOWA_PREVIEW_BASE'):
+        import stub;stub.start()
+        api(op,'posts',{'body':'Two clips from this week','links':['https://youtu.be/dQw4w9WgXcQ','https://www.instagram.com/reel/C9xYz_-AbCd/']})
+        time.sleep(4);nav('#/practice',1) # leave the timeline, so it loads the new post
+        page('links-phone','Timeline with link cards, phone','#/timeline',w=420,ht=900,wait=3)
     # A post with a short conversation, to show threads.
     pid=json.loads(js("return fetch('api/posts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:'Which drill fixed your wrist?'})}).then(r=>r.text())"))['posts'][0]['id']
     cid=json.loads(js("return fetch('api/posts/'+arguments[0]+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:'Slow figure-8s in front of a mirror.'})}).then(r=>r.text())",pid))['comment']['id']

@@ -30,6 +30,11 @@ named but not described.
   edit window; a deleted comment with replies stays as "Comment deleted") and @mentions; new badges post themselves as milestones (each user can turn that off). A people
   list ranks everyone by XP. The composer's picker searches every skill map and your combos, and suggests
   the tricks from today's session and this week's level-ups; a combo's Publish button brings it to the composer.
+- **Link cards:** a pasted Instagram post or reel, TikTok video or YouTube video or short is offered as a card
+  (up to 4 per post). The server fetches the title, author and thumbnail from the site's public oEmbed or page
+  tags and serves its own small JPEG of the thumbnail, so visitors never contact those sites until they open
+  a link. YouTube can play in place, from youtube-nocookie.com, when an admin turns that on. See
+  [Link cards](#link-cards).
 - **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions and new
   badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
@@ -66,7 +71,9 @@ Changing the admin password in `.env` later does nothing; change it on the Profi
 - Full database dump: `docker exec nunchaku-db pg_dump -U flowa flowa > flowa.sql`
 - The files from before accounts existed were imported into the admin account and renamed `*.imported`.
 
-The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only.
+The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
+Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
+outbound requests the server makes are link previews to Instagram, TikTok and YouTube.
 
 ## Feature flags
 
@@ -75,7 +82,8 @@ on the Admin page. No restart is needed. `signups` opens or closes sign-up, and 
 `community` (timeline, public profiles, people list, notifications) and `game` (XP, levels, streak sharing,
 challenges, achievements, quests) are on by default and can be turned off if they get in the way.
 `moderation` (reports, the queue, hiding, mutes and suspensions) and `catalogEditor` (the skill map editor)
-are off until an admin turns them on.
+are off until an admin turns them on. `linkCards` (cards for Instagram, TikTok and YouTube links) is on;
+`videoEmbeds` (play YouTube in place) is off.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -112,13 +120,36 @@ user reports for their profile and the people list (the community section of `ma
 ## Community API
 
 All of these need a signed-in user. `GET /api/users` (people, most XP first), `GET /api/users/{name}`
-(profile with achievements), `GET /api/posts?before=&user=`, `POST /api/posts` (text, picture, up to 10 `tags` of prop and skill id, one `combo`), `GET|DELETE
+(profile with achievements), `GET /api/posts?before=&user=`, `POST /api/posts` (text, picture, up to 10 `tags` of prop and skill id, one `combo`, up to 4 `links`), `GET|DELETE
 /api/posts/{id}`, `POST /api/posts/{id}/like` (toggle), `GET /api/posts/{id}/comments?after=` (20 top-level
 comments, each with its two newest replies), `POST /api/posts/{id}/comments` (with `parentId` for a reply),
 `PUT|DELETE /api/comments/{id}`, `GET /api/comments/{id}/replies?after=` (50 at a time),
 `GET /api/comments/{id}/thread`, `POST /api/comments/{id}/like` (toggle), `POST /api/achievements`, `GET /api/notifications`,
 `PUT /api/notifications/read`. Profile fields (`bio`, `links`, `prefs`, `stats`) go through
 `PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted.
+
+## Link cards
+
+`parseLink` in `main.go` recognises Instagram posts and reels (also after an account name), TikTok videos and
+short links (`vm.`, `vt.`, `/t/`), and YouTube videos, shorts, live and `youtu.be` links, and stores each in a
+canonical form without tracking parameters. Anything else is refused.
+
+Previews are fetched in the background after a post is made, so posting never waits for another site. The
+fetcher only talks to those sites and their image hosts, follows redirects only between them, refuses private
+and loopback addresses, gives up after 3 s, and reads at most 256 KB of an answer and 2 MB of a picture. Short
+links are followed to their video. A preview is fetched once per link and refreshed at most weekly; a failure
+leaves a plain card with the site's name and the link. Instagram answers without a login only sometimes, so
+its cards may have no title or picture. Thumbnails are scaled to 640 px and re-encoded as JPEG by the server,
+and `/api/previews/<id>.jpg` serves one only while a post the viewer may see links to it.
+
+With `videoEmbeds` on, YouTube cards get a play button that swaps in a frame from
+`https://www.youtube-nocookie.com`; that host is added as `frame-src` to the Content-Security-Policy only while
+the flag is on (`csp()` in `main.go`). Instagram and TikTok always open in a new tab: their embeds need their
+own scripts, which the policy does not allow.
+
+Tests never reach the real sites: `FLOWA_PREVIEW_BASE` points the fetcher at the stand-in in
+`test/browser/stub.py` (Go tests use an `httptest` server), and `FLOWA_PREVIEW_FETCH=off` turns fetching off.
+Neither is set in production.
 
 ## Moderation, roles and the skill map editor
 

@@ -17,6 +17,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -792,4 +793,104 @@ func skillLike(cat map[string]any, id string) map[string]any {
 	s := cloneJSON(cat["skills"].([]any)[0].(map[string]any))
 	s["id"], s["needs"] = id, []any{}
 	return s
+}
+
+func TestDBLinkCards(t *testing.T) {
+	e := newEnv(t)
+	srv, hits := stub(t)
+	e.a.fetch = newFetcher(srv.URL, true)
+	_, owner := e.user("owner", "user")
+	_, mod := e.user("moe", "moderator")
+	_, other := e.user("ola", "user")
+	e.setFlag("moderation", true)
+	post := func(tok string, links ...string) int64 {
+		out := e.must(200, tok, "POST", "/api/posts", map[string]any{"body": "watch this", "links": links})
+		return num(out["posts"].([]any)[0].(map[string]any)["id"])
+	}
+	card := func(tok string, id int64) map[string]any {
+		p := e.must(200, tok, "GET", fmt.Sprintf("/api/posts/%d", id), nil)["posts"].([]any)[0].(map[string]any)
+		return p["links"].([]any)[0].(map[string]any)
+	}
+	// Posting returns at once; the preview arrives in the background.
+	start := time.Now()
+	p := post(owner, "https://youtu.be/dQw4w9WgXcQ?si=tracking")
+	if time.Since(start) > time.Second {
+		t.Fatalf("posting waited %v for the preview", time.Since(start))
+	}
+	var c map[string]any
+	for i := 0; i < 40; i++ {
+		if c = card(owner, p); c["status"] == "ok" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if c["status"] != "ok" || c["title"] != "Figure-8 drill" || c["url"] != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" || !strings.HasPrefix(c["thumb"].(string), "api/previews/") || c["ratio"] != "16:9" {
+		t.Fatalf("card: %v", c)
+	}
+	// The thumbnail is Flowa's own JPEG.
+	r := httptest.NewRequest("GET", "/"+c["thumb"].(string), nil)
+	r.AddCookie(&http.Cookie{Name: cookieName, Value: other})
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	if w.Code != 200 || w.Header().Get("Content-Type") != "image/jpeg" || w.Body.Len() > maxThumbOut {
+		t.Fatalf("thumbnail: %d %s %d bytes", w.Code, w.Header().Get("Content-Type"), w.Body.Len())
+	}
+	// The same link again is not fetched again.
+	before := atomic.LoadInt64(hits)
+	post(other, "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+	time.Sleep(300 * time.Millisecond)
+	if atomic.LoadInt64(hits) != before {
+		t.Fatal("a known link was fetched again")
+	}
+	// Limits and refusals.
+	e.must(400, owner, "POST", "/api/posts", map[string]any{"body": "x", "links": []string{"https://example.com/video"}})
+	e.must(400, owner, "POST", "/api/posts", map[string]any{"body": "x", "links": []string{"https://youtu.be/aaaaaaaaaa1", "https://youtu.be/aaaaaaaaaa2", "https://youtu.be/aaaaaaaaaa3", "https://youtu.be/aaaaaaaaaa4", "https://youtu.be/aaaaaaaaaa5"}})
+	// A preview that fails becomes a plain card, and the post is unaffected.
+	slow := post(owner, "https://www.tiktok.com/@a/video/9999999999")
+	for i := 0; i < 80; i++ {
+		if c = card(owner, slow); c["status"] == "failed" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if c["status"] != "failed" || c["ratio"] != "9:16" {
+		t.Fatalf("failed preview: %v", c)
+	}
+	// Hidden: the post's preview is no longer served to others.
+	e.must(200, mod, "POST", "/api/mod/actions", map[string]any{"action": "hide", "kind": "post", "id": p, "reason": "spam"})
+	thumb := card(owner, p)["thumb"].(string) // the author still sees the card
+	// ola's own post links to the same video, so the thumbnail is still served to her; delete that post to check.
+	e.a.db.Exec(`DELETE FROM posts WHERE user_id = (SELECT id FROM users WHERE username = 'ola')`)
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/"+thumb, nil)
+	r.AddCookie(&http.Cookie{Name: cookieName, Value: other})
+	e.h.ServeHTTP(w, r)
+	if w.Code != 404 {
+		t.Fatalf("preview of a hidden post served: %d", w.Code)
+	}
+	// With the flag off, links stay out of cards and nothing is fetched.
+	e.setFlag("linkCards", false)
+	e.a.flagsAt = time.Time{}
+	before = atomic.LoadInt64(hits)
+	out := e.must(200, owner, "POST", "/api/posts", map[string]any{"body": "plain link", "links": []string{"https://youtu.be/bbbbbbbbbbb"}})
+	time.Sleep(300 * time.Millisecond)
+	if _, has := out["posts"].([]any)[0].(map[string]any)["links"]; has || atomic.LoadInt64(hits) != before {
+		t.Fatal("with linkCards off a link became a card or was fetched")
+	}
+}
+
+func TestDBStaticCSP(t *testing.T) {
+	e := newEnv(t)
+	e.h = e.a.routes(map[string]asset{"/index.html": {body: []byte("<!doctype html>"), ctype: "text/html", etag: `"1"`}})
+	get := func() string {
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		return w.Header().Get("Content-Security-Policy")
+	}
+	off := get()
+	e.setFlag("videoEmbeds", true)
+	e.a.flagsAt = time.Time{}
+	if on := get(); off != csp(false) || on != csp(true) {
+		t.Fatalf("CSP:\n%s\n%s", off, on)
+	}
 }

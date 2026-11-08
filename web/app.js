@@ -29,6 +29,7 @@ const ICONS = {
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20c1-4 4-5.5 7.5-5.5s6.5 1.5 7.5 5.5',
   shield: 'M12 3l7 3v5.5c0 4.5-3 8-7 9.5-4-1.5-7-5-7-9.5V6z',
   inbox: 'M4 13h4l2 3h4l2-3h4M4 13l2-8h12l2 8v6H4z',
+  play: 'M8 5v14l11-7L8 5Z',
   flame: 'M12 21c-3.5 0-6-2.4-6-5.8 0-2.6 1.6-4.3 2.8-6 .3 1.2.9 2.2 1.9 2.9C10.3 9 10.7 5.8 13 3c.4 3 2.5 4.4 3.8 6.4A7 7 0 0 1 18 15.2C18 18.6 15.5 21 12 21Z',
   trophy: 'M8 4h8v5a4 4 0 0 1-8 0V4ZM8 6H5v1a3 3 0 0 0 3 3M16 6h3v1a3 3 0 0 1-3 3M12 13v4M9 20h6M10 17h4',
   medal: 'M12 15a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9ZM9 14l-1.5 6 4.5-2 4.5 2L15 14',
@@ -71,6 +72,8 @@ const FLAGS = [
   ['tour', 'Guided tour', 'A step-by-step tour for new users, on first sign-in and the first visit to each section. When off, a short note is shown instead.'],
   ['signups', 'Open sign-ups', 'Let anyone who can open this page create an account. Turn it off once everyone has one.'],
   ['community', 'Community', 'The timeline with posts, likes and comments, public profiles, the people list and the notification bell.'],
+  ['linkCards', 'Link cards', 'Instagram, TikTok and YouTube links in posts become cards with a preview the server fetches, so visitors never contact those sites until they open a link.'],
+  ['videoEmbeds', 'Play YouTube in place', 'A play button on YouTube cards that loads the video from youtube-nocookie.com inside Flowa. Adds that one site to the page security policy while on.'],
   ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and the Plan as quests.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;

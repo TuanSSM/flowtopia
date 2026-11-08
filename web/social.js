@@ -2,7 +2,7 @@
 // Community: the timeline of posts with likes and comments, notifications, the people
 // list, and public profiles with social links. Talks to the endpoints in social.go.
 
-const social = { full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftTags: [], draftCombo: null, pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {} };
+const social = { full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {} };
 const MAX_TAGS = 10;
 const LINK_KINDS = {
   instagram: { name: 'Instagram', hint: 'instagram.com/…', url: h => `https://www.instagram.com/${h}/` },
@@ -93,7 +93,7 @@ function postCard(p) {
     body = `<div class="ms"><div class="row" style="gap:10px"><span class="badge-ic on">${icon('trophy')}</span><b>Unlocked ${keys.length === 1 ? 'an achievement' : keys.length + ' achievements'}</b></div>
       <div class="chips" style="margin-top:10px">${keys.map(k => { const b = badgeByKey(k); return `<span class="chip ok" data-tip="${esc(b?.desc || '')}">${icon(b?.icon || 'medal')}${esc(b?.name || k)}</span>`; }).join('')}</div></div>`;
   } else {
-    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
+    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${(p.links || []).map(c => linkCardHTML(p, c)).join('')}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
   }
   const thread = threadHTML(p);
   return `<article class="card post" data-post="${p.id}">
@@ -263,15 +263,36 @@ function picker() {
     <div class="pick-list" role="listbox">${pickListHTML()}</div></div>`;
 }
 function refreshPicker() { const l = $('.pick-list'); if (l) { l.innerHTML = pickListHTML(); $('.pick-i.on')?.scrollIntoView({ block: 'nearest' }); } }
+/* ---------- links to Instagram, TikTok and YouTube ---------- */
+// Roughly what the server accepts (parseLink in main.go has the final say and the canonical form).
+const LINK_RE = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?\S*v=|shorts\/|live\/)|youtu\.be\/|instagram\.com\/(?:[\w.]+\/)?(?:p|reels?|tv)\/|(?:vm|vt)\.tiktok\.com\/|tiktok\.com\/(?:@[\w.]+\/video\/|t\/))\S+/gi;
+const SITE_NAMES = { youtube: 'YouTube', tiktok: 'TikTok', instagram: 'Instagram' };
+const siteOf = u => /tiktok/i.test(u) ? 'tiktok' : /instagram/i.test(u) ? 'instagram' : 'youtube';
+// The first link in the text that is not attached yet, to offer as a card.
+function linkOffer(text) {
+  if (!flags.linkCards || social.draftLinks.length >= 4) return '';
+  return (text.match(LINK_RE) || []).find(u => !social.draftLinks.includes(u)) || '';
+}
+function linkCardHTML(p, c) {
+  const site = SITE_NAMES[c.site] || c.site, tall = c.ratio === '9:16';
+  if (c.status === 'pending' && !social.refreshing.has(p.id)) { social.refreshing.add(p.id); setTimeout(() => { social.refreshing.delete(p.id); refreshPost(p.id); }, 3000); }
+  const playing = social.played.has(`${p.id}:${c.url}`);
+  const media = playing ? `<div class="lc-media ${tall ? 'tall' : ''}"><iframe src="https://www.youtube-nocookie.com/embed/${esc(c.id)}?autoplay=1" title="${esc(c.title || 'YouTube video')}" referrerpolicy="no-referrer" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen sandbox="allow-scripts allow-same-origin allow-presentation"></iframe></div>`
+    : c.thumb ? `<div class="lc-media ${tall ? 'tall' : ''}"><img src="${esc(c.thumb)}" alt="" loading="lazy">${c.site === 'youtube' && flags.videoEmbeds ? `<button class="lc-play" data-act="yt-play" data-id="${p.id}" data-url="${esc(c.url)}" aria-label="Play here">${icon('play')}</button>` : ''}</div>` : '';
+  const meta = c.status === 'pending' ? '<span class="tiny">Getting the preview…</span>' : `<b class="lc-title">${esc(c.title || `${site} ${c.kind === 'reel' ? 'reel' : c.kind === 'short' ? 'short' : c.site === 'instagram' ? 'post' : 'video'}`)}</b>${c.author ? `<span class="tiny">${esc(c.author)}</span>` : ''}`;
+  return `<div class="lc ${c.thumb ? '' : 'plain'}">${media}<a class="lc-meta" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer"><span class="lc-site social-${esc(c.site)}">${icon(c.site)}${esc(site)}</span>${meta}<span class="tiny lc-open">Open on ${esc(site)} ${icon('ext')}</span></a></div>`;
+}
 const mutedNote = () => me.mutedUntil ? `You are muted until ${new Date(me.mutedUntil).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${me.muteReason ? `: ${me.muteReason}` : ''}. You can still read and like.` : '';
 function composer() {
   if (me.mutedUntil) return `<div class="card notice warn muted-note">${icon('lock')} ${esc(mutedNote())}</div>`;
   const chips = social.draftTags.map(t => trickChip(t.prop, t.skill, `<button type="button" class="x" data-act="tag-rm" data-prop="${t.prop}" data-skill="${esc(t.skill)}" aria-label="Remove ${esc(t.skill)}">${icon('x')}</button>`, false)).join('')
+    + social.draftLinks.map(u => `<span class="chip trick link-chip social-${siteOf(u)}">${icon(siteOf(u))}<span class="trick-n">${esc(u.replace(/^https?:\/\/(www\.)?/, '').slice(0, 34))}</span><button type="button" class="x" data-act="link-rm" data-url="${esc(u)}" aria-label="Remove link">${icon('x')}</button></span>`).join('')
     + (social.draftCombo ? `<span class="chip trick combo-chip">${icon('link')}<span class="trick-n">${esc(social.draftCombo.name)}</span><button type="button" class="x" data-act="combo-rm-draft" aria-label="Remove combo">${icon('x')}</button></span>` : '');
   const sugg = social.pickOpen ? [] : suggestedTags();
   return `<form class="card compose" id="compose-form"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
     <textarea name="body" maxlength="2000" rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
     ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt=""><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>` : ''}
+    <div class="row wrap link-offer" ${social.linkOffer ? '' : 'hidden'}><span class="tiny grow">${social.linkOffer ? `${esc(SITE_NAMES[siteOf(social.linkOffer)])} link found` : ''}</span><button type="button" class="btn sm" data-act="link-attach">${icon('link')}Attach as a card</button></div>
     <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
     ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
     <div class="row wrap" style="gap:8px"><label class="btn sm">${icon('image')}Picture<input type="file" accept="image/*" data-change="compose-img" hidden></label>
@@ -419,6 +440,15 @@ document.addEventListener('click', async e => {
     case 'more-replies': moreReplies(id); break;
     case 'more-posts': loadFeed(social.key, true); break;
     case 'compose-img-rm': social.draftImg = ''; leaveCompose(); render(); break;
+    case 'link-attach': {
+      const u = social.linkOffer;
+      if (!u) break;
+      social.draftLinks.push(u);
+      social.draftBody = social.draftBody.replace(u, '').replace(/[ \t]{2,}/g, ' ').trim();
+      social.linkOffer = linkOffer(social.draftBody); leaveCompose(); render(); break;
+    }
+    case 'link-rm': social.draftLinks = social.draftLinks.filter(x => x !== d.url); social.linkOffer = linkOffer(social.draftBody); leaveCompose(); render(); break;
+    case 'yt-play': social.played.add(`${d.id}:${d.url}`); render(); break;
     case 'pick-open': social.pickOpen = !social.pickOpen; social.pickQ = ''; social.pickIdx = 0; leaveCompose(); render(); if (social.pickOpen) $('#pick-q')?.focus(); break;
     case 'pick-close': social.pickOpen = false; leaveCompose(); render(); $('#compose-form textarea')?.focus(); break;
     case 'pick-add': { const it = pickItems(social.pickQ)[Number(d.i)]; if (it) pickAdd(it); $('#pick-q')?.focus(); break; }
@@ -429,7 +459,12 @@ document.addEventListener('click', async e => {
   }
 });
 document.addEventListener('input', e => {
-  if (e.target.closest('#compose-form') && e.target.name === 'body') social.draftBody = e.target.value;
+  if (e.target.closest('#compose-form') && e.target.name === 'body') {
+    social.draftBody = e.target.value;
+    // Offer a pasted or typed link as a card, without redrawing while typing.
+    const offer = linkOffer(e.target.value), row = $('.link-offer');
+    if (offer !== social.linkOffer && row) { social.linkOffer = offer; row.hidden = !offer; row.querySelector('.tiny').textContent = offer ? `${SITE_NAMES[siteOf(offer)]} link found` : ''; }
+  }
   if (e.target.id === 'pick-q') { social.pickQ = e.target.value; social.pickIdx = 0; refreshPicker(); }
 });
 document.addEventListener('keydown', e => {
@@ -451,12 +486,12 @@ document.addEventListener('submit', async e => {
   if (f.id === 'compose-form') {
     e.preventDefault();
     const body = f.body.value.trim();
-    if (!body && !social.draftImg && !social.draftCombo) { toast('Write something, add a picture or attach a combo.'); return; }
+    if (!body && !social.draftImg && !social.draftCombo && !social.draftLinks.length) { toast('Write something, add a picture or attach a combo.'); return; }
     const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
-    const r = await api('posts', 'POST', { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo });
+    const r = await api('posts', 'POST', { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo, links: social.draftLinks });
     btn.disabled = false;
     if (!r.ok) { toast(r.error); return; }
-    social.draftBody = ''; social.draftImg = ''; social.draftTags = []; social.draftCombo = null; social.pickOpen = false; leaveCompose();
+    social.draftBody = ''; social.draftImg = ''; social.draftTags = []; social.draftCombo = null; social.draftLinks = []; social.linkOffer = ''; social.pickOpen = false; leaveCompose();
     Object.assign(social.users, r.data.users);
     if (social.key === 'all') social.posts.unshift(r.data.posts[0]); else social.stale = true;
     render(); grant(['first-post']); toast('Posted.');

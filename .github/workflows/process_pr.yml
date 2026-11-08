@@ -183,6 +183,7 @@ jobs:
       social: ${{ steps.social.outputs.line }}
       mod: ${{ steps.mod.outputs.line }}
       editor: ${{ steps.editor.outputs.line }}
+      links: ${{ steps.links.outputs.line }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -231,6 +232,16 @@ jobs:
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh editor.py | tee editor.txt || code=$?
           echo "line=$(grep -E 'passed' editor.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
+      # The server asks a stand-in for Instagram, TikTok and YouTube (test/browser/stub.py), never the real sites.
+      - name: Link cards
+        id: links
+        if: always()
+        env:
+          FLOWA_PREVIEW_BASE: http://127.0.0.1:3199
+        run: |
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh links.py | tee links.txt || code=$?
+          echo "line=$(grep -E 'passed' links.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v5
@@ -245,6 +256,7 @@ jobs:
             dbtests.txt
             mod.txt
             editor.txt
+            links.txt
           retention-days: 7
 
   # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
@@ -282,6 +294,8 @@ jobs:
         # run.sh starts Python with -I, which ignores user site-packages, so install it system-wide.
         run: sudo python3 -m pip install --quiet --break-system-packages pillow
       - name: Take the screenshots
+        env:
+          FLOWA_PREVIEW_BASE: http://127.0.0.1:3199
         run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
         if: always()
@@ -387,6 +401,7 @@ jobs:
           SOCIAL: ${{ needs.integration.outputs.social }}
           MODS: ${{ needs.integration.outputs.mod }}
           EDITOR: ${{ needs.integration.outputs.editor }}
+          LINKS: ${{ needs.integration.outputs.links }}
           STAT: ${{ steps.size.outputs.stat }}
           FILES: ${{ steps.size.outputs.files }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -403,7 +418,7 @@ jobs:
             echo "| docs | $(icon "$DOCS") | Markdown links, Claude Code front matter |"
             echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
-            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a} |"
+            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a}; links: ${LINKS:-n/a} |"
             echo "| screenshots | $(icon "$SCREENS") | pages at desktop and phone width, demo sheet |"
             echo
             echo "$SHOTS_MD"
