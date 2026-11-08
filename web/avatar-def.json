@@ -1,0 +1,23 @@
+{
+ "version": 1,
+ "skinTones": ["#f6dccb", "#ebc6aa", "#e0b08d", "#d39b74", "#c28761", "#b1734f", "#a0603f", "#885134", "#72422a", "#5b3422", "#46271a", "#2f1b12"],
+ "hairColors": ["#1c1714", "#3b2a20", "#6b4a2f", "#a8743f", "#d6b47a", "#b5512c", "#8a8a8a", "#e9e4dc"],
+ "palette": ["#1f2a44", "#3a4a6b", "#2f6f4f", "#7a2e2e", "#c4572e", "#d9a441", "#f2f0e9", "#2b2b2b", "#6d6d72", "#5b3f8c", "#2a7fa8", "#c25d8d", "#8aa346", "#e0d7c6"],
+ "propColors": ["#3987e5", "#e0533a", "#2f9e6a", "#9b59d0", "#d94f8c", "#1c9fb5", "#c96f22", "#6e7fe0", "#8a9a2a", "#b36b3a"],
+ "options": {
+  "body": ["short", "average", "tall"],
+  "build": ["lean", "average", "broad"],
+  "hair": ["none", "buzz", "short", "long", "ponytail", "bun", "curly"],
+  "eyes": ["round", "wide", "narrow", "sleepy"],
+  "brows": ["straight", "arched", "thick", "angled", "none"],
+  "mouth": ["smile", "neutral", "grin", "open"],
+  "top": ["tshirt", "tank", "longsleeve", "hoodie"],
+  "bottoms": ["shorts", "trousers", "leggings"],
+  "shoes": ["trainers", "hightops", "boots", "barefoot"],
+  "hat": ["none", "cap", "beanie", "bucket"],
+  "glasses": ["none", "round", "square"],
+  "wristbands": ["no", "yes"]
+ },
+ "colorKeys": {"skin": "skinTones", "hairColor": "hairColors", "topColor": "palette", "bottomsColor": "palette", "shoesColor": "palette", "hatColor": "palette", "wristColor": "palette"},
+ "defaults": {"v": 1, "body": "average", "build": "average", "skin": "#c28761", "hair": "short", "hairColor": "#3b2a20", "eyes": "round", "brows": "straight", "mouth": "smile", "top": "tshirt", "topColor": "#2a7fa8", "bottoms": "trousers", "bottomsColor": "#1f2a44", "shoes": "trainers", "shoesColor": "#f2f0e9", "hat": "none", "hatColor": "#c4572e", "glasses": "none", "wristbands": "no", "wristColor": "#d9a441", "props": {}}
+}

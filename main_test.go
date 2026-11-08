@@ -208,3 +208,46 @@ func TestCSP(t *testing.T) {
 		t.Fatalf("policies differ by more than the YouTube frame:\n%s\n%s", off, on)
 	}
 }
+
+func TestValidAvatar(t *testing.T) {
+	raw, _ := os.ReadFile("web/avatar-def.json")
+	var def struct {
+		Defaults map[string]any `json:"defaults"`
+	}
+	json.Unmarshal(raw, &def)
+	good, _ := json.Marshal(def.Defaults)
+	if err := validAvatar(good); err != nil {
+		t.Fatalf("the defaults must be valid: %v", err)
+	}
+	withProps := map[string]any{}
+	json.Unmarshal(good, &withProps)
+	withProps["props"] = map[string]any{"poi": "#e0533a"}
+	b, _ := json.Marshal(withProps)
+	if err := validAvatar(b); err != nil {
+		t.Fatalf("a valid prop colour was refused: %v", err)
+	}
+	bad := []map[string]any{
+		{"hair": "mohawk"}, {"skin": "#00ff00"}, {"topColor": "red"}, {"v": 2}, {"wings": "yes"},
+		{"props": map[string]any{"poi": "#000000"}}, {"props": map[string]any{"drums": "#3987e5"}}, {"props": "blue"},
+	}
+	for _, change := range bad {
+		c := map[string]any{}
+		json.Unmarshal(good, &c)
+		for k, v := range change {
+			c[k] = v
+		}
+		b, _ := json.Marshal(c)
+		if validAvatar(b) == nil {
+			t.Errorf("%v should be refused", change)
+		}
+	}
+	if validAvatar(json.RawMessage(`[]`)) == nil || validAvatar(json.RawMessage(`{"v":1,"note":"`+strings.Repeat("x", 3000)+`"}`)) == nil {
+		t.Error("a list or an oversized object should be refused")
+	}
+	if validAvatar(json.RawMessage(`{}`)) != nil || validAvatar(json.RawMessage(`null`)) == nil {
+		t.Error("an empty object removes the avatar; null is not an avatar")
+	}
+	if validAvatar(json.RawMessage(`{"v":1,"props":{"rope":"#3987e5"}}`)) == nil || validAvatar(json.RawMessage(`{"v":1,"props":{"poi":"#000000"}}`)) == nil {
+		t.Error("an unknown prop or a colour off the prop palette should be refused")
+	}
+}
