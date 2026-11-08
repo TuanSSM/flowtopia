@@ -75,6 +75,7 @@ const FLAGS = [
   ['linkCards', 'Link cards', 'Instagram, TikTok and YouTube links in posts become cards with a preview the server fetches, so visitors never contact those sites until they open a link.'],
   ['videoEmbeds', 'Play YouTube in place', 'A play button on YouTube cards that loads the video from youtube-nocookie.com inside Flowa. Adds that one site to the page security policy while on.'],
   ['suggest', 'Next-trick suggestions', 'The combo builder suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links directly. Members can share their transition marks anonymously to improve it.'],
+  ['avatars', 'Avatars', 'Members build an avatar that plays their demos and combos (on their body preset where the clip passes its body checks), shows on their profile, and appears on stickers and streak overlays. Needs the 3D figure.'],
   ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and the Plan as quests.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
@@ -597,14 +598,15 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation', avatar: 'Avatar' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
   if (p === 'branch') return pageBranch(a, b);
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
-  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements'].includes(p) && !me) return pageNeedAccount(title);
+  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements', 'avatar'].includes(p) && !me) return pageNeedAccount(title);
+  if (p === 'avatar') return pageAvatar(a);
   if (p === 'practice') return pagePractice();
   if (['timeline', 'post', 'u'].includes(p) && !flags.community) return pageOff('Community');
   if (p === 'achievements' && !flags.game) return pageOff('Gamification');
@@ -648,7 +650,8 @@ function render() {
     const nf = $('#log-form');
     if (nf && keep) { nf.date.value = keep.date; nf.minutes.value = keep.minutes; nf.notes.value = keep.notes; }
   }
-  Demo.figure(flags.demos && flags.model3d); // the 3D model is fetched the first time it is wanted
+  Demo.figure((flags.demos || flags.avatars) && flags.model3d); // the 3D model is fetched the first time it is wanted
+  avatarMount(); // the signed-in user's avatar for demos, and the editor's or a profile's preview
   Demo.comboMount(); // the combo player, when one is open
   const hw = $('.heat-wrap');
   if (hw) hw.scrollLeft = hw.scrollWidth; // phones show the newest weeks first
@@ -668,7 +671,7 @@ function toast(msg) {
 }
 
 /* ---------- command palette ---------- */
-const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ['Settings', '#/settings'],
+const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars && me ? [['Avatar', '#/avatar']] : []), ['Settings', '#/settings'],
   ...myProps().filter(p => p.id !== ui.prop).map(p => [p.name + ' map', `#/prop/${p.id}`]), ...BRANCHES.map(b => [`${curProp().name}: ${b.name}`, `#/prop/${CID}/${b.k}`])];
 function palItems(q) {
   q = q.trim().toLowerCase();

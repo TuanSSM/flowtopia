@@ -58,7 +58,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false, "linkCards": true, "videoEmbeds": false, "suggest": false}
+var flagDefaults = map[string]bool{"details": false, "demos": false, "references": false, "signups": true, "tour": false, "model3d": true, "community": true, "game": true, "moderation": false, "catalogEditor": false, "linkCards": true, "videoEmbeds": false, "suggest": false, "avatars": false}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -133,9 +133,11 @@ type user struct {
 	SuspendReason  string     `json:"suspendReason,omitempty"`
 	StatsHidden    bool       `json:"statsHidden,omitempty"`
 	LastActive     *time.Time `json:"lastActive,omitempty"` // filled only in the admin accounts list
+	// AvatarCfg is the avatar the user built (web/avatar-def.json lists every option); public.
+	AvatarCfg json.RawMessage `json:"avatarCfg"`
 }
 
-const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden"
+const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden, u.avatar_cfg"
 
 type scanner interface{ Scan(...any) error }
 
@@ -144,11 +146,13 @@ func scanUser(row scanner, extra ...any) (*user, error) {
 	var u user
 	var props, seen, links, prefs, stats []byte
 	var muted, suspended sql.NullTime
+	var avcfg []byte
 	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &prefs, &stats, &u.Created,
-		&muted, &u.MuteReason, &suspended, &u.SuspendReason, &u.StatsHidden}, extra...)
+		&muted, &u.MuteReason, &suspended, &u.SuspendReason, &u.StatsHidden, &avcfg}, extra...)
 	if err := row.Scan(dst...); err != nil {
 		return nil, err
 	}
+	u.AvatarCfg = avcfg
 	// Only a mute or suspension still running is reported.
 	if muted.Valid && muted.Time.After(time.Now()) {
 		u.MutedUntil = &muted.Time
@@ -364,6 +368,10 @@ func (a *app) setFlags(in map[string]bool) error {
 			return err
 		}
 	}
+	// The next request reads the new flags, not the cached ones.
+	a.mu.Lock()
+	a.flagCache = nil
+	a.mu.Unlock()
 	return nil
 }
 
@@ -574,6 +582,8 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		Prefs *map[string]bool `json:"prefs"`
 		// Level, streak and totals the client worked out, shown on profiles.
 		Stats json.RawMessage `json:"stats"`
+		// The avatar, checked against web/avatar-def.json.
+		AvatarCfg json.RawMessage `json:"avatarCfg"`
 	}
 	if !readJSON(w, r, 200<<10, &in) {
 		return
@@ -664,6 +674,13 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		u.Prefs, _ = json.Marshal(prefs)
 	}
+	if len(in.AvatarCfg) > 0 {
+		if err := validAvatar(in.AvatarCfg); err != nil {
+			fail(w, http.StatusBadRequest, "That avatar cannot be saved: "+err.Error())
+			return
+		}
+		u.AvatarCfg = in.AvatarCfg
+	}
 	if len(in.Stats) > 0 {
 		if !validStats(in.Stats) {
 			fail(w, http.StatusBadRequest, "Stats must be a small object of numbers.")
@@ -671,8 +688,8 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		u.Stats = in.Stats
 	}
-	_, err := a.db.Exec(`UPDATE users SET display_name = $2, props = $3, seen = $4, onboarded = $5, avatar = $6, bio = $7, links = $8, prefs = $9, stats = $10 WHERE id = $1`,
-		u.ID, u.DisplayName, string(u.Props), string(u.Seen), u.Onboarded, u.Avatar, u.Bio, string(u.Links), string(u.Prefs), string(u.Stats))
+	_, err := a.db.Exec(`UPDATE users SET display_name = $2, props = $3, seen = $4, onboarded = $5, avatar = $6, bio = $7, links = $8, prefs = $9, stats = $10, avatar_cfg = $11 WHERE id = $1`,
+		u.ID, u.DisplayName, string(u.Props), string(u.Seen), u.Onboarded, u.Avatar, u.Bio, string(u.Links), string(u.Prefs), string(u.Stats), string(u.AvatarCfg))
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -2954,6 +2971,84 @@ func (a *app) handleSuggestUsage(w http.ResponseWriter, r *http.Request, _ *user
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+/* ---------- avatars ---------- */
+
+// avatarDef is web/avatar-def.json: every option of the avatar editor, and the palettes colours come
+// from. The editor reads the same file, so the server and the page cannot disagree about what exists.
+type avatarDefT struct {
+	Version   int                 `json:"version"`
+	Options   map[string][]string `json:"options"`
+	ColorKeys map[string]string   `json:"colorKeys"`
+	Palettes  map[string][]string `json:"-"`
+	Props     []string            `json:"propColors"`
+}
+
+var avatarDef = func() avatarDefT {
+	raw, err := webFS.ReadFile("web/avatar-def.json")
+	if err != nil {
+		panic(err)
+	}
+	var d avatarDefT
+	var all map[string]json.RawMessage
+	if json.Unmarshal(raw, &d) != nil || json.Unmarshal(raw, &all) != nil {
+		panic("web/avatar-def.json is not valid")
+	}
+	d.Palettes = map[string][]string{}
+	for _, name := range d.ColorKeys {
+		var list []string
+		json.Unmarshal(all[name], &list)
+		d.Palettes[name] = list
+	}
+	return d
+}()
+
+const maxAvatarCfg = 2048
+
+// validAvatar accepts an avatar whose every field is a known option or a colour from its palette,
+// or an empty object, which removes the avatar.
+func validAvatar(raw json.RawMessage) error {
+	if len(raw) > maxAvatarCfg {
+		return errors.New("it is larger than 2 KB")
+	}
+	var c map[string]any
+	if json.Unmarshal(raw, &c) != nil || c == nil {
+		return errors.New("it is not an object")
+	}
+	if len(c) == 0 {
+		return nil
+	}
+	if v, _ := c["v"].(float64); int(v) != avatarDef.Version {
+		return fmt.Errorf("its version must be %d", avatarDef.Version)
+	}
+	for k, v := range c {
+		switch {
+		case k == "v":
+		case k == "props":
+			m, ok := v.(map[string]any)
+			if !ok {
+				return errors.New("props must map a prop to a colour")
+			}
+			for p, col := range m {
+				s, _ := col.(string)
+				if !knownProp(p) || !slices.Contains(avatarDef.Props, s) {
+					return fmt.Errorf("prop colour %v for %s is not one of the prop colours", col, p)
+				}
+			}
+		case avatarDef.Options[k] != nil:
+			if s, _ := v.(string); !slices.Contains(avatarDef.Options[k], s) {
+				return fmt.Errorf("%s must be one of %s", k, strings.Join(avatarDef.Options[k], ", "))
+			}
+		case avatarDef.ColorKeys[k] != "":
+			if s, _ := v.(string); !slices.Contains(avatarDef.Palettes[avatarDef.ColorKeys[k]], s) {
+				return fmt.Errorf("%s must be a colour from its palette", k)
+			}
+		default:
+			return fmt.Errorf("there is no field %q", k)
+		}
+	}
+	return nil
+}
+
 /* ---------- admin dashboard ---------- */
 
 const dashWeeks = 12
@@ -3374,6 +3469,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS suspend_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stats_hidden BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_cfg JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ;
@@ -3567,6 +3663,7 @@ type pubUser struct {
 	Props       json.RawMessage `json:"props"`
 	Stats       json.RawMessage `json:"stats"`
 	Created     time.Time       `json:"created"`
+	AvatarCfg   json.RawMessage `json:"avatarCfg"`
 }
 
 func (u *user) public() pubUser {
@@ -3575,7 +3672,7 @@ func (u *user) public() pubUser {
 		v.Stats = json.RawMessage("{}")
 		u = &v
 	}
-	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Stats, u.Created}
+	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.Avatar, u.Bio, u.Links, u.Props, u.Stats, u.Created, u.AvatarCfg}
 }
 
 func (a *app) usersByID(ids []int64) (map[int64]pubUser, error) {
@@ -3651,7 +3748,57 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u.public(), "achievements": ach, "posts": posts, "likes": likes})
+	out := map[string]any{"user": u.public(), "achievements": ach, "posts": posts, "likes": likes}
+	// With avatars on, the skills this person has clean, so their avatar can play one on their profile.
+	if a.flagsCached()["avatars"] && !u.StatsHidden {
+		clean, err := a.cleanSkills(u.ID)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out["clean"] = clean
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// cleanSkills lists, per prop, the skills a user has at level 2 (clean) or above in any variant,
+// read from their progress documents (state.skills: skill id -> variant -> level).
+func (a *app) cleanSkills(id int64) (map[string][]string, error) {
+	rows, err := a.db.Query(`SELECT prop, state->'skills' FROM progress WHERE user_id = $1 ORDER BY prop`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var prop string
+		var raw []byte
+		if err := rows.Scan(&prop, &raw); err != nil {
+			return nil, err
+		}
+		var skills map[string]map[string]any
+		if json.Unmarshal(raw, &skills) != nil {
+			continue // a document without skills, or with an unexpected shape, lists none
+		}
+		ids := []string{}
+		for sid, rec := range skills {
+			if !skillIDRE.MatchString(sid) {
+				continue
+			}
+			for _, v := range rec {
+				if n, ok := v.(float64); ok && n >= 2 {
+					ids = append(ids, sid)
+					break
+				}
+			}
+		}
+		slices.Sort(ids)
+		if len(ids) > 200 {
+			ids = ids[:200]
+		}
+		out[prop] = ids
+	}
+	return out, rows.Err()
 }
 
 /* ---------- achievements ---------- */

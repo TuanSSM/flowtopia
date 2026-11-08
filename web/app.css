@@ -684,3 +684,37 @@ tr[hidden] { display: none; }
 .nt-bridge svg.i { width: 12px; height: 12px; color: var(--ink-3); }
 .ed-motion { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px 12px; margin: 0; }
 .ed-motion legend { color: var(--ink-2); padding: 0 4px; }
+
+/* ---------- avatars ---------- */
+.av-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px; align-items: start; }
+.av-stage { display: grid; gap: 10px; position: sticky; top: 12px; }
+.av-stage canvas, .av-prof canvas { width: 100%; max-width: 480px; aspect-ratio: 1; justify-self: center; border-radius: 12px; background: var(--side); touch-action: none; cursor: grab; }
+.av-stage canvas:active, .av-prof canvas:active { cursor: grabbing; }
+.av-tools { gap: 8px; }
+.av-panel { display: grid; gap: 14px; }
+.av-tabs { overflow-x: auto; max-width: 100%; }
+.av-tabs button { white-space: nowrap; }
+.av-fields { display: grid; gap: 14px; }
+.av-field { display: grid; gap: 6px; }
+.av-sw { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.sw { width: 30px; height: 30px; border-radius: 50%; background: var(--c); border: 2px solid var(--line-2); padding: 0; flex: none; }
+.sw.on { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--card); }
+.sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.av-first { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); margin-bottom: 14px; display: grid; gap: 8px; }
+.av-prof { display: grid; gap: 10px; }
+.av-prof canvas { max-width: 320px; }
+.demo-body { margin-top: 4px; color: var(--ink-2); }
+.sticker { display: block; flex: none; }
+.ms.has-sticker { display: grid; grid-template-columns: 1fr auto; }
+.ms.has-sticker > :not(.sticker) { grid-column: 1; }
+.ms-sticker { grid-column: 2; grid-row: 1 / span 2; width: 96px; height: 96px; }
+.unlock-sticker { width: 56px; height: 56px; margin: -6px 0; }
+/* Phones: the preview on top, smaller, and each row of options or colours scrolls sideways, so it
+   all works with one thumb. */
+@media (max-width: 760px) {
+  .av-wrap { grid-template-columns: 1fr; }
+  .av-stage { position: static; }
+  .av-stage canvas { max-width: 300px; }
+  .av-sw, .av-field .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+  .av-field .chips .chip { flex: none; }
+}

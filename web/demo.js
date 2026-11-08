@@ -25,8 +25,35 @@ const Demo = (() => {
   // World: x toward the figure's left, y up, z forward, in metres. A pose gives the pelvis,
   // the way the chest faces, the line of the spine, the feet and the hands; everything
   // else (shoulders, elbows, knees) follows from bone lengths. Missing parts stand at rest.
-  const UP = [0, 1, 0], U_ARM = 0.31, F_ARM = 0.28, THIGH = 0.47, SHIN = 0.465, REACH = U_ARM + F_ARM;
-  const DIM = { pelvis: 0.97, chest: 0.46, head: 0.66, shoulder: 0.2, hip: 0.1, stance: 0.14, ankle: 0.04 };
+  const UP = [0, 1, 0], BASE = { U_ARM: 0.31, F_ARM: 0.28, THIGH: 0.47, SHIN: 0.465 };
+  const DIM0 = { pelvis: 0.97, chest: 0.46, head: 0.66, shoulder: 0.2, hip: 0.1, stance: 0.14, ankle: 0.04 };
+  let U_ARM = BASE.U_ARM, F_ARM = BASE.F_ARM, THIGH = BASE.THIGH, SHIN = BASE.SHIN, REACH = U_ARM + F_ARM, DIM = { ...DIM0 };
+  // Body presets for avatars: a height (it scales lengths) and a build (it scales widths: shoulders,
+  // hips, trunk and limbs; breadth follows height only loosely in people, so height leaves it). The
+  // standard body (1, 1) is the one every clip was simulated for; sim/presets.js checks each clip on
+  // each preset, and a clip is moved as a whole to fit a preset (fit), which leaves its physics as it was.
+  const BODY = { sc: 1, bd: 1 };
+  const HEIGHTS = { short: 0.93, average: 1, tall: 1.07 }, BUILDS = { lean: 0.92, average: 1, broad: 1.1 };
+  function setBody(sc = 1, bd = 1) {
+    BODY.sc = sc; BODY.bd = bd;
+    U_ARM = BASE.U_ARM * sc; F_ARM = BASE.F_ARM * sc; THIGH = BASE.THIGH * sc; SHIN = BASE.SHIN * sc; REACH = U_ARM + F_ARM;
+    DIM = { pelvis: DIM0.pelvis * sc, chest: DIM0.chest * sc, head: DIM0.head * sc, shoulder: DIM0.shoulder * bd, hip: DIM0.hip * bd, stance: DIM0.stance, ankle: DIM0.ankle };
+    Object.assign(dim, DIM, { U_ARM, F_ARM, REACH, THIGH, SHIN });
+  }
+  // A frame moved to fit the current body. The hands, elbows and props rise or sink with the
+  // shoulders (lift), so they keep their place relative to them; the pelvis rises with the legs; the
+  // feet stay on the floor; directions do not move. A pure shift keeps the physics as simulated.
+  const DIRKEY = /(^|\.)(d|u|v|x|w|face|spine|tL|tR)$/;
+  const lift = () => (DIM0.pelvis + DIM0.chest) * (BODY.sc - 1);
+  function fit(f) {
+    if (BODY.sc === 1) return f;
+    const dy = lift(), dp = DIM0.pelvis * (BODY.sc - 1), o = {};
+    for (const k in f) {
+      const v = f[k];
+      o[k] = k === 'fL' || k === 'fR' || DIRKEY.test(k) || !Array.isArray(v) ? v : [v[0], v[1] + (k === 'pelvis' ? dp : dy), v[2]];
+    }
+    return o;
+  }
   // The middle joint of a two-bone limb, bent toward the hint direction.
   function bend(S, H, U, F, hint) {
     const v = sub(H, S), D = clamp(len(v), 0.02, U + F - 0.002), dir = norm(v);
@@ -60,17 +87,19 @@ const Demo = (() => {
   // stops short of the fist, which is wrapped around it.
   const cap = (a, b, r, name, side) => ({ a, b, r, name, side });
   function caps(J, hold = {}) {
-    const out = [cap(J.head, J.head, 0.105, 'head'), cap(add(J.pelvis, mul(J.up, 0.08)), add(J.pelvis, mul(J.up, 0.41)), 0.135, 'torso')];
+    const sc = BODY.sc, bd = BODY.bd;
+    const out = [cap(J.head, J.head, 0.105, 'head'), cap(add(J.pelvis, mul(J.up, 0.08 * sc)), add(J.pelvis, mul(J.up, 0.41 * sc)), 0.135 * bd, 'torso')];
     for (const s of ['L', 'R']) {
       const el = J['el' + s], hand = J['h' + s];
-      out.push(cap(J['hip' + s], J['knee' + s], 0.058, 'thigh', s), cap(J['knee' + s], J['f' + s], 0.058, 'shin', s),
-        cap(J['sh' + s], el, 0.042, 'upper arm', s), cap(el, hold[s] ? add(hand, mul(norm(sub(el, hand)), 0.07)) : hand, 0.038, 'forearm', s));
+      out.push(cap(J['hip' + s], J['knee' + s], 0.058 * bd, 'thigh', s), cap(J['knee' + s], J['f' + s], 0.058 * bd, 'shin', s),
+        cap(J['sh' + s], el, 0.042 * bd, 'upper arm', s), cap(el, hold[s] ? add(hand, mul(norm(sub(el, hand)), 0.07)) : hand, 0.038 * bd, 'forearm', s));
     }
     return out;
   }
 
   /* ---------- props ---------- */
   const GRIP = 0.12, BUTT = 0.18; // nunchaku: fist to link end, fist to tail end of the handle
+  const dim = { ...DIM, U_ARM, F_ARM, REACH, THIGH, SHIN, GRIP, BUTT }; // live: setBody() updates it
   // A buugeng as two half-circles joined into an S, in its own plane.
   const S_SHAPE = (() => { const r = 0.19, pts = []; for (let i = 0; i <= 6; i++) { const t = Math.PI * i / 6; pts.push([-r - r * cos(t), r * sin(t)]); } for (let i = 1; i <= 6; i++) { const t = Math.PI * i / 6; pts.push([r - r * cos(t), -r * sin(t)]); } return pts; })();
   const sPoints = (c, u, v) => S_SHAPE.map(([x, y]) => add(c, add(mul(u, x), mul(v, y))));
@@ -140,7 +169,7 @@ const Demo = (() => {
     if (clip.loop) { x = (((ph % 1) + 1) % 1) * N; i = Math.floor(x) % N; j = (i + 1) % N; }
     else { x = clamp(ph, 0, 1) * (N - 1); i = Math.floor(x); j = Math.min(i + 1, N - 1); }
     const f = blend(fr[i], fr[j], x - Math.floor(x));
-    return mir ? mirror(f) : f;
+    return fit(mir ? mirror(f) : f);
   }
   const other = s => s === 'L' ? 'R' : 'L';
   const propsOf = (clip, mir) => mir ? clip.props.map(p => p.hand ? { ...p, hand: other(p.hand) } : p) : clip.props;
@@ -174,6 +203,41 @@ const Demo = (() => {
     return { o, x, w, grip, r: g ? g.r : 0.012 };
   }
 
+  /* ---------- avatars ---------- */
+  // The viewer's avatar (web/avatar-def.json lists the options), or null for the standard figure.
+  // Its body preset applies to each clip that passed the body checks on that preset (sim/presets.js
+  // writes web/clips/presets.json); any other clip plays on the standard body and its caption says so.
+  let av = null, presetFails = {};
+  const presetOf = a => a ? `${HEIGHTS[a.body] ? a.body : 'average'}-${BUILDS[a.build] ? a.build : 'average'}` : 'average-average';
+  const STANDARD = 'average-average';
+  // Why a clip does not play on the viewer's body, or '' when it does (or the viewer has the standard body).
+  const unfit = (f, who = av) => {
+    const id = presetOf(who);
+    if (id === STANDARD) return '';
+    if (!presetFails) return 'the results of the body checks could not be loaded';
+    return (presetFails[f] && presetFails[f][id]) || '';
+  };
+  // The 3D figure wears one avatar at a time, and rebuilding it costs a few milliseconds, so it changes
+  // only when a different person's avatar is drawn (someone's profile, a milestone sticker).
+  let worn = 'none';
+  function wear(who) {
+    const k = who ? JSON.stringify(who) : 'none';
+    if (k === worn || typeof window === 'undefined' || !window.Figure3D || !window.Figure3D.ready) return;
+    worn = k; window.Figure3D.setAvatar(who || null);
+  }
+  function useBody(clip, who = av) {
+    const [h, b] = (unfit(clip.f, who) ? STANDARD : presetOf(who)).split('-'), sc = HEIGHTS[h], bd = BUILDS[b];
+    if (sc === BODY.sc && bd === BODY.bd) return;
+    setBody(sc, bd);
+    if (typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready) window.Figure3D.setBody(sc, bd);
+  }
+  function avatar(cfg) {
+    av = cfg && cfg.v ? cfg : null;
+    if (typeof document !== 'undefined') { mount(); comboMount(); }
+  }
+  // The prop in the avatar's colour for that prop, if one was chosen.
+  const tint = (col, cid, who = av) => who && who.props && who.props[cid] ? { ...col, prop: who.props[cid] } : col;
+
   /* ---------- the 3D figure ---------- */
   // A rigged human model drawn by web/figure3d.js, loaded only when wanted. Until it is ready,
   // or where WebGL is missing, the drawn figure is used.
@@ -183,7 +247,7 @@ const Demo = (() => {
     if (!on || asked3d || typeof document === 'undefined') return;
     asked3d = true;
     const sc = document.createElement('script'); sc.src = 'figure3d.js';
-    sc.onload = () => window.Figure3D.load('assets/human.glb').then(ok => { if (ok) { mount(); comboMount(); } });
+    sc.onload = () => window.Figure3D.load('assets/human.glb').then(ok => { if (ok) { window.Figure3D.setBody(BODY.sc, BODY.bd); worn = ''; wear(av); mount(); comboMount(); } });
     document.head.appendChild(sc);
   }
   const use3d = clip => want3d && typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready;
@@ -205,13 +269,17 @@ const Demo = (() => {
   }
 
   /* ---------- drawing ---------- */
-  function draw(ctx, W, clip, ph, view, mir, col, full) {
+  // who: whose avatar (default the viewer's). view: 'front', 'angle', 'side', or a yaw in radians.
+  function draw(ctx, W, clip, ph, view, mir, col, full, who = av) {
+    if (use3d(clip)) wear(who);
+    useBody(clip, who);
     const cam = clip.cam, zoom = cam ? cam.zoom : 1, S = W / 2.75 * zoom, base = W * 0.93;
     // Yaw turns the camera toward the working hand's side: 0 is front, 90 degrees is side.
-    const yaw = { front: 0, angle: 0.66, side: Math.PI / 2 }[view], tilt = view === 'angle' ? 0.2 : 0;
+    const yaw = typeof view === 'number' ? view : { front: 0, angle: 0.66, side: Math.PI / 2 }[view], tilt = view === 'angle' ? 0.2 : typeof view === 'number' ? 0.12 : 0;
     const cy = cos(yaw), sy = sin(yaw), k = mir ? -1 : 1;
     const flat = v => { const depth = v[2] * cy - k * v[0] * sy; return [v[0] * cy + k * (v[2] - 0.3 * sy) * sy, v[1] * cos(tilt) - depth * sin(tilt), depth]; };
-    const aim = cam ? flat(mir ? flip(cam.at) : cam.at) : null;
+    const up = lift(), at0 = cam ? [cam.at[0], cam.at[1] + up, cam.at[2]] : null; // the camera and planes move with the clip (fit)
+    const aim = cam ? flat(mir ? flip(at0) : at0) : null;
     const pr = v => { const q = flat(v); return aim ? [W / 2 + (q[0] - aim[0]) * S, W / 2 - (q[1] - aim[1]) * S, q[2]] : [W / 2 + q[0] * S, base - q[1] * S, q[2]]; };
     const items = [];
     const seg = (pts, w, color, lift = 0) => { const q = pts.map(pr); items.push({ z: q.reduce((a, b) => a + b[2], 0) / q.length + lift, q, w: w * S, color }); };
@@ -224,7 +292,7 @@ const Demo = (() => {
       ctx.beginPath(); ctx.moveTo(W * 0.08, base + 0.02 * S); ctx.lineTo(W * 0.92, base + 0.02 * S); ctx.stroke();
     }
     for (const q of clip.quads || []) {
-      const corner = (i, j) => { const v = add(q.c, add(mul(q.a, i * q.k), mul(q.b, j * q.k))); return pr(mir ? flip(v) : v); };
+      const corner = (i, j) => { const v = add([q.c[0], q.c[1] + up, q.c[2]], add(mul(q.a, i * q.k), mul(q.b, j * q.k))); return pr(mir ? flip(v) : v); };
       const c = [corner(1, 1), corner(-1, 1), corner(-1, -1), corner(1, -1)];
       ctx.beginPath(); c.forEach((v, i) => i ? ctx.lineTo(v[0], v[1]) : ctx.moveTo(v[0], v[1])); ctx.closePath();
       ctx.fillStyle = col.plane; ctx.fill(); ctx.strokeStyle = col.prop; ctx.globalAlpha = 0.5; ctx.lineWidth = W / 240; ctx.stroke(); ctx.globalAlpha = 1;
@@ -321,6 +389,8 @@ const Demo = (() => {
   // The list of demos is small and loaded once; each clip is fetched when it is first shown.
   async function init() {
     try { const r = await fetch('clips/index.json'); if (r.ok) index = await r.json(); } catch { /* no demos */ }
+    // Without the results no clip is known to fit another body, so every clip plays on the standard one.
+    try { const r = await fetch('clips/presets.json'); presetFails = r.ok ? (await r.json()).fail || {} : null; } catch { presetFails = null; }
   }
   const has = (cid, id) => !!index[cid + ':' + id];
   const variant = () => index[st.id]?.v[st.variant];
@@ -333,7 +403,7 @@ const Demo = (() => {
   function fetchClip(f, then) {
     if (!cache.has(f)) {
       cache.set(f, undefined);
-      fetch(`clips/${f}.json`).then(r => r.ok ? r.json() : Promise.reject(new Error(r.status))).then(c => { cache.set(f, unpack(c)); then(); }, () => { cache.set(f, null); then(); });
+      fetch(`clips/${f}.json`).then(r => r.ok ? r.json() : Promise.reject(new Error(r.status))).then(c => { cache.set(f, Object.assign(unpack(c), { f })); then(); }, () => { cache.set(f, null); then(); });
     }
     return cache.get(f);
   }
@@ -342,7 +412,7 @@ const Demo = (() => {
     const cv = document.getElementById('demo-cv'), v = variant();
     if (!cv || !v) return false;
     const ctx = cv.getContext('2d'), clip = clipNow();
-    if (clip) { draw(ctx, cv.width, clip, st.phase, st.view, v.one && st.hand === 'L', colors(), !st.playing); return true; }
+    if (clip) { draw(ctx, cv.width, clip, st.phase, st.view, v.one && st.hand === 'L', tint(colors(), st.id.split(':')[0]), !st.playing); return true; }
     const col = colors();
     ctx.fillStyle = col.bg; ctx.fillRect(0, 0, cv.width, cv.width);
     ctx.fillStyle = col.link; ctx.font = `${cv.width / 26}px system-ui, sans-serif`; ctx.textAlign = 'center';
@@ -387,6 +457,7 @@ const Demo = (() => {
         <button class="btn sm" data-act="demo" data-k="gif" data-tip="Download this clip as a GIF">GIF</button>`}
       </div>
       <p class="tiny">${esc(CAPTION[v.m] || '')} ${esc(v.note || e.note || '')}</p>
+      ${unfit(v.f) ? `<p class="tiny demo-body">Shown on the standard body: on your ${esc(presetOf(av).replace('-', ', '))} avatar this clip does not pass the body checks yet (${esc(unfit(v.f))}).</p>` : ''}
     </div>`;
   }
   function act(d) {
@@ -414,7 +485,7 @@ const Demo = (() => {
   function comboPaint() {
     const cv = document.getElementById('combo-cv'), step = cs.steps[cs.i];
     if (!cv || !step) return false;
-    const ctx = cv.getContext('2d'), W = cv.width, col = colors(), clip = comboClip(step), d = step.v && step.v.d || 1;
+    const ctx = cv.getContext('2d'), W = cv.width, col = tint(colors(), cs.sig.split('|')[1]), clip = comboClip(step), d = step.v && step.v.d || 1;
     if (clip) draw(ctx, W, clip, clip.still ? 0 : clip.loop ? cs.t / d : Math.min((cs.t % d) / d, 0.999), st.view, step.v.one && cs.hand === 'L', col, false);
     else {
       ctx.fillStyle = col.bg; ctx.fillRect(0, 0, W, W); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -476,6 +547,58 @@ const Demo = (() => {
     else st[d.k] = d.v;
   }
 
+  /* ---------- a small stage: the avatar editor's preview and someone's profile ---------- */
+  // Plays one clip (or the figure standing) in a canvas, at a yaw the page can turn with a drag,
+  // in a given person's avatar.
+  const STAND = { fr: [{}], props: [], dur: 1, still: true };
+  const pv = { cv: null, key: '', yaw: 0.5, t: 0, raf: 0, last: 0, who: undefined, playing: true };
+  function preview(cv, key, opts = {}) {
+    Object.assign(pv, { cv, key: key || '', who: 'who' in opts ? opts.who : undefined });
+    if (opts.yaw != null) pv.yaw = opts.yaw;
+    if (!pv.raf && cv) { pv.last = performance.now(); pv.raf = requestAnimationFrame(previewTick); }
+  }
+  // The first clip of a prop that moves, for the editor's preview.
+  const firstClip = cid => Object.keys(index).find(k => k.startsWith(cid + ':') && index[k].v[0].m !== 'still') || '';
+  function previewTick(ts) {
+    pv.raf = 0;
+    if (!pv.cv || !pv.cv.isConnected) { pv.cv = null; return; }
+    const v = pv.key && index[pv.key]?.v[0], clip = (v && fetchClip(v.f, () => {})) || STAND, who = pv.who === undefined ? av : pv.who;
+    if (pv.playing) pv.t += Math.min(ts - pv.last, 100) / 1000 * 0.5;
+    pv.last = ts;
+    draw(pv.cv.getContext('2d'), pv.cv.width, clip, clip.still ? 0 : (pv.t / clip.dur) % 1, pv.yaw, false, tint(colors(), pv.key.split(':')[0], who), false, who);
+    pv.raf = requestAnimationFrame(previewTick);
+  }
+
+  /* ---------- stickers ---------- */
+  // Poses for stickers, as rig poses on the standard body (test/stickers.js puts each through the
+  // body checks on every preset), and frames of a few signature moves, which the physics suite checks.
+  const STICKERS = {
+    celebrate: { name: 'Celebrate', pose: { hL: [0.3, 1.93, 0.06], hR: [-0.3, 1.93, 0.06], eL: [0.55, 1.62, 0], eR: [-0.55, 1.62, 0] } },
+    salute: { name: 'Salute', pose: { hR: [-0.08, 1.7, 0.12], eR: [-0.42, 1.52, 0.08] } },
+    thinking: { name: 'Thinking', pose: { hR: [-0.03, 1.52, 0.16], eR: [-0.12, 1.24, 0.26], hL: [-0.06, 1.14, 0.26], eL: [0.2, 1.08, 0.12] } },
+    wave: { name: 'Wave', pose: { hR: [-0.42, 1.78, 0.08], eR: [-0.5, 1.45, 0] } },
+    flex: { name: 'Strong', pose: { hL: [0.32, 1.62, 0.04], hR: [-0.32, 1.62, 0.04], eL: [0.5, 1.38, -0.02], eR: [-0.5, 1.38, -0.02] } },
+  };
+  const SIGNATURE = [['nunchaku:F5', 'Upspin'], ['poi:B1', 'Butterfly'], ['staff:F4', 'One direction'], ['buugeng:F3', 'Wrist spin'], ['doublestaff:F5', 'Figure 8']];
+  // A sticker as a canvas with a transparent background, or null where the 3D figure is not ready.
+  function sticker(pose, W = 256, who = av) {
+    if (typeof document === 'undefined' || !use3d()) return null;
+    const cv = document.createElement('canvas'); cv.width = cv.height = W;
+    const col = { ...colors(), bg: 'rgba(0,0,0,0)', floor: 'rgba(0,0,0,0)' };
+    const st0 = STICKERS[pose];
+    if (st0) draw(cv.getContext('2d'), W, { ...STAND, fr: [st0.pose] }, 0, 0.35, false, col, true, who);
+    else { const v = index[pose]?.v[0], clip = v && cache.get(v.f); if (!clip) return null; draw(cv.getContext('2d'), W, clip, 0, 0.35, false, tint(col, pose.split(':')[0], who), true, who); }
+    return cv;
+  }
+  // The head and shoulders, for a profile picture (JPEG data URL).
+  function headshot(who = av, W = 256) {
+    if (typeof document === 'undefined' || !use3d()) return '';
+    const cv = document.createElement('canvas'); cv.width = cv.height = W;
+    const ctx = cv.getContext('2d'); ctx.fillStyle = '#c9d4e8'; ctx.fillRect(0, 0, W, W);
+    draw(ctx, W, { ...STAND, cam: { zoom: 3.4, at: [0, 1.58, 0] } }, 0, 0.25, false, { ...colors(), bg: 'rgba(0,0,0,0)', floor: 'rgba(0,0,0,0)' }, true, who);
+    return cv.toDataURL('image/jpeg', 0.88);
+  }
+
   /* ---------- GIF export ---------- */
   function lzw(minCode, px) {
     const out = []; let cur = 0, bits = 0;
@@ -534,7 +657,7 @@ const Demo = (() => {
   function download() {
     const v = variant(), clip = v && cache.get(v.f);
     if (!clip || clip.still) return;
-    const url = URL.createObjectURL(new Blob([gif(clip, st.view, v.one && st.hand === 'L', colors())], { type: 'image/gif' }));
+    const url = URL.createObjectURL(new Blob([gif(clip, st.view, v.one && st.hand === 'L', tint(colors(), st.id.split(':')[0]))], { type: 'image/gif' }));
     const a = document.createElement('a');
     a.href = url; a.download = `flowa-${st.id.replace(':', '-')}-${v.n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${viewName()}.gif`; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -542,6 +665,6 @@ const Demo = (() => {
 
   return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, pack, unpack, mirror, sPoints,
     index: () => index, clip: () => { const v = variant(); return v && cache.get(v.f); },
-    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim: { ...DIM, U_ARM, F_ARM, REACH, THIGH, SHIN, GRIP, BUTT } };
+    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, avatar, presetOf, preview, previewState: pv, firstClip, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
 })();
 if (typeof window !== 'undefined') window.Demo = Demo;

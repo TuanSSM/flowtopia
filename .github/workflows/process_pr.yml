@@ -158,6 +158,14 @@ jobs:
           node sim/features.js
           git diff --exit-code --stat web/clips/features.json || {
             echo "::error::web/clips/features.json is stale; run node sim/features.js and commit"; exit 1; }
+      # Body presets keep each move's shape, sticker poses pass the body checks, avatar colours read
+      # on both themes, and the 3D figure stays within its download size.
+      - name: Avatars, body presets and stickers
+        run: |
+          node test/presets.js
+          node test/stickers.js
+          node test/avatar-colors.js
+          node test/bundle-size.js
       # web/ is embedded in the binary, so the committed bundles must be the ones the sources build.
       - name: Bundles are up to date
         run: |
@@ -169,7 +177,7 @@ jobs:
   integration:
     name: integration tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     needs: changes
     if: needs.changes.outputs.code == 'true'
     services:
@@ -193,6 +201,7 @@ jobs:
       editor: ${{ steps.editor.outputs.line }}
       links: ${{ steps.links.outputs.line }}
       suggest: ${{ steps.suggest.outputs.line }}
+      avatars: ${{ steps.avatars.outputs.line }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -258,6 +267,26 @@ jobs:
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh links.py | tee links.txt || code=$?
           echo "line=$(grep -E 'passed' links.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
+      # The frame budget (33 ms for one demo frame with the heaviest avatar) is for this runner's
+      # software WebGL; a Pi is slower and sets FRAME_BUDGET_MS when it runs the suite.
+      - name: Avatars
+        id: avatars
+        if: always()
+        env:
+          FRAME_BUDGET_MS: "33"
+        run: |
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh avatar.py | tee avatars.txt || code=$?
+          grep -E '^demo frame|^parts' /tmp/flowa-test/out.txt || true
+          echo "line=$(grep -E 'passed' avatars.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          exit "${code:-0}"
+      - name: Demos and combos with avatars on
+        if: always()
+        env:
+          FLOWA_AVATARS: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh demos.py | tee demos-avatars.txt || code=$?
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh combo.py | tee combo-avatars.txt || code=$?
+          exit "${code:-0}"
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v5
@@ -274,6 +303,9 @@ jobs:
             editor.txt
             links.txt
             suggest.txt
+            avatars.txt
+            demos-avatars.txt
+            combo-avatars.txt
           retention-days: 7
 
   # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
@@ -420,6 +452,7 @@ jobs:
           EDITOR: ${{ needs.integration.outputs.editor }}
           LINKS: ${{ needs.integration.outputs.links }}
           SUGGEST: ${{ needs.integration.outputs.suggest }}
+          AVATARS: ${{ needs.integration.outputs.avatars }}
           STAT: ${{ steps.size.outputs.stat }}
           FILES: ${{ steps.size.outputs.files }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -436,7 +469,7 @@ jobs:
             echo "| docs | $(icon "$DOCS") | Markdown links, Claude Code front matter |"
             echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
-            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a}; links: ${LINKS:-n/a}; suggestions: ${SUGGEST:-n/a} |"
+            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a}; links: ${LINKS:-n/a}; suggestions: ${SUGGEST:-n/a}; avatars: ${AVATARS:-n/a} |"
             echo "| screenshots | $(icon "$SCREENS") | pages at desktop and phone width, demo sheet |"
             echo
             echo "$SHOTS_MD"

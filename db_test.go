@@ -950,3 +950,42 @@ func TestDBTransitionCounts(t *testing.T) {
 		t.Fatalf("usage: %v", sug)
 	}
 }
+
+func TestDBAvatars(t *testing.T) {
+	e := newEnv(t)
+	bID, b := e.user("bea", "user")
+	_, c := e.user("cal", "user")
+	cfg := map[string]any{"v": 1, "body": "tall", "build": "lean", "skin": "#46271a", "hair": "curly", "props": map[string]any{"nunchaku": "#e0533a"}}
+	e.must(200, b, "PUT", "/api/me", map[string]any{"avatarCfg": cfg})
+	got := e.must(200, c, "GET", "/api/users/bea", nil)
+	if av := got["user"].(map[string]any)["avatarCfg"].(map[string]any); av["hair"] != "curly" || av["build"] != "lean" {
+		t.Fatalf("avatar on the profile: %v", av)
+	}
+	// Refused: an unknown option, a colour off its palette, a body that does not exist; nothing changes.
+	for _, bad := range []map[string]any{{"v": 1, "hair": "mohawk"}, {"v": 1, "skin": "#00ff00"}, {"v": 1, "body": "giant"}} {
+		e.must(400, b, "PUT", "/api/me", map[string]any{"avatarCfg": bad})
+	}
+	if n := e.count(`SELECT count(*) FROM users WHERE id = $1 AND avatar_cfg->>'hair' = 'curly'`, bID); n != 1 {
+		t.Fatal("a refused avatar must leave the saved one")
+	}
+	// Clean skills are listed only with avatars on, and not for someone whose stats were hidden.
+	e.must(200, b, "PUT", "/api/progress/nunchaku", map[string]any{"rev": 0, "state": map[string]any{"skills": map[string]any{
+		"F5": map[string]any{"O": 2}, "F3": map[string]any{"O": 1}, "F4": map[string]any{"L": 0, "R": 3}, "F6": map[string]any{"note": "x"}}}})
+	if _, ok := e.must(200, c, "GET", "/api/users/bea", nil)["clean"]; ok {
+		t.Fatal("clean skills listed with avatars off")
+	}
+	e.setFlag("avatars", true)
+	clean := e.must(200, c, "GET", "/api/users/bea", nil)["clean"].(map[string]any)["nunchaku"].([]any)
+	if len(clean) != 2 || clean[0] != "F4" || clean[1] != "F5" {
+		t.Fatalf("clean: %v", clean)
+	}
+	e.a.db.Exec(`UPDATE users SET stats_hidden = true WHERE id = $1`, bID)
+	if _, ok := e.must(200, c, "GET", "/api/users/bea", nil)["clean"]; ok {
+		t.Fatal("clean skills listed for hidden stats")
+	}
+	// An empty object removes the avatar.
+	e.must(200, b, "PUT", "/api/me", map[string]any{"avatarCfg": map[string]any{}})
+	if n := e.count(`SELECT count(*) FROM users WHERE id = $1 AND avatar_cfg = '{}'`, bID); n != 1 {
+		t.Fatal("the avatar was not removed")
+	}
+}

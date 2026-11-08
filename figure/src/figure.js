@@ -4,6 +4,7 @@
 // missing, the 2D figure is used instead.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 const V = a => new THREE.Vector3(a[0], a[1], a[2]);
 const F = { ready: false, failed: false, nopose: typeof window !== "undefined" && !!window.__nopose };
@@ -44,6 +45,13 @@ async function load(url) {
     const chain = { LeftShoulder: 'LeftArm', RightShoulder: 'RightArm', LeftArm: 'LeftForeArm', LeftForeArm: 'LeftHand', RightArm: 'RightForeArm', RightForeArm: 'RightHand', LeftUpLeg: 'LeftLeg', LeftLeg: 'LeftFoot', LeftFoot: 'LeftToeBase', RightUpLeg: 'RightLeg', RightLeg: 'RightFoot', RightFoot: 'RightToeBase' };
     for (const n of names) rest[n] = { q: wquat(bone[n]), dir: chain[n] ? wpos(bone[chain[n]]).sub(wpos(bone[n])).normalize() : null, local: bone[n].quaternion.clone(), pos: bone[n].position.clone() };
     rest.hipOff = wpos(bone.Hips).y - wpos(bone.LeftUpLeg).y; // the hips bone sits a little above the hip joints
+    rest.scale = model.scale.x;
+    // For avatar parts: the head and hands in the rest pose, and the ankle height that ends boots.
+    rest.head = { m: bone.Head.matrixWorld.clone(), top: wpos(find(model, 'HeadTop_End') || bone.Head) };
+    for (const S of ['Left', 'Right']) rest[S + 'HandM'] = bone[S + 'Hand'].matrixWorld.clone();
+    rest.ankle = wpos(bone.LeftFoot).y;
+    // How much of the shoulder's distance from the spine the collarbone spans, to widen it with the build.
+    { const root = wpos(bone.LeftShoulder), arm = wpos(bone.LeftArm), mid = wpos(bone.Spine2); rest.collar = Math.abs(arm.x - mid.x) / Math.max(arm.distanceTo(root), 1e-6); }
     // The model stands in a T-pose facing its own +z: elbows bend toward the front, knees toward the back.
     rest.fwd = new THREE.Vector3(0, 0, 1).transformDirection(model.matrixWorld).normalize();
     // Hands: the rest frame of each, and how each finger joint curls toward the palm.
@@ -74,8 +82,13 @@ async function load(url) {
       out.setIndex(g.index); if (g.attributes.uv) out.setAttribute('uv', g.attributes.uv);
       out.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3)); out.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
       const mesh = new THREE.Mesh(out, o.material); mesh.frustumCulled = false; scene.add(mesh); o.visible = false;
-      skins.push({ sm: o, n, bind, bnor, idx: g.attributes.skinIndex.array, wt: g.attributes.skinWeight.array, out, norm: g.attributes.skinWeight.normalized });
+      // The bone that moves each vertex most decides which part of an outfit colours it.
+      const region = new Uint8Array(n), wts = g.attributes.skinWeight.array, ids = g.attributes.skinIndex.array, names = o.skeleton.bones.map(b => b.name.replace(/^mixamorig:?/, ''));
+      for (let i = 0; i < n; i++) { let bj = 0; for (let j = 1; j < 4; j++) if (wts[i * 4 + j] > wts[i * 4 + bj]) bj = j; region[i] = regionOf(names[ids[i * 4 + bj]], bind[i * 3 + 1]); }
+      out.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3));
+      skins.push({ sm: o, n, bind, bind0: bind.slice(), bnor, idx: g.attributes.skinIndex.array, wt: g.attributes.skinWeight.array, out, norm: g.attributes.skinWeight.normalized, mesh, neutral: o.material, joint: /joint/i.test(o.material.name + o.name), region });
     });
+    measureHead();
     F.ready = true;
   } catch (e) { F.failed = true; F.reason = String(e.message || e); console.warn('3D figure not available:', F.reason); }
   return F.ready;
@@ -195,6 +208,8 @@ function skin() {
     }
     k.out.attributes.position.needsUpdate = true; k.out.attributes.normal.needsUpdate = true;
   }
+  // Avatar parts follow the bone they are fixed to.
+  for (const p of parts) { p.g.matrix.multiplyMatrices(bone[p.bone].matrixWorld, p.offset); p.g.matrixWorldNeedsUpdate = true; }
 }
 
 // W: size in pixels. J: joints. hands: { L, R } each { o, x, w, grip, r }. items: props as tubes and balls.
@@ -213,4 +228,252 @@ function render(W, J, hands, items, cam) {
   return renderer.domElement;
 }
 
-window.Figure3D = Object.assign(F, { load, render, debug: () => ({ gl2: renderer.capabilities.isWebGL2, maxTex: renderer.capabilities.maxVertexTextures, info: JSON.stringify(renderer.info.render), meshes: (() => { const out = []; model.traverse(o => { if (o.isMesh) out.push([o.name, o.isSkinnedMesh, o.visible, o.material.type, o.material.opacity, o.material.transparent, o.material.color.getHexString(), o.geometry.attributes.position.count, o.parent && o.parent.name, o.scale.x, !!o.skeleton && o.skeleton.bones.length]); }); return out; })(), scale: model.scale.x, hips: wpos(bone.Hips).toArray(), head: wpos(bone.Head).toArray(), lhand: wpos(bone.LeftHand).toArray(), box: new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).toArray() }) });
+
+/* ---------- avatars ---------- */
+// Parts are made here in code, not loaded: an outfit colours the body by the bone that moves each
+// vertex, and hair, faces, hats, glasses and wristbands are small meshes fixed to one bone each, so
+// they cost almost nothing per frame. No textures, no extra files.
+const REGION = { skin: 0, top: 1, arm: 2, forearm: 3, bottoms: 4, shin: 5, boot: 6, shoe: 7, ankle: 8 };
+let parts = [], head = null, avatar = null;
+function regionOf(name, y) {
+  if (/^(Head|HeadTop_End|Neck)/.test(name) || /Hand/.test(name)) return REGION.skin;
+  if (/^(Spine|LeftShoulder|RightShoulder)/.test(name)) return REGION.top;
+  if (/(Left|Right)Arm$/.test(name)) return REGION.arm;
+  if (/ForeArm$/.test(name)) return REGION.forearm;
+  if (name === 'Hips' || /UpLeg$/.test(name)) return REGION.bottoms;
+  if (/(Left|Right)Leg$/.test(name)) return REGION.shin; // the part near the ankle becomes boot, in measureHead
+  if (/Foot|Toe/.test(name)) return REGION.shoe;
+  return REGION.skin;
+}
+// Where the head is in the rest pose, measured from the vertices the head bone moves. Bind positions
+// are taken to the rest-pose world (where parts are built) by the skinning matrix of the rest pose.
+function measureHead() {
+  const c = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), neckY = wpos(bone.Head).y, v = new THREE.Vector3();
+  let n = 0, top = -Infinity;
+  for (const k of skins) {
+    const sk = k.sm.skeleton, M = new THREE.Matrix4().multiplyMatrices(sk.bones[0].matrixWorld, sk.boneInverses[0]);
+    for (let i = 0; i < k.n; i++) {
+      v.set(k.bind[i * 3], k.bind[i * 3 + 1], k.bind[i * 3 + 2]).applyMatrix4(M);
+      // Boots and high-tops: shin vertices near the ankle take the shoe colour (high-tops up to 6 cm, boots 13 cm).
+      if (k.region[i] === REGION.shin) { const h = v.y - rest.ankle; if (h < 0.06) k.region[i] = REGION.ankle; else if (h < 0.13) k.region[i] = REGION.boot; }
+      if (k.joint || k.region[i] !== REGION.skin || v.y < neckY) continue; // the head is the skin above the neck
+      c.add(v); n++; top = Math.max(top, v.y);
+    }
+  }
+  const centre = n ? c.multiplyScalar(1 / n) : wpos(bone.Head);
+  const r = Math.max(0.06, (top - centre.y) * 0.98);
+  head = { centre, r, up, fwd: rest.fwd.clone(), side: new THREE.Vector3().crossVectors(up, rest.fwd).normalize() };
+}
+const hexColor = h => new THREE.Color(h || '#888888');
+const lambert = color => new THREE.MeshStandardMaterial({ color: hexColor(color), roughness: 0.75, metalness: 0.02 });
+// A part built in rest-pose world coordinates and fixed to a bone from then on.
+function attach(mesh, boneName, restM) {
+  const g = new THREE.Group(); g.add(mesh); g.matrixAutoUpdate = false;
+  g.updateMatrix(); scene.add(g);
+  const offset = new THREE.Matrix4().copy(restM).invert().multiply(new THREE.Matrix4().compose(new THREE.Vector3(), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1)));
+  parts.push({ g, bone: boneName, offset });
+  return g;
+}
+// Place geometry at a point on the head, facing outward along `dir`.
+function onHead(geo, mat, at, quat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(at); if (quat) m.quaternion.copy(quat);
+  m.updateMatrix();
+  return m;
+}
+function headPoint(fwd, side, up, scale = 1) {
+  const h = head;
+  return h.centre.clone().add(h.fwd.clone().multiplyScalar(fwd * h.r * scale)).add(h.side.clone().multiplyScalar(side * h.r * scale)).add(h.up.clone().multiplyScalar(up * h.r * scale));
+}
+const faceQuat = () => new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(head.side, head.up, head.fwd));
+function buildHead(cfg) {
+  // Each piece is tagged with its part, so the parts test can measure each one.
+  let tag = 'hair';
+  const H = new THREE.Group(), r = head.r, add = m => { m.userData.part = tag; H.add(m); }, q = faceQuat();
+  const hairM = lambert(cfg.hairColor), dark = lambert('#202124'), white = lambert('#f2f1ee'), lip = lambert('#7a3a3a');
+  const cap = (scale, phi = 0.55) => onHead(new THREE.SphereGeometry(r * scale, 28, 16, 0, Math.PI * 2, 0, Math.PI * phi), hairM, head.centre.clone().add(head.up.clone().multiplyScalar(r * 0.02)).add(head.fwd.clone().multiplyScalar(-r * 0.06)), new THREE.Quaternion());
+  const hat = cfg.hat && cfg.hat !== 'none';
+  switch (cfg.hair) {
+    case 'buzz': if (!hat) add(cap(1.02, 0.5)); break;
+    case 'short': if (!hat) add(cap(1.07, 0.56)); break;
+    case 'long': if (!hat) add(cap(1.07, 0.56)); { const back = onHead(new THREE.CylinderGeometry(r * 1.02, r * 1.1, r * 1.5, 24, 1, true, Math.PI * 0.5, Math.PI), hairM, head.centre.clone().add(head.up.clone().multiplyScalar(-r * 0.55)).add(head.fwd.clone().multiplyScalar(-r * 0.12))); back.material = hairM.clone(); back.material.side = THREE.DoubleSide; add(back); } break;
+    case 'ponytail': if (!hat) add(cap(1.06, 0.55)); for (let i = 0; i < 4; i++) add(onHead(new THREE.SphereGeometry(r * (0.24 - i * 0.03), 12, 10), hairM, headPoint(-1.05 - i * 0.08, 0, 0.25 - i * 0.32))); break;
+    case 'bun': if (!hat) add(cap(1.05, 0.55)); add(onHead(new THREE.SphereGeometry(r * 0.32, 16, 12), hairM, headPoint(-0.55, 0, 0.95))); break;
+    case 'curly': if (!hat) { const ico = new THREE.IcosahedronGeometry(r * 1.02, 2).attributes.position; const seen = new Set(); for (let i = 0; i < ico.count; i++) { const v = new THREE.Vector3().fromBufferAttribute(ico, i); const k = v.toArray().map(x => x.toFixed(3)).join(); if (seen.has(k)) continue; seen.add(k); const up = v.clone().normalize().dot(head.up), fw = v.clone().normalize().dot(head.fwd); if (up < 0.05 || (fw > 0.55 && up < 0.6)) continue; add(onHead(new THREE.SphereGeometry(r * 0.17, 8, 6), hairM, head.centre.clone().add(v))); } } break;
+  }
+  // Eyes, brows and mouth sit on the front of the head.
+  tag = 'eyes';
+  const eyeR = { round: 0.11, wide: 0.14, narrow: 0.11, sleepy: 0.11 }[cfg.eyes] || 0.11;
+  for (const sd of [-1, 1]) {
+    const at = headPoint(0.9, sd * 0.33, 0.1);
+    const eye = onHead(new THREE.SphereGeometry(r * eyeR, 14, 10), white, at, q);
+    if (cfg.eyes === 'narrow') eye.scale.set(1, 0.5, 1); if (cfg.eyes === 'sleepy') eye.scale.set(1, 0.6, 1);
+    eye.updateMatrix(); add(eye);
+    add(onHead(new THREE.SphereGeometry(r * eyeR * 0.55, 10, 8), dark, at.clone().add(head.fwd.clone().multiplyScalar(r * eyeR * 0.62)), q));
+    if (cfg.eyes === 'sleepy') add(onHead(new THREE.SphereGeometry(r * eyeR * 1.06, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.45), lambert(cfg.skin), at.clone(), q));
+    if (cfg.brows !== 'none') {
+      tag = 'brows';
+      const h = cfg.brows === 'thick' ? 0.075 : 0.042, brow = onHead(new THREE.BoxGeometry(r * 0.3, r * h, r * 0.06), lambert(cfg.hairColor), headPoint(0.92, sd * 0.33, 0.34), q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), cfg.brows === 'arched' ? sd * -0.28 : cfg.brows === 'angled' ? sd * 0.3 : 0)));
+      add(brow); tag = 'eyes';
+    }
+  }
+  tag = 'mouth';
+  const mouthAt = headPoint(0.93, 0, -0.38);
+  if (cfg.mouth === 'smile' || cfg.mouth === 'grin') {
+    const arc = onHead(new THREE.TorusGeometry(r * (cfg.mouth === 'grin' ? 0.24 : 0.17), r * 0.03, 6, 18, Math.PI), lip, mouthAt.clone().add(head.up.clone().multiplyScalar(r * 0.1)), q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI)));
+    add(arc);
+    if (cfg.mouth === 'grin') add(onHead(new THREE.BoxGeometry(r * 0.3, r * 0.07, r * 0.04), white, mouthAt.clone().add(head.up.clone().multiplyScalar(-r * 0.04)), q));
+  } else if (cfg.mouth === 'open') add(onHead(new THREE.SphereGeometry(r * 0.12, 12, 10), lip, mouthAt, q));
+  else add(onHead(new THREE.BoxGeometry(r * 0.26, r * 0.035, r * 0.04), lip, mouthAt, q));
+  // Hats and glasses.
+  tag = 'hat';
+  if (hat) {
+    const hm = lambert(cfg.hatColor), top = head.centre.clone().add(head.up.clone().multiplyScalar(r * 0.12));
+    if (cfg.hat === 'cap') { add(onHead(new THREE.SphereGeometry(r * 1.1, 28, 14, 0, Math.PI * 2, 0, Math.PI * 0.5), hm, top)); add(onHead(new THREE.CylinderGeometry(r * 0.62, r * 0.62, r * 0.05, 24, 1, false, -Math.PI * 0.5, Math.PI), hm, top.clone().add(head.fwd.clone().multiplyScalar(r * 0.75)).add(head.up.clone().multiplyScalar(r * 0.02)), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), head.fwd))); }
+    if (cfg.hat === 'beanie') { const b = onHead(new THREE.SphereGeometry(r * 1.09, 28, 14, 0, Math.PI * 2, 0, Math.PI * 0.55), hm, top); b.scale.set(1, 1.18, 1); b.updateMatrix(); add(b); add(onHead(new THREE.TorusGeometry(r * 1.05, r * 0.08, 8, 28), hm, top.clone().add(head.up.clone().multiplyScalar(r * 0.05)), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), head.up))); }
+    if (cfg.hat === 'bucket') { add(onHead(new THREE.CylinderGeometry(r * 0.88, r * 1.05, r * 0.7, 24, 1), hm, top.clone().add(head.up.clone().multiplyScalar(r * 0.42)))); add(onHead(new THREE.CylinderGeometry(r * 1.55, r * 1.55, r * 0.05, 28), hm, top.clone().add(head.up.clone().multiplyScalar(r * 0.08)))); }
+  }
+  tag = 'glasses';
+  if (cfg.glasses && cfg.glasses !== 'none') {
+    const gm = lambert('#1b1c1f');
+    for (const sd of [-1, 1]) {
+      const at = headPoint(1.0, sd * 0.33, 0.1);
+      if (cfg.glasses === 'round') add(onHead(new THREE.TorusGeometry(r * 0.17, r * 0.022, 6, 20), gm, at, q));
+      else for (const [w, h, dx, dy] of [[0.4, 0.035, 0, 0.14], [0.4, 0.035, 0, -0.14], [0.035, 0.3, 0.19, 0], [0.035, 0.3, -0.19, 0]]) add(onHead(new THREE.BoxGeometry(r * w, r * h, r * 0.03), gm, at.clone().add(head.side.clone().multiplyScalar(r * dx)).add(head.up.clone().multiplyScalar(r * dy)), q));
+    }
+    add(onHead(new THREE.CylinderGeometry(r * 0.02, r * 0.02, r * 0.26, 6), gm, headPoint(1.02, 0, 0.12), q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2))));
+  }
+  return merge(H);
+}
+// The pieces of a group as one mesh with one material, coloured per vertex: one draw call per bone.
+// Keeps where each part's vertices are, for the parts test.
+function merge(group) {
+  const geos = [], ranges = [];
+  let at = 0;
+  group.updateMatrixWorld(true);
+  group.traverse(o => {
+    if (!o.isMesh) return;
+    const g = o.geometry.toNonIndexed(); g.applyMatrix4(o.matrixWorld); g.deleteAttribute('uv');
+    const n = g.attributes.position.count, c = o.material.color, col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) col.set([c.r, c.g, c.b], i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geos.push(g); ranges.push({ part: o.userData.part || 'part', from: at, n }); at += n;
+    o.geometry.dispose();
+  });
+  const mesh = new THREE.Mesh(geos.length ? mergeGeometries(geos) : new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.02, side: THREE.DoubleSide }));
+  mesh.userData.ranges = ranges;
+  return mesh;
+}
+// Colours each vertex of the body for the outfit, and makes the parts. Called with null for the plain figure.
+function setAvatar(cfg) {
+  if (!F.ready) return false;
+  for (const p of parts) { scene.remove(p.g); p.g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+  parts = []; avatar = cfg || null;
+  if (!cfg) { for (const k of skins) k.mesh.material = k.neutral; return true; }
+  const skin = hexColor(cfg.skin), topC = hexColor(cfg.topColor), botC = hexColor(cfg.bottomsColor), shoeC = cfg.shoes === 'barefoot' ? skin : hexColor(cfg.shoesColor);
+  const sleeve = { tank: 0, tshirt: 1, longsleeve: 2, hoodie: 2 }[cfg.top] ?? 1, longLegs = cfg.bottoms !== 'shorts';
+  const legC = longLegs ? botC : skin, high = cfg.shoes === 'boots' || cfg.shoes === 'hightops';
+  const byRegion = [skin, topC, sleeve >= 1 ? topC : skin, sleeve >= 2 ? topC : skin, botC, legC, cfg.shoes === 'boots' ? shoeC : legC, shoeC, high ? shoeC : legC];
+  for (const k of skins) {
+    const col = k.out.attributes.color.array, shade = k.joint ? 0.72 : 1;
+    for (let i = 0; i < k.n; i++) { const c = byRegion[k.region[i]]; col[i * 3] = c.r * shade; col[i * 3 + 1] = c.g * shade; col[i * 3 + 2] = c.b * shade; }
+    k.out.attributes.color.needsUpdate = true;
+    k.mesh.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.02 });
+  }
+  attach(buildHead(cfg), 'Head', rest.head.m);
+  if (cfg.wristbands === 'yes') for (const S of ['Left', 'Right']) {
+    const m = new THREE.Mesh(new THREE.TorusGeometry(0.036, 0.011, 8, 20), lambert(cfg.wristColor));
+    // Built at the hand's rest position (the bones may be in any pose now), and fixed to the hand.
+    const at = new THREE.Vector3().setFromMatrixPosition(rest[S + 'HandM']).add(new THREE.Vector3().setFromMatrixColumn(rest[S + 'HandM'], 1).normalize().multiplyScalar(-0.015));
+    m.position.copy(at); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3().setFromMatrixColumn(rest[S + 'HandM'], 1).normalize()); m.updateMatrix();
+    m.userData.ranges = [{ part: 'wristbands', from: 0, n: m.geometry.attributes.position.count }];
+    attach(m, S + 'Hand', rest[S + 'HandM']);
+  }
+  return true;
+}
+
+// Body presets (web/demo.js setBody): sc scales lengths; bd scales widths. Bones are never
+// scaled unevenly, since posing reads each parent's rotation: instead the rest-pose vertices of the
+// trunk spread out from the spine and those of the limbs from their bone, and the collarbones grow so
+// the arms start where the rig's shoulders are.
+let body = { sc: 1, bd: 1 };
+function setBody(sc = 1, bd0 = 1) {
+  if (!F.ready || (body.sc === sc && body.bd === bd0)) return;
+  body = { sc, bd: bd0 };
+  model.scale.setScalar(rest.scale * sc);
+  // The model scales evenly with height; widths follow the build alone, as in the rig, so they are
+  // narrowed back by the height.
+  const bd = bd0 / sc;
+  for (const S of ['Left', 'Right']) {
+    const r = rest[S + 'Arm'];
+    if (!r.pos0) r.pos0 = r.pos.clone();
+    r.pos.copy(r.pos0).multiplyScalar(1 + (bd - 1) * rest.collar);
+  }
+  for (const k of skins) {
+    const B = k.bind, B0 = k.bind0, sk = k.sm.skeleton;
+    if (!k.bonePos) {
+      // Each bone's place and its child's in the bind pose, and which bones make the trunk.
+      const names = sk.bones.map(b => b.name.replace(/^mixamorig:?/, ''));
+      k.trunk = names.map(n => /^(Hips|Spine|Spine1|Spine2|LeftShoulder|RightShoulder)$/.test(n));
+      k.limb = names.map(n => /(Arm|ForeArm|UpLeg|Leg)$/.test(n) && !/Shoulder/.test(n));
+      k.bonePos = sk.boneInverses.map(m => new THREE.Vector3().setFromMatrixPosition(m.clone().invert()));
+      k.childPos = sk.bones.map((b, i) => { const c = b.children.find(x => x.isBone); return c ? k.bonePos[sk.bones.indexOf(c)] || k.bonePos[i] : k.bonePos[i]; });
+      let cx = 0, cz = 0, n = 0;
+      for (let i = 0; i < k.n; i++) if (k.region[i] === REGION.top) { cx += B0[i * 3]; cz += B0[i * 3 + 2]; n++; }
+      k.axis = n ? [cx / n, cz / n] : [0, 0];
+    }
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), p = new THREE.Vector3(), c = new THREE.Vector3();
+    for (let i = 0; i < k.n; i++) {
+      let wT = 0, wL = 0, bl = -1, bw = 0;
+      for (let j = 0; j < 4; j++) {
+        const w = k.wt[i * 4 + j], id = k.idx[i * 4 + j]; if (!w) continue;
+        if (k.trunk[id]) wT += w;
+        if (k.limb[id]) { wL += w; if (w > bw) { bw = w; bl = id; } }
+      }
+      const x = B0[i * 3], y = B0[i * 3 + 1], z = B0[i * 3 + 2];
+      if (bd === 1 || (wT === 0 && wL === 0)) { B[i * 3] = x; B[i * 3 + 1] = y; B[i * 3 + 2] = z; continue; }
+      // Trunk: out from the spine's vertical line. Limbs: out from the bone's line.
+      const fT = 1 + (bd - 1) * wT;
+      let nx = k.axis[0] + (x - k.axis[0]) * fT, ny = y, nz = k.axis[1] + (z - k.axis[1]) * fT;
+      if (bl >= 0) {
+        a.copy(k.bonePos[bl]); b.copy(k.childPos[bl]); p.set(x, y, z);
+        const d = b.clone().sub(a), t = d.lengthSq() > 1e-12 ? Math.max(0, Math.min(1, p.clone().sub(a).dot(d) / d.lengthSq())) : 0;
+        c.copy(a).add(d.multiplyScalar(t));
+        const fL = (bd - 1) * wL;
+        nx += (x - c.x) * fL; ny += (y - c.y) * fL; nz += (z - c.z) * fL;
+      }
+      B[i * 3] = nx; B[i * 3 + 1] = ny; B[i * 3 + 2] = nz;
+    }
+  }
+}
+
+// Every part's vertices where the last render put them, in the rig's world (metres), for the parts test.
+function partPoints() {
+  const out = {}, v = new THREE.Vector3();
+  for (const p of parts) p.g.traverse(o => {
+    if (!o.isMesh || !o.userData.ranges) return;
+    o.updateMatrixWorld(true);
+    const pos = o.geometry.attributes.position, idx = o.geometry.index;
+    for (const r of o.userData.ranges) {
+      const list = out[r.part] || (out[r.part] = []);
+      for (let i = r.from; i < r.from + r.n; i++) { v.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(o.matrixWorld); list.push([v.x, v.y, v.z]); }
+    }
+  });
+  return out;
+}
+
+// How far each part reaches outside the figure's own head (head parts) or wrist (wristbands) where
+// the last render put it, in metres. Parts are fixed to one bone, so this must not change with pose.
+function partReport() {
+  const out = {}, v = new THREE.Vector3(), s = model.scale.x / rest.scale;
+  const hc = head.centre.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(bone.Head.matrixWorld, rest.head.m.clone().invert()));
+  const wrists = ['Left', 'Right'].map(S => wpos(bone[S + 'Hand']));
+  for (const [part, list] of Object.entries(partPoints())) {
+    let w = -Infinity;
+    for (const p of list) { v.fromArray(p); w = Math.max(w, part === 'wristbands' ? Math.min(...wrists.map(c => v.distanceTo(c))) - 0.045 * s : v.distanceTo(hc) - head.r * s); }
+    out[part] = Math.round(w * 1000) / 1000;
+  }
+  return out;
+}
+
+window.Figure3D = Object.assign(F, { load, render, setAvatar, setBody, partPoints, partReport, avatar: () => avatar, debug: () => ({ gl2: renderer.capabilities.isWebGL2, maxTex: renderer.capabilities.maxVertexTextures, info: JSON.stringify(renderer.info.render), meshes: (() => { const out = []; model.traverse(o => { if (o.isMesh) out.push([o.name, o.isSkinnedMesh, o.visible, o.material.type, o.material.opacity, o.material.transparent, o.material.color.getHexString(), o.geometry.attributes.position.count, o.parent && o.parent.name, o.scale.x, !!o.skeleton && o.skeleton.bones.length]); }); return out; })(), scale: model.scale.x, hips: wpos(bone.Hips).toArray(), head: wpos(bone.Head).toArray(), lhand: wpos(bone.LeftHand).toArray(), box: new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).toArray() }) });

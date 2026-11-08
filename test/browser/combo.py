@@ -42,6 +42,9 @@ try:
         if len(seen)==4 and js("return window.Demo.combo.i")==0: break
     check('it moves through every step and starts again',seen=={0,1,2,3},seen)
     check('the playing row is highlighted and the progress bar has a segment per skill',js("return document.querySelectorAll('.cb-step.playing').length")==1 and js("return document.querySelectorAll('#combo-prog i').length")==4)
+    for _ in range(20):  # the rows are drawn again as the stage plays; wait until they are there
+        if js("return document.querySelectorAll('.cb-main').length")>=2: break
+        time.sleep(.25)
     js("document.querySelectorAll('.cb-main')[1].click()");time.sleep(1.2)
     check('clicking a row plays from there; a name card stands in for a missing demo',txt('#combo-now').startswith('R10') and js("return document.querySelectorAll('.cb-step')[1].classList.contains('playing')"),txt('#combo-now'))
     js("document.querySelector('[data-act=combo-move][data-i=\"1\"]').click()");time.sleep(1.2)

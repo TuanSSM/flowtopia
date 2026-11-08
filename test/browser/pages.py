@@ -63,6 +63,12 @@ try:
     page('map-phone','Skill map, phone','#/maps',w=420,ht=900)
     page('combos-phone','Combos, phone','#/combos',w=420,ht=900,wait=2.5)
     page('skill-phone','Skill guide, phone','#/prop/nunchaku/F/F5',w=420,ht=900,wait=2.5)
+    # The avatar editor, with avatars on and a saved avatar.
+    api(op,'flags',{'flags':{'avatars':True}},'PUT')
+    api(op,'me',{'avatarCfg':{'v':1,'body':'average','build':'average','skin':'#a0603f','hair':'ponytail','hairColor':'#1c1714','eyes':'round','brows':'arched','mouth':'smile','top':'tshirt','topColor':'#2a7fa8','bottoms':'leggings','bottomsColor':'#2b2b2b','shoes':'trainers','shoesColor':'#f2f0e9','hat':'none','hatColor':'#c4572e','glasses':'round','wristbands':'yes','wristColor':'#d9a441','props':{'nunchaku':'#e0533a'}}},'PUT')
+    cmd('WebDriver:Refresh');time.sleep(3)
+    page('avatar-phone','Avatar editor, phone','#/avatar',w=420,ht=900,wait=4)
+    page('avatar','Avatar editor','#/avatar',wait=4)
     # A contact sheet of demos, as shots.py makes it.
     cmd('WebDriver:SetWindowRect',width=1440,height=1000)
     for _ in range(40):

@@ -25,6 +25,9 @@ named but not described.
   suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links
   directly ([docs/suggestions.md](docs/suggestions.md)).
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
+- **Avatars:** with `avatars` on, members build an avatar (face, hair, outfit, accessories, prop colours
+  and a body preset) that plays their demos and combos, shows on their profile, and appears on badge,
+  milestone and streak stickers ([docs/avatars.md](docs/avatars.md)).
 - **Profiles:** a picture, a bio and Instagram, TikTok and YouTube links, shown on a public profile page
   (`#/u/<username>`) with the user's level, streak, badges and posts.
 - **Timeline:** posts with a picture, tagged tricks from any of your props and an attached combo, likes,
@@ -85,7 +88,8 @@ on the Admin page. No restart is needed. `signups` opens or closes sign-up, and 
 challenges, achievements, quests) are on by default and can be turned off if they get in the way.
 `moderation` (reports, the queue, hiding, mutes and suspensions) and `catalogEditor` (the skill map editor)
 are off until an admin turns them on. `linkCards` (cards for Instagram, TikTok and YouTube links) is on;
-`videoEmbeds` (play YouTube in place) is off. `suggest` (next-trick suggestions) is off until an admin turns it on.
+`videoEmbeds` (play YouTube in place) is off. `suggest` (next-trick suggestions) and `avatars` (avatars,
+body presets and stickers) are off until an admin turns them on.
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -249,6 +253,23 @@ earlier; a skill with no demo shows as a name card; the links between skills are
 What the sources say about each nunchaku skill that had no demo is in
 [docs/nunchaku-research.json](docs/nunchaku-research.json) (8 fully described, 44 partly, 38 not at all).
 Browser tests live in `test/browser` (`test/browser/run.sh combo.py`); they use a throwaway database.
+
+## Avatars
+
+The avatar editor (`#/avatar`, `web/avatar.js`) has a live 3D preview that turns with a drag and a tab
+each for face, hair, outfit, accessories, props and body; "Surprise me" picks a random avatar and Undo
+steps back. New members are offered it, with a random avatar, right after choosing their props. A
+picture of the avatar's head can become the profile picture. On someone's profile, their avatar plays a
+skill they have marked Clean.
+
+Parts are made in code in the figure bundle, with no model files or textures: outfits colour the body
+per vertex, and head parts and wristbands are fixed to a bone. Body presets (3 heights by 3 builds) are
+checked like any clip: `node test/physics.js` runs the body checks on every clip for every preset,
+`node sim/bake.js` records which clips fail where in `web/clips/presets.json`, and such a clip plays on
+the standard body with a note. `node test/presets.js`, `node test/stickers.js`,
+`node test/avatar-colors.js` and `node test/bundle-size.js` cover shapes across presets, sticker poses,
+palette contrast and download size; `test/browser/avatar.py` covers the pages, parts and the frame
+budget. Details, sources for the preset sizes, and licences: [docs/avatars.md](docs/avatars.md).
 
 ## Pull requests
 
