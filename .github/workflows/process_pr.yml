@@ -389,7 +389,9 @@ jobs:
         run: |
           base=${{ github.event.pull_request.base.sha }}
           echo "stat=$(git diff --shortstat "$base"...HEAD | sed 's/^ *//')" >> "$GITHUB_OUTPUT"
-          { echo 'files<<EOF'; git diff --stat=100 "$base"...HEAD | head -60; echo EOF; } >> "$GITHUB_OUTPUT"
+          # Into a file first: with pipefail, `git diff | head` fails with SIGPIPE on a diff of more than 60 files.
+          git diff --stat=100 "$base"...HEAD > files.txt
+          { echo 'files<<EOF'; head -60 files.txt; echo EOF; } >> "$GITHUB_OUTPUT"
       - name: Fetch the screenshot index
         if: needs.screenshots.outputs.base != ''
         uses: actions/download-artifact@v5
