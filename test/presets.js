@@ -19,7 +19,7 @@ for (const [f, m] of Object.entries(file.fail)) {
   for (const id of Object.keys(m)) check(`preset ${id} for ${f} exists`, !!file.presets[id]);
 }
 // Presets stay within ordinary adult proportions (docs/avatars.md): the standard figure is about
-// 1.74 m tall with shoulder joints 0.40 m apart.
+// 1.79 m tall with shoulder joints 0.40 m apart.
 for (const p of P.PRESETS) {
   const stature = (Demo.dim.pelvis + Demo.dim.head + 0.105) * p.sc, shoulders = 2 * 0.2 * p.bd;
   check(`${p.id}: stature ${stature.toFixed(2)} m between 1.52 and 1.87 m`, stature >= 1.52 && stature <= 1.87);

@@ -48,7 +48,10 @@ Shoulders, elbows, hips and knees follow from bone lengths (upper arm 31 cm, for
 47 cm, shin 46.5 cm). The elbow goes where an arm would put it: down and back when the hand is low
 and in front, out to the side overhead, out and back behind the body, forward when the hand is
 close across the chest. A move can also say where it wants the elbow. The same joints give the
-capsules used for contact, so the body that props collide with is the body that is drawn.
+capsules used for contact (`caps()`), fitted to the 3D model's skin: a head longer than it is wide at
+the model's height, a neck, the shoulders and the upper back, hips and buttocks outside the trunk, and
+limbs thicker near the body than at their ends. `node test/body3d.js rig` keeps the skin within 25 mm of
+them, so the body that props collide with is the body that is drawn ([docs/avatars.md](avatars.md)).
 
 A body movement is a function of the phase of the move: weight from foot to foot, down and up by
 bending the knees, a full turn in quarter-turn steps with one foot always on the floor. Hands and
@@ -94,6 +97,9 @@ same clip. If nothing on the grid is clear, the move gets no demo.
 
 ## Tried and left out
 
+- **Double staff shoulder reel (W2).** With the body fitted to the drawn model, the short staff
+  reeled beside the shoulder sweeps through the chest or its own upper arm from every hand position
+  the arm can reach; the hip reel (W1) stays, beside and in front of the hip.
 - **Poi weaves and one-poi crossings (tic-tacs).** Carrying the hand from side to side with the
   existing hand model stalls the poi or sends it into the legs. A search over height, distance,
   width and timing (64 settings each for two and three beats) found none that kept turning clear.
@@ -138,7 +144,8 @@ same clip. If nothing on the grid is clear, the move gets no demo.
    but not on it, and nothing limits the force, only the speed.
 6. **Steps are simple.** Turns use quarter-turn steps on the spot. There is no travel, no pivot on
    one foot, and the upper body does not turn against the hips.
-7. **The torso is one capsule.** Shoulders and hips are wider than what props collide with.
+7. **The body is capsules.** They are fitted to the drawn model within 25 mm, but a flat back or a
+   bony knee is still a round shape, so a prop may hover a centimetre or two off the skin.
 8. **The posture search is a coarse grid.** It finds a clear posture, not the one a teacher would
    show.
 9. **Passes still missing.** Nothing changes hands except by a throw or in the staff rotor.

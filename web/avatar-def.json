@@ -7,6 +7,7 @@
  "options": {
   "body": ["short", "average", "tall"],
   "build": ["lean", "average", "broad"],
+  "frame": ["neutral", "feminine", "masculine"],
   "hair": ["none", "buzz", "short", "long", "ponytail", "bun", "curly"],
   "eyes": ["round", "wide", "narrow", "sleepy"],
   "brows": ["straight", "arched", "thick", "angled", "none"],
@@ -19,5 +20,5 @@
   "wristbands": ["no", "yes"]
  },
  "colorKeys": {"skin": "skinTones", "hairColor": "hairColors", "topColor": "palette", "bottomsColor": "palette", "shoesColor": "palette", "hatColor": "palette", "wristColor": "palette"},
- "defaults": {"v": 1, "body": "average", "build": "average", "skin": "#c28761", "hair": "short", "hairColor": "#3b2a20", "eyes": "round", "brows": "straight", "mouth": "smile", "top": "tshirt", "topColor": "#2a7fa8", "bottoms": "trousers", "bottomsColor": "#1f2a44", "shoes": "trainers", "shoesColor": "#f2f0e9", "hat": "none", "hatColor": "#c4572e", "glasses": "none", "wristbands": "no", "wristColor": "#d9a441", "props": {}}
+ "defaults": {"v": 1, "body": "average", "build": "average", "frame": "neutral", "skin": "#c28761", "hair": "short", "hairColor": "#3b2a20", "eyes": "round", "brows": "straight", "mouth": "smile", "top": "tshirt", "topColor": "#2a7fa8", "bottoms": "trousers", "bottomsColor": "#1f2a44", "shoes": "trainers", "shoesColor": "#f2f0e9", "hat": "none", "hatColor": "#c4572e", "glasses": "none", "wristbands": "no", "wristColor": "#d9a441", "props": {}}
 }

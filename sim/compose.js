@@ -73,6 +73,7 @@ function scene(sp) {
       const s = sample(clip, ph * rate + lag, side, shift);
       f['h' + side] = s.h;
       if (s.h2) f['h' + (side === 'R' ? 'L' : 'R')] = s.h2;
+      if (s.e2) f['e' + (side === 'R' ? 'L' : 'R')] = s.e2; // where the other hand's elbow goes, when the clip says
       if (s.e) f['e' + side] = s.e;
       if (j === 0) for (const k of BODY) if (s[k]) f[k] = s[k];
       if (clip.kind === 'nunchaku') f[j + '.g'] = s.g || s.h;

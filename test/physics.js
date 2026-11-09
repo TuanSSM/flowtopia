@@ -67,7 +67,7 @@ for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) 
       if (Math.max(...full) - Math.min(...full) > 2e-4) errs.push('staff length changes');
       // Outside a throw, some hand is always on the staff.
       const off = Math.max(...fr.map((f, i) => m.air && i / N >= m.air.from - 0.01 && i / N <= m.air.to + 0.01 ? 0 : Math.min(...['hL', 'hR'].filter(h => f[h]).map(h => { const q = E.closest(f[h], f[h], K(f, 'a'), K(f, 'b')); return len(sub(q.c1, q.c2)); }))));
-      if (off > 0.056 && !sp.free) errs.push(`no hand on the staff (nearest is ${mm(off)} away)`); // the staff lies in the palm, up to a hand's thickness from the wrist
+      if (off > 0.085 && !sp.free) errs.push(`no hand on the staff (nearest is ${mm(off)} away)`); // the staff lies in the palm, or along the back of a 6 cm forearm in a unit circle
     } else if (p.kind === 'buugeng') {
       const sq = Math.max(...fr.map(f => Math.max(Math.abs(len(K(f, 'u')) - 1), Math.abs(len(K(f, 'v')) - 1), Math.abs(dot(K(f, 'u'), K(f, 'v'))))));
       if (sq > 2e-3) errs.push('shape is not rigid');

@@ -25,7 +25,7 @@ const BASIS = {
   face: { n: [0, 0, 1], a: [-1, 0, 0], b: [0, 1, 0] },
   table: { n: [0, 1, 0], a: [0, 0, 1], b: [-1, 0, 0] },
 };
-const CENTRE = { wall: [-0.32, 1.02, 0.2], face: [-0.22, 1.14, 0.48], table: [-0.46, 1.52, 0.45], roof: [-0.1, 1.98, 0.05] };
+const CENTRE = { wall: [-0.42, 1.02, 0.26], face: [-0.22, 1.14, 0.48], table: [-0.46, 1.52, 0.45], roof: [-0.1, 1.98, 0.05] };
 const spoke = (bs, t) => add(mul(bs.a, cos(t)), mul(bs.b, sin(t)));
 const NORMAL = { gamma: 0.61, rh: 0.03 }, POINT = { gamma: 0.5, rh: 0.03 }, PIVOT = { gamma: 0.9, rh: 0.07 };
 
@@ -380,7 +380,8 @@ const poiPendulum = memo(() => {
 /* ---------- release and catch ---------- */
 // A smooth path from one position and velocity to another, over D seconds (s runs 0 to 1).
 const herm = (p0, v0, p1, v1, s, D) => { const a = s * s, b = a * s; return add(add(mul(p0, 2 * b - 3 * a + 1), mul(v0, (b - 2 * a + s) * D)), add(mul(p1, 3 * a - 2 * b), mul(v1, (b - a) * D))); };
-const ZERO = [0, 0, 0], IDLE = [-0.24, 0.93, -0.04], SHOULDER_R = [-0.2, 1.43, 0];
+// A hand at rest hangs beside the hip, just clear of it (the hips are 0.22 m to each side).
+const ZERO = [0, 0, 0], IDLE = [-0.26, 0.93, -0.04], SHOULDER_R = [-0.2, 1.43, 0];
 // Keep a hand within arm's length of its shoulder.
 const within = (p, sh) => { const v = sub(p, sh), d = len(v); return d > 0.58 ? add(sh, mul(v, 0.58 / d)) : p; };
 // Turn one direction into another along the shortest arc.
@@ -407,9 +408,11 @@ function aerialClip(o) {
   const tr = sim.time();
   sim.load(base);
   sim.setWarp((q, t) => { const s = clamp((t - (tr - WIND)) / WIND, 0, 1) ** 2 * WIND / 2; return clearOf({ h: add(q.h, [o.across * s, o.lift * s, 0]), d: q.d }, STILL); });
-  const idle2 = flip(IDLE);
+  // The other hand rests, then catches. Its elbow is asked to stay low and a little behind, beside the
+  // body, so the forearm rises to the handle without folding across the chest or into the striker's swing.
+  const idle2 = flip(IDLE), elbow2 = () => [0.33, 1.14, -0.02];
   let n = 0, before = sim.pose();
-  const keep = f => { if (n++ % EVERY === 0) fr.push(o.other ? { ...f, h2: f.h2 || idle2 } : f); };
+  const keep = f => { if (n++ % EVERY === 0) { const h2 = f.h2 || idle2; fr.push(o.other ? { ...f, h2, e2: elbow2(h2) } : f); } };
   while (sim.time() < tr - 1e-9) { const f = sim.sample(); keep({ ...f, g: f.h }); before = sim.pose(); sim.step(DRAG); }
   // Let go: from here the handle is a free body with whatever motion the hand gave it.
   const now = sim.pose(), hr = now.h, vr = mul(sub(now.h, before.h), 1 / H);
@@ -449,7 +452,10 @@ function aerialClip(o) {
   for (const f of air) {
     if (!f) continue;
     const s = (f.t - tr) / span;
-    fr.push(o.other ? { h: within(herm(hr, vr, IDLE, ZERO, s, span), SHOULDER_R), h2: within(herm(idle2, ZERO, caught.g, caught.v, s, span), shoulder), g: f.g, d: f.d, B: f.B, T: f.T }
+    // The catching hand arrives at the handle's speed, but no faster than 1.2 m/s: a faster end to the
+    // cubic path makes it loop back through the shoulder on its way out.
+    const h2 = within(herm(idle2, ZERO, caught.g, len(caught.v) > 1.2 ? mul(caught.v, 1.2 / len(caught.v)) : caught.v, s, span), shoulder);
+    fr.push(o.other ? { h: within(herm(hr, vr, IDLE, ZERO, s, span), SHOULDER_R), h2, e2: elbow2(h2), g: f.g, d: f.d, B: f.B, T: f.T }
       : { h: within(herm(hr, vr, caught.g, caught.v, s, span), SHOULDER_R), g: f.g, d: f.d, B: f.B, T: f.T });
   }
   const to = fr.length;
@@ -465,7 +471,7 @@ function aerialClip(o) {
   n = 0;
   while (sim2.turned() - start < 2 * TAU && sim2.time() - caught.t < 2.4) {
     const f = sim2.sample();
-    if (n++ % EVERY === 0) fr.push(o.other ? { h: IDLE, h2: f.h, g: f.h, d: f.d, B: f.B, T: f.T } : { ...f, g: f.h });
+    if (n++ % EVERY === 0) fr.push(o.other ? { h: IDLE, h2: f.h, e2: elbow2(f.h), g: f.h, d: f.d, B: f.B, T: f.T } : { ...f, g: f.h });
     sim2.step(DRAG);
   }
   if (sim2.turned() - start < 2 * TAU) return null; // the swing did not recover after the catch
@@ -483,7 +489,7 @@ function bounceClip(o) {
   settle(sim, TAU);
   const t0 = sim.time(), first = sim.contacts.length, start = sim.turned();
   while (stage < 3) {
-    if (n++ % EVERY === 0) fr.push({ ...sim.sample(), h2: there });
+    if (n++ % EVERY === 0) fr.push({ ...sim.sample(), h2: there, e2: [0.3, 1.1, 0.25] }); // the target arm's elbow out and forward, so the forearm is off the belly
     sim.step(DRAG);
     amount = clamp(amount + clamp(goal - amount, -H / 0.3, H / 0.5), 0, 1);
     there = mix(idle2, o.target, amount * amount * (3 - 2 * amount));

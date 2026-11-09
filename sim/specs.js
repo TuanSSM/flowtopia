@@ -12,12 +12,15 @@ const circle = (n, plane, dir, x) => { const o = { plane, dir, ...NORMAL, ...x }
 // Two props: the left hand mirrors the right clip, or a second clip, together or split in time.
 const pair = (n, make, left, split, shift) => ({ n, make, pair: { left: left ? { make: left } : null, time: split ? 'split' : 'together', opposite: !!left, shift } });
 const modes = (same, other) => [pair('Together, same direction', same, null, false), pair('Split, same direction', same, null, true), pair('Together, opposite direction', same, other, false), pair('Split, opposite direction', same, other, true)];
-const KNUCKLES = [0, 0, 0.09]; // in a butterfly the tethers leave from the front of the fists, clear of the wrists behind
-const P_SIDE = [-0.3, 1.0, 0.12], P_FRONT = [-0.2, 1.2, 0.5], P_HANDS = [-0.07, 1.15, 0.32], P_TOP = [-0.1, 1.93, 0.05];
-const sideF = poiSpin('wheel', P_SIDE, FWD), sideB = poiSpin('wheel', P_SIDE, BACK), fly = poiSpin('wall', P_HANDS, 1, 0.7, KNUCKLES), flyR = poiSpin('wall', P_HANDS, -1, 0.7, KNUCKLES);
+const KNUCKLES = [0, 0, 0.1]; // in a butterfly the tethers leave from the front of the fists, clear of the wrists behind
+const P_SIDE = [-0.3, 1.0, 0.12], P_FRONT = [-0.2, 1.2, 0.5], P_HANDS = [-0.12, 1.15, 0.35], P_TOP = [-0.1, 1.93, 0.05];
+// A clip with the elbow told where to go in every frame (the composer mirrors it for the left hand).
+const withElbow = (make, e) => memo(() => { const c = make(); c.fr.forEach(f => { f.e = e; }); return c; });
+const BUTTERFLY_ELBOW = [-0.3, 1.1, 0.18]; // elbows out at the sides, so the forearms lie in front of the belly, not through it
+const sideF = poiSpin('wheel', P_SIDE, FWD), sideB = poiSpin('wheel', P_SIDE, BACK), fly = withElbow(poiSpin('wall', P_HANDS, 1, 0.7, KNUCKLES), BUTTERFLY_ELBOW), flyR = withElbow(poiSpin('wall', P_HANDS, -1, 0.7, KNUCKLES), BUTTERFLY_ELBOW);
 const hd = (n, make, x) => ({ n, make, ...x });
 // Staff. A rotor is kept turning hand over hand; a figure-8 is turned by one wrist.
-const ROTOR = { front: [0, 1.18, 0.4], top: [0, 1.9, 0.05] };
+const ROTOR = { front: [0, 1.25, 0.46], top: [0, 1.9, 0.05] }; // in front of the chest, the forearms clear of it and within reach
 const rotorAt = (where, dir, dur = 1.4) => handRotor({ half: STAFF, c: ROTOR[where], bs: STAFF_BS[where], dir, dur, right: where === 'top' ? 90 : 0 });
 // A figure-8 changes side when the prop is square to the forearm, and leans most when it lies along it.
 // With the arm stretched forward that is when the prop is upright; with the forearm upright, when it is level.
@@ -29,8 +32,8 @@ const staff8 = dir => eight('staff8' + dir, { kind: 'staff', half: STAFF, ...WHE
 // Double staff: the sources say each staff changes side when it is level.
 const short8 = (dir, lobes = 1) => eight('short8' + dir + lobes, { kind: 'staff', half: SHORT, ...WHEEL8, dir, lobes, dur: 1.5 }, { flip: [0, PI] });
 const wall8 = dir => eight('wall8' + dir, { kind: 'staff', half: SHORT, ...WALL8, dir, dur: 1.5 }, { x: [-0.46, -0.52], flip: [0, PI] });
-const reel = (c, lobes, elbow) => figure8({ kind: 'staff', half: SHORT, c, ...WALL8, dir: 1, gamma: 0.9, stay: true, lobes, dur: 1.6, elbow: () => elbow });
-const SH = [-0.24, 1.43, 0], OUT = 0.05; // unit-circle moves turn about the shoulder, with the staff just outside the arm
+const reel = (c, lobes, elbow) => figure8({ kind: 'staff', half: SHORT, c, ...WALL8, dir: 1, gamma: 0, stay: true, lobes, dur: 1.6, elbow: () => elbow }); // flat in its plane: a lean would send the inner end into the belly
+const SH = [-0.26, 1.43, 0], OUT = 0.08; // the circle a little out from the shoulder, so the arm clears the hips; the staff rests on a 6 cm arm // unit-circle moves turn about the shoulder, with the staff just outside the arm
 // The elbow bends within the plane of the arm circle, so the arm stays beside the staff.
 const inPlane = (c, bs, dir) => th => add(c, mul(spoke(bs, th - dir * PI / 2), 0.6));
 const circleMove = (k, dir, x) => unit({ half: SHORT, c: SH, bs: PB.wheel, R: 0.5, k, dir, out: OUT, elbow: inPlane(SH, PB.wheel, dir), ...x });
@@ -53,7 +56,7 @@ const tossSide = memo(() => staffToss({ half: SHORT, c: SHORT_SIDE, bs: PB.wheel
 const tossAcross = memo(() => staffToss({ half: SHORT, c: [-0.22, 1.15, 0.4], bs: BASIS.face, dir: 1, rate: 1.25, rise: 0.3, other: true }));
 const tossLong = memo(() => staffToss({ half: STAFF, c: [-0.45, 1.1, 0.1], bs: PB.wheel, dir: FWD, rate: 1.1, rise: 0.3 }));
 // Poi patterns from poi theory: two turning arms give the head's path, and the hand is solved for.
-const FLOWER_AT = [-0.24, 1.43, 0], flower = (k, dir = FWD) => solved(1.8, twoArm(FLOWER_AT, PB.wheel, 0.4, k, dir));
+const FLOWER_AT = [-0.36, 1.43, 0], flower = (k, dir = FWD) => solved(1.8, twoArm(FLOWER_AT, PB.wheel, 0.4, k, dir));
 const CAT_AT = [-0.02, 1.25, 0.4], cateye = (dir, phase, dur = 0.85, R = 0.2) => solved(dur, twoArm(CAT_AT, PB.wall, R, -1, dir, phase));
 const petalF = flower(-3, FWD), petalB = flower(-3, BACK);
 const weaveOf = (n, dir, at = 1.0, x) => weave({ dir, n, A: 0.21, y: 1.16, z: 0.36, at, w: 0.05, lift: 0.04, ...x });
@@ -83,7 +86,8 @@ const passGrips = (leftThumbUp, labels) => picture([line([[-0.06, -0.18, 0], [-0
   fistAt([-0.06, 0, 0], UPV, OUTV, 'closed'), fistAt([0.06, 0, 0], leftThumbUp ? UPV : [0, -1, 0], OUTV, 'closed', 0.014, 'L')], { hide: true, cam: { at: [0, -0.02, 0], zoom: 4.2 }, labels });
 // Rolls. The forearm points forward, so the roll goes round it on the plane in front (the face plane).
 const ROLL_AT = [-0.24, 1.15, 0.44], FWDV = [0, 0, 1], ROLL = { at: ROLL_AT, a: [-1, 0, 0], b: [0, 1, 0], elbow: [-0.26, 1.08, 0.1] };
-const ROLL_ON = { hand: { off: [0, 0, 0], rho: 0.064 }, wrist: { off: [0, 0, -0.09], rho: 0.072 }, forearm: { off: [0, 0, -0.2], rho: 0.064 }, finger: { off: [0, 0, 0.17], rho: 0.03 }, thumb: { off: [0.07, 0.03, 0.1], rho: 0.03 } };
+// rho is the limb's radius there plus the stick's (the forearm is 5 cm thick at the wrist, 5.5 higher up).
+const ROLL_ON = { hand: { off: [0, 0, 0], rho: 0.064 }, wrist: { off: [0, 0, -0.09], rho: 0.085 }, forearm: { off: [0, 0, -0.2], rho: 0.08 }, finger: { off: [0, 0, 0.17], rho: 0.03 }, thumb: { off: [0.07, 0.03, 0.1], rho: 0.03 } };
 const rollOf = (pivot, seq, x) => memo(() => roll({ ...ROLL, ...ROLL_ON[pivot], seq, ...x }));
 const once = (pivot, half, x) => rollOf(pivot, [{ swing: 1 }, { roll: half }, { swing: 2 }], x), chain = (pivot, halves, x) => rollOf(pivot, halves.flatMap(h => [{ swing: 1 }, { roll: h }]), { loop: true, ...x });
 const RL = { contact: 1, fingers: 1 };
@@ -95,7 +99,8 @@ const intercept = memo(() => {
   for (let t = 0; t < total; t += dt) {
     const k = smooth(1.4, 2.0, t), P = add(mix(A, Bq, k), [0, 0, 0.17]), d = spoke(PB.wall, W * t), m = add(P, mul(spoke(PB.wall, W * t + PI / 2), -0.03));
     const hb = sub(m, mul(d, 0.045)), ha = add(m, mul(d, 0.045)), inn = smooth(0.7, 1.3, t), out = smooth(2.1, 2.7, t);
-    fr.push({ h: add(A, [-0.1 * out, -0.12 * out, -0.14 * out]), h2: mix([0.24, 0.93, -0.04], Bq, inn), g: add(ha, mul(d, GRIP)), d: mul(d, -1), B: hb, T: sub(hb, mul(d, 0.3)) });
+    // The catching arm comes in from the side with its elbow out, so the forearm stays off the chest.
+    fr.push({ h: add(A, [-0.1 * out, -0.12 * out, -0.14 * out]), h2: mix([0.26, 0.93, -0.04], Bq, inn), e2: mix([0.33, 1.1, 0.02], [0.34, 1.12, 0.22], inn), g: add(ha, mul(d, GRIP)), d: mul(d, -1), B: hb, T: sub(hb, mul(d, 0.3)) });
   }
   return { kind: 'nunchaku', method: 'roll', dur: total, loop: false, trail: 0.5, fr };
 });
@@ -109,8 +114,8 @@ const STILLS = {
     F1: [{ n: 'Front grip', make: chuckGrip('closed', true, [{ at: [0, 0.12, 0], text: 'link end', dx: -0.14, dy: -0.04 }, { at: [0.01, 0.045, 0.01], text: 'thumb toward the link', dx: -0.16, dy: 0.02 }, { at: [0, -0.18, 0], text: 'tail end', dx: -0.12, dy: 0.02 }]) },
       { n: 'Back grip', make: chuckGrip('closed', false, [{ at: [0, 0.12, 0], text: 'link end', dx: -0.14, dy: -0.04 }, { at: [0.01, -0.045, 0.01], text: 'thumb toward the tail', dx: -0.16, dy: 0.04 }, { at: [0.0, 0.04, 0.02], text: 'little finger toward the link', dx: 0.1, dy: 0.2 }]) }],
     A7: [{ n: 'Clock on the face plane', make: picture([chuckOn(CLOCK_AT, [0, 0, 1], add(CLOCK_AT, [0, 0.085, 0.14]), add(CLOCK_AT, [0, 0.3835, 0.17]))], { pose: { hR: CLOCK_AT }, quads: quad(add(CLOCK_AT, [0, 0, 0.15]), PB.wall, 0.56), labels: clock }) }],
-    C1: [{ n: 'Trapped under the arm', contact: 1, make: picture([chuckOn([-0.2, 1.205, 0.265], [0.035, 0.105, -0.175], [-0.165, 1.31, 0.09], [-0.165, 1.27, -0.207])], { pose: { hR: [-0.2, 1.205, 0.265], eR: [-0.27, 1.1, -0.03] }, cam: { at: [-0.15, 1.25, 0], zoom: 2.2 }, labels: [{ at: [-0.165, 1.29, -0.06], text: 'striker pinned between arm and ribs', dx: -0.02, dy: -0.2 }, { at: [-0.2, 1.205, 0.265], text: 'hand keeps the handle in front', dx: 0.02, dy: 0.16 }] }) }],
-    S2: [{ n: 'Over the shoulder', make: picture([chuckOn([-0.22, 1.52, 0.07], [0, 0.05, -0.19], [-0.22, 1.57, -0.12], [-0.22, 1.275, -0.175])], { pose: { hR: [-0.22, 1.52, 0.07], hL: [-0.12, 1.25, 0.24] }, labels: [{ at: [-0.22, 1.42, -0.15], text: 'striker hangs down the back', dx: -0.04, dy: -0.2 }, { at: [-0.12, 1.25, 0.24], text: 'other hand reaches across', dx: 0.1, dy: 0.12 }] }) }],
+    C1: [{ n: 'Trapped under the arm', contact: 1, make: picture([chuckOn([-0.2, 1.205, 0.265], [0.035, 0.105, -0.175], [-0.15, 1.29, 0.09], [-0.15, 1.25, -0.207])], { pose: { hR: [-0.2, 1.205, 0.265], eR: [-0.27, 1.1, -0.03] }, cam: { at: [-0.15, 1.25, 0], zoom: 2.2 }, labels: [{ at: [-0.165, 1.29, -0.06], text: 'striker pinned between arm and ribs', dx: -0.02, dy: -0.2 }, { at: [-0.2, 1.205, 0.265], text: 'hand keeps the handle in front', dx: 0.02, dy: 0.16 }] }) }],
+    S2: [{ n: 'Over the shoulder', contact: 1, make: picture([chuckOn([-0.22, 1.52, 0.07], [0, 0.05, -0.19], [-0.22, 1.57, -0.12], [-0.22, 1.275, -0.175])], { pose: { hR: [-0.22, 1.52, 0.07], hL: [-0.1, 1.2, 0.3], eL: [0.3, 1.15, 0.1] }, labels: [{ at: [-0.22, 1.42, -0.15], text: 'striker hangs down the back', dx: -0.04, dy: -0.2 }, { at: [-0.12, 1.25, 0.24], text: 'other hand reaches across', dx: 0.1, dy: 0.12 }] }) }],
     S4: [{ n: 'Slick: same grip', make: passGrips(true, [{ at: [-0.06, 0.05, 0.02], text: 'thumb toward the link', dx: -0.1, dy: -0.22 }, { at: [0.06, 0.05, 0.02], text: 'thumb toward the link', dx: 0.1, dy: 0.26 }]) },
       { n: 'Gritch: different grip', make: passGrips(false, [{ at: [-0.06, 0.05, 0.02], text: 'thumb toward the link', dx: -0.1, dy: -0.22 }, { at: [0.06, -0.05, 0.02], text: 'thumb toward the tail', dx: 0.1, dy: 0.26 }]) }],
     S6: [{ n: 'Hand positions', make: picture([chuckOn([-0.06, 1.08, -0.2], [0.2, 0.6, -0.1], [0.02, 1.26, -0.2], [0.13, 1.535, -0.245])], { pose: { hR: [-0.06, 1.08, -0.2], hL: [0.2, 1.5, -0.12] }, labels: [{ at: [-0.06, 1.08, -0.2], text: 'swinging hand at the small of the back', dx: -0.03, dy: 0.2 }, { at: [0.2, 1.5, -0.12], text: 'empty hand close to the shoulder', dx: 0.03, dy: -0.2 }] }) }],
@@ -118,7 +123,7 @@ const STILLS = {
     F2: [{ n: 'Open grip', make: chuckGrip('open', true, [{ at: [0.012, 0.02, 0.012], text: 'thumb holds the stick on the palm', dx: -0.1, dy: 0.26 }, { at: [0, 0.0, 0.09], text: 'fingers open', dx: 0.16, dy: 0.1 }]) }],
   },
   poi: {
-    F1: [{ n: 'Tether length', make: picture([{ prop: { kind: 'poi', hand: 'R' }, keys: { P: [-0.228, 1.345, 0.05] } }], { pose: { hR: [-0.77, 1.43, 0] }, cam: { at: [-0.3, 1.2, 0], zoom: 1.7 }, labels: [{ at: [-0.228, 1.345, 0.05], text: 'the head just reaches the armpit', dx: 0.02, dy: -0.2 }, { at: [-0.77, 1.43, 0], text: 'handle', dx: 0, dy: -0.08 }] }) },
+    F1: [{ n: 'Tether length', make: picture([{ prop: { kind: 'poi', hand: 'R' }, keys: { P: [-0.243, 1.302, 0.079] } }], { pose: { hR: [-0.77, 1.43, 0] }, cam: { at: [-0.3, 1.2, 0], zoom: 1.7 }, labels: [{ at: [-0.243, 1.302, 0.079], text: 'the head just reaches the armpit', dx: 0.02, dy: -0.2 }, { at: [-0.77, 1.43, 0], text: 'handle', dx: 0, dy: -0.08 }] }) },
       { n: 'Finger loops', make: picture([fistAt(O, [-1, 0, 0], OUTV, 'closed', 0.008), line([[0, -0.02, 0.02], [0.004, -0.3, 0.02]], 0.007, 'link'), ballAt([0.004, -0.33, 0.02], 0.045, 'prop')], { hide: true, cam: { at: [0, -0.14, 0], zoom: 4.4 }, labels: [{ at: [0, -0.01, 0.03], text: 'a finger through each loop', dx: 0.12, dy: -0.12 }, { at: [0.004, -0.33, 0.02], text: 'head', dx: 0.12, dy: 0 }] }) }],
   },
   staff: {
@@ -146,12 +151,12 @@ const SPECS = {
     F5: [circle('Upspin', 'wall', 1), circle('Downspin', 'wall', -1), circle('Outspin', 'face', -1), circle('Inspin', 'face', 1), circle('Nearspin', 'table', 1), circle('Farspin', 'table', -1), circle('Overhead', 'roof', 1)],
     F6: [{ n: 'Down stop', make: () => stopClip(25) }, { n: 'Side stop', make: () => stopClip(90) }, { n: 'Up stop', make: () => stopClip(150) }],
     F7: [
-      { n: 'Upspin H8', make: () => loopClip(eightWall({ dir: 1, a: 0.22, y: 1.16, z: 0.42 })) },
+      { n: 'Upspin H8', make: () => loopClip(eightWall({ dir: 1, a: 0.22, y: 1.2, z: 0.47 })) },
     ],
-    F9: [{ n: 'Stretched H8', make: () => loopClip(eightWall({ dir: 1, a: 0.26, y: 1.16, z: 0.42 })) }],
+    F9: [{ n: 'Stretched H8', make: () => loopClip(eightWall({ dir: 1, a: 0.26, y: 1.2, z: 0.47 })) }],
     M1: [hd('Weight shifts', chuckCarried(swing(), BODY.shift, 2))],
     M4: [hd('Down and up', chuckCarried(swing(), BODY.level, 4))],
-    F8: [{ n: 'Upspin H8', make: () => loopClip(eightWall({ dir: 1, a: 0.22, y: 1.16, z: 0.42 })) }],
+    F8: [{ n: 'Upspin H8', make: () => loopClip(eightWall({ dir: 1, a: 0.22, y: 1.2, z: 0.47 })) }],
     R1: [hd('One half turn round the hand', once('hand', 1), RL), hd('The other way', once('hand', 1, { dir: -1 }), RL)],
     R2: [hd('Hand rolls in a chain', chain('hand', [1, 1]), RL)],
     R3: [hd('Once round the wrist', once('wrist', 2), RL)],
@@ -165,7 +170,7 @@ const SPECS = {
     R12: [hd('Upward', wheel(1), { fixed: 1, fingers: 1 }), hd('Downward', wheel(-1), { fixed: 1, fingers: 1 })],
     R13: [hd('Disconnected wheel', looseWheel, { fixed: 1, fingers: 1 })],
     R15: [hd('Round the forearm', once('forearm', 2), RL)],
-    R16: [hd('Round the neck', memo(() => roll({ at: [0, 1.51, 0], a: [0, 0, 1], b: [-1, 0, 0], rho: 0.085, free: true, loop: true, seq: [{ roll: 2 }] })), RL)],
+    R16: [hd('Round the neck', memo(() => roll({ at: [0, 1.58, 0], a: [0, 0, 1], b: [-1, 0, 0], rho: 0.17, free: true, loop: true, seq: [{ roll: 2 }] })), RL)], // the sticks slide over the chest and shoulders, so their line sits out from the neck
     R17: [hd('One way', chuckIso(1), { fingers: 1 }), hd('The other way', chuckIso(-1), { fingers: 1 })],
     D13: [{ n: 'Upspin and nearspin', make: swingOn, pair: { free: memo(() => loopClip(cone({ plane: 'table', dir: 1, ...NORMAL }))) } }],
     C2: [{ n: 'Forearm bounce', make: memo(() => bounceClip({ dir: -1, target: [0.02, 1.25, 0.55], fade: 0.2, on: 'forearm' })), contact: 1 }],
@@ -201,7 +206,7 @@ const SPECS = {
     F4: [hd('One direction', rotorAt('front', 1)), hd('Other direction', rotorAt('front', -1))],
     F6: [hd('One direction', staffRotor('side', FWD), { fingers: 1 }), hd('Other direction', staffRotor('side', BACK), { fingers: 1 })],
     F7: [hd('One direction', rotorAt('top', 1)), hd('Other direction', rotorAt('top', -1))],
-    P1: [hd('Passing during a slow rotor', rotorAt('front', 1, 2.6))],
+    P1: [hd('Passing during a slow rotor', rotorAt('front', 1, 2.6), { contact: 1 })], // the staff slides along the hands as it passes
     M1: [hd('Turning one way', carriedClip(rotorAt('front', 1), BODY.turn, 4)), hd('Turning the other way', carriedClip(rotorAt('front', 1), BODY.turnBack, 4))],
     C3: [hd('Palm spin', palmSpin(STAFF, [-0.22, 1.93, 0.1], 1, 1.3), { free: 1 })],
     T2: [{ n: 'Thumb toss', make: tossLong, fingers: 1 }],
@@ -215,20 +220,19 @@ const SPECS = {
     T4: [{ n: 'Same time', make: s8F, pair: { left: { make: short8(FWD, -1) }, time: 'together', opposite: false } }, { n: 'Split time', make: s8F, pair: { left: { make: short8(FWD, -1) }, time: 'split', opposite: false } }],
     T5: [{ n: 'Butterfly weave', make: s8F, pair: { left: { make: short8(BACK, -1) }, time: 'together', opposite: true } }],
     T6: [{ n: 'Quarter time, same direction', make: extF, pair: { lag: 0.25 } }, { n: 'Quarter time, opposite direction', make: extF, pair: { left: { make: circleMove(1, BACK) }, lag: 0.25 } }],
-    W1: [hd('Hip reel', reel([-0.34, 0.99, 0.02], 1, [-0.7, 1.2, 0]))],
-    W2: [hd('Shoulder reel', reel([-0.42, 1.45, 0.02], -1, [-0.6, 1.1, 0]))],
+    W1: [hd('Hip reel', reel([-0.44, 1.05, 0.34], 1, [-0.38, 1.15, -0.3]))], // beside and in front of the hip, the elbow bent behind the hand so the forearm points forward, out of the staff's plane
     I1: [hd('One direction', isoF), hd('Reverse', isoB)],
     I2: modes(isoF, isoB),
     I3: [hd('Pinky end fixed', staffIsolation(FWD, true)), { n: 'One on each end', make: isoF, pair: { left: { make: staffIsolation(FWD, true) }, lag: 0 } }],
     I4: [hd('Extension', extF), hd('Reverse', circleMove(1, BACK))],
-    A1: [hd('Antispin', anti1)],
+    A1: [hd('Antispin', anti1, { fingers: 1 })], // the fingers roll the staff against the arm's turn, so it rides on the forearm
     A2: modes(antiF, antiB),
     A3: [hd('Inspin', circleMove(3, FWD))],
-    A8: [hd('Cateye', circleMove(-1, FWD, { R: 0.26 }))],
+    A8: [hd('Cateye', circleMove(-1, FWD, { R: 0.3 }))], // a wider circle keeps the straighter arm off the staff
     A10: [hd('Eight petals', circleMove(-3, FWD, { dur: 2 }))],
     A11: [hd('Opening and closing the book', circleMove(0, FWD, { angle: t => 0.75 * PI * (1 - cos(2 * t)), dur: 2.4 }))],
-    H1: [{ n: 'Same time, same direction', make: isoF, pair: { left: { make: anti1 }, lag: 0 } }],
-    H6: [{ n: 'Each hand keeps its move', make: isoF, pair: { left: { make: anti1 }, lag: 0.25 } }],
+    H1: [{ n: 'Same time, same direction', make: isoF, fingers: 1, pair: { left: { make: anti1 }, lag: 0 } }],
+    H6: [{ n: 'Each hand keeps its move', make: isoF, fingers: 1, pair: { left: { make: anti1 }, lag: 0.25 } }],
     L1: [carriedPair('Weight shifts under a weave', s8F, short8(FWD, -1), 'together', BODY.shift, BODY.shiftL, 2)],
     L2: [carriedPair('Turning with a weave', s8F, short8(FWD, -1), 'together', BODY.turn, BODY.turnBack, 4)],
     J1: [{ n: 'Low throw', make: tossSide, fingers: 1 }],
@@ -300,7 +304,7 @@ const NOTES = {
   'doublestaff:T1': 'Shown with a one-hand figure 8 in each hand.', 'doublestaff:T2': 'On the wall plane, each staff changing side when it is level.', 'doublestaff:T3': 'On the wall plane; the staffs stay parallel.',
   'doublestaff:T4': 'Each staff alternates between the inside and the outside of its arm, and the two stay parallel.', 'doublestaff:T5': 'The same weave with the staffs turning opposite ways.',
   'doublestaff:T6': 'Shown with extensions, one hand a quarter of a circle ahead of the other.',
-  'doublestaff:W1': 'One staff shown. The thumb end circles in front of the body and the pinky end behind it.', 'doublestaff:W2': 'One staff shown. Here the thumb end is the one behind the shoulder.',
+  'doublestaff:W1': 'One staff shown. The thumb end circles in front of the body and the pinky end behind it.',
   'doublestaff:I1': 'The marked end is the one that stays still. Finger work and the body turn are not shown.', 'doublestaff:I2': 'Shown on the wheel plane at each side.',
   'doublestaff:I3': 'The marked end is the one that travels.', 'doublestaff:I4': 'Read from the poi definition: the staff stays in line with the arm.',
   'doublestaff:A1': 'Shown on the wheel plane with the hand circle as wide as half the staff, so the marked end travels along one line.',

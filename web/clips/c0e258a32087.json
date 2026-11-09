@@ -1,0 +1,1 @@
+{"trail":0.5,"scene":true,"still":true,"dur":1,"loop":false,"props":[{"kind":"poi","hand":"R"}],"labels":[{"at":[-0.243,1.302,0.079],"text":"the head just reaches the armpit","dx":0.02,"dy":-0.2},{"at":[-0.77,1.43,0],"text":"handle","dx":0,"dy":-0.08}],"cam":{"at":[-0.3,1.2,0],"zoom":1.7},"n":1,"keys":[],"const":{"hR":[-0.77,1.43,0],"0.P":[-0.243,1.302,0.079]},"data":[]}
