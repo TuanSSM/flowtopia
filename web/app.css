@@ -61,6 +61,15 @@ a { color: var(--accent-ink); text-decoration: none; }
 a:hover { text-decoration: underline; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; }
+/* The pointer stays an arrow over the interface and becomes a text cursor only over text that can be
+   selected (posts, comments, guides, bios) or typed in; controls and labels cannot be selected by a
+   stray drag or double click. */
+body { cursor: default; -webkit-tap-highlight-color: transparent; }
+input, textarea { cursor: text; }
+select { cursor: pointer; }
+.post-body, .cmt-body, .prof-bio, .steps, .refs, .notice, .empty, .lc-body, .card > p, section > p, .side-row ~ p { cursor: text; }
+.side, .top, .chips, .lv, .seg, .seg-r, .post-acts, .node, .br-row, .cb-row, .cb-head, .demo-ctl, .heat, .av-field, .palette, .pick-list,
+h1, h2, h3, .sec-t, .card-h, label, .nav-a, .btn, .chip, .act, .icon-btn, summary, .tour, .unlock, .toast, .tip, .crumb { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .muted { color: var(--ink-2); }
@@ -512,6 +521,13 @@ select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
 .act { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 8px; color: var(--ink-2); font-size: 12.5px; font-weight: 560; }
 .act:hover { background: var(--card-2); color: var(--ink); }
 .act.on { color: var(--bad); } .act.on svg.i { fill: currentColor; }
+.bm.on { color: var(--accent-ink); } .bm.on svg.i { fill: currentColor; }
+.bm-row { display: flex; align-items: center; gap: 6px; padding: 8px 6px 8px 10px; border-radius: var(--r-s); background: var(--card-2); }
+.bm-row + .bm-row { margin-top: 6px; }
+.bm-row a { color: var(--ink); } .bm-row a:hover { text-decoration: none; } .bm-row a:hover b { text-decoration: underline; }
+.bm-row b { display: block; font-weight: 560; font-size: 13px; } .bm-row .tiny { display: block; }
+.bm-row .tag { display: inline-flex; align-items: center; } .bm-row .cb-mini { flex: none; max-width: 40%; }
+.node .bm-mark { display: inline-flex; color: var(--accent-ink); } .node .bm-mark svg.i { width: 11px; height: 11px; fill: currentColor; }
 .cmts { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
 .cmts[hidden] { display: none; }
 .cmt { display: flex; gap: 9px; align-items: flex-start; }

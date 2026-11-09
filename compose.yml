@@ -47,6 +47,9 @@ services:
       # Reverse proxies whose X-Forwarded-For is believed, as addresses or ranges, comma-separated;
       # "none" for none. Unset: loopback and Docker networks (127.0.0.0/8, ::1, 172.16.0.0/12).
       FLOWA_TRUSTED_PROXIES: ${FLOWA_TRUSTED_PROXIES:-}
+      # Shown on the admin dashboard. deploy.sh sets main.<commit> on the Pi; production passes the
+      # release tag (v1.2.3).
+      VERSION: ${VERSION:-dev}
     volumes:
       - ./data:/data
     read_only: true

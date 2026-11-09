@@ -59,7 +59,7 @@ const (
 )
 
 // Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": true, "demos": true, "references": true, "signups": true, "tour": true, "model3d": true, "community": true, "game": true, "moderation": true, "catalogEditor": true, "linkCards": true, "videoEmbeds": true, "suggest": true, "avatars": true}
+var flagDefaults = map[string]bool{"details": true, "demos": true, "references": true, "signups": true, "tour": true, "model3d": true, "community": true, "game": true, "moderation": true, "catalogEditor": true, "linkCards": true, "videoEmbeds": true, "suggest": true, "avatars": true, "bookmarks": true}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -107,13 +107,14 @@ type app struct {
 	hosts     []string     // names the server answers to besides addresses and private names (FLOWA_HOSTS)
 	proxies   []*net.IPNet // reverse proxies whose forwarding headers are believed (FLOWA_TRUSTED_PROXIES)
 	fetch     *fetcher     // link previews; nil means no fetching
+	version   string       // what VERSION says this build is (main.<commit> on the Pi, a release tag in production); "dev" if unset
 	flagCache map[string]bool
 	flagsAt   time.Time
 }
 
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: "dev"}
 }
 
 // defaultProxies are where a reverse proxy connects from when it runs on the same host (loopback,
@@ -215,6 +216,7 @@ func (l *limiter) add(key string) bool {
 type limits struct {
 	signin, signinIP, account, signup, password *limiter
 	posts, comments, likes, badges, marks       *limiter
+	bookmarks                                   *limiter
 }
 
 func newLimits() limits {
@@ -223,6 +225,7 @@ func newLimits() limits {
 		signup: newLimiter(10, time.Hour), password: newLimiter(5, failWindow),
 		posts: newLimiter(30, time.Hour), comments: newLimiter(120, time.Hour), likes: newLimiter(600, time.Hour),
 		badges: newLimiter(60, time.Hour), marks: newLimiter(120, time.Hour),
+		bookmarks: newLimiter(300, time.Hour),
 	}
 }
 
@@ -3339,7 +3342,7 @@ const dashWeeks = 12
 // handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
 // for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
 func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
-	out := map[string]any{}
+	out := map[string]any{"version": a.version}
 	var users, mods, admins, active7, active30, open int
 	err := a.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`).Scan(&users, &mods, &admins)
 	if err == nil {
@@ -3444,6 +3447,15 @@ func openDB(dsn string) (*sql.DB, error) {
 var migrations = []string{schema, schemaSocial,
 	// 3: sessions also end when unused for sessionIdle.
 	`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ NOT NULL DEFAULT now()`,
+	// 4: bookmarks. ref is "prop:skill" for a skill, the combo's id from the progress document for a
+	// combo, and the post id for a post; a post bookmark goes when the post does (housekeep).
+	`CREATE TABLE IF NOT EXISTS bookmarks (
+		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL CHECK (kind IN ('skill', 'combo', 'post')),
+		ref TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (user_id, kind, ref)
+	)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -3498,6 +3510,7 @@ func (a *app) housekeep() (map[string]int64, error) {
 		{"notifications", `DELETE FROM notifications WHERE read AND created_at < now() - interval '180 days'`},
 		{"previews", `DELETE FROM link_previews lp WHERE COALESCE(lp.fetched_at, now() - interval '2 days') < now() - interval '1 day'
 			AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.data->'links' @> jsonb_build_array(jsonb_build_object('url', lp.url)))`},
+		{"bookmarks", `DELETE FROM bookmarks b WHERE b.kind = 'post' AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.id::text = b.ref)`},
 	}
 	out := map[string]int64{}
 	for _, st := range steps {
@@ -3517,8 +3530,8 @@ func (a *app) housekeeping(ctx context.Context, every time.Duration) {
 	for {
 		if n, err := a.housekeep(); err != nil {
 			log.Print(err)
-		} else if n["sessions"]+n["notifications"]+n["previews"] > 0 {
-			log.Printf("housekeeping: removed %d expired sessions, %d old notifications, %d unused link previews", n["sessions"], n["notifications"], n["previews"])
+		} else if n["sessions"]+n["notifications"]+n["previews"]+n["bookmarks"] > 0 {
+			log.Printf("housekeeping: removed %d expired sessions, %d old notifications, %d unused link previews, %d bookmarks of deleted posts", n["sessions"], n["notifications"], n["previews"], n["bookmarks"])
 		}
 		select {
 		case <-ctx.Done():
@@ -3680,6 +3693,12 @@ func main() {
 		log.Fatal(err)
 	}
 	a := newApp(db, *dataDir)
+	// VERSION names the build for the admin dashboard: the deploy script passes main.<commit> on the Pi,
+	// production passes the release tag. The app only shows it.
+	if v := strings.TrimSpace(os.Getenv("VERSION")); v != "" {
+		a.version = v
+	}
+	log.Printf("version %s", a.version)
 	if v, ok := os.LookupEnv("FLOWA_TRUSTED_PROXIES"); ok && strings.TrimSpace(v) != "" {
 		p, err := parseProxies(v)
 		if err != nil {
@@ -4513,15 +4532,20 @@ type post struct {
 }
 
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
-// liked each one, every comment, and the users involved.
-func (a *app) loadPosts(viewer *user, before, byUser, only int64) (map[string]any, error) {
+// liked each one, every comment, and the users involved. With ids, it reads those posts
+// instead of a page (the viewer's bookmarks).
+func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) (map[string]any, error) {
+	limit := pageSize + 1
+	if ids != nil {
+		limit = len(ids) + 1
+	}
 	// Hidden posts are seen only by their author and by those who may hide posts.
 	rows, err := a.db.Query(`SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL), p.hidden_reason
-		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4)
+		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) AND ($7::bigint[] IS NULL OR p.id = ANY($7))
 		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) ORDER BY p.id DESC LIMIT $5`,
-		viewer.ID, before, byUser, only, pageSize+1, can(viewer, permPostHide))
+		viewer.ID, before, byUser, only, limit, can(viewer, permPostHide), pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -4891,6 +4915,126 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
+}
+
+/* ---------- bookmarks: skills, combos and posts to come back to ---------- */
+
+const maxBookmarks = 500
+
+// A combo's id is made by the page (uid in web/app.js: base 36 time and a few random characters).
+var comboIDRE = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+
+// bookmarkRef checks a bookmark's kind and ref for u, and answers the client when they are no good.
+// A post must exist and be visible to u; a skill is "prop:skill" with a known prop; a combo is an id.
+func (a *app) bookmarkRef(w http.ResponseWriter, u *user, kind, ref string) bool {
+	switch kind {
+	case "skill":
+		prop, skill, ok := strings.Cut(ref, ":")
+		if !ok || !knownProp(prop) || !skillIDRE.MatchString(skill) {
+			fail(w, http.StatusBadRequest, "A skill bookmark names a prop and a skill id, like nunchaku:F5.")
+			return false
+		}
+	case "combo":
+		if !comboIDRE.MatchString(ref) {
+			fail(w, http.StatusBadRequest, "That is not a combo id.")
+			return false
+		}
+	case "post":
+		id, err := strconv.ParseInt(ref, 10, 64)
+		if err != nil || id <= 0 {
+			fail(w, http.StatusBadRequest, "That is not a post id.")
+			return false
+		}
+		if _, ok := a.postOwner(w, id, u); !ok {
+			return false
+		}
+	default:
+		fail(w, http.StatusBadRequest, "A bookmark is a skill, a combo or a post.")
+		return false
+	}
+	return true
+}
+
+// handleBookmark adds the bookmark, or removes it when it is already there, and says which.
+func (a *app) handleBookmark(w http.ResponseWriter, r *http.Request, u *user) {
+	if !allowed(w, a.lim.bookmarks, u, "bookmarks") {
+		return
+	}
+	var in struct{ Kind, Ref string }
+	if !readJSON(w, r, 1024, &in) {
+		return
+	}
+	in.Ref = strings.TrimSpace(in.Ref)
+	if !a.bookmarkRef(w, u, in.Kind, in.Ref) {
+		return
+	}
+	// One statement either way, so two quick clicks cannot race into a duplicate key. The cap is
+	// checked in the same statement, so a burst cannot pass it.
+	res, err := a.db.Exec(`INSERT INTO bookmarks (user_id, kind, ref) SELECT $1, $2, $3
+		WHERE (SELECT count(*) FROM bookmarks WHERE user_id = $1) < $4 ON CONFLICT DO NOTHING`, u.ID, in.Kind, in.Ref, maxBookmarks)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	on := n == 1
+	if !on {
+		res, err := a.db.Exec(`DELETE FROM bookmarks WHERE user_id = $1 AND kind = $2 AND ref = $3`, u.ID, in.Kind, in.Ref)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if gone, _ := res.RowsAffected(); gone == 0 {
+			fail(w, http.StatusBadRequest, fmt.Sprintf("You have %d bookmarks, which is the most Flowa keeps. Remove one first.", maxBookmarks))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"on": on})
+}
+
+// handleBookmarks lists the viewer's bookmarks, newest first: skill and combo refs, and the bookmarked
+// posts in full, as the timeline shows them. A post the viewer may no longer see is left out.
+func (a *app) handleBookmarks(w http.ResponseWriter, _ *http.Request, u *user) {
+	rows, err := a.db.Query(`SELECT kind, ref FROM bookmarks WHERE user_id = $1 ORDER BY created_at DESC, ref`, u.ID)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	skills, combos, ids := []string{}, []string{}, []int64{}
+	for rows.Next() {
+		var kind, ref string
+		if err := rows.Scan(&kind, &ref); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		switch kind {
+		case "skill":
+			skills = append(skills, ref)
+		case "combo":
+			combos = append(combos, ref)
+		case "post":
+			id, _ := strconv.ParseInt(ref, 10, 64)
+			ids = append(ids, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out, err := a.loadPosts(u, 0, 0, 0, ids...)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// The posts carry their own ids; the list of ids says what is bookmarked, in bookmark order.
+	visible := []int64{}
+	for _, p := range out["posts"].([]*post) {
+		visible = append(visible, p.ID)
+	}
+	out["postIds"], out["skills"], out["combos"] = visible, skills, combos
+	delete(out, "more")
+	writeJSON(w, http.StatusOK, out)
 }
 
 /* ---------- comments and replies ---------- */
@@ -5350,6 +5494,8 @@ func (a *app) socialRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/posts/{id}", a.authed("", a.handleGetPost))
 	mux.HandleFunc("DELETE /api/posts/{id}", a.authed("", a.handleDeletePost))
 	mux.HandleFunc("POST /api/posts/{id}/like", a.authed("", a.handleLike))
+	mux.HandleFunc("GET /api/bookmarks", a.flagged("bookmarks", a.authed("", a.handleBookmarks)))
+	mux.HandleFunc("POST /api/bookmarks", a.flagged("bookmarks", a.authed("", a.handleBookmark)))
 	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed("", a.handleComment))
 	mux.HandleFunc("GET /api/posts/{id}/comments", a.authed("", a.handleGetComments))
 	mux.HandleFunc("DELETE /api/comments/{id}", a.authed("", a.handleDeleteComment))

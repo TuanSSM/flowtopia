@@ -630,7 +630,11 @@ func TestDBDashboard(t *testing.T) {
 	e.a.db.Exec(`UPDATE posts SET created_at = now() - interval '28 days' WHERE id = $1`, old2)
 	e.a.db.Exec(`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES ($1, 'post', $2, 'spam')`, adminID, p)
 	e.must(403, e.session(cID), "GET", "/api/admin/dashboard", nil)
+	e.a.version = "main.abc1234"
 	out := e.must(200, b, "GET", "/api/admin/dashboard", nil)
+	if out["version"] != "main.abc1234" {
+		t.Fatalf("version: %v", out["version"])
+	}
 	tot := out["totals"].(map[string]any)
 	if num(tot["users"]) != 3 || num(tot["moderators"]) != 1 || num(tot["admins"]) != 1 || num(tot["openReports"]) != 1 {
 		t.Fatalf("totals: %v", tot)
@@ -1237,4 +1241,64 @@ func TestDBLimitsBehindProxy(t *testing.T) {
 	if via("203.0.113.2", "POST", "/api/signin", map[string]any{"username": "second", "password": "long enough pw"}) != 200 {
 		t.Fatal("another visitor still signs in")
 	}
+}
+
+func TestDBBookmarks(t *testing.T) {
+	e := newEnv(t)
+	_, kim := e.user("kim", "user")
+	leeID, lee := e.user("lee", "user")
+	p := e.post(lee, "a post worth keeping")
+	ref := fmt.Sprint(p)
+	// Toggling: on, then off, then on again.
+	if out := e.must(200, kim, "POST", "/api/bookmarks", map[string]any{"kind": "post", "ref": ref}); out["on"] != true {
+		t.Fatalf("first toggle: %v", out)
+	}
+	if out := e.must(200, kim, "POST", "/api/bookmarks", map[string]any{"kind": "post", "ref": ref}); out["on"] != false {
+		t.Fatalf("second toggle: %v", out)
+	}
+	e.must(200, kim, "POST", "/api/bookmarks", map[string]any{"kind": "post", "ref": ref})
+	e.must(200, kim, "POST", "/api/bookmarks", map[string]any{"kind": "skill", "ref": "nunchaku:F5"})
+	e.must(200, kim, "POST", "/api/bookmarks", map[string]any{"kind": "combo", "ref": "m3k9ab1x"})
+	list := e.must(200, kim, "GET", "/api/bookmarks", nil)
+	if fmt.Sprint(list["skills"]) != "[nunchaku:F5]" || fmt.Sprint(list["combos"]) != "[m3k9ab1x]" || fmt.Sprint(list["postIds"]) != "["+ref+"]" {
+		t.Fatalf("list: %v", list["_raw"])
+	}
+	posts := list["posts"].([]any)
+	if len(posts) != 1 || num(posts[0].(map[string]any)["id"]) != p || list["users"].(map[string]any)[fmt.Sprint(leeID)] == nil {
+		t.Fatalf("posts in the list: %v", list["_raw"])
+	}
+	// Bad refs and kinds.
+	for _, in := range []map[string]any{{"kind": "skill", "ref": "drums:F1"}, {"kind": "skill", "ref": "F1"}, {"kind": "combo", "ref": "has space"}, {"kind": "nope", "ref": "x"}, {"kind": "post", "ref": "abc"}} {
+		e.must(400, kim, "POST", "/api/bookmarks", in)
+	}
+	e.must(404, kim, "POST", "/api/bookmarks", map[string]any{"kind": "post", "ref": "999999"})
+	// A post hidden by a moderator leaves the list and cannot be bookmarked by others.
+	e.a.db.Exec(`UPDATE posts SET hidden_at = now(), hidden_reason = 'spam' WHERE id = $1`, p)
+	if l := e.must(200, kim, "GET", "/api/bookmarks", nil); fmt.Sprint(l["postIds"]) != "[]" {
+		t.Fatalf("hidden post still listed: %v", l["_raw"])
+	}
+	e.a.db.Exec(`UPDATE posts SET hidden_at = NULL, hidden_reason = '' WHERE id = $1`, p)
+	// The cap: with 500 bookmarks, one more is refused but removing still works.
+	for i := 0; i < maxBookmarks-3; i++ {
+		e.a.db.Exec(`INSERT INTO bookmarks (user_id, kind, ref) VALUES ((SELECT id FROM users WHERE username = 'kim'), 'combo', $1)`, fmt.Sprintf("fill%d", i))
+	}
+	e.must(400, kim, "POST", "/api/bookmarks", map[string]any{"kind": "skill", "ref": "poi:F1"})
+	if out := e.must(200, kim, "POST", "/api/bookmarks", map[string]any{"kind": "skill", "ref": "nunchaku:F5"}); out["on"] != false {
+		t.Fatalf("removing at the cap: %v", out)
+	}
+	// Deleting the post drops its bookmark at the next housekeeping.
+	e.a.db.Exec(`DELETE FROM posts WHERE id = $1`, p)
+	n, err := e.a.housekeep()
+	if err != nil || n["bookmarks"] != 1 {
+		t.Fatalf("housekeep: %v %v", n, err)
+	}
+	if c := e.count(`SELECT count(*) FROM bookmarks WHERE kind = 'post'`); c != 0 {
+		t.Fatalf("post bookmarks left: %d", c)
+	}
+	// Someone else sees none of it, and with the flag off the endpoints are gone.
+	if l := e.must(200, lee, "GET", "/api/bookmarks", nil); fmt.Sprint(l["skills"]) != "[]" || fmt.Sprint(l["combos"]) != "[]" {
+		t.Fatalf("lee sees kim's bookmarks: %v", l["_raw"])
+	}
+	e.setFlag("bookmarks", false)
+	e.must(404, kim, "GET", "/api/bookmarks", nil)
 }

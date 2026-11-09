@@ -3,15 +3,17 @@
 #
 #   lint         gofmt, go vet, staticcheck; JS syntax and catalog format; Python syntax; workflow lint
 #   unit         go build + go test; the physics suite over every demo clip; bundles reproducible
-#   integration  real server against Postgres, driven through headless Firefox (test/browser:
-#                combos, demos, and the timeline, profiles, notifications and achievements)
+#   integration  real server against Postgres: the database tests, and each browser suite in
+#                test/browser driven through headless Firefox, one job per suite, in parallel
 #   screenshots  pictures of the pages and demos, pushed to the ci-screenshots branch
 #   docs         Markdown links and the front matter of the Claude Code files
 #   pr_summary   one sticky comment on the PR with the results and the size of the change
 #
-# A pull request that touches no code (Markdown, docs/, .claude/, .gitignore, LICENSE) runs only
-# the docs job: `changes` decides, the code jobs are skipped, and process_pr_result accepts the
-# skips in that case only, so such a PR can still auto-merge on the required check.
+# Only what a change can affect runs. `changes` lists the changed files and test/ci-plan.sh turns
+# them into a plan: which of lint, unit and screenshots to run, and which integration suites. A
+# documentation-only PR runs the docs job alone; a change to one browser test runs that suite; a
+# change to main.go, to this file, or to a path no rule knows runs everything. process_pr_result
+# accepts a skipped job only when the plan said it was not needed.
 name: process_pr
 
 on:
@@ -42,8 +44,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
-      code: ${{ steps.classify.outputs.code }}
-      files: ${{ steps.classify.outputs.files }}
+      code: ${{ steps.plan.outputs.code }}
+      lint: ${{ steps.plan.outputs.lint }}
+      unit: ${{ steps.plan.outputs.unit }}
+      screenshots: ${{ steps.plan.outputs.screenshots }}
+      suites: ${{ steps.plan.outputs.suites }}
     steps:
       # The PR title becomes the squash commit on main, which cliff.toml reads for the next version,
       # so it must be a Conventional Commits title (types in CLAUDE.md). Renamed? Re-run the checks.
@@ -65,18 +70,20 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - id: classify
+      - name: Plan the jobs from the changed files
+        id: plan
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           EVENT: ${{ github.event_name }}
         run: |
-          if [ "$EVENT" != pull_request ]; then echo "code=true" >> "$GITHUB_OUTPUT"; echo "files=0" >> "$GITHUB_OUTPUT"; echo "not a pull request: everything runs"; exit 0; fi
+          if [ "$EVENT" != pull_request ]; then
+            echo "not a pull request: everything runs"
+            test/ci-plan.sh --all | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
           changed=$(git diff --name-only "$BASE"...HEAD)
-          # Documentation: anything matching every pattern here is not code.
-          code=$(printf '%s\n' "$changed" | grep -vE '(^|/)[^/]+\.md$|^docs/|^\.claude/|^\.gitignore$|^\.editorconfig$|^LICENSE$' || true)
-          printf 'changed files:\n%s\n' "$changed"
-          if [ -n "$code" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; printf 'code files:\n%s\n' "$code"; else echo "code=false" >> "$GITHUB_OUTPUT"; echo "documentation only: the code jobs are skipped"; fi
-          echo "files=$(printf '%s\n' "$changed" | grep -c .)" >> "$GITHUB_OUTPUT"
+          printf 'changed files:\n%s\n\n' "$changed"
+          printf '%s\n' "$changed" | test/ci-plan.sh | tee -a "$GITHUB_OUTPUT"
 
   docs:
     name: docs
@@ -92,7 +99,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.lint == 'true'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -142,7 +149,9 @@ jobs:
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
       - name: Shell scripts
-        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh
+        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh
+      - name: The rules that choose which jobs run
+        run: test/ci-plan.sh --self-test
 
       - name: Workflow files
         uses: raven-actions/actionlint@v2
@@ -152,7 +161,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.unit == 'true'
     outputs:
       physics: ${{ steps.physics.outputs.line }}
     steps:
@@ -180,7 +189,7 @@ jobs:
           echo "line=$(grep -E '^[0-9]+ clips, problems' physics.txt | tail -1)" >> "$GITHUB_OUTPUT"
           exit "${code:-0}"
       - name: Upload physics report
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
         with:
           name: physics-report
@@ -214,12 +223,18 @@ jobs:
           git diff --exit-code --stat web/tour.js web/figure3d.js || {
             echo "::error::web/tour.js or web/figure3d.js is stale; run npm run build in tour/ and figure/ and commit"; exit 1; }
 
+  # One job per suite, in parallel; each has its own Postgres and server. fail-fast is off so
+  # every suite reports, not only the first to fail.
   integration:
-    name: integration tests
+    name: integration (${{ matrix.suite }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 15
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.suites != '[]' && needs.changes.outputs.suites != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -233,119 +248,49 @@ jobs:
           --health-retries 12
     env:
       DATABASE_URL: postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disable
-    outputs:
-      combo: ${{ steps.combo.outputs.line }}
-      demos: ${{ steps.demos.outputs.line }}
-      social: ${{ steps.social.outputs.line }}
-      mod: ${{ steps.mod.outputs.line }}
-      editor: ${{ steps.editor.outputs.line }}
-      links: ${{ steps.links.outputs.line }}
-      suggest: ${{ steps.suggest.outputs.line }}
-      avatars: ${{ steps.avatars.outputs.line }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version: stable   # what the Pi builds with; go.mod only sets the language version
-      # Headless Firefox only gets WebGL (software, llvmpipe) when a display exists, so the
-      # browser tests run under Xvfb; without it the 3D figure cannot be tested.
-      - name: Firefox
-        run: firefox --version
-
-      # Go tests that need Postgres (db_test.go); each runs in its own schema, so the browser
-      # tests below still start from an empty public schema.
-      - name: Database tests
-        run: TEST_DATABASE_URL="$DATABASE_URL" go test -race -count=1 -run DB -v ./... | tee dbtests.txt
-      - name: Combo builder
-        id: combo
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh combo.py | tee combo.txt || code=$?
-          echo "line=$(grep -E 'passed' combo.txt | tail -1)" >> "$GITHUB_OUTPUT"
-          exit "${code:-0}"
-      - name: Demos and 3D figure
-        id: demos
-        if: always()
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh demos.py | tee demos.txt || code=$?
-          echo "line=$(grep -E 'passed' demos.txt | tail -1)" >> "$GITHUB_OUTPUT"
-          exit "${code:-0}"
-      - name: Timeline, profiles, notifications and achievements
-        id: social
-        if: always()
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh social.py | tee social.txt || code=$?
-          echo "line=$(grep -E 'passed' social.txt | tail -1)" >> "$GITHUB_OUTPUT"
-          exit "${code:-0}"
-      - name: Moderation, roles and the admin dashboard
-        id: mod
-        if: always()
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh mod.py | tee mod.txt || code=$?
-          echo "line=$(grep -E 'passed' mod.txt | tail -1)" >> "$GITHUB_OUTPUT"
-          exit "${code:-0}"
-      - name: Skill map editor
-        id: editor
-        if: always()
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh editor.py | tee editor.txt || code=$?
-          echo "line=$(grep -E 'passed' editor.txt | tail -1)" >> "$GITHUB_OUTPUT"
-          exit "${code:-0}"
-      - name: Next-trick suggestions
-        id: suggest
-        if: always()
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh suggest.py | tee suggest.txt || code=$?
-          echo "line=$(grep -E 'passed' suggest.txt | tail -1)" >> "$GITHUB_OUTPUT"
-          exit "${code:-0}"
-      # The server asks a stand-in for Instagram, TikTok and YouTube (test/browser/stub.py), never the real sites.
-      - name: Link cards
-        id: links
-        if: always()
+      # db: the Go tests that need Postgres (db_test.go), each in its own schema. Every other suite
+      # is a test/browser script. Headless Firefox only gets WebGL (software, llvmpipe) when a
+      # display exists, so they run under Xvfb; without it the 3D figure cannot be tested.
+      - name: Run the ${{ matrix.suite }} suite
         env:
-          FLOWA_PREVIEW_BASE: http://127.0.0.1:3199
+          SUITE: ${{ matrix.suite }}
         run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh links.py | tee links.txt || code=$?
-          echo "line=$(grep -E 'passed' links.txt | tail -1)" >> "$GITHUB_OUTPUT"
+          mkdir -p report
+          if [ "$SUITE" = db ]; then
+            TEST_DATABASE_URL="$DATABASE_URL" go test -race -count=1 -run DB -v ./... | tee report/result.txt || code=$?
+            echo "$(grep -c -- '^--- PASS' report/result.txt) passed, $(grep -c -- '^--- FAIL' report/result.txt) failed, $(grep -c -- '^--- SKIP' report/result.txt) skipped" > report/line.txt
+            cat report/line.txt
+            exit "${code:-0}"
+          fi
+          case "$SUITE" in
+            # The server asks a stand-in for Instagram, TikTok and YouTube (test/browser/stub.py), never the real sites.
+            links) export FLOWA_PREVIEW_BASE=http://127.0.0.1:3199; file=links.py ;;
+            # The frame budget (33 ms for one demo frame with the heaviest avatar) is for this runner's
+            # software WebGL; a Pi is slower and sets FRAME_BUDGET_MS when it runs the suite.
+            avatar) export FRAME_BUDGET_MS=33; file=avatar.py ;;
+            # Demos and combos again with avatars on.
+            demos-avatars) export FLOWA_AVATARS=1; file=demos.py ;;
+            combo-avatars) export FLOWA_AVATARS=1; file=combo.py ;;
+            *) file="$SUITE.py" ;;
+          esac
+          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh "$file" | tee report/result.txt || code=$?
+          [ "$SUITE" = avatar ] && { grep -E '^demo frame|^parts' /tmp/flowa-test/out.txt || true; }
+          grep -E 'passed' report/result.txt | tail -1 > report/line.txt || true
           exit "${code:-0}"
-      # The frame budget (33 ms for one demo frame with the heaviest avatar) is for this runner's
-      # software WebGL; a Pi is slower and sets FRAME_BUDGET_MS when it runs the suite.
-      - name: Avatars
-        id: avatars
-        if: always()
-        env:
-          FRAME_BUDGET_MS: "33"
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh avatar.py | tee avatars.txt || code=$?
-          grep -E '^demo frame|^parts' /tmp/flowa-test/out.txt || true
-          echo "line=$(grep -E 'passed' avatars.txt | tail -1)" >> "$GITHUB_OUTPUT"
-          exit "${code:-0}"
-      - name: Demos and combos with avatars on
-        if: always()
-        env:
-          FLOWA_AVATARS: "1"
-        run: |
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh demos.py | tee demos-avatars.txt || code=$?
-          xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh combo.py | tee combo-avatars.txt || code=$?
-          exit "${code:-0}"
+      - name: Collect logs
+        if: ${{ !cancelled() }}
+        run: cp /tmp/flowa-test/out.txt /tmp/flowa-test/dev.log report/ 2>/dev/null || true
       - name: Upload logs
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
         with:
-          name: integration-logs
-          path: |
-            /tmp/flowa-test/out.txt
-            /tmp/flowa-test/dev.log
-            combo.txt
-            demos.txt
-            social.txt
-            dbtests.txt
-            mod.txt
-            editor.txt
-            links.txt
-            suggest.txt
-            avatars.txt
-            demos-avatars.txt
-            combo-avatars.txt
+          name: integration-${{ matrix.suite }}
+          path: report
           retention-days: 7
 
   # Pictures of the main pages and a sheet of demos, taken in headless Firefox against the
@@ -356,7 +301,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.screenshots == 'true'
     permissions:
       contents: write
     services:
@@ -387,7 +332,7 @@ jobs:
           FLOWA_PREVIEW_BASE: http://127.0.0.1:3199
         run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
         with:
           name: screenshots
@@ -430,7 +375,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [changes, docs, lint, unit, integration, screenshots]
-    if: always() && github.event_name == 'pull_request'
+    # Not on a cancelled run: a newer commit's run owns the comment.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     permissions:
       contents: read
       pull-requests: write
@@ -450,16 +396,34 @@ jobs:
         with:
           name: screenshots
           path: shots
+      - name: Fetch the integration results
+        if: needs.changes.outputs.suites != '[]' && needs.changes.outputs.suites != ''
+        continue-on-error: true   # a suite that never started has no results; the table says n/a
+        uses: actions/download-artifact@v5
+        with:
+          pattern: integration-*
+          path: results
+      - name: Integration detail
+        id: integ
+        env:
+          SUITES: ${{ needs.changes.outputs.suites }}
+        run: |
+          detail=""
+          for s in $(echo "${SUITES:-[]}" | jq -r '.[]'); do
+            line=$(cat "results/integration-$s/line.txt" 2>/dev/null || true)
+            detail+="${detail:+; }$s: ${line:-n/a}"
+          done
+          echo "detail=${detail:-none needed}" >> "$GITHUB_OUTPUT"
       - name: Screenshot gallery
         id: shots
         env:
           BASE: ${{ needs.screenshots.outputs.base }}
           RESULT: ${{ needs.screenshots.result }}
-          CODE: ${{ needs.changes.outputs.code }}
+          WANTED: ${{ needs.changes.outputs.screenshots }}
         run: |
           {
             echo 'md<<EOF'
-            if [ "$CODE" = false ]; then
+            if [ "$WANTED" != true ]; then
               echo '_No screenshots: nothing that is drawn changed._'
             elif [ -n "$BASE" ] && [ -f shots/index.json ]; then
               echo '### Screenshots'
@@ -480,37 +444,34 @@ jobs:
           SHOTS_MD: ${{ steps.shots.outputs.md }}
           SCREENS: ${{ needs.screenshots.result }}
           CODE: ${{ needs.changes.outputs.code }}
+          PLAN: ${{ toJSON(needs.changes.outputs) }}
           DOCS: ${{ needs.docs.result }}
           LINT: ${{ needs.lint.result }}
           UNIT: ${{ needs.unit.result }}
           INTEG: ${{ needs.integration.result }}
           PHYSICS: ${{ needs.unit.outputs.physics }}
-          COMBO: ${{ needs.integration.outputs.combo }}
-          DEMOS: ${{ needs.integration.outputs.demos }}
-          SOCIAL: ${{ needs.integration.outputs.social }}
-          MODS: ${{ needs.integration.outputs.mod }}
-          EDITOR: ${{ needs.integration.outputs.editor }}
-          LINKS: ${{ needs.integration.outputs.links }}
-          SUGGEST: ${{ needs.integration.outputs.suggest }}
-          AVATARS: ${{ needs.integration.outputs.avatars }}
+          INTEG_DETAIL: ${{ steps.integ.outputs.detail }}
           STAT: ${{ steps.size.outputs.stat }}
           FILES: ${{ steps.size.outputs.files }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          icon() { case "$1" in success) echo "✅ passed";; failure) echo "❌ failed";; cancelled) echo "⚪ cancelled";; skipped) [ "$CODE" = false ] && echo "➖ not needed" || echo "⏭️ skipped";; *) echo "⏭️ skipped";; esac; }
+          # icon <result> <plan key>: a skipped job the plan did not need reads "not needed".
+          icon() { case "$1" in success) echo "✅ passed";; failure) echo "❌ failed";; cancelled) echo "⚪ cancelled";; *)
+            if [ -n "${2:-}" ] && [ "$(echo "$PLAN" | jq -r --arg k "$2" 'if $k == "suites" then (.suites // "[]" | fromjson | length > 0) else .[$k] == "true" end')" = false ]; then echo "➖ not needed"; else echo "⏭️ skipped"; fi;; esac; }
           {
             echo '<!-- process_pr summary -->'
             echo "## process_pr · \`${SHA:0:7}\`"
             echo
             [ "$CODE" = false ] && echo '_Documentation only: no code changed, so the lint, test and screenshot jobs were not needed._' && echo
+            [ "$CODE" = true ] && echo "_Ran what this change can affect: integration suites $(echo "$PLAN" | jq -r '.suites // "[]" | fromjson | if length == 0 then "none" else join(", ") end')._" && echo
             echo '| Job | Result | Detail |'
             echo '| --- | --- | --- |'
             echo "| docs | $(icon "$DOCS") | Markdown links, Claude Code front matter |"
-            echo "| lint | $(icon "$LINT") | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
-            echo "| unit tests | $(icon "$UNIT") | ${PHYSICS:-go build, go test, physics suite, bundles} |"
-            echo "| integration tests | $(icon "$INTEG") | combo: ${COMBO:-n/a}; demos: ${DEMOS:-n/a}; community: ${SOCIAL:-n/a}; moderation: ${MODS:-n/a}; editor: ${EDITOR:-n/a}; links: ${LINKS:-n/a}; suggestions: ${SUGGEST:-n/a}; avatars: ${AVATARS:-n/a} |"
-            echo "| screenshots | $(icon "$SCREENS") | pages at desktop and phone width, demo sheet |"
+            echo "| lint | $(icon "$LINT" lint) | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
+            echo "| unit tests | $(icon "$UNIT" unit) | ${PHYSICS:-go build, go test, physics suite, bundles} |"
+            echo "| integration tests | $(icon "$INTEG" suites) | $INTEG_DETAIL |"
+            echo "| screenshots | $(icon "$SCREENS" screenshots) | pages at desktop and phone width, demo sheet |"
             echo
             echo "$SHOTS_MD"
             echo
@@ -541,8 +502,9 @@ jobs:
             if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
             else await github.rest.issues.createComment({ owner, repo, issue_number, body });
 
-  # The single check branch protection requires. It fails if any job above failed, was
-  # cancelled or was skipped, so a broken or missing job can never let a PR through.
+  # The single check branch protection requires. It fails if any job above failed or was
+  # cancelled, or was skipped though the plan needed it, so a broken or missing job can never let
+  # a PR through.
   process_pr_result:
     name: process_pr_result
     runs-on: ubuntu-24.04
@@ -553,15 +515,18 @@ jobs:
       - name: Check every job passed
         env:
           RESULTS: ${{ toJSON(needs) }}
-          CODE: ${{ needs.changes.outputs.code }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          # pr_summary is informational and does not run on workflow_dispatch. The code jobs may be
-          # skipped only when `changes` found no code; `changes` and `docs` must always pass.
-          bad=$(echo "$RESULTS" | jq -r --arg code "$CODE" 'to_entries[]
+          # pr_summary is informational and does not run on workflow_dispatch. A job may be skipped
+          # only when the plan from `changes` did not need it; `changes` and `docs` must always pass.
+          # A job the gate does not know is needed (null is not false).
+          bad=$(echo "$RESULTS" | jq -r '(.changes.outputs // {}) as $p
+            | {changes: true, docs: true, lint: ($p.lint == "true"), unit: ($p.unit == "true"),
+               integration: (($p.suites // "[]") | fromjson | length > 0), screenshots: ($p.screenshots == "true")} as $need
+            | to_entries[]
             | select(.key != "pr_summary")
             | select(.value.result != "success")
-            | select(.value.result != "skipped" or $code != "false" or (.key == "changes" or .key == "docs"))
+            | select(.value.result != "skipped" or $need[.key] != false)
             | .key')
-          if [ -n "$bad" ]; then echo "::error::failed or skipped: $bad"; exit 1; fi
-          [ "$CODE" = false ] && echo "documentation only: docs passed, code jobs not needed" || echo "all checks passed"
+          if [ -n "$bad" ]; then echo "::error::failed, cancelled, or skipped though needed: $bad"; exit 1; fi
+          echo "every needed job passed; plan: $(echo "$RESULTS" | jq -c '.changes.outputs')"

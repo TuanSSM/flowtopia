@@ -9,9 +9,10 @@ harness in `test/browser/`, and what the PR summary shows. Read `.claude/rules/c
 and the top of `process_pr.yml` before changing anything.
 
 How the pieces fit:
-- Jobs `lint`, `unit`, `integration`, `screenshots` run in parallel; `pr_summary` needs them and
-  writes one sticky comment (marker `<!-- process_pr summary -->`); `process_pr_result` is the
-  required check and fails on any non-success.
+- `changes` plans the run with `test/ci-plan.sh` from the changed files. Jobs `lint`, `unit`,
+  `integration` (a matrix, one job per suite) and `screenshots` run in parallel when the plan needs
+  them; `pr_summary` needs them and writes one sticky comment (marker `<!-- process_pr summary -->`);
+  `process_pr_result` is the required check and fails on any non-success the plan did not allow.
 - `test/browser/run.sh <script.py> [args]` builds the dev server, starts it on :3170 against a
   throwaway database, runs the script with `python3 -I`, and exits non-zero on a failed check.
   In CI it runs under `xvfb-run` so Firefox has WebGL.
@@ -27,8 +28,9 @@ When asked to add CI support for something:
 2. Make it work locally first with `test/browser/run.sh` or the plain command.
 3. Edit the workflow; run `actionlint` mentally: quote variables, use `|| code=$?` around piped
    commands so the output line is still written, keep `shell: bash` defaults.
-4. If a new job is added, add it to the `needs` of both `pr_summary` and `process_pr_result`, and
-   a row to the summary table.
+4. If a new job is added, add it to the `needs` of both `pr_summary` and `process_pr_result`, a
+   row to the summary table, and a key to the plan in `test/ci-plan.sh` and the gate. A new browser
+   suite is a new entry in the plan's `ALL` list, not a new job.
 5. Push the branch, open the PR, then watch it: `gh run watch <id> --exit-status`, and on failure
    read the log with `gh run view <id> --log | grep -E "^<job>" | grep -E "FAIL|Error|Traceback"`.
    Download artifacts with `gh run download <id> -n <name> -D /tmp/x` when the log is not enough.
