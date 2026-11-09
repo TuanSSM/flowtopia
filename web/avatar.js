@@ -11,9 +11,9 @@ const AV_TABS = [
   ['outfit', 'Outfit', ['top', 'topColor', 'bottoms', 'bottomsColor', 'shoes', 'shoesColor']],
   ['extras', 'Accessories', ['hat', 'hatColor', 'glasses', 'wristbands', 'wristColor']],
   ['props', 'Props', []],
-  ['body', 'Body', ['body', 'build']],
+  ['body', 'Body', ['frame', 'body', 'build']],
 ];
-const AV_LABEL = { skin: 'Skin tone', eyes: 'Eyes', brows: 'Brows', mouth: 'Mouth', hair: 'Style', hairColor: 'Colour', top: 'Top', topColor: 'Top colour', bottoms: 'Bottoms', bottomsColor: 'Bottoms colour', shoes: 'Shoes', shoesColor: 'Shoes colour', hat: 'Hat', hatColor: 'Hat colour', glasses: 'Glasses', wristbands: 'Wristbands', wristColor: 'Wristband colour', body: 'Height', build: 'Build' };
+const AV_LABEL = { skin: 'Skin tone', eyes: 'Eyes', brows: 'Brows', mouth: 'Mouth', hair: 'Style', hairColor: 'Colour', top: 'Top', topColor: 'Top colour', bottoms: 'Bottoms', bottomsColor: 'Bottoms colour', shoes: 'Shoes', shoesColor: 'Shoes colour', hat: 'Hat', hatColor: 'Hat colour', glasses: 'Glasses', wristbands: 'Wristbands', wristColor: 'Wristband colour', body: 'Height', build: 'Build', frame: 'Frame' };
 const AV_NAME = { tshirt: 'T-shirt', longsleeve: 'Long sleeves', hightops: 'High-tops', no: 'None', yes: 'Wear them', none: 'None' };
 const avName = v => AV_NAME[v] || v[0].toUpperCase() + v.slice(1);
 const avOn = () => !!flags.avatars;

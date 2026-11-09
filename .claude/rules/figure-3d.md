@@ -20,6 +20,12 @@ paths:
   figure from front, angle and side.
 - The model file is the three.js "X Bot"; any Mixamo-rigged GLB can replace it. Textures are
   blocked by the CSP (`connect-src 'self'`), so use neutral materials.
-- Avatar parts (outfits, head parts, wristbands) and body presets are made in code in
-  `figure/src/figure.js` ([docs/avatars.md](../../docs/avatars.md)). After changing them, run
-  `FRAME_BUDGET_MS=80 test/browser/run.sh avatar.py` on the Pi (CI uses 33 ms).
+- Avatar parts (outfits, head parts, wristbands), body presets and frames are made in code in
+  `figure/src/figure.js` ([docs/avatars.md](../../docs/avatars.md)). Place a head part with
+  `skinPoint` (the measured skin), never on a ball of the head's radius. After changing them, run
+  `node test/body3d.js parts`, then `FRAME_BUDGET_MS=80 test/browser/run.sh avatar.py` on the Pi
+  (CI uses 33 ms).
+- `figure/src/figure.js` loads in Node without WebGL (`load(url, bytes)`), which is how
+  `test/body3d.js` poses the figure against every clip and measures the props against the skin.
+  Keep `probe`, `partReport` and `stage` working there: no `document`, `window` or renderer in the
+  posing and measuring code.

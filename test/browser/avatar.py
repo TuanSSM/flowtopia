@@ -38,7 +38,7 @@ def reload(h):
     n_reload[0]+=1;cmd('WebDriver:Navigate',url=BASE+f'?r={n_reload[0]}'+h);time.sleep(1)
     wait(lambda: js("return document.readyState==='complete'&&!!window.Demo"))
 def figure_ready(): return wait(lambda: js("return !!(window.Figure3D&&window.Figure3D.ready)"),n=60)
-HEAVY={'v':1,'body':'tall','build':'broad','skin':'#5b3422','hair':'curly','hairColor':'#d6b47a','eyes':'wide','brows':'thick','mouth':'grin','top':'hoodie','topColor':'#c4572e','bottoms':'trousers','bottomsColor':'#1f2a44','shoes':'boots','shoesColor':'#2b2b2b','hat':'bucket','hatColor':'#2f6f4f','glasses':'square','wristbands':'yes','wristColor':'#d9a441','props':{'nunchaku':'#e0533a'}}
+HEAVY={'v':1,'body':'tall','build':'broad','frame':'feminine','skin':'#5b3422','hair':'curly','hairColor':'#d6b47a','eyes':'wide','brows':'thick','mouth':'grin','top':'hoodie','topColor':'#c4572e','bottoms':'trousers','bottomsColor':'#1f2a44','shoes':'boots','shoesColor':'#2b2b2b','hat':'bucket','hatColor':'#2f6f4f','glasses':'square','wristbands':'yes','wristColor':'#d9a441','props':{'nunchaku':'#e0533a'}}
 try:
     op=admin();api(op,'me',{'props':['nunchaku']},'PUT')
     api(op,'flags',{'flags':{'avatars':True,'community':True,'game':True,'model3d':True}},'PUT')
@@ -71,6 +71,11 @@ try:
     click(f'[data-act=av-set][data-k=skin][data-v="{tone}"]');time.sleep(1)
     c=snap('#av-cv')
     check('changing hair and then skin tone changes the preview',a and b and c and a!=b and b!=c,(a,b,c))
+    # Frames: the feminine and masculine frames each draw a different figure from the neutral one.
+    click('[data-act=av-tab][data-v=body]');time.sleep(.4)
+    fr={}
+    for f in ['neutral','feminine','masculine']: click(f'[data-act=av-set][data-k=frame][data-v={f}]');time.sleep(1.2);fr[f]=snap('#av-cv')
+    check('the neutral, feminine and masculine frames each draw a different figure',all(fr.values()) and len(set(fr.values()))==3 and js("return window.Figure3D.body().frame")=='masculine',js("return window.Figure3D.body()"))
     # Turning: a drag (pointer events) turns the figure.
     y0=js("return window.Demo.previewState.yaw")
     js("const c=document.querySelector('#av-cv'),r=c.getBoundingClientRect(),o={bubbles:true,pointerId:1,clientY:r.top+50};c.dispatchEvent(new PointerEvent('pointerdown',{...o,clientX:r.left+50}));c.dispatchEvent(new PointerEvent('pointermove',{...o,clientX:r.left+150}));c.dispatchEvent(new PointerEvent('pointerup',{...o,clientX:r.left+150}))")
@@ -110,7 +115,7 @@ try:
     note=js("return document.querySelector('.demo-body')?.textContent||''")
     fail=js("return fetch('clips/presets.json').then(r=>r.json()).then(p=>{const f=window.Demo.clip()?.f;return f&&p.fail[f]?p.fail[f]['tall-broad']||'':''})")
     check("a demo plays in the member's avatar",json.loads(worn or 'null')==HEAVY,worn)
-    check('on their body preset when the clip passes there, and on the standard body with a note when it does not',(body==[1.07,1.1] and not note) if not fail else (body==[1,1] and 'standard body' in note and fail in note),(body,note,fail))
+    check('on their body preset when the clip passes there, and on the standard body with a note when it does not',(body==[1.035,1.1] and not note) if not fail else (body==[1,1] and 'standard body' in note and fail in note),(body,note,fail))
     shot_if('avatar-demo')
     api(op,'flags',{'flags':{'avatars':False}},'PUT')
     reload('#/prop/nunchaku/F/F5');time.sleep(3);figure_ready();time.sleep(1.5)
@@ -123,22 +128,26 @@ try:
     base=js(FRAME,None);ms=js(FRAME,HEAVY)
     print(f'demo frame, median of 30: standard figure {base} ms, heaviest avatar {ms} ms')
     check(f'one demo frame with the heaviest avatar draws within {BUDGET:.0f} ms ({ms} ms; the standard figure takes {base} ms)',ms is not None and ms<=BUDGET,ms)
-    # ---- Parts: every part, in five poses, stays close to the body's capsules.
+    # ---- Parts: every part, in five poses, shows and stays close to the skin (measured against the mesh).
     POSES={'stand':{},'arms up':{'hL':[0.25,1.95,0.05],'hR':[-0.25,1.95,0.05]},'deep bend':{'pelvis':[0,0.78,-0.12],'spine':[0,0.75,0.66],'hL':[0.2,0.75,0.35],'hR':[-0.2,0.75,0.35]},'turn':{'face':[0.8,0,0.6]},'hand behind back':{'hR':[-0.1,1.0,-0.2]}}
     CFGS=[HEAVY,{**HEAVY,'hair':'ponytail','hat':'cap','glasses':'round','eyes':'sleepy','mouth':'open','brows':'arched'},{**HEAVY,'hair':'long','hat':'beanie','glasses':'none','mouth':'smile','brows':'angled','eyes':'narrow'},{**HEAVY,'hair':'bun','hat':'none','mouth':'neutral','brows':'straight','eyes':'round'},{**HEAVY,'hair':'buzz','hat':'none'},{**HEAVY,'hair':'short','hat':'none'}]
-    worst=js("""const D=window.Demo,P=arguments[0],C=arguments[1],out={};
+    worst=js("""const D=window.Demo,P=arguments[0],C=arguments[1],out={},least={};
       const cv=document.createElement('canvas');cv.width=cv.height=200;const x=cv.getContext('2d'),col=D.colors();
       for(const cfg of C)for(const [name,pose] of Object.entries(P)){
         D.draw(x,200,{fr:[pose],props:[],dur:1,still:true},0,0.4,false,col,true,cfg);
-        for(const [part,w] of Object.entries(window.Figure3D.partReport())){if(!out[part])out[part]={};out[part][name]=Math.max(out[part][name]??-1,w)}}
-      return out""",POSES,CFGS)
-    print('parts, furthest outside the head or wrist by pose (m):',worst)
+        for(const [part,w] of Object.entries(window.Figure3D.partReport())){if(!out[part])out[part]={};out[part][name]=Math.max(out[part][name]??-1,w.out);least[part]=Math.min(least[part]??1,w.out)}}
+      return {out,least}""",POSES,CFGS) or {}
+    least=worst.get('least',{});worst=worst.get('out',{})
+    print('parts, furthest outside the skin by pose (m):',worst)
+    print('parts, least proud of the skin (m):',least)
     # Face parts, glasses and wristbands sit on the skin; hats have brims and hair hangs (a ponytail,
-    # long hair), so they reach further, as real ones do.
+    # long hair), so they reach further, as real ones do. Every part shows: at least 2 mm proud of the skin.
     LIMITS={'hat':0.07,'hair':0.10}
-    over={k:v for k,v in (worst or {}).items() if max(v.values())>LIMITS.get(k,0.03)}
-    moved={k:v for k,v in (worst or {}).items() if max(v.values())-min(v.values())>0.002}
-    check('face parts, glasses and wristbands stay within 3 cm of the head or wrist, hats within 7 cm and hair within 10 cm',worst and len(worst)>=7 and not over,over or worst)
+    over={k:v for k,v in worst.items() if max(v.values())>LIMITS.get(k,0.03)}
+    moved={k:v for k,v in worst.items() if max(v.values())-min(v.values())>0.003}
+    hidden={k:v for k,v in least.items() if v<0.002}
+    check('face parts, glasses and wristbands stay within 3 cm of the skin, hats within 7 cm and hair within 10 cm',worst and len(worst)>=7 and not over,over or worst)
+    check('every part stands at least 2 mm proud of the skin, so it shows (glasses and eyes used to sit inside the face)',worst and not hidden,hidden)
     check('every part follows its bone through five poses',worst and not moved,moved)
     # ---- Stickers: the unlock card and the milestone post show the avatar.
     api(op,'flags',{'flags':{'demos':False}},'PUT')

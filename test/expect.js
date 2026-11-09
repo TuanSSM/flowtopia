@@ -55,7 +55,7 @@ function eight(c, ax, sideAx) {
 }
 // Unit-circle staff moves: turns of the staff per circle of the hand.
 function ratio(c, want, centre) { const st = staffTurns(c, 0), hd = handTurns(c, centre, 2); return (Math.abs(hd) === 1 && st / hd === want) || `staff turns ${st / hd} per hand circle; wanted ${want}`; }
-const SH = [-0.24, 1.43, 0];
+const SH = [-0.26, 1.43, 0]; // the unit circles' centre, a little out from the shoulder (sim/specs.js SH)
 const span = v => Math.max(...v) - Math.min(...v);
 Object.assign(X, {
   'staff:F4': { '*': c => Math.abs(staffTurns(c, 2)) === 1 || 'the staff does not make one turn per repeat' },

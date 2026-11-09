@@ -9,9 +9,9 @@ and of each other, hand speed, leg length, feet on the floor and balance.
 | Nunchaku | 109 | 41 | 14 | 54 |
 | Poi | 90 | 18 | 11 | 61 |
 | Staff | 84 | 10 | 18 | 56 |
-| Double staff | 72 | 28 | 16 | 28 |
+| Double staff | 72 | 27 | 16 | 29 |
 | Buugeng | 56 | 7 | 35 | 14 |
-| **Total** | 411 | 104 | 94 | 213 |
+| **Total** | 411 | 103 | 94 | 214 |
 
 The number is how many variants the skill shows. "Simulated" clips move by gravity, drag, contact and tether or cord tension.
 "Solved" poi clips give the head its defined path and place the hand exactly where gravity and tension produce it.
@@ -59,13 +59,13 @@ The grouping in the last column is by keyword, so treat it as a guide to the wor
 
 ## Double staff
 
-**Demos (28):** F1 Thumb end and pinky end (1, picture); F3 Thumbs in and thumbs out (3, picture); F5 One-hand figure 8 (1, hand-driven); F6 Reverse figure 8 (1, hand-driven); T1 The four timing and direction modes (4, hand-driven); T2 Butterfly figure 8 (opposite direction) (1, hand-driven); T3 Same-direction figure 8 (1, hand-driven); T4 Same-direction 2-beat weave (2, hand-driven); T5 Butterfly weave (opposite-direction 2-beat) (1, hand-driven); T6 Quarter time (2, hand-driven); W1 Hip reel (1, hand-driven); W2 Shoulder reel (1, hand-driven); I1 One-staff isolation (2, hand-driven); I2 Double isolations in the four modes (4, hand-driven); I3 Pinky-end isolation and end combos (2, hand-driven); I4 Extension (2, hand-driven); A1 Basic antispin (1, hand-driven); A2 Four-petal antispin with both staffs (4, hand-driven); A3 Inspin (1, hand-driven); A8 Cateyes (1, hand-driven); A10 Eight-petal antispin flower (1, hand-driven); A11 Opening and closing the book (1, hand-driven); H1 Isolation versus antispin hybrid (1, hand-driven); H6 Quarter-time hybrids (1, hand-driven); J1 Inside throw, same hand (1, simulated); J2 Inside throw to the other hand (1, simulated); L1 Move with and against the staffs (1, hand-driven); L2 Turns (1, hand-driven).
+**Demos (27):** F1 Thumb end and pinky end (1, picture); F3 Thumbs in and thumbs out (3, picture); F5 One-hand figure 8 (1, hand-driven); F6 Reverse figure 8 (1, hand-driven); T1 The four timing and direction modes (4, hand-driven); T2 Butterfly figure 8 (opposite direction) (1, hand-driven); T3 Same-direction figure 8 (1, hand-driven); T4 Same-direction 2-beat weave (2, hand-driven); T5 Butterfly weave (opposite-direction 2-beat) (1, hand-driven); T6 Quarter time (2, hand-driven); W1 Hip reel (1, hand-driven); I1 One-staff isolation (2, hand-driven); I2 Double isolations in the four modes (4, hand-driven); I3 Pinky-end isolation and end combos (2, hand-driven); I4 Extension (2, hand-driven); A1 Basic antispin (1, hand-driven); A2 Four-petal antispin with both staffs (4, hand-driven); A3 Inspin (1, hand-driven); A8 Cateyes (1, hand-driven); A10 Eight-petal antispin flower (1, hand-driven); A11 Opening and closing the book (1, hand-driven); H1 Isolation versus antispin hybrid (1, hand-driven); H6 Quarter-time hybrids (1, hand-driven); J1 Inside throw, same hand (1, simulated); J2 Inside throw to the other hand (1, simulated); L1 Move with and against the staffs (1, hand-driven); L2 Turns (1, hand-driven).
 
 **No demo because the sources do not confirm or describe the move (16):** F2, F4, W6, W8, W9, I6, I7, H9, H10, J3, J4, J5, J6, C1, C4, C5.
 
 **Described, but would need:**
 
-- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 20 skills (F7, W3, W4, W5, W7, W10, I5, I8, A4, A5, A6, A7, A9, H2, H3, H4, H7, H8, H11, H12)
+- both arms or the whole body moving in ways the figure cannot yet show (arm crossing, turns, hand changes): 21 skills (F7, W2, W3, W4, W5, W7, W10, I5, I8, A4, A5, A6, A7, A9, H2, H3, H4, H7, H8, H11, H12)
 - the prop touching or wrapping the body (contact physics): 3 skills (H5, C2, C3)
 - the prop leaving the hand (release and catch physics): 1 skills (J7)
 - no motion to show, or a composition skill (grips, planning, routines, footwork): 4 skills (L3, L4, L5, L6)

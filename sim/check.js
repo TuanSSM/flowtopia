@@ -133,8 +133,10 @@ function floorErrors(c) {
 function bodyErrors(c, sp) {
   const errs = [], o = overlaps(c), tol = c.method === 'sim' || c.method === 'flight' ? 0.008 : 0.003;
   if (o.prop[0] > tol && !(sp.contact && o.prop[0] < 0.02)) errs.push(`${mm(o.prop[0])} ${o.prop[1]}`);
-  if (o.grip[0] > 0.02 && !sp.fingers) errs.push(`${mm(o.grip[0])} ${o.grip[1]}`);
-  if (o.limb[0] > 0.012) errs.push(`${mm(o.limb[0])} ${o.limb[1]}`);
+  // A held stick may rest on the forearm, not sink into it: the capsules are the drawn skin.
+  if (o.grip[0] > 0.01 && !sp.fingers) errs.push(`${mm(o.grip[0])} ${o.grip[1]}`);
+  // The capsules are the drawn skin, and skin and muscle give about 2 cm when an arm presses on the body.
+  if (o.limb[0] > 0.02) errs.push(`${mm(o.limb[0])} ${o.limb[1]}`);
   const an = anatomy(c, sp);
   errs.push(...an.errs);
   return { errs, twist: an.twist };

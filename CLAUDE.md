@@ -60,6 +60,7 @@ gofmt -l . && go vet ./...                 # Go
 node --check web/*.js sim/*.js test/*.js   # JS syntax
 node test/catalog.js web/catalog/*.json    # catalog format
 node test/physics.js                       # every clip (~2.5 min on the Pi); ONLY='nunchaku:F5' for one
+node test/body3d.js                        # the 3D figure: no prop drawn into the body, avatar parts show
 node sim/bake.js                           # rebake web/clips after changing sim/
 (cd figure && npm run build)               # rebuild web/figure3d.js after changing figure/src
 test/browser/run.sh combo.py               # browser tests (throwaway DB in Docker, server on :3170)

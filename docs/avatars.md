@@ -11,7 +11,7 @@ A small JSON object (`users.avatar_cfg`, at most 2 KB), versioned with `v`:
 
 | Field | Values |
 | --- | --- |
-| `body`, `build` | body preset: short, average or tall; lean, average or broad |
+| `body`, `build`, `frame` | body preset: short, average or tall; lean, average or broad; frame: neutral, feminine or masculine |
 | `skin` | one of 12 skin tones |
 | `hair`, `hairColor` | none, buzz, short, long, ponytail, bun or curly; one of 8 hair colours |
 | `eyes`, `brows`, `mouth` | 4 eye shapes, 4 brow shapes or none, 4 mouths |
@@ -32,33 +32,40 @@ There are no model files or textures for parts. Everything is made in code in th
   the bone that moves it most (trunk, upper arm, forearm, hips and thighs, shin, ankle band, foot).
   A top colours the trunk and, by sleeve length, the arms; bottoms the hips and, unless shorts, the
   legs; shoes the feet and, for high-tops and boots, 6 or 13 cm up the shin.
-- **Head parts** (hair, eyes, brows, mouth, hats, glasses) are simple shapes placed on the head,
-  measured from the model's own head vertices, and merged into one mesh with vertex colours, fixed
-  to the head bone. **Wristbands** are fixed to the hand bones. A part fixed to a bone costs nothing
-  to skin, so the figure still skins one body mesh per frame.
+- **Head parts** (hair, eyes, brows, mouth, hats, glasses) are simple shapes placed on the head and
+  merged into one mesh with vertex colours, fixed to the head bone. The head is measured from the
+  skinned mesh at rest: its centre, its three semi-axes (8.8 cm to each side, 10.6 cm up, 12.4 cm front
+  to back) and, for any direction, how far the skin is. Face parts and glasses are placed a few
+  millimetres outside that measured skin, so they show (they used to be placed on a ball of the head's
+  height and sat inside the mannequin's longer face); caps, crowns and bands are stretched to the
+  semi-axes; glasses have temples back to the ears. **Wristbands** are fixed to the hand bones. A part
+  fixed to a bone costs nothing to skin, so the figure still skins one body mesh per frame.
 - **Body presets** scale the figure: height scales the whole model; build widens the trunk out from
   the spine, the limbs out from their bones, and the collarbones, by moving rest-pose vertices.
   Bones are never scaled unevenly, since posing reads each parent's rotation.
 
 To add a part: add its option to `web/avatar-def.json`, draw it in `buildHead` (head parts, with a
 `tag` so the parts test can find it) or as a mesh fixed to a bone with `attach`, rebuild the bundle
-(`cd figure && npm run build`), and run `test/browser/avatar.py`. Its parts check measures how far
-each part reaches outside the figure's own head or wrist in five poses: face parts, glasses and
-wristbands within 3 cm, hats within 7 cm (a brim) and hair within 10 cm (a ponytail hangs), and the
-same in every pose, which shows the part follows its bone. Measured now: eyes, brows and mouth 1.5 cm,
-glasses 2 cm, wristbands 0.5 cm, hats 6.4 cm, hair 8.9 cm.
+(`cd figure && npm run build`), and run `node test/body3d.js parts` (the same check runs in the
+browser in `test/browser/avatar.py`). It measures every part against the mesh itself, by the nearest
+triangle of the skin, in five poses: every part stands at least 2 mm proud of the skin, so it shows;
+face parts, glasses and wristbands stay within 3 cm of it, hats within 7 cm (a brim) and hair within
+10 cm (a ponytail hangs); and each measures the same in every pose, which shows the part follows its
+bone. Measured now: eyes 10 to 12 mm proud, brows 14 to 16, mouth 8 to 12, glasses 25 to 28,
+wristbands 15, hats up to 62, hair up to 66.
 
 ## Body presets and their checks
 
 | Preset | Height factor | Build factor |
 | --- | --- | --- |
-| short, average, tall | 0.93, 1, 1.07 | |
+| short, average, tall | 0.90, 1, 1.035 | |
 | lean, average, broad | | 0.92, 1, 1.1 |
 
 Height scales lengths: arms, legs, pelvis and chest height. Build scales widths: shoulders, hips, the
 trunk and the limbs. Breadth follows height only loosely in people, so height leaves widths alone.
-The standard figure is about 1.74 m tall with its shoulder joints 0.40 m apart, so the presets run
-from about 1.62 to 1.86 m and from 0.37 to 0.44 m across the shoulders. The 2012 US Army
+The standard figure is 1.79 m tall (the 3D model's height; the rig's head is where the model's is) with
+its shoulder joints 0.40 m apart, so the presets run from about 1.61 to 1.86 m and from 0.37 to 0.44 m
+across the shoulders. The 2012 US Army
 anthropometric survey (ANSUR II; Gordon et al., *2012 Anthropometric Survey of U.S. Army Personnel:
 Methods and Summary Statistics*, NATICK/TR-15/007,
 [DTIC](https://apps.dtic.mil/sti/tr/pdf/ADA611869.pdf)) gives stature from about 1.52 m (5th
@@ -86,6 +93,71 @@ run on each preset (`bodyErrors` and `floorErrors` in `sim/check.js`), with no t
 Most failures are real: shorter arms cannot reach where the standard body's hands go, wider
 shoulders put a hand further from a cross-body grip, and longer forearms bend the elbow so a staff
 passes through it.
+
+## Frames
+
+The frame (`frame`: neutral, feminine or masculine) shapes the drawn figure. The mannequin as it comes
+is the neutral frame. The other two move its rest-pose vertices as the build does, out from the spine
+for the trunk and from the bone for the limbs, by a factor that changes along the trunk, plus a bust for
+the feminine frame; the collarbones follow the shoulder factor so the arms start at the shoulders.
+
+| Frame | Shoulders | Chest | Waist | Hips | Neck | Arms | Legs | Bust |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| feminine | 0.93 | 0.97 | 0.90 | 1.06 | 0.88 | 0.94 | 1.02 | 3.5 cm forward |
+| masculine | 1.06 | 1.04 | 1.02 | 0.97 | 1.08 | 1.05 | 1.00 | none |
+
+The direction and rough size of each come from the ANSUR II tables cited above, as the ratio of the
+women's to the men's means: shoulders (biacromial breadth) about 11% narrower, waist girth about 12%
+smaller, neck girth about 15% smaller, hip breadth a few percent wider. The neutral mannequin sits
+between the two, so each frame moves about half of that away from it.
+
+A frame changes the figure, not the rig: the rig the physics and body checks use (`sim/check.js`) is
+the same for every frame, so the clips, their checks and `web/clips/presets.json` do not change. What
+does change is how close the drawn skin comes to the props, which `node test/body3d.js` measures on
+every clip for the neutral, feminine and masculine frames (below).
+
+## The drawn body and the props
+
+The physics and the body checks keep every prop clear of the rig's capsules (`Demo.caps` in
+`web/demo.js`), so those capsules must be the drawn body. They are fitted to the 3D model's skin: a head
+longer than it is wide and at the model's height, a neck, the shoulders and the upper back, hips and
+buttocks reaching well outside the trunk, and limbs thicker near the body than near their ends (the X Bot
+is a chunky mannequin). `node test/body3d.js rig` measures, standing, how far the skin reaches outside
+the capsules anywhere: at most 25 mm is allowed, and it is 22 mm now, on the flat of the upper back. Before
+the fit the gap was up to 70 mm (the hips), the head sat 6 cm lower than the model's, and 43 of 158 clips
+drew a prop through the figure, the worst 86 mm deep.
+
+Fitting the body changed what the physics sees, so the clips were baked again and the moves that no
+longer passed were set right at their source rather than by loosening a check: the resting hand hangs
+at 0.26 m from the middle (0.24 put it inside the hips); the wall-plane nunchaku swing centre moved out
+to 0.42 m and forward to 0.26 m (the tosses were catching the hip); the horizontal figure 8 and the
+staff rotor moved forward; the poi flowers' arm is held out at 0.36 m and the butterfly's elbows are
+given (out at the sides, so the forearms lie in front of the belly); the unit circles' centre is a little
+out from the shoulder and the staff rests on the back of a 5 cm forearm; the hip reel is beside and in
+front of the hip with the elbow behind the hand; the neck roll's sticks slide over the chest; a wrist
+roll's radius is the forearm's plus the stick's; the catching hand of a cross toss keeps its elbow low
+and arrives no faster than 1.2 m/s; and three still pictures were moved by a centimetre or two. Three
+tolerances did change, each for a reason the fit made true: a limb may press 20 mm into the body (the
+capsules are now the skin, and skin and muscle give about that much); a held stick may sink 10 mm into
+the forearm it rests along, not 20; and a staff counts as in the hand up to 72 mm from the fist (on the
+back of the forearm in a unit circle). The posture cache
+(`sim/fits.json`) was emptied, so every searched posture was chosen against the new body.
+
+`node test/body3d.js` also poses and skins the figure in Node exactly as the browser does
+(`figure/src/figure.js` loads without WebGL) and, for every clip at 8 phases on the neutral, feminine
+and masculine frames, samples every prop's tubes and balls and measures each sample against the nearest
+triangle of the skin. It measures what the checks measure, in two channels: a prop against the body and
+the other arm may go at most 25 mm into the skin, which is what the capsules may miss of it (the checks
+keep the props clear of the capsules, not of the mesh); a held prop against the arm that holds it, which
+the checks let sink 10 mm into the forearm capsule, may go 35 mm. The allowances mirror the checks' own: a
+clip the checks let touch the body (`contact`) may go 10 mm further; a clip turned by finger work
+(`fingers`) is not measured against the arm that holds the prop; the hands are left out, as the fingers
+wrap round what is held, and so is the forearm within 13 cm of the wrist, where a held stick may lie; and
+a poi's tether or a nunchaku's cord is not measured against the arm of the hand it leaves from, as the hand
+model cannot steer a poi's plane ([demo-engine.md](demo-engine.md), limitation 4) and the checks let the
+tether cross that arm. Within those rules the drawn figure shows what the physics allows and no more. The
+test lists every clip over the limit with the depth, the prop, the bone under it and the phase; `ALL=1`
+lists every clip, `PRESETS=1` runs the body presets too, `FRAMES=0` the neutral frame only.
 
 ## Stickers
 

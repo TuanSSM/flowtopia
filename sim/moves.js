@@ -17,7 +17,8 @@ const ELBOW = { auto: null, under: [0, -0.4, -0.05], out: [-0.4, -0.15, -0.1], b
 const elbowAt = (name, c) => ELBOW[name] ? () => add(c, ELBOW[name]) : null;
 function score(clip) {
   const sc = C.scene({ make: () => clip }), o = K.overlaps(sc), a = K.anatomy(sc, {});
-  return Math.max(o.prop[0], o.grip[0] - 0.015, o.limb[0] - 0.008, a.errs.length ? 0.5 : 0);
+  // Each term is zero within what bodyErrors (sim/check.js) allows: 10 mm for a held stick on its arm, 20 mm for a limb.
+  return Math.max(o.prop[0], o.grip[0] - 0.01, o.limb[0] - 0.02, a.errs.length ? 0.5 : 0);
 }
 function fitted(name, grid, make) {
   return memo(() => {

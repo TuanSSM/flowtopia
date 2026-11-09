@@ -26,14 +26,15 @@ const Demo = (() => {
   // the way the chest faces, the line of the spine, the feet and the hands; everything
   // else (shoulders, elbows, knees) follows from bone lengths. Missing parts stand at rest.
   const UP = [0, 1, 0], BASE = { U_ARM: 0.31, F_ARM: 0.28, THIGH: 0.47, SHIN: 0.465 };
-  const DIM0 = { pelvis: 0.97, chest: 0.46, head: 0.66, shoulder: 0.2, hip: 0.1, stance: 0.14, ankle: 0.04 };
+  // head is the centre of the head above the pelvis: where the 3D model's head is (it stands 1.79 m).
+  const DIM0 = { pelvis: 0.97, chest: 0.46, head: 0.718, shoulder: 0.2, hip: 0.1, stance: 0.14, ankle: 0.04 };
   let U_ARM = BASE.U_ARM, F_ARM = BASE.F_ARM, THIGH = BASE.THIGH, SHIN = BASE.SHIN, REACH = U_ARM + F_ARM, DIM = { ...DIM0 };
   // Body presets for avatars: a height (it scales lengths) and a build (it scales widths: shoulders,
   // hips, trunk and limbs; breadth follows height only loosely in people, so height leaves it). The
   // standard body (1, 1) is the one every clip was simulated for; sim/presets.js checks each clip on
   // each preset, and a clip is moved as a whole to fit a preset (fit), which leaves its physics as it was.
-  const BODY = { sc: 1, bd: 1 };
-  const HEIGHTS = { short: 0.93, average: 1, tall: 1.07 }, BUILDS = { lean: 0.92, average: 1, broad: 1.1 };
+  const BODY = { sc: 1, bd: 1, frame: 'neutral' }, FRAMES = ['neutral', 'feminine', 'masculine'];
+  const HEIGHTS = { short: 0.9, average: 1, tall: 1.035 }, BUILDS = { lean: 0.92, average: 1, broad: 1.1 };
   function setBody(sc = 1, bd = 1) {
     BODY.sc = sc; BODY.bd = bd;
     U_ARM = BASE.U_ARM * sc; F_ARM = BASE.F_ARM * sc; THIGH = BASE.THIGH * sc; SHIN = BASE.SHIN * sc; REACH = U_ARM + F_ARM;
@@ -67,7 +68,7 @@ const Demo = (() => {
     const J = { pelvis, chest, head, face, up, left, nose: add(head, mul(fwd, 0.1)) };
     for (const [s, k] of [['L', 1], ['R', -1]]) {
       const sh = add(chest, mul(left, DIM.shoulder * k)), hip = add(pelvis, mul(side, DIM.hip * k));
-      const hand = p['h' + s] || add(pelvis, add(mul(side, 0.24 * k), add([0, -0.04, 0], mul(face, -0.04))));
+      const hand = p['h' + s] || add(pelvis, add(mul(side, 0.26 * BODY.bd * k), add([0, -0.04, 0], mul(face, -0.04)))); // at rest, beside the hip, further out on a broad build
       // Where the elbow goes. Low and in front it hangs down and back; overhead it points out
       // to the side; behind the back it points out and back; close across the chest it comes forward.
       const r = sub(hand, chest), own = dot(r, left) * k, front = dot(r, fwd);
@@ -83,16 +84,33 @@ const Demo = (() => {
     }
     return J;
   }
-  // The figure as capsules (a line with a radius), for contact. An arm that holds a prop
-  // stops short of the fist, which is wrapped around it.
+  // The figure as capsules (a line with a radius), for contact: what the physics and the body checks
+  // keep the props clear of. They are fitted to the 3D model's skin (node test/body3d.js rig measures
+  // how far the skin reaches outside them), so what the checks pass is what the drawn figure shows:
+  // the head is longer than it is wide, the hips and the buttocks reach well outside the trunk, each
+  // limb is thicker near the body than near its end, and the shoulders and the neck have their own.
+  // An arm that holds a prop stops 10 cm short of the fist: the wrist and the hand are wrapped around it.
   const cap = (a, b, r, name, side) => ({ a, b, r, name, side });
   function caps(J, hold = {}) {
-    const sc = BODY.sc, bd = BODY.bd;
-    const out = [cap(J.head, J.head, 0.105, 'head'), cap(add(J.pelvis, mul(J.up, 0.08 * sc)), add(J.pelvis, mul(J.up, 0.41 * sc)), 0.135 * bd, 'torso')];
+    const sc = BODY.sc, bd = BODY.bd, up = J.up, fwd = cross(J.left, up), at = (v, h, f = 0) => add(add(v, mul(up, h * sc)), mul(fwd, f));
+    const out = [
+      cap(at(J.head, 0, -0.035), at(J.head, -0.02, 0.04), 0.105, 'head'),
+      cap(at(J.chest, 0.03, -0.01), at(J.head, -0.07, 0), 0.075 * bd, 'neck'),
+      cap(at(J.chest, 0.15 - 0.46), J.chest, 0.145 * bd, 'torso'), // waist to chest
+      // Belly, pelvis and buttocks: two upright capsules side by side, as the hips are wider than they are deep.
+      cap(at(add(J.pelvis, mul(J.left, 0.06 * bd)), -0.1, -0.02), at(add(J.pelvis, mul(J.left, 0.06 * bd)), 0.15, -0.02), 0.14 * bd, 'torso'),
+      cap(at(add(J.pelvis, mul(J.left, -0.06 * bd)), -0.1, -0.02), at(add(J.pelvis, mul(J.left, -0.06 * bd)), 0.15, -0.02), 0.14 * bd, 'torso'),
+      cap(at(add(J.shL, mul(J.left, -0.06 * bd)), 0, -0.035), at(add(J.shR, mul(J.left, 0.06 * bd)), 0, -0.035), 0.095 * bd, 'torso'), // chest top and trapezius, short of the deltoids
+      cap(at(add(J.shL, mul(J.left, -0.1 * bd)), -0.1, -0.085), at(add(J.shR, mul(J.left, 0.1 * bd)), -0.1, -0.085), 0.07 * bd, 'torso'), // the upper back, flat and broad
+    ];
     for (const s of ['L', 'R']) {
-      const el = J['el' + s], hand = J['h' + s];
-      out.push(cap(J['hip' + s], J['knee' + s], 0.058 * bd, 'thigh', s), cap(J['knee' + s], J['f' + s], 0.058 * bd, 'shin', s),
-        cap(J['sh' + s], el, 0.042 * bd, 'upper arm', s), cap(el, hold[s] ? add(hand, mul(norm(sub(el, hand)), 0.07)) : hand, 0.038 * bd, 'forearm', s));
+      const el = J['el' + s], hand = J['h' + s], hip = J['hip' + s], knee = J['knee' + s], foot = J['f' + s], sh = J['sh' + s];
+      const t1 = mix(hip, knee, 0.35), t2 = mix(hip, knee, 0.7), midS = mix(knee, foot, 0.45), midA = mix(sh, el, 0.5), midF = mix(el, hand, 0.5);
+      const hipOut = at(add(hip, mul(J.left, 0.07 * bd * (s === 'L' ? 1 : -1))), -0.11); // the hip joint's outer bulge
+      out.push(cap(hipOut, hipOut, 0.085 * bd, 'thigh', s), cap(hip, t1, 0.1 * bd, 'thigh', s), cap(t1, t2, 0.075 * bd, 'thigh', s), cap(t2, knee, 0.065 * bd, 'thigh', s),
+        cap(knee, knee, 0.085 * bd, 'shin', s), cap(knee, midS, 0.072 * bd, 'shin', s), cap(midS, foot, 0.045 * bd, 'shin', s),
+        cap(add(sh, mul(J.left, (s === 'L' ? -0.03 : 0.03) * bd)), sh, 0.06 * bd, 'upper arm', s), cap(sh, midA, 0.062 * bd, 'upper arm', s), cap(midA, el, 0.055 * bd, 'upper arm', s), // the deltoid, then the arm
+        cap(el, midF, 0.063 * bd, 'forearm', s), cap(midF, hold[s] ? add(hand, mul(norm(sub(el, hand)), 0.1)) : hand, 0.05 * bd, 'forearm', s));
     }
     return out;
   }
@@ -174,6 +192,14 @@ const Demo = (() => {
   const other = s => s === 'L' ? 'R' : 'L';
   const propsOf = (clip, mir) => mir ? clip.props.map(p => p.hand ? { ...p, hand: other(p.hand) } : p) : clip.props;
 
+  // The unit vector `a` turned toward `b` by at most `max` radians (or onto it when it is nearer).
+  function turnToward(a, b, max) {
+    const ang = Math.acos(clamp(dot(a, b), -1, 1));
+    if (ang <= max) return b;
+    let axis = cross(a, b);
+    if (len(axis) < 1e-6) axis = cross(a, Math.abs(a[1]) < 0.9 ? UP : [1, 0, 0]);
+    return norm(rot(a, norm(axis), max));
+  }
   // The hand: a fist round whatever it holds, or an open hand with the thumb forward.
   // Returns where the grip is (o), the axis out of the thumb side (x), wrist-to-knuckles (w), and how big the thing held is.
   function handPose(J, s, props, f, HAND = 1) {
@@ -196,7 +222,11 @@ const Demo = (() => {
     let x, w, o = H, grip = 'closed';
     if (g && g.x) { x = g.x; w = sub(fa, mul(x, dot(fa, x))); if (len(w) < 0.25) w = cross(x, cross(fa, J.left)); if (len(w) < 0.1) w = cross(x, UP); w = norm(w); o = g.at || H; }
     else {
-      w = fa; x = g ? cross(fa, g.to) : sub(J.face, mul(fa, dot(J.face, fa)));
+      // A poi's tether leaves between the fingers, so the fist turns toward it, as far as a wrist bends
+      // (about 75 degrees); with the knuckles along the forearm the tether would run through the arm.
+      w = g && g.to ? turnToward(fa, g.to, 1.3) : fa;
+      x = g ? cross(w, g.to) : sub(J.face, mul(fa, dot(J.face, fa)));
+      if (g && len(x) < 0.2) x = cross(fa, g.to);
       if (len(x) < 0.2) x = cross(fa, mul(J.left, side)); x = norm(x);
       if (!g) { grip = 'open'; o = add(H, mul(w, 0.07 * HAND)); } else o = add(H, mul(w, 0.03));
     }
@@ -225,11 +255,13 @@ const Demo = (() => {
     if (k === worn || typeof window === 'undefined' || !window.Figure3D || !window.Figure3D.ready) return;
     worn = k; window.Figure3D.setAvatar(who || null);
   }
+  // The frame (neutral, feminine or masculine) shapes the 3D figure only; the rig is the same.
+  const frameOf = who => who && FRAMES.includes(who.frame) ? who.frame : 'neutral';
   function useBody(clip, who = av) {
-    const [h, b] = (unfit(clip.f, who) ? STANDARD : presetOf(who)).split('-'), sc = HEIGHTS[h], bd = BUILDS[b];
-    if (sc === BODY.sc && bd === BODY.bd) return;
-    setBody(sc, bd);
-    if (typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready) window.Figure3D.setBody(sc, bd);
+    const [h, b] = (unfit(clip.f, who) ? STANDARD : presetOf(who)).split('-'), sc = HEIGHTS[h], bd = BUILDS[b], frame = frameOf(who);
+    if (sc === BODY.sc && bd === BODY.bd && frame === BODY.frame) return;
+    setBody(sc, bd); BODY.frame = frame;
+    if (typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready) window.Figure3D.setBody(sc, bd, frame);
   }
   function avatar(cfg) {
     av = cfg && cfg.v ? cfg : null;
@@ -247,7 +279,7 @@ const Demo = (() => {
     if (!on || asked3d || typeof document === 'undefined') return;
     asked3d = true;
     const sc = document.createElement('script'); sc.src = 'figure3d.js';
-    sc.onload = () => window.Figure3D.load('assets/human.glb').then(ok => { if (ok) { window.Figure3D.setBody(BODY.sc, BODY.bd); worn = ''; wear(av); mount(); comboMount(); } });
+    sc.onload = () => window.Figure3D.load('assets/human.glb').then(ok => { if (ok) { window.Figure3D.setBody(BODY.sc, BODY.bd, BODY.frame); worn = ''; wear(av); mount(); comboMount(); } });
     document.head.appendChild(sc);
   }
   const use3d = clip => want3d && typeof window !== 'undefined' && window.Figure3D && window.Figure3D.ready;
@@ -266,6 +298,14 @@ const Demo = (() => {
     const J = rig(p);
     for (const s of ['L', 'R']) if (!hands[s]) hands[s] = handPose(J, s, [], f);
     return { J, hands };
+  }
+
+  // What the 3D figure is given for one frame: the joints, the two hands and the props as tubes and
+  // balls with their colour roles. A close-up has no body of its own, so one stands behind the hands.
+  function stage(clip, f, props) {
+    const near = clip.hide ? closeUp(props, f) : null, J = near ? near.J : rig(f), list = [];
+    props.forEach((p, i) => { if (p.kind === 'fist') return; const pt = parts(p, i, f); for (const [pts, wd, role] of pt.segs) list.push({ pts, w: wd, role, hand: p.hand }); for (const [c, r, role] of pt.balls) list.push({ c, r, role, hand: p.hand }); });
+    return { J, hands: near ? near.hands : { L: handPose(J, 'L', props, f), R: handPose(J, 'R', props, f) }, list, near };
   }
 
   /* ---------- drawing ---------- */
@@ -301,14 +341,13 @@ const Demo = (() => {
     for (const p of props) if (p.hand) busy[p.hand] = true;
     if (solid) {
       // The model, its props and their shading come from three.js; trails and labels are drawn over it here.
-      const near = clip.hide ? closeUp(props, f) : null, J = near ? near.J : rig(f), list = [], R = [cy, 0, k * sy], D = [-k * sy, 0, cy], U = sub([0, cos(tilt), 0], mul(D, sin(tilt)));
-      props.forEach((p, i) => { if (p.kind === 'fist') return; const pt = parts(p, i, f); for (const [pts, wd, role] of pt.segs) list.push({ pts, w: wd, color: col[role] }); for (const [c, r, role] of pt.balls) list.push({ c, r, color: col[role] }); });
+      const sg = stage(clip, f, props), { J, hands, near } = sg, list = sg.list.map(it => ({ ...it, color: col[it.role] })), R = [cy, 0, k * sy], D = [-k * sy, 0, cy], U = sub([0, cos(tilt), 0], mul(D, sin(tilt)));
       if (!near) {
         const sh = pr([J.pelvis[0], 0, J.pelvis[2]]), g = ctx.createRadialGradient(sh[0], sh[1], 0, sh[0], sh[1], 0.42 * S);
         g.addColorStop(0, 'rgba(0,0,0,.35)'); g.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.save(); ctx.translate(sh[0], sh[1]); ctx.scale(1, 0.28); ctx.translate(-sh[0], -sh[1]); ctx.fillStyle = g; ctx.fillRect(sh[0] - S, sh[1] - S, 2 * S, 2 * S); ctx.restore();
       }
-      const gl = window.Figure3D.render(W, J, near ? near.hands : { L: handPose(J, 'L', props, f), R: handPose(J, 'R', props, f) }, list,
+      const gl = window.Figure3D.render(W, J, hands, list,
         { right: R, up: U, toward: cross(R, U), cx: (aim ? aim[0] : 0) + 0.3 * k * sy * sy, cy: aim ? aim[1] : (base - W / 2) / S, half: W / (2 * S), cut: near && view !== 'side' ? 0.25 : 0 });
       ctx.drawImage(gl, 0, 0, W, W);
     } else if (!clip.hide) {
@@ -327,7 +366,7 @@ const Demo = (() => {
       fill([J.shL, J.shR, sub(mid, wl), hipR, hipL, add(mid, wl)], col.body);
       seg([J.shL, J.shR], 0.1, col.body); seg([hipL, hipR], 0.13, col.body);
       seg([add(J.pelvis, mul(J.up, 0.05)), add(J.pelvis, mul(J.up, 0.2))], 0.19, col.body); seg([add(J.pelvis, mul(J.up, 0.24)), add(J.pelvis, mul(J.up, 0.4))], 0.215, col.body);
-      seg([J.chest, add(J.chest, mul(J.up, 0.1))], 0.075, col.body);
+      seg([J.chest, add(J.head, mul(J.up, -0.09))], 0.075, col.body); // the neck, up to the head
       // Head: a skull with a jaw below and in front, and a nose to show which way it faces.
       const fw = cross(J.left, J.up);
       ball(add(J.head, mul(J.up, 0.012)), 0.098, col.body, 0.01); ball(add(J.head, add(mul(J.up, -0.05), mul(fw, 0.022))), 0.07, col.body, 0.005);
@@ -575,7 +614,7 @@ const Demo = (() => {
   const STICKERS = {
     celebrate: { name: 'Celebrate', pose: { hL: [0.3, 1.93, 0.06], hR: [-0.3, 1.93, 0.06], eL: [0.55, 1.62, 0], eR: [-0.55, 1.62, 0] } },
     salute: { name: 'Salute', pose: { hR: [-0.08, 1.7, 0.12], eR: [-0.42, 1.52, 0.08] } },
-    thinking: { name: 'Thinking', pose: { hR: [-0.03, 1.52, 0.16], eR: [-0.12, 1.24, 0.26], hL: [-0.06, 1.14, 0.26], eL: [0.2, 1.08, 0.12] } },
+    thinking: { name: 'Thinking', pose: { hR: [-0.03, 1.52, 0.22], eR: [-0.14, 1.24, 0.32], hL: [-0.06, 1.14, 0.36], eL: [0.25, 1.08, 0.26] } },
     wave: { name: 'Wave', pose: { hR: [-0.42, 1.78, 0.08], eR: [-0.5, 1.45, 0] } },
     flex: { name: 'Strong', pose: { hL: [0.32, 1.62, 0.04], hR: [-0.32, 1.62, 0.04], eL: [0.5, 1.38, -0.02], eR: [-0.5, 1.38, -0.02] } },
   };
@@ -663,8 +702,8 @@ const Demo = (() => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, pack, unpack, mirror, sPoints,
+  return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, pack, unpack, mirror, sPoints, propsOf, stage,
     index: () => index, clip: () => { const v = variant(); return v && cache.get(v.f); },
-    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, avatar, presetOf, preview, previewState: pv, firstClip, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
+    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, FRAMES, avatar, presetOf, preview, previewState: pv, firstClip, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
 })();
 if (typeof window !== 'undefined') window.Demo = Demo;

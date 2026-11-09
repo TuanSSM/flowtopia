@@ -205,13 +205,16 @@ jobs:
           git diff --exit-code --stat web/clips/features.json || {
             echo "::error::web/clips/features.json is stale; run node sim/features.js and commit"; exit 1; }
       # Body presets keep each move's shape, sticker poses pass the body checks, avatar colours read
-      # on both themes, and the 3D figure stays within its download size.
+      # on both themes, the 3D figure stays within its download size, and, posed in Node as in the
+      # browser, no prop is drawn into its body on any clip and every avatar part shows.
       - name: Avatars, body presets and stickers
         run: |
           node test/presets.js
           node test/stickers.js
           node test/avatar-colors.js
           node test/bundle-size.js
+          (cd figure && npm ci --silent)
+          node test/body3d.js
       # web/ is embedded in the binary, so the committed bundles must be the ones the sources build.
       - name: Bundles are up to date
         run: |

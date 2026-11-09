@@ -311,13 +311,15 @@ picture of the avatar's head can become the profile picture. On someone's profil
 skill they have marked Clean.
 
 Parts are made in code in the figure bundle, with no model files or textures: outfits colour the body
-per vertex, and head parts and wristbands are fixed to a bone. Body presets (3 heights by 3 builds) are
-checked like any clip: `node test/physics.js` runs the body checks on every clip for every preset,
+per vertex, and head parts and wristbands are fixed to a bone; the head is measured from the mesh, so
+face parts and glasses sit on the skin. A frame (neutral, feminine or masculine) shapes the trunk, the
+arms and, for the feminine frame, a bust. Body presets (3 heights by 3 builds) are checked like any clip: `node test/physics.js` runs the body checks on every clip for every preset,
 `node sim/bake.js` records which clips fail where in `web/clips/presets.json`, and such a clip plays on
 the standard body with a note. `node test/presets.js`, `node test/stickers.js`,
 `node test/avatar-colors.js` and `node test/bundle-size.js` cover shapes across presets, sticker poses,
-palette contrast and download size; `test/browser/avatar.py` covers the pages, parts and the frame
-budget. Details, sources for the preset sizes, and licences: [docs/avatars.md](docs/avatars.md).
+palette contrast and download size; `node test/body3d.js` poses the 3D figure without a browser and
+checks that no prop is drawn into the body on any clip and that every avatar part shows; `test/browser/avatar.py`
+covers the pages, parts and the frame budget. Details, sources for the preset sizes, and licences: [docs/avatars.md](docs/avatars.md).
 
 ## Pull requests
 
