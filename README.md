@@ -73,7 +73,10 @@ substitute for listening with a screen reader, which has not been done yet.
 Text, icons and the edges of fields stand out from what is behind them in both themes: 4.5:1 for text,
 3:1 for large text, icons, the edge of a field and the ring around a chosen option. `node test/contrast.js`
 reads this from `web/app.css` in lint, hover and focus included, and fails on a colour, a background or a
-fade it has not been told how to place. `test/browser/contrast.py` reads it from the computed styles of
+fade it has not been told how to place. It reads plain rules and `@media` blocks: a rule inside
+`@supports` or `@layer`, a colour that a narrower `@media` block overrides, `color: inherit` on a
+coloured background and a state marked only by an outline or a side border are not seen by it yet.
+`test/browser/contrast.py` reads it from the computed styles of
 55 stops in each theme, about 20,000 pairs of colours. Neither judges what is drawn over a picture, a
 gradient or the demo canvas; the walk counts those as skipped.
 

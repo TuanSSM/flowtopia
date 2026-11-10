@@ -15,6 +15,7 @@
   --accent-ink: #8fc0f7;
   --accent-soft: rgba(57, 135, 229, .15);
   --on-accent: #fff;
+  --accent-hover: #2d6bb7;
   --l0: #2a2f3a;
   --l1: #1f3d63;
   --l2: #2a64a8;
@@ -32,7 +33,7 @@
     color-scheme: light;
     --bg: #f5f5f2; --side: #fbfbf9; --card: #ffffff; --card-2: #f1f1ed; --hover: #e9e9e4;
     --line: #e2e2dc; --line-2: #c9c9c1; --edge: #8a8a86; --ink: #161616; --ink-2: #52514e; --ink-3: #646360;
-    --accent: #2976d3; --accent-ink: #1c5ca8; --accent-soft: rgba(42, 120, 214, .11);
+    --accent: #2976d3; --accent-hover: #256abe; --accent-ink: #1c5ca8; --accent-soft: rgba(42, 120, 214, .11);
     --l0: #e2e2dc; --l1: #bcd6f5; --l2: #79aee9; --l3: #2976d3; --l4: #123f7a;
     --good: #147650; --warn: #8c5e00; --bad: #bf3231; --shadow: 0 16px 48px rgba(30, 30, 20, .16);
   }
@@ -41,7 +42,7 @@
   color-scheme: light;
   --bg: #f5f5f2; --side: #fbfbf9; --card: #ffffff; --card-2: #f1f1ed; --hover: #e9e9e4;
   --line: #e2e2dc; --line-2: #c9c9c1; --edge: #8a8a86; --ink: #161616; --ink-2: #52514e; --ink-3: #646360;
-  --accent: #2976d3; --accent-ink: #1c5ca8; --accent-soft: rgba(42, 120, 214, .11);
+  --accent: #2976d3; --accent-hover: #256abe; --accent-ink: #1c5ca8; --accent-soft: rgba(42, 120, 214, .11);
   --l0: #e2e2dc; --l1: #bcd6f5; --l2: #79aee9; --l3: #2976d3; --l4: #123f7a;
   --good: #147650; --warn: #8c5e00; --bad: #bf3231; --shadow: 0 16px 48px rgba(30, 30, 20, .16);
 }
@@ -142,7 +143,7 @@ main { padding: 26px 28px 60px; max-width: 1240px; width: 100%; outline: none; }
 }
 .btn:hover { background: var(--hover); text-decoration: none; }
 .btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
-.btn.primary:hover { background: color-mix(in srgb, var(--accent) 90%, #000); }
+.btn.primary:hover { background: var(--accent-hover); }   /* a token, not color-mix: a browser without it would leave the label on nothing */
 /* The guided tour paints its Next button in --accent and writes on it in the colour of its own box, which does not
    stand out from it in either theme. The words are written in the colour made for --accent instead. */
 .react-joyride__tooltip [data-action=primary] { color: var(--on-accent) !important; }

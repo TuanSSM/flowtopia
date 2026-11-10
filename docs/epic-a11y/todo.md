@@ -63,7 +63,8 @@ Commits title of the category's type. An item is checked only when its DoD holds
   checkboxes, radio buttons and sliders, which the browser draws. Out of scope and counted, not
   passed: text and icons over a picture, a gradient or the demo canvas (about 100 in the walk), and
   the shapes of charts, the heatmap and progress bars (14 rules).
-  The walk ran on Chromium here, not on Firefox; the first run in CI is its first on Firefox. Seen
+  The walk was written against Chromium; its first run on Firefox was the pull request's CI, where
+  it passed (123 passed, 0 failed, 8 skipped). Seen
   and left: the search box in the palette shows no focus ring (Focus); the tour's Next button is
   put right by a rule in `app.css` over the colours the tour is handed, where the tour itself
   should ask for the right one.
