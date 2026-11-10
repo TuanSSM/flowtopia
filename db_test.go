@@ -2022,3 +2022,130 @@ func TestDBHomeLink(t *testing.T) {
 		}
 	}
 }
+
+// Reading notifications: one by id, all at once, and never someone else's.
+func TestDBNotificationsRead(t *testing.T) {
+	e := newEnv(t)
+	kimID, kim := e.user("kim", "user")
+	leeID, lee := e.user("lee", "user")
+	add := func(uid int64, n int) []int64 {
+		t.Helper()
+		ids := []int64{}
+		for i := 0; i < n; i++ {
+			var id int64
+			if err := e.a.db.QueryRow(`INSERT INTO notifications (user_id, kind, actor_id) VALUES ($1, 'like', $2) RETURNING id`, uid, leeID).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	// state returns the unread count the bell shows and, for each listed notification, whether it is read.
+	state := func(tok string) (int64, map[int64]bool) {
+		t.Helper()
+		out := e.must(200, tok, "GET", "/api/notifications", nil)
+		read := map[int64]bool{}
+		for _, it := range out["items"].([]any) {
+			m := it.(map[string]any)
+			read[num(m["id"])] = m["read"] == true
+		}
+		return num(out["unread"]), read
+	}
+	k := add(kimID, 3)
+	l := add(leeID, 2)
+	if n, read := state(kim); n != 3 || len(read) != 3 || read[k[0]] || read[k[1]] || read[k[2]] {
+		t.Fatalf("new notifications: unread %d, read %v", n, read)
+	}
+	// Signed out there is nothing to read or to mark.
+	e.must(401, "", "GET", "/api/notifications", nil)
+	e.must(401, "", "PUT", "/api/notifications/read", map[string]any{})
+	// One by id, the way opening it from the bell does. Doing it twice changes nothing more.
+	for i := 0; i < 2; i++ {
+		e.must(200, kim, "PUT", "/api/notifications/read", map[string]any{"ids": []int64{k[1]}})
+		if n, read := state(kim); n != 2 || read[k[0]] || !read[k[1]] || read[k[2]] {
+			t.Fatalf("after reading one (time %d): unread %d, read %v", i+1, n, read)
+		}
+	}
+	// Someone else's ids, and ids that do not exist, mark nothing: not theirs, and not kim's own.
+	e.must(200, kim, "PUT", "/api/notifications/read", map[string]any{"ids": []int64{l[0], l[1], 999999, -1, 0}})
+	if n, _ := state(lee); n != 2 {
+		t.Fatalf("kim read lee's notifications: lee has %d unread, want 2", n)
+	}
+	if n, _ := state(kim); n != 2 {
+		t.Fatalf("ids that are not kim's changed kim's count to %d, want 2", n)
+	}
+	// What is not a list of numbers is refused and marks nothing.
+	for _, body := range []any{map[string]any{"ids": "all"}, map[string]any{"ids": []string{"x"}}, "ids", []int64{k[0]}} {
+		e.must(400, kim, "PUT", "/api/notifications/read", body)
+	}
+	huge := make([]int64, 4000)
+	for i := range huge {
+		huge[i] = int64(1000000 + i)
+	}
+	e.must(400, kim, "PUT", "/api/notifications/read", map[string]any{"ids": huge})
+	if n, _ := state(kim); n != 2 {
+		t.Fatalf("a refused request marked something: unread %d, want 2", n)
+	}
+	// "Mark all read" sends no ids, or an empty list; both mark every one of kim's and only kim's.
+	e.must(200, kim, "PUT", "/api/notifications/read", map[string]any{"ids": []int64{}})
+	if n, read := state(kim); n != 0 || !read[k[0]] || !read[k[2]] {
+		t.Fatalf("after marking all: unread %d, read %v", n, read)
+	}
+	if n, _ := state(lee); n != 2 {
+		t.Fatalf("kim's mark all reached lee: lee has %d unread, want 2", n)
+	}
+	// A new one after that is unread again, and an empty body marks it.
+	fresh := add(kimID, 1)[0]
+	if n, read := state(kim); n != 1 || read[fresh] {
+		t.Fatalf("a new notification: unread %d, read %v", n, read[fresh])
+	}
+	e.must(200, kim, "PUT", "/api/notifications/read", map[string]any{})
+	if n, _ := state(kim); n != 0 {
+		t.Fatalf("after an empty body: unread %d, want 0", n)
+	}
+	// The list is capped but the count is not: unread ones older than the list still count, and
+	// marking all reaches them too.
+	add(kimID, maxNotifList+5)
+	if n, read := state(kim); n != maxNotifList+5 || len(read) != maxNotifList {
+		t.Fatalf("a long list: unread %d (want %d), listed %d (want %d)", n, maxNotifList+5, len(read), maxNotifList)
+	}
+	e.must(200, kim, "PUT", "/api/notifications/read", map[string]any{})
+	if c := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND NOT read`, kimID); c != 0 {
+		t.Fatalf("marking all left %d unread beyond the list", c)
+	}
+	// With the community off the route is gone, and what was unread stays unread.
+	e.setFlag("community", false)
+	e.must(404, lee, "PUT", "/api/notifications/read", map[string]any{})
+	if c := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND NOT read`, leeID); c != 2 {
+		t.Fatalf("a refused request marked lee's: %d unread, want 2", c)
+	}
+}
+
+// The build's name is for the people who run Flowa: the dashboard tells them, and nobody else is told.
+func TestDBVersion(t *testing.T) {
+	e := newEnv(t)
+	_, admin := e.user("boss", "admin")
+	_, mod := e.user("mo", "moderator")
+	_, member := e.user("sandy", "user")
+	// With no VERSION set the build says so, instead of an empty line on the dashboard.
+	if out := e.must(200, admin, "GET", "/api/admin/dashboard", nil); out["version"] != "dev" {
+		t.Fatalf("with no VERSION the dashboard says %v, want dev", out["version"])
+	}
+	e.a.version = "v1.2.3"
+	for who, tok := range map[string]string{"an admin": admin, "a moderator": mod} {
+		if out := e.must(200, tok, "GET", "/api/admin/dashboard", nil); out["version"] != "v1.2.3" {
+			t.Fatalf("%s is told %v, want v1.2.3", who, out["version"])
+		}
+	}
+	e.must(403, member, "GET", "/api/admin/dashboard", nil)
+	e.must(401, "", "GET", "/api/admin/dashboard", nil)
+	// Nothing a member or a visitor can fetch names the build: which commit runs is a help to an attacker.
+	for who, tok := range map[string]string{"a member": member, "a visitor": ""} {
+		for _, path := range []string{"/api/me", "/healthz", "/api/admin/dashboard"} {
+			_, out, hdr := e.doH(tok, "GET", path, nil, nil)
+			if strings.Contains(fmt.Sprint(out["_raw"], hdr), "v1.2.3") {
+				t.Fatalf("%s reads the version at %s", who, path)
+			}
+		}
+	}
+}

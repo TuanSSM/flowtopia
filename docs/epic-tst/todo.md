@@ -5,7 +5,7 @@ Category: improvement. Size: S. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#33](https://github.com/TuanSSM/flowtopia/issues/33)). 0 of 6 items done.
+**Status:** in progress (issue [#33](https://github.com/TuanSSM/flowtopia/issues/33)). 1 of 6 items done.
 
 About 150 `time.sleep` calls across `test/browser/*.py` today.
 
@@ -20,7 +20,9 @@ About 150 `time.sleep` calls across `test/browser/*.py` today.
   comment on the same line. DoD: the rule in `test/ci-plan.sh`'s lint set and in the rules file.
 - [ ] **Time per check.** Each suite prints the seconds per check; the PR comment lists the five
   slowest. DoD: visible in the sticky comment.
-- [ ] **Go tests for the routes the browser only brushes.** Bookmarks, notifications read state,
+- [x] **Go tests for the routes the browser only brushes.** Bookmarks, notifications read state,
   the version endpoint, `FLOWA_HOME_URL`. DoD: each route has a `db_test.go` case.
+  `TestDBBookmarks`, `TestDBNotificationsRead`, `TestDBVersion` (the version is part of the
+  dashboard's answer; there is no route of its own) and `TestDBHomeLink`.
 - [ ] **A month of PRs.** Reruns caused by flakes counted from the Actions history. DoD: zero in
   the 30 days after the last suite is converted; the count written here.
