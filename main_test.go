@@ -136,72 +136,43 @@ func TestShippedCatalogsValid(t *testing.T) {
 	}
 }
 
+// TestParseLink reads test/links-fixtures.json, the cases the server and the page (web/links.js,
+// checked by node test/links.js) must agree on.
 func TestParseLink(t *testing.T) {
-	good := map[string]string{
-		"https://www.youtube.com/watch?v=dQw4w9WgXcQ":                       "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"https://youtube.com/watch?v=dQw4w9WgXcQ&t=42s&si=abc":              "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"http://m.youtube.com/watch?feature=share&v=dQw4w9WgXcQ":            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"youtube.com/watch?v=dQw4w9WgXcQ":                                   "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"https://youtu.be/dQw4w9WgXcQ":                                      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"https://youtu.be/dQw4w9WgXcQ?si=XYZ123":                            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"https://www.youtube.com/shorts/aBcDeFgHiJk":                        "https://www.youtube.com/shorts/aBcDeFgHiJk",
-		"https://youtube.com/shorts/aBcDeFgHiJk?feature=share":              "https://www.youtube.com/shorts/aBcDeFgHiJk",
-		"https://www.youtube.com/live/aBcDeFgHiJk":                          "https://www.youtube.com/watch?v=aBcDeFgHiJk",
-		"https://www.youtube.com/embed/aBcDeFgHiJk":                         "https://www.youtube.com/watch?v=aBcDeFgHiJk",
-		"https://music.youtube.com/watch?v=aBcDeFgHiJk":                     "https://www.youtube.com/watch?v=aBcDeFgHiJk",
-		"https://www.instagram.com/p/C1a2B3c4D5e/":                          "https://www.instagram.com/p/C1a2B3c4D5e/",
-		"https://instagram.com/p/C1a2B3c4D5e":                               "https://www.instagram.com/p/C1a2B3c4D5e/",
-		"https://www.instagram.com/p/C1a2B3c4D5e/?igsh=MWQ1ZGUxMzBkMA==":    "https://www.instagram.com/p/C1a2B3c4D5e/",
-		"https://www.instagram.com/reel/C9xYz_-AbCd/":                       "https://www.instagram.com/reel/C9xYz_-AbCd/",
-		"https://www.instagram.com/reels/C9xYz_-AbCd/":                      "https://www.instagram.com/reel/C9xYz_-AbCd/",
-		"https://www.instagram.com/tv/C9xYz_-AbCd/":                         "https://www.instagram.com/p/C9xYz_-AbCd/",
-		"https://www.instagram.com/flowa.spins/p/C1a2B3c4D5e/":              "https://www.instagram.com/p/C1a2B3c4D5e/",
-		"https://www.instagram.com/flowa.spins/reel/C9xYz_-AbCd/?hl=en":     "https://www.instagram.com/reel/C9xYz_-AbCd/",
-		"instagram.com/reel/C9xYz_-AbCd":                                    "https://www.instagram.com/reel/C9xYz_-AbCd/",
-		"https://www.tiktok.com/@flowa.spins/video/7301234567890123456":     "https://www.tiktok.com/@flowa.spins/video/7301234567890123456",
-		"https://tiktok.com/@flowa_spins/video/7301234567890123456?lang=en": "https://www.tiktok.com/@flowa_spins/video/7301234567890123456",
-		"https://m.tiktok.com/v/7301234567890123456.html":                   "https://m.tiktok.com/v/7301234567890123456.html",
-		"https://www.tiktok.com/@flowa/video/7301234567890123456/":          "https://www.tiktok.com/@flowa/video/7301234567890123456",
-		"https://vm.tiktok.com/ZMabc1234/":                                  "https://vm.tiktok.com/ZMabc1234/",
-		"https://vt.tiktok.com/ZSxyz9876/":                                  "https://vt.tiktok.com/ZSxyz9876/",
-		"vm.tiktok.com/ZMabc1234":                                           "https://vm.tiktok.com/ZMabc1234/",
-		"https://www.tiktok.com/t/ZTRabcde1/":                               "https://www.tiktok.com/t/ZTRabcde1/",
-		"  https://youtu.be/dQw4w9WgXcQ  ":                                  "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"https://WWW.YOUTUBE.COM/watch?v=dQw4w9WgXcQ":                       "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-		"https://www.youtube.com/watch?v=dQw4w9WgXcQ#comments":              "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+	raw, err := os.ReadFile("test/links-fixtures.json")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for in, want := range good {
+	var fx struct {
+		Good  map[string]string    `json:"good"`
+		Bad   []string             `json:"bad"`
+		Kinds map[string][3]string `json:"kinds"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.Good) < 30 || len(fx.Bad) < 30 || len(fx.Kinds) < 4 {
+		t.Fatalf("the fixtures look cut short: %d good, %d bad, %d kinds", len(fx.Good), len(fx.Bad), len(fx.Kinds))
+	}
+	for in, want := range fx.Good {
 		l, ok := parseLink(in)
 		if !ok || l.URL != want {
 			t.Errorf("parseLink(%q) = %q, %v; want %q", in, l.URL, ok, want)
 		}
+		// A canonical link reads as itself.
+		if again, ok := parseLink(want); !ok || again.URL != want {
+			t.Errorf("parseLink(%q) = %q, %v; a canonical link must not change", want, again.URL, ok)
+		}
 	}
-	bad := []string{
-		"https://www.youtube.com/watch?v=short",
-		"https://www.youtube.com/@FlowaSpins",
-		"https://www.youtube.com/playlist?list=PL123",
-		"https://www.instagram.com/flowa.spins/",
-		"https://www.instagram.com/stories/flowa/123/",
-		"https://www.tiktok.com/@flowa.spins",
-		"https://www.tiktok.com/@flowa/video/abc",
-		"https://example.com/watch?v=dQw4w9WgXcQ",
-		"https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ",
-		"ftp://youtu.be/dQw4w9WgXcQ",
-		"https://user:pass@youtu.be/dQw4w9WgXcQ",
-		"https://youtu.be:8443/dQw4w9WgXcQ",
-		"javascript:alert(1)",
-		"",
-	}
-	for _, in := range bad {
+	for _, in := range fx.Bad {
 		if l, ok := parseLink(in); ok {
 			t.Errorf("parseLink(%q) should be refused, got %v", in, l)
 		}
 	}
-	if l, _ := parseLink("https://youtube.com/shorts/aBcDeFgHiJk"); l.Kind != "short" || l.Site != "youtube" || l.ID != "aBcDeFgHiJk" {
-		t.Errorf("short: %+v", l)
-	}
-	if l, _ := parseLink("https://vm.tiktok.com/ZMabc1234/"); l.Kind != "shortlink" {
-		t.Errorf("tiktok short link kind: %+v", l)
+	for in, want := range fx.Kinds {
+		if l, _ := parseLink(in); l.Site != want[0] || l.Kind != want[1] || l.ID != want[2] {
+			t.Errorf("parseLink(%q) = %+v; want site, kind, id %v", in, l, want)
+		}
 	}
 }
 

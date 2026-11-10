@@ -2,7 +2,19 @@
 // Community: the timeline of posts with likes and comments, notifications, the people
 // list, and public profiles with social links. Talks to the endpoints in social.go.
 
-const social = { full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {} };
+// sending: the forms whose answer is still on its way; keys: the Idempotency-Key each unsent form
+// last used, so trying the very same thing again cannot make it twice.
+const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, sending: new Set(), keys: {} });
+// owner: the account all of this belongs to (0 for a visitor); gen goes up each time it is thrown
+// away, so an answer that was asked for by the previous account is not shown to the next.
+const social = Object.assign(socialBlank(), { owner: 0, gen: 0 });
+// Everything here belongs to one signed-in person. When the session ends or another account signs
+// in on this tab it all goes: drafts, the feed, notifications, and a tour waiting to be replayed.
+function resetSocial() {
+  Object.assign(social, socialBlank(), { owner: me?.id || 0, gen: social.gen + 1 });
+  delete social.queue; ui.replay = false;
+}
+function sameOwner() { if (social.owner !== (me?.id || 0)) resetSocial(); }
 const MAX_TAGS = 10;
 const LINK_KINDS = {
   instagram: { name: 'Instagram', hint: 'instagram.com/…', url: h => `https://www.instagram.com/${h}/` },
@@ -36,7 +48,10 @@ async function shrinkImage(file, max = 1280, q = 0.82) {
   for (let side = max, quality = q; ; quality -= 0.12) {
     const k = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
     c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    const g = c.getContext('2d');
+    // JPEG has no transparency: without a white sheet under it, a see-through picture turns black.
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(img, 0, 0, c.width, c.height);
     const out = c.toDataURL('image/jpeg', quality);
     if (out.length <= 390000 || side < 320) return out;
     if (quality < 0.5) { quality = q; side = Math.round(side * 0.75); }
@@ -50,8 +65,8 @@ async function loadFeed(key, append) {
   social.loading = true; social.key = key; social.stale = false;
   if (!append) social.posts = [];
   const before = append && social.posts.length ? `${key === 'all' ? '?' : '&'}before=${social.posts[social.posts.length - 1].id}` : '';
-  const r = await api(feedPath(key) + before);
-  if (social.key !== key) return; // another feed was opened meanwhile
+  const gen = social.gen, r = await api(feedPath(key) + before);
+  if (social.gen !== gen || social.key !== key) return; // another feed was opened meanwhile, or another account
   social.loading = false;
   if (!r.ok) { if (r.status !== 404) toast(r.error); social.posts = []; social.more = false; render(); return; }
   social.posts = append ? [...social.posts, ...r.data.posts] : r.data.posts;
@@ -117,12 +132,38 @@ function eachComment(id, fn) {
   for (const k in social.full) visit(social.full[k].list);
   for (const k in social.fullReplies) visit(social.fullReplies[k].list);
 }
+// A form whose answer is on its way keeps its button off and ignores another submit. The set is
+// state, not a property of the button, so a redraw in between cannot switch the button back on.
+const sendOff = k => social.sending.has(k) ? 'disabled' : '';
+function setSending(k, on) {
+  if (on) social.sending.add(k); else social.sending.delete(k);
+  // The page is not redrawn while a text field has the cursor, so the button on show is set too.
+  const b = document.querySelector(`form[data-k="${k}"] button[type=submit]`);
+  if (b) b.disabled = on;
+}
+// The Idempotency-Key for what a form is about to send. Trying the very same thing again (after a
+// lost connection, say) reuses the key, so the server answers with the post or comment it already
+// made; anything edited in between is a new thing and gets a new key.
+function onceKey(k, send) {
+  const sig = JSON.stringify(send), had = social.keys[k];
+  if (had && had.sig === sig) return had.key;
+  const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+  social.keys[k] = { sig, key };
+  return key;
+}
+// True while something typed here has not been sent: a post being put together, a comment or
+// reply, or a comment being edited. The page asks before it is closed or reloaded with one.
+function socialDraft() {
+  if (!me) return false;
+  if (social.draftBody.trim() || social.draftImg || social.draftTags.length || social.draftCombo || social.draftLinks.length) return true;
+  return [...document.querySelectorAll('.cmt-form, .cmt-edit')].some(f => f.body && f.body.value.trim() !== f.body.defaultValue.trim());
+}
 function commentHTML(p, c, reply) {
   const cu = social.users[c.userId] || {}, mine = c.userId === me.id, canDel = !c.deleted && (mine || p.userId === me.id || canDo('content.delete'));
   const canEdit = mine && !c.deleted && Date.now() - new Date(c.created) < EDIT_MS;
   const editing = social.editing === c.id;
   const body = c.deleted ? `<span class="small cmt-gone">${c.removed ? 'Comment removed by a moderator' : 'Comment deleted'}</span>`
-    : editing ? `<form class="cmt-edit" data-id="${c.id}" data-post="${p.id}"><textarea name="body" maxlength="1000" rows="2" aria-label="Edit comment">${esc(c.body)}</textarea><span class="row" style="gap:6px"><button class="btn sm primary" type="submit">Save</button><button class="btn sm" type="button" data-act="cmt-edit-cancel">Cancel</button></span></form>`
+    : editing ? `<form class="cmt-edit" data-k="e:${c.id}" data-id="${c.id}" data-post="${p.id}"><textarea name="body" maxlength="1000" rows="2" aria-label="Edit comment">${esc(c.body)}</textarea><span class="row" style="gap:6px"><button class="btn sm primary" type="submit" ${sendOff(`e:${c.id}`)}>Save</button><button class="btn sm" type="button" data-act="cmt-edit-cancel">Cancel</button></span></form>`
     : `<span class="small cmt-body">${richText(c.body)}</span>`;
   const acts = c.deleted || editing ? '' : `<span class="cmt-acts"><button class="cmt-a ${c.liked ? 'on' : ''}" data-act="cmt-like" data-id="${c.id}" aria-pressed="${c.liked}" aria-label="Like comment">${icon('heart')}${c.likes ? `<span class="num">${c.likes}</span>` : ''}</button><button class="cmt-a" data-act="cmt-reply" data-id="${c.id}" data-post="${p.id}" data-root="${reply ? c.parentId : c.id}">Reply</button>${canEdit ? `<button class="cmt-a" data-act="cmt-edit" data-id="${c.id}">Edit</button>` : ''}${canDel ? `<button class="cmt-a" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}">Delete</button>` : ''}${canReport(c.userId) ? `<button class="cmt-a" data-act="report" data-kind="comment" data-id="${c.id}" data-what="this comment">Report</button>` : ''}${c.hidden && canDo('post.hide') && !mine ? `<button class="cmt-a" data-act="mod-do" data-do="restore" data-kind="comment" data-id="${c.id}">Restore</button>` : ''}</span>${c.hidden ? `<span class="tiny cmt-hidden">${icon('lock')} Hidden by a moderator: ${esc(c.hidden)}</span>` : ''}`;
   return `<div class="cmt ${reply ? 'reply' : ''} ${social.focus === c.id ? 'focus' : ''}" id="c-${c.id}">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row" style="gap:6px"><a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a><span class="tiny">${ago(c.created)}${c.edited ? ' · edited' : ''}</span></span>${body}${acts}</div></div>`;
@@ -130,7 +171,7 @@ function commentHTML(p, c, reply) {
 function replyForm(p, root) {
   const r = social.replyTo;
   if (!r || r.root !== root) return '';
-  return `<form class="cmt-form reply-form" data-id="${p.id}" data-parent="${r.parent}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" value="${esc(r.prefill)}" aria-label="Reply to ${esc(r.name)}" autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send reply">${icon('send')}</button><button class="icon-btn" type="button" data-act="reply-cancel" aria-label="Cancel reply">${icon('x')}</button></form>`;
+  return `<form class="cmt-form reply-form" data-k="c:${p.id}:${r.parent}" data-id="${p.id}" data-parent="${r.parent}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" value="${esc(r.prefill)}" aria-label="Reply to ${esc(r.name)}" autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send reply" ${sendOff(`c:${p.id}:${r.parent}`)}>${icon('send')}</button><button class="icon-btn" type="button" data-act="reply-cancel" aria-label="Cancel reply">${icon('x')}</button></form>`;
 }
 function threadHTML(p) {
   const roots = rootsOf(p), full = social.full[p.id];
@@ -142,7 +183,7 @@ function threadHTML(p) {
   }).join('');
   const more = full ? full.more : (p.commentCount || 0) > shown;
   const open = social.openCmts.has(p.id) || roots.length > 0;
-  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment">${icon('send')}</button></form></div>`;
+  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-k="c:${p.id}:0" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment" ${sendOff(`c:${p.id}:0`)}>${icon('send')}</button></form></div>`;
 }
 // Loads the next page of a post's comments; the first call replaces the feed's preview.
 async function moreComments(postId) {
@@ -266,14 +307,24 @@ function picker() {
 }
 function refreshPicker() { const l = $('.pick-list'); if (l) { l.innerHTML = pickListHTML(); $('.pick-i.on')?.scrollIntoView({ block: 'nearest' }); } }
 /* ---------- links to Instagram, TikTok and YouTube ---------- */
-// Roughly what the server accepts (parseLink in main.go has the final say and the canonical form).
+// Where a link might be in the text. Whether it can be a card is decided by linkCheck (links.js),
+// which reads a link the way parseLink in main.go does.
 const LINK_RE = /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?\S*v=|shorts\/|live\/)|youtu\.be\/|instagram\.com\/(?:[\w.]+\/)?(?:p|reels?|tv)\/|(?:vm|vt)\.tiktok\.com\/|tiktok\.com\/(?:@[\w.]+\/video\/|t\/))\S+/gi;
 const SITE_NAMES = { youtube: 'YouTube', tiktok: 'TikTok', instagram: 'Instagram' };
 const siteOf = u => /tiktok/i.test(u) ? 'tiktok' : /instagram/i.test(u) ? 'instagram' : 'youtube';
-// The first link in the text that is not attached yet, to offer as a card.
+// The first link in the text that the server would take as a card and that is not attached yet.
 function linkOffer(text) {
   if (!flags.linkCards || social.draftLinks.length >= 4) return '';
-  return (text.match(LINK_RE) || []).find(u => !social.draftLinks.includes(u)) || '';
+  const have = new Set(social.draftLinks.map(u => linkCheck.parseLink(u)?.url));
+  for (let u of text.match(LINK_RE) || []) {
+    // A link at the end of a sentence drags the full stop or the bracket along: try without it.
+    for (; u; u = /[.,;:!?)\]}'"]$/.test(u) ? u.slice(0, -1) : '') {
+      const c = linkCheck.parseLink(u);
+      if (c && !have.has(c.url)) return u;
+      if (c) break;
+    }
+  }
+  return '';
 }
 function linkCardHTML(p, c) {
   const site = SITE_NAMES[c.site] || c.site, tall = c.ratio === '9:16';
@@ -291,14 +342,14 @@ function composer() {
     + social.draftLinks.map(u => `<span class="chip trick link-chip social-${siteOf(u)}">${icon(siteOf(u))}<span class="trick-n">${esc(u.replace(/^https?:\/\/(www\.)?/, '').slice(0, 34))}</span><button type="button" class="x" data-act="link-rm" data-url="${esc(u)}" aria-label="Remove link">${icon('x')}</button></span>`).join('')
     + (social.draftCombo ? `<span class="chip trick combo-chip">${icon('link')}<span class="trick-n">${esc(social.draftCombo.name)}</span><button type="button" class="x" data-act="combo-rm-draft" aria-label="Remove combo">${icon('x')}</button></span>` : '');
   const sugg = social.pickOpen ? [] : suggestedTags();
-  return `<form class="card compose" id="compose-form"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
+  return `<form class="card compose" id="compose-form" data-k="post"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
     <textarea name="body" maxlength="2000" rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
-    ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt=""><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>` : ''}
+    ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt=""><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>${social.draftStill ? '<p class="tiny still-note">Animated pictures are kept as a still.</p>' : ''}` : ''}
     <div class="row wrap link-offer" ${social.linkOffer ? '' : 'hidden'}><span class="tiny grow">${social.linkOffer ? `${esc(SITE_NAMES[siteOf(social.linkOffer)])} link found` : ''}</span><button type="button" class="btn sm" data-act="link-attach">${icon('link')}Attach as a card</button></div>
     <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
     ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
     <div class="row wrap" style="gap:8px"><label class="btn sm">${icon('image')}Picture<input type="file" accept="image/*" data-change="compose-img" hidden></label>
-      <span class="grow"></span><button class="btn primary sm" type="submit">${icon('send')}Post</button></div></div></div></form>`;
+      <span class="grow"></span><button class="btn primary sm" type="submit" ${sendOff('post')}>${icon('send')}Post</button></div></div></div></form>`;
 }
 // The Combos page's Publish button: bring the combo to the composer with a line to edit.
 function publishCombo(c) {
@@ -347,8 +398,8 @@ function pageUser(name) {
 /* ---------- notifications ---------- */
 async function loadNotifs() {
   if (!me) return;
-  const r = await api('notifications');
-  if (!r.ok) return;
+  const gen = social.gen, r = await api('notifications');
+  if (!r.ok || social.gen !== gen) return;
   social.notifs = r.data.items; social.nUsers = r.data.users; social.unread = r.data.unread;
   const q = r.data.queue || 0;
   if (q !== social.queue) { social.queue = q; mod.count = q; renderSide(parseRoute()); }
@@ -446,10 +497,13 @@ document.addEventListener('click', async e => {
       renderBell(); break;
     case 'ntf-read-all': social.notifs.forEach(n => n.read = true); social.unread = 0; renderBell(); await api('notifications/read', 'PUT', {}); break;
     case 'like': {
-      if (!post) break;
-      post.liked = !post.liked; post.likes += post.liked ? 1 : -1; render();
+      if (!post || post.liking) break;
+      const was = { liked: post.liked, likes: post.likes };
+      post.liking = true; post.liked = !post.liked; post.likes += post.liked ? 1 : -1; render();
       const r = await api(`posts/${id}/like`, 'POST');
-      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes; } else toast(r.error);
+      delete post.liking;
+      // A like that did not go through (the post is gone, the connection dropped) is taken back.
+      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes; } else { Object.assign(post, was); toast(r.error); }
       render(); break;
     }
     case 'cmt-toggle':
@@ -496,7 +550,7 @@ document.addEventListener('click', async e => {
     case 'more-comments': moreComments(id); break;
     case 'more-replies': moreReplies(id); break;
     case 'more-posts': loadFeed(social.key, true); break;
-    case 'compose-img-rm': social.draftImg = ''; leaveCompose(); render(); break;
+    case 'compose-img-rm': social.draftImg = ''; social.draftStill = false; leaveCompose(); render(); break;
     case 'link-attach': {
       const u = social.linkOffer;
       if (!u) break;
@@ -504,7 +558,13 @@ document.addEventListener('click', async e => {
       social.draftBody = social.draftBody.replace(u, '').replace(/[ \t]{2,}/g, ' ').trim();
       social.linkOffer = linkOffer(social.draftBody); leaveCompose(); render(); break;
     }
-    case 'link-rm': social.draftLinks = social.draftLinks.filter(x => x !== d.url); social.linkOffer = linkOffer(social.draftBody); leaveCompose(); render(); break;
+    case 'link-rm': {
+      social.draftLinks = social.draftLinks.filter(x => x !== d.url);
+      // Attaching took the link out of the text; taking the card away puts it back, so it is not lost.
+      const back = `${social.draftBody.trimEnd()} ${d.url}`.trim();
+      if (!social.draftBody.includes(d.url) && back.length <= 2000) social.draftBody = back;
+      social.linkOffer = linkOffer(social.draftBody); leaveCompose(); render(); break;
+    }
     case 'yt-play': social.played.add(`${d.id}:${d.url}`); render(); break;
     case 'pick-open': social.pickOpen = !social.pickOpen; social.pickQ = ''; social.pickIdx = 0; leaveCompose(); render(); if (social.pickOpen) $('#pick-q')?.focus(); break;
     case 'pick-close': social.pickOpen = false; leaveCompose(); render(); $('#compose-form textarea')?.focus(); break;
@@ -535,48 +595,71 @@ document.addEventListener('change', async e => {
   if (e.target.dataset.change !== 'compose-img') return;
   const f = e.target.files[0]; e.target.value = '';
   if (!f) return;
-  try { social.draftImg = await shrinkImage(f); } catch { toast('That file could not be read as a picture.'); }
+  const gen = social.gen;
+  try {
+    const img = await shrinkImage(f);
+    if (social.gen !== gen) return;
+    social.draftImg = img; social.draftStill = f.type === 'image/gif';
+  } catch { toast('That file could not be read as a picture.'); }
   render();
 });
 document.addEventListener('submit', async e => {
   const f = e.target;
   if (f.id === 'compose-form') {
     e.preventDefault();
+    if (social.sending.has('post')) return;
     const body = f.body.value.trim();
     if (!body && !social.draftImg && !social.draftCombo && !social.draftLinks.length) { toast('Write something, add a picture or attach a combo.'); return; }
-    const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
-    const r = await api('posts', 'POST', { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo, links: social.draftLinks });
-    btn.disabled = false;
+    const gen = social.gen, send = { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo, links: social.draftLinks };
+    setSending('post', true);
+    const r = await api('posts', 'POST', send, { 'Idempotency-Key': onceKey('post', send) });
+    if (social.gen !== gen) return; // signed out meanwhile: the draft and its answer are no longer this tab's
+    setSending('post', false);
     if (!r.ok) { toast(r.error); return; }
-    social.draftBody = ''; social.draftImg = ''; social.draftTags = []; social.draftCombo = null; social.draftLinks = []; social.linkOffer = ''; social.pickOpen = false; leaveCompose();
+    delete social.keys.post;
+    social.draftBody = ''; social.draftImg = ''; social.draftStill = false; social.draftTags = []; social.draftCombo = null; social.draftLinks = []; social.linkOffer = ''; social.pickOpen = false; leaveCompose();
+    // With the cursor resting in a comment box the page is not redrawn, so the sent text is cleared here: left in place it invites a second Post.
+    if (f.isConnected) f.body.value = '';
     Object.assign(social.users, r.data.users);
-    if (social.key === 'all') social.posts.unshift(r.data.posts[0]); else social.stale = true;
+    const made = r.data.posts[0];
+    if (social.key !== 'all') social.stale = true; else if (!social.posts.some(p => p.id === made.id)) social.posts.unshift(made);
     render(); grant(['first-post']); toast('Posted.');
   } else if (f.classList.contains('cmt-form')) {
     e.preventDefault();
-    const id = Number(f.dataset.id), parentId = Number(f.dataset.parent || 0), body = f.body.value.trim();
-    if (!body) return;
-    const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
-    const r = await api(`posts/${id}/comments`, 'POST', { body, parentId });
-    btn.disabled = false;
+    const id = Number(f.dataset.id), parentId = Number(f.dataset.parent || 0), body = f.body.value.trim(), k = f.dataset.k;
+    if (social.sending.has(k)) return;
+    if (!body) { toast('Write something first.'); f.body.focus(); return; }
+    const gen = social.gen, send = { body, parentId };
+    setSending(k, true);
+    const r = await api(`posts/${id}/comments`, 'POST', send, { 'Idempotency-Key': onceKey(k, send) });
+    if (social.gen !== gen) return;
+    setSending(k, false);
     if (!r.ok) { toast(r.error); return; }
+    delete social.keys[k];
     Object.assign(social.users, r.data.users);
     const i = social.posts.findIndex(p => p.id === id), c = r.data.comment;
     if (i >= 0) social.posts[i] = r.data.posts[0];
-    // An expanded list keeps what was loaded; the new comment joins it in place.
-    if (social.full[id] && !c.parentId) social.full[id].list.push(c);
+    // An expanded list keeps what was loaded; the new comment joins it in place, once.
+    const add = l => { if (!l.some(x => x.id === c.id)) { l.push(c); return true; } return false; };
+    if (social.full[id] && !c.parentId) add(social.full[id].list);
     if (c.parentId) {
-      if (social.fullReplies[c.parentId]) social.fullReplies[c.parentId].list.push(c);
-      if (social.full[id]) for (const root of social.full[id].list) if (root.id === c.parentId) { root.replyCount = (root.replyCount || 0) + 1; if (!social.fullReplies[c.parentId]) (root.replies ||= []).push(c); }
+      const all = social.fullReplies[c.parentId];
+      let fresh = all ? add(all.list) : true;
+      if (social.full[id]) for (const root of social.full[id].list) if (root.id === c.parentId) { if (!all) fresh = add(root.replies ||= []); if (fresh) root.replyCount = (root.replyCount || 0) + 1; }
     }
     f.body.value = ''; social.replyTo = null; social.openCmts.add(id);
     leaveCompose(); document.activeElement?.blur?.(); render();
     document.getElementById('c-' + c.id)?.scrollIntoView({ block: 'nearest' });
   } else if (f.classList.contains('cmt-edit')) {
     e.preventDefault();
-    const id = Number(f.dataset.id), body = f.body.value.trim();
-    if (!body) return;
+    const id = Number(f.dataset.id), body = f.body.value.trim(), k = f.dataset.k;
+    if (social.sending.has(k)) return;
+    if (!body) { toast('Write something first.'); f.body.focus(); return; }
+    const gen = social.gen;
+    setSending(k, true);
     const r = await api('comments/' + id, 'PUT', { body });
+    if (social.gen !== gen) return;
+    setSending(k, false);
     if (!r.ok) { toast(r.error); return; }
     eachComment(id, c => { c.body = r.data.comment.body; c.edited = true; });
     social.editing = 0; document.activeElement?.blur?.(); render();

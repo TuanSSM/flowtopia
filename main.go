@@ -41,6 +41,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/lib/pq"
 	// The image is built FROM scratch and holds only this binary, so it has no root certificates of
@@ -116,11 +117,111 @@ type app struct {
 	version   string       // what VERSION says this build is (main.<commit> on the Pi, a release tag in production); "dev" if unset
 	flagCache map[string]bool
 	flagsAt   time.Time
+	sent      *onceStore // posts and comments that named themselves, so a repeat is not a second one
 }
 
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: "dev"}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: "dev", sent: &onceStore{m: map[string]*onceEntry{}}}
+}
+
+// A post or a comment can name itself with an Idempotency-Key header: a random key the page makes
+// once for each thing a person writes and sends again with every retry of it. The first request
+// with a key does the work; a repeat of it, from a second tap or after a lost answer on a slow
+// network, is answered with the post or comment the first one made instead of making another.
+// Only the id of what was made is remembered, in memory, for ten minutes: the answer is built
+// afresh, so a repeat does not hold a picture in memory. A restart forgets the keys, and a repeat
+// after one is then an ordinary write.
+const (
+	onceWindow = 10 * time.Minute
+	maxOnce    = 5000 // keys remembered at once; beyond that a write goes ahead unremembered
+)
+
+var onceKeyRE = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+
+type onceEntry struct {
+	done chan struct{} // closed when the first request has finished
+	id   int64         // what it made; 0 while it runs
+	at   time.Time     // when it finished
+}
+
+type onceStore struct {
+	mu    sync.Mutex
+	m     map[string]*onceEntry
+	swept time.Time
+}
+
+// sweep forgets keys older than the window. The caller holds the lock.
+func (s *onceStore) sweep(now time.Time) {
+	if len(s.m) < maxOnce && now.Sub(s.swept) < time.Minute {
+		return
+	}
+	s.swept = now
+	for k, e := range s.m {
+		if e.id != 0 && now.Sub(e.at) > onceWindow {
+			delete(s.m, k)
+		}
+	}
+}
+
+// once looks at the request's Idempotency-Key. It returns prior, the id an earlier request with
+// the same key made (0 if this is the first), and finish, which the first request must call when
+// it ends with the id it made, or 0 if it made nothing. A request that failed is forgotten, so
+// the person can correct it and send it again under the same key. While the first request is
+// still running, a repeat waits for it. Keys belong to one member and one path. ok is false when
+// the request has been answered here (a key that is not a key).
+func (a *app) once(w http.ResponseWriter, r *http.Request, u *user) (prior int64, finish func(int64), ok bool) {
+	key := r.Header.Get("Idempotency-Key")
+	if key == "" {
+		return 0, func(int64) {}, true
+	}
+	if !onceKeyRE.MatchString(key) {
+		fail(w, http.StatusBadRequest, "The Idempotency-Key header needs 8 to 64 letters, digits, dashes or underscores.")
+		return 0, nil, false
+	}
+	s, k := a.sent, strconv.FormatInt(u.ID, 10)+" "+r.URL.Path+" "+key
+	for {
+		s.mu.Lock()
+		e := s.m[k]
+		if e == nil {
+			s.sweep(time.Now())
+			if len(s.m) >= maxOnce {
+				s.mu.Unlock()
+				return 0, func(int64) {}, true
+			}
+			e = &onceEntry{done: make(chan struct{})}
+			s.m[k] = e
+			s.mu.Unlock()
+			return 0, func(id int64) {
+				s.mu.Lock()
+				if id == 0 {
+					delete(s.m, k)
+				} else {
+					e.id, e.at = id, time.Now()
+				}
+				s.mu.Unlock()
+				close(e.done)
+			}, true
+		}
+		s.mu.Unlock()
+		select {
+		case <-e.done:
+		case <-r.Context().Done():
+			fail(w, http.StatusServiceUnavailable, "The first try is still being saved. Try again in a moment.")
+			return 0, nil, false
+		}
+		s.mu.Lock()
+		id, fresh := e.id, time.Since(e.at) < onceWindow
+		if (id == 0 || !fresh) && s.m[k] == e {
+			delete(s.m, k)
+		}
+		s.mu.Unlock()
+		if id != 0 && fresh {
+			w.Header().Set("Idempotency-Replayed", "true")
+			return id, nil, true
+		}
+		// The first try made nothing, or was long ago: this one starts over as a first.
+	}
 }
 
 // defaultProxies are where a reverse proxy connects from when it runs on the same host (loopback,
@@ -391,6 +492,21 @@ type user struct {
 	LastActive     *time.Time `json:"lastActive,omitempty"` // filled only in the admin accounts list
 	// AvatarCfg is the avatar the user built (web/avatar-def.json lists every option); public.
 	AvatarCfg json.RawMessage `json:"avatarCfg"`
+	// Rev names the state of the profile text (see profileRev); only the owner's own copy carries it.
+	Rev string `json:"rev,omitempty"`
+}
+
+// profileRev names the state of the part of a profile a person edits by hand: the bio, the links
+// and the preferences. A save can say which state it was made against, and a save made against an
+// older one is turned down instead of undoing what another device saved. The stats and the list of
+// notes already read are left out on purpose: the page writes those by itself, and they must not
+// make a profile edit look stale.
+func profileRev(u *user) string {
+	links, prefs := map[string]string{}, map[string]bool{}
+	json.Unmarshal(u.Links, &links)
+	json.Unmarshal(u.Prefs, &prefs)
+	b, _ := json.Marshal([]any{u.Bio, links, prefs})
+	return hashOf(b)
 }
 
 const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden, u.avatar_cfg"
@@ -755,6 +871,7 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 	u := a.currentUser(r)
 	var ach []achievement
 	if u != nil {
+		u.Rev = profileRev(u)
 		if ach, err = a.achievementsOf(u.ID); err != nil {
 			a.serverError(w, err)
 			return
@@ -965,6 +1082,11 @@ func (a *app) handleSignout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handlePutMe changes the signed-in member's account. Only what the body names is written, and
+// it is written onto the account as it is now, not as it was when the request arrived: a save from
+// one device leaves alone what another device saved a moment ago. A body with rev says which state
+// of the bio, links and preferences the edit was made against; if that is no longer the state, the
+// answer is 409 with the account as it is, and nothing is written.
 func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	var in struct {
 		DisplayName *string   `json:"displayName"`
@@ -980,9 +1102,18 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		Stats json.RawMessage `json:"stats"`
 		// The avatar, checked against web/avatar-def.json.
 		AvatarCfg json.RawMessage `json:"avatarCfg"`
+		// The profile state the edit was made against (profileRev); optional.
+		Rev *string `json:"rev"`
 	}
 	if !readJSON(w, r, 200<<10, &in) {
 		return
+	}
+	// Everything is checked before the account is read, so the row is locked only briefly.
+	var cols []string
+	args := []any{u.ID}
+	set := func(col string, v any) {
+		args = append(args, v)
+		cols = append(cols, col+" = $"+strconv.Itoa(len(args)))
 	}
 	if in.DisplayName != nil {
 		d := strings.TrimSpace(*in.DisplayName)
@@ -990,7 +1121,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 			fail(w, http.StatusBadRequest, "The display name needs 1 to 40 characters.")
 			return
 		}
-		u.DisplayName = d
+		set("display_name", d)
 	}
 	if in.Props != nil {
 		if len(*in.Props) == 0 {
@@ -1003,8 +1134,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 				return
 			}
 		}
-		u.Props, _ = json.Marshal(*in.Props)
-		u.Onboarded = true
+		b, _ := json.Marshal(*in.Props)
+		set("props", string(b))
+		set("onboarded", true)
 	}
 	if in.Seen != nil {
 		if len(*in.Seen) > 40 {
@@ -1017,7 +1149,8 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 				return
 			}
 		}
-		u.Seen, _ = json.Marshal(*in.Seen)
+		b, _ := json.Marshal(*in.Seen)
+		set("seen", string(b))
 	}
 	if in.Avatar != nil {
 		v, err := cleanImage(*in.Avatar, 1024, maxAvatar)
@@ -1025,7 +1158,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 			fail(w, http.StatusBadRequest, "That picture cannot be used: "+err.Error()+".")
 			return
 		}
-		u.Avatar = v
+		set("avatar", v)
 	}
 	if in.Bio != nil {
 		b := strings.TrimSpace(*in.Bio)
@@ -1033,11 +1166,12 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 			fail(w, http.StatusBadRequest, "Keep the bio under 300 characters.")
 			return
 		}
-		u.Bio = b
+		set("bio", b)
 	}
+	// Links and preferences are kept per key: the ones the body names are cleaned here and laid
+	// over the stored ones once the row is locked. An empty link takes that link away.
+	links := map[string]string{}
 	if in.Links != nil {
-		links := map[string]string{}
-		json.Unmarshal(u.Links, &links)
 		for _, k := range linkKinds {
 			v, ok := (*in.Links)[k]
 			if !ok {
@@ -1048,48 +1182,85 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 				fail(w, http.StatusBadRequest, "That does not look like a "+k+" handle or link.")
 				return
 			}
-			if h == "" {
-				delete(links, k)
-			} else {
-				links[k] = h
-			}
+			links[k] = h
 		}
-		u.Links, _ = json.Marshal(links)
 	}
 	if in.Prefs != nil {
-		prefs := map[string]bool{}
-		json.Unmarshal(u.Prefs, &prefs)
-		for k, v := range *in.Prefs {
+		for k := range *in.Prefs {
 			// autoPost: share milestones; shareTransitions: send anonymous transition marks for suggestions.
 			if k != "autoPost" && k != "shareTransitions" {
 				fail(w, http.StatusBadRequest, "Unknown preference: "+k)
 				return
 			}
-			prefs[k] = v
 		}
-		u.Prefs, _ = json.Marshal(prefs)
 	}
 	if len(in.AvatarCfg) > 0 {
 		if err := validAvatar(in.AvatarCfg); err != nil {
 			fail(w, http.StatusBadRequest, "That avatar cannot be saved: "+err.Error())
 			return
 		}
-		u.AvatarCfg = in.AvatarCfg
+		set("avatar_cfg", string(in.AvatarCfg))
 	}
 	if len(in.Stats) > 0 {
 		if !validStats(in.Stats) {
 			fail(w, http.StatusBadRequest, "Stats must be a small object of numbers.")
 			return
 		}
-		u.Stats = in.Stats
+		set("stats", string(in.Stats))
 	}
-	_, err := a.db.Exec(`UPDATE users SET display_name = $2, props = $3, seen = $4, onboarded = $5, avatar = $6, bio = $7, links = $8, prefs = $9, stats = $10, avatar_cfg = $11 WHERE id = $1`,
-		u.ID, u.DisplayName, string(u.Props), string(u.Seen), u.Onboarded, u.Avatar, u.Bio, string(u.Links), string(u.Prefs), string(u.Stats), string(u.AvatarCfg))
+	tx, err := a.db.Begin()
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+	defer tx.Rollback()
+	cur, err := scanUser(tx.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.id = $1 FOR UPDATE`, u.ID))
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	cur.Rev = profileRev(cur)
+	if in.Rev != nil && *in.Rev != cur.Rev {
+		writeJSON(w, http.StatusConflict, map[string]any{"user": cur,
+			"error": "Your profile was changed on another device. Your edit is still here: save again to put it on top."})
+		return
+	}
+	if len(links) > 0 {
+		all := map[string]string{}
+		json.Unmarshal(cur.Links, &all)
+		for k, h := range links {
+			if h == "" {
+				delete(all, k)
+			} else {
+				all[k] = h
+			}
+		}
+		b, _ := json.Marshal(all)
+		set("links", string(b))
+	}
+	if in.Prefs != nil && len(*in.Prefs) > 0 {
+		all := map[string]bool{}
+		json.Unmarshal(cur.Prefs, &all)
+		for k, v := range *in.Prefs {
+			all[k] = v
+		}
+		b, _ := json.Marshal(all)
+		set("prefs", string(b))
+	}
+	if len(cols) > 0 {
+		// The column names come from the fixed list above, never from the request.
+		cur, err = scanUser(tx.QueryRow(`UPDATE users u SET `+strings.Join(cols, ", ")+` WHERE u.id = $1 RETURNING `+userCols, args...))
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		cur.Rev = profileRev(cur)
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": cur})
 }
 
 func (a *app) handlePassword(w http.ResponseWriter, r *http.Request, u *user) {
@@ -2830,10 +3001,20 @@ func parseLink(raw string) (postLink, bool) {
 		raw = "https://" + raw
 	}
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Port() != "" {
+	// No account, and no colon after the name: not a port, and not the empty port of "youtu.be:".
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || strings.Contains(u.Host, ":") {
 		return postLink{}, false
 	}
-	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	// Only A to Z are folded, so a look-alike letter that Unicode lower-cases to a plain one (the
+	// Kelvin sign for k) does not make a name match. web/links.js follows the same rules, and
+	// test/links-fixtures.json holds the cases both must agree on.
+	host := strings.Map(func(c rune) rune {
+		if c >= 'A' && c <= 'Z' {
+			return c + 'a' - 'A'
+		}
+		return c
+	}, u.Host)
+	host = strings.TrimPrefix(host, "www.")
 	host = strings.TrimPrefix(host, "m.")
 	parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
 	switch host {
@@ -4942,10 +5123,21 @@ func muted(w http.ResponseWriter, u *user) bool {
 }
 
 func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) {
+	// A repeat of a post already made is a read: it is answered before the mute and the allowance.
+	prior, finish, ok := a.once(w, r, u)
+	if !ok {
+		return
+	}
+	if prior != 0 {
+		a.writePost(w, u, prior)
+		return
+	}
+	var made int64
+	defer func() { finish(made) }()
 	if muted(w, u) {
 		return
 	}
-	w, ok := allowed(w, a.lim.posts, u, "posts")
+	w, ok = allowed(w, a.lim.posts, u, "posts")
 	if !ok {
 		return
 	}
@@ -4993,7 +5185,7 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		for _, raw := range in.Links {
 			l, ok := parseLink(raw)
 			if !ok {
-				fail(w, http.StatusBadRequest, "Links can be Instagram posts and reels, TikTok videos, and YouTube videos and shorts.")
+				fail(w, http.StatusBadRequest, "This link cannot be a card: "+shown(raw, 80)+". Cards are for Instagram posts and reels, TikTok videos, and YouTube videos and shorts.")
 				return
 			}
 			if !seen[l.URL] {
@@ -5028,11 +5220,28 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		a.serverError(w, err)
 		return
 	}
+	made = id
 	a.notifyMentions(body, u.ID, id, 0)
 	for _, l := range links {
 		go a.preview(l) // in the background: posting never waits for another site
 	}
 	a.writePost(w, u, id)
+}
+
+// shown makes text a person sent safe to say back in a message: printable characters only, and
+// at most max of them.
+func shown(s string, max int) string {
+	out := make([]rune, 0, max+1)
+	for _, c := range s {
+		if !unicode.IsPrint(c) {
+			continue
+		}
+		if len(out) == max {
+			return string(out) + "..."
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
 
 func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) {
@@ -5425,14 +5634,25 @@ func startsWithMention(text, name string) bool {
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
-	if muted(w, u) {
-		return
-	}
-	w, ok := allowed(w, a.lim.comments, u, "comments")
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	// A repeat of a comment already made is a read: it is answered before the mute and the allowance.
+	prior, finish, ok := a.once(w, r, u)
 	if !ok {
 		return
 	}
-	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if prior != 0 {
+		a.writeComment(w, u, id, prior)
+		return
+	}
+	var made int64
+	defer func() { finish(made) }()
+	if muted(w, u) {
+		return
+	}
+	w, ok = allowed(w, a.lim.comments, u, "comments")
+	if !ok {
+		return
+	}
 	var in struct {
 		Body     string `json:"body"`
 		ParentID int64  `json:"parentId"`
@@ -5516,15 +5736,26 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 	if owner != answered {
 		a.notifyAt(owner, u.ID, "comment", id, cid, "")
 	}
+	made = cid
 	a.notifyMentions(body, u.ID, id, cid, owner, answered)
+	a.writeComment(w, u, id, cid)
+}
+
+// writeComment answers with the post and the comment cid on it, as the page expects after
+// commenting. A repeat of a comment that has since been removed gets a 404.
+func (a *app) writeComment(w http.ResponseWriter, u *user, id, cid int64) {
 	out, err := a.loadPosts(u, 0, 0, id)
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, cid)
-	if err != nil || len(list) == 0 {
-		a.serverError(w, fmt.Errorf("new comment %d: %v", cid, err))
+	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2 AND post_id = $3`, cid, id)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if len(out["posts"].([]*post)) == 0 || len(list) == 0 {
+		fail(w, http.StatusNotFound, "That comment is gone.")
 		return
 	}
 	out["comment"] = list[0]

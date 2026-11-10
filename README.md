@@ -196,7 +196,21 @@ comments, each with its two newest replies), `POST /api/posts/{id}/comments` (wi
 `PUT|DELETE /api/comments/{id}`, `GET /api/comments/{id}/replies?after=` (50 at a time),
 `GET /api/comments/{id}/thread`, `POST /api/comments/{id}/like` (toggle), `POST /api/achievements`, `GET /api/notifications`,
 `PUT /api/notifications/read`. Profile fields (`bio`, `links`, `prefs`, `stats`) go through
-`PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted.
+`PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted. `PUT /api/me` writes
+only the fields, links and preferences that are in the body. With `rev` (from the user in `GET /api/me`)
+a save made on an older copy of the profile is answered 409 with the current user, and the About form
+keeps what was typed, shows what changed elsewhere and saves on top at the next press.
+
+`POST /api/posts` and `POST /api/posts/{id}/comments` take an `Idempotency-Key` header. A second request
+from the same member with the same key within 10 minutes gets the first answer again, with
+`Idempotency-Replayed: true`, and makes nothing new; the page sends one per draft, so a tap repeated
+after a lost answer does not post twice.
+
+Progress is one document per prop, saved with the `rev` it was read at. When another device saved in
+between, the page merges the two against the copy they both started from (`web/merge.js`: per skill,
+session, combo and setting; the same field changed on both sides keeps this device's value) and saves
+again. `node test/merge.js` checks the merge, and `node test/links.js` checks that the page reads a
+pasted link the way the server does, on the fixtures the Go test uses (`test/links-fixtures.json`).
 
 ## Link cards
 
@@ -350,7 +364,7 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | --- | --- |
 | `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
-| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
+| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js` and `test/merge.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
 | `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on |
 | `screenshots` | `test/browser/pages.py`: the main pages at desktop and phone width and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |

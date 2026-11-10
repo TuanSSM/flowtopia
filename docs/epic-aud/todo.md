@@ -5,7 +5,7 @@ Category: fix. Size: M. Each item is one pull request or one commit of one, with
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 2 of 7 items done.
+**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 3 of 7 items done.
 
 The items, their causes, fixes and tests are in [audit-plan.md](../audit-plan.md); this list is the
 order and the DoD of each pull request. Nothing is added to a PR beyond its table.
@@ -21,10 +21,14 @@ order and the DoD of each pull request. Nothing is added to a PR beyond its tabl
   differ from the first plan, with the reasons in its table: a request the server turns down costs
   a tenth of an allowance instead of nothing, the Origin check refuses an HTTP page writing to an
   HTTPS site and not the reverse, and a member's picture stays reachable with `community` off.
-- [ ] **PR 3, nothing lost on the client.** `fix(ui): keep drafts and edits safe across sign-out,
+- [x] **PR 3, nothing lost on the client.** `fix(ui): keep drafts and edits safe across sign-out,
   slow networks and devices` (UN-04, UN-01, UN-02, UN-03, UN-14, UN-07, UN-13, UN-09, UN-10, UN-11).
   DoD: `TestDBIdempotentPost` and `TestDBProfileRev` pass; the `social.py`, `combo.py` and
-  `links.py` checks named in the plan pass; a transparent PNG uploads on a white background.
+  `links.py` checks named in the plan pass; a transparent PNG uploads on a white background. Four
+  fixes differ from the first plan, with the reasons in its table: progress from two devices is
+  merged three ways instead of re-applying one change, the profile `rev` is a hash and needs no
+  migration, a send key is made per form and content, and a removed link card puts its link back
+  in the text.
 - [ ] **PR 4, admin and moderation correctness.** `fix(admin): every flag listed, fresh account
   states, deliberate role changes` (MAP-02, HP-02, HP-05, HP-03, HP-09, HP-10, UN-17, UN-12, UN-16,
   HP-08, SEC-12, SEC-11). DoD: `node test/flags.js` in lint; migration 5 (`users.last_seen`,

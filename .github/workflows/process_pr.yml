@@ -145,6 +145,11 @@ jobs:
           node test/catalog-fixtures/check.js   # the Go validator runs on the same files in go test
       - name: Badge keys the server accepts match the page
         run: node test/badges.js
+      # The page reads a link the way the server does (the Go test runs the same fixtures).
+      - name: Link reading matches the server
+        run: node test/links.js
+      - name: Merging progress from two devices
+        run: node test/merge.js
       - name: Python syntax
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.

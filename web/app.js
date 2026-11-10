@@ -104,30 +104,45 @@ function commit() {
   clearTimeout(saveTimer); saveTimer = setTimeout(save, 350);
   render();
 }
+// How many saves in a row met a newer copy from another device; a successful save clears it.
+let clashes = 0;
 async function save() {
   if (!me) { dirty = false; return; }
   if (saving) { saveTimer = setTimeout(save, 200); return; }
   saving = true; dirty = false;
-  const prop = ui.prop;
+  const prop = ui.prop, user = me.id, sent = JSON.stringify(state);
   try {
-    const r = await fetch(`api/progress/${prop}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rev, state }) });
+    const r = await fetch(`api/progress/${prop}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: `{"rev":${Number(rev) || 0},"state":${sent}}` });
     if (r.status === 401) {
-      me = null; state = blank(); rev = 0;
+      me = null; state = blank(); rev = 0; sameOwner();
       toast('You were signed out, so that change was not saved. Sign in again.');
       location.hash = '#/signin'; render();
       return;
     }
+    const d = r.status === 409 || r.ok ? await r.json() : null;
+    if (!d) throw new Error(r.status);
+    if (me?.id !== user) return; // signed out, or someone else signed in, while this was on its way
+    // The person may have switched props meanwhile; then the answer belongs to the copy put aside.
+    const here = ui.prop === prop;
     if (r.status === 409) {
-      const d = await r.json();
-      rev = d.rev; state = normalize(d.state); dirty = false;
-      toast('Changed on another device. Loaded the latest copy, so your last edit was not kept.');
+      // Another device saved first. Both sets of changes since the copy the two started from are
+      // kept (merge.js) and saved again. Without that starting copy, or when it keeps happening,
+      // the latest copy is loaded and the person is told.
+      const theirs = normalize(d.state), mine = here ? state : docs[prop]?.state, base = synced[prop];
+      synced[prop] = JSON.stringify(theirs);
+      const both = base && mine && clashes < 3 ? normalize(progressMerge.progress(JSON.parse(base), mine, theirs)) : null;
+      clashes++;
+      const again = !!both && !progressMerge.same(both, theirs);
+      if (here) {
+        state = both || theirs; rev = d.rev; docs[prop] = { rev, state };
+        if (again) { dirty = true; clearTimeout(saveTimer); saveTimer = setTimeout(save, 50); } else dirty = false;
+      } else docs[prop] = { rev: d.rev, state: both || theirs, migrated: again }; // saved when the prop is opened again
+      toast(both ? 'Changed on another device too. Both sets of changes were kept.' : 'Changed on another device. Loaded the latest copy, so your last edit was not kept.');
       render();
-    } else if (!r.ok) {
-      throw new Error(r.status);
     } else {
-      rev = (await r.json()).rev;
+      synced[prop] = sent; clashes = 0;
+      if (here) { rev = d.rev; docs[prop] = { rev, state }; } else if (docs[prop]) docs[prop].rev = d.rev;
     }
-    docs[prop] = { rev, state };
     setSync(dirty ? 'saving' : 'ok');
     if (!dirty) { if (flags.game) syncGame(); ntSyncAll(false); }
   } catch {
@@ -150,6 +165,7 @@ async function load() {
   await loadSession();
   loaded = true;
   if (!me || BM.user !== me.id) resetBookmarks();
+  sameOwner();
   if (me && flags.bookmarks && !BM.loaded) { BM.user = me.id; loadBookmarks(); }
   if (flags.game) syncGame();
   ntSyncAll(false); // marks made before consent changed elsewhere, or while offline
@@ -160,7 +176,9 @@ document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || dirty || saving || !loaded) return;
   try { if (await load()) render(); } catch { /* the next save reports trouble */ }
 });
-window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+// Leaving with something unsaved or unsent asks first: progress on its way, a post or comment
+// being written, or an edit to the About form.
+window.addEventListener('beforeunload', e => { if (dirty || socialDraft() || aboutDirty()) e.preventDefault(); });
 
 /* ---------- skill model ---------- */
 function rec(id) { return state.skills[id] || {}; }
