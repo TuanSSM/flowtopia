@@ -720,13 +720,20 @@ func TestDBModeration(t *testing.T) {
 	if e.count(`SELECT count(*) FROM achievements WHERE user_id = $1 AND key = 'streak-100'`, ownerID) != 0 {
 		t.Fatal("revoked badge granted again")
 	}
+	// A branch badge, which ends in a capital letter, can be revoked like any other.
+	e.must(200, owner, "POST", "/api/achievements", map[string]any{"keys": []string{"branch:nunchaku:F"}})
+	act(mod, 200, map[string]any{"action": "revoke_badge", "id": ownerID, "key": "branch:nunchaku:F", "reason": "Levels set in one minute"})
+	e.must(200, owner, "POST", "/api/achievements", map[string]any{"keys": []string{"branch:nunchaku:F"}})
+	if e.count(`SELECT count(*) FROM achievements WHERE user_id = $1 AND key = 'branch:nunchaku:F'`, ownerID) != 0 {
+		t.Fatal("revoked branch badge granted again")
+	}
 	act(mod, 200, map[string]any{"action": "hide_stats", "id": ownerID})
 	people := e.must(200, other, "GET", "/api/users", nil)["users"].([]any)
 	if top := people[0].(map[string]any); top["username"] == "owner" {
 		t.Fatal("hidden stats still rank first")
 	}
-	// Every action above was logged once.
-	for action, want := range map[string]int{"hide": 2, "restore": 1, "resolve": 1, "mute": 1, "unmute": 1, "suspend": 1, "revoke_badge": 1, "hide_stats": 1} {
+	// Every action above was logged once (two badges were revoked).
+	for action, want := range map[string]int{"hide": 2, "restore": 1, "resolve": 1, "mute": 1, "unmute": 1, "suspend": 1, "revoke_badge": 2, "hide_stats": 1} {
 		if n := e.count(`SELECT count(*) FROM mod_actions WHERE action = $1`, action); n != want {
 			t.Errorf("%s logged %d times, want %d", action, n, want)
 		}
@@ -1487,6 +1494,19 @@ func TestDBHardening(t *testing.T) {
 	// Only known badges, and not while muted (S7).
 	e.must(400, member, "POST", "/api/achievements", map[string]any{"keys": []string{"made-up-badge"}, "prop": "nunchaku"})
 	e.must(200, member, "POST", "/api/achievements", map[string]any{"keys": []string{"sessions-1"}, "prop": "nunchaku"})
+	// The badges the page builds from a prop's map: its roadmap and each branch with a skill in use.
+	// A batch with one unknown key grants nothing.
+	had := e.count(`SELECT count(*) FROM achievements WHERE user_id = $1`, userID)
+	for _, bad := range []string{"gates:unicycle", "gates", "gates:nunchaku:F", "branch:nunchaku", "branch:nunchaku:Z", "branch:nunchaku:f", "branch:nunchaku:FR", "branch:unicycle:F", "trophy:nunchaku"} {
+		e.must(400, member, "POST", "/api/achievements", map[string]any{"keys": []string{"sessions-10", bad}, "prop": "nunchaku"})
+	}
+	if e.count(`SELECT count(*) FROM achievements WHERE user_id = $1`, userID) != had {
+		t.Fatal("a batch with an unknown badge should grant nothing")
+	}
+	perProp := e.must(200, member, "POST", "/api/achievements", map[string]any{"keys": []string{"gates:nunchaku", "branch:nunchaku:F", "branch:poi:" + poiBranch(t, e)}, "prop": "nunchaku"})
+	if len(perProp["new"].([]any)) != 3 {
+		t.Fatalf("the roadmap and branch badges of a prop should be granted: %v", perProp["_raw"])
+	}
 	e.a.db.Exec(`UPDATE users SET muted_until = now() + interval '1 hour' WHERE id = $1`, userID)
 	e.must(403, member, "POST", "/api/achievements", map[string]any{"keys": []string{"sessions-10"}, "prop": "nunchaku"})
 	e.a.db.Exec(`UPDATE users SET muted_until = NULL WHERE id = $1`, userID)
@@ -2515,4 +2535,17 @@ func TestDBCountsToken(t *testing.T) {
 	if code, _ := ask("Bearer " + token); code != 404 {
 		t.Errorf("with the suggest flag off: %d, want 404", code)
 	}
+}
+
+// poiBranch is the letter of a poi branch with a skill in use, read from the published map.
+func poiBranch(t *testing.T, e *tenv) string {
+	t.Helper()
+	_, cat := e.do("", "GET", "/catalog/poi.json", nil)
+	for _, s := range cat["skills"].([]any) {
+		if m := s.(map[string]any); m["retired"] != true {
+			return m["id"].(string)[:1]
+		}
+	}
+	t.Fatal("the poi map has no skill in use")
+	return ""
 }
