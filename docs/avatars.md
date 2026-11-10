@@ -195,6 +195,13 @@ pull request's comment whenever the suite ran, which it does for every change to
 figure bundle, the clips or `sim/`. The numbers are the runner's; the Pi's are in the table above
 and are measured there by running the suite with `FRAME_BUDGET_MS` set.
 
+A frame that is the one already drawn (a paused demo, a still picture, a page drawn again) is not
+posed, skinned or rendered again: the figure remembers the last pose it skinned and the last picture it
+rendered, compares each request with them, and hands the kept picture out
+(`node test/skin-once.js`). In Chromium with software WebGL such a frame takes about 0.6 ms where a
+changed one takes 41 to 95 ms, depending on what else the machine is doing. The bound in CI is 5 ms (`SAME_FRAME_BUDGET_MS` in
+`test/browser/avatar.py`); the target on the Pi is 2 ms and has not been measured there yet.
+
 ## Licences
 
 - **Base model.** `web/assets/human.glb` is the "X Bot" mannequin from the three.js examples

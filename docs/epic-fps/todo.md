@@ -29,6 +29,26 @@ third slower than the heavier one timed after it). A pixel is read back after ev
   adds a third to the same line.
 - [ ] **Skin only on change.** No skinning when the pose is the one already drawn (paused, a still,
   the same frame at a lower play speed). DoD: a paused demo costs under 2 ms a frame on the Pi.
+  Built: the figure remembers the last pose it skinned and the last picture it rendered, compares
+  each request with them by value (size, every joint, both hands, every prop, the camera), and
+  hands the kept picture out. An unchanged frame poses, skins and renders nothing. Measured in
+  Chromium with software WebGL at 720 px: 0.5 to 0.8 ms, where a changed frame takes 41 to 52 ms on a quiet machine (up to 95 ms on a busy one),
+  of which 38 to 49 ms is the browser copying the picture out of WebGL, 1.6 ms the skinning and
+  0.2 ms the posing. A new avatar or body, a staging outside a render and a lost WebGL context drop
+  what is kept. `node test/skin-once.js` (24 checks, in the unit job) counts the figure's own work;
+  `test/browser/avatar.py` checks that 60 drawings of a drawn frame render nothing, that such a
+  frame draws within 5 ms on the runner (`SAME_FRAME_BUDGET_MS`), and that another view, hand,
+  figure, avatar, prop colour, size or pose gives another picture and going back gives the first
+  again. All 32 tiles of a contact sheet are pixel-identical to before.
+  What it does and does not help: a paused demo and a still in the main player already drew no
+  frames, so the gain is for pages drawn again while paused, the still steps of a combo and the
+  profile and editor previews. "The same frame at a lower play speed" does not occur: the player
+  blends between clip frames, so every animation frame is a new pose, and rounding it would change
+  the picture.
+  Open, and why the box is not ticked: the 2 ms is a number for the Pi and has not been measured
+  there. On the Pi: `SAME_FRAME_BUDGET_MS=2 FRAME_BUDGET_MS=80 test/browser/run.sh avatar.py`, and
+  write the "unchanged demo frame" line it prints here. Nothing in CI covers a lost WebGL context;
+  it was tried by hand with a throwaway script.
 - [ ] **No allocations per frame.** Vectors, matrices and the skin buffers reused; the player makes
   no new arrays while playing. DoD: a heap snapshot over 300 frames grows by under 100 KB.
 - [ ] **A lighter body mesh.** The X Bot decimated once at build time (target: half the triangles),
