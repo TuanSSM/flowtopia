@@ -63,6 +63,10 @@ under `docs/epic-<code>/todo.md`.
 docker logs nunchaku
 ```
 
+The image holds the binary and nothing else, so the root certificates that link previews need are
+compiled into the binary (Mozilla's bundle, pinned in `go.mod`; update it with
+`go get golang.org/x/crypto/x509roots/fallback@latest`). The log says `TLS roots: present` at start.
+
 `deploy.sh` keeps the image that was running as `nunchaku:previous` and goes back to it by itself if
 the new container does not become healthy within 90 seconds. Both containers have CPU, memory and
 process limits in `compose.yml`, so the app cannot starve the printer stack on the same Pi.

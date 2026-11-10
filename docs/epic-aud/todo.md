@@ -5,14 +5,16 @@ Category: fix. Size: M. Each item is one pull request or one commit of one, with
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 0 of 7 items done.
+**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 1 of 7 items done.
 
 The items, their causes, fixes and tests are in [audit-plan.md](../audit-plan.md); this list is the
 order and the DoD of each pull request. Nothing is added to a PR beyond its table.
 
-- [ ] **PR 1, root certificates.** `fix(build): give the container its root certificates`. DoD:
-  `TestRootsPresent` passes with empty `SSL_CERT_FILE` and `SSL_CERT_DIR`; the start log shows
-  `TLS roots: <n>` with n over 100; a YouTube link posted on stage shows a card.
+- [x] **PR 1, root certificates.** `fix(build): give the container its root certificates`. DoD:
+  `TestRootsPresent` passes with `SSL_CERT_FILE` and `SSL_CERT_DIR` pointed at an empty directory;
+  the start log shows `TLS roots: present`. Go has no supported way to count a pool, so the test
+  proves trust in two named roots (Let's Encrypt, Google) where the plan asked for a count over 100.
+  The card on stage needs a deploy, so it is checked under "The audit run again".
 - [ ] **PR 2, limits.** `fix(server): limits count attempts fairly and cannot lock people out`
   (UN-05, SEC-04, SEC-05, SEC-10, UN-06, MAP-03, SEC-16, SEC-15). DoD: the eight tests in the plan
   pass; `TestDBFlagsGateAPI` shows `community` and `game` off give 404 on their routes.
@@ -34,4 +36,5 @@ order and the DoD of each pull request. Nothing is added to a PR beyond its tabl
   documented and empty by default; Staff group in the sidebar footer and both staff pages in the
   palette; visitors see three sidebar items; the combo card's logging and publishing are apart.
 - [ ] **The audit run again.** The four journeys on stage after PR 6. DoD: every item in the audit
-  report carries its PR number or is reopened with what still fails; the count is in this file.
+  report carries its PR number or is reopened with what still fails; the count is in this file; a
+  YouTube link posted on stage shows a card and the start log says `TLS roots: present`.

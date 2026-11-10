@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
 	"database/sql"
 	"embed"
 	"encoding/base64"
@@ -41,6 +42,10 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	// The image is built FROM scratch and holds only this binary, so it has no root certificates of
+	// its own. This package compiles Mozilla's bundle into the binary; Go uses it only when the
+	// system has none, so a host with its own certificates keeps using them.
+	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
 //go:embed web
@@ -3660,6 +3665,13 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	return a.secure(guard(mux))
 }
 
+// rootsPresent says whether there is anything to check a server's certificate against: the system's
+// root certificates, or the bundle compiled into the binary when the system has none.
+func rootsPresent() bool {
+	pool, err := x509.SystemCertPool()
+	return err == nil && pool != nil && !pool.Equal(x509.NewCertPool())
+}
+
 func main() {
 	listen := flag.String("listen", ":3169", "listen address")
 	dataDir := flag.String("data", "/data", "directory for backups")
@@ -3699,6 +3711,11 @@ func main() {
 		a.version = v
 	}
 	log.Printf("version %s", a.version)
+	if rootsPresent() {
+		log.Print("TLS roots: present")
+	} else {
+		log.Print("TLS roots: none; link previews cannot be fetched")
+	}
 	if v, ok := os.LookupEnv("FLOWA_TRUSTED_PROXIES"); ok && strings.TrimSpace(v) != "" {
 		p, err := parseProxies(v)
 		if err != nil {

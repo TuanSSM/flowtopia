@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -249,5 +252,46 @@ func TestValidAvatar(t *testing.T) {
 	}
 	if validAvatar(json.RawMessage(`{"v":1,"props":{"rope":"#3987e5"}}`)) == nil || validAvatar(json.RawMessage(`{"v":1,"props":{"poi":"#000000"}}`)) == nil {
 		t.Error("an unknown prop or a colour off the prop palette should be refused")
+	}
+}
+
+// The container is built FROM scratch, so the binary must carry root certificates itself. The system
+// roots are read once per process, so the check runs in a second copy of the test binary that is told
+// to look for certificates in an empty directory, which is what the container has.
+func TestRootsPresent(t *testing.T) {
+	if os.Getenv("FLOWA_ROOTS_CHILD") == "1" {
+		if !rootsPresent() {
+			t.Fatal("no root certificates with an empty system store: is x509roots/fallback still imported?")
+		}
+		// Two roots the link previews depend on: Let's Encrypt, and Google for YouTube.
+		for _, name := range []string{"isrg-root-x1.pem", "gts-root-r1.pem"} {
+			raw, err := os.ReadFile(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			block, _ := pem.Decode(raw)
+			if block == nil {
+				t.Fatalf("%s: not a PEM file", name)
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if _, err := cert.Verify(x509.VerifyOptions{}); err != nil {
+				t.Errorf("%s is not trusted with an empty system store: %v", name, err)
+			}
+		}
+		return
+	}
+	empty := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRootsPresent$", "-test.v")
+	cmd.Env = append(os.Environ(), "FLOWA_ROOTS_CHILD=1",
+		"SSL_CERT_FILE="+filepath.Join(empty, "none.pem"), "SSL_CERT_DIR="+empty)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("with an empty certificate store: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "PASS: TestRootsPresent") {
+		t.Fatalf("the check did not run in the second process:\n%s", out)
 	}
 }
