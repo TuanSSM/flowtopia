@@ -61,11 +61,13 @@ services:
     cpus: "2"
     mem_limit: 384m
     pids_limit: 256
-    # Refused sign-ins and used-up allowances are logged (one line per address per minute), so the
-    # log keeps enough to look back over an incident: 5 files of 5 MB.
+    # The log holds one line per request (at most 240 a minute) and the refused sign-ins and used-up
+    # allowances (at most 120 a minute). A line takes about 220 bytes on disk, so a flood that uses
+    # both to the full writes about 100 MB in a day: 10 files of 10 MB keep a day of the worst case
+    # to look back over, and months of ordinary use.
     logging:
       driver: json-file
-      options: { max-size: 5m, max-file: "5" }
+      options: { max-size: 10m, max-file: "10" }
 
 volumes:
   pgdata:

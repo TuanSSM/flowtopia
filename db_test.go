@@ -2200,3 +2200,33 @@ func TestDBHealthz(t *testing.T) {
 		t.Fatalf("with the table gone a local probe gets %d %v, want 503 with the database up and schema 0", code, out)
 	}
 }
+
+// TestDBRequestLog: with a database behind it, a member's write gets a line that says how it went and
+// not what was written, and a write over the allowance says which allowance and whose.
+func TestDBRequestLog(t *testing.T) {
+	e := newEnv(t)
+	id, tok := e.user("sandy", "user")
+	post := func() *http.Request {
+		r := httptest.NewRequest("POST", "/api/posts", strings.NewReader(`{"body":"a secret thought"}`))
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
+		return r
+	}
+	lines := logLines(t, e.a, e.h, post())
+	if len(lines) != 1 || lines[0]["method"] != "POST" || lines[0]["route"] != "/api/posts" || lines[0]["status"] != float64(200) || num(lines[0]["bytes"]) < 20 {
+		t.Fatalf("a post: got %v, want one line for POST /api/posts with status 200 and the bytes answered", lines)
+	}
+	for _, secret := range []string{"secret thought", "sandy", tok} {
+		if strings.Contains(fmt.Sprint(lines[0]["_raw"]), secret) {
+			t.Fatalf("the log line carries %q: %s", secret, lines[0]["_raw"])
+		}
+	}
+	// Thirty posts an hour is the allowance; the next one is refused and its line says so.
+	for i := 0; i < 30; i++ {
+		e.a.lim.posts.add(fmt.Sprint(id))
+	}
+	lines = logLines(t, e.a, e.h, post())
+	if len(lines) != 1 || lines[0]["status"] != float64(429) || lines[0]["refused"] != fmt.Sprintf("too many posts by member %d", id) {
+		t.Fatalf("a post over the allowance: got %v, want 429 and the refusal named", lines)
+	}
+}
