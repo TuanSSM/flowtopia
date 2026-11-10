@@ -359,3 +359,21 @@ func TestPasswordPolicy(t *testing.T) {
 		t.Error("a hash that cannot be read has no round count")
 	}
 }
+
+func TestHomeLink(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                           "",
+		"  ":                         "",
+		" http://pi.local:8080/ ":    "http://pi.local:8080/",
+		"https://home.example/start": "https://home.example/start",
+	} {
+		if got, err := homeLink(in); err != nil || got != want {
+			t.Errorf("homeLink(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"pi.local:8080", "//pi.local/", "javascript:alert(1)", "ftp://pi.local/", "http://", "http://admin:secret@pi.local/", "/start"} {
+		if got, err := homeLink(in); err == nil {
+			t.Errorf("homeLink(%q) = %q, want it refused", in, got)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 'use strict';
 // Accounts, props and onboarding. Loaded before app.js, which calls into it.
 let me = null, perms = []; // perms: what the signed-in user may do, from the server
+let homeUrl = ''; // for admins, the start page of the machine Flowa runs on, when the server names one
 const docs = {}; // progress per prop for the signed-in user: { rev, state }
 // Per prop, the progress as the server last had it (JSON). When a save meets a newer copy from
 // another device, this is the common starting point the two sets of edits are compared against.
@@ -25,7 +26,7 @@ async function api(path, method = 'GET', body, headers) {
     let data = null;
     try { data = await r.json(); } catch { /* no body */ }
     return { ok: r.ok, status: r.status, data, error: localTimes(data?.error || 'Something went wrong.') };
-  } catch { return { ok: false, status: 0, data: null, error: 'Could not reach the Pi.' }; }
+  } catch { return { ok: false, status: 0, data: null, error: 'Could not reach Flowa.' }; }
 }
 
 const propById = id => PROPS.find(p => p.id === id);
@@ -49,7 +50,7 @@ function inProp(id, fn) {
 async function loadSession() {
   const r = await api('me');
   if (!r.ok) throw new Error(r.status);
-  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || [];
+  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || []; homeUrl = r.data.homeUrl || '';
   setAchievements(r.data.achievements);
   for (const k in docs) delete docs[k];
   for (const k in synced) delete synced[k];
@@ -317,8 +318,11 @@ function pageAuth(mode) {
     <button class="btn primary" type="submit">${up ? 'Create account' : 'Sign in'}</button>
     <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : flags.signups ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p></form>`;
 }
-function pageNeedAccount(title) {
-  return `<div class="auth card"><h1>${esc(title)}</h1><p class="muted" style="margin:8px 0 14px">This page saves to your account. Sign in to use it.</p>
+// What a visitor is told on a page that needs an account: one sentence, about that page.
+const WALLS = { practice: 'Sign in to log your practice.', combos: 'Sign in to build combos.', plan: 'Sign in to follow the plan.', profile: 'Sign in to see your profile.', timeline: 'Sign in to use the timeline.',
+  post: 'Sign in to read this post.', u: 'Sign in to see this profile.', achievements: 'Sign in to see your achievements.', avatar: 'Sign in to make your avatar.', bookmarks: 'Sign in to keep bookmarks.' };
+function pageNeedAccount(title, page) {
+  return `<div class="auth card"><h1>${esc(title)}</h1><p class="muted" style="margin:8px 0 14px">${WALLS[page] || 'Sign in to use this page.'}</p>
     <div class="row wrap"><a class="btn primary" href="#/signin">Sign in</a>${flags.signups ? '<a class="btn" href="#/signup">Create an account</a>' : ''}</div></div>`;
 }
 // Shown until a new user has picked their props.
@@ -377,7 +381,7 @@ function pageDashLite() {
   return `<div class="page-h"><div class="grow"><h1>Dashboard</h1><p>${esc(p.name)}</p></div><a class="btn primary" href="#/practice">${icon('plus')}Log practice</a></div>
   <div class="grid g4" data-tour="stats" style="margin-bottom:16px">
     <div class="card stat"><div class="lbl">Last 7 days</div><div class="val">${weekMinutes(m)}<small> min</small></div><div class="foot">${fmtMin(total)} in total</div></div>
-    <div class="card stat"><div class="lbl">Practice streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div></div>
+    <div class="card stat"><div class="lbl">${esc(p.name)} streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div></div>
   ${flags.game ? `<div class="grid g2" style="margin-bottom:16px">${levelCard(true)}${streakCard()}</div>` : ''}
   <div class="stack"><div class="card"><div class="card-h"><h2 class="grow">Practice, last 9 months</h2><a class="small" href="#/practice">View log</a></div>${heatmap(m)}</div>${propPlaceholder(p)}</div>`;
 }

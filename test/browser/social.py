@@ -249,7 +249,7 @@ try:
     js("const f=document.querySelector('#compose-form');f.body.value='The answer got lost on the way';f.requestSubmit()")
     wait(lambda: bodies('The answer got lost on the way'),n=20);time.sleep(1)
     kept=js("return [window.__lost,document.querySelector('#compose-form textarea').value,document.querySelector('#compose-form button[type=submit]').disabled]")
-    check('when the answer is lost the draft stays and the button comes back',kept==[1,'The answer got lost on the way',False] and toastIs('Could not reach the Pi.'),kept)
+    check('when the answer is lost the draft stays and the button comes back',kept==[1,'The answer got lost on the way',False] and toastIs('Could not reach Flowa.'),kept)
     js("document.querySelector('#compose-form').requestSubmit()");time.sleep(2)
     check('sending the same draft again does not post it twice',len(bodies('The answer got lost on the way'))==1 and js("return [...document.querySelectorAll('.post-body')].filter(b=>b.textContent==='The answer got lost on the way').length")==1 and js("return document.querySelector('#compose-form textarea').value")=='',len(bodies('The answer got lost on the way')))
     # A like on a post that was deleted elsewhere is taken back.

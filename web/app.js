@@ -1,6 +1,6 @@
 'use strict';
-const ROADMAP_URL = 'https://claude.ai/artifact/WxYa5pGgTFsSPNSESqfLLy';
-const HOME_URL = `${location.protocol}//${location.hostname}:8080/`;
+// What is planned for Flowa itself, in the repository's own documents.
+const DOCS_URL = 'https://github.com/TuanSSM/flowtopia/blob/main/docs/';
 
 /* ---------- helpers ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -80,7 +80,7 @@ const FLAGS = [
   ['avatars', 'Avatars', 'Members build an avatar that plays their demos and combos (on their body preset where the clip passes its body checks), shows on their profile, and appears on stickers and streak overlays. Needs the 3D figure.'],
   ['moderation', 'Reports and moderation', 'Members can report posts, comments and profiles, and moderators get the Moderation page with the queue, mutes and suspensions. When off, the Report buttons and that page are hidden; suspensions already given still hold.'],
   ['catalogEditor', 'Skill map editor', 'Admins edit the skill catalogs in the browser and publish them for everyone. When off, the editor is hidden and nothing can be changed; what was last published stays in use.'],
-  ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and the Plan as quests.'],
+  ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and XP on the phases of the Plan.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
 const ui = { graphView: localStorage.getItem('nf-view') || 'graph', draftFocus: [], palIdx: 0, prop: localStorage.getItem('fl-prop') || 'nunchaku', open: (localStorage.getItem('fl-groups') ?? localStorage.getItem('fl-prop') ?? 'nunchaku').split(',').filter(Boolean), users: null };
@@ -309,8 +309,8 @@ function pageDashboard() {
   <div class="grid g4" data-tour="stats" style="margin-bottom:16px">
     <div class="card stat"><div class="lbl">Skills clean</div><div class="val">${clean}<small> / ${SKILLS.length}</small></div><div class="foot">Unlocks what depends on them</div></div>
     <div class="card stat"><div class="lbl">Last 7 days</div><div class="val">${wk}<small> min</small></div><div class="foot">${fmtMin(total)} in total</div></div>
-    <div class="card stat"><div class="lbl">Practice streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div>
-    <div class="card stat"><div class="lbl">Gates passed</div><div class="val">${gates}<small> / ${PHASES.length}</small></div><div class="foot">${phase ? 'Next: ' + esc(phase.name) : 'Roadmap complete'}</div></div>
+    <div class="card stat"><div class="lbl">${esc(curProp().name)} streak</div><div class="val">${st}<small> ${st === 1 ? 'day' : 'days'}</small></div><div class="foot">${state.sessions.length} ${state.sessions.length === 1 ? 'session' : 'sessions'} logged</div></div>
+    <div class="card stat"><div class="lbl">Gates passed</div><div class="val">${gates}<small> / ${PHASES.length}</small></div><div class="foot">${phase ? 'Next: ' + esc(phase.name) : 'Plan complete'}</div></div>
   </div>
   ${flags.game ? `<div class="grid g2" style="margin-bottom:16px">${levelCard(true)}${streakCard()}</div>` : ''}
   <div class="grid g32" style="margin-bottom:16px">
@@ -499,16 +499,18 @@ function pageCombos() {
         <button class="icon-btn" data-act="combo-rm" data-id="${esc(c.id)}" data-i="${i}" aria-label="Remove ${esc(id)}">${icon('x')}</button>
       </li>${trKey ? `<li class="cb-link"><button class="tr ${t}" data-act="combo-tr" data-id="${esc(c.id)}" data-k="${esc(trKey)}" data-tip="Transition ${esc(trKey.replace('>', ' to '))}. Click to change.">${icon(TR[t].i)}${TR[t].n}</button></li>` : ''}`;
     }).join('');
+    // Logging a run sits under the player, where the run was just watched; without demos it closes the list.
+    const log = `<div class="cb-log" role="group" aria-label="Log a run"><b>Log a run</b><span class="small muted num grow">${cleanRuns} clean of ${runs} full runs</span>
+      <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button></div>`;
     return `<section class="card cb" aria-label="${esc(c.name)}">
-      <header class="cb-head"><h2 class="grow">${esc(c.name)}</h2>${meta}${bmButton('combo', c.id)}<button class="icon-btn" data-act="combo-del" data-id="${esc(c.id)}" aria-label="Delete combo">${icon('trash')}</button></header>
+      <header class="cb-head"><h2 class="grow">${esc(c.name)}</h2>${meta}${flags.community && seq.length >= 2 ? `<button class="btn sm" data-act="combo-publish" data-id="${esc(c.id)}" data-tip="Share this combo on the timeline">${icon('send')}Publish</button>` : ''}${bmButton('combo', c.id)}<button class="icon-btn" data-act="combo-del" data-id="${esc(c.id)}" aria-label="Delete combo">${icon('trash')}</button></header>
       <div class="cb-body">
-        ${flags.demos ? Demo.comboStage(c.id, CID, seq, reps, id => SK[id]?.name || id, state.settings.dominant, esc) : ''}
+        ${flags.demos ? Demo.comboStage(c.id, CID, seq, reps, id => SK[id]?.name || id, state.settings.dominant, esc, log) : ''}
         <div class="cb-side">
           <ol class="cb-steps">${steps || '<li class="small muted" style="padding:8px 2px">Start with two skills you can already do.</li>'}</ol>
           ${nextTrickHTML(c)}
           <span class="add-pick"><select data-pick="combo-add" data-id="${esc(c.id)}" aria-label="Skill to add to ${esc(c.name)}"><option value="">Choose a skill to add</option>${skillOptions()}</select><button type="button" class="btn" data-act="add-chosen" disabled>Add</button></span>
-          <div class="cb-runs"><span class="small muted num grow">${cleanRuns} clean of ${runs} full runs</span>
-            <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button>${flags.community && seq.length >= 2 ? `<button class="btn sm" data-act="combo-publish" data-id="${esc(c.id)}" data-tip="Share this combo on the timeline">${icon('send')}Publish</button>` : ''}</div>
+          ${flags.demos ? '' : log}
         </div>
       </div></section>`;
   }).join('');
@@ -526,14 +528,14 @@ function pagePlan() {
   const start = state.settings.trackStart;
   let week = 0;
   if (start) week = Math.floor((parseDay(dayKey()) - parseDay(start)) / (7 * 864e5)) + 1;
-  // Each phase is a quest: its skills, the XP they hold, and the gate that ends it.
+  // Each phase: its skills, the XP they hold, and the gate that ends it.
   const phases = PHASES.map((p, i) => {
     const list = p.skills.split(' ').map(id => SK[id]).filter(Boolean), done = state.gates[p.id];
     const met = p.req.every(needMet), pc = pctOf(list);
     const earned = list.reduce((a, s) => a + variants(s).reduce((b, [k]) => b + XP_SKILL[lv(s.id, k)], 0), 0);
     const possible = list.reduce((a, s) => a + variants(s).length * XP_SKILL[4], 0);
     return `<div class="card phase quest ${done ? 'done' : p === cur ? 'on' : ''}"><span class="phase-n ${done ? 'done' : p === cur ? 'on' : ''}">${done ? icon('check') : i + 1}</span><div>
-      <div class="row wrap"><h2 class="grow">${esc(p.name)}</h2>${p === cur && !done ? '<span class="chip on">Current quest</span>' : ''}<span class="tiny">${esc(p.time)} (estimate)</span></div>
+      <div class="row wrap"><h2 class="grow">${esc(p.name)}</h2>${p === cur && !done ? '<span class="chip on">Current phase</span>' : ''}<span class="tiny">${esc(p.time)} (estimate)</span></div>
       <div class="row" style="margin:9px 0 11px"><div class="bar grow"><i style="width:${pc}%"></i></div><span class="num small muted">${pc}%</span>${flags.game ? `<span class="chip num" data-tip="Skill XP earned in this phase, of what its skills hold at Performance level">${earned.toLocaleString()} / ${possible.toLocaleString()} XP</span>` : ''}</div>
       <div class="quest-skills">${list.map(s => `<a class="qs ${best(s.id) >= 2 ? 'ok' : best(s.id) ? 'part' : ''}" href="${skillHref(s.id)}" data-tip="${esc(s.name)}: ${esc(statusLabel(s.id))}">${best(s.id) >= 2 ? icon('check') : ''}${s.id}</a>`).join('')}<span class="tiny num">${cleanCount(list)} of ${list.length} clean</span></div>
       <label class="check" style="margin-top:10px"><input type="checkbox" data-change="gate" data-id="${p.id}" ${done ? 'checked' : ''}><span class="grow">${esc(p.gate)}</span>${flags.game ? `<span class="chip ${done ? 'ok' : ''} num">${done ? icon('check') : '+'}${XP.gate} XP</span>` : ''}</label>
@@ -545,7 +547,7 @@ function pagePlan() {
   const focusCard = `<div class="card" data-tour="focus"><div class="card-h"><h2 class="grow">Today\u2019s focus</h2><span class="sub">Ready to learn</span></div>
     ${focus ? `<a class="sk-row" style="padding-left:0" href="${skillHref(focus.id)}"><span class="tag">${focus.id}</span><span class="grow"><b style="font-weight:560">${esc(focus.name)}</b><br><span class="tiny">${esc(focus.desc)}</span></span>${icon('right')}</a>
     ${flags.details && focus.drill ? `<p class="small muted" style="margin-top:8px"><b>Drill:</b> ${esc(focus.drill)}</p>` : ''}<p class="tiny" style="margin-top:8px">Clean it for +${XP_SKILL[2]} XP per hand or direction, and it unlocks what depends on it.</p>` : '<div class="empty small">Nothing new is unlocked. Bring a skill to Clean first.</div>'}</div>`;
-  return `<div class="page-h"><div><h1>Plan</h1><p>${PHASES.length} ${flags.game ? 'quests' : 'long-term phases'} for ${esc(curProp().name.toLowerCase())}${WEEKS.length ? ', plus a 12-week track for turning existing skills into one routine' : ''}.${flags.game ? ` Each gate passed is ${XP.gate} XP.` : ''} Time estimates are rough.</p></div></div>
+  return `<div class="page-h"><div><h1>Plan</h1><p>${PHASES.length} long-term phases for ${esc(curProp().name.toLowerCase())}${WEEKS.length ? ', plus a 12-week track for turning existing skills into one routine' : ''}.${flags.game ? ` Each gate passed is ${XP.gate} XP.` : ''} Time estimates are rough.</p></div></div>
   ${flags.game ? `<div class="grid g3" style="margin-bottom:16px">${propXPCard()}${challengesCard()}${focusCard}</div>` : ''}
   <div class="stack" style="margin-bottom:26px">${phases}</div>
   ${!WEEKS.length ? '' : `<div class="card" data-tour="track"><div class="card-h"><h2 class="grow">12-week contest track</h2>${start ? `<span class="chip">${week > 12 ? 'Track finished' : week < 1 ? 'Not started' : 'Week ' + week}</span>` : ''}</div>
@@ -574,7 +576,8 @@ function pageSettings() {
     ${me ? `<div class="card"><div class="card-h"><h2>Data: ${esc(curProp().name)}</h2></div><p class="small muted" style="margin-bottom:12px">Export, import and reset apply to your ${esc(curProp().name.toLowerCase())} progress only. The server also keeps a daily backup for 14 days.</p>
       <div class="row wrap"><button class="btn" data-act="export">Export JSON</button><label class="btn">Import JSON<input type="file" accept="application/json" data-change="import" hidden></label><button class="btn danger" data-act="reset">Reset</button></div></div>` : ''}
     <div class="card"><div class="card-h"><h2>About the skill maps</h2></div><p class="small muted">Each map takes its technique names from the sources listed on its skills. Prerequisites and tiers are coaching proposals, not rules of the art. Skills marked unconfirmed could not be checked against a source.</p>
-      <p style="margin-top:10px"><a href="${ROADMAP_URL}" target="_blank" rel="noopener noreferrer" class="btn sm">Open nunchaku roadmap ${icon('ext')}</a></p></div>
+      <p class="small muted" style="margin-top:10px">What is planned for Flowa itself is in its repository, the same for every prop.</p>
+      <div class="row wrap" style="margin-top:10px"><a href="${DOCS_URL}roadmap.md" target="_blank" rel="noopener noreferrer" class="btn sm">Roadmap ${icon('ext')}</a><a href="${DOCS_URL}epics.md" target="_blank" rel="noopener noreferrer" class="btn sm">Epics ${icon('ext')}</a></div></div>
   </div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
@@ -605,6 +608,7 @@ function renderSide(route) {
     return `<button class="nav-a nav-group ${here ? 'here' : ''}" data-act="nav-toggle" data-id="${p.id}" aria-expanded="${open}" aria-controls="nav-${p.id}">${icon(open ? 'down' : 'right')}${esc(p.name)}${pct()}</button>
       <div id="nav-${p.id}" class="nav-sub" ${open ? '' : 'hidden'}>${cat.branches.map(b => { const on = here && curId === 'branch' && route[1] === b.k; return `<a class="nav-a ${on ? 'on' : ''}" href="#/prop/${p.id}/${b.k}" ${on ? 'aria-current="page"' : ''}><span class="letter">${b.k}</span>${esc(b.name)}${pct(b.k)}</a>`; }).join('')}</div>`;
   }).join('');
+  const staff = staffPages();
   const profile = me
     ? `<a class="nav-profile ${curId === 'profile' ? 'on' : ''}" href="#/profile" ${curId === 'profile' ? 'aria-current="page"' : ''}>${avatarHTML(me)}<span class="grow"><b>${esc(me.displayName || me.username)}</b><span class="tiny">@${esc(me.username)}</span></span></a>`
     : `<a class="nav-profile ${curId === 'signin' || curId === 'signup' ? 'on' : ''}" href="#/signin">${avatarHTML(null)}<span class="grow"><b>Sign in</b><span class="tiny">or create an account</span></span></a>`;
@@ -613,16 +617,19 @@ function renderSide(route) {
     ${a('#/', 'home', me ? 'Dashboard' : 'Welcome', curId === 'dashboard')}
     ${me && flags.community ? a('#/timeline', 'feed', 'Timeline', curId === 'timeline' || curId === 'post' || curId === 'u') : ''}
     ${a('#/maps', 'map', 'Skill maps', curId === 'maps')}
-    ${a('#/practice', 'log', 'Practice', curId === 'practice')}
-    ${a('#/combos', 'link', 'Combos', curId === 'combos')}
-    ${a('#/plan', 'flag', 'Plan', curId === 'plan')}
+    ${me ? a('#/practice', 'log', 'Practice', curId === 'practice') + a('#/combos', 'link', 'Combos', curId === 'combos') + a('#/plan', 'flag', 'Plan', curId === 'plan') : ''}
     ${me && flags.bookmarks ? a('#/bookmarks', 'bookmark', 'Bookmarks', curId === 'bookmarks') : ''}
     ${me && flags.game ? a('#/achievements', 'trophy', 'Achievements', curId === 'achievements') : ''}
     <div class="nav-h">Props</div>
     ${props}
-    <div class="side-foot">${me && flags.moderation && canDo('report.resolve') ? a('#/mod', 'inbox', `Moderation${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : ''}${me && adminTabs().length ? a('#/admin', 'shield', 'Admin', curId === 'admin') : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}
-    <a class="nav-a" href="${esc(HOME_URL)}">${icon('ext')}Raspi home</a>
+    <div class="side-foot">${staff.length ? `<div class="side-staff"><div class="nav-h">Staff</div>${staff.map(([n, h, ic]) => h === '#/mod' ? a(h, ic, `${n}${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : h === '#/admin' ? a(h, ic, n, curId === 'admin') : `<a class="nav-a" href="${esc(h)}" rel="noopener noreferrer">${icon(ic)}${n}</a>`).join('')}</div>` : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}
     ${me ? sync() : ''}</div>`;
+}
+// The pages for the people who run this Flowa, for the menu and the search: the moderation queue, the admin
+// area, and for admins the start page of the machine itself when the server names one (FLOWA_HOME_URL).
+function staffPages() {
+  if (!me) return [];
+  return [...(flags.moderation && canDo('report.resolve') ? [['Moderation', '#/mod', 'inbox']] : []), ...(adminTabs().length ? [['Admin', '#/admin', 'shield']] : []), ...(homeUrl ? [['Server home', homeUrl, 'ext']] : [])];
 }
 // Branch pages live at #/prop/<prop>/F/F1; inside the app that is the 'branch' route,
 // with the prop as its fourth part. Older #/branch/... and #/map links still work.
@@ -640,7 +647,7 @@ function pageFor(p, a, b, title) {
   if (p === 'branch') return pageBranch(a, b);
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
-  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements', 'avatar', 'bookmarks'].includes(p) && !me) return pageNeedAccount(title);
+  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements', 'avatar', 'bookmarks'].includes(p) && !me) return pageNeedAccount(title, p);
   if (p === 'avatar') return pageAvatar(a);
   if (p === 'bookmarks') return flags.bookmarks ? pageBookmarks() : pageOff('Bookmarks');
   if (p === 'practice') return pagePractice();
@@ -714,8 +721,12 @@ function toast(msg) {
 }
 
 /* ---------- command palette ---------- */
-const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars && me ? [['Avatar', '#/avatar']] : []), ...(flags.bookmarks && me ? [['Bookmarks', '#/bookmarks']] : []), ['Settings', '#/settings'],
-  ...myProps().filter(p => p.id !== ui.prop).map(p => [p.name + ' map', `#/prop/${p.id}`]), ...BRANCHES.map(b => [`${curProp().name}: ${b.name}`, `#/prop/${CID}/${b.k}`])];
+// A visitor is offered the pages that open without an account; a member theirs, and staff the staff pages
+// with each admin section they may open.
+const pages = () => !me ? [['Welcome', '#/'], ['Skill maps', '#/maps'], ['Sign in', '#/signin'], ...(flags.signups ? [['Create an account', '#/signup']] : []), ['Settings', '#/settings'], ...propPages()]
+  : [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars ? [['Avatar', '#/avatar']] : []), ...(flags.bookmarks ? [['Bookmarks', '#/bookmarks']] : []), ['Settings', '#/settings'],
+    ...staffPages().filter(([, h]) => h[0] === '#'), ...adminTabs().map(([k, n]) => ['Admin: ' + n, '#/admin/' + k]), ...propPages()];
+const propPages = () => [...myProps().filter(p => p.id !== ui.prop).map(p => [p.name + ' map', `#/prop/${p.id}`]), ...BRANCHES.map(b => [`${curProp().name}: ${b.name}`, `#/prop/${CID}/${b.k}`])];
 function palItems(q) {
   q = q.trim().toLowerCase();
   const found = pages().filter(([n]) => n.toLowerCase().includes(q)).map(([n, h]) => ({ tag: '', n, h }));
@@ -892,5 +903,5 @@ $('.menu-btn').innerHTML = icon('menu');
 $('.search-btn').innerHTML = `${icon('search')}<span>Search skills</span><kbd>Ctrl K</kbd>`;
 (async () => {
   try { await loadCatalogs(); await Demo.init(); await load(); render(); }
-  catch { $('#main').innerHTML = '<div class="empty">Could not reach Flowa on the Pi. Nothing was changed. Reload to try again.</div>'; }
+  catch { $('#main').innerHTML = '<div class="empty">Could not reach Flowa. Nothing was changed. Reload to try again.</div>'; }
 })();

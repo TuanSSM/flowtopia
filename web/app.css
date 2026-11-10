@@ -101,6 +101,7 @@ svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor;
 .letter { width: 16px; text-align: center; font-size: 12px; font-weight: 650; color: var(--ink-3); }
 .nav-pct { margin-left: auto; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .side-foot { margin-top: auto; padding-top: 14px; }
+.side-staff { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); } .side-staff .nav-h { padding-top: 0; }
 .sync { display: flex; align-items: center; gap: 8px; padding: 8px 10px 2px; font-size: 12px; color: var(--ink-3); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none; }
 .sync.saving .dot { background: var(--accent); }
@@ -387,12 +388,13 @@ button:disabled { opacity: .6; cursor: default; }
 /* Combos: a stage that plays the sequence, beside the sequence itself */
 .cb { padding: 0; overflow: hidden; }
 .cb-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
-.cb-head h2 { font-size: 17px; letter-spacing: -.01em; }
+.cb-head { justify-content: flex-end; }
+.cb-head h2 { font-size: 17px; letter-spacing: -.01em; flex: 1 1 14ch; overflow-wrap: anywhere; } /* the name keeps room for itself; what does not fit beside it wraps under it */
 .cb-body { display: grid; grid-template-columns: minmax(280px, 400px) minmax(0, 1fr); }
 .cb-stage { padding: 18px; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
 .cb-stage canvas { display: block; width: 100%; aspect-ratio: 1; border-radius: var(--r); border: 1px solid var(--line); }
 .cb-stage .demo-ctl { margin: 0; }
-.cb-empty { align-items: center; justify-content: center; min-height: 220px; text-align: center; color: var(--ink-3); }
+.cb-empty { display: flex; flex: 1; align-items: center; justify-content: center; min-height: 220px; text-align: center; color: var(--ink-3); }
 .cb-empty div { display: grid; gap: 4px; } .cb-empty b { color: var(--ink-2); font-weight: 600; }
 .cb-prog { display: flex; gap: 3px; height: 5px; }
 .cb-prog i { flex: 1 1 0; min-width: 4px; background: var(--line); border-radius: 3px; overflow: hidden; }
@@ -422,7 +424,9 @@ button:disabled { opacity: .6; cursor: default; }
 .cb-reps b { min-width: 26px; text-align: center; font-size: 12.5px; font-weight: 600; }
 .cb-link { display: flex; align-items: center; gap: 8px; padding: 1px 0 1px 26px; }
 .cb-link::before { content: ''; width: 1px; height: 22px; background: var(--line-2); margin-right: 6px; }
-.cb-runs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.cb-log { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.cb-log b { flex-basis: 100%; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.ctl-l { display: inline-flex; align-items: center; gap: 6px; }
 .cb-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 16px; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); }
 .cb-row:hover { border-color: var(--line-2); background: var(--card-2); }
 .cb-row b { font-size: 14.5px; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

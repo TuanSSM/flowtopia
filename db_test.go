@@ -2000,3 +2000,25 @@ func TestDBProfileRev(t *testing.T) {
 		t.Fatalf("two saves on one rev answered %d and %d, want one 200 and one 409", a, b)
 	}
 }
+
+// The link to the machine's start page is off unless FLOWA_HOME_URL is set, and only admins get it.
+func TestDBHomeLink(t *testing.T) {
+	e := newEnv(t)
+	_, admin := e.user("admin", "admin")
+	_, mod := e.user("mo", "moderator")
+	_, member := e.user("sandy", "user")
+	for _, tok := range []string{admin, mod, member, ""} {
+		if out := e.must(200, tok, "GET", "/api/me", nil); out["homeUrl"] != nil {
+			t.Fatalf("with no FLOWA_HOME_URL the answer has a home link: %v", out["homeUrl"])
+		}
+	}
+	e.a.homeURL = "http://pi.local:8080/"
+	if out := e.must(200, admin, "GET", "/api/me", nil); out["homeUrl"] != "http://pi.local:8080/" {
+		t.Fatalf("an admin gets %v, want the link", out["homeUrl"])
+	}
+	for who, tok := range map[string]string{"a moderator": mod, "a member": member, "a visitor": ""} {
+		if out := e.must(200, tok, "GET", "/api/me", nil); out["homeUrl"] != nil {
+			t.Fatalf("%s is told where the home page is: %v", who, out["homeUrl"])
+		}
+	}
+}

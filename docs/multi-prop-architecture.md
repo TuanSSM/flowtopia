@@ -12,7 +12,7 @@ All five props now have researched catalogs, loaded per prop (`web/catalogs.js`)
 progress is recorded per variant (`one`, `LR`, `FR`). Plans and gates come from each catalog.
 Demos now cover all five props (5). Still open from the list below: shared concepts across props
 (4), cross-prop views (7) and storage growth (8). The catalog editor (9) is done: catalogs are
-revisions in Postgres edited in Admin, Skill maps ([epic-mod/todo.md](epic-mod/todo.md)), and the
+revisions in Postgres edited in Admin, Catalogs ([epic-mod/todo.md](epic-mod/todo.md)), and the
 shared motion fields that would support shared concepts in the GEO epic
 ([epic-geo/todo.md](epic-geo/todo.md), M3). The three open items are now epics XPR and TRU in
 [epics.md](epics.md#second-cycle); see [roadmap.md](roadmap.md) for the order. The table

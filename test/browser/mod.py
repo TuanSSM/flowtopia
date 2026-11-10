@@ -27,6 +27,14 @@ def as_user(name,pw=PW):
         time.sleep(.5)
     time.sleep(1)
 menu=lambda: js("return [...document.querySelectorAll('#side .side-foot .nav-a')].map(a=>a.textContent.trim())")
+# The Staff group of the menu: its heading and where its entries lead.
+staff=lambda: js("const g=document.querySelector('#side .side-staff');return g?[g.querySelector('.nav-h').textContent,[...g.querySelectorAll('.nav-a')].map(a=>a.getAttribute('href'))]:null")
+# What the search offers for a word: the pages only, as [name, address].
+def pages_for(q):
+    js("if(document.querySelector('#palette').hidden)openPalette();const i=document.querySelector('#pal-q');i.value=arguments[0];i.dispatchEvent(new Event('input',{bubbles:true}))",q);time.sleep(.5)
+    rows=js("return [...document.querySelectorAll('.pal-i')].filter(a=>!/^#\\/prop\\//.test(a.getAttribute('href'))).map(a=>[a.querySelector('.grow').textContent,a.getAttribute('href')])")
+    js("closePalette()")
+    return rows
 def wait(fn,n=20,dt=.5):
     for _ in range(n):
         v=fn()
@@ -43,6 +51,8 @@ try:
     # A regular user: no moderation or admin entries; reports a post.
     as_user('rae')
     check('a regular user has no Moderation or Admin entry',not any(x.startswith(('Moderation','Admin')) for x in menu()),menu())
+    found=pages_for('moderation')+pages_for('admin')
+    check('a regular user has no Staff group, and search offers no staff pages',staff() is None and found==[],(staff(),found))
     nav('#/timeline',2.5)
     js("document.querySelector('.post[data-post=\"'+arguments[0]+'\"] [data-act=report]').click()",str(post));time.sleep(.8)
     check('Report opens a dialog with the reasons',js("return document.querySelectorAll('#report-form input[name=reason]').length")==5)
@@ -63,12 +73,18 @@ try:
     as_user('moe')
     m=wait(lambda: [x for x in menu() if x.startswith('Moderation')])
     check('a moderator has Moderation (with the count) and Admin',bool(m) and m[0].endswith('1') and 'Admin' in menu(),menu())
+    check('they sit in one group headed Staff, above Settings',staff()==['Staff',['#/mod','#/admin']] and menu()[-1]=='Settings',(staff(),menu()))
+    found=pages_for('moderation')+pages_for('admin')
+    check('search offers a moderator Moderation, Admin and the sections they may open',found==[['Moderation','#/mod'],['Admin','#/admin'],['Admin: Overview','#/admin/dashboard'],['Admin: Accounts','#/admin/accounts'],['Admin: Catalogs','#/admin/maps']],found)
+    js("openPalette();const i=document.querySelector('#pal-q');i.value='admin: accounts';i.dispatchEvent(new Event('input',{bubbles:true}))");time.sleep(.5)
+    js("document.querySelector('.pal-i[href=\"#/admin/accounts\"]').click()");time.sleep(2)
+    check('choosing a section in search opens it',js("return location.hash")=='#/admin/accounts' and js("return document.querySelector('#palette').hidden") and js("return (document.querySelector('.admin-tabs a.on')||{}).textContent")=='Accounts',js("return [location.hash,(document.querySelector('.admin-tabs a.on')||{}).textContent]"))
     nav('#/admin',2)
     tabs=js("return [...document.querySelectorAll('.admin-tabs a')].map(a=>a.textContent)")
-    # The skill map editor is on by default and moderators may draft maps, so they also see Skill maps.
-    check('a moderator sees the dashboard, accounts and skill maps, not features or the audit log',tabs==['Dashboard','Accounts','Skill maps'],tabs)
+    # The skill map editor is on by default and moderators may draft maps, so they also see Catalogs.
+    check('a moderator sees the overview, accounts and catalogs, not features or the audit log',tabs==['Overview','Accounts','Catalogs'],tabs)
     nav('#/mod',2.5)
-    check('the queue shows the report, its reason and the author',js("return document.querySelectorAll('.mq').length")==1 and 'Harassment' in txt('.mq') and '@sam' in txt('.mq-author') and 'mocking people' in txt('.mq'))
+    check('the queue shows the report, its reason and the author',js("return document.querySelectorAll('.mq').length")==1 and 'Harassment' in txt('.mq') and '@sam · member · ' in txt('.mq-author') and 'mocking people' in txt('.mq'),txt('.mq-author'))
     click('.mq [data-act=mod-open][data-do=hide]');time.sleep(.8)
     js("const f=document.querySelector('#action-form');f.reason.value='Mocking other members';f.requestSubmit()");time.sleep(1.5)
     check('hiding needs a reason and marks the item hidden',wait(lambda: 'Hidden: Mocking other members' in (txt('.mq') or '')))
@@ -103,8 +119,19 @@ try:
     check('the admin signs in',st[1]=='@admin',st)
     nav('#/admin',2.5)
     tabs=js("return [...document.querySelectorAll('.admin-tabs a')].map(a=>a.textContent)")
-    check('an admin sees every admin section',tabs[:4]==['Dashboard','Accounts','Features','Audit log'],(tabs,js("return location.hash+' | '+document.querySelector('#main').innerText.slice(0,160)")))
+    check('an admin sees every admin section',tabs==['Overview','Accounts','Features','Audit log','Catalogs'],(tabs,js("return location.hash+' | '+document.querySelector('#main').innerText.slice(0,160)")))
     wait(lambda: js("return document.querySelectorAll('.dash-chart svg').length")==4)
+    found=[r[0] for r in pages_for('admin')]
+    check('search offers an admin every section',found==['Admin','Admin: Overview','Admin: Accounts','Admin: Features','Admin: Audit log','Admin: Catalogs'],found)
+    # The link to the machine's own start page: none unless the server names one, and then for admins, in the Staff group.
+    check('the menu has no link out of Flowa when the server names no start page',staff()==['Staff',['#/mod','#/admin']] and not js("return [...document.querySelectorAll('#side a')].some(a=>/^[a-z]+:/i.test(a.getAttribute('href')))"),staff())
+    js("const real=window.fetch;window.__real=real;window.fetch=function(u,o){return real.call(window,u,o).then(r=>String(u)==='api/me'&&(!o||o.method==='GET')?r.json().then(d=>new Response(JSON.stringify(Object.assign(d,{homeUrl:'http://pi.example:8080/?a=1&b=\"2'})),{status:200,headers:{'Content-Type':'application/json'}})):r)}")
+    js("loadSession().then(render)");time.sleep(2.5)
+    link=js("const a=document.querySelector('#side .side-staff a:not([href^=\"#\"])');return a?[a.textContent.trim(),a.getAttribute('href'),a.rel]:null")
+    check('when the server names one, an admin gets Server home in the Staff group',link==['Server home','http://pi.example:8080/?a=1&b="2','noopener noreferrer'] and menu()[-1]=='Settings',(link,menu()))
+    check('search stays inside Flowa',not [r for r in pages_for('server')+pages_for('home') if not r[1].startswith('#')])
+    js("window.fetch=window.__real");js("loadSession().then(render)");time.sleep(2.5)
+    check('and it goes again when the server stops naming one',staff()==['Staff',['#/mod','#/admin']],staff())
     # Four headline numbers, plus two for next-trick suggestions, which are on by default.
     check('the dashboard has four headline numbers, two for suggestions, and four weekly charts with labelled values',js("return document.querySelectorAll('.stat').length")==6 and 'Suggestions' in txt('#main') and js("return document.querySelectorAll('.dash-chart svg').length")==4 and js("return document.querySelectorAll('.dash-chart .dc-val').length")>=2)
     js("document.querySelector('.dash-table summary').click()");time.sleep(.3)

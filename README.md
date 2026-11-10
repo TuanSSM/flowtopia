@@ -44,11 +44,14 @@ named but not described.
   badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
 - **Gamification:** XP and levels, a practice streak across props, weekly challenges, achievements, and
-  the Plan as quests. See [Gamification](#gamification).
+  XP on the phases of the Plan. See [Gamification](#gamification).
 
 Search with `Ctrl K`, `/` or the Search button. It covers the pages and the skills of every prop you chose
 (every prop for a visitor), says so under the results, and names the prop beside each skill when there is
-more than one. The landing page plays one demo, the prop's signature move, and shows the skill map in small.
+more than one. Staff also find Moderation, Admin and each admin section they may open. A visitor's menu
+and search list what opens without an account (Welcome, Skill maps, Sign in, Settings); a page that
+needs an account says what signing in is for. The landing page plays one demo, the prop's signature
+move, and shows the skill map in small.
 
 On a touch screen (`pointer: coarse`) every control is at least 44 x 44 px, by its smallest size and its
 padding; with a mouse the layouts are unchanged. The words follow: a touch screen is told about the Search
@@ -92,6 +95,11 @@ names (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`, `.t
 by any other name, list it in `FLOWA_HOSTS` in `.env` (comma-separated). This stops a website from
 pointing its own name at the Pi and talking to Flowa from a visitor's browser (DNS rebinding).
 
+`FLOWA_HOME_URL` in `.env` is optional: an `http` or `https` address of the start page of the machine
+Flowa runs on, like `http://raspi.local:8080/`. Admins then get a "Server home" link in the Staff
+group of the menu; nobody else is told the address. It is empty by default, which means no link, and
+a value that is not such an address stops the server at start with a message that says so.
+
 Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from
 `X-Forwarded-For` (or `X-Real-IP`), but only when the connection comes from a trusted proxy, and it reads
@@ -105,7 +113,7 @@ also send `X-Forwarded-Proto: https` (the same three do; in nginx,
 `proxy_set_header X-Forwarded-Proto $scheme;`): Flowa then marks its cookie Secure and refuses a write
 that an `http://` page tries to make to the HTTPS site.
 
-The admin dashboard shows the running version, from `VERSION` in the container's environment.
+Admin, Overview shows the running version, from `VERSION` in the container's environment.
 `deploy.sh` sets it to `main.<short commit hash>` of the checkout it deploys (the Pi is the staging
 host); production passes the release tag, such as `v1.2.0`. Unset, it reads `dev`.
 
@@ -166,7 +174,7 @@ way, and a flag an admin has set keeps that setting. A flag that is off turns of
 well as its pages: with `community` off the timeline, comments, likes, people and notifications answer
 404, and with `game` off so do badges. `signups` opens or closes sign-up, `tour` runs the
 guided tour, `community` is the timeline, public profiles, people list and notifications, `game` is XP,
-levels, streak sharing, challenges, achievements and quests, `moderation` is reports, the queue, hiding,
+levels, streak sharing, challenges, achievements and XP on the Plan's phases, `moderation` is reports, the queue, hiding,
 mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and
 YouTube links into cards, `videoEmbeds` plays YouTube in place (it adds youtube-nocookie.com frames to
 the page security policy), `suggest` is next-trick suggestions, and `avatars` is avatars, body presets
@@ -201,7 +209,7 @@ user reports for their profile and the people list (the community section of `ma
 - **Achievements.** Badges for sessions, hours, streaks, clean skills, both hands, gates, combos and
   the community, plus one per branch and one per roadmap for each of the user's props. New badges show
   an unlock card, a notification and one milestone post per batch.
-- **Plan as quests.** Each phase shows its skills as chips, the skill XP earned of what it holds, and
+- **Plan with XP.** Each phase shows its skills as chips, the skill XP earned of what it holds, and
   the XP its gate pays; the page opens with the prop's XP, the week's challenges and a focus skill.
 
 ## Community API
@@ -284,9 +292,9 @@ accounts page is asked about first ("Make @name a moderator?") and sent on Apply
   author and moderators.
 - **Audit log:** every moderation and admin action (including flags, roles, account deletion, password
   resets and catalog publishing) is written by one helper in the same transaction, and admins can filter it.
-- **Dashboard:** members, people active in 7 and 30 days, open reports, and 12 weeks of practice sessions,
+- **Overview** (the first admin tab): members, people active in 7 and 30 days, open reports, and 12 weeks of practice sessions,
   posts, comments and reports as small charts with a table view.
-- **Skill map editor** (behind `catalogEditor`): edit skills, branches and phases, or the whole catalog as
+- **Skill map editor** (the Catalogs tab, behind `catalogEditor`): edit skills, branches and phases, or the whole catalog as
   JSON, in a draft. Every field shows the validator's messages as you type (`web/catalog-check.js`; the
   server runs the same rules in Go, `validateCatalog`, and both must agree on `test/catalog-fixtures`).
   The review lists each change and how many people have progress on it. Publishing (admins) makes a new

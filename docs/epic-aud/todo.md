@@ -5,7 +5,7 @@ Category: fix. Size: M. Each item is one pull request or one commit of one, with
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 5 of 7 items done.
+**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 6 of 7 items done.
 
 The items, their causes, fixes and tests are in [audit-plan.md](../audit-plan.md); this list is the
 order and the DoD of each pull request. Nothing is added to a PR beyond its table.
@@ -48,10 +48,15 @@ order and the DoD of each pull request. Nothing is added to a PR beyond its tabl
   avatar editor's tabs at 360 px. Search covers every prop the member has and says so. A new member's
   menu lists the profile, the chooser and Settings, and the profile and Settings open before props
   are chosen. A tour closes when its section is left and counts as seen.
-- [ ] **PR 6, copy and the surface.** `fix(ui): the server has no Pi, and the words match the pages`
+- [x] **PR 6, copy and the surface.** `fix(ui): the server has no Pi, and the words match the pages`
   (HP-04, MAP-15, MAP-09, MAP-10, MAP-08, MAP-17, HP-07; MAP-14 is done in #25). DoD: `FLOWA_HOME_URL`
   documented and empty by default; Staff group in the sidebar footer and both staff pages in the
   palette; visitors see three sidebar items; the combo card's logging and publishing are apart.
+  Built: `GET /api/me` gives the address to admins only, as `homeUrl`, and a value that is not an
+  http or https address stops the server at start. Search also offers each admin section. The
+  visitor's menu keeps Settings and the props below its three entries. The admin tab Accounts keeps
+  its name; the list inside it says Member. On the Pi the old link is gone until `FLOWA_HOME_URL` is
+  set in `.env`.
 - [ ] **The audit run again.** The four journeys on stage after PR 6. DoD: every item in the audit
   report carries its PR number or is reopened with what still fails; the count is in this file; a
   YouTube link posted on stage shows a card and the start log says `TLS roots: present`.
