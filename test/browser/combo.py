@@ -102,7 +102,9 @@ try:
     again=wait_for(lambda: doc()['state']['skills']['F1'].get(side)==1,'the next level to be saved',20)
     d=doc()
     check('the next edit saves on top without another clash',bool(again) and d['rev']==rev+1 and d['state']['skills']['F5'].get(side5)==2,(rev,d['rev']))
-    cmd('WebDriver:SetWindowRect',width=480,height=900);wait_for("return innerWidth<=480",'the window to narrow');shot('/tmp/flowa-test/combo-narrow.png')
+    # A window can refuse to go as narrow as asked (under a real display it keeps a minimum), so the wait is
+    # for a narrower page, not for a width.
+    w0=js("return innerWidth");cmd('WebDriver:SetWindowRect',width=480,height=900);wait_for(lambda: js("return innerWidth")<w0,'the window to narrow');frames();shot('/tmp/flowa-test/combo-narrow.png')
     check('no page overflow on a narrow screen',js("return document.documentElement.scrollWidth<=innerWidth"))
     cmd('WebDriver:SetWindowRect',width=1280,height=900)
     # ---- Search: it covers every prop the member has, says so, and names the prop of each skill it finds.
