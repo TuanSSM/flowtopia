@@ -428,8 +428,8 @@ Settings.
 
 The rest of the UI is plain JS, so the tour is a separate React bundle, `web/tour.js`, loaded
 only when a tour starts. Its source is `tour/src/tour.jsx`, and the steps are in `TOURS` in
-`web/account.js`. `./deploy.sh` rebuilds the bundle when `tour/node_modules` exists
-(`cd tour && npm install` once).
+`web/account.js`. The committed bundle is what ships, and CI checks that it is the one the source
+builds; `./deploy.sh --build` rebuilds it when `tour/node_modules` exists (`cd tour && npm install` once).
 
 ## Demos
 
@@ -437,8 +437,8 @@ only when a tour starts. Its source is `tour/src/tour.jsx`, and the steps are in
 [docs/demo-coverage.md](docs/demo-coverage.md) for the list and for why the rest have none, and
 [docs/demo-engine.md](docs/demo-engine.md) for how they are made and where they are weak.
 
-The motion is worked out at build time (`sim/`, run by `./deploy.sh` through `node sim/bake.js`)
-and stored in `web/clips`. The browser (`web/demo.js`) only plays it, on a jointed figure.
+The motion is worked out at build time (`sim/`, by `node sim/bake.js`, which `./deploy.sh --build`
+also runs) and stored in `web/clips`, where it is committed: a release's image holds the clips of its tag. The browser (`web/demo.js`) only plays it, on a jointed figure.
 
 - **Simulated:** nunchaku and poi moved by gravity, drag, cord or tether tension and contact with
   the body, including throws, a bounce, and swings carried by a body that shifts or bends.
