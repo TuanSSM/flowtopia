@@ -120,6 +120,9 @@ type app struct {
 	flagCache map[string]bool
 	flagsAt   time.Time
 	sent      *onceStore // posts and comments that named themselves, so a repeat is not a second one
+	healthMu  sync.Mutex // guards healthAt and healthWas
+	healthAt  time.Time  // when the database was last asked for GET /healthz
+	healthWas health     // what it said then
 }
 
 func newApp(db *sql.DB, dataDir string) *app {
@@ -4164,13 +4167,7 @@ func (a *app) handleStatic(assets map[string]asset) http.HandlerFunc {
 // routes builds the HTTP handler: every API route, the static files, and the write guard.
 func (a *app) routes(assets map[string]asset) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if err := a.db.Ping(); err != nil {
-			http.Error(w, "database down", http.StatusServiceUnavailable)
-			return
-		}
-		io.WriteString(w, "ok\n")
-	})
+	mux.HandleFunc("GET /healthz", a.handleHealthz)
 	mux.HandleFunc("GET /api/me", a.handleMe)
 	mux.HandleFunc("PUT /api/me", a.authed("", a.handlePutMe))
 	mux.HandleFunc("PUT /api/me/password", a.authed("", a.handlePassword))
@@ -4213,6 +4210,91 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	return a.secure(a.guard(mux))
 }
 
+// health is what GET /healthz says about the running instance.
+type health struct {
+	OK         bool   `json:"ok"`         // the database answers and its schema is not older than this build needs
+	Database   bool   `json:"database"`   // the database answers
+	Schema     int    `json:"schema"`     // the newest migration the database has had
+	Migrations int    `json:"migrations"` // the newest migration this build knows; less than schema after going back an image
+	TLSRoots   bool   `json:"tlsRoots"`   // root certificates are present, so link previews can be fetched
+	Version    string `json:"version"`    // what VERSION says this build is
+}
+
+// healthEvery is how often GET /healthz asks the database. The endpoint needs no session, so without
+// this a flood of probes would be a flood of queries; with it they share one answer.
+const healthEvery = time.Second
+
+// checkHealth reads the schema version from the database, or gives the answer of the last second.
+func (a *app) checkHealth() health {
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	if !a.healthAt.IsZero() && time.Since(a.healthAt) < healthEvery {
+		return a.healthWas
+	}
+	h := health{Migrations: len(migrations), TLSRoots: rootsPresent(), Version: a.version}
+	// Not the request's context: a probe that hangs up early must not leave "database down" behind for
+	// the probes that share this answer.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := a.db.QueryRowContext(ctx, `SELECT COALESCE(max(version), 0) FROM schema_migrations`).Scan(&h.Schema); err == nil {
+		h.Database = true
+	} else {
+		// The table can be missing (an empty database put in place of the real one) while the database
+		// itself answers: say which.
+		h.Database = a.db.PingContext(ctx) == nil
+	}
+	h.OK = h.Database && h.Schema >= h.Migrations
+	a.healthAt, a.healthWas = time.Now(), h
+	return h
+}
+
+// handleHealthz answers probes: 200 when the instance works, 503 when it does not. Anyone may ask and
+// learns only that. The rest (schema version, TLS roots, the build) goes to a probe from the machine
+// itself: which commit runs is a help to an attacker.
+func (a *app) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	h := a.checkHealth()
+	code := http.StatusOK
+	if !h.OK {
+		code = http.StatusServiceUnavailable
+	}
+	if !localProbe(r) {
+		writeJSON(w, code, map[string]bool{"ok": h.OK})
+		return
+	}
+	writeJSON(w, code, h)
+}
+
+// localProbe reports whether a request comes from the machine the app runs on (in Docker: from inside
+// the container, as the image's health check and "docker exec nunchaku /nunchaku -healthcheck" do) and
+// was not passed on by a proxy. A reverse proxy on the same machine connects from a local address too,
+// but it names the visitor in a forwarding header.
+func localProbe(r *http.Request) bool {
+	for _, k := range []string{"X-Forwarded-For", "X-Real-Ip", "Forwarded", "Via"} {
+		if len(r.Header.Values(k)) > 0 {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// probeURL is where -healthcheck asks, given the listen address: the same port on this machine, or on
+// the one address the server listens on when -listen names one.
+func probeURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://127.0.0.1" + listen + "/healthz"
+	}
+	if ip := net.ParseIP(host); host == "" || host == "localhost" || (ip != nil && ip.IsUnspecified()) {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz"
+}
+
 // rootsPresent says whether there is anything to check a server's certificate against: the system's
 // root certificates, or the bundle compiled into the binary when the system has none.
 func rootsPresent() bool {
@@ -4223,16 +4305,21 @@ func rootsPresent() bool {
 func main() {
 	listen := flag.String("listen", ":3169", "listen address")
 	dataDir := flag.String("data", "/data", "directory for backups")
-	health := flag.Bool("healthcheck", false, "probe the local server and exit")
+	probe := flag.Bool("healthcheck", false, "ask the local server's /healthz, print the answer, and exit 0 if it is healthy")
 	flag.Parse()
 
-	if *health {
+	if *probe {
 		c := http.Client{Timeout: 3 * time.Second}
-		resp, err := c.Get("http://127.0.0.1" + *listen + "/healthz")
-		if err != nil || resp.StatusCode != http.StatusOK {
+		resp, err := c.Get(probeURL(*listen))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		io.Copy(io.Discard, resp.Body)
+		// The answer is one short line; Docker keeps it with the health state and deploy.sh prints it.
+		io.Copy(os.Stdout, io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
 		return
 	}
 

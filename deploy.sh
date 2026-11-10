@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the static binary, rebuild the image, recreate the container, wait for healthy.
+# Build the static binary, rebuild the image, recreate the container, wait until GET /healthz says it works.
 #   ./deploy.sh              build and deploy; if the new container is not healthy, go back
 #   ./deploy.sh --rollback   go back to the image that ran before the last deploy
 # The image that was running is kept as nunchaku:previous. Going back is safe while migrations only
@@ -12,9 +12,15 @@ export PATH="$HOME/.local/go/bin:$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"
 # here on the Pi, unless the environment already says, as production does with the release tag.
 export VERSION="${VERSION:-main.$(git rev-parse --short HEAD)}"
 
+# Wait for the app's own probe, run inside the new container: it asks GET /healthz, which answers 200 once
+# the server is up, the database is reachable and its schema is what the build needs, and it prints the
+# answer (schema version, TLS roots, version). Asking it directly means the wait is as long as the start;
+# Docker's own health state only changes at its next check, half a minute later. An image from before the
+# probe printed anything (after --rollback) leaves HEALTH empty.
+HEALTH=""
 healthy() {
   for _ in $(seq 1 90); do
-    [ "$(docker inspect -f '{{.State.Health.Status}}' nunchaku 2>/dev/null)" = healthy ] && return 0
+    if HEALTH=$(docker exec nunchaku /nunchaku -healthcheck 2>/dev/null); then return 0; fi
     sleep 1
   done
   return 1
@@ -45,5 +51,6 @@ if ! healthy; then
   rollback
   exit 1
 fi
-docker inspect -f 'nunchaku: {{.State.Health.Status}}' nunchaku
+echo "nunchaku: ${HEALTH:-healthy}"
+# And the published port answers from the host.
 curl -fsS -m 5 http://127.0.0.1:3169/healthz >/dev/null

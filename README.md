@@ -83,6 +83,19 @@ compiled into the binary (Mozilla's bundle, pinned in `go.mod`; update it with
 the new container does not become healthy within 90 seconds. Both containers have CPU, memory and
 process limits in `compose.yml`, so the app cannot starve the printer stack on the same Pi.
 
+Healthy means `GET /healthz` answers 200: the database is reachable and its schema is not older than
+the build needs; otherwise it answers 503. Anyone may ask and is told only that, as `{"ok":true}`. A
+probe from the machine the app runs on (in Docker: from inside the container) also reads the schema
+version, the number of migrations the build knows, whether TLS roots are present, and `VERSION`:
+
+```sh
+docker exec nunchaku /nunchaku -healthcheck
+# {"ok":true,"database":true,"schema":5,"migrations":5,"tlsRoots":true,"version":"main.abc1234"}
+```
+
+That is the probe the image's health check runs and the one `deploy.sh` waits on. The database is asked
+at most once a second, however many probes arrive.
+
 Two containers (`compose.yml`): `nunchaku` (the app) and `nunchaku-db` (Postgres 16, data in the
 `pgdata` Docker volume, not exposed outside Docker). Secrets are in `.env` (mode 600):
 the database password, and the admin name and password used to create the admin on first start.

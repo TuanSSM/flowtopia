@@ -36,7 +36,7 @@ filesystem and no capabilities.
 | D1 | The schema is two strings run in full at every start; there is no record of what ran, so a change that is not "add if missing" (a data fix, a rename) cannot be shipped safely. | Versioned migrations in `schema_migrations`, under an advisory lock, each in a transaction; the old schema is the baseline. |
 | D2 | Expired sessions are deleted only at start; read notifications and unused link previews are never removed. | An hourly housekeeping job, tested. |
 | D3 | The in-app backup covers progress documents only; accounts, posts, comments and catalogs have no backup. | `backup.sh`: a daily compressed `pg_dump`, checked with `pg_restore --list`, kept 14 days, with restore steps. |
-| D4 | A deploy that comes up unhealthy leaves the app down; there is no way back. | `deploy.sh` keeps the running image as `nunchaku:previous`, goes back by itself when the new one is unhealthy, and has `--rollback`; it also runs the Go tests before building. |
+| D4 | A deploy that comes up unhealthy leaves the app down; there is no way back. | `deploy.sh` keeps the running image as `nunchaku:previous`, goes back by itself when the new one is unhealthy (it waits on `GET /healthz`), and has `--rollback`; it also runs the Go tests before building. |
 | D5 | Code for importing the single-user files from before accounts existed still runs at every start, though both files were imported on 5 November. | Removed. |
 | D6 | One global mutex covers unrelated state (sign-in failures, the flag cache, backups). | Each has its own lock. |
 | D7 | Shell scripts are not linted. | `shellcheck` in the lint job. |

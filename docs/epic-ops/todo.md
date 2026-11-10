@@ -5,10 +5,14 @@ Category: improvement. Size: M. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 0 of 7 items done.
+**Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 1 of 7 items done.
 
-- [ ] **Health.** `GET /healthz`: schema version, TLS root count, database reachable, `VERSION`.
-  DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
+- [x] **Health.** `GET /healthz`: schema version, whether TLS roots are present, database reachable,
+  `VERSION`. DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
+  Done: 200 or 503 for anyone, the detail only for a probe from the machine itself (the version is not
+  for visitors); `TestHealthz`, `TestDBHealthz`, `TestProbeURL`; `deploy.sh` waits on
+  `docker exec nunchaku /nunchaku -healthcheck`. The number of TLS roots is not something Go reports, so
+  the answer says whether there are any.
 - [ ] **Structured request log.** One line per request: method, route, status, duration, bytes,
   the limit key when refused. DoD: `TestRequestLog`; the log cap in `compose.yml` reviewed.
 - [ ] **Loopback by default.** The app publishes on `127.0.0.1:3169` unless `FLOWA_BIND` says

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -2147,5 +2148,55 @@ func TestDBVersion(t *testing.T) {
 				t.Fatalf("%s reads the version at %s", who, path)
 			}
 		}
+	}
+}
+
+// TestDBHealthz: a working instance answers 200; a probe from the machine itself reads the schema version,
+// the build and whether TLS roots are present, and anyone else only that it works. A schema older than the
+// build needs, or a database that is there without its tables, is not healthy.
+func TestDBHealthz(t *testing.T) {
+	e := newEnv(t)
+	e.a.version = "v1.2.3"
+	fresh := func() { e.a.healthMu.Lock(); e.a.healthAt = time.Time{}; e.a.healthMu.Unlock() }
+	code, out := probe(t, e.h, "127.0.0.1:4000", nil)
+	want := map[string]any{"ok": true, "database": true, "schema": float64(len(migrations)), "migrations": float64(len(migrations)), "tlsRoots": rootsPresent(), "version": "v1.2.3"}
+	if code != 200 || !reflect.DeepEqual(out, want) {
+		t.Fatalf("a local probe gets %d %v, want 200 %v", code, out, want)
+	}
+	if code, out := probe(t, e.h, "203.0.113.9:5000", nil); code != 200 || len(out) != 1 || out["ok"] != true {
+		t.Fatalf("a visitor gets %d %v, want 200 and only ok", code, out)
+	}
+
+	// Probes within a second share one answer, so a flood of them is not a flood of queries.
+	if _, err := e.a.db.Exec(`DELETE FROM schema_migrations WHERE version = $1`, len(migrations)); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := probe(t, e.h, "127.0.0.1:4000", nil); code != 200 || out["schema"] != float64(len(migrations)) {
+		t.Fatalf("a second probe in the same second gets %d %v, want the first answer again", code, out)
+	}
+	// After that the database is asked again. Its schema is now one migration short of what the build needs.
+	fresh()
+	code, out = probe(t, e.h, "127.0.0.1:4000", nil)
+	if code != 503 || out["ok"] != false || out["database"] != true || out["schema"] != float64(len(migrations)-1) {
+		t.Fatalf("with a migration missing a local probe gets %d %v, want 503 with the database up and schema %d", code, out, len(migrations)-1)
+	}
+	if code, out := probe(t, e.h, "203.0.113.9:5000", nil); code != 503 || len(out) != 1 || out["ok"] != false {
+		t.Fatalf("with a migration missing a visitor gets %d %v, want 503 and only ok", code, out)
+	}
+	// A schema newer than the build knows is what going back an image leaves, and that works.
+	if _, err := e.a.db.Exec(`INSERT INTO schema_migrations (version) VALUES ($1), ($2)`, len(migrations), len(migrations)+1); err != nil {
+		t.Fatal(err)
+	}
+	fresh()
+	if code, out := probe(t, e.h, "127.0.0.1:4000", nil); code != 200 || out["schema"] != float64(len(migrations)+1) || out["migrations"] != float64(len(migrations)) {
+		t.Fatalf("with a newer schema a local probe gets %d %v, want 200 and schema %d", code, out, len(migrations)+1)
+	}
+	// The database answers but the table is gone: up, and not healthy.
+	if _, err := e.a.db.Exec(`ALTER TABLE schema_migrations RENAME TO schema_migrations_away`); err != nil {
+		t.Fatal(err)
+	}
+	fresh()
+	if code, out := probe(t, e.h, "127.0.0.1:4000", nil); code != 503 || out["database"] != true || out["schema"] != float64(0) {
+		t.Fatalf("with the table gone a local probe gets %d %v, want 503 with the database up and schema 0", code, out)
 	}
 }
