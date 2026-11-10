@@ -57,14 +57,22 @@ def start(w=1440,h=1100):
     cmd('WebDriver:NewSession',capabilities={});cmd('WebDriver:SetWindowRect',width=w,height=h)
     cmd('WebDriver:Navigate',url=BASE);time.sleep(2.5)
     js("window.__e=[];window.addEventListener('error',e=>__e.push(e.message+' @'+(e.filename||'').split('/').pop()+':'+e.lineno));window.addEventListener('unhandledrejection',e=>__e.push('rej '+String(e.reason)));document.addEventListener('securitypolicyviolation',e=>__e.push('CSP '+e.violatedDirective))")
+zoom=1.0  # the zoom phone() has set so far
 def phone(width=390):
     # A Firefox window is never narrower than 450 px, so the page is zoomed until the window holds `width` px
     # of it. Zoom is set from the browser's own side, which is why a touch run starts Firefox with system access.
-    cmd('WebDriver:SetWindowRect',width=450,height=900);w=js("return innerWidth")
-    cmd('Marionette:SetContext',value='chrome')
-    try: js("return FullZoom.setZoom(arguments[0],gBrowser.selectedBrowser)",w/width)
-    finally: cmd('Marionette:SetContext',value='content')
-    time.sleep(1);return js("return innerWidth")
+    # The first try can land a few px off (392 for 390 on the runner's Firefox), so the zoom is corrected from
+    # what the page then reports. The width the page ends with is returned.
+    global zoom
+    cmd('WebDriver:SetWindowRect',width=450,height=900);got=js("return innerWidth")
+    for _ in range(4):
+        if got==width: break
+        zoom*=got/width
+        cmd('Marionette:SetContext',value='chrome')
+        try: js("return FullZoom.setZoom(arguments[0],gBrowser.selectedBrowser)",zoom)
+        finally: cmd('Marionette:SetContext',value='content')
+        time.sleep(1);got=js("return innerWidth")
+    return got
 def signin(name='admin'):
     # Checking a password takes a second or two on a small machine, so wait for the page to show who signed in.
     nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value='flowa-test-only';f.requestSubmit()",name)

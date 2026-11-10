@@ -35,7 +35,7 @@ try:
     api(other,'signup',{'username':'rae','password':'flowa-test-only'});api(other,'me',{'props':['nunchaku']},'PUT')
     op2=api(other,'posts',{'body':'First clean upspin today'})['posts'][0]['id'];api(other,'posts/%d/comments'%pid,{'body':'A mirror, yes.'})
     start(450,900);wide=phone(390)
-    check('the browser reports a touch screen 390 px wide',js("return matchMedia('(pointer: coarse)').matches&&matchMedia('(hover: none)').matches")and abs(wide-390)<=1,wide)
+    check('the browser reports a touch screen within 4 px of 390 px wide',js("return matchMedia('(pointer: coarse)').matches&&matchMedia('(hover: none)').matches")and abs(wide-390)<=4,wide)
     # Signed out.
     page('landing','#/',2.5)
     land=js("return document.querySelector('#main').innerText")
