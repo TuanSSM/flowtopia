@@ -107,5 +107,11 @@ try:
     # With the flag off, reporting is gone.
     api(op,'flags',{'flags':{'moderation':False}},'PUT')
     check('with moderation off the report endpoint does not exist',code_of(rae,'mod/queue')==404)
+    # Community off turns off its API, not only its pages.
+    api(op,'flags',{'flags':{'community':False}},'PUT')
+    check('with community off the timeline endpoint does not exist',code_of(rae,'posts')==404 and code_of(rae,'notifications')==404)
+    check('with community off the rest of the API still answers',code_of(rae,'me')==200)
+    api(op,'flags',{'flags':{'community':True}},'PUT')
+    check('with community back on the timeline answers',code_of(rae,'posts')==200)
 finally:
     done()

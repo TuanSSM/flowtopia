@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"image"
 	"image/color"
@@ -114,17 +115,110 @@ func TestLimiter(t *testing.T) {
 	if l.over("a") || !l.add("a") {
 		t.Fatal("a new window starts afresh")
 	}
-	// A full limiter drops expired keys, and refuses new keys while every slot is live.
-	small := newLimiter(5, time.Hour)
+	// A full limiter drops expired keys first, and then forgets the oldest: the cap bounds memory
+	// and never refuses a new visitor (SEC-10).
+	small := newLimiter(1, time.Hour)
 	small.maxKeys = 2
 	small.add("x")
 	small.add("y")
-	if small.add("z") {
-		t.Fatal("a new key in a full limiter counts as over")
+	if !small.add("z") || len(small.m) != 2 || small.m["x"] != nil || small.m["y"] == nil {
+		t.Fatalf("a new key in a full limiter is taken and the oldest is forgotten: %v", small.m)
 	}
-	small.m["x"].reset = time.Now().Add(-time.Second)
-	if !small.add("z") || len(small.m) != 2 {
-		t.Fatal("expired keys make room")
+	small.m["y"].reset = time.Now().Add(-time.Second)
+	if !small.add("w") || len(small.m) != 2 || small.m["y"] != nil || small.m["z"] == nil {
+		t.Fatal("an expired key makes room before a live one is forgotten")
+	}
+	small.forget("z")
+	if !small.add("v") || !small.add("u") || len(small.m) != 2 || small.m["w"] != nil {
+		t.Fatalf("a forgotten key leaves its place in the queue: %v", small.m)
+	}
+	if len(small.order) > 3 {
+		t.Fatalf("the queue keeps %d entries for 2 keys", len(small.order))
+	}
+	// Tenths: ten taken names cost one event, and part of a count can be given back.
+	w := newLimiter(2, time.Hour)
+	for i := 0; i < 10; i++ {
+		w.addWeight("k", 1)
+	}
+	if w.over("k") || !w.add("k") || !w.over("k") {
+		t.Fatal("ten tenths and one whole event use up an allowance of two")
+	}
+	w.addWeight("k", 1-tenths)
+	if w.over("k") {
+		t.Fatal("giving nine tenths back leaves room")
+	}
+	// A tenth from a request that was turned down does not cost the last whole event, and a count
+	// that is full stops growing.
+	e := newLimiter(2, time.Hour)
+	e.add("k")
+	e.addWeight("k", 1)
+	if !e.add("k") || e.add("k") || e.add("k") || e.m["k"].n != 2*tenths+1 {
+		t.Fatalf("one and a tenth, then one more and no further: count %d", e.m["k"].n)
+	}
+	w.addWeight("gone", -5)
+	if w.m["gone"] != nil {
+		t.Fatal("giving back makes no counter")
+	}
+}
+
+func TestLimitKey(t *testing.T) {
+	for _, c := range [][2]string{
+		{"203.0.113.9", "203.0.113.9"},
+		{"::ffff:203.0.113.9", "203.0.113.9"},         // IPv4 written as IPv6 is IPv4
+		{"2001:db8:1:2:aaaa::1", "2001:db8:1:2::/64"}, // one /64, one key
+		{"2001:db8:1:2:bbbb::2", "2001:db8:1:2::/64"},
+		{"2001:db8:1:3::1", "2001:db8:1:3::/64"}, // the next /64 is someone else
+		{"fe80::1%eth0", "fe80::/64"},
+		{"::1", "::/64"},
+		{"not an address", "not an address"},
+	} {
+		if got := limitKey(c[0]); got != c[1] {
+			t.Errorf("limitKey(%q) = %q, want %q", c[0], got, c[1])
+		}
+	}
+}
+
+// A write must come from Flowa's own pages, and a page served over plain HTTP may not write to the
+// HTTPS site (SEC-16).
+func TestSameOrigin(t *testing.T) {
+	def, _ := parseProxies(defaultProxies)
+	a := &app{proxies: def}
+	req := func(remote, origin, proto string, direct bool) *http.Request {
+		r := httptest.NewRequest("POST", "/api/posts", nil)
+		r.RemoteAddr = remote
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		if proto != "" {
+			r.Header.Set("X-Forwarded-Proto", proto)
+		}
+		if direct {
+			r.TLS = &tls.ConnectionState{}
+		}
+		return r
+	}
+	const visitor, proxy = "203.0.113.9:5000", "172.18.0.2:5000"
+	for _, c := range []struct {
+		name string
+		r    *http.Request
+		want bool
+	}{
+		{"no Origin (not a browser page)", req(visitor, "", "", false), true},
+		{"plain HTTP at home", req(visitor, "http://example.com", "", false), true},
+		{"HTTPS directly", req(visitor, "https://example.com", "", true), true},
+		{"an HTTP page writing to the HTTPS site", req(visitor, "http://example.com", "", true), false},
+		{"HTTPS through a trusted proxy", req(proxy, "https://example.com", "https", false), true},
+		{"an HTTP page through a trusted proxy that saw HTTPS", req(proxy, "http://example.com", "https", false), false},
+		{"a proxy that ends TLS without saying so", req(proxy, "https://example.com", "", false), true},
+		{"a proxy behind a tunnel reports http", req(proxy, "https://example.com", "http", false), true},
+		{"a visitor's own X-Forwarded-Proto is not believed", req(visitor, "http://example.com", "https", false), true},
+		{"another site", req(visitor, "https://attacker.example", "", true), false},
+		{"another port", req(visitor, "http://example.com:8080", "", false), false},
+		{"an opaque origin", req(visitor, "null", "", false), false},
+	} {
+		if got := a.sameOrigin(c.r); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

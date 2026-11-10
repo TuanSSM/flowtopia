@@ -11,12 +11,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,6 +107,51 @@ func (e *tenv) do(tok, method, path string, body any) (int, map[string]any) {
 	json.Unmarshal(w.Body.Bytes(), &out)
 	out["_raw"] = w.Body.String()
 	return w.Code, out
+}
+
+// from sends a request with no session from the given address ("203.0.113.9:5000") and returns the
+// status. via is a visitor's address when the connection is a trusted proxy's.
+func (e *tenv) from(remote, via, method, path string, body any) int {
+	e.t.Helper()
+	b, _ := json.Marshal(body)
+	r := httptest.NewRequest(method, path, bytes.NewReader(b))
+	r.RemoteAddr = remote
+	if via != "" {
+		r.Header.Set("X-Forwarded-For", via)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	return w.Code
+}
+
+// logBuf is a log output that a test can read while the server may still be writing to it.
+type logBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// logged collects what the server logs until the test ends.
+func logged(t *testing.T) *logBuf {
+	var buf logBuf
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	refusals.mu.Lock()
+	refusals.since, refusals.seen, refusals.dropped = time.Now(), map[string]bool{}, 0
+	refusals.mu.Unlock()
+	return &buf
 }
 
 // must sends a request and fails the test unless the status is want.
@@ -1110,6 +1157,23 @@ func TestDBHardening(t *testing.T) {
 	e.post(fast, "one")
 	e.post(fast, "two")
 	e.must(429, fast, "POST", "/api/posts", map[string]any{"body": "three"})
+	// A post the server turns down costs a tenth, so thirty mistakes leave room to post (UN-06).
+	e.a.lim.posts = newLimiter(30, time.Hour)
+	_, typo := e.user("typo", "user")
+	for i := 0; i < 30; i++ {
+		e.must(400, typo, "POST", "/api/posts", map[string]any{"body": strings.Repeat("x", maxPost+1)})
+	}
+	e.post(typo, "the one that fits")
+	// Likes and comments on a post that is not there cost a tenth as well.
+	e.a.lim.likes, e.a.lim.comments = newLimiter(2, time.Hour), newLimiter(2, time.Hour)
+	for i := 0; i < 10; i++ {
+		e.must(404, typo, "POST", "/api/posts/999999/like", nil)
+		e.must(400, typo, "POST", fmt.Sprintf("/api/posts/%d/comments", memberPost), map[string]any{"body": ""})
+	}
+	e.must(200, typo, "POST", fmt.Sprintf("/api/posts/%d/like", memberPost), nil)
+	e.comment(typo, memberPost, 0, "one comment after ten empty ones")
+	e.must(429, typo, "POST", fmt.Sprintf("/api/posts/%d/like", memberPost), nil)
+	e.must(429, typo, "POST", fmt.Sprintf("/api/posts/%d/comments", memberPost), map[string]any{"body": "too many"})
 
 	// Progress documents up to 512 KB (S6).
 	big := strings.Repeat("x", maxProgress)
@@ -1180,13 +1244,49 @@ func TestDBHardening(t *testing.T) {
 
 func TestDBSigninLimits(t *testing.T) {
 	e := newEnv(t)
+	out := logged(t)
 	e.must(200, "", "POST", "/api/signup", map[string]any{"username": "vic", "password": "the right password"})
-	bad := map[string]any{"username": "vic", "password": "wrong password"}
+	bad := map[string]any{"username": "vic", "password": "a-wrong-guess"}
+	right := map[string]any{"username": "vic", "password": "the right password"}
 	// Per address and username: 8 failures, then even the right password waits (S5).
 	for i := 0; i < maxFails; i++ {
 		e.must(401, "", "POST", "/api/signin", bad)
 	}
-	e.must(429, "", "POST", "/api/signin", map[string]any{"username": "vic", "password": "the right password"})
+	e.must(429, "", "POST", "/api/signin", right)
+	e.must(429, "", "POST", "/api/signin", right)
+	// The log has one line for the run of failures and one for the refusals, with the address and
+	// neither the username nor a password (SEC-15).
+	if got := out.String(); strings.Count(got, "refused: wrong username or password from 192.0.2.1\n") != 1 ||
+		strings.Count(got, "refused: too many sign-in attempts from 192.0.2.1\n") != 1 || strings.Count(got, "refused:") != 2 ||
+		strings.Contains(got, "vic") || strings.Contains(got, "a-wrong-guess") || strings.Contains(got, "the right password") {
+		t.Fatalf("the log after a run of failed sign-ins:\n%s", got)
+	}
+	// Per account: 20 wrong guesses, the 8 above and 12 more from 12 addresses, do not lock the member
+	// out (SEC-04). A wrong password from a new address is told to wait, the right one signs in, and
+	// that clears the count.
+	for i := 0; i < 12; i++ {
+		if code := e.from(fmt.Sprintf("198.51.100.%d:5000", i+1), "", "POST", "/api/signin", bad); code != 401 {
+			t.Fatalf("guess %d from its own address: %d", i+1, code)
+		}
+	}
+	if code := e.from("198.51.100.21:5000", "", "POST", "/api/signin", bad); code != 429 {
+		t.Fatalf("a wrong password for an account under attack: %d, want 429", code)
+	}
+	if code := e.from("198.51.100.21:5000", "", "POST", "/api/signin", right); code != 200 {
+		t.Fatalf("the right password for an account under attack: %d, want 200", code)
+	}
+	if code := e.from("198.51.100.22:5000", "", "POST", "/api/signin", bad); code != 401 {
+		t.Fatalf("after a good sign-in the count starts again: %d, want 401", code)
+	}
+	// A wrong password while the account is over its count still counts against the address.
+	e.a.lim.account = newLimiter(1, failWindow)
+	for i := 0; i < maxFails; i++ {
+		e.from("198.51.100.30:5000", "", "POST", "/api/signin", bad)
+	}
+	if code := e.from("198.51.100.30:5000", "", "POST", "/api/signin", right); code != 429 {
+		t.Fatalf("an address that kept guessing is refused even with the right password: %d", code)
+	}
+	e.a.lim.account = newLimiter(20, failWindow)
 	// Per address across usernames: spraying many accounts is limited too.
 	e.a.lim.signin = newLimiter(maxFails, failWindow)
 	e.a.lim.signinIP = newLimiter(3, failWindow)
@@ -1240,6 +1340,111 @@ func TestDBLimitsBehindProxy(t *testing.T) {
 	}
 	if via("203.0.113.2", "POST", "/api/signin", map[string]any{"username": "second", "password": "long enough pw"}) != 200 {
 		t.Fatal("another visitor still signs in")
+	}
+	// IPv6: every address in one /64 is one visitor, and the next /64 is another (SEC-05).
+	for i, n := range []string{"amy", "ben", "cat", "dan"} {
+		via(fmt.Sprintf("2001:db8:7:1::%x", i+1), "POST", "/api/signin", map[string]any{"username": n, "password": "guess guess"})
+	}
+	if via("2001:db8:7:1:ffff::9", "POST", "/api/signin", map[string]any{"username": "first", "password": "long enough pw"}) != 429 {
+		t.Fatal("a new address in the same /64 is the same visitor")
+	}
+	if via("2001:db8:7:2::1", "POST", "/api/signin", map[string]any{"username": "first", "password": "long enough pw"}) != 200 {
+		t.Fatal("the next /64 is someone else")
+	}
+	e.a.lim.signup = newLimiter(1, time.Hour)
+	if via("2001:db8:8:1::1", "POST", "/api/signup", map[string]any{"username": "sixth", "password": "long enough pw"}) != 200 ||
+		via("2001:db8:8:1::2", "POST", "/api/signup", map[string]any{"username": "seventh", "password": "long enough pw"}) != 429 {
+		t.Fatal("sign-ups are counted per /64")
+	}
+}
+
+// Sign-ups count what costs something: a new account is one, a taken name a tenth, and a form the
+// server turns down nothing (UN-05).
+func TestDBSignupLimits(t *testing.T) {
+	e := newEnv(t)
+	out := logged(t)
+	pw := "long enough pw"
+	for _, bad := range []map[string]any{
+		{"username": "x", "password": pw}, {"username": "has space", "password": pw}, {"username": "fine", "password": "short"},
+		{"username": "fine", "password": pw, "displayName": strings.Repeat("d", 41)}, {"username": "", "password": ""},
+		{"username": "x", "password": pw}, {"username": "x", "password": pw}, {"username": "x", "password": pw},
+		{"username": "x", "password": pw}, {"username": "x", "password": pw},
+	} {
+		e.must(400, "", "POST", "/api/signup", bad)
+	}
+	e.must(200, "", "POST", "/api/signup", map[string]any{"username": "first", "password": pw})
+	for i := 0; i < 10; i++ {
+		e.must(409, "", "POST", "/api/signup", map[string]any{"username": "first", "password": pw})
+	}
+	// One account and ten taken names are two of the ten: eight more accounts, and then no more.
+	for i := 0; i < 8; i++ {
+		e.must(200, "", "POST", "/api/signup", map[string]any{"username": fmt.Sprintf("more%d", i), "password": pw})
+	}
+	e.must(429, "", "POST", "/api/signup", map[string]any{"username": "eleventh", "password": pw})
+	e.must(429, "", "POST", "/api/signup", map[string]any{"username": "x", "password": pw}) // refused before it is read
+	if n := e.count(`SELECT count(*) FROM users`); n != 9 {
+		t.Fatalf("%d accounts, want 9", n)
+	}
+	if got := out.String(); strings.Count(got, "refused: too many new accounts from 192.0.2.1\n") != 1 || strings.Count(got, "refused:") != 1 {
+		t.Fatalf("the log after refused sign-ups:\n%s", got)
+	}
+	// Another address has its own count.
+	if code := e.from("203.0.113.77:5000", "", "POST", "/api/signup", map[string]any{"username": "elsewhere", "password": pw}); code != 200 {
+		t.Fatalf("another address: %d", code)
+	}
+}
+
+// The community and game flags turn the API off too, not only the menu (MAP-03).
+func TestDBFlagsGateAPI(t *testing.T) {
+	e := newEnv(t)
+	uid, una := e.user("una", "user")
+	p := e.post(una, "before the flag goes off")
+	c := num(e.comment(una, p, 0, "a comment")["id"])
+	e.must(200, una, "PUT", "/api/me", map[string]any{"avatar": dataURL(t, "jpeg", 40, 40, nil)})
+	community := [][2]string{
+		{"GET", "/api/users"}, {"GET", "/api/users/una"},
+		{"GET", "/api/posts"}, {"POST", "/api/posts"}, {"GET", fmt.Sprintf("/api/posts/%d", p)}, {"DELETE", fmt.Sprintf("/api/posts/%d", p)},
+		{"POST", fmt.Sprintf("/api/posts/%d/like", p)}, {"POST", fmt.Sprintf("/api/posts/%d/comments", p)}, {"GET", fmt.Sprintf("/api/posts/%d/comments", p)},
+		{"DELETE", fmt.Sprintf("/api/comments/%d", c)}, {"PUT", fmt.Sprintf("/api/comments/%d", c)}, {"GET", fmt.Sprintf("/api/comments/%d/replies", c)},
+		{"GET", fmt.Sprintf("/api/comments/%d/thread", c)}, {"POST", fmt.Sprintf("/api/comments/%d/like", c)},
+		{"GET", "/api/notifications"}, {"PUT", "/api/notifications/read"},
+	}
+	body := map[string]any{"body": "hello"}
+	gated := func(routes [][2]string, off bool) {
+		t.Helper()
+		for _, r := range routes {
+			code, out := e.do(una, r[0], r[1], body)
+			raw, _ := out["_raw"].(string)
+			if closed := code == 404 && strings.Contains(raw, "404 page not found"); closed != off {
+				t.Errorf("%s %s with the flag %s: %d %.60q", r[0], r[1], map[bool]string{true: "off", false: "on"}[off], code, raw)
+			}
+		}
+	}
+	badge := map[string]any{"keys": []string{"sessions-1"}, "prop": "nunchaku"}
+	e.setFlag("community", false)
+	gated(community, true)
+	if e.count(`SELECT count(*) FROM posts`) != 1 || e.count(`SELECT count(*) FROM comments`) != 1 {
+		t.Fatal("nothing is written or deleted while community is off")
+	}
+	// Pictures stay, and so do badges, but a badge posts no milestone to a timeline that is off.
+	r := httptest.NewRequest("GET", fmt.Sprintf("/api/users/%d/avatar", uid), nil)
+	r.AddCookie(&http.Cookie{Name: cookieName, Value: una})
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("a picture while community is off: %d", w.Code)
+	}
+	if got := e.must(200, una, "POST", "/api/achievements", badge); num(got["postId"]) != 0 || e.count(`SELECT count(*) FROM posts`) != 1 {
+		t.Fatalf("a badge while community is off made a post: %v", got["_raw"])
+	}
+	e.setFlag("community", true)
+	e.setFlag("game", false)
+	gated([][2]string{{"POST", "/api/achievements"}}, true)
+	gated(community[:3], false)
+	e.setFlag("game", true)
+	badge["keys"] = []string{"sessions-10"}
+	if got := e.must(200, una, "POST", "/api/achievements", badge); num(got["postId"]) == 0 {
+		t.Fatalf("with both flags on a badge posts its milestone: %v", got["_raw"])
 	}
 }
 
