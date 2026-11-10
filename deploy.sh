@@ -52,5 +52,16 @@ if ! healthy; then
   exit 1
 fi
 echo "nunchaku: ${HEALTH:-healthy}"
-# And the published port answers from the host.
-curl -fsS -m 5 http://127.0.0.1:3169/healthz >/dev/null
+# And the published port answers from the host, at the address it is published on: this machine only
+# unless FLOWA_BIND in .env names another (compose.yml). "Every address" is asked by loopback.
+at=$(docker compose port nunchaku 3169) || { echo "docker compose did not say where port 3169 is published" >&2; exit 1; }
+case "$at" in
+  0.0.0.0:*) ask="127.0.0.1:${at##*:}" ;;
+  "[::]":*) ask="[::1]:${at##*:}" ;;
+  *) ask="$at" ;;
+esac
+curl -fsS -m 5 "http://$ask/healthz" >/dev/null
+case "$at" in
+  127.*|"[::1]":*) echo "published on $at: only this machine can open it. To open it to the LAN, set FLOWA_BIND in .env (README, Run)." ;;
+  *) echo "published on $at" ;;
+esac

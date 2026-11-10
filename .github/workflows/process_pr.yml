@@ -3,8 +3,9 @@
 #
 #   lint         gofmt, go vet, staticcheck; JS syntax and catalog format; Python syntax; workflow lint
 #   unit         go build + go test; the physics suite over every demo clip; bundles reproducible
-#   integration  real server against Postgres: the database tests, and each browser suite in
-#                test/browser driven through headless Firefox, one job per suite, in parallel
+#   integration  real server against Postgres: the database tests, compose.yml started as on a new
+#                machine, and each browser suite in test/browser driven through headless Firefox, one
+#                job per suite, in parallel
 #   screenshots  pictures of the pages and demos, pushed to the ci-screenshots branch
 #   docs         Markdown links and the front matter of the Claude Code files
 #   pr_summary   one sticky comment on the PR with the results and the size of the change
@@ -157,7 +158,11 @@ jobs:
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
       - name: Shell scripts
-        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh
+        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/compose.sh
+      # What compose.yml resolves to, without starting anything: the app published on this machine only
+      # unless FLOWA_BIND says otherwise, the database not at all. The compose suite asks running containers.
+      - name: compose.yml publishes the app on loopback by default
+        run: test/compose.sh
       - name: The rules that choose which jobs run
         run: test/ci-plan.sh --self-test
       # A browser test waits for what it checks (wait_for, idle and check in test/browser/h.py). A sleep is
@@ -269,9 +274,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: stable   # what the Pi builds with; go.mod only sets the language version
-      # db: the Go tests that need Postgres (db_test.go), each in its own schema. Every other suite
-      # is a test/browser script. Headless Firefox only gets WebGL (software, llvmpipe) when a
-      # display exists, so they run under Xvfb; without it the 3D figure cannot be tested.
+      # db: the Go tests that need Postgres (db_test.go), each in its own schema. compose: the two
+      # containers of compose.yml, built and started on this runner (test/compose.sh --up); it does not
+      # use the Postgres service above. Every other suite is a test/browser script. Headless Firefox
+      # only gets WebGL (software, llvmpipe) when a display exists, so they run under Xvfb; without
+      # it the 3D figure cannot be tested.
       - name: Run the ${{ matrix.suite }} suite
         env:
           SUITE: ${{ matrix.suite }}
@@ -281,6 +288,12 @@ jobs:
             TEST_DATABASE_URL="$DATABASE_URL" go test -race -count=1 -run DB -v ./... | tee report/result.txt || code=$?
             echo "$(grep -c -- '^--- PASS' report/result.txt) passed, $(grep -c -- '^--- FAIL' report/result.txt) failed, $(grep -c -- '^--- SKIP' report/result.txt) skipped" > report/line.txt
             cat report/line.txt
+            exit "${code:-0}"
+          fi
+          if [ "$SUITE" = compose ]; then
+            test/compose.sh --up | tee report/result.txt || code=$?
+            cp report/result.txt report/out.txt   # its TIME lines, for the slowest checks table
+            grep -E '^[0-9]+ passed, ' report/result.txt | tail -1 > report/line.txt || true
             exit "${code:-0}"
           fi
           case "$SUITE" in

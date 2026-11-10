@@ -19,6 +19,9 @@ paths:
 - `test/ci-plan.sh` maps changed paths to jobs and integration suites. When in doubt it runs
   everything; keep it that way. A new browser suite goes into its `ALL` list and the self-test (the
   lint job runs `test/ci-plan.sh --self-test`), or it never runs in CI.
+- `test/compose.sh` checks `compose.yml`: without arguments what the file resolves to (lint), with
+  `--up` the running containers (the `compose` integration suite). `--up` uses the real names and port,
+  so it refuses to run where Flowa is deployed; never run it on the Pi that serves.
 - Use `if: ${{ !cancelled() }}` for steps that must run after a failure, never `always()`: an
   `always()` step keeps running in a run that a newer push cancelled. Only `process_pr_result` uses
   `always()`.

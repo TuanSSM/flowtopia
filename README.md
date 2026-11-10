@@ -103,6 +103,24 @@ Changing the admin password in `.env` later does nothing; change it on the Profi
 admin exists, remove `ADMIN_PASSWORD` from `.env`: it is otherwise kept in the container's
 environment, where `docker inspect` shows it.
 
+Port 3169 is published on the machine itself only (`127.0.0.1`), so after a first `docker compose up`
+nothing else on the network can open the app: a reverse proxy on the same machine can, and so can
+`curl http://127.0.0.1:3169/healthz`. That is the default because a port Docker publishes is opened
+ahead of the host's firewall (ufw and firewalld do not see it), so publishing on every address would
+put the app on every network the machine is on, whatever the firewall says. To open it to other
+devices, set `FLOWA_BIND` in `.env` and run `./deploy.sh` (or `docker compose up -d`):
+
+```sh
+FLOWA_BIND=192.168.1.20    # one address of the machine: only that network reaches the app
+FLOWA_BIND=0.0.0.0         # every IPv4 address the machine has
+```
+
+A reverse proxy that runs in another container on the same machine reaches the app through the
+Docker bridge, not through loopback: give `FLOWA_BIND` the bridge's address (`172.17.0.1` for the
+default bridge). A value that is not an address stops `docker compose` with `invalid ip address`.
+`deploy.sh` ends by saying where the port is published, and says so when it is this machine only.
+The database is never published.
+
 The app answers only to IP addresses, `localhost`, single-label names such as `raspi`, and private
 names (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`, `.ts.net`). To reach it
 by any other name, list it in `FLOWA_HOSTS` in `.env` (comma-separated). This stops a website from
@@ -428,11 +446,11 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` or the `Dockerfile` runs `lint` and the `compose` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
-| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
+| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/compose.sh` (`compose.yml` publishes the app on loopback unless `FLOWA_BIND` is set, and never the database); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres), `compose` (`test/compose.sh --up`: the two containers of `compose.yml` built and started on the runner, the app asked by loopback, where it must answer, and by the runner's other addresses, where it must not until `FLOWA_BIND=0.0.0.0`) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |

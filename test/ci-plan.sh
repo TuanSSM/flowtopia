@@ -12,7 +12,8 @@
 set -euo pipefail
 
 # Every suite, in the order the summary lists them. Each one is a job in the integration matrix.
-ALL="db combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
+# compose is not a browser suite: test/compose.sh --up starts compose.yml and asks who can reach the app.
+ALL="db compose combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
 BROWSER="combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
 # Suites that play demo clips or draw the figure, for changes to the clips or the 3D figure. The touch suite
 # is one of them: it measures the avatar editor and the landing page's demo on a phone.
@@ -32,10 +33,13 @@ plan() {
     docs_only=false
     case "$f" in
       .github/workflows/process_pr.yml|test/ci-plan.sh) everything ;;
-      # Release, deploy and container files, the checks lint runs on the docs and on the browser tests'
-      # sleeps, and the table of slowest checks for the PR comment: their checks are in lint (actionlint,
-      # the git-cliff preview, shellcheck, the scripts' own self-tests); nothing the tests run reads them.
-      .github/*|cliff.toml|deploy.sh|backup.sh|compose.yml|Dockerfile|test/docs.sh|test/sleeps.sh|test/slowest.sh) lint=true ;;
+      # What the containers are made of and how they are started: lint reads compose.yml, and the
+      # compose suite starts it and asks who can reach the app.
+      compose.yml|Dockerfile|.dockerignore|.env.example|test/compose.sh) lint=true; suites compose ;;
+      # Release and deploy files, the checks lint runs on the docs and on the browser tests' sleeps, and
+      # the table of slowest checks for the PR comment: their checks are in lint (actionlint, the
+      # git-cliff preview, shellcheck, the scripts' own self-tests); nothing the tests run reads them.
+      .github/*|cliff.toml|deploy.sh|backup.sh|test/docs.sh|test/sleeps.sh|test/slowest.sh) lint=true ;;
       # Go tests only: the unit job runs them, and the db suite the ones that need Postgres.
       *_test.go) lint=true; unit=true; suites db ;;
       *.go|go.mod|go.sum) everything ;;
@@ -69,14 +73,16 @@ self_test() {
     local got; got=$(tr ',' '\n' <<<"$1" | plan | paste -sd' ')
     if [ "$got" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: $2"; echo "  got:  $got"; fails=$((fails + 1)); fi
   }
-  local all='["db","combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
+  local all='["db","compose","combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
   local browser='["combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
   expect "README.md,docs/epics.md,.claude/rules/go-server.md" 'code=false lint=false unit=false screenshots=false suites=[]'
   expect "main.go" "code=true lint=true unit=true screenshots=true suites=$all"
   expect "docs/x.md,go.sum" "code=true lint=true unit=true screenshots=true suites=$all"
   expect ".github/workflows/process_pr.yml" "code=true lint=true unit=true screenshots=true suites=$all"
   expect ".github/workflows/release_tag.yml,cliff.toml,CLAUDE.md" 'code=true lint=true unit=false screenshots=false suites=[]'
-  expect "deploy.sh,backup.sh,compose.yml" 'code=true lint=true unit=false screenshots=false suites=[]'
+  expect "deploy.sh,backup.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
+  expect "compose.yml" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
+  expect "Dockerfile,.dockerignore,.env.example,test/compose.sh,deploy.sh" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
   expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "test/physics.js,test/catalog-fixtures/bad-cycle.json" 'code=true lint=true unit=true screenshots=false suites=[]'

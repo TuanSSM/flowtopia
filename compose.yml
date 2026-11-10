@@ -34,7 +34,15 @@ services:
     restart: unless-stopped
     depends_on:
       db: { condition: service_healthy }
-    ports: ["3169:3169"]
+    # Published on this machine only (loopback) unless FLOWA_BIND in .env names another address:
+    # the LAN address of the machine, or 0.0.0.0 for every address it has. A port Docker publishes
+    # is opened ahead of the host's firewall (ufw, firewalld), so "every address" has to be asked for.
+    # The long form takes an IPv6 address as it is written, without brackets.
+    ports:
+      - target: 3169
+        published: "3169"
+        host_ip: ${FLOWA_BIND:-127.0.0.1}
+        protocol: tcp
     user: "1000:1000"
     environment:
       DATABASE_URL: postgres://flowa:${POSTGRES_PASSWORD}@db:5432/flowa?sslmode=disable
