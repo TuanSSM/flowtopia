@@ -1,6 +1,7 @@
 # Next-trick suggestions in the combo builder: the list and its reasons, adding one, "Not a good fit",
-# sharing marks with consent and taking them back, the usage counts on the dashboard, and the "early"
-# label, which is there with the starting weights and gone with fitted ones.
+# sharing marks with consent and taking them back, the question after a logged run about each
+# transition without a mark, the usage counts on the dashboard, and the "early" label, which is there
+# with the starting weights and gone with fitted ones.
 import sys,os
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from h import *
@@ -44,6 +45,43 @@ try:
     nav('#/profile')
     js("const f=document.querySelector('#about-form');f.shareTransitions.checked=false;f.requestSubmit()");idle()
     check('turning it off takes every mark back out',lambda: get(op,'api/suggest/counts?prop=nunchaku')['counts']==[],timeout=15)
+    # The question after a run. Sharing is off here, and logging a run asks nothing.
+    nav('#/combos');listed()
+    click('[data-act=combo-run][data-clean="1"]');idle()
+    check('without sharing, logging a run asks nothing',not js("return !!document.querySelector('.cb-ask')"))
+    # With sharing on and a combo whose two transitions nobody has marked, each is asked about once.
+    ASKED="return !!document.querySelector('.cb-ask')"
+    def fresh_combo(seq,tag):
+        doc=get(op,'api/progress/nunchaku');old=(doc['state'].get('combos') or [{}])[0]
+        doc['state']['combos']=[{'id':'ask','name':'Ask me','role':'reliable','seq':seq,'reps':[1]*len(seq),'tr':old.get('tr',{}) if old.get('id')=='ask' else {},'runs':0,'clean':0}]
+        api(op,'progress/nunchaku',{'rev':doc['rev'],'state':doc['state']},'PUT')
+        load(BASE+f'?ask={tag}#/combos');js("document.querySelector('[data-act=combo-open]')?.click()")
+        wait_for("return !!document.querySelector('[data-act=combo-run]')",'the combo to open')
+    api(op,'me',{'prefs':{'shareTransitions':True}},'PUT')
+    fresh_combo(['F1','F2','F3'],1)
+    click('[data-act=combo-run][data-clean="1"]')
+    check('after a logged run the first transition without a mark is asked about, by name',lambda: txt('.cb-ask b')=='How did F1 into F2 go?',lambda: txt('.cb-ask b'))
+    check('with Works, Needs a bridge, Blocked, Skip and a way to stop being asked',js("return [...document.querySelectorAll('.cb-ask button')].map(b=>b.textContent)")==['Works','Needs a bridge','Blocked','Skip','Do not ask again'])
+    click('.cb-ask [data-v=works]')
+    check('then about the next one',lambda: txt('.cb-ask b')=='How did F2 into F3 go?',lambda: txt('.cb-ask b'))
+    click('.cb-ask [data-v=skip]')
+    check('and after the last one the question is gone',lambda: not js(ASKED))
+    c=poll(lambda: (lambda x: x if x.get('tr')=={'F1>F2':'works'} else None)(saved_combo()),15)[0]
+    check('the answer is the mark on the combo; the skipped one leaves none; the run is counted once',bool(c) and c['runs']==1,lambda: saved_combo())
+    check('the answer reaches the shared counts',lambda: any(x['a']=='F1' and x['b']=='F2' and x['works']==1 for x in get(op,'api/suggest/counts?prop=nunchaku')['counts']),lambda: get(op,'api/suggest/counts?prop=nunchaku')['counts'],timeout=15)
+    idle();click('[data-act=combo-run][data-clean="0"]');idle()
+    asked=get(op,'api/progress/nunchaku')['state'].get('asked')
+    check('a transition is asked about once: another run asks nothing, the skipped one included',not js(ASKED) and asked=={'F1>F2':1,'F2>F3':1},asked)
+    # "Do not ask again" is a preference of its own, and the profile has the switch to turn it back on.
+    fresh_combo(['F1','F2','F3','F4'],2)
+    click('[data-act=combo-run][data-clean="1"]')
+    check('a transition added later is asked about after the next run',lambda: txt('.cb-ask b')=='How did F3 into F4 go?',lambda: txt('.cb-ask b'))
+    click('[data-act=tr-ask-off]')
+    check('"Do not ask again" takes the question away and is kept with the account',lambda: not js(ASKED) and get(op,'api/me')['user']['prefs'].get('askTransitions') is False,lambda: get(op,'api/me')['user']['prefs'],timeout=15)
+    idle();click('[data-act=combo-run][data-clean="1"]');idle()
+    check('after that a run asks nothing',not js(ASKED))
+    nav('#/profile')
+    check('the profile has the switch, now off, next to sharing',js("const f=document.querySelector('#about-form');return [f.askTransitions.checked,f.shareTransitions.checked]")==[False,True])
     # Usage reaches the dashboard.
     js("ntFlushUsage()");idle()
     nav('#/admin/dashboard');wait_for("return document.querySelectorAll('.stat').length>=6",'the dashboard to show its numbers',20)

@@ -5,12 +5,22 @@ Category: feature. Size: S. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#39](https://github.com/TuanSSM/flowtopia/issues/39)). 2 of 4 items done.
+**Status:** in progress (issue [#39](https://github.com/TuanSSM/flowtopia/issues/39)). 3 of 4 items done.
 The fit by workflow is built and tested; its box waits for its first run on an instance's data.
 
-- [ ] **The prompt.** After a combo run is logged, for each transition the member has not marked:
+- [x] **The prompt.** After a combo run is logged, for each transition the member has not marked:
   "How did <a> into <b> go?" Works, Needs a bridge, Blocked, Skip; once per transition; only with
   sharing on. DoD: `suggest.py` logs a run and answers; the mark lands in the combo and the counts.
+  Done: under "Log a run", after Clean run or Dropped, the question for the first transition of that
+  combo without a mark in any of the member's combos, with the two skills' names, how many are left,
+  and that the answer is shared as a count with no name. An answer is the mark on the combo, as if
+  the link had been clicked; Skip leaves none. Either way the transition is remembered as asked
+  (`asked` in the progress document, which merges across devices like the rest) and is not put to
+  the member again. "Do not ask again" sets the `askTransitions` preference to off for the account;
+  the profile has the switch next to sharing. Nothing is asked without sharing, with the `suggest`
+  flag off, or of a visitor. `suggest.py` logs runs and answers: asked by name, the five buttons,
+  the next question, the mark on the combo and in the shared counts, nothing asked twice, a later
+  transition asked, and the switch. `TestDBTransitionCounts` has the preference.
 - [x] **Progress to the gate.** The admin dashboard shows shared pairs toward 30 and the date the
   gate can open. DoD: `TestDBDashboard` has the number.
   Done: a third tile under Suggestions, "Pairs of skills with a shared mark": the count of pairs

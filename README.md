@@ -23,7 +23,10 @@ named but not described.
 - **Without an account:** browse the skill maps, guides, demos and references.
 - **Dashboard, Practice, Combos, Plan:** per user and per prop. With `suggest` on, the combo builder
   suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links
-  directly ([docs/suggestions.md](docs/suggestions.md)).
+  directly ([docs/suggestions.md](docs/suggestions.md)). A member who shares their transition marks is
+  asked after a logged run how each transition of that combo went that they have not marked: Works,
+  Needs a bridge, Blocked or Skip, once per transition, with "Do not ask again" beside it and a
+  switch on the profile to turn the question back on.
 - **Skill maps:** one per prop, with dependency graphs. Progress is tracked per hand or per direction where the skill calls for it.
 - **Avatars:** with `avatars` on, members build an avatar (face, hair, outfit, accessories, prop colours
   and a body preset) that plays their demos and combos, shows on their profile, and appears on badge,
