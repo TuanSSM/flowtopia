@@ -5,7 +5,7 @@ Category: improvement. Size: S. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#33](https://github.com/TuanSSM/flowtopia/issues/33)). 4 of 6 items done.
+**Status:** in progress (issue [#33](https://github.com/TuanSSM/flowtopia/issues/33)). 5 of 6 items done.
 
 There were 204 `time.sleep` calls across `test/browser/*.py`. Seven are left, each with its reason on the line.
 
@@ -22,8 +22,10 @@ There were 204 `time.sleep` calls across `test/browser/*.py`. Seven are left, ea
 - [x] **A lint against bare sleeps.** The lint job fails on `time.sleep` without a `# fixed:`
   comment on the same line. DoD: the rule in `test/ci-plan.sh`'s lint set and in the rules file.
   `test/sleeps.sh`, with its own self-test; any `sleep(` call counts, not only `time.sleep`.
-- [ ] **Time per check.** Each suite prints the seconds per check; the PR comment lists the five
+- [x] **Time per check.** Each suite prints the seconds per check; the PR comment lists the five
   slowest. DoD: visible in the sticky comment.
+  `TIME` lines from `test/browser/h.py`, go test's own times for the db suite, and `test/slowest.sh` for
+  the table. A check's time runs from the check before it.
 - [x] **Go tests for the routes the browser only brushes.** Bookmarks, notifications read state,
   the version endpoint, `FLOWA_HOME_URL`. DoD: each route has a `db_test.go` case.
   `TestDBBookmarks`, `TestDBNotificationsRead`, `TestDBVersion` (the version is part of the

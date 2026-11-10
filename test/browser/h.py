@@ -106,7 +106,7 @@ def frames(n=2):
     js("let n=arguments[0];return new Promise(r=>{const f=()=>n-->0?requestAnimationFrame(f):r(1);f()})",n)
 click=lambda sel: js("document.querySelector(arguments[0]).click()",sel)
 txt=lambda sel: js("const e=document.querySelector(arguments[0]);return e?e.textContent.trim():null",sel)
-errs=[]
+errs=[];times=[];clock=[time.monotonic()]
 def check(n,ok,x='',timeout=10):
     # ok is a value, or a function that is asked until it is true or the time runs out. x says more when the
     # check fails; give a function to have it worked out then, not before the wait.
@@ -117,6 +117,8 @@ def check(n,ok,x='',timeout=10):
     if callable(x): x=x() if not ok else ''
     print(('PASS ' if ok else 'FAIL ')+n,*([late] if late else []),x if not ok or x=='' else str(x)[:110],flush=True)
     if not ok: errs.append(n)
+    # What this check cost: the time since the check before it, so the steps that led to it are counted in.
+    now=time.monotonic();times.append((now-clock[0],n));clock[0]=now
 def api(op,path,body,method='POST'):
     return json.loads(op.open(urllib.request.Request(BASE+'api/'+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'},method=method),timeout=20).read() or b'null')
 def admin():
@@ -161,4 +163,6 @@ def done():
     except Exception: pass
     try: ff.wait(10)
     except Exception: ff.kill()
+    # Seconds per check, slowest first, for run.sh and the pull request comment (test/slowest.sh).
+    for secs,n in sorted(times,key=lambda t:-t[0]): print(f'TIME {secs:.1f} {n}')
     print('FAILURES:',errs or 'none')

@@ -157,7 +157,7 @@ jobs:
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
       - name: Shell scripts
-        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh
+        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh
       - name: The rules that choose which jobs run
         run: test/ci-plan.sh --self-test
       # A browser test waits for what it checks (wait_for, idle and check in test/browser/h.py). A sleep is
@@ -166,6 +166,8 @@ jobs:
         run: |
           test/sleeps.sh --self-test
           test/sleeps.sh
+      - name: The slowest checks table builds from examples
+        run: test/slowest.sh --self-test
 
       - name: Workflow files
         uses: raven-actions/actionlint@v2
@@ -294,7 +296,7 @@ jobs:
           esac
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh "$file" | tee report/result.txt || code=$?
           [ "$SUITE" = avatar ] && { grep -E '^demo frame|^parts' /tmp/flowa-test/out.txt || true; }
-          grep -E 'passed' report/result.txt | tail -1 > report/line.txt || true
+          grep -E '^[0-9]+ passed, ' report/result.txt | tail -1 > report/line.txt || true
           exit "${code:-0}"
       - name: Collect logs
         if: ${{ !cancelled() }}
@@ -430,6 +432,8 @@ jobs:
             detail+="${detail:+; }$s: ${line:-n/a}"
           done
           echo "detail=${detail:-none needed}" >> "$GITHUB_OUTPUT"
+          # Where the suites' time went: a check's seconds run from the check before it (test/slowest.sh).
+          test/slowest.sh results > slowest.md
       - name: Screenshot gallery
         id: shots
         env:
@@ -489,6 +493,12 @@ jobs:
             echo "| integration tests | $(icon "$INTEG" suites) | $INTEG_DETAIL |"
             echo "| screenshots | $(icon "$SCREENS" screenshots) | pages at desktop and phone width, demo sheet |"
             echo
+            if [ -s slowest.md ]; then
+              echo '**Slowest checks** (seconds, each counted from the check before it):'
+              echo
+              cat slowest.md
+              echo
+            fi
             echo "$SHOTS_MD"
             echo
             echo "**Change:** ${STAT:-no diff}"
