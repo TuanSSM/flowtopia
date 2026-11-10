@@ -57,6 +57,7 @@ proxy too. `TestClientIP` and `TestDBLimitsBehindProxy` cover it.
   owner's network (LAN address, a reverse proxy, how updates are taken) and change how the app is
   reached; the README describes the options. The port is done since, in the
   [OPS epic](epic-ops/todo.md): published on the machine itself unless `FLOWA_BIND` names an address.
+  So is TLS, as a recipe: the `proxy` profile in `compose.yml` (README, HTTPS).
 - **Moving progress from client-owned documents to server-checked state.** Stats and badges are
   reported by the browser by design; the limits above bound the damage, and changing the model is
   an epic of its own.

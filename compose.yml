@@ -43,6 +43,8 @@ services:
         published: "3169"
         host_ip: ${FLOWA_BIND:-127.0.0.1}
         protocol: tcp
+    # default reaches the database; edge is where the reverse proxy of the "proxy" profile finds the app.
+    networks: [default, edge]
     user: "1000:1000"
     environment:
       DATABASE_URL: postgres://flowa:${POSTGRES_PASSWORD}@db:5432/flowa?sslmode=disable
@@ -50,14 +52,16 @@ services:
       ADMIN_USER: ${ADMIN_USER:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # Extra names the app answers to, comma-separated (IP addresses, localhost and private
-      # names such as raspi or raspi.local always work).
-      FLOWA_HOSTS: ${FLOWA_HOSTS:-}
+      # names such as raspi or raspi.local always work). The proxy's FLOWA_DOMAIN is added to them.
+      FLOWA_HOSTS: "${FLOWA_HOSTS:-}${FLOWA_DOMAIN:+,${FLOWA_DOMAIN}}"
       # A link for admins to the start page of this machine, in the Staff group of the menu.
       # An http or https address, like http://raspi.local:8080/. Unset: no link.
       FLOWA_HOME_URL: ${FLOWA_HOME_URL:-}
       # Reverse proxies whose X-Forwarded-For is believed, as addresses or ranges, comma-separated;
-      # "none" for none. Unset: loopback and Docker networks (127.0.0.0/8, ::1, 172.16.0.0/12).
-      FLOWA_TRUSTED_PROXIES: ${FLOWA_TRUSTED_PROXIES:-}
+      # "none" for none. Unset: loopback and Docker networks (127.0.0.0/8, ::1, 172.16.0.0/12), or,
+      # once FLOWA_DOMAIN is set for the proxy profile, the edge network alone: then the proxy is the
+      # only thing whose word on a visitor's address and on HTTPS is taken.
+      FLOWA_TRUSTED_PROXIES: "${FLOWA_TRUSTED_PROXIES:-${FLOWA_DOMAIN:+${FLOWA_PROXY_NET:-10.169.31.0/29}}}"
       # Shown on the admin dashboard. deploy.sh sets main.<commit> on the Pi; production passes the
       # release tag (v1.2.3).
       VERSION: ${VERSION:-dev}
@@ -77,5 +81,62 @@ services:
       driver: json-file
       options: { max-size: 10m, max-file: "10" }
 
+  # HTTPS for everyone: started only with the "proxy" profile (COMPOSE_PROFILES=proxy in .env) and a
+  # name in FLOWA_DOMAIN. Caddy gets a certificate for that name by itself (Let's Encrypt for a public
+  # name, its own authority for a private one such as flowa.home.arpa), renews it, sends plain HTTP
+  # on to HTTPS, and passes requests to the app with the visitor's address. The app's own port stays
+  # on loopback. README, "HTTPS", has the steps.
+  proxy:
+    profiles: [proxy]
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    container_name: nunchaku-proxy
+    restart: unless-stopped
+    depends_on:
+      nunchaku: { condition: service_started }
+    # Without a name Caddy would read the Caddyfile's site block as global options, so say it first.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        [ -n "$$FLOWA_DOMAIN" ] || { echo "FLOWA_DOMAIN is not set: put the name people will open in .env" >&2; exit 64; }
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    networks: [edge]
+    environment:
+      FLOWA_DOMAIN: ${FLOWA_DOMAIN:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # certificates and their keys: losing it means asking for them again
+      - caddy_config:/config
+    healthcheck:
+      # Caddy's admin endpoint, which listens inside the container only.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]   # ports 80 and 443
+    security_opt: ["no-new-privileges:true"]
+    cpus: "1"
+    mem_limit: 128m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: { max-size: 5m, max-file: "3" }
+
+networks:
+  # The one network the app and the proxy share. Its range is fixed so the app can be told to believe
+  # forwarding headers from it and from nowhere else; FLOWA_PROXY_NET moves it if the range is taken.
+  edge:
+    ipam:
+      config:
+        - subnet: ${FLOWA_PROXY_NET:-10.169.31.0/29}
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

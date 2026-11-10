@@ -34,8 +34,8 @@ plan() {
     case "$f" in
       .github/workflows/process_pr.yml|test/ci-plan.sh) everything ;;
       # What the containers are made of and how they are started: lint reads compose.yml, and the
-      # compose suite starts it and asks who can reach the app.
-      compose.yml|Dockerfile|.dockerignore|.env.example|test/compose.sh) lint=true; suites compose ;;
+      # compose suite starts it and asks who can reach the app, directly and through the proxy.
+      compose.yml|Caddyfile|Dockerfile|.dockerignore|.env.example|test/compose.sh) lint=true; suites compose ;;
       # Release and deploy files, the checks lint runs on the docs and on the browser tests' sleeps, and
       # the table of slowest checks for the PR comment: their checks are in lint (actionlint, the
       # git-cliff preview, shellcheck, the scripts' own self-tests); nothing the tests run reads them.
@@ -82,7 +82,7 @@ self_test() {
   expect ".github/workflows/release_tag.yml,cliff.toml,CLAUDE.md" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "deploy.sh,backup.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "compose.yml" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
-  expect "Dockerfile,.dockerignore,.env.example,test/compose.sh,deploy.sh" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
+  expect "Caddyfile,Dockerfile,.dockerignore,.env.example,test/compose.sh,deploy.sh" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
   expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "test/physics.js,test/catalog-fixtures/bad-cycle.json" 'code=true lint=true unit=true screenshots=false suites=[]'

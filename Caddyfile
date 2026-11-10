@@ -1,0 +1,23 @@
+# The reverse proxy of the "proxy" profile in compose.yml: HTTPS for the name in FLOWA_DOMAIN, with a
+# certificate Caddy gets and renews by itself. Plain HTTP is sent on to HTTPS without a line here.
+# README, "HTTPS", has the steps. Several names: FLOWA_DOMAIN=flowa.example.org, www.flowa.example.org
+{
+	# For a private name Caddy signs with its own authority and would add that to the container's
+	# list of trusted roots, which nothing reads and the read-only container cannot take.
+	skip_install_trust
+}
+
+{$FLOWA_DOMAIN} {
+	# Browsers that have been here once use HTTPS for a year without asking. Subdomains are left
+	# alone: the name may be one of many under a domain that serves other things.
+	header Strict-Transport-Security "max-age=31536000"
+	# Say less about what answers.
+	header -Server
+	encode zstd gzip
+	# Caddy passes the Host as it came, sets X-Forwarded-For to the address it saw (a visitor's own
+	# header is dropped) and X-Forwarded-Proto to https. X-Real-IP it would pass on as the visitor
+	# sent it, so that is set to the same address. The app believes these from this network only.
+	reverse_proxy nunchaku:3169 {
+		header_up X-Real-IP {remote_host}
+	}
+}
