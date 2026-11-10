@@ -464,7 +464,10 @@ accounts page is asked about first ("Make @name a moderator?") and sent on Apply
   Under Branches a map names the shared concepts it teaches (plane, timing and direction, weave,
   isolation, extension), each with a sentence on what it means for that prop, and the skill form has a
   tick box per named concept. They are chosen by a person and never worked out from a skill's text
-  ([docs/catalog-method.md](docs/catalog-method.md)); the shipped maps name none yet.
+  ([docs/catalog-method.md](docs/catalog-method.md)); the shipped maps name none yet. Where two
+  of a member's props name the same concept and a skill that lists it is Clean on one, the guide of a
+  skill that lists it on the other says so ("You know the plane from poi"). It is a hint and unlocks
+  nothing.
   Ids are never reused: renaming a published skill keeps its old id as an alias, and progress moves to the
   new id when it next loads; retired skills leave the maps but keep their progress. Publishing or restoring
   anything that would leave progress with no skill to belong to is refused.

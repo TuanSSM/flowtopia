@@ -7,6 +7,10 @@
 const TRACKS = { one: [['O', 'Overall']], LR: [['L', 'Left hand'], ['R', 'Right hand']], FR: [['F', 'Forward'], ['R', 'Reverse']] };
 const variants = s => TRACKS[s.track] || TRACKS.one;
 
+// The ideas that carry over from one prop to another, as a sentence reads them (the keys are CONCEPTS
+// in catalog-check.js). A catalog names the ones it teaches; a skill lists the ones it is about.
+const CONCEPT_NAMES = { plane: 'plane', timing: 'timing and direction', weave: 'weave', isolation: 'isolation', extension: 'extension' };
+
 const CATALOGS = {};
 const EMPTY = { branches: [], skills: [], refs: {}, phases: [], weeks: [], about: '', careNote: '' };
 

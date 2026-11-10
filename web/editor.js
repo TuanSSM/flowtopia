@@ -69,7 +69,7 @@ function edSkillsView() {
       <fieldset class="ed-motion"><legend class="small">How it moves (for next-trick suggestions; unknown unless the clip or the text says)</legend>
         <div class="grid g3">${Object.entries(MOTION).map(([k, vals]) => `<label class="field">${k[0].toUpperCase() + k.slice(1)}<select data-edm="${k}">${vals.map(v => `<option ${(s.motion || {})[k] === v ? 'selected' : ''}>${v}</option>`).join('')}</select>${msgHTML(`${at}.motion.${k}`)}</label>`).join('')}</div>${msgHTML(`${at}.motion`)}</fieldset>
       <fieldset class="ed-concepts"><legend class="small">Shared ideas this skill is about (up to 3; chosen by hand, for the "you know this from another prop" hint)</legend>
-        ${CONCEPTS.some(k => conceptsOf(ed.draft)[k] !== undefined) ? `<div class="row wrap" style="gap:14px">${CONCEPTS.filter(k => conceptsOf(ed.draft)[k] !== undefined).map(k => `<label class="check" data-tip="${esc(String(conceptsOf(ed.draft)[k]))}"><input type="checkbox" data-edc="${k}" ${Array.isArray(s.concepts) && s.concepts.includes(k) ? 'checked' : ''}><span>${CONCEPT_NAMES[k]}</span></label>`).join('')}</div>` : '<p class="tiny muted">This map names no shared concept yet. Name them under Branches, each with a sentence on what it means for this prop.</p>'}
+        ${CONCEPTS.some(k => conceptsOf(ed.draft)[k] !== undefined) ? `<div class="row wrap" style="gap:14px">${CONCEPTS.filter(k => conceptsOf(ed.draft)[k] !== undefined).map(k => `<label class="check" data-tip="${esc(String(conceptsOf(ed.draft)[k]))}"><input type="checkbox" data-edc="${k}" ${Array.isArray(s.concepts) && s.concepts.includes(k) ? 'checked' : ''}><span>${conceptLabel(k)}</span></label>`).join('')}</div>` : '<p class="tiny muted">This map names no shared concept yet. Name them under Branches, each with a sentence on what it means for this prop.</p>'}
         ${msgHTML(`${at}.concepts`)}</fieldset>
       <div class="row wrap" style="gap:14px">${[['star', 'Unconfirmed by a source'], ['care', 'Needs the safety note'], ['retired', 'Retired (hidden; progress kept)']].map(([k, n]) => `<label class="check"><input type="checkbox" data-ed="${k}" data-bool="1" ${s[k] ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>
     </form></div>`;
@@ -83,13 +83,13 @@ function edBranchesView() {
 }
 // The shared concepts this map teaches: a sentence names one, an empty box leaves it out. Which
 // skills are about a concept is ticked in the skill form, by a person.
-const CONCEPT_NAMES = { plane: 'Plane', timing: 'Timing and direction', weave: 'Weave', isolation: 'Isolation', extension: 'Extension' };
+const conceptLabel = k => CONCEPT_NAMES[k][0].toUpperCase() + CONCEPT_NAMES[k].slice(1);
 const conceptsOf = d => d.concepts && typeof d.concepts === 'object' && !Array.isArray(d.concepts) ? d.concepts : {};
 function edConceptsCard() {
   const c = conceptsOf(ed.draft);
   return `<div class="card ed-concept-list" style="margin-top:14px"><div class="card-h"><h2 class="grow">Shared concepts</h2><span class="sub">Ideas that carry over to other props</span></div>
     <p class="tiny muted">Write a sentence on what the idea means for this prop to name it, in the words its own sources use. Leave the box empty and this map does not teach it. Skills are ticked by hand in the skill form.</p>
-    <div class="stack" style="gap:10px;margin-top:10px">${CONCEPTS.map(k => `<label class="field">${CONCEPT_NAMES[k]}<input type="text" data-edk="${k}" maxlength="240" value="${esc(typeof c[k] === 'string' ? c[k] : '')}">${msgHTML(`concepts.${k}`)}</label>`).join('')}</div>${msgHTML('concepts')}</div>`;
+    <div class="stack" style="gap:10px;margin-top:10px">${CONCEPTS.map(k => `<label class="field">${conceptLabel(k)}<input type="text" data-edk="${k}" maxlength="240" value="${esc(typeof c[k] === 'string' ? c[k] : '')}">${msgHTML(`concepts.${k}`)}</label>`).join('')}</div>${msgHTML('concepts')}</div>`;
 }
 function edPhasesView() {
   const ph = ed.draft.phases || [];
