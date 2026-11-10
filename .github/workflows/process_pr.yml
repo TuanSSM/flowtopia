@@ -160,8 +160,9 @@ jobs:
       - name: Shell scripts
         run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/compose.sh
       # What compose.yml resolves to, without starting anything: the app published on this machine only
-      # unless FLOWA_BIND says otherwise, the database not at all. The compose suite asks running containers.
-      - name: compose.yml publishes the app on loopback by default
+      # unless FLOWA_BIND says otherwise, the database not at all, and with FLOWA_DOMAIN the name answered
+      # and only the proxy's network believed. The compose suite asks running containers.
+      - name: compose.yml says who can reach the app
         run: test/compose.sh
       - name: The rules that choose which jobs run
         run: test/ci-plan.sh --self-test

@@ -6,6 +6,8 @@ Commits title of the category's type. An item is checked only when its DoD holds
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
 **Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 3 of 7 items done.
+The reverse proxy recipe is built and tested; its box waits for the one thing only the owner can do,
+the recorded run with a public name.
 
 - [x] **Health.** `GET /healthz`: schema version, whether TLS roots are present, database reachable,
   `VERSION`. DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
@@ -36,6 +38,22 @@ Commits title of the category's type. An item is checked only when its DoD holds
   certificates for `FLOWA_DOMAIN`, `FLOWA_TRUSTED_PROXIES` set to the proxy network, HSTS. DoD: the
   README's steps from clone to HTTPS run on a clean machine (recorded once by hand); `TestSameOrigin`
   covers `https` behind the proxy.
+  Built: the `proxy` service (Caddy 2.11.9, pinned by version and digest, read-only, one capability,
+  with limits) and the `Caddyfile`; `COMPOSE_PROFILES=proxy` and `FLOWA_DOMAIN` in `.env` are the whole
+  switch. With `FLOWA_DOMAIN` the app answers to the name and believes forwarding headers from the
+  proxy's network alone (`10.169.31.0/29`, moved with `FLOWA_PROXY_NET`), unless the owner set
+  `FLOWA_TRUSTED_PROXIES`. HSTS for a year, without subdomains. `TestSameOrigin` and `TestClientIP` have
+  the cases for that network; `test/compose.sh` reads what the file resolves to (15 more checks in
+  lint) and, in the `compose` suite, starts the proxy for a private name and asks it over HTTPS: the
+  certificate, the way from HTTP, HSTS, the app's own headers, the Secure cookie, a write from an HTTP
+  page, and an address the visitor made up. That last check found a fault that is fixed here: beside a
+  proxy's own `X-Forwarded-For`, the app took a visitor's `X-Real-IP` when the proxy passed it on, as
+  Caddy does. The app now reads `X-Real-IP` only when there is no `X-Forwarded-For`, and the
+  `Caddyfile` overwrites it. `deploy.sh` names the HTTPS address and fails when the proxy is not serving.
+  Open, and why the box is not ticked: the README's steps have not been run from clone to HTTPS on a
+  clean machine. That needs a public name and a machine the internet can reach, for the certificate
+  from Let's Encrypt; the checks here use a private name and Caddy's own authority. The owner runs the
+  five steps once and writes the date here.
 - [ ] **Postgres by digest.** The image pinned by digest with a documented update step and a
   Dependabot or weekly check that opens a PR for a new digest. DoD: `compose.yml` carries the digest;
   the update PR has been seen once.

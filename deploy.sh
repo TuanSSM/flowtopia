@@ -65,3 +65,14 @@ case "$at" in
   127.*|"[::1]":*) echo "published on $at: only this machine can open it. To open it to the LAN, set FLOWA_BIND in .env (README, Run)." ;;
   *) echo "published on $at" ;;
 esac
+# The reverse proxy, where the "proxy" profile is on (COMPOSE_PROFILES=proxy in .env). The app is up
+# either way; a proxy that is not serving is said, and fails the deploy so that it is seen.
+if state=$(docker inspect nunchaku-proxy --format '{{.State.Status}}' 2>/dev/null); then
+  domain=$(docker inspect nunchaku-proxy --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^FLOWA_DOMAIN=//p')
+  if [ "$state" = running ] && [ -n "$domain" ]; then
+    echo "proxy: https://${domain%%,*} (a first certificate can take a minute: docker logs nunchaku-proxy)"
+  else
+    echo "proxy: not serving (state: $state${domain:+, for $domain}). The app is up; see docker logs nunchaku-proxy" >&2
+    exit 1
+  fi
+fi

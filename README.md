@@ -121,6 +121,50 @@ default bridge). A value that is not an address stops `docker compose` with `inv
 `deploy.sh` ends by saying where the port is published, and says so when it is this machine only.
 The database is never published.
 
+### HTTPS
+
+`compose.yml` has a reverse proxy behind a profile, for opening Flowa to people outside the house:
+[Caddy](https://caddyserver.com), which gets a certificate for your name by itself, renews it, sends
+plain HTTP on to HTTPS and tells browsers to keep using HTTPS for a year (HSTS). The app's own port
+stays on the machine. From a machine that has Docker with the compose plugin, Go and Node, and
+nothing else:
+
+1. Point a DNS record for a name you own (say `flowa.example.org`) at the machine, and let ports 80
+   and 443 reach it from outside (on a home router: forward both, and 443 over UDP too for HTTP/3).
+   The certificate comes from Let's Encrypt, which has to reach the machine under that name.
+2. Get the code and the settings:
+
+   ```sh
+   git clone https://github.com/TuanSSM/flowtopia.git && cd flowtopia
+   cp .env.example .env && chmod 600 .env
+   ```
+
+3. In `.env`, choose `POSTGRES_PASSWORD` and `ADMIN_PASSWORD`, and add the name and the profile:
+
+   ```sh
+   FLOWA_DOMAIN=flowa.example.org
+   COMPOSE_PROFILES=proxy
+   ```
+
+4. `./deploy.sh`. It ends with `proxy: https://flowa.example.org`; a first certificate can take a
+   minute, and `docker logs nunchaku-proxy` says how it went.
+5. Open `https://flowa.example.org`, sign in as the admin, then remove `ADMIN_PASSWORD` from `.env`.
+
+What the two settings do: the proxy (`nunchaku-proxy`, configured by the `Caddyfile`) is started and
+publishes 80 and 443; the app answers to the name without listing it in `FLOWA_HOSTS`; and the app
+believes what a proxy says about a visitor (their address, and that they came over HTTPS) from the
+proxy's own network alone, `10.169.31.0/29`, where before it believed any Docker network and the
+machine itself. That is why the session cookie is marked Secure and a write from an `http://` page is
+refused, and why a visitor cannot pick their address by sending `X-Forwarded-For` or `X-Real-IP`.
+If you set `FLOWA_TRUSTED_PROXIES` yourself, keep that range in it, or the proxy is not believed. If
+the range is taken on your machine (Docker says `Pool overlaps`), move it with `FLOWA_PROXY_NET`.
+
+A name that only resolves at home (`flowa.home.arpa`, `raspi.local`) works too: Caddy then signs the
+certificate with an authority of its own, which each device has to be told to trust once
+(`docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt .`). Without `FLOWA_DOMAIN` the
+proxy stops and says so in its log. Certificates and their keys live in the `caddy_data` volume.
+The image is pinned by version and digest; to update it, change both in `compose.yml`.
+
 The app answers only to IP addresses, `localhost`, single-label names such as `raspi`, and private
 names (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`, `.ts.net`). To reach it
 by any other name, list it in `FLOWA_HOSTS` in `.env` (comma-separated). This stops a website from
@@ -131,7 +175,7 @@ Flowa runs on, like `http://raspi.local:8080/`. Admins then get a "Server home" 
 group of the menu; nobody else is told the address. It is empty by default, which means no link, and
 a value that is not such an address stops the server at start with a message that says so.
 
-Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
+Behind a reverse proxy of your own instead (nginx, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from
 `X-Forwarded-For` (or `X-Real-IP`), but only when the connection comes from a trusted proxy, and it reads
 the header from the right, so a visitor cannot choose their address by sending it. Trusted by default:
@@ -172,7 +216,9 @@ host); production passes the release tag, such as `v1.2.0`. Unset, it reads `dev
   `schema_migrations`), each applied once at start. An hourly job removes expired or unused
   sessions, notifications read more than 180 days ago, and link previews no post uses.
 
-The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
+The app itself is plain HTTP, so on its own port passwords cross the network unencrypted: keep that
+port to the machine or the LAN, and open Flowa to anyone else through the proxy profile
+([HTTPS](#https)), which encrypts every connection. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
 outbound requests the server makes are link previews to Instagram, TikTok and YouTube. Every response
 forbids framing by other sites and MIME sniffing and sends no referrer.
@@ -446,11 +492,11 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` or the `Dockerfile` runs `lint` and the `compose` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml`, the `Caddyfile` or the `Dockerfile` runs `lint` and the `compose` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
-| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/compose.sh` (`compose.yml` publishes the app on loopback unless `FLOWA_BIND` is set, and never the database); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
+| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/compose.sh` (what `compose.yml` resolves to: the app on loopback unless `FLOWA_BIND` is set, never the database, and with `FLOWA_DOMAIN` the name answered and only the proxy's network believed); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres), `compose` (`test/compose.sh --up`: the two containers of `compose.yml` built and started on the runner, the app asked by loopback, where it must answer, and by the runner's other addresses, where it must not until `FLOWA_BIND=0.0.0.0`) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres), `compose` (`test/compose.sh --up`: the two containers of `compose.yml` built and started on the runner, the app asked by loopback, where it must answer, and by the runner's other addresses, where it must not until `FLOWA_BIND=0.0.0.0`; then the proxy profile for a private name, asked over HTTPS for its certificate, the way from HTTP, HSTS, the Secure cookie, a write from an HTTP page and an address the visitor made up) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |
