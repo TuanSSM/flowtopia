@@ -61,4 +61,5 @@ proxy too. `TestClientIP` and `TestDBLimitsBehindProxy` cover it.
   an epic of its own.
 - **Splitting `main.go`.** The repository keeps one file on purpose (`.claude/rules/go-server.md`).
 - **Browser tests that wait with fixed sleeps.** They pass, and the flaky step found during the
-  epics now waits for its condition; replacing every sleep is a separate cleanup.
+  epics now waits for its condition; replacing every sleep is a separate cleanup (done since, in the
+  [TST epic](epic-tst/todo.md)).

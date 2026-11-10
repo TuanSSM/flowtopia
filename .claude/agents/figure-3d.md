@@ -20,7 +20,7 @@ What is already true and must stay true:
 Working loop:
 1. Change `figure/src/figure.js` (or `closeUp`/`handPose` in `web/demo.js`).
 2. `cd figure && npm run build` (esbuild, under a second).
-3. Render and look: `WAIT=2 SZ=400 COLS=4 test/browser/run.sh shots.py /tmp/sheet.png ...`
+3. Render and look: `SZ=400 COLS=4 test/browser/run.sh shots.py /tmp/sheet.png ...`
    with at least: a close-up (`nunchaku,F1,0,angle,0`, `nunchaku,F2,0,angle,0`), a two-prop move
    (`doublestaff,T1,0,front,0.3`), an overhead or behind-the-back pose, and one of each view.
    Read the image file. Describe faults in anatomical terms (elbow crease facing back, wrist

@@ -19,7 +19,7 @@ def _cleanup():
 atexit.register(_cleanup)
 for _ in range(60):
     try: s=socket.create_connection(('127.0.0.1',2935));break
-    except OSError: time.sleep(1)
+    except OSError: time.sleep(1)  # fixed: Firefox is still starting and has no page to ask
 buf=b''
 def recv():
     global buf
@@ -34,12 +34,88 @@ def cmd(name,**p):
     return r[3]
 js=lambda c,*a: cmd('WebDriver:ExecuteScript',script=c,args=list(a),sandbox=None)['value']
 def shot(path): open(path,'wb').write(base64.b64decode(cmd('WebDriver:TakeScreenshot',full=False)['value']))
-def nav(h,t=.6): js("location.hash=arguments[0]",h);time.sleep(t)
+# What a test waits for is named, never guessed as a number of seconds. HOOK is put into the page by a test,
+# not shipped with it: it counts the requests the page has sent and not yet handled, and the timers under a
+# second it has set (a save is sent 350 ms after a change), so idle() knows when an action has run its course.
+# It also counts address changes for nav() and collects page errors for done().
+HOOK="""if(!window.__q){const q=window.__q={n:0,t:new Set(),nav:0},st=window.setTimeout,ct=window.clearTimeout,f0=window.fetch;
+window.fetch=function(...a){q.n++;let open=true;const end=()=>{if(open){open=false;st.call(window,()=>q.n--,0)}};
+  return f0.apply(window,a).then(r=>{let read=false;
+    for(const m of ['json','text','blob','arrayBuffer','formData']){const o=r[m];r[m]=function(){read=true;return o.call(r).finally(end)}}
+    st.call(window,()=>{if(!read)end()},0);return r},e=>{end();throw e})};
+window.setTimeout=function(fn,ms,...a){if(typeof fn!=='function'||ms>=1000)return st.call(window,fn,ms,...a);
+  const id=st.call(window,()=>{q.t.delete(id);fn(...a)},ms);q.t.add(id);return id};
+window.clearTimeout=function(id){q.t.delete(id);return ct.call(window,id)};
+window.addEventListener('hashchange',()=>q.nav++);
+window.__e=[];window.addEventListener('error',e=>__e.push(e.message+' @'+(e.filename||'').split('/').pop()+':'+e.lineno));window.addEventListener('unhandledrejection',e=>__e.push('rej '+String(e.reason)));document.addEventListener('securitypolicyviolation',e=>__e.push('CSP '+e.violatedDirective))}"""
+def poll(cond,timeout=10):
+    # Asks every 50 ms at first and less often as time passes, down to every 250 ms, so a slow machine
+    # is not kept busy answering. Returns what cond gave last and whether that was in time.
+    t0=time.monotonic();dt=.05
+    while True:
+        v=cond()
+        if v or time.monotonic()-t0>=timeout: return v,bool(v)
+        time.sleep(dt);dt=min(.25,dt*1.5)  # fixed: the pause between two looks
+def wait_for(cond,what,timeout=10):
+    # Waits until cond() is true and returns its value. cond is a function, or a line of JS for the page.
+    # When the time runs out the suite fails with "waited 10 s for <what>" and goes on with the last value.
+    v,ok=poll((lambda: js(cond)) if isinstance(cond,str) else cond,timeout)
+    if not ok: check(f'waited {timeout:g} s for {what}',False,v)
+    return v
+RUNNING="document.getAnimations().filter(a=>a.playState==='running'&&a.effect&&a.effect.getComputedTiming().endTime!==Infinity)"
+def idle(what='the page to finish its requests',timeout=10):
+    # True once no request is unanswered, no short timer is pending and no transition or animation is still
+    # running, twice in a row with the same number of files fetched (requests the page sent before HOOK was
+    # there are seen only that way). An animation that never ends is not waited for. When the time runs out
+    # the failure says what was still going on.
+    last=[None]
+    def quiet():
+        # A page that is being replaced refuses to answer, or answers nothing; that is not quiet.
+        try: v=js(HOOK+f";return [__q.n+__q.t.size+{RUNNING}.length,performance.getEntriesByType('resource').length]")
+        except RuntimeError: v=None
+        if not v: last[0]=None;return False
+        ok=v[0]==0 and v==last[0];last[0]=v;return ok
+    def busy():
+        try: return js(HOOK+f";return {{requests:__q.n,timers:__q.t.size,animations:{RUNNING}.map(a=>(a.animationName||a.transitionProperty||'animation')+' on '+(a.effect.target?a.effect.target.tagName.toLowerCase()+'.'+a.effect.target.className:'?')),files:performance.getEntriesByType('resource').length}}")
+        except RuntimeError as e: return str(e)[:200]
+    ok=poll(quiet,timeout)[1]
+    if not ok: check(f'waited {timeout:g} s for {what}',False,busy())
+    return ok
+page_errs=[]  # errors from pages that were since reloaded
+def load(url=None,what='the page to load'):
+    # Opens url, or reloads the page, and waits for the first drawing. Errors of the page that is left are kept.
+    try: page_errs.extend(js("return window.__e||[]"))
+    except Exception: pass
+    cmd('WebDriver:Navigate',url=url) if url else cmd('WebDriver:Refresh')
+    def drawn():
+        # Between two pages the browser can answer from an empty document, or refuse to answer at all.
+        try: return js(HOOK+";const m=document.querySelector('#main');return !!m&&m.childElementCount>0")
+        except RuntimeError: return False
+    wait_for(drawn,what,30);idle()
+def nav(h):
+    # Changes the address and waits for the page to have drawn it and fetched what it needs.
+    n,moved=js(HOOK+";const b=location.hash,n=__q.nav;location.hash=arguments[0];return [n,location.hash!==b]",h)
+    if moved: wait_for(lambda: js("return __q.nav")>n,f'the page to open {h}')
+    idle()
+def figure(timeout=30):
+    # The 3D figure is fetched after the first drawing. True once it is ready; False when it has said it
+    # cannot be drawn here (a browser with no WebGL), or did not come in time.
+    return poll(lambda: js("const F=window.Figure3D;return F&&F.ready?1:F&&F.failed?2:0"),timeout)[0]==1
+def frames(n=2):
+    # Lets the page draw n frames, so a picture taken next shows what the last step changed.
+    js("let n=arguments[0];return new Promise(r=>{const f=()=>n-->0?requestAnimationFrame(f):r(1);f()})",n)
 click=lambda sel: js("document.querySelector(arguments[0]).click()",sel)
 txt=lambda sel: js("const e=document.querySelector(arguments[0]);return e?e.textContent.trim():null",sel)
 errs=[]
-def check(n,ok,x=''):
-    print(('PASS ' if ok else 'FAIL ')+n,x if not ok or x=='' else str(x)[:110],flush=True)
+def check(n,ok,x='',timeout=10):
+    # ok is a value, or a function that is asked until it is true or the time runs out. x says more when the
+    # check fails; give a function to have it worked out then, not before the wait.
+    late=''
+    if callable(ok):
+        ok,intime=poll(ok,timeout)
+        if not intime: late=f'(waited {timeout:g} s)'
+    if callable(x): x=x() if not ok else ''
+    print(('PASS ' if ok else 'FAIL ')+n,*([late] if late else []),x if not ok or x=='' else str(x)[:110],flush=True)
     if not ok: errs.append(n)
 def api(op,path,body,method='POST'):
     return json.loads(op.open(urllib.request.Request(BASE+'api/'+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'},method=method),timeout=20).read() or b'null')
@@ -55,8 +131,7 @@ started=False
 def start(w=1440,h=1100):
     global started;started=True
     cmd('WebDriver:NewSession',capabilities={});cmd('WebDriver:SetWindowRect',width=w,height=h)
-    cmd('WebDriver:Navigate',url=BASE);time.sleep(2.5)
-    js("window.__e=[];window.addEventListener('error',e=>__e.push(e.message+' @'+(e.filename||'').split('/').pop()+':'+e.lineno));window.addEventListener('unhandledrejection',e=>__e.push('rej '+String(e.reason)));document.addEventListener('securitypolicyviolation',e=>__e.push('CSP '+e.violatedDirective))")
+    load(BASE)
 zoom=1.0  # the zoom phone() has set so far
 def phone(width=390):
     # A Firefox window is never narrower than 450 px, so the page is zoomed until the window holds `width` px
@@ -71,19 +146,16 @@ def phone(width=390):
         cmd('Marionette:SetContext',value='chrome')
         try: js("return FullZoom.setZoom(arguments[0],gBrowser.selectedBrowser)",zoom)
         finally: cmd('Marionette:SetContext',value='content')
-        time.sleep(1);got=js("return innerWidth")
+        got=poll(lambda: (lambda w: w if w!=got else None)(js("return innerWidth")),2)[0] or got  # the zoom takes a moment to reach the page
     return got
 def signin(name='admin'):
     # Checking a password takes a second or two on a small machine, so wait for the page to show who signed in.
-    nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value='flowa-test-only';f.requestSubmit()",name)
-    for _ in range(60):
-        if js("return (document.querySelector('.nav-profile .tiny')||{}).textContent")=='@'+name: break
-        time.sleep(.5)
-    time.sleep(1.5)
+    nav('#/signin');js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value='flowa-test-only';f.requestSubmit()",name)
+    wait_for(lambda: js("return (document.querySelector('.nav-profile .tiny')||{}).textContent")=='@'+name,f'@{name} to be signed in',30);idle()
 def done():
     # A suite that skipped never opened a page; Firefox is closed either way, so none is left running.
     try:
-        if started: e=js("return window.__e");check('no page errors',not e,e)
+        if started: e=page_errs+(js("return window.__e") or []);check('no page errors',not e,e)
     except Exception as x: check('no page errors',False,x)
     try: cmd('Marionette:Quit')
     except Exception: pass
