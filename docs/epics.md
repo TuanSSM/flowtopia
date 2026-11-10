@@ -524,6 +524,7 @@ changed level or streak; the feed renders no self-reported number.
 
 **Risks.** The biggest change since accounts. It ships behind `progressServer`, member by member
 (the flag plus an allowlist), with the document kept in sync both ways until the flag is on for all.
+The design, and the decisions it leaves to the owner, are in [progress-server.md](progress-server.md).
 
 ---
 
