@@ -21,8 +21,8 @@ order and the DoD of each pull request. Nothing is added to a PR beyond its tabl
   differ from the first plan, with the reasons in its table: a request the server turns down costs
   a tenth of an allowance instead of nothing, the Origin check refuses an HTTP page writing to an
   HTTPS site and not the reverse, and a member's picture stays reachable with `community` off.
-- [x] **PR 3, nothing lost on the client.** `fix(ui): keep drafts and edits safe across sign-out,
-  slow networks and devices` (UN-04, UN-01, UN-02, UN-03, UN-14, UN-07, UN-13, UN-09, UN-10, UN-11).
+- [x] **PR 3, nothing lost on the client.** `fix(ui): keep drafts and edits safe across sign-out
+  and devices` (UN-04, UN-01, UN-02, UN-03, UN-14, UN-07, UN-13, UN-09, UN-10, UN-11).
   DoD: `TestDBIdempotentPost` and `TestDBProfileRev` pass; the `social.py`, `combo.py` and
   `links.py` checks named in the plan pass; a transparent PNG uploads on a white background. Four
   fixes differ from the first plan, with the reasons in its table: progress from two devices is

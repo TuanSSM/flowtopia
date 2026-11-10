@@ -41,7 +41,7 @@ deploy on the Pi; the fallback package needs nothing at build or deploy time.
 
 ## PR 3: nothing lost on the client (Medium, UI and API)
 
-`fix(ui): keep drafts and edits safe across sign-out, slow networks and devices`
+`fix(ui): keep drafts and edits safe across sign-out and devices`
 
 | # | Finding | Fix | Test |
 | --- | --- | --- | --- |
