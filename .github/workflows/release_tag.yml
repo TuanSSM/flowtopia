@@ -1,11 +1,15 @@
-# release_tag: tag a release of main and publish its notes. Run it by hand from the Actions tab
-# (release_tag, Run workflow), or: gh workflow run release_tag -f bump=auto
+# release_tag: tag a release of main, build its image and publish its notes. Run it by hand from the
+# Actions tab (release_tag, Run workflow), or: gh workflow run release_tag -f bump=auto
 #
 # The next version follows semantic versioning from the commits since the last vX.Y.Z tag, as
 # cliff.toml reads them: a breaking change bumps major, a feature minor, anything else patch. The
 # first release is v1.0.0. The bump can also be chosen by hand, or an exact version given.
-# With dry_run, it only shows the version and the notes. Nothing is committed: the notes go into
-# the GitHub release, so protected main needs no push.
+# With dry_run, it only shows the version and the notes, and builds the image without pushing it.
+# Nothing is committed: the notes go into the GitHub release, so protected main needs no push.
+#
+# The image is built from the commit being tagged by build-image.sh, for arm64 (the Pi) and amd64, and
+# pushed to ghcr.io/<owner>/<repository> under the version. Its digest goes into the release notes, and
+# ./deploy.sh <version> pulls it, so the Pi does not build. The same commit gives the same digest.
 name: release_tag
 
 on:
@@ -22,7 +26,7 @@ on:
         required: false
         default: ""
       dry_run:
-        description: "Only show the next version and the notes; tag and publish nothing"
+        description: "Only show the next version and the notes, and build the image; tag and publish nothing"
         type: boolean
         default: false
 
@@ -41,9 +45,10 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write   # to push the tag and create the GitHub release
+      packages: write   # to push the image to ghcr.io
     steps:
       - name: Releases come from main
         if: github.ref != 'refs/heads/main'
@@ -106,6 +111,45 @@ jobs:
             echo
             cat notes.md
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The image comes before the tag: a build that fails leaves nothing behind to clean up, and a run
+      # started again pushes the same bytes under the same name.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable   # what process_pr builds and tests with
+      - name: The commit builds and its tests pass
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+      - name: Build the image
+        id: image
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"   # a registry name is lower case
+          # A builder that can push more than one architecture; the default one cannot.
+          docker buildx create --name release --driver docker-container --use >/dev/null
+          if [ "$DRY_RUN" = true ]; then
+            ./build-image.sh "$image" "$NEXT"
+            echo "Dry run: the image for $NEXT builds for arm64 and amd64; nothing was pushed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          ref=$(./build-image.sh "$image" "$NEXT" --push)
+          [[ "$ref" =~ ^$image:$NEXT@sha256:[0-9a-f]{64}$ ]] || { echo "::error::build-image.sh printed '$ref', not $image:$NEXT@sha256:..."; exit 1; }
+          # What was pushed says it is this release: the same question deploy.sh asks before starting it.
+          says=$(docker run --rm --network none "$ref" -version)
+          [ "$says" = "$NEXT" ] || { echo "::error::the pushed image says it is '$says', not $NEXT"; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "### Image"
+            echo
+            echo "\`$ref\` for linux/arm64 and linux/amd64, built from this tag by \`build-image.sh\`."
+            echo "\`./deploy.sh $NEXT\` pulls and starts it."
+          } | tee -a notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Tag and publish
         if: ${{ !inputs.dry_run }}

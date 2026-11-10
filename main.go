@@ -117,7 +117,7 @@ type app struct {
 	proxies   []*net.IPNet // reverse proxies whose forwarding headers are believed (FLOWA_TRUSTED_PROXIES)
 	fetch     *fetcher     // link previews; nil means no fetching
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
-	version   string       // what VERSION says this build is (main.<commit> on the Pi, a release tag in production); "dev" if unset
+	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
 	flagCache map[string]bool
 	flagsAt   time.Time
 	sent      *onceStore  // posts and comments that named themselves, so a repeat is not a second one
@@ -127,9 +127,14 @@ type app struct {
 	healthWas health      // what it said then
 }
 
+// buildVersion names the build. A release image has its tag compiled in (build-image.sh, with -X), and
+// deploy.sh --build the checkout's commit; anything else is "dev". VERSION in the environment, when
+// set, is shown instead.
+var buildVersion = "dev"
+
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: "dev", sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard}}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: buildVersion, sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard}}
 }
 
 // A post or a comment can name itself with an Idempotency-Key header: a random key the page makes
@@ -4462,8 +4467,13 @@ func main() {
 	listen := flag.String("listen", ":3169", "listen address")
 	dataDir := flag.String("data", "/data", "directory for backups")
 	probe := flag.Bool("healthcheck", false, "ask the local server's /healthz, print the answer, and exit 0 if it is healthy")
+	showVersion := flag.Bool("version", false, "print the version this binary was built as, and exit")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(buildVersion)
+		return
+	}
 	if *probe {
 		c := http.Client{Timeout: 3 * time.Second}
 		resp, err := c.Get(probeURL(*listen))
@@ -4496,8 +4506,8 @@ func main() {
 		log.Fatal(err)
 	}
 	a := newApp(db, *dataDir)
-	// VERSION names the build for the admin dashboard: the deploy script passes main.<commit> on the Pi,
-	// production passes the release tag. The app only shows it.
+	// The admin dashboard shows the version compiled in (a release tag, or main.<commit> from
+	// deploy.sh --build). VERSION in the environment replaces it, for a build that has none.
 	if v := strings.TrimSpace(os.Getenv("VERSION")); v != "" {
 		a.version = v
 	}
