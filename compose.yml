@@ -1,6 +1,9 @@
 services:
   db:
-    image: postgres:16-alpine
+    # Pinned by version and digest, so a deploy never changes the database by itself. Dependabot opens
+    # a pull request when either moves (.github/dependabot.yml), and the checks then run on the new
+    # image (test/db-image.sh). Stay on 16: another major version cannot open this data folder.
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     container_name: nunchaku-db
     restart: unless-stopped
     environment:

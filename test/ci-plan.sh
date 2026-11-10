@@ -33,9 +33,13 @@ plan() {
     docs_only=false
     case "$f" in
       .github/workflows/process_pr.yml|test/ci-plan.sh) everything ;;
-      # What the containers are made of and how they are started: lint reads compose.yml, and the
+      # compose.yml pins the Postgres every suite's database is started from (test/db-image.sh), so a
+      # change to it runs every suite, on the image it names. No pictures: nothing drawn changes, and
+      # Dependabot's pull requests, which move the pins, may not push them.
+      compose.yml|test/db-image.sh) lint=true; suites $ALL ;;
+      # What else the containers are made of and how they are started: lint reads compose.yml, and the
       # compose suite starts it and asks who can reach the app, directly and through the proxy.
-      compose.yml|Caddyfile|Dockerfile|.dockerignore|.env.example|test/compose.sh) lint=true; suites compose ;;
+      Caddyfile|Dockerfile|.dockerignore|.env.example|test/compose.sh) lint=true; suites compose ;;
       # Release and deploy files, the checks lint runs on the docs and on the browser tests' sleeps, and
       # the table of slowest checks for the PR comment: their checks are in lint (actionlint, the
       # git-cliff preview, shellcheck, the scripts' own self-tests); nothing the tests run reads them.
@@ -81,7 +85,8 @@ self_test() {
   expect ".github/workflows/process_pr.yml" "code=true lint=true unit=true screenshots=true suites=$all"
   expect ".github/workflows/release_tag.yml,cliff.toml,CLAUDE.md" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "deploy.sh,backup.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
-  expect "compose.yml" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
+  expect "compose.yml" "code=true lint=true unit=false screenshots=false suites=$all"
+  expect "test/db-image.sh,.github/dependabot.yml" "code=true lint=true unit=false screenshots=false suites=$all"
   expect "Caddyfile,Dockerfile,.dockerignore,.env.example,test/compose.sh,deploy.sh" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
   expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'

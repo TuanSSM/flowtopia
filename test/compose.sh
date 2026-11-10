@@ -72,6 +72,8 @@ if resolved "FLOWA_BIND=not an address" >/dev/null; then bad "a FLOWA_BIND that 
 elif grep -qi 'invalid ip' "$work/said"; then ok "a FLOWA_BIND that is no address stops compose"
 else bad "a FLOWA_BIND that is no address stops compose" "it failed for another reason: $(tail -1 "$work/said")"; fi
 is "the database is not published" "$(resolved | ports_of db)" ""
+# The pin itself, and that the checks would start their own database from the same image.
+is "the database's image is the one test/db-image.sh reads, pinned by version and digest" "$(resolved | jq -r '.services.db.image')" "$(test/db-image.sh 2>&1)"
 
 # ---- what compose.yml resolves to: the proxy profile ----
 net='10.169.31.0/29'   # the edge network's range in compose.yml
