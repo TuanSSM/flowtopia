@@ -163,7 +163,26 @@ A name that only resolves at home (`flowa.home.arpa`, `raspi.local`) works too: 
 certificate with an authority of its own, which each device has to be told to trust once
 (`docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt .`). Without `FLOWA_DOMAIN` the
 proxy stops and says so in its log. Certificates and their keys live in the `caddy_data` volume.
-The image is pinned by version and digest; to update it, change both in `compose.yml`.
+
+### Pinned images
+
+Postgres and Caddy are named in `compose.yml` by version and digest
+(`postgres:16.15-alpine@sha256:...`), so a deploy starts the bytes that were tested and never a newer
+image by itself. Dependabot looks once a week (`.github/dependabot.yml`) and opens a pull request when
+a version or a digest has moved. That pull request runs every integration suite with the database
+started from the image it names, because the checks read the image from `compose.yml`
+(`test/db-image.sh`), and so does `test/browser/run.sh` on the Pi. To take an update: merge the pull
+request, pull, `./deploy.sh`. To do it by hand:
+
+```sh
+docker buildx imagetools inspect postgres:16-alpine | grep -m1 Digest   # the digest of the newest 16
+# write the version (docker run --rm postgres:16-alpine postgres --version) and that digest into
+# compose.yml, open a pull request, deploy after it merges
+```
+
+A minor version of Postgres (16.15 to 16.16) starts on the same data. A major one (16 to 17) does
+not: `test/db-image.sh` refuses it and Dependabot does not offer it, because that move is a full
+dump with `./backup.sh`, a new empty volume, and a restore.
 
 The app answers only to IP addresses, `localhost`, single-label names such as `raspi`, and private
 names (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`, `.ts.net`). To reach it
@@ -492,11 +511,11 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml`, the `Caddyfile` or the `Dockerfile` runs `lint` and the `compose` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to the `Caddyfile` or the `Dockerfile` runs `lint` and the `compose` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/compose.sh` (what `compose.yml` resolves to: the app on loopback unless `FLOWA_BIND` is set, never the database, and with `FLOWA_DOMAIN` the name answered and only the proxy's network believed); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres), `compose` (`test/compose.sh --up`: the two containers of `compose.yml` built and started on the runner, the app asked by loopback, where it must answer, and by the runner's other addresses, where it must not until `FLOWA_BIND=0.0.0.0`; then the proxy profile for a private name, asked over HTTPS for its certificate, the way from HTTP, HSTS, the Secure cookie, a write from an HTTP page and an address the visitor made up) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `compose` (`test/compose.sh --up`: the two containers of `compose.yml` built and started on the runner, the app asked by loopback, where it must answer, and by the runner's other addresses, where it must not until `FLOWA_BIND=0.0.0.0`; then the proxy profile for a private name, asked over HTTPS for its certificate, the way from HTTP, HSTS, the Secure cookie, a write from an HTTP page and an address the visitor made up) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |

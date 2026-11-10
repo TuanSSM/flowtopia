@@ -50,6 +50,7 @@ jobs:
       unit: ${{ steps.plan.outputs.unit }}
       screenshots: ${{ steps.plan.outputs.screenshots }}
       suites: ${{ steps.plan.outputs.suites }}
+      postgres: ${{ steps.db.outputs.image }}
     steps:
       # The PR title becomes the squash commit on main, which cliff.toml reads for the next version,
       # so it must be a Conventional Commits title (types in CLAUDE.md). Renamed? Re-run the checks.
@@ -85,6 +86,12 @@ jobs:
           changed=$(git diff --name-only "$BASE"...HEAD)
           printf 'changed files:\n%s\n\n' "$changed"
           printf '%s\n' "$changed" | test/ci-plan.sh | tee -a "$GITHUB_OUTPUT"
+      # The jobs that need a database start it from the image compose.yml pins, by version and digest:
+      # the checks run on the Postgres that is deployed, and a pull request that moves the pin is
+      # tested on the image it moves to. An image that is not pinned fails here.
+      - name: The Postgres the checks run on
+        id: db
+        run: echo "image=$(test/db-image.sh)" | tee -a "$GITHUB_OUTPUT"
 
   docs:
     name: docs
@@ -158,7 +165,7 @@ jobs:
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
       - name: Shell scripts
-        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/compose.sh
+        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/compose.sh test/db-image.sh
       # What compose.yml resolves to, without starting anything: the app published on this machine only
       # unless FLOWA_BIND says otherwise, the database not at all, and with FLOWA_DOMAIN the name answered
       # and only the proxy's network believed. The compose suite asks running containers.
@@ -166,6 +173,8 @@ jobs:
         run: test/compose.sh
       - name: The rules that choose which jobs run
         run: test/ci-plan.sh --self-test
+      - name: Reading the pinned Postgres image from compose.yml
+        run: test/db-image.sh --self-test
       # A browser test waits for what it checks (wait_for, idle and check in test/browser/h.py). A sleep is
       # allowed only with "# fixed: why" on its line, for a time nothing on the page can report.
       - name: No browser test sleeps without a reason
@@ -259,7 +268,7 @@ jobs:
         suite: ${{ fromJSON(needs.changes.outputs.suites) }}
     services:
       postgres:
-        image: postgres:16-alpine
+        image: ${{ needs.changes.outputs.postgres }}   # the image compose.yml pins
         env:
           POSTGRES_PASSWORD: test
         ports: ["55432:5432"]
@@ -336,7 +345,7 @@ jobs:
       contents: write
     services:
       postgres:
-        image: postgres:16-alpine
+        image: ${{ needs.changes.outputs.postgres }}   # the image compose.yml pins
         env:
           POSTGRES_PASSWORD: test
         ports: ["55432:5432"]

@@ -19,6 +19,11 @@ paths:
 - `test/ci-plan.sh` maps changed paths to jobs and integration suites. When in doubt it runs
   everything; keep it that way. A new browser suite goes into its `ALL` list and the self-test (the
   lint job runs `test/ci-plan.sh --self-test`), or it never runs in CI.
+- The Postgres image is written once, in `compose.yml`, by version and digest. `test/db-image.sh`
+  reads it: the `changes` job hands it to the jobs with a Postgres service
+  (`needs.changes.outputs.postgres`) and `run.sh` starts its throwaway database from it. Never name
+  a Postgres image anywhere else. Dependabot (`.github/dependabot.yml`) moves the pins; its pull
+  requests cannot push screenshots, which is one reason `compose.yml` alone does not ask for them.
 - `test/compose.sh` checks `compose.yml` and the `Caddyfile`: without arguments what the file resolves
   to (lint), with `--up` the running containers and the proxy profile over HTTPS (the `compose`
   integration suite). `--up` uses the real names and ports (3169, 80, 443), so it refuses to run where

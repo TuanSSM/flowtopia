@@ -1,0 +1,22 @@
+# Dependabot looks at the images compose.yml pins by version and digest (Postgres, and Caddy for the
+# proxy profile) once a week and opens a pull request when a version or a digest has moved. The pull
+# request runs process_pr like any other; for compose.yml that is lint and every integration suite,
+# with the database started from the image the pull request names (test/db-image.sh).
+# Titles are Conventional Commits titles (chore(deps): ...), which the `changes` job checks.
+version: 2
+updates:
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 3
+    ignore:
+      # A new major version of Postgres cannot open the data folder of the one before: that move is a
+      # dump and a restore done on purpose (README, Data), never a pull request to merge.
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]

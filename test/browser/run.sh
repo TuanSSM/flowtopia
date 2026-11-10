@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Browser tests against a throwaway database and a dev server on :3170, never the real data.
 #   test/browser/run.sh combo.py [demos.py ...]
-# Without DATABASE_URL a throwaway Postgres is started in Docker. With it (as in CI, where a
+# Without DATABASE_URL a throwaway Postgres is started in Docker, from the image compose.yml pins
+# (test/db-image.sh); one left running from an older pin is replaced. With it (as in CI, where a
 # Postgres service is provided) the database must be disposable: its public schema is emptied
 # before each suite, so suites never see each other's accounts.
 # Exits non-zero when any check fails, so it can gate a pull request.
@@ -10,7 +11,9 @@ export PATH="$HOME/.local/go/bin:$PATH"
 (cd ../.. && CGO_ENABLED=0 go build -o $W/nunchaku-dev .) || exit 1
 [ -f $W/dev.pid ] && kill "$(cat $W/dev.pid)" 2>/dev/null; sleep .5
 if [ -z "${DATABASE_URL:-}" ]; then
-  docker ps --format '{{.Names}}' | grep -q '^flowa-test-db$' || { docker run -d --rm --name flowa-test-db -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 --tmpfs /var/lib/postgresql/data postgres:16-alpine >/dev/null; for i in $(seq 1 30); do docker exec flowa-test-db pg_isready -U postgres -q && break; sleep 1; done; sleep 1; }
+  img=$(../db-image.sh) || exit 1
+  [ "$(docker inspect flowa-test-db --format '{{.Config.Image}}' 2>/dev/null)" = "$img" ] || docker rm -f flowa-test-db >/dev/null 2>&1
+  docker ps --format '{{.Names}}' | grep -q '^flowa-test-db$' || { docker run -d --rm --name flowa-test-db -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 --tmpfs /var/lib/postgresql/data "$img" >/dev/null; for i in $(seq 1 30); do docker exec flowa-test-db pg_isready -U postgres -q && break; sleep 1; done; sleep 1; }
   # Start from an empty public schema, whatever tables earlier runs or branches created.
   docker exec flowa-test-db psql -U postgres -q -c "drop schema if exists public cascade; create schema public" >/dev/null 2>&1
   DATABASE_URL='postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disable'
