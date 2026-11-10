@@ -4932,7 +4932,7 @@ var linkNames = map[string]string{"instagram": "an Instagram", "tiktok": "a TikT
 var (
 	handleRE   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,60}$`)
 	ytHandleRE = regexp.MustCompile(`^[A-Za-z0-9._@/-]{1,80}$`)
-	achKeyRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9:_-]{0,60}$`)
+	achKeyRE   = regexp.MustCompile(`^[a-z0-9][a-zA-Z0-9:_-]{0,60}$`) // a branch badge ends in its branch's capital letter
 	mentionRE  = regexp.MustCompile(`(?:^|[^a-z0-9._-])@([a-z0-9][a-z0-9._-]{2,23})`)
 )
 
@@ -5421,12 +5421,16 @@ func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user
 		fail(w, http.StatusBadRequest, "Too many keys at once.")
 		return
 	}
-	fresh := []string{}
+	// Every key is checked before any is recorded, so a batch with one unknown key grants nothing
+	// and the page is not left resending the half that went through.
 	for _, k := range in.Keys {
-		if !badgeKeys[k] {
+		if !badgeKeys[k] && !a.propBadge(k) {
 			fail(w, http.StatusBadRequest, "There is no badge called "+strconv.Quote(k)+".")
 			return
 		}
+	}
+	fresh := []string{}
+	for _, k := range in.Keys {
 		var got string
 		err := a.db.QueryRow(`INSERT INTO achievements (user_id, key) SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM badge_blocks WHERE user_id = $1 AND key = $2)
 			ON CONFLICT DO NOTHING RETURNING key`, u.ID, k).Scan(&got)
@@ -5460,6 +5464,46 @@ func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"new": fresh, "all": all, "postId": postID})
+}
+
+// propBadge says whether key is one of the badges the page builds from a prop's map (propBadges in
+// web/game.js): "gates:<prop>" for a prop whose map has a roadmap, and "branch:<prop>:<K>" for a
+// branch of it that has a skill in use. They are not in badgeKeys because the maps can change.
+func (a *app) propBadge(key string) bool {
+	parts := strings.Split(key, ":")
+	if len(parts) < 2 || !slices.Contains(knownProps, parts[1]) {
+		return false
+	}
+	// The map the page was given: the published one, or the shipped file when none is published.
+	raw, _, err := a.latestCatalog(parts[1])
+	if err != nil {
+		shipped, ok := shippedCatalog(parts[1])
+		if !ok {
+			return false
+		}
+		raw = shipped
+	}
+	var c struct {
+		Phases []json.RawMessage `json:"phases"`
+		Skills []struct {
+			ID      string `json:"id"`
+			Retired bool   `json:"retired"`
+		} `json:"skills"`
+	}
+	if json.Unmarshal(raw, &c) != nil {
+		return false
+	}
+	switch {
+	case parts[0] == "gates" && len(parts) == 2:
+		return len(c.Phases) > 0
+	case parts[0] == "branch" && len(parts) == 3 && branchKeyRE.MatchString(parts[2]):
+		for _, s := range c.Skills {
+			if !s.Retired && strings.HasPrefix(s.ID, parts[2]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *app) pref(u *user, key string, def bool) bool {

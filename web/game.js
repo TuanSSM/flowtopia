@@ -144,7 +144,7 @@ function propBadges(props = myProps()) {
     if (!cat) continue;
     if (cat.phases.length) out.push({ key: `gates:${p.id}`, name: `${p.name} roadmap complete`, desc: `Pass every gate of the ${p.name.toLowerCase()} plan.`, icon: 'trophy', group: p.name, of: cat.phases.length, n: c => c.gatesBy[p.id] || 0 });
     for (const b of cat.branches) {
-      const size = cat.skills.filter(s => s.b === b.k).length;
+      const size = cat.skills.filter(s => s.b === b.k && !s.retired).length; // skills in use: a retired one is not counted as clean either
       if (size) out.push({ key: `branch:${p.id}:${b.k}`, name: `${b.name} complete`, desc: `Every ${p.name.toLowerCase()} ${b.name.toLowerCase()} skill clean.`, icon: 'medal', group: p.name, of: size, n: c => c.branchClean[`${p.id}:${b.k}`] || 0 });
     }
   }

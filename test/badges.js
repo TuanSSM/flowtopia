@@ -18,4 +18,13 @@ if (missing.length || extra.length || page.length < 20) {
   console.log(`FAIL badge keys differ. Only in web/game.js: ${missing.join(', ') || 'none'}. Only in main.go: ${extra.join(', ') || 'none'}.`);
   process.exit(1);
 }
-console.log(`badges: ${page.length} keys, the same in web/game.js and main.go`);
+// The badges built from each prop's map (propBadges in web/game.js) are not in that list: the server
+// knows them by their first word (propBadge in main.go). Every first word the page uses must be one
+// the server takes, and the other way round, or the page would resend a batch the server refuses.
+const made = [...new Set([...game.matchAll(/key: `([a-z]+):\$\{/g)].map(m => m[1]))].sort();
+const taken = [...new Set([...go.matchAll(/case parts\[0\] == "([a-z]+)"/g)].map(m => m[1]))].sort();
+if (!made.length || made.join() !== taken.join()) {
+  console.log(`FAIL badges per prop differ. web/game.js makes: ${made.join(', ') || 'none'}. main.go takes: ${taken.join(', ') || 'none'}.`);
+  process.exit(1);
+}
+console.log(`badges: ${page.length} keys, the same in web/game.js and main.go; per prop: ${made.join(', ')}, in both`);
