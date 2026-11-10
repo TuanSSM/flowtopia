@@ -472,6 +472,30 @@ function pagePractice() {
 
 const TR = { untested: { n: 'Untested', i: 'circle' }, works: { n: 'Works', i: 'check' }, bridge: { n: 'Needs bridge', i: 'bridge' }, blocked: { n: 'Blocked', i: 'x' } };
 const TR_ORDER = ['untested', 'works', 'bridge', 'blocked'];
+// After a logged run, the member is asked how each transition of that combo went that they have not
+// marked anywhere: once per transition, only while they share their marks, and never again once they
+// say so (the askTransitions preference). `asking` is the combo and the transitions still to ask,
+// and lives only until they are answered; state.asked remembers every one that was put to them.
+let asking = null;
+const askOn = () => flags.suggest && !!me?.prefs?.shareTransitions && me.prefs.askTransitions !== false;
+function askFor(c) {
+  if (!askOn()) return null;
+  const mine = myMarks(), seq = c.seq || [], keys = [];
+  for (let i = 0; i < seq.length - 1; i++) {
+    const k = `${seq[i]}>${seq[i + 1]}`;
+    if (seq[i] !== seq[i + 1] && !mine[k] && !state.asked?.[k] && !keys.includes(k)) keys.push(k);
+  }
+  return keys.length ? { id: c.id, keys } : null;
+}
+function askHTML(c) {
+  if (!asking || asking.id !== c.id || !askOn()) return '';
+  const k = asking.keys[0], [a, b] = k.split('>'), left = asking.keys.length - 1;
+  const btn = (v, n) => `<button class="btn sm" data-act="tr-ask" data-id="${esc(c.id)}" data-k="${esc(k)}" data-v="${v}">${n}</button>`;
+  return `<div class="cb-ask" role="group" aria-label="How did ${esc(a)} into ${esc(b)} go?"><b>How did ${esc(a)} into ${esc(b)} go?</b>
+    <span class="tiny muted grow">${esc(SK[a]?.name || a)} into ${esc(SK[b]?.name || b)}. Your answer is shared as a count, with no name${left ? `. ${left} more to ask` : ''}.</span>
+    ${btn('works', 'Works')}${btn('bridge', 'Needs a bridge')}${btn('blocked', 'Blocked')}${btn('skip', 'Skip')}
+    <button class="btn sm cb-ask-off" data-act="tr-ask-off">Do not ask again</button></div>`;
+}
 function comboReady(c) {
   if ((c.seq || []).length < 2) return false;
   for (let i = 0; i < c.seq.length - 1; i++) if ((c.tr?.[`${c.seq[i]}>${c.seq[i + 1]}`] || 'untested') !== 'works') return false;
@@ -501,7 +525,7 @@ function pageCombos() {
     }).join('');
     // Logging a run sits under the player, where the run was just watched; without demos it closes the list.
     const log = `<div class="cb-log" role="group" aria-label="Log a run"><b>Log a run</b><span class="small muted num grow">${cleanRuns} clean of ${runs} full runs</span>
-      <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button></div>`;
+      <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button></div>${askHTML(c)}`;
     return `<section class="card cb" aria-label="${esc(c.name)}">
       <header class="cb-head"><h2 class="grow">${esc(c.name)}</h2>${meta}${flags.community && seq.length >= 2 ? `<button class="btn sm" data-act="combo-publish" data-id="${esc(c.id)}" data-tip="Share this combo on the timeline">${icon('send')}Publish</button>` : ''}${bmButton('combo', c.id)}<button class="icon-btn" data-act="combo-del" data-id="${esc(c.id)}" aria-label="Delete combo">${icon('trash')}</button></header>
       <div class="cb-body">
@@ -799,7 +823,27 @@ document.addEventListener('click', e => {
       }
       break;
     case 'combo-run':
-      if (combo) { combo.runs = (Number(combo.runs) || 0) + 1; if (d.clean === '1') combo.clean = (Number(combo.clean) || 0) + 1; commit(); }
+      if (combo) { combo.runs = (Number(combo.runs) || 0) + 1; if (d.clean === '1') combo.clean = (Number(combo.clean) || 0) + 1; asking = askFor(combo); commit(); }
+      break;
+    case 'tr-ask':
+      if (combo && asking && asking.id === combo.id && asking.keys.includes(d.k)) {
+        (state.asked ||= {})[d.k] = 1; // asked once, whatever the answer
+        if (TR[d.v] && d.v !== 'untested') {
+          (combo.tr ||= {})[d.k] = d.v;
+          if (d.v === 'works' && (combo.suggested || []).includes(d.k)) NT.usage.worked++; // a suggestion that turned out to work
+        }
+        asking.keys = asking.keys.filter(k => k !== d.k);
+        if (!asking.keys.length) asking = null;
+        commit();
+      }
+      break;
+    case 'tr-ask-off':
+      asking = null; render();
+      api('me', 'PUT', { prefs: { askTransitions: false } }).then(r => {
+        if (r.ok) { me = r.data.user; toast('You will not be asked again. Your profile has the switch to turn it back on.'); }
+        else toast(r.error);
+        render();
+      });
       break;
     case 'theme':
       if (d.v === 'auto') { localStorage.removeItem('nf-theme'); delete document.documentElement.dataset.theme; }

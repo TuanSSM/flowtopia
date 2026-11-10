@@ -426,6 +426,11 @@ button:disabled { opacity: .6; cursor: default; }
 .cb-link::before { content: ''; width: 1px; height: 22px; background: var(--line-2); margin-right: 6px; }
 .cb-log { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 .cb-log b { flex-basis: 100%; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+/* The question after a logged run: how one transition went. */
+.cb-ask { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); }
+.cb-ask b { flex-basis: 100%; font-size: 13.5px; }
+.cb-ask .grow { flex-basis: 100%; }
+.cb-ask-off { margin-left: auto; border-color: transparent; background: none; color: var(--ink-2); }
 .ctl-l { display: inline-flex; align-items: center; gap: 6px; }
 .cb-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 16px; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); }
 .cb-row:hover { border-color: var(--line-2); background: var(--card-2); }

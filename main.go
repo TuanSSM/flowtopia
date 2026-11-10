@@ -1279,8 +1279,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	if in.Prefs != nil {
 		for k := range *in.Prefs {
-			// autoPost: share milestones; shareTransitions: send anonymous transition marks for suggestions.
-			if k != "autoPost" && k != "shareTransitions" {
+			// autoPost: share milestones; shareTransitions: send anonymous transition marks for suggestions;
+			// askTransitions: after a logged combo run, be asked how each transition not yet marked went.
+			if k != "autoPost" && k != "shareTransitions" && k != "askTransitions" {
 				fail(w, http.StatusBadRequest, "Unknown preference: "+k)
 				return
 			}

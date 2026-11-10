@@ -86,6 +86,12 @@ AUC of 0.75 and beat the baseline. With fewer, as now, nothing can be fitted or 
 be the starting ones from the physics and marked early, and the combo builder says its suggestions are not
 yet checked against real combos.
 
+Marks come from members who share them. A mark can be set on any link of a combo at any time, and
+after a logged run a sharing member is asked about each transition of that combo they have not marked
+anywhere: "How did F5 into F7 go?", with Works, Needs a bridge, Blocked and Skip. A transition is put
+to a member once, whatever they answer; "Do not ask again" turns the question off for the account
+(the `askTransitions` preference, with its switch on the profile).
+
 The admin dashboard counts toward that gate: the pairs of skills that someone marked Works or Blocked, of
 the 30 needed, and the week 30 would be reached at the pace of the last four weeks (or that there is no
 date, when none were first marked in them). A pair keeps the week it first counted and nothing finer.

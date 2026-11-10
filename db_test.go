@@ -1257,6 +1257,13 @@ func TestDBTransitionCounts(t *testing.T) {
 	e.must(200, c, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"shareTransitions": true}})
 	e.must(200, b, "POST", "/api/suggest/labels", label)
 	e.must(200, c, "POST", "/api/suggest/labels", label)
+	// Being asked about transitions after a run is a preference of its own, kept apart from sharing,
+	// and a preference the server does not know is refused.
+	asked := e.must(200, c, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"askTransitions": false}})["user"].(map[string]any)["prefs"].(map[string]any)
+	if asked["askTransitions"] != false || asked["shareTransitions"] != true {
+		t.Fatalf("prefs after turning the question off: %v", asked)
+	}
+	e.must(400, c, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"askEverything": true}})
 	// bea changes her mind; then withdraws (her browser sends the reverse change).
 	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "works", "to": "blocked"}}})
 	got := e.must(200, c, "GET", "/api/suggest/counts?prop=nunchaku", nil)["counts"].([]any)

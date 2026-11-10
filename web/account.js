@@ -104,16 +104,17 @@ const aboutOf = u => ({
   rev: u.rev || '', bio: u.bio || '',
   links: Object.fromEntries(Object.keys(LINK_KINDS).map(k => [k, (u.links || {})[k] || ''])),
   autoPost: (u.prefs || {}).autoPost !== false, shareTransitions: !!(u.prefs || {}).shareTransitions,
+  askTransitions: (u.prefs || {}).askTransitions !== false,
 });
 const aboutNow = f => ({
   bio: f.bio.value.trim(), links: Object.fromEntries(Object.keys(LINK_KINDS).map(k => [k, f[k].value.trim()])),
-  autoPost: f.autoPost.checked, shareTransitions: f.shareTransitions.checked,
+  autoPost: f.autoPost.checked, shareTransitions: f.shareTransitions.checked, askTransitions: f.askTransitions.checked,
 });
 function aboutPatch(base, now) {
   const p = {}, links = {}, prefs = {};
   if (now.bio !== base.bio) p.bio = now.bio;
   for (const k in now.links) if (now.links[k] !== base.links[k]) links[k] = now.links[k];
-  for (const k of ['autoPost', 'shareTransitions']) if (now[k] !== base[k]) prefs[k] = now[k];
+  for (const k of ['autoPost', 'shareTransitions', 'askTransitions']) if (now[k] !== base[k]) prefs[k] = now[k];
   if (Object.keys(links).length) p.links = links;
   if (Object.keys(prefs).length) p.prefs = prefs;
   return p;
@@ -130,7 +131,7 @@ function aboutRebase(f, old, typed) {
   const fresh = aboutOf(me);
   if (typed.bio === old.bio) f.bio.value = fresh.bio;
   for (const k in fresh.links) if (typed.links[k] === old.links[k]) f[k].value = fresh.links[k];
-  for (const k of ['autoPost', 'shareTransitions']) if (typed[k] === old[k]) f[k].checked = fresh[k];
+  for (const k of ['autoPost', 'shareTransitions', 'askTransitions']) if (typed[k] === old[k]) f[k].checked = fresh[k];
   f.dataset.base = JSON.stringify(fresh);
 }
 
@@ -352,6 +353,7 @@ function pageProfile() {
         <div class="grid links-grid">${Object.entries(LINK_KINDS).map(([k, L]) => `<label class="field social-${k}">${icon(k)} ${L.name}<input type="text" name="${k}" maxlength="120" value="${esc((me.links || {})[k] || '')}" placeholder="${L.hint} or just the handle" autocapitalize="none" spellcheck="false"></label>`).join('')}</div>
         <label class="check" ${flags.community && flags.game ? '' : 'hidden'}><input type="checkbox" name="autoPost" ${(me.prefs || {}).autoPost === false ? '' : 'checked'}><span>Post my milestones to the timeline automatically (new badges)</span></label>
         <label class="check" ${flags.suggest ? '' : 'hidden'}><input type="checkbox" name="shareTransitions" ${(me.prefs || {}).shareTransitions ? 'checked' : ''}><span>Help improve next-trick suggestions: share which transitions work, are blocked or need a bridge in my combos. Only counts per pair of skills are kept, with no name. Turning it off takes my marks back out.</span></label>
+        <label class="check" ${flags.suggest ? '' : 'hidden'}><input type="checkbox" name="askTransitions" ${(me.prefs || {}).askTransitions === false ? '' : 'checked'}><span>After I log a combo run, ask me how each transition I have not marked went. One question per transition, and only while sharing above is on.</span></label>
         <p class="form-err" id="about-err" role="alert" hidden></p>
         <div><button class="btn" type="submit">Save</button></div></div></form>
     <form class="card span-2" id="props-form"><div class="card-h"><h2>Your props</h2></div>${propChecks(me.props || [])}
