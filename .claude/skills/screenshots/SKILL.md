@@ -6,7 +6,7 @@ Both scripts start a dev server on :3170 with a throwaway database; the real dat
 
 - Pages (what the PR comment shows): `test/browser/run.sh pages.py /tmp/shots`, then read
   `/tmp/shots/index.json` for the list and open the PNGs you need with the Read tool.
-- Chosen demos: `WAIT=2 SZ=400 COLS=4 test/browser/run.sh shots.py /tmp/sheet.png <tile> ...`
+- Chosen demos: `SZ=400 COLS=4 test/browser/run.sh shots.py /tmp/sheet.png <tile> ...`
   where a tile is `prop,skill,variantIndex,view,phase`, for example `nunchaku,F5,0,angle,0.15`,
   `poi,L2,0,front,0.5`, `nunchaku,F1,0,angle,0` (a close-up). Views: `front`, `angle`, `side`.
   Phase is 0 to 1 through the loop. A tile that says "Loading the demo…" needed more `WAIT`.

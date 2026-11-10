@@ -157,9 +157,15 @@ jobs:
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
       - name: Shell scripts
-        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh
+        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh
       - name: The rules that choose which jobs run
         run: test/ci-plan.sh --self-test
+      # A browser test waits for what it checks (wait_for, idle and check in test/browser/h.py). A sleep is
+      # allowed only with "# fixed: why" on its line, for a time nothing on the page can report.
+      - name: No browser test sleeps without a reason
+        run: |
+          test/sleeps.sh --self-test
+          test/sleeps.sh
 
       - name: Workflow files
         uses: raven-actions/actionlint@v2

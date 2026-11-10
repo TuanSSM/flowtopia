@@ -5,19 +5,23 @@ Category: improvement. Size: S. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#33](https://github.com/TuanSSM/flowtopia/issues/33)). 1 of 6 items done.
+**Status:** in progress (issue [#33](https://github.com/TuanSSM/flowtopia/issues/33)). 4 of 6 items done.
 
-About 150 `time.sleep` calls across `test/browser/*.py` today.
+There were 204 `time.sleep` calls across `test/browser/*.py`. Seven are left, each with its reason on the line.
 
-- [ ] **The helper.** `wait_for(cond, what, timeout=10)` in `test/browser/h.py`, polling at 50 ms
+- [x] **The helper.** `wait_for(cond, what, timeout=10)` in `test/browser/h.py`, polling at 50 ms
   with backoff to 250 ms, failing with "waited 10 s for <what>". DoD: used by at least one suite;
   documented in `.claude/rules/ci-and-tests.md`.
-- [ ] **Replace the sleeps.** Suite by suite (`social.py` first, 39 sleeps), each sleep becomes a
+  Every suite uses it, with `idle()`, `load()`, `nav()`, `figure()`, `frames()` and a `check` that polls.
+- [x] **Replace the sleeps.** Suite by suite (`social.py` first, 39 sleeps), each sleep becomes a
   wait for the element, text, count or request it was waiting for, or keeps a comment saying why a
   fixed time is right (an animation of known length). DoD: `grep -c time.sleep` per suite in the
   PR body, before and after.
-- [ ] **A lint against bare sleeps.** The lint job fails on `time.sleep` without a `# fixed:`
+  All suites at once, since they share the helper. The seven that stay sample something over time or show that
+  something did not happen.
+- [x] **A lint against bare sleeps.** The lint job fails on `time.sleep` without a `# fixed:`
   comment on the same line. DoD: the rule in `test/ci-plan.sh`'s lint set and in the rules file.
+  `test/sleeps.sh`, with its own self-test; any `sleep(` call counts, not only `time.sleep`.
 - [ ] **Time per check.** Each suite prints the seconds per check; the PR comment lists the five
   slowest. DoD: visible in the sticky comment.
 - [x] **Go tests for the routes the browser only brushes.** Bookmarks, notifications read state,

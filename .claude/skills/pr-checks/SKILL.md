@@ -7,7 +7,8 @@ line as it is, not a paraphrase.
 
 1. Lint: `gofmt -l .` (must print nothing), `go vet ./...`,
    `for f in sim/*.js web/*.js test/*.js; do node --check "$f" || echo "SYNTAX $f"; done`,
-   `node test/catalog.js web/catalog/*.json`, `python3 -m py_compile test/browser/*.py`.
+   `node test/catalog.js web/catalog/*.json`, `python3 -m py_compile test/browser/*.py`,
+   `test/sleeps.sh` (a browser test's sleep needs `# fixed: why` on its line).
 2. Bundles: if `figure/src` or `tour/src` changed, rebuild (`cd figure && npm run build`,
    `cd tour && npm run build`) and confirm `git status` shows the bundle changed too.
 3. Unit: `CGO_ENABLED=0 go build ./... && go test ./...`, then `node test/physics.js`

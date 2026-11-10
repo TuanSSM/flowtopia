@@ -76,7 +76,9 @@ function avDrag(cv) {
   if (cv.dataset.drag) return;
   cv.dataset.drag = '1';
   let x0 = null;
-  cv.addEventListener('pointerdown', e => { x0 = e.clientX; cv.setPointerCapture(e.pointerId); });
+  // Capturing keeps the drag when the pointer leaves the picture. A pointer that has already lifted cannot be
+  // captured and the browser says so with an error; the drag then simply ends at the picture's edge.
+  cv.addEventListener('pointerdown', e => { x0 = e.clientX; try { cv.setPointerCapture(e.pointerId); } catch { /* already lifted */ } });
   cv.addEventListener('pointermove', e => { if (x0 === null) return; Demo.previewState.yaw += (e.clientX - x0) * 0.012; x0 = e.clientX; });
   cv.addEventListener('pointerup', () => { x0 = null; });
   cv.addEventListener('pointercancel', () => { x0 = null; });
