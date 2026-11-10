@@ -1,5 +1,7 @@
 module nunchaku
 
-go 1.24
+go 1.26.0
 
 require github.com/lib/pq v1.10.9
+
+require golang.org/x/crypto/x509roots/fallback v0.0.0-20261109165751-4e10f38b063d

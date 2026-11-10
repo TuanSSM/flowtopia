@@ -1,2 +1,4 @@
 github.com/lib/pq v1.10.9 h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
 github.com/lib/pq v1.10.9/go.mod h1:AlVN5x4E4T544tWzH6hKfbfQvm3HdbOxrmggDNAPY9o=
+golang.org/x/crypto/x509roots/fallback v0.0.0-20261109165751-4e10f38b063d h1:Lc3YVk5cfbGVyxKKdoZR+ohgIO16RPEIJichdZ0Neb0=
+golang.org/x/crypto/x509roots/fallback v0.0.0-20261109165751-4e10f38b063d/go.mod h1:HPze8vhfG6fO06AM+VSvxRm4E3+5Yk375mgrJ5M2z1E=
