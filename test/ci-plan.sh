@@ -42,6 +42,8 @@ plan() {
       # The image and the way it gets onto a machine: the release suite builds it as the release
       # workflow does and deploys it with deploy.sh.
       Dockerfile|.dockerignore) lint=true; suites release ;;
+      # The settings a deployment starts from: the release suite deploys with a file made like it.
+      .env.example) lint=true; suites release ;;
       deploy.sh|build-image.sh|test/release.sh|.github/workflows/release_tag.yml) lint=true; suites release ;;
       # The backup, the drill that restores it, and the backups of earlier versions the drill keeps.
       backup.sh|test/restore.sh|testdata/backups/*|.github/workflows/restore_drill.yml) lint=true; suites restore ;;
@@ -95,7 +97,7 @@ self_test() {
   expect "deploy.sh,build-image.sh,test/release.sh" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "compose.yml" "code=true lint=true unit=false screenshots=false suites=$all"
   expect "test/db-image.sh,.github/dependabot.yml" "code=true lint=true unit=false screenshots=false suites=$all"
-  expect "Dockerfile,.dockerignore" 'code=true lint=true unit=false screenshots=false suites=["release"]'
+  expect "Dockerfile,.dockerignore,.env.example" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "test/physics.js,test/catalog-fixtures/bad-cycle.json" 'code=true lint=true unit=true screenshots=false suites=[]'

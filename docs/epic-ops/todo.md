@@ -5,12 +5,12 @@ Category: improvement. Size: M. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 2 of 7 items done.
-Three more are built and tested and wait for something that cannot be done from a pull request:
-Postgres by digest for Dependabot's first update pull request, the release's image for a first
-release and a deploy of it on the Pi, and the restore drill for its first runs on `main`. Two were
-built and then taken out again at the owner's request: loopback by default and the reverse proxy
-recipe.
+**Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 2 of 5 items done;
+two more were withdrawn. Three are built and tested and wait for something that cannot be done from
+a pull request: Postgres by digest for Dependabot's first update pull request, the release's image
+for a first release and a deploy of it on the Pi, and the restore drill for its first runs on
+`main`. The two withdrawn ones, loopback by default and the reverse proxy recipe, were built and
+then taken out again at the owner's request; they no longer count toward the epic.
 
 - [x] **Health.** `GET /healthz`: schema version, whether TLS roots are present, database reachable,
   `VERSION`. DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
@@ -25,24 +25,25 @@ recipe.
   an error get no line, and a minute holds at most 240 lines with the rest counted. The log cap went
   from 5 files of 5 MB to 10 of 10 MB: a day of the most the request lines and the refusal lines can
   write together.
-- [ ] **Loopback by default.** The app publishes on `127.0.0.1:3169` unless `FLOWA_BIND` says
-  otherwise; the README says why. DoD: a fresh `compose up` is reachable from the host only.
-  Built in #57 and taken out again on 10 November 2026, at the owner's request: the deployment was
+- **Withdrawn: Loopback by default.** The app publishes on `127.0.0.1:3169` unless `FLOWA_BIND`
+  says otherwise; the README says why. DoD: a fresh `compose up` is reachable from the host only.
+  Built in #57 and taken out again in #74 on 10 November 2026, at the owner's request: the deployment was
   working on port 3169 as it was, opened from other devices and through the owner's own reverse
   proxy, and the new default closed that port to everything but the machine itself until a setting
   was added. `compose.yml` publishes `3169:3169` as before. Not to be done again unless the owner
   asks; if it is, the default must not change a deployment that works.
-- [ ] **Reverse proxy recipe.** A `proxy` profile in `compose.yml` with Caddy, automatic
+- **Withdrawn: Reverse proxy recipe.** A `proxy` profile in `compose.yml` with Caddy, automatic
   certificates for `FLOWA_DOMAIN`, `FLOWA_TRUSTED_PROXIES` set to the proxy network, HSTS. DoD: the
   README's steps from clone to HTTPS run on a clean machine (recorded once by hand); `TestSameOrigin`
   covers `https` behind the proxy.
-  Built in #58 and taken out again on 10 November 2026, at the owner's request, together with the
+  Built in #58 and taken out again in #74 on 10 November 2026, at the owner's request, together with the
   item above: the `proxy` service, the `Caddyfile`, `FLOWA_DOMAIN`, the fixed proxy network and the
   `compose` checks are gone, and `FLOWA_HOSTS` and `FLOWA_TRUSTED_PROXIES` mean what they meant
   before. The owner's own reverse proxy stays in front, as the README describes under "Behind a
-  reverse proxy". One thing went with it that was not a setting: #58 made the app read `X-Real-IP`
-  only when there is no `X-Forwarded-For`. That is back to the earlier order too; it matters only
-  for a visitor on a trusted proxy's own network and can come back as a small change of its own.
+  reverse proxy". One thing of #58 stays, because it is not a setting and has nothing to do with the
+  port or the proxy profile: the app reads `X-Real-IP` only when there is no `X-Forwarded-For`, so
+  beside a proxy's own header a visitor cannot pick the address the sign-in limits count
+  (`clientIP` in `main.go`, `TestClientIP`).
 - [ ] **Postgres by digest.** The image pinned by digest with a documented update step and a
   Dependabot or weekly check that opens a PR for a new digest. DoD: `compose.yml` carries the digest;
   the update PR has been seen once.

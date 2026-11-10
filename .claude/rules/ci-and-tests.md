@@ -27,8 +27,10 @@ paths:
   requests cannot push screenshots, which is one reason `compose.yml` alone does not ask for them.
 - `test/release.sh` is the `release` suite: `build-image.sh` against a registry on the runner, then
   `deploy.sh` for real (pull, next release, rollback, refusals, `--build`). It uses the real names
-  and port (3169), so it refuses to run where Flowa is deployed; `--image` runs the image checks alone. What `deploy.sh` or
-  `build-image.sh` learn to do gets a check there.
+  and port (3169), so it refuses to run where Flowa is deployed; `--image` runs the image checks
+  alone. What `deploy.sh` or `build-image.sh` learn to do gets a check there. A new setting in
+  `compose.yml` goes into the list its `deploy()` unsets, or a value in the caller's environment
+  leaks into the checks.
 - `test/restore.sh` is the restore drill and the `restore` suite; `restore_drill.yml` runs it weekly and
   opens an issue when it fails. It uses names and ports of its own, so it may run anywhere. A pull
   request that adds a migration also adds the backup of the schema before it to `testdata/backups`

@@ -57,7 +57,7 @@ proxy too. `TestClientIP` and `TestDBLimitsBehindProxy` cover it.
   owner's network (LAN address, a reverse proxy, how updates are taken) and change how the app is
   reached; the README describes the options. Postgres is pinned since, by version and digest, with
   Dependabot opening the pull request when it moves ([OPS epic](epic-ops/todo.md)). The port and
-  TLS were built there too and taken out again at the owner's request: the port is published as
+  TLS were built there too and withdrawn at the owner's request (#74): the port is published as
   before, and TLS is the owner's own reverse proxy.
 - **Moving progress from client-owned documents to server-checked state.** Stats and badges are
   reported by the browser by design; the limits above bound the damage, and changing the model is

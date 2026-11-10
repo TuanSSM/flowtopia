@@ -1047,7 +1047,9 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 // proxy the connection comes from the proxy, so when it does (a trusted proxy), the visitor is the
 // nearest address in X-Forwarded-For that is not itself a trusted proxy, read from the right: each
 // proxy appends the address it saw, so only the right-hand end is trustworthy and a visitor cannot
-// choose their address by sending the header. Without X-Forwarded-For, X-Real-IP is used.
+// choose their address by sending the header. X-Real-IP is read only when there is no X-Forwarded-For
+// at all: a proxy that writes X-Forwarded-For may still pass on the X-Real-IP a visitor sent (Caddy
+// does), so beside the proxy's own header it says nothing.
 func (a *app) clientIP(r *http.Request) string {
 	remote, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -1070,11 +1072,14 @@ func (a *app) clientIP(r *http.Request) string {
 			return hop.String()
 		}
 	}
+	if len(hops) > 0 {
+		// Every hop is a trusted proxy: the visitor is on the proxy's own network (a request from
+		// the machine itself, or a Docker that does not keep visitors' addresses), and the
+		// leftmost hop is the nearest thing to their address that a proxy wrote.
+		return net.ParseIP(strings.TrimSpace(hops[0])).String()
+	}
 	if xr := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); xr != nil {
 		return xr.String()
-	}
-	if len(hops) > 0 {
-		return net.ParseIP(strings.TrimSpace(hops[0])).String() // every hop is a trusted proxy
 	}
 	return remote
 }
