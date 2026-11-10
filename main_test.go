@@ -8,8 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCleanLink(t *testing.T) {
@@ -374,6 +377,42 @@ func TestHomeLink(t *testing.T) {
 	for _, in := range []string{"pi.local:8080", "//pi.local/", "javascript:alert(1)", "ftp://pi.local/", "http://", "http://admin:secret@pi.local/", "/start"} {
 		if got, err := homeLink(in); err == nil {
 			t.Errorf("homeLink(%q) = %q, want it refused", in, got)
+		}
+	}
+}
+
+// The dashboard's count toward the fit of the suggestion weights: the number of pairs is the one
+// sim/fit-suggest.js waits for, and the date is honest about what it knows.
+func TestGate(t *testing.T) {
+	src, err := os.ReadFile("sim/fit-suggest.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`MIN_PAIRS = (\d+)`).FindSubmatch(src)
+	if m == nil || string(m[1]) != strconv.Itoa(gatePairs) {
+		t.Fatalf("gatePairs is %d, but sim/fit-suggest.js has MIN_PAIRS = %s: the dashboard would count toward another number than the fit", gatePairs, m)
+	}
+	wed := time.Date(2026, 11, 11, 15, 30, 0, 0, time.UTC) // a Wednesday; its week began on Monday 9 November
+	for _, c := range []struct {
+		name          string
+		pairs, recent int
+		now           time.Time
+		want          string
+	}{
+		{"enough pairs", 30, 0, wed, "now"},
+		{"more than enough", 41, 7, wed, "now"},
+		{"nothing marked lately: no date", 12, 0, wed, ""},
+		{"none at all", 0, 0, wed, ""},
+		{"a pair a week, eighteen missing", 12, 4, wed, "2027-03-15"},
+		{"two a week, one missing: next week", 29, 8, wed, "2026-11-16"},
+		{"one in four weeks, one missing: four weeks", 29, 1, wed, "2026-12-07"},
+		{"three in four weeks, four missing: rounded up to six weeks", 26, 3, wed, "2026-12-21"},
+		{"on a Monday the week is this one", 29, 4, time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), "2026-11-16"},
+		{"on a Sunday too", 29, 4, time.Date(2026, 11, 15, 23, 59, 0, 0, time.UTC), "2026-11-16"},
+		{"across a new year", 20, 4, time.Date(2026, 12, 30, 12, 0, 0, 0, time.UTC), "2027-03-08"},
+	} {
+		if got := gateOpens(c.pairs, c.recent, c.now); got != c.want {
+			t.Errorf("%s: gateOpens(%d, %d) = %q, want %q", c.name, c.pairs, c.recent, got, c.want)
 		}
 	}
 }

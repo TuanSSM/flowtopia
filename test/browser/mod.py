@@ -121,8 +121,11 @@ try:
     check('search stays inside Flowa',not [r for r in pages_for('server')+pages_for('home') if not r[1].startswith('#')])
     js("window.fetch=window.__real");js("loadSession().then(render)");idle()
     check('and it goes again when the server stops naming one',staff()==['Staff',['#/mod','#/admin']],staff())
-    # Four headline numbers, plus two for next-trick suggestions, which are on by default.
-    check('the dashboard has four headline numbers, two for suggestions, and four weekly charts with labelled values',js("return document.querySelectorAll('.stat').length")==6 and 'Suggestions' in txt('#main') and js("return document.querySelectorAll('.dash-chart svg').length")==4 and js("return document.querySelectorAll('.dash-chart .dc-val').length")>=2)
+    # Four headline numbers, plus three for next-trick suggestions, which are on by default.
+    check('the dashboard has four headline numbers, three for suggestions, and four weekly charts with labelled values',js("return document.querySelectorAll('.stat').length")==7 and 'Suggestions' in txt('#main') and js("return document.querySelectorAll('.dash-chart svg').length")==4 and js("return document.querySelectorAll('.dash-chart .dc-val').length")>=2)
+    # No transition has a shared mark in this suite, so the count toward the fit is 0 of 30, with no date to give.
+    gate=txt('.dash-suggest .stat:nth-child(3)')
+    check('the dashboard counts the pairs with a shared mark toward the 30 the fit needs, and gives no date without a pace',gate.startswith('Pairs of skills with a shared mark') and 'of 30 needed' in gate and 'no date yet' in gate,gate)
     js("document.querySelector('.dash-table summary').click()");idle()
     check('the weekly numbers are also a table',js("return document.querySelectorAll('.dash-table tbody tr').length")==12)
     check('the dashboard shows the running version (dev here, where VERSION is not set)',txt('.dash-version').startswith('Flowa version dev'),txt('.dash-version'))
