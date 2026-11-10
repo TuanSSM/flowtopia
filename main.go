@@ -3754,6 +3754,14 @@ func (a *app) handleTransitionLabels(w http.ResponseWriter, r *http.Request, u *
 			a.serverError(w, err)
 			return
 		}
+		// The week this pair first counted toward the fit (Works or Blocked from someone), for the
+		// dashboard's pace. A week and not a moment, so that it cannot be laid next to who was
+		// signed in; gone again when the last such mark is withdrawn.
+		if _, err := tx.Exec(`UPDATE transition_counts SET first_week = CASE WHEN works > 0 OR blocked > 0 THEN COALESCE(first_week, date_trunc('week', now())::date) END
+			WHERE prop = $1 AND a = $2 AND b = $3`, in.Prop, d.A, d.B); err != nil {
+			a.serverError(w, err)
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		a.serverError(w, err)
@@ -3927,6 +3935,32 @@ const dashWeeksSQL = `WITH weeks AS (SELECT generate_series(date_trunc('week', n
 		(SELECT count(*) FROM reports r WHERE r.created_at >= weeks.w AND r.created_at < weeks.w + interval '1 week')
 	FROM weeks ORDER BY weeks.w`
 
+// gatePairs is how many pairs of skills need a shared Works or Blocked mark before the suggestion
+// weights can be fitted and measured. It is MIN_PAIRS in sim/fit-suggest.js; TestGate holds the two equal.
+const gatePairs = 30
+
+// gateSQL counts the pairs that count toward the fit, and those among them that first counted in one
+// of the four whole weeks before this one.
+const gateSQL = `SELECT count(*), count(*) FILTER (WHERE first_week >= (date_trunc('week', now()) - interval '4 weeks')::date AND first_week < date_trunc('week', now())::date)
+	FROM transition_counts WHERE works > 0 OR blocked > 0`
+
+// gateOpens says when the fit can run: "now" with enough pairs, the Monday of the week it would be
+// reached at the pace of the last four weeks (recent pairs in four weeks), or "" when that pace is
+// nothing, because then there is no honest date to give.
+func gateOpens(pairs, recent int, now time.Time) string {
+	if pairs >= gatePairs {
+		return "now"
+	}
+	if recent <= 0 {
+		return ""
+	}
+	// Whole weeks still needed, rounded up: (gatePairs - pairs) pairs at recent/4 a week.
+	weeks := ((gatePairs-pairs)*4 + recent - 1) / recent
+	y, m, d := now.UTC().Date()
+	monday := time.Date(y, m, d, 0, 0, 0, 0, time.UTC).AddDate(0, 0, -((int(now.UTC().Weekday()) + 6) % 7))
+	return monday.AddDate(0, 0, 7*weeks).Format("2006-01-02")
+}
+
 // handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
 // for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
 func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
@@ -3971,7 +4005,15 @@ func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 		a.serverError(w, err)
 		return
 	}
-	out["suggest"] = map[string]int{"shown": shown, "added": added, "worked": worked}
+	// How far the shared marks are from the fit: pairs marked Works or Blocked by someone, and how
+	// many of them first counted in the four whole weeks before this one, which is the pace.
+	var pairs, recent int
+	if err := a.db.QueryRow(gateSQL).Scan(&pairs, &recent); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["suggest"] = map[string]any{"shown": shown, "added": added, "worked": worked,
+		"pairs": pairs, "gate": gatePairs, "recent": recent, "opens": gateOpens(pairs, recent, time.Now())}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -4052,6 +4094,10 @@ var migrations = []string{schema, schemaSocial,
 	CREATE INDEX IF NOT EXISTS comment_likes_user ON comment_likes (user_id, comment_id);
 	CREATE INDEX IF NOT EXISTS posts_created ON posts (created_at);
 	CREATE INDEX IF NOT EXISTS comments_created ON comments (created_at)`,
+	// 7: the week a pair of skills first got a shared Works or Blocked mark, for the dashboard's count
+	// toward the fit of the suggestion weights. Pairs marked before this have none and are counted
+	// without a week. One new column: going back to an earlier build is safe.
+	`ALTER TABLE transition_counts ADD COLUMN IF NOT EXISTS first_week DATE`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting

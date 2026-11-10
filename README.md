@@ -436,7 +436,10 @@ accounts page is asked about first ("Make @name a moderator?") and sent on Apply
 - **Audit log:** every moderation and admin action (including flags, roles, account deletion, password
   resets and catalog publishing) is written by one helper in the same transaction, and admins can filter it.
 - **Overview** (the first admin tab): members, people active in 7 and 30 days, open reports, and 12 weeks of practice sessions,
-  posts, comments and reports as small charts with a table view.
+  posts, comments and reports as small charts with a table view. With `suggest` on it also shows how many suggested tricks
+  were added to a combo and later marked Works, and how far the shared marks are from the 30 pairs of skills the
+  suggestion weights need to be fitted ([docs/suggestions.md](docs/suggestions.md)): the count, and the week it would be
+  reached at the pace of the last four weeks, or that there is no date when nothing was marked in them.
 - **Skill map editor** (the Catalogs tab, behind `catalogEditor`): edit skills, branches and phases, or the whole catalog as
   JSON, in a draft. Every field shows the validator's messages as you type (`web/catalog-check.js`; the
   server runs the same rules in Go, `validateCatalog`, and both must agree on `test/catalog-fixtures`).

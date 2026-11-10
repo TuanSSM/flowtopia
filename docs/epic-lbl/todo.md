@@ -5,13 +5,22 @@ Category: feature. Size: S. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#39](https://github.com/TuanSSM/flowtopia/issues/39)). 0 of 4 items done.
+**Status:** in progress (issue [#39](https://github.com/TuanSSM/flowtopia/issues/39)). 1 of 4 items done.
 
 - [ ] **The prompt.** After a combo run is logged, for each transition the member has not marked:
   "How did <a> into <b> go?" Works, Needs a bridge, Blocked, Skip; once per transition; only with
   sharing on. DoD: `suggest.py` logs a run and answers; the mark lands in the combo and the counts.
-- [ ] **Progress to the gate.** The admin dashboard shows shared pairs toward 30 and the date the
+- [x] **Progress to the gate.** The admin dashboard shows shared pairs toward 30 and the date the
   gate can open. DoD: `TestDBDashboard` has the number.
+  Done: a third tile under Suggestions, "Pairs of skills with a shared mark": the count of pairs
+  that someone marked Works or Blocked (what `sim/fit-suggest.js` counts; "needs a bridge" alone is
+  not read by the fit), "of 30 needed", and the week 30 would be reached at the pace of the last
+  four whole weeks. With no pair first marked in those weeks it says there is no date, and with 30
+  it says the fit can run now. For the pace a pair keeps the week it first counted
+  (`transition_counts.first_week`, migration 7): a week and not a moment, so it cannot be laid next
+  to who was signed in, and gone again when the last mark is withdrawn. `TestDBDashboard` and
+  `TestDBTransitionCounts` have the numbers, `TestGate` the date arithmetic and that 30 is the
+  `MIN_PAIRS` of the fit, and `mod.py` reads the tile.
 - [ ] **The fit by workflow.** `fit_suggest.yml`, run by hand with an instance URL and a read token
   in a secret: fetches `GET /api/suggest/counts`, runs `sim/fit-suggest.js --write`, opens a PR with
   the AUC and the baseline in the body. DoD: run once on stage data.

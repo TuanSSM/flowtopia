@@ -84,6 +84,10 @@ AUC of 0.75 and beat the baseline. With fewer, as now, nothing can be fitted or 
 be the starting ones from the physics and marked early, and the combo builder says its suggestions are not
 yet checked against real combos.
 
+The admin dashboard counts toward that gate: the pairs of skills that someone marked Works or Blocked, of
+the 30 needed, and the week 30 would be reached at the pace of the last four weeks (or that there is no
+date, when none were first marked in them). A pair keeps the week it first counted and nothing finer.
+
 ## Limits
 
 - 89 of 411 skills have clip measurements (104 have demos; stills have no motion). The rest rely on

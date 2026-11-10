@@ -791,6 +791,19 @@ func TestDBDashboard(t *testing.T) {
 	if sessions != 3 || posts != 2 {
 		t.Fatalf("12-week totals: %d sessions, %d posts", sessions, posts)
 	}
+	// The count toward the fit of the suggestion weights: two pairs that someone marked Works or
+	// Blocked, one of them first in the week before this one, and a third with only "needs a bridge",
+	// which the fit does not read. TestDBTransitionCounts follows the marks that make these rows.
+	if _, err := e.a.db.Exec(`INSERT INTO transition_counts (prop, a, b, works, bridge, blocked, first_week) VALUES
+		('nunchaku', 'F5', 'F7', 2, 0, 0, (date_trunc('week', now()) - interval '1 week')::date),
+		('nunchaku', 'F7', 'R1', 0, 1, 1, date_trunc('week', now())::date),
+		('nunchaku', 'R1', 'F5', 0, 4, 0, NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	sug := e.must(200, admin, "GET", "/api/admin/dashboard", nil)["suggest"].(map[string]any)
+	if num(sug["pairs"]) != 2 || num(sug["gate"]) != 30 || num(sug["recent"]) != 1 || sug["opens"] != gateOpens(2, 1, time.Now()) {
+		t.Fatalf("the gate: %v, want 2 pairs of 30, 1 of them recent, and the week that pace reaches 30", sug)
+	}
 }
 
 // TestDBAccounts covers the account rules of the fourth audit pull request: passwords nobody
@@ -1250,6 +1263,21 @@ func TestDBTransitionCounts(t *testing.T) {
 	if len(got) != 1 || num(got[0].(map[string]any)["works"]) != 1 || num(got[0].(map[string]any)["blocked"]) != 1 {
 		t.Fatalf("counts: %v", got)
 	}
+	// The pair counts toward the fit since this week, and the dashboard says so: one pair of the 30
+	// needed, none of them from the four whole weeks before this one, so no date yet.
+	thisWeek := `SELECT count(*) FROM transition_counts WHERE a = 'F5' AND b = 'F7' AND first_week = date_trunc('week', now())::date`
+	if e.count(thisWeek) != 1 {
+		t.Fatal("a pair with a Works or Blocked mark remembers the week it first had one")
+	}
+	if sug := e.must(200, admin, "GET", "/api/admin/dashboard", nil)["suggest"].(map[string]any); num(sug["pairs"]) != 1 || num(sug["gate"]) != gatePairs || num(sug["recent"]) != 0 || sug["opens"] != "" {
+		t.Fatalf("the gate with one pair: %v", sug)
+	}
+	// A mark that only says "needs a bridge" is not one the fit reads: it does not count, and has no week.
+	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F7", "b": "R1", "from": "untested", "to": "bridge"}}})
+	if e.count(`SELECT count(*) FROM transition_counts WHERE a = 'F7' AND b = 'R1' AND first_week IS NULL`) != 1 {
+		t.Fatal("a pair with only a bridge mark has no first week")
+	}
+	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F7", "b": "R1", "from": "bridge", "to": "untested"}}})
 	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "blocked", "to": "untested"}}})
 	// Counts never go below zero, whatever a client sends.
 	e.must(200, b, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "blocked", "to": "untested"}}})
@@ -1275,12 +1303,35 @@ func TestDBTransitionCounts(t *testing.T) {
 	if got := e.must(200, c, "GET", "/api/suggest/counts?prop=nunchaku", nil)["counts"].([]any); len(got) != 0 {
 		t.Fatalf("after withdrawal: %v", got)
 	}
+	// With the last mark withdrawn the pair no longer counts, and its week is forgotten with it.
+	if e.count(`SELECT count(*) FROM transition_counts WHERE first_week IS NOT NULL`) != 0 {
+		t.Fatal("a pair nobody marks any more keeps no week")
+	}
+	if sug := e.must(200, admin, "GET", "/api/admin/dashboard", nil)["suggest"].(map[string]any); num(sug["pairs"]) != 0 {
+		t.Fatalf("the gate after withdrawal: %v", sug)
+	}
+	// Twelve pairs, four of them first marked in the last four whole weeks: a pair a week, so the
+	// eighteen still missing take eighteen weeks. One marked this week and one from before the column
+	// existed count as pairs and not toward the pace.
+	if _, err := e.a.db.Exec(`INSERT INTO transition_counts (prop, a, b, works, blocked, first_week)
+		SELECT 'poi', 'A' || g, 'B' || g, g % 2, 1 - g % 2,
+			CASE WHEN g <= 4 THEN (date_trunc('week', now()) - g * interval '1 week')::date WHEN g = 5 THEN date_trunc('week', now())::date
+				WHEN g = 6 THEN NULL ELSE (date_trunc('week', now()) - (g + 3) * interval '1 week')::date END
+		FROM generate_series(1, 12) g`); err != nil {
+		t.Fatal(err)
+	}
+	e.a.db.Exec(`INSERT INTO transition_counts (prop, a, b, bridge) VALUES ('poi', 'A1', 'B2', 3)`) // bridge only: not a pair for the fit
+	sug := e.must(200, admin, "GET", "/api/admin/dashboard", nil)["suggest"].(map[string]any)
+	if num(sug["pairs"]) != 12 || num(sug["recent"]) != 4 || sug["opens"] != gateOpens(12, 4, time.Now()) || sug["opens"] == "" {
+		t.Fatalf("the gate with twelve pairs: %v", sug)
+	}
+	e.a.db.Exec(`DELETE FROM transition_counts WHERE prop = 'poi'`)
 	_ = bID
 	// Usage counters feed the dashboard.
 	e.must(200, b, "POST", "/api/suggest/usage", map[string]any{"shown": 5, "added": 2, "worked": 1})
 	e.must(200, c, "POST", "/api/suggest/usage", map[string]any{"shown": 3, "added": 1, "worked": 0})
 	e.must(400, c, "POST", "/api/suggest/usage", map[string]any{"shown": -1})
-	sug := e.must(200, admin, "GET", "/api/admin/dashboard", nil)["suggest"].(map[string]any)
+	sug = e.must(200, admin, "GET", "/api/admin/dashboard", nil)["suggest"].(map[string]any)
 	if num(sug["shown"]) != 8 || num(sug["added"]) != 3 || num(sug["worked"]) != 1 {
 		t.Fatalf("usage: %v", sug)
 	}
