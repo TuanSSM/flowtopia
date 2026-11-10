@@ -51,7 +51,7 @@ try:
     check('bad tags and combos are refused',refused(op,'posts',{'body':'x','tags':[{'prop':'drums','skill':'F1'}]}) and refused(op,'posts',{'body':'x','combo':{'name':'c','prop':'nunchaku','seq':[]}}))
     # Publish a combo from the Combos page.
     nav('#/combos',2);js("const f=document.querySelector('#combo-form');f.name.value='Morning loop';f.requestSubmit()");time.sleep(1.2)
-    for sid in ['F5','F7','R1']: js("const s=document.querySelector('[data-change=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}))",sid);time.sleep(1)
+    for sid in ['F5','F7','R1']: js("const s=document.querySelector('[data-pick=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));s.parentElement.querySelector('[data-act=add-chosen]').click()",sid);time.sleep(1)
     click('[data-act=combo-publish]');time.sleep(1.5)
     check('Publish opens the composer with the combo attached and a line to edit',js("return location.hash")=='#/timeline' and 'Morning loop' in txt('.draft-chips .combo-chip') and js("return document.querySelector('#compose-form textarea').value").startswith('New combo: Morning loop'))
     js("document.querySelector('#compose-form').requestSubmit()");time.sleep(1.5)
@@ -83,7 +83,7 @@ try:
     check('only the author or an admin can delete a post',refused(sam,f'posts/{post}',{},'DELETE') and not refused(op,f'posts/{sp}',{},'DELETE'))
     # Achievements: a session unlocks badges, which post a milestone and show in the bell.
     nav('#/practice',1.5)
-    js("const s=document.querySelector('[data-change=focus-add]');s.value='F7';s.dispatchEvent(new Event('change',{bubbles:true}))");time.sleep(.6)
+    js("const s=document.querySelector('[data-pick=focus-add]');s.value='F7';s.dispatchEvent(new Event('change',{bubbles:true}));s.parentElement.querySelector('[data-act=add-chosen]').click()");time.sleep(.6)
     js("const f=document.querySelector('#log-form');f.minutes.value='35';f.requestSubmit()");time.sleep(1)
     ach=wait(lambda: [a['key'] for a in get(op,'me')['achievements'] if a['key']=='sessions-1'])
     check('logging a session unlocks First steps',ach==['sessions-1'],ach)
@@ -169,6 +169,16 @@ try:
     js("[...document.querySelectorAll('.ntf')].find(a=>a.textContent.includes('replied to your comment')).click()");time.sleep(2.5)
     inview=js("const e=document.getElementById('c-'+arguments[0]);if(!e)return null;const r=e.getBoundingClientRect();return [location.hash,r.top>=0&&r.bottom<=innerHeight,e.classList.contains('focus')]",str(r2))
     check('the reply notification opens the post with the reply in view and highlighted',inview==[f'#/post/{rp}/{r2}',True,True],inview)
+    # A post opened at one thread offers more comments only when there are some it is not showing.
+    solo=api(sam,'posts',{'body':'One thread only'})['posts'][0]['id']
+    k1=api(op,f'posts/{solo}/comments',{'body':'first here'})['comment']['id']
+    k2=api(sam,f'posts/{solo}/comments',{'body':'an answer','parentId':k1})['comment']['id']
+    nav('#/practice',.8);nav(f'#/post/{solo}/{k2}',2.5)
+    seen=js("return [!!document.getElementById('c-'+arguments[0]),!!document.getElementById('c-'+arguments[1]),!!document.querySelector('[data-act=more-comments]')]",str(k1),str(k2))
+    check('a thread that shows every comment has no "View more comments"',seen==[True,True,False],seen)
+    api(sam,f'posts/{solo}/comments',{'body':'a second thread'})
+    nav('#/practice',.8);nav(f'#/post/{solo}/{k2}',2.5)
+    check('with another thread on the post the button is there',js("return (document.querySelector('[data-act=more-comments]')||{}).textContent")=='View more comments')
     # Bookmarks: a post from the timeline, a skill from its panel, a combo from its header, then the page.
     bm=lambda: get(op,'bookmarks')
     check('the navigation has a Bookmarks entry',js("return !!document.querySelector('.side a[href=\"#/bookmarks\"]')"))
@@ -285,7 +295,7 @@ try:
     pick('[data-change=compose-img]',clear_png,'clear.png','image/png')
     wait(lambda: js("return !!document.querySelector('.compose-img img')"),n=20)
     nav('#/profile',1.5);click('[data-act=signout]');wait(lambda: toastIs('Signed out.'),n=20)
-    nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value='sam';f.elements.password.value='flowa-test-only';f.requestSubmit()");time.sleep(2.5)
+    signin('sam')
     nav('#/timeline',2.5)
     left=js("const f=document.querySelector('#compose-form');return f&&[f.body.value,!!document.querySelector('.compose-img'),socialDraft()]")
     check('after sign-out the next person on this browser finds an empty composer',left==['',False,False] and get(sam,'me')['user']['username']=='sam' and 'Private until' not in js("return document.body.textContent"),left)

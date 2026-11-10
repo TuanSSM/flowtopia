@@ -13,7 +13,7 @@ def saved_combo(want):
         time.sleep(.5)
     return got
 def add(sid):
-    js("const s=document.querySelector('[data-change=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}))",sid);time.sleep(1.1)
+    js("const s=document.querySelector('[data-pick=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));s.parentElement.querySelector('[data-act=add-chosen]').click()",sid);time.sleep(1.1)
 try:
     op=admin();start();signin()
     if js("return !!document.querySelector('input[name=prop]')"): js("for(const i of document.querySelectorAll('input[name=prop]'))i.checked=i.value==='nunchaku';document.querySelector('#props-form').requestSubmit()");time.sleep(3.5)
@@ -57,6 +57,17 @@ try:
     js("document.querySelector('[data-act=combo-rm][data-i=\"0\"]').click()");time.sleep(1.2)
     check('removing a skill updates the stage',ids()=='F5,F1,A1' and js("return document.querySelectorAll('#combo-prog i').length")==3)
     shot('/tmp/flowa-test/combo-open.png')
+    # The list of skills is worked with the keyboard: moving through it adds nothing, Enter or the Add button does.
+    def keys(*ks): cmd('WebDriver:PerformActions',actions=[{'type':'key','id':'kb','actions':[a for k in ks for a in ({'type':'keyDown','value':k},{'type':'keyUp','value':k})]}]);cmd('WebDriver:ReleaseActions')
+    js("document.querySelector('[data-pick=combo-add]').focus()")
+    check('the Add button waits for a choice',js("return document.querySelector('[data-pick=combo-add]').parentElement.querySelector('[data-act=add-chosen]').disabled")==True)
+    keys('\ue015','\ue015','\ue015');time.sleep(1.2)
+    third=js("const s=document.querySelector('[data-pick=combo-add]');return [s.value,s.options[3].value,s.parentElement.querySelector('[data-act=add-chosen]').disabled]")
+    check('arrow down three times chooses the third skill and adds nothing',ids()=='F5,F1,A1' and third[0]==third[1]!='' and third[2]==False,(ids(),third))
+    keys('\ue007');time.sleep(1.2)
+    after=js("const s=document.querySelector('[data-pick=combo-add]');return [document.activeElement===s,s.value]")
+    check('Enter adds the chosen skill and leaves the keyboard on the list',ids()=='F5,F1,A1,'+third[1] and after==[True,''],(ids(),after))
+    js("document.querySelector('[data-act=combo-rm][data-i=\"3\"]').click()");time.sleep(1.2)
     js("const f=document.querySelector('#combo-form');f.name.value='Second';f.requestSubmit()");time.sleep(1.2)
     check('only one combo is open; the other is a single line',js("return document.querySelectorAll('.cb').length")==1 and js("return document.querySelectorAll('.cb-row').length")==1 and 'Test loop' in txt('.cb-row'))
     click('.cb-row');time.sleep(1.2)

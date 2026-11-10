@@ -495,11 +495,83 @@ func TestDBRoles(t *testing.T) {
 	e.must(400, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/role", bID), map[string]any{"role": "king"})
 	e.must(403, b, "PUT", fmt.Sprintf("/api/admin/users/%d/role", adminID), map[string]any{"role": "user"})
 	e.must(403, b, "PUT", "/api/flags", map[string]any{"flags": map[string]bool{"tour": true}})
-	// A second admin can be demoted; the last one cannot be deleted.
-	cID, _ := e.user("cal", "admin")
-	e.must(200, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/role", cID), map[string]any{"role": "user"})
-	if n := e.count(`SELECT count(*) FROM mod_actions WHERE action = 'role'`); n != 2 {
-		t.Fatalf("role changes logged %d times, want 2", n)
+	// The owner (SEC-12). With no owner yet, the longest-standing admin becomes it, once.
+	role := func(id int64) string { return fmt.Sprintf("/api/admin/users/%d/role", id) }
+	owner := func(id int64) string { return fmt.Sprintf("/api/admin/users/%d/owner", id) }
+	to := func(r string) map[string]any { return map[string]any{"role": r} }
+	cID, cal := e.user("cal", "admin")
+	dID, dee := e.user("dee", "admin")
+	// Before there is an owner nobody can take an admin's role away.
+	e.must(403, admin, "PUT", role(cID), to("user"))
+	for i := 0; i < 2; i++ {
+		if err := e.a.ensureOwner(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM users WHERE owner`); n != 1 || e.count(`SELECT count(*) FROM users WHERE owner AND id = $1`, adminID) != 1 {
+		t.Fatalf("%d owners, want the first admin alone", n)
+	}
+	if u := e.must(200, admin, "GET", "/api/me", nil)["user"].(map[string]any); u["owner"] != true {
+		t.Fatalf("the owner's own account does not say so: %v", u["owner"])
+	}
+	if u := e.must(200, cal, "GET", "/api/me", nil)["user"].(map[string]any); u["owner"] != nil {
+		t.Fatalf("an admin is marked owner: %v", u["owner"])
+	}
+	// Admins are peers: one cannot demote another, and nobody changes or deletes the owner.
+	if out := e.must(403, cal, "PUT", role(dID), to("moderator")); !strings.Contains(fmt.Sprint(out["error"]), "Only the owner") {
+		t.Fatalf("an admin demoting an admin: %v", out["error"])
+	}
+	if out := e.must(403, cal, "PUT", role(adminID), to("user")); !strings.Contains(fmt.Sprint(out["error"]), "owner's role cannot be changed") {
+		t.Fatalf("an admin demoting the owner: %v", out["error"])
+	}
+	if out := e.must(403, cal, "DELETE", fmt.Sprintf("/api/admin/users/%d", adminID), nil); !strings.Contains(fmt.Sprint(out["error"]), "owner's account cannot be deleted") {
+		t.Fatalf("an admin deleting the owner: %v", out["error"])
+	}
+	e.must(200, cal, "PUT", role(adminID), to("admin")) // no change is no offence
+	// An admin still makes admins; only taking the role away is the owner's.
+	eID, _ := e.user("eve", "user")
+	e.must(200, cal, "PUT", role(eID), to("admin"))
+	e.must(403, cal, "PUT", role(eID), to("user"))
+	e.must(200, admin, "PUT", role(eID), to("user"))
+	// The database holds the two rules too: one owner, and the owner is an admin.
+	if _, err := e.a.db.Exec(`UPDATE users SET owner = true WHERE id = $1`, cID); err == nil {
+		t.Fatal("the database let a second owner in")
+	}
+	if _, err := e.a.db.Exec(`UPDATE users SET role = 'user' WHERE id = $1`, adminID); err == nil {
+		t.Fatal("the database let the owner stop being an admin")
+	}
+	// Handing over: only the owner, only to another admin who is not suspended.
+	e.must(403, cal, "PUT", owner(dID), nil)
+	e.must(403, cal, "PUT", owner(cID), nil)
+	e.must(400, admin, "PUT", owner(adminID), nil)
+	e.must(400, admin, "PUT", owner(bID), nil)
+	e.must(404, admin, "PUT", owner(999999), nil)
+	e.must(403, b, "PUT", owner(bID), nil)
+	e.a.db.Exec(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, dID)
+	e.must(400, admin, "PUT", owner(dID), nil)
+	e.a.db.Exec(`UPDATE users SET suspended_until = NULL WHERE id = $1`, dID)
+	if n := e.count(`SELECT count(*) FROM users WHERE owner AND id = $1`, adminID); n != 1 {
+		t.Fatal("a refused hand-over moved ownership")
+	}
+	e.must(200, admin, "PUT", owner(dID), nil)
+	if e.count(`SELECT count(*) FROM users WHERE owner`) != 1 || e.count(`SELECT count(*) FROM users WHERE owner AND id = $1`, dID) != 1 {
+		t.Fatal("after the hand-over dee alone is the owner")
+	}
+	if e.count(`SELECT count(*) FROM mod_actions WHERE action = 'owner' AND actor_id = $1 AND target_user_id = $2`, adminID, dID) != 1 {
+		t.Fatal("the hand-over is not in the audit log")
+	}
+	if k := e.kinds(dID); strings.Join(k, ",") != "moderation" {
+		t.Fatalf("dee told %v", k)
+	}
+	// The old owner is an admin like any other now: cannot demote, can be demoted.
+	e.must(403, admin, "PUT", role(cID), to("user"))
+	e.must(403, admin, "PUT", owner(adminID), nil)
+	e.must(200, dee, "PUT", role(cID), to("user"))
+	e.must(200, dee, "PUT", role(adminID), to("moderator"))
+	e.must(200, dee, "PUT", role(adminID), to("admin"))
+	admin = e.session(adminID)
+	if n := e.count(`SELECT count(*) FROM mod_actions WHERE action = 'role'`); n != 6 {
+		t.Fatalf("role changes logged %d times, want 6", n)
 	}
 	if k := e.kinds(bID); strings.Join(k, ",") != "moderation" {
 		t.Fatalf("bea told %v", k)
@@ -715,6 +787,170 @@ func TestDBDashboard(t *testing.T) {
 	}
 	if sessions != 3 || posts != 2 {
 		t.Fatalf("12-week totals: %d sessions, %d posts", sessions, posts)
+	}
+}
+
+// TestDBAccounts covers the account rules of the fourth audit pull request: passwords nobody
+// should pick, hashes made stronger at sign-in, names that show, and a last-active time the
+// account keeps when its sessions are removed.
+func TestDBAccounts(t *testing.T) {
+	e := newEnv(t)
+	_, admin := e.user("boss", "admin")
+	_, mod := e.user("mona", "moderator")
+	signup := func(want int, name, pw string) map[string]any {
+		t.Helper()
+		return e.must(want, "", "POST", "/api/signup", map[string]any{"username": name, "password": pw})
+	}
+	cookie := func(h http.Header) string {
+		t.Helper()
+		for _, c := range (&http.Response{Header: h}).Cookies() {
+			if c.Name == cookieName && c.Value != "" {
+				return c.Value
+			}
+		}
+		t.Fatal("no session cookie")
+		return ""
+	}
+
+	// SEC-11: the most used passwords are refused whatever the case, and so is the username.
+	for _, pw := range []string{"password", "PASSWORD1", " qwerty123 ", "Sunshine1", "sandy.beach", "Sandy.Beach"} {
+		if out := signup(400, "sandy.beach", pw); !strings.Contains(fmt.Sprint(out["error"]), "password") {
+			t.Fatalf("sign-up with %q: %v", pw, out["error"])
+		}
+	}
+	if out := signup(400, "sandy.beach", "short"); !strings.Contains(fmt.Sprint(out["error"]), "8 to 200") {
+		t.Fatalf("a short password: %v", out["error"])
+	}
+	if e.count(`SELECT count(*) FROM users WHERE username = 'sandy.beach'`) != 0 {
+		t.Fatal("a refused sign-up made an account")
+	}
+	_, _, hdr := e.doH("", "POST", "/api/signup", map[string]any{"username": "sandy.beach", "password": "wind on the dunes"}, nil)
+	sandy := cookie(hdr)
+	var sandyID int64
+	if err := e.a.db.QueryRow(`SELECT id FROM users WHERE username = 'sandy.beach'`).Scan(&sandyID); err != nil {
+		t.Fatal(err)
+	}
+	// The same rules when changing a password and when an admin sets one.
+	change := func(next string) map[string]any { return map[string]any{"current": "wind on the dunes", "next": next} }
+	e.must(400, sandy, "PUT", "/api/me/password", change("iloveyou1"))
+	e.must(400, sandy, "PUT", "/api/me/password", change("SANDY.beach"))
+	reset := fmt.Sprintf("/api/admin/users/%d/password", sandyID)
+	e.must(400, admin, "PUT", reset, map[string]any{"next": "12345678"})
+	e.must(400, admin, "PUT", reset, map[string]any{"next": "sandy.beach"})
+	if out := e.must(200, sandy, "GET", "/api/me", nil); out["user"] == nil {
+		t.Fatal("a refused reset signed the member out")
+	}
+
+	// SEC-11: a hash made with fewer rounds is made again at the next sign-in, once.
+	hashOf := func() string {
+		var h string
+		if err := e.a.db.QueryRow(`SELECT pw_hash FROM users WHERE id = $1`, sandyID).Scan(&h); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	if hashRounds(hashOf()) != pwRounds {
+		t.Fatalf("a new account is hashed with %d rounds", hashRounds(hashOf()))
+	}
+	weak := hashWith("wind on the dunes", 200000)
+	e.a.db.Exec(`UPDATE users SET pw_hash = $2 WHERE id = $1`, sandyID, weak)
+	in := func(pw string) map[string]any { return map[string]any{"username": "sandy.beach", "password": pw} }
+	e.must(401, "", "POST", "/api/signin", in("wind on the dune"))
+	if hashOf() != weak {
+		t.Fatal("a wrong password changed the stored hash")
+	}
+	e.must(200, "", "POST", "/api/signin", in("wind on the dunes"))
+	strong := hashOf()
+	if hashRounds(strong) != pwRounds || !checkPassword(strong, "wind on the dunes") {
+		t.Fatalf("after sign-in the hash has %d rounds", hashRounds(strong))
+	}
+	e.must(200, "", "POST", "/api/signin", in("wind on the dunes"))
+	if hashOf() != strong {
+		t.Fatal("a hash that is strong already was made again")
+	}
+	if out := e.must(200, sandy, "GET", "/api/me", nil); out["user"] == nil {
+		t.Fatal("making the hash again signed the other device out")
+	}
+
+	// UN-12: names and bios keep only what shows.
+	put := func(want int, body map[string]any) map[string]any {
+		t.Helper()
+		return e.must(want, sandy, "PUT", "/api/me", body)
+	}
+	name := func() string {
+		return e.must(200, sandy, "GET", "/api/me", nil)["user"].(map[string]any)["displayName"].(string)
+	}
+	for _, bad := range []string{"\u200b\u200b", "\u3164", "   ", "...", "\u202eevil", strings.Repeat("x", 41)} {
+		put(400, map[string]any{"displayName": bad})
+	}
+	if name() != "sandy.beach" {
+		t.Fatalf("a refused name was stored: %q", name())
+	}
+	put(200, map[string]any{"displayName": "  Sandy\u200b   Beach\u200f "})
+	if name() != "Sandy Beach" {
+		t.Fatalf("name %q, want it cleaned", name())
+	}
+	put(400, map[string]any{"bio": "spins \u202e poi"})
+	put(200, map[string]any{"bio": "\u200b\n  spins poi\u2060 "})
+	if bio := e.must(200, sandy, "GET", "/api/me", nil)["user"].(map[string]any)["bio"]; bio != "spins poi" {
+		t.Fatalf("bio %q", bio)
+	}
+	e.must(400, "", "POST", "/api/signup", map[string]any{"username": "ghost2", "password": "wind on the dunes", "displayName": "\u2800"})
+	if e.count(`SELECT count(*) FROM users WHERE username = 'ghost2'`) != 0 {
+		t.Fatal("an account with an empty-looking name was made")
+	}
+
+	// UN-16: the message names the service with the right article.
+	out := put(400, map[string]any{"links": map[string]string{"instagram": "not a handle!"}})
+	if !strings.Contains(fmt.Sprint(out["error"]), "an Instagram handle") {
+		t.Fatalf("instagram: %v", out["error"])
+	}
+	out = put(400, map[string]any{"links": map[string]string{"tiktok": "not a handle!"}})
+	if !strings.Contains(fmt.Sprint(out["error"]), "a TikTok handle") {
+		t.Fatalf("tiktok: %v", out["error"])
+	}
+
+	// HP-10: last active is the account's own record, so a suspension, which removes the
+	// sessions, does not blank it; and the hourly touch moves it on.
+	lastActive := func(id int64) any {
+		for _, x := range e.must(200, admin, "GET", "/api/admin/users", nil)["users"].([]any) {
+			if m := x.(map[string]any); num(m["id"]) == id {
+				return m["lastActive"]
+			}
+		}
+		t.Fatalf("user %d is not in the list", id)
+		return nil
+	}
+	if lastActive(sandyID) == nil {
+		t.Fatal("no last active after signing up")
+	}
+	e.a.db.Exec(`UPDATE users SET last_seen = now() - interval '3 days' WHERE id = $1`, sandyID)
+	e.a.db.Exec(`UPDATE sessions SET created_at = now() - interval '3 days', last_seen = now() - interval '2 hours' WHERE user_id = $1`, sandyID)
+	e.must(200, sandy, "GET", "/api/me", nil)
+	if e.count(`SELECT count(*) FROM users WHERE id = $1 AND last_seen > now() - interval '1 minute'`, sandyID) != 1 {
+		t.Fatal("an hour of use did not move the account's last-seen time")
+	}
+	e.must(200, mod, "POST", "/api/mod/actions", map[string]any{"action": "suspend", "id": sandyID, "reason": "spam",
+		"until": time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)})
+	if e.count(`SELECT count(*) FROM sessions WHERE user_id = $1`, sandyID) != 0 {
+		t.Fatal("a suspension should end the sessions")
+	}
+	got, _ := lastActive(sandyID).(string)
+	when, err := time.Parse(time.RFC3339, got)
+	if err != nil || time.Since(when) > time.Minute {
+		t.Fatalf("last active after a suspension: %q", got)
+	}
+	tot := e.must(200, admin, "GET", "/api/admin/dashboard", nil)["totals"].(map[string]any)
+	if num(tot["active7"]) != 3 {
+		t.Fatalf("a suspended member who was here today counts as active: %v", tot["active7"])
+	}
+	// HP-09: the sign-in refusal carries the end time in a form the page can make local.
+	code, sus := e.do("", "POST", "/api/signin", in("wind on the dunes"))
+	msg := fmt.Sprint(sus["error"])
+	if i := strings.Index(msg, "suspended until "); code != 403 || i < 0 {
+		t.Fatalf("suspended sign-in: %d %v", code, msg)
+	} else if _, err := time.Parse(time.RFC3339, strings.TrimSuffix(strings.Fields(msg[i+len("suspended until "):])[0], ".")); err != nil {
+		t.Fatalf("the end time in %q is not RFC 3339", msg)
 	}
 }
 

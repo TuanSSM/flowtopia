@@ -5,7 +5,7 @@ Category: fix. Size: M. Each item is one pull request or one commit of one, with
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 3 of 7 items done.
+**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 4 of 7 items done.
 
 The items, their causes, fixes and tests are in [audit-plan.md](../audit-plan.md); this list is the
 order and the DoD of each pull request. Nothing is added to a PR beyond its table.
@@ -29,11 +29,16 @@ order and the DoD of each pull request. Nothing is added to a PR beyond its tabl
   merged three ways instead of re-applying one change, the profile `rev` is a hash and needs no
   migration, a send key is made per form and content, and a removed link card puts its link back
   in the text.
-- [ ] **PR 4, admin and moderation correctness.** `fix(admin): every flag listed, fresh account
-  states, deliberate role changes` (MAP-02, HP-02, HP-05, HP-03, HP-09, HP-10, UN-17, UN-12, UN-16,
-  HP-08, SEC-12, SEC-11). DoD: `node test/flags.js` in lint; migration 5 (`users.last_seen`,
-  `users.owner`) applied under the lock; `TestDBRoles` owner cases; `TestPasswordPolicy`; a rehash
-  on sign-in for 200 000-round hashes; sign-in time on the Pi recorded in the PR body.
+- [x] **PR 4, admin and moderation correctness.** `fix(admin): list every flag and make account changes deliberate`
+  (MAP-02, HP-02, HP-05, HP-03, HP-09, HP-10, UN-17, UN-12, UN-16, HP-08, SEC-12, SEC-11). DoD:
+  `node test/flags.js` in lint; migration 5 (`users.last_seen`, `users.owner`) applied under the
+  lock; `TestDBRoles` owner cases; `TestPasswordPolicy`; a rehash on sign-in for 200 000-round
+  hashes; sign-in time on the Pi recorded in the PR body (one hash: 0.57 s before, 1.69 s now).
+  The title was shortened to fit 70 characters. What differs from the first plan is in its table:
+  the page has 15 switches, not 14; ownership is handed over through its own endpoint and the
+  database allows one owner; any admin may still promote, only the owner demotes an admin; joiners
+  inside words and emoji are kept in names; server messages carry RFC 3339 times that the page
+  puts into local time.
 - [ ] **PR 5, phones and reach.** `fix(ui): tap targets, phone layout and the landing page` (UN-15,
   HP-12, HP-11, HP-13, MAP-16, HP-06, MAP-11, MAP-12, UN-08). DoD: `pages.py` at phone width fails
   any tappable control under 44 px on a coarse pointer; `#/avatar` has no horizontal scroll; the

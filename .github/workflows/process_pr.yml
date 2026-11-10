@@ -150,6 +150,9 @@ jobs:
         run: node test/links.js
       - name: Merging progress from two devices
         run: node test/merge.js
+      # An admin can only switch a feature the Features page lists.
+      - name: Feature switches on the page match the server
+        run: node test/flags.js
       - name: Python syntax
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.

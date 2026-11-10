@@ -104,7 +104,15 @@ host); production passes the release tag, such as `v1.2.0`. Unset, it reads `dev
 
 - Postgres holds users, sessions, progress (one JSON document per user and prop), flags, posts,
   likes, comments, notifications, achievements, reports, the audit log and catalog revisions.
-- Passwords are stored as PBKDF2-SHA256 hashes (200,000 rounds); session tokens are stored hashed.
+- Passwords are stored as PBKDF2-SHA256 hashes with 600,000 rounds; the count is stored in each hash,
+  so an older hash of 200,000 rounds still checks and is replaced the next time its owner signs in.
+  One hash takes about 1.7 s on the Pi, and the server works out at most two at a time. A password is
+  8 characters or more, is not the username, and is not one of the 1,000 most used passwords of that
+  length (the UK NCSC list, embedded in `main.go`, compared without regard to case). Session tokens
+  are stored hashed.
+- `users.last_seen` is the last time a person was seen, written at sign-in and at most hourly after
+  that. The accounts page and the dashboard read it, so signing someone out (a suspension, a password
+  reset) does not make them read "Never".
 - `data/backups/progress-DATE.json` is written by the app before the first change each day, kept
   14 days. It holds progress documents only.
 - `./backup.sh` writes a full, compressed dump of the database (accounts, posts, comments, progress,
@@ -248,9 +256,15 @@ returns the signed-in user's permissions so the interface shows only what the se
 
 Nobody acts on someone of their own role or higher, or on themself, and Flowa always keeps one admin.
 That covers deleting someone's posts and comments: a moderator cannot delete an admin's or another
-moderator's. Admins are peers for roles (an admin can change another admin's role, which is audited),
-but no admin can reset another admin's password or delete their account, and an admin changes their
-own password on the Profile page, with the current one.
+moderator's. No admin can reset another admin's password or delete their account, and an admin changes
+their own password on the Profile page, with the current one.
+
+One admin is the **owner**: the first admin, marked at start if nobody is (`users.owner`; the database
+allows one, and only on an admin). Any admin may make someone a moderator or an admin, but only the
+owner changes an admin's role, so one admin cannot demote another and then delete them. The owner
+cannot be demoted or deleted, and hands ownership to another admin from Admin > Accounts
+(`PUT /api/admin/users/{id}/owner`), which is audited and tells the new owner. A role chosen on the
+accounts page is asked about first ("Make @name a moderator?") and sent on Apply.
 
 - **Reports** (behind `moderation`): on a post, comment or profile, with a reason (spam, harassment, unsafe
   advice, not about flow arts, other) and a note; one open report per person and target, ten a day.
@@ -272,7 +286,8 @@ own password on the Profile page, with the current one.
   new id when it next loads; retired skills leave the maps but keep their progress. Publishing or restoring
   anything that would leave progress with no skill to belong to is refused.
 
-Admin API (permission in brackets): `PUT /api/admin/users/{id}/role` (user.role), `GET /api/admin/audit`
+Admin API (permission in brackets): `PUT /api/admin/users/{id}/role` (user.role),
+`PUT /api/admin/users/{id}/owner` (the owner only), `GET /api/admin/audit`
 (audit.read), `GET /api/admin/dashboard` (dashboard.read), `POST /api/reports`, `GET /api/mod/queue`,
 `POST /api/mod/resolve` (report.resolve), `POST /api/mod/actions` (the action's own permission),
 `GET|PUT|DELETE /api/admin/catalog/{prop}[/draft]`, `GET .../diff`, `POST .../publish` (catalog.publish),
@@ -364,7 +379,7 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | --- | --- |
 | `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
-| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js` and `test/merge.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
+| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
 | `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on |
 | `screenshots` | `test/browser/pages.py`: the main pages at desktop and phone width and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
