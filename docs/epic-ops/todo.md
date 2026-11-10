@@ -6,9 +6,10 @@ Commits title of the category's type. An item is checked only when its DoD holds
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
 **Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 3 of 7 items done.
-Two more are built and tested and wait for something that cannot be done from a pull request: the
-reverse proxy recipe for the owner's recorded run with a public name, and Postgres by digest for
-Dependabot's first update pull request.
+Three more are built and tested and wait for something that cannot be done from a pull request: the
+reverse proxy recipe for the owner's recorded run with a public name, Postgres by digest for
+Dependabot's first update pull request, and the release's image for a first release and a deploy of
+it on the Pi.
 
 - [x] **Health.** `GET /healthz`: schema version, whether TLS roots are present, database reachable,
   `VERSION`. DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
@@ -72,6 +73,21 @@ Dependabot's first update pull request.
   pushes it to GHCR with the version as its tag; `deploy.sh` pulls by default and builds only with
   `--build`; the digest is in the release notes. DoD: a deploy on the Pi takes under a minute and
   the dashboard shows the tag.
+  Built: `build-image.sh` builds the image for arm64 and amd64 from the one Dockerfile, with the
+  version compiled into the binary (`/nunchaku -version`), and the same commit gives the same digest.
+  `release_tag.yml` runs it before it tags, pushes to `ghcr.io/tuanssm/flowtopia:<tag>`, asks the
+  pushed image for its version, and ends the notes with the name and digest; a dry run builds without
+  pushing. `deploy.sh` pulls the newest release the checkout knows, or the one named, refuses an image
+  that says it is another version, starts only what changed (the database keeps running), makes
+  `data/` for the app's user on a new machine, and ends with the version and the seconds it took;
+  `--build` is the old way. The new `release` suite (`test/release.sh`) does both ends on the runner
+  against a registry of its own: the image checks, then deploy, next release, rollback, the refusals
+  and `--build`. This changes what `./deploy.sh` without an argument does, so the change is marked
+  breaking.
+  Open, and why the box is not ticked: no release has been made with it, so there is no image at
+  ghcr.io yet and nothing has been pulled on the Pi. After the next release: make the package public
+  once (README, Releases), run `./deploy.sh` on the Pi, and write the seconds it prints and the version
+  the dashboard shows here.
 - [ ] **Restore drill.** A weekly workflow restores the newest backup format (a fixture produced by
   `backup.sh`) into a scratch Postgres and runs the Go tests against it. DoD: green weekly; a
   failure opens an issue.

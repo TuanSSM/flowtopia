@@ -67,9 +67,9 @@ services:
       # once FLOWA_DOMAIN is set for the proxy profile, the edge network alone: then the proxy is the
       # only thing whose word on a visitor's address and on HTTPS is taken.
       FLOWA_TRUSTED_PROXIES: "${FLOWA_TRUSTED_PROXIES:-${FLOWA_DOMAIN:+${FLOWA_PROXY_NET:-10.169.31.0/29}}}"
-      # Shown on the admin dashboard. deploy.sh sets main.<commit> on the Pi; production passes the
-      # release tag (v1.2.3).
-      VERSION: ${VERSION:-dev}
+      # Shown on the admin dashboard in place of the version compiled into the image (a release's
+      # tag, or main.<commit> from deploy.sh --build). Unset: the image says what it is.
+      VERSION: ${VERSION:-}
     volumes:
       - ./data:/data
     read_only: true

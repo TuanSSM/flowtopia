@@ -6,8 +6,9 @@ paths:
 ---
 # CI and browser tests
 
-- `process_pr.yml` is the one workflow that checks pull requests; `release_tag.yml` only tags releases,
-  started by hand (workflow_dispatch), with versions from `cliff.toml`. Keep the git-cliff version the
+- `process_pr.yml` is the one workflow that checks pull requests; `release_tag.yml` only makes releases
+  (the image by `build-image.sh`, then the tag and the notes), started by hand (workflow_dispatch),
+  with versions from `cliff.toml`. Keep the git-cliff version the
   same in both files.
 - PR titles are Conventional Commits titles (the `changes` job checks them): with squash merges the
   title is the commit `cliff.toml` reads. When adding a commit type, change the list in CLAUDE.md, the
@@ -24,6 +25,10 @@ paths:
   (`needs.changes.outputs.postgres`) and `run.sh` starts its throwaway database from it. Never name
   a Postgres image anywhere else. Dependabot (`.github/dependabot.yml`) moves the pins; its pull
   requests cannot push screenshots, which is one reason `compose.yml` alone does not ask for them.
+- `test/release.sh` is the `release` suite: `build-image.sh` against a registry on the runner, then
+  `deploy.sh` for real (pull, next release, rollback, refusals, `--build`). Like `compose.sh --up` it
+  refuses to run where Flowa is deployed; `--image` runs the image checks alone. What `deploy.sh` or
+  `build-image.sh` learn to do gets a check there.
 - `test/compose.sh` checks `compose.yml` and the `Caddyfile`: without arguments what the file resolves
   to (lint), with `--up` the running containers and the proxy profile over HTTPS (the `compose`
   integration suite). `--up` uses the real names and ports (3169, 80, 443), so it refuses to run where

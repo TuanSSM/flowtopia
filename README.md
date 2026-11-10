@@ -69,7 +69,9 @@ under `docs/epic-<code>/todo.md`.
 ## Run
 
 ```sh
-./deploy.sh                 # runs the Go tests, builds the binary, rebuilds the image, recreates the containers
+./deploy.sh                 # pulls the image of the newest release this checkout knows and starts it
+./deploy.sh v1.3.0          # pulls the image of that release
+./deploy.sh --build         # builds here instead: bakes the clips, runs the Go tests, builds the binary and the image
 ./deploy.sh --rollback      # back to the image that ran before the last deploy
 ./backup.sh                 # a full database dump to data/backups (see Data)
 docker logs nunchaku
@@ -79,7 +81,19 @@ The image holds the binary and nothing else, so the root certificates that link 
 compiled into the binary (Mozilla's bundle, pinned in `go.mod`; update it with
 `go get golang.org/x/crypto/x509roots/fallback@latest`). The log says `TLS roots: present` at start.
 
-`deploy.sh` keeps the image that was running as `nunchaku:previous` and goes back to it by itself if
+A release's image is built by the release workflow, for arm64 (the Pi) and amd64, and kept at
+`ghcr.io/tuanssm/flowtopia` under the release's tag ([Releases](#releases)). `./deploy.sh` pulls it,
+so the machine needs Docker and nothing else, a deploy takes seconds where a build takes minutes, and
+what starts is what the release was built as: the script asks the pulled image for its version and
+does not start one that says anything else. Without an argument it takes the last `vX.Y.Z` tag at or
+before the checkout's commit (`git fetch --tags` first) and says so when the checkout is ahead of it.
+`./deploy.sh v1.3.0@sha256:...` holds the pull to one digest, the one in the release notes.
+`FLOWA_IMAGE` in the environment names another place to pull from. Releases up to v1.2.0 have no
+image; for those, and for trying `main` before it is released, `./deploy.sh --build` builds from the
+checkout as before, which needs Go and Node. The script ends with what it deployed and how long it took.
+
+`deploy.sh` starts what changed: the app, and the database or the proxy only when their settings or
+pinned images moved. It keeps the image that was running as `nunchaku:previous` and goes back to it by itself if
 the new container does not become healthy within 90 seconds. Both containers have CPU, memory and
 process limits in `compose.yml`, so the app cannot starve the printer stack on the same Pi.
 
@@ -126,8 +140,8 @@ The database is never published.
 `compose.yml` has a reverse proxy behind a profile, for opening Flowa to people outside the house:
 [Caddy](https://caddyserver.com), which gets a certificate for your name by itself, renews it, sends
 plain HTTP on to HTTPS and tells browsers to keep using HTTPS for a year (HSTS). The app's own port
-stays on the machine. From a machine that has Docker with the compose plugin, Go and Node, and
-nothing else:
+stays on the machine. From a machine that has git and Docker with the compose plugin, and nothing
+else:
 
 1. Point a DNS record for a name you own (say `flowa.example.org`) at the machine, and let ports 80
    and 443 reach it from outside (on a home router: forward both, and 443 over UDP too for HTTP/3).
@@ -146,8 +160,9 @@ nothing else:
    COMPOSE_PROFILES=proxy
    ```
 
-4. `./deploy.sh`. It ends with `proxy: https://flowa.example.org`; a first certificate can take a
-   minute, and `docker logs nunchaku-proxy` says how it went.
+4. `./deploy.sh`, which pulls the newest release (`./deploy.sh --build`, with Go and Node, where the
+   release has no image yet). It ends with `proxy: https://flowa.example.org`; a first certificate
+   can take a minute, and `docker logs nunchaku-proxy` says how it went.
 5. Open `https://flowa.example.org`, sign in as the admin, then remove `ADMIN_PASSWORD` from `.env`.
 
 What the two settings do: the proxy (`nunchaku-proxy`, configured by the `Caddyfile`) is started and
@@ -207,9 +222,10 @@ also send `X-Forwarded-Proto: https` (the same three do; in nginx,
 `proxy_set_header X-Forwarded-Proto $scheme;`): Flowa then marks its cookie Secure and refuses a write
 that an `http://` page tries to make to the HTTPS site.
 
-Admin, Overview shows the running version, from `VERSION` in the container's environment.
-`deploy.sh` sets it to `main.<short commit hash>` of the checkout it deploys (the Pi is the staging
-host); production passes the release tag, such as `v1.2.0`. Unset, it reads `dev`.
+Admin, Overview shows the running version, which is compiled into the binary: the release's tag
+(`v1.3.0`) in a release's image, `main.<short commit hash>` from `./deploy.sh --build`, and `dev` for
+a plain `go build`. `docker run --rm ghcr.io/tuanssm/flowtopia:v1.3.0 -version` prints it. `VERSION`
+in the container's environment, when set, is shown instead.
 
 ## Data
 
@@ -511,27 +527,36 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to the `Caddyfile` or the `Dockerfile` runs `lint` and the `compose` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to the `Caddyfile` runs `lint` and the `compose` suite, one to `deploy.sh`, `build-image.sh` or `release_tag.yml` `lint` and the `release` suite, one to the `Dockerfile` both; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/compose.sh` (what `compose.yml` resolves to: the app on loopback unless `FLOWA_BIND` is set, never the database, and with `FLOWA_DOMAIN` the name answered and only the proxy's network believed); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `compose` (`test/compose.sh --up`: the two containers of `compose.yml` built and started on the runner, the app asked by loopback, where it must answer, and by the runner's other addresses, where it must not until `FLOWA_BIND=0.0.0.0`; then the proxy profile for a private name, asked over HTTPS for its certificate, the way from HTTP, HSTS, the Secure cookie, a write from an HTTP page and an address the visitor made up) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `compose` (`test/compose.sh --up`: the two containers of `compose.yml` built and started on the runner, the app asked by loopback, where it must answer, and by the runner's other addresses, where it must not until `FLOWA_BIND=0.0.0.0`; then the proxy profile for a private name, asked over HTTPS for its certificate, the way from HTTP, HSTS, the Secure cookie, a write from an HTTP page and an address the visitor made up), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, the same bytes when built twice; then `deploy.sh` pulls and starts one, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |
 
 ## Releases
 
-`.github/workflows/release_tag.yml` tags a release of `main` and publishes its notes as a GitHub
-release. It runs only when started by hand: Actions, `release_tag`, Run workflow, or
+`.github/workflows/release_tag.yml` tags a release of `main`, builds its image and publishes its
+notes as a GitHub release. It runs only when started by hand: Actions, `release_tag`, Run workflow, or
 
 ```sh
 gh workflow run release_tag -f bump=auto          # or patch, minor, major
 gh workflow run release_tag -f version=v1.4.0     # an exact version
-gh workflow run release_tag -f dry_run=true       # show the version and the notes, tag nothing
+gh workflow run release_tag -f dry_run=true       # show the version and the notes, build the image, tag and push nothing
 ```
 
-That tag is the `VERSION` to pass to the production container (the Pi shows `main.<commit>` instead).
+The image is built from the commit being tagged by `build-image.sh`, with the Dockerfile
+`./deploy.sh --build` uses, for arm64 and amd64, and pushed to `ghcr.io/tuanssm/flowtopia:<tag>` before
+the tag is made, so a build that fails leaves no tag behind. The tag is compiled into the binary, and
+the notes end with the image's name and digest. The same commit gives the same digest (Go builds
+reproducibly, and every time stamp in the image is the commit's), so it can be checked by building
+again: `./build-image.sh ghcr.io/tuanssm/flowtopia v1.3.0` at that tag. `./deploy.sh v1.3.0` on the Pi
+pulls it. The first release that pushes an image creates the package on GitHub as private: make it
+public once (the repository's Packages, `flowtopia`, Package settings, Change visibility), or run
+`docker login ghcr.io` on each machine that deploys.
+
 The version follows semantic versioning from the commits since the last `vX.Y.Z` tag, read by
 [git-cliff](https://git-cliff.org) with [cliff.toml](cliff.toml). Commits follow
 [Conventional Commits](https://www.conventionalcommits.org) (types in [CLAUDE.md](CLAUDE.md)): a breaking

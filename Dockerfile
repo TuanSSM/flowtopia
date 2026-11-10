@@ -1,4 +1,5 @@
-# The binary is built on the host by deploy.sh, so the Pi needs no Go image.
+# The image is the static binary and nothing else. The binary is built outside it, for the machine the
+# image is for: by build-image.sh for a release (arm64 and amd64), by deploy.sh --build on the Pi.
 FROM scratch
 COPY nunchaku /nunchaku
 USER 1000:1000
