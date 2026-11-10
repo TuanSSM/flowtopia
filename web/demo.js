@@ -557,13 +557,14 @@ const Demo = (() => {
     if (!comboPaint()) return;
     if (cs.playing && !craf) { clast = performance.now(); craf = requestAnimationFrame(comboTick); }
   }
-  // The stage of the open combo. seq: skill ids in order; reps: how many cycles each plays; nameOf: id -> name.
-  function comboStage(id, cid, seq, reps, nameOf, dominant, esc) {
+  // The stage of the open combo. seq: skill ids in order; reps: how many cycles each plays; nameOf: id -> name;
+  // foot: what the page puts under the player (the buttons that log a run).
+  function comboStage(id, cid, seq, reps, nameOf, dominant, esc, foot = '') {
     const sig = id + '|' + cid + '|' + seq.join(','), same = cs.sig === sig;
     const steps = seq.map((sid, i) => ({ sid, name: nameOf(sid), v: index[cid + ':' + sid]?.v[0], reps: reps[i] || 1 }));
     if (!same) Object.assign(cs, { sig, i: cs.sig.split('|')[0] === id ? Math.min(cs.i, Math.max(seq.length - 1, 0)) : 0, t: 0, hand: dominant });
     cs.steps = steps;
-    if (!steps.length) return `<div class="cb-stage cb-empty"><div><b>Nothing to play yet</b><span>Add a skill and it plays here.</span></div></div>`;
+    if (!steps.length) return `<div class="cb-stage"><div class="cb-empty"><div><b>Nothing to play yet</b><span>Add a skill and it plays here.</span></div></div>${foot}</div>`;
     const missing = steps.filter(x => !x.v).length;
     return `<div class="cb-stage">
       <canvas id="combo-cv" width="720" height="720" role="img" aria-label="The combo's skills, demonstrated one after another, ${viewName()} view."></canvas>
@@ -572,10 +573,11 @@ const Demo = (() => {
       <div class="demo-ctl">
         <button class="btn sm primary" data-act="combo-demo" data-k="play" style="min-width:64px">${cs.playing ? 'Pause' : 'Play'}</button>
         <button class="btn sm" data-act="combo-demo" data-k="restart">Restart</button>
-        <div class="seg" role="group" aria-label="Speed">${[[1, '1×', 'Real speed'], [0.5, '½', 'Half speed'], [0.25, '¼', 'Quarter speed']].map(([x, l, a]) => segBtn('speed', x, l, st.speed === x, a, 'combo-demo')).join('')}</div>
-        <div class="seg" role="group" aria-label="Camera view">${segBtn('view', 'angle', '3/4', st.view === 'angle', 'Three-quarter view', 'combo-demo')}${segBtn('view', 'front', 'Front', st.view === 'front', '', 'combo-demo')}${segBtn('view', 'side', 'Side', st.view === 'side', '', 'combo-demo')}</div>
+        <span class="ctl-l"><span class="tiny" aria-hidden="true">Speed</span><div class="seg" role="group" aria-label="Speed">${[[1, '1×', 'Real speed'], [0.5, '½', 'Half speed'], [0.25, '¼', 'Quarter speed']].map(([x, l, a]) => segBtn('speed', x, l, st.speed === x, a, 'combo-demo')).join('')}</div></span>
+        <span class="ctl-l"><span class="tiny" aria-hidden="true">View</span><div class="seg" role="group" aria-label="Camera view">${segBtn('view', 'angle', '3/4', st.view === 'angle', 'Three-quarter view', 'combo-demo')}${segBtn('view', 'front', 'Front', st.view === 'front', '', 'combo-demo')}${segBtn('view', 'side', 'Side', st.view === 'side', '', 'combo-demo')}</div></span>
       </div>
       <p class="tiny">Each skill plays whole cycles of its demo, as many as you set. The links between skills are not animated.${missing ? ` ${missing} ${missing === 1 ? 'skill has' : 'skills have'} no demo yet and ${missing === 1 ? 'shows' : 'show'} as a name card.` : ''}</p>
+      ${foot}
     </div>`;
   }
   function comboAct(d) {

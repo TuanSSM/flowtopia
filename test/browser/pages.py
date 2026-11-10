@@ -23,6 +23,17 @@ try:
     page('landing','Landing page','#/',wait=3)
     page('landing-phone','Landing page, phone','#/',w=420,ht=900,wait=2.5)
     cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    # Signed out: the menu lists what opens without an account, and a page that needs one says so in one sentence.
+    MENU="return [...document.querySelectorAll('#side a.nav-a')].map(a=>[a.textContent.trim(),a.getAttribute('href')]).filter(x=>!x[1].startsWith('#/prop/'))"
+    side=js(MENU);who=js("return document.querySelector('#side .nav-profile b').textContent")
+    check('signed out: the menu is Welcome, Skill maps and Sign in, with Settings below',side==[['Welcome','#/'],['Skill maps','#/maps'],['Settings','#/settings']] and who=='Sign in',(side,who))
+    walls={'practice':'Sign in to log your practice.','combos':'Sign in to build combos.','plan':'Sign in to follow the plan.','timeline':'Sign in to use the timeline.','bookmarks':'Sign in to keep bookmarks.','achievements':'Sign in to see your achievements.','avatar':'Sign in to make your avatar.','profile':'Sign in to see your profile.'}
+    said={}
+    for p in walls: nav('#/'+p,.6);said[p]=js("return (document.querySelector('.auth p')||{}).textContent")
+    check('signed out: each page that needs an account says what signing in is for',said==walls,said)
+    page('signed-out','Signed out: a page that needs an account','#/timeline',wait=1.2)
+    page('signed-out-phone','Signed out, phone','#/timeline',w=420,ht=900,wait=1.2)
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
     signin()
     if js("return !!document.querySelector('input[name=prop]')"): js("for(const i of document.querySelectorAll('input[name=prop]'))i.checked=i.value==='nunchaku';document.querySelector('#props-form').requestSubmit()");time.sleep(3)
     # Some progress so the dashboard and map are not empty.
@@ -32,6 +43,14 @@ try:
     for sid in ['F5','F7','R1','D4']: add(sid)
     time.sleep(1.5)
     page('dashboard','Dashboard','#/')
+    # The two streaks say what they count, the menu has no link out of Flowa, and Settings links to what is planned.
+    lbl=js("return [[...document.querySelectorAll('.stat .lbl')].map(l=>l.textContent),document.querySelector('#main').innerText.includes('Streak across all your props')]")
+    check('the dashboard names both streaks: this prop, and all props',('Nunchaku streak' in lbl[0]) and 'Streak' not in lbl[0] and lbl[1],lbl)
+    out_links=js("return [...document.querySelectorAll('#side a')].map(a=>a.getAttribute('href')).filter(h=>!h.startsWith('#'))")
+    check('the menu has no link out of Flowa unless the server names one',out_links==[],out_links)
+    nav('#/settings',1.2)
+    docs=js("return [...document.querySelectorAll('#main a[href^=\"https://github.com/\"]')].map(a=>[a.textContent.trim(),a.getAttribute('href'),a.rel,a.target])")
+    check('Settings links to the roadmap and the epics in the repository',docs==[['Roadmap','https://github.com/TuanSSM/flowtopia/blob/main/docs/roadmap.md','noopener noreferrer','_blank'],['Epics','https://github.com/TuanSSM/flowtopia/blob/main/docs/epics.md','noopener noreferrer','_blank']],docs)
     page('map','Skill map','#/maps')
     page('skill','Skill guide with demo (F5)','#/prop/nunchaku/F/F5',wait=2.5)
     page('combos','Combos','#/combos',wait=2.5)

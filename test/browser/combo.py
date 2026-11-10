@@ -20,8 +20,22 @@ try:
     nav('#/combos',2.5)
     js("const f=document.querySelector('#combo-form');f.name.value='Test loop';f.requestSubmit()");time.sleep(1.2)
     check('a new combo opens with an empty stage and no Watch button',js("return !!document.querySelector('.cb-empty')&&!document.querySelector('[data-act=combo-watch]')"))
+    LOG="const g=document.querySelector('.cb-log');return g?[g.getAttribute('role'),g.getAttribute('aria-label'),g.querySelector('b').textContent,[...g.querySelectorAll('button')].map(b=>b.textContent.trim()),!!g.closest('.cb-stage'),g.querySelector('.num').textContent,document.querySelectorAll('.cb-log').length]:null"
+    g=js(LOG)
+    check('an empty combo already has the Log a run group, and nothing to publish',g==['group','Log a run','Log a run',['Clean run','Dropped'],True,'0 clean of 0 full runs',1] and not js("return !!document.querySelector('[data-act=combo-publish]')"),g)
     for sid in ['F5','R10','F1','A1']: add(sid)
     check('the stage appears as soon as there are skills, with one row per skill',js("return !!document.querySelector('#combo-cv')")and ids()=='F5,R10,F1,A1')
+    # The card: logging a run is one named group under the player, Publish is with the combo's name, and the player's controls say what they set.
+    g=js(LOG)
+    under=js("const g=document.querySelector('.cb-log'),c=document.querySelector('.cb-stage .demo-ctl'),cv=document.querySelector('#combo-cv').getBoundingClientRect(),r=g.getBoundingClientRect();return [!!(c.compareDocumentPosition(g)&4),r.top>=cv.bottom,r.left>=cv.left-30&&r.right<=cv.right+30,!!document.querySelector('.cb-side .cb-log')]")
+    check('Log a run is one group under the player, not in the list of skills',g and g[:5]==['group','Log a run','Log a run',['Clean run','Dropped'],True] and g[6]==1 and under==[True,True,True,False],(g,under))
+    pub=js("return [document.querySelectorAll('[data-act=combo-publish]').length,!!document.querySelector('.cb-head [data-act=combo-publish]'),(document.querySelector('.cb-head [data-act=combo-publish]')||{}).textContent]")
+    check('Publish is in the header of the card, once',pub[:2]==[1,True] and pub[2].strip()=='Publish',pub)
+    lab=js("return [...document.querySelectorAll('.cb-stage .ctl-l')].map(l=>[l.querySelector('.tiny').textContent,l.querySelector('.seg').getAttribute('aria-label'),l.querySelectorAll('.seg button').length,l.querySelector('.tiny').getBoundingClientRect().width>0])")
+    check('speed and view are labelled segmented controls',lab==[['Speed','Speed',3,True],['View','Camera view',3,True]],lab)
+    js("document.querySelector('.cb-log [data-act=combo-run][data-clean=\"1\"]').click()");time.sleep(1.2)
+    js("document.querySelector('.cb-log [data-act=combo-run][data-clean=\"0\"]').click()");time.sleep(1.2)
+    check('a clean run and a dropped one are counted where they are logged',js("return document.querySelector('.cb-log .num').textContent")=='1 clean of 2 full runs' and js("return !!document.querySelector('#combo-cv')"),js("return document.querySelector('.cb-log .num').textContent"))
     check('a skill with no demo is marked, and a picture has no repetitions',js("return [...document.querySelectorAll('.cb-step.nodemo .cb-id')].map(c=>c.textContent).join()")=='R10' and js("return document.querySelectorAll('.cb-step')[2].querySelector('.cb-reps')===null&&document.querySelectorAll('.cb-step')[0].querySelector('.cb-reps')!==null"))
     a=js(SNAP);time.sleep(.5);b=js(SNAP)
     check('it plays without being asked',js("return window.Demo.combo.playing")and len(txt('#combo-now'))>3 and js("return document.querySelector('#combo-time').textContent.includes('/')"),txt('#combo-now'))
@@ -113,7 +127,7 @@ try:
     check('with one prop the search says so and finds only its skills',txt('#pal-hint')=='Searches the pages and the skills of your props: Nunchaku. Add a prop in your profile to search it too.' and not any(r[0] or '/prop/poi/' in r[1] for r in rows),(txt('#pal-hint'),rows[:4]))
     api(op,'me',{'props':['nunchaku','poi']},'PUT');fresh('two')
     rows=search('butterfly');poi=[r for r in rows if r[0]=='Poi']
-    check('with two props the search names both',txt('#pal-hint')=='Searches the pages and the skills of your props: Nunchaku and Poi. Add a prop in your profile to search it too.',txt('#pal-hint'))
+    check('with two props the search names both',txt('#pal-hint')=='Searches the pages and the skills of your props: Nunchaku and Poi. Add a prop in your profile to search it too.',(txt('#pal-hint'),txt('.nav-profile .tiny'),js("return myProps().map(p=>p.id)")))
     check("a skill of the member's other prop is found and carries the prop's name",bool(poi) and all(r[1].startswith('#/prop/poi/') for r in poi) and all(r[0]=='Nunchaku' for r in rows if r[1].startswith('#/prop/nunchaku/') and r[1].count('/')==4),rows[:6])
     if poi:
         js("document.querySelector('.pal-i[href=\"'+arguments[0]+'\"]').click()",poi[0][1]);time.sleep(3)

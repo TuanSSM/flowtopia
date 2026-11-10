@@ -5,11 +5,11 @@
 
 const canDo = p => perms.includes(p);
 const adminTabs = () => [
-  ['dashboard', 'Dashboard', canDo('dashboard.read')],
+  ['dashboard', 'Overview', canDo('dashboard.read')],
   ['accounts', 'Accounts', canDo('dashboard.read')],
   ['features', 'Features', canDo('flags.edit')],
   ['audit', 'Audit log', canDo('audit.read')],
-  ['maps', 'Skill maps', flags.catalogEditor && canDo('catalog.edit')],
+  ['maps', 'Catalogs', flags.catalogEditor && canDo('catalog.edit')],
 ].filter(t => t[2]);
 const REASONS = [['spam', 'Spam'], ['harassment', 'Harassment'], ['unsafe', 'Unsafe advice'], ['offtopic', 'Not about flow arts'], ['other', 'Other']];
 const DURATIONS = [['1h', '1 hour', 1], ['1d', '1 day', 24], ['3d', '3 days', 72], ['7d', '1 week', 168], ['30d', '30 days', 720]];
@@ -51,7 +51,7 @@ function authorHTML(it) {
   const a = it.author;
   if (!a) return '';
   const status = [a.mutedUntil && `Muted until ${fmtWhen(a.mutedUntil)}`, a.suspendedUntil && `Suspended until ${fmtWhen(a.suspendedUntil)}`, a.statsHidden && 'Stats hidden'].filter(Boolean);
-  return `<div class="mq-author">${avatarHTML(a, 'sm')}<span class="grow"><a href="#/u/${esc(a.username)}"><b>${esc(a.displayName || a.username)}</b></a> <span class="tiny">@${esc(a.username)} · ${a.role} · ${a.posts} ${a.posts === 1 ? 'post' : 'posts'} · ${a.actions} earlier ${a.actions === 1 ? 'action' : 'actions'}</span>
+  return `<div class="mq-author">${avatarHTML(a, 'sm')}<span class="grow"><a href="#/u/${esc(a.username)}"><b>${esc(a.displayName || a.username)}</b></a> <span class="tiny">@${esc(a.username)} · ${esc((RANK_NAMES[a.role] || a.role).toLowerCase())} · ${a.posts} ${a.posts === 1 ? 'post' : 'posts'} · ${a.actions} earlier ${a.actions === 1 ? 'action' : 'actions'}</span>
     ${status.length ? `<span class="row wrap" style="gap:4px;margin-top:4px">${status.map(s => `<span class="chip warn">${esc(s)}</span>`).join('')}</span>` : ''}
     ${it.history?.length ? `<span class="tiny mq-hist">${it.history.map(h => `${esc(fmtWhen(h.at))}: ${esc(h.action.replace('_', ' '))} by @${esc(h.actor)}${h.reason ? ` (${esc(h.reason)})` : ''}`).join('<br>')}</span>` : ''}</span></div>`;
 }
@@ -112,10 +112,10 @@ function pageAdmin(tab) {
   const cur = tabs.find(t => t[0] === tab) ? tab : tabs[0][0];
   const nav = `<div class="seg admin-tabs" role="group" aria-label="Admin sections">${tabs.map(([k, n]) => `<a class="${k === cur ? 'on' : ''}" href="#/admin/${k}">${n}</a>`).join('')}</div>`;
   const body = { dashboard: () => adminDashboard(), accounts: adminAccounts, features: adminFeatures, audit: adminAudit, maps: () => adminMaps() }[cur]();
-  return `<div class="page-h"><div class="grow"><h1>Admin</h1><p>Features, accounts and records for everyone on this Pi.</p></div></div>${nav}${body}`;
+  return `<div class="page-h"><div class="grow"><h1>Admin</h1><p>Features, accounts and records for everyone on this Flowa.</p></div></div>${nav}${body}`;
 }
 function adminFeatures() {
-  return `<div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every user, straight away</span></div>
+  return `<div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every member, straight away</span></div>
     <div class="stack" style="gap:8px">${FLAGS.map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
 }
 // The accounts list is never kept from one visit to the next: it is fetched when the tab opens
@@ -130,8 +130,9 @@ async function loadUsers() {
   render();
 }
 window.addEventListener('hashchange', () => { ui.users = null; ui.rolePick = null; });
-const RANK_NAMES = { user: 'User', moderator: 'Moderator', admin: 'Admin' };
-const ROLE_ASK = { user: 'a user', moderator: 'a moderator', admin: 'an admin' };
+// The server calls the plain role "user"; on the page a person with it is a member, as everywhere else.
+const RANK_NAMES = { user: 'Member', moderator: 'Moderator', admin: 'Admin' };
+const ROLE_ASK = { user: 'a member', moderator: 'a moderator', admin: 'an admin' };
 function adminAccounts() {
   if (!ui.users) { loadUsers(); return '<div class="card"><div class="empty small">Loading accounts…</div></div>'; }
   const f = ui.userFilter || { q: '', role: '', status: '' }, q = f.q.trim().toLowerCase();
@@ -159,7 +160,7 @@ function adminAccounts() {
       <select data-change="user-filter" data-k="role" aria-label="Role" style="width:auto"><option value="">Every role</option>${Object.entries(RANK_NAMES).map(([k, n]) => `<option value="${k}" ${f.role === k ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <select data-change="user-filter" data-k="status" aria-label="Status" style="width:auto"><option value="">Any status</option>${['active', 'muted', 'suspended'].map(k => `<option value="${k}" ${f.status === k ? 'selected' : ''}>${k[0].toUpperCase() + k.slice(1)}</option>`).join('')}</select>
       <span class="sub tiny">${list.length} of ${ui.users.length}</span></div>
-    <div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last active</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">No accounts match.</td></tr>'}</tbody></table></div></div>`;
+    <div class="table-wrap"><table class="table"><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Last active</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">No accounts match.</td></tr>'}</tbody></table></div></div>`;
 }
 const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft' };
 async function loadAudit(more) {

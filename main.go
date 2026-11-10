@@ -115,6 +115,7 @@ type app struct {
 	hosts     []string     // names the server answers to besides addresses and private names (FLOWA_HOSTS)
 	proxies   []*net.IPNet // reverse proxies whose forwarding headers are believed (FLOWA_TRUSTED_PROXIES)
 	fetch     *fetcher     // link previews; nil means no fetching
+	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
 	version   string       // what VERSION says this build is (main.<commit> on the Pi, a release tag in production); "dev" if unset
 	flagCache map[string]bool
 	flagsAt   time.Time
@@ -230,6 +231,21 @@ func (a *app) once(w http.ResponseWriter, r *http.Request, u *user) (prior int64
 // 172.16.0.0/12; a home LAN (192.168.x.x) is not in the list, so a device there cannot pick its own
 // address by sending forwarding headers.
 const defaultProxies = "127.0.0.0/8,::1/128,172.16.0.0/12"
+
+// homeLink reads FLOWA_HOME_URL: the address of the start page of the machine Flowa runs on, which
+// admins get as a link in the menu. Empty means no link. It has to be a whole http or https address,
+// because the page puts it into a link as it is.
+func homeLink(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("FLOWA_HOME_URL must be an http or https address without a password, like http://pi.local:8080/, not %q", s)
+	}
+	return u.String(), nil
+}
 
 // parseProxies reads FLOWA_TRUSTED_PROXIES: addresses or CIDR ranges separated by commas, or
 // "none" to trust no proxy (every visitor connects directly).
@@ -897,7 +913,12 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": permsOf(u)})
+	out := map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": permsOf(u)}
+	// Where the machine's own start page is concerns the people who run it, nobody else.
+	if u != nil && u.Role == "admin" && a.homeURL != "" {
+		out["homeUrl"] = a.homeURL
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type credentials struct {
@@ -4251,6 +4272,9 @@ func main() {
 		a.proxies = p
 	}
 	log.Printf("visitor addresses: forwarding headers believed from %d trusted proxy ranges", len(a.proxies))
+	if a.homeURL, err = homeLink(os.Getenv("FLOWA_HOME_URL")); err != nil {
+		log.Fatal(err)
+	}
 	for _, h := range strings.Split(os.Getenv("FLOWA_HOSTS"), ",") {
 		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
 			a.hosts = append(a.hosts, h)

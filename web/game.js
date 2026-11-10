@@ -122,7 +122,7 @@ const ACH = [
   ...achTiers('sessions', n => `Log ${n} practice ${n === 1 ? 'session' : 'sessions'}.`, 'log', 'Practice', [[1, 'First steps'], [10, 'Regular'], [50, 'Dedicated'], [200, 'Devoted']], c => c.sessions),
   ...achTiers('hours', n => `Practise for ${n} hours in total.`, 'log', 'Practice', [[10, 'Ten hours in'], [50, 'Fifty hours'], [100, 'Hundred hours']], c => c.minutes / 60),
   { key: 'props-2', name: 'Multi-prop', desc: 'Log practice on two different props.', icon: 'map', group: 'Practice', of: 2, n: c => c.props },
-  ...achTiers('streak', n => `Practise ${n} days in a row.`, 'flame', 'Streaks', [[3, 'Warming up'], [7, 'One week on fire'], [30, 'Thirty days'], [100, 'Hundred days']], c => c.best),
+  ...achTiers('streak', n => `Practise ${n} days in a row, on any of your props.`, 'flame', 'Streaks', [[3, 'Warming up'], [7, 'One week on fire'], [30, 'Thirty days'], [100, 'Hundred days']], c => c.best),
   { key: 'week-5', name: 'Five-day week', desc: 'Practise on five days of one week.', icon: 'calendar', group: 'Streaks', of: 5, n: c => c.weekBest },
   ...achTiers('challenges', n => `Complete all four weekly challenges in ${n === 1 ? 'a week' : n + ' weeks'}.`, 'bolt', 'Streaks', [[1, 'Challenger'], [4, 'Four full weeks']], c => c.challengeWeeks),
   ...achTiers('clean', n => `Bring ${n} ${n === 1 ? 'skill' : 'skills'} to Clean.`, 'check', 'Skills', [[1, 'First clean skill'], [10, 'Ten clean'], [50, 'Fifty clean'], [100, 'Hundred clean']], c => c.clean),
@@ -235,7 +235,7 @@ function streakCard(st = streakInfo()) {
   const n = st.current;
   return `<div class="card streak-card ${st.today ? 'lit' : ''}" data-tour="streak">
     <div class="row" style="gap:14px;align-items:flex-start"><span class="flame ${n ? 'lit' : ''}">${icon('flame')}</span>
-      <div class="grow"><div class="val num">${n}<small> ${n === 1 ? 'day' : 'days'}</small></div><div class="small muted">Practice streak · best ${st.best}</div></div>
+      <div class="grow"><div class="val num">${n}<small> ${n === 1 ? 'day' : 'days'}</small></div><div class="small muted">Streak across all your props · best ${st.best}</div></div>
       <button class="btn sm" data-act="share-streak">${icon('share')}Share</button></div>
     ${weekDots(st)}
     <p class="tiny" style="margin-top:8px">${st.today ? 'Today is in. See you tomorrow.' : n ? 'Log today’s practice to keep the streak.' : 'Log a session to start a streak. Any prop counts.'}</p></div>`;
