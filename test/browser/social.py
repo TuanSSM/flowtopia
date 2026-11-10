@@ -208,7 +208,7 @@ try:
     clear_png=base64.b64encode(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',64,64,8,6,0,0,0))+chunk(b'IDAT',zlib.compress((b'\0'+b'\0'*256)*64))+chunk(b'IEND',b'')).decode()
     one_gif='R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
     mine=api(op,f'posts/{rp}/comments',{'body':'Mine to edit'})['comment']['id']
-    quiet=lambda: js("document.querySelector('#toast').hidden=true")
+    quiet=lambda: js("document.querySelector('#toast').textContent=''")
     nav('#/practice');nav('#/timeline')
     check('with nothing typed, leaving the page is not held up',js(leaving) is False and js("return socialDraft()") is False)
     before=get(op,f'posts/{rp}')['posts'][0]['commentCount']

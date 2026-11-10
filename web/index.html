@@ -14,7 +14,7 @@
 </head>
 <body>
 <div id="app" class="shell">
-  <div class="scrim" data-act="nav-close"></div>
+  <div class="scrim" data-act="nav-close" aria-hidden="true"></div>
   <nav id="side" class="side" aria-label="Main"></nav>
   <div class="content">
     <header class="top">
@@ -29,9 +29,11 @@
 </div>
 <div id="palette" class="palette" hidden></div>
 <div id="modal" class="modal" hidden></div>
-<div id="unlock" class="unlock" hidden role="status"></div>
-<div id="tip" class="tip" hidden role="status"></div>
-<div id="toast" class="toast" hidden role="status"></div>
+<!-- Short messages. A screen reader says what is put into a live region it already knows, so these three
+     are on the page from the start and are emptied, not hidden, when there is nothing to say. -->
+<div id="unlock" class="unlock" role="status"></div>
+<div id="tip" class="tip" role="status"></div>
+<div id="toast" class="toast" role="status"></div>
 <script src="props.js"></script>
 <script src="data.js"></script>
 <script src="demo.js"></script>

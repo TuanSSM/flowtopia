@@ -41,7 +41,7 @@ function edSkillsView() {
   const d = ed.draft, skills = d.skills || [], q = ed.q.trim().toLowerCase(), pubIds = new Set((ed.data.published.skills || []).map(s => s.id));
   const list = (d.branches || []).map(b => {
     const items = skills.map((s, i) => [s, i]).filter(([s]) => s.id && s.id[0] === b.k && (!q || s.id.toLowerCase().startsWith(q) || (s.name || '').toLowerCase().includes(q)));
-    return `<div class="ed-branch"><div class="row"><b class="grow small">${esc(b.k)} ${esc(b.name)}</b><button class="btn sm" data-act="ed-add" data-k="${esc(b.k)}">${icon('plus')}Skill</button></div>
+    return `<div class="ed-branch"><div class="row"><b class="grow small">${esc(b.k)} ${esc(b.name)}</b><button class="btn sm" data-act="ed-add" data-k="${esc(b.k)}" aria-label="Add a skill to ${esc(b.name)}">${icon('plus')}Skill</button></div>
       ${items.map(([s, i]) => `<button class="ed-skill ${i === ed.sel ? 'on' : ''} ${s.retired ? 'retired' : ''} ${ed.checks.errs.some(m => m.path.startsWith(`skills.${i}.`) || m.path === `skills.${i}`) ? 'has-err' : ''}" data-act="ed-sel" data-i="${i}" data-i2="${i}"><span class="tag">${esc(s.id)}</span><span class="grow">${esc(s.name || '(no name)')}</span>${s.retired ? '<span class="tiny">retired</span>' : ''}</button>`).join('')}</div>`;
   }).join('');
   const s = skills[ed.sel], i = ed.sel;
@@ -79,7 +79,7 @@ function edBranchesView() {
   return `<div class="card"><div class="stack" style="gap:10px">${b.map((x, i) => `<div class="grid ed-row" data-i="${i}"><span class="tag">${esc(x.k)}</span>
       <label class="field">Name<input type="text" data-edb="name" data-i="${i}" maxlength="40" value="${esc(x.name)}">${msgHTML(`branches.${i}.name`)}</label>
       <label class="field">Blurb<input type="text" data-edb="blurb" data-i="${i}" maxlength="120" value="${esc(x.blurb)}">${msgHTML(`branches.${i}.blurb`)}</label></div>`).join('')}</div>
-    ${msgHTML('branches')}<button class="btn sm" data-act="ed-add-branch" style="margin-top:10px" ${b.length >= 11 ? 'disabled' : ''}>${icon('plus')}Branch</button></div>${edConceptsCard()}`;
+    ${msgHTML('branches')}<button class="btn sm" data-act="ed-add-branch" style="margin-top:10px" ${b.length >= 11 ? 'disabled' : ''} aria-label="Add a branch">${icon('plus')}Branch</button></div>${edConceptsCard()}`;
 }
 // The shared concepts this map teaches: a sentence names one, an empty box leaves it out. Which
 // skills are about a concept is ticked in the skill form, by a person.

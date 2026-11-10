@@ -454,7 +454,7 @@ function renderPanel(id) {
 function pagePractice() {
   const sessions = [...state.sessions].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
   const m = minutesByDay();
-  const focus = ui.draftFocus.map(id => `<button type="button" class="chip" data-act="focus-del" data-id="${id}" data-tip="Remove ${esc(SK[id].name)}">${id} ${icon('x')}</button>`).join('');
+  const focus = ui.draftFocus.map(id => `<button type="button" class="chip" data-act="focus-del" data-id="${id}" data-tip="Remove ${esc(SK[id].name)}" aria-label="Remove ${id}, ${esc(SK[id].name)}, from this session">${id} ${icon('x')}</button>`).join('');
   return `<div class="page-h"><div><h1>Practice</h1><p>${esc(curProp().name)} · ${weekMinutes(m)} min in the last 7 days · ${streak(m)}-day streak</p></div></div>
   <form class="card" id="log-form" style="margin-bottom:16px"><div class="card-h"><h2>Log a session</h2></div>
     <div class="form-grid">
@@ -740,8 +740,8 @@ function render() {
 
 let toastT;
 function toast(msg) {
-  const t = $('#toast'); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 4500);
+  const t = $('#toast'); t.textContent = msg;
+  clearTimeout(toastT); toastT = setTimeout(() => t.textContent = '', 4500);
 }
 
 /* ---------- command palette ---------- */
@@ -934,8 +934,8 @@ document.addEventListener('keydown', e => {
 const tip = $('#tip');
 document.addEventListener('pointerover', e => {
   const t = e.target.closest?.('[data-tip]');
-  if (!t || e.pointerType === 'touch') { tip.hidden = true; return; }
-  tip.textContent = t.dataset.tip; tip.hidden = false;
+  if (!t || e.pointerType === 'touch') { if (tip.textContent) tip.textContent = ''; return; }
+  tip.textContent = t.dataset.tip;
   const r = t.getBoundingClientRect(), w = tip.offsetWidth;
   tip.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + 'px';
   tip.style.top = (r.top > 34 ? r.top - 32 : r.bottom + 6) + 'px';
