@@ -130,6 +130,23 @@ proposals, not claims about the art; they need consistency, not a source.
 - When a pass rewrites a description from a source, it uses these words where the source supports
   them, so that the field can be read from the text by the same rule the next time.
 
+## Shared concepts
+
+A skill's `concepts` say which of five ideas it is about: plane, timing and direction, weave,
+isolation, extension ([catalog-format.md](catalog-format.md)). They exist so that Flowa can one day
+say "you know the plane from poi" on a staff skill, and a wrong claim of that kind is worse than
+none. So:
+
+- A catalog names a concept only with a sentence, in its own words, on what the idea means for that
+  prop, and only when the prop's own sources use the idea. Poi and staff sources both speak of
+  planes; that does not make a nunchaku "plane" the same thing until a nunchaku source says so.
+- A skill is given a concept by a person, in the editor, when the skill's confirmed text is about
+  that idea: it teaches it or cannot be done without it. Mentioning a wall-plane circle in a step
+  does not make a skill "about" the plane.
+- Nothing is inferred: no script proposes concepts, as `sim/motion.js` does for `motion`, and a
+  skill that is unconfirmed or named but not described gets none.
+- A concept is a hint and never a prerequisite. It does not unlock anything.
+
 ## A pass, step by step
 
 1. List the prop's skills in the first two states: `node test/coverage.js` writes them under "No

@@ -5,11 +5,21 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#41](https://github.com/TuanSSM/flowtopia/issues/41)). 0 of 5 items done.
+**Status:** in progress (issue [#41](https://github.com/TuanSSM/flowtopia/issues/41)). 1 of 5 items done.
 
-- [ ] **Concepts in the catalogs.** A `concepts` list (plane, timing and direction, weave,
+- [x] **Concepts in the catalogs.** A `concepts` list (plane, timing and direction, weave,
   isolation, extension) and a `concepts` field on skills, validated by both validators; curated in
   the editor. DoD: fixtures for both validators; no inference from text.
+  Done: the five concepts are a fixed list in both validators (`CONCEPTS` in `web/catalog-check.js`,
+  `catalogConcepts` in `main.go`). A catalog may name the ones it teaches, each with a sentence on
+  what it means for that prop; a skill may list up to three of its catalog's concepts. Twelve
+  fixtures (two good, ten bad, each failing for its own reason) are judged the same way by both
+  validators. In the editor the map's concepts are written under Branches and the skill form has a
+  tick box per concept the map names; the review now also names what changed in the map itself, so
+  a concept can be published before any skill lists it (`editor.py` and `TestDBCatalogs` cover it).
+  Nothing fills the field in: there is no script for it, the method page says when a person may
+  tick one, and the five shipped catalogs name no concept yet. Curating them is content work for a
+  pass that can open sources ([CAT](../epic-cat/todo.md)); the hint below shows nothing until then.
 - [ ] **The hint.** A skill whose concept is clean on another of the member's props says "you know
   the <concept> from <prop>". Never an unlock. DoD: `combo.py` shows the hint only when both
   catalogs name the concept and the level is clean.

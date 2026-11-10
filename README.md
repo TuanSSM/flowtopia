@@ -446,8 +446,14 @@ accounts page is asked about first ("Make @name a moderator?") and sent on Apply
 - **Skill map editor** (the Catalogs tab, behind `catalogEditor`): edit skills, branches and phases, or the whole catalog as
   JSON, in a draft. Every field shows the validator's messages as you type (`web/catalog-check.js`; the
   server runs the same rules in Go, `validateCatalog`, and both must agree on `test/catalog-fixtures`).
-  The review lists each change and how many people have progress on it. Publishing (admins) makes a new
-  revision live for everyone; earlier revisions can be exported as catalog files or restored.
+  The review lists each changed skill and how many people have progress on it, and names the parts of
+  the map itself that changed (branches, phases, concepts), so a change to those alone can be published
+  too. Publishing (admins) makes a new revision live for everyone; earlier revisions can be exported as
+  catalog files or restored.
+  Under Branches a map names the shared concepts it teaches (plane, timing and direction, weave,
+  isolation, extension), each with a sentence on what it means for that prop, and the skill form has a
+  tick box per named concept. They are chosen by a person and never worked out from a skill's text
+  ([docs/catalog-method.md](docs/catalog-method.md)); the shipped maps name none yet.
   Ids are never reused: renaming a published skill keeps its old id as an alias, and progress moves to the
   new id when it next loads; retired skills leave the maps but keep their progress. Publishing or restoring
   anything that would leave progress with no skill to belong to is refused.

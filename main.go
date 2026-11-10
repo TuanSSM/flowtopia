@@ -2319,6 +2319,11 @@ type catalogIssue struct {
 var motionValues = map[string][]string{"plane": {"wall", "face", "table", "mixed", "unknown"}, "direction": {"forward", "reverse", "either", "unknown"},
 	"hands": {"one", "both", "unknown"}, "grip": {"handle", "end", "middle", "unknown"}, "source": {"clip", "description", "unknown"}}
 
+// catalogConcepts are the ideas that carry over from one prop to another (CONCEPTS in
+// web/catalog-check.js). A catalog names the ones it teaches and a skill lists the ones it is about;
+// a person chooses them in the editor, and nothing works them out from a skill's text.
+var catalogConcepts = []string{"plane", "timing", "weave", "isolation", "extension"}
+
 var (
 	branchKeyRE = regexp.MustCompile(`^[A-Z]$`)
 	catSkillRE  = regexp.MustCompile(`^[A-Z][1-9][0-9]?$`)
@@ -2376,6 +2381,25 @@ func validateCatalog(raw []byte) (errs, warns []catalogIssue) {
 	refs := obj(c["refs"])
 	if refs == nil {
 		refs = map[string]any{}
+	}
+	concepts, taught := map[string]bool{}, map[string]bool{}
+	if cv, ok := c["concepts"]; ok {
+		if m := obj(cv); m == nil {
+			E("concepts", "concepts must be an object: a concept and a sentence on what it means for this prop")
+		} else {
+			for k, v := range m {
+				text, _ := v.(string)
+				if !slices.Contains(catalogConcepts, k) {
+					E("concepts."+k, `concepts has no "%s"; the concepts are %s`, k, strings.Join(catalogConcepts, ", "))
+				} else if !str(v, 10, 240) {
+					E("concepts."+k, "concept %s: needs a sentence of 10 to 240 characters", k)
+				} else if strings.ContainsAny(text, "—–") {
+					E("concepts."+k, "concept %s: contains a long dash; use plain punctuation", k)
+				} else {
+					concepts[k] = true
+				}
+			}
+		}
 	}
 	if len(branches) < 5 || len(branches) > 11 {
 		E("branches", "needs 5 to 11 branches, has %d", len(branches))
@@ -2494,6 +2518,26 @@ func validateCatalog(raw []byte) (errs, warns []catalogIssue) {
 						E(at+".motion."+k, `%s: motion has no field "%s"`, who, k)
 					} else if !slices.Contains(allowed, s) {
 						E(at+".motion."+k, "%s: motion %s must be one of %s", who, k, strings.Join(allowed, ", "))
+					}
+				}
+			}
+		}
+		if cv, ok := sk["concepts"]; ok {
+			// The shared ideas this skill is about: up to three, each one the catalog itself names.
+			l, isList := cv.([]any)
+			seen, words := map[string]bool{}, true
+			for _, x := range l {
+				k, isWord := x.(string)
+				seen[k], words = true, words && isWord
+			}
+			if !isList || len(l) > 3 || !words || len(seen) != len(l) {
+				E(at+".concepts", "%s: concepts must be a list of up to 3 different concepts", who)
+			} else {
+				for _, x := range l {
+					if k, _ := x.(string); !concepts[k] {
+						E(at+".concepts", `%s: "%v" is not one of this catalog's concepts`, who, x)
+					} else {
+						taught[k] = true
 					}
 				}
 			}
@@ -2661,6 +2705,11 @@ func validateCatalog(raw []byte) (errs, warns []catalogIssue) {
 					E("aliases."+from, "alias %s: points at %v, which is not a current skill", from, to)
 				}
 			}
+		}
+	}
+	for _, k := range catalogConcepts {
+		if concepts[k] && !taught[k] {
+			W("concepts."+k, "concept %s: no skill names it", k)
 		}
 	}
 	return errs, warns
@@ -3037,8 +3086,28 @@ func (a *app) handleCatalogDiff(w http.ResponseWriter, r *http.Request, _ *user)
 			}
 		}
 	}
+	// What changed outside the skills: the map's own parts, such as its branches, phases or concepts.
+	// Without this a draft that only renames a branch would look the same as the published map.
+	var op, np map[string]any
+	_ = json.Unmarshal(pub, &op)
+	_ = json.Unmarshal(draft, &np)
+	whole, parts := []string{}, map[string]bool{}
+	for k := range op {
+		parts[k] = true
+	}
+	for k := range np {
+		parts[k] = true
+	}
+	for k := range parts {
+		was, _ := json.Marshal(op[k])
+		is, _ := json.Marshal(np[k])
+		if k != "skills" && string(was) != string(is) {
+			whole = append(whole, k)
+		}
+	}
+	sort.Strings(whole)
 	errs, warns := validateCatalog(draft)
-	writeJSON(w, http.StatusOK, map[string]any{"changes": changes, "errors": errs, "warnings": warns, "blocked": a.safeToPublish(prop, draft, false)})
+	writeJSON(w, http.StatusOK, map[string]any{"changes": changes, "map": whole, "errors": errs, "warnings": warns, "blocked": a.safeToPublish(prop, draft, false)})
 }
 
 // publishCatalog makes body the next published revision, after the same checks the editor shows.
