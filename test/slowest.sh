@@ -25,7 +25,9 @@ rows() {   # seconds<TAB>suite<TAB>name, one per check
 
 table() {
   local n=${2:-5} out
-  out=$(rows "$1" | sort -t$'\t' -k1,1nr -k2,2 -k3,3 | head -n "$n")
+  # awk reads to the end where head would stop reading: with a few thousand checks sort would be cut off
+  # mid-write and, under pipefail, fail the script.
+  out=$(rows "$1" | sort -t$'\t' -k1,1nr -k2,2 -k3,3 | awk -v n="$n" 'NR <= n')
   [ -n "$out" ] || return 0
   echo '| Seconds | Suite | Check |'
   echo '| ---: | --- | --- |'
@@ -62,6 +64,12 @@ self_test() {
   expect "a bar is escaped and a backtick replaced" "$got" '| 0.3 | social | `a \| b '"'"'c'"'"'` |'
   expect "five by default" "$(table "$t/r" | wc -l | tr -d ' ')" 7
   expect "no times, no table" "$(table "$t/none")" ""
+  mkdir -p "$t/many/integration-combo"
+  for ((i = 0; i < 20000; i++)); do echo "TIME $((i % 97)).5 a check with a long enough name to fill a pipe, number $i"; done > "$t/many/integration-combo/out.txt"
+  # Run as the workflow runs it: as its own process, where a failed pipe ends the script, and with the
+  # broken pipe signal ignored as it is on the runner.
+  if (trap '' PIPE; "$0" "$t/many" > "$t/many.md"); then got=ok; else got=failed; fi
+  expect "twenty thousand checks still give five rows" "$got $(wc -l < "$t/many.md" | tr -d ' ')" "ok 7"
   expect "no results folder, no table" "$(table "$t/missing")" ""
   echo "FAILURES: $fails"
   [ "$fails" -eq 0 ]
