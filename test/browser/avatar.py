@@ -132,12 +132,21 @@ try:
     check('with avatars off demos use the standard figure and body',js("return window.Figure3D.avatar()") is None and js("return [window.Demo.body.sc,window.Demo.body.bd]")==[1,1])
     api(op,'flags',{'flags':{'avatars':True}},'PUT')
     reload('#/prop/nunchaku/F/F5');figure_ready();wait_for("return !!window.Demo.clip()",'the demo to load its clip',20)
-    # ---- Frame budget: drawing one demo frame, on the standard figure and with the heaviest avatar.
-    FRAME="""const D=window.Demo,c=D.clip();if(!c)return null;const cv=document.createElement('canvas');cv.width=cv.height=720;const x=cv.getContext('2d'),col=D.colors(),who=arguments[0];
-      D.draw(x,720,c,0,'angle',false,col,false,who);const t=[];for(let i=0;i<30;i++){const t0=performance.now();D.draw(x,720,c,i/30,'angle',false,col,false,who);t.push(performance.now()-t0)}t.sort((a,b)=>a-b);return Math.round(t[15]*10)/10"""
-    base=js(FRAME,None);ms=js(FRAME,HEAVY)
-    print(f'demo frame, median of 30: standard figure {base} ms, heaviest avatar {ms} ms')
+    # ---- Frame time: one frame of a demo (nunchaku F5, 720 px) on each path the player has, the median of 60
+    # drawings after 20 to warm up (with one, the path timed first read a third slower than the heavier one
+    # timed after it: the browser was still compiling the drawing code). The 3D figure is skinned and drawn through WebGL, in software here; the
+    # drawn figure is what a browser without WebGL gets. A pixel is read back after each drawing: a canvas
+    # only notes what to draw until someone looks, and without the look the drawn figure would time at nothing. The "frame ms" line goes into the pull request's
+    # comment (process_pr.yml), so a change to the player or the figure shows what it cost before it merges.
+    FRAME="""const D=window.Demo,c=D.clip();if(!c)return null;const cv=document.createElement('canvas');cv.width=cv.height=720;const x=cv.getContext('2d'),col=D.colors(),who=arguments[0],flat=arguments[1];
+      if(flat)D.figure(false);
+      try{for(let i=0;i<20;i++)D.draw(x,720,c,i/20,'angle',false,col,false,who);const t=[];for(let i=0;i<60;i++){const t0=performance.now();D.draw(x,720,c,i/60,'angle',false,col,false,who);x.getImageData(360,360,1,1);t.push(performance.now()-t0)}
+        t.sort((a,b)=>a-b);return Math.round((t[29]+t[30])/2*10)/10}
+      finally{if(flat)D.figure(true)}"""
+    base=js(FRAME,None,False);ms=js(FRAME,HEAVY,False);flat=js(FRAME,None,True)
+    print(f'frame ms: 3D figure {base}, 3D figure with the heaviest avatar {ms}, drawn figure {flat} (median of 60 frames; budget {BUDGET:.0f} for the heaviest avatar)')
     check(f'one demo frame with the heaviest avatar draws within {BUDGET:.0f} ms ({ms} ms; the standard figure takes {base} ms)',ms is not None and ms<=BUDGET,ms)
+    check(f'the drawn figure, for a browser without WebGL, draws a frame too and the 3D figure is back afterwards ({flat} ms)',flat is not None and flat<=BUDGET and js("return !!(window.Figure3D&&window.Figure3D.ready)") and js(FRAME,None,False) is not None,flat)
     # ---- Parts: every part, in five poses, shows and stays close to the skin (measured against the mesh).
     POSES={'stand':{},'arms up':{'hL':[0.25,1.95,0.05],'hR':[-0.25,1.95,0.05]},'deep bend':{'pelvis':[0,0.78,-0.12],'spine':[0,0.75,0.66],'hL':[0.2,0.75,0.35],'hR':[-0.2,0.75,0.35]},'turn':{'face':[0.8,0,0.6]},'hand behind back':{'hR':[-0.1,1.0,-0.2]}}
     CFGS=[HEAVY,{**HEAVY,'hair':'ponytail','hat':'cap','glasses':'round','eyes':'sleepy','mouth':'open','brows':'arched'},{**HEAVY,'hair':'long','hat':'beanie','glasses':'none','mouth':'smile','brows':'angled','eyes':'narrow'},{**HEAVY,'hair':'bun','hat':'none','mouth':'neutral','brows':'straight','eyes':'round'},{**HEAVY,'hair':'buzz','hat':'none'},{**HEAVY,'hair':'short','hat':'none'}]

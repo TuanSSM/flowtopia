@@ -327,7 +327,8 @@ jobs:
             *) file="$SUITE.py" ;;
           esac
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh "$file" | tee report/result.txt || code=$?
-          [ "$SUITE" = avatar ] && { grep -E '^demo frame|^parts' /tmp/flowa-test/out.txt || true; }
+          # The avatar suite times one demo frame on each path; the line goes into the pull request's comment.
+          [ "$SUITE" = avatar ] && { grep -E '^frame ms|^parts' /tmp/flowa-test/out.txt || true; grep -m1 '^frame ms' /tmp/flowa-test/out.txt > report/frame.txt || true; }
           grep -E '^[0-9]+ passed, ' report/result.txt | tail -1 > report/line.txt || true
           exit "${code:-0}"
       - name: Collect logs
@@ -466,6 +467,9 @@ jobs:
           echo "detail=${detail:-none needed}" >> "$GITHUB_OUTPUT"
           # Where the suites' time went: a check's seconds run from the check before it (test/slowest.sh).
           test/slowest.sh results > slowest.md
+          # One demo frame on each path, when the avatar suite ran (it runs for every change to the player or the figure).
+          frame=$(cut -c1-300 results/integration-avatar/frame.txt 2>/dev/null | tr -d '`|<>' || true)
+          echo "frame=${frame#frame ms: }" >> "$GITHUB_OUTPUT"
       - name: Screenshot gallery
         id: shots
         env:
@@ -503,6 +507,7 @@ jobs:
           INTEG: ${{ needs.integration.result }}
           PHYSICS: ${{ needs.unit.outputs.physics }}
           INTEG_DETAIL: ${{ steps.integ.outputs.detail }}
+          FRAME: ${{ steps.integ.outputs.frame }}
           STAT: ${{ steps.size.outputs.stat }}
           FILES: ${{ steps.size.outputs.files }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -529,6 +534,10 @@ jobs:
               echo '**Slowest checks** (seconds, each counted from the check before it):'
               echo
               cat slowest.md
+              echo
+            fi
+            if [ -n "$FRAME" ]; then
+              echo "**Demo frame, ms:** $FRAME. Drawn in software on this runner; the Pi and a phone are in docs/avatars.md."
               echo
             fi
             echo "$SHOTS_MD"
