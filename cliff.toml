@@ -34,10 +34,21 @@ protect_breaking_commits = true
 filter_commits = false
 tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+$"
 sort_commits = "oldest"
+# Changes that were merged and taken out again before any release are left out of the notes, with
+# the revert that took them out: the notes say what a release ships, and a breaking change that never
+# shipped must not raise the version. Each is rewritten here, before the message is read, to a title
+# the parsers below skip. Loopback by default (#57) and the reverse proxy profile (#58) were
+# reverted in #74.
+commit_preprocessors = [
+  { pattern = '(?s)^build!: publish the app on loopback by default \(#57\).*', replace = 'chore(withdrawn): #57' },
+  { pattern = '(?s)^feat\(server\): add an https reverse proxy profile to compose \(#58\).*', replace = 'chore(withdrawn): #58' },
+  { pattern = '(?s)^revert: publish on loopback and the https proxy profile \(#57, #58\).*', replace = 'chore(withdrawn): #74' },
+]
 commit_parsers = [
   # Merge commits (GitHub's test merge on a pull request, or main merged into a branch) are not changes.
   { message = '^Merge ', skip = true },
   { message = '^chore\(release\)', skip = true },
+  { message = '^chore\(withdrawn\)', skip = true },
   { message = '^feat', group = '<!-- 0 -->Features' },
   { message = '^fix', group = '<!-- 1 -->Fixes' },
   { message = '^perf', group = '<!-- 2 -->Performance' },

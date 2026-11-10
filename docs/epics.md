@@ -439,10 +439,13 @@ pinned by digest with a documented update step; the arm64 image built by the rel
 pulled by `deploy.sh`, so the Pi stops building; a weekly CI job that restores the latest backup
 format into a scratch database and runs the Go tests against it; `GET /healthz` with the schema
 version and whether TLS roots are present; one structured log line per request. **Out of scope.** Multi-instance,
-metrics dashboards, email alerts.
+metrics dashboards, email alerts. **Withdrawn on 10 November 2026**, at the owner's request, after
+both were built: the reverse proxy recipe and loopback by default (#74). The deployment was working
+on port 3169 behind the owner's own reverse proxy, and stays that way; HTTPS is that proxy's job.
 
-**Success.** A fresh machine goes from `git clone` to HTTPS in the README's steps; the restore
-drill is green; a deploy takes under a minute on the Pi.
+**Success.** The restore drill is green; a deploy takes under a minute on the Pi. (The first
+measure, a fresh machine going from `git clone` to HTTPS in the README's steps, went with the
+withdrawn recipe.)
 
 **Risks.** Building in CI changes the bytes deployed; the image is built from the tag by the same
 Dockerfile and its digest is recorded in the release notes.

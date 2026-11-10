@@ -12,10 +12,9 @@
 set -euo pipefail
 
 # Every suite, in the order the summary lists them. Each one is a job in the integration matrix.
-# compose, release and restore are not browser suites: test/compose.sh --up starts compose.yml and asks
-# who can reach the app; test/release.sh builds the release image and deploys it with deploy.sh;
-# test/restore.sh is the restore drill, a backup taken and put back with backup.sh.
-ALL="db compose release restore combo demos social mod editor suggest links avatar touch a11y demos-avatars combo-avatars"
+# release and restore are not browser suites: test/release.sh builds the release image and deploys it
+# with deploy.sh; test/restore.sh is the restore drill, a backup taken and put back with backup.sh.
+ALL="db release restore combo demos social mod editor suggest links avatar touch a11y demos-avatars combo-avatars"
 BROWSER="combo demos social mod editor suggest links avatar touch a11y demos-avatars combo-avatars"
 # Suites that play demo clips or draw the figure, for changes to the clips or the 3D figure. The touch suite
 # is one of them: it measures the avatar editor and the landing page's demo on a phone. So is the a11y suite:
@@ -40,12 +39,11 @@ plan() {
       # change to it runs every suite, on the image it names. No pictures: nothing drawn changes, and
       # Dependabot's pull requests, which move the pins, may not push them.
       compose.yml|test/db-image.sh) lint=true; suites $ALL ;;
-      # What else the containers are made of and how they are started: lint reads compose.yml, and the
-      # compose suite starts it and asks who can reach the app, directly and through the proxy.
-      Caddyfile|.env.example|test/compose.sh) lint=true; suites compose ;;
       # The image and the way it gets onto a machine: the release suite builds it as the release
-      # workflow does and deploys it with deploy.sh; the compose suite builds it too.
-      Dockerfile|.dockerignore) lint=true; suites compose release ;;
+      # workflow does and deploys it with deploy.sh.
+      Dockerfile|.dockerignore) lint=true; suites release ;;
+      # The settings a deployment starts from: the release suite deploys with a file made like it.
+      .env.example) lint=true; suites release ;;
       deploy.sh|build-image.sh|test/release.sh|.github/workflows/release_tag.yml) lint=true; suites release ;;
       # The backup, the drill that restores it, and the backups of earlier versions the drill keeps.
       backup.sh|test/restore.sh|testdata/backups/*|.github/workflows/restore_drill.yml) lint=true; suites restore ;;
@@ -87,7 +85,7 @@ self_test() {
     local got; got=$(tr ',' '\n' <<<"$1" | plan | paste -sd' ')
     if [ "$got" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: $2"; echo "  got:  $got"; fails=$((fails + 1)); fi
   }
-  local all='["db","compose","release","restore","combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","demos-avatars","combo-avatars"]'
+  local all='["db","release","restore","combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","demos-avatars","combo-avatars"]'
   local browser='["combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","demos-avatars","combo-avatars"]'
   expect "README.md,docs/epics.md,.claude/rules/go-server.md" 'code=false lint=false unit=false screenshots=false suites=[]'
   expect "main.go" "code=true lint=true unit=true screenshots=true suites=$all"
@@ -99,8 +97,7 @@ self_test() {
   expect "deploy.sh,build-image.sh,test/release.sh" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "compose.yml" "code=true lint=true unit=false screenshots=false suites=$all"
   expect "test/db-image.sh,.github/dependabot.yml" "code=true lint=true unit=false screenshots=false suites=$all"
-  expect "Caddyfile,.env.example,test/compose.sh" 'code=true lint=true unit=false screenshots=false suites=["compose"]'
-  expect "Dockerfile,.dockerignore" 'code=true lint=true unit=false screenshots=false suites=["compose","release"]'
+  expect "Dockerfile,.dockerignore,.env.example" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "test/physics.js,test/catalog-fixtures/bad-cycle.json" 'code=true lint=true unit=true screenshots=false suites=[]'
