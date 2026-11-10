@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 type tenv struct {
@@ -2228,5 +2230,133 @@ func TestDBRequestLog(t *testing.T) {
 	lines = logLines(t, e.a, e.h, post())
 	if len(lines) != 1 || lines[0]["status"] != float64(429) || lines[0]["refused"] != fmt.Sprintf("too many posts by member %d", id) {
 		t.Fatalf("a post over the allowance: got %v, want 429 and the refusal named", lines)
+	}
+}
+
+// planNode is one step of a query plan as EXPLAIN (FORMAT JSON) gives it.
+type planNode struct {
+	Type     string     `json:"Node Type"`
+	Relation string     `json:"Relation Name"`
+	Rows     float64    `json:"Actual Rows"`
+	Loops    float64    `json:"Actual Loops"`
+	Removed  float64    `json:"Rows Removed by Filter"`
+	Plans    []planNode `json:"Plans"`
+}
+
+// walk calls f for n and every step under it.
+func (n planNode) walk(f func(planNode)) {
+	f(n)
+	for _, c := range n.Plans {
+		c.walk(f)
+	}
+}
+
+// The queries behind the timeline, the people list, the notifications, the bookmarks and the admin
+// dashboard, read with EXPLAIN ANALYZE on a database the size the roadmap plans for: 500 members,
+// 10,000 posts, 30,000 comments, 110,000 likes, 20,000 notifications. None of them may read one of
+// the tables that grow with use from end to end, and each has a bound on the rows it reads at all,
+// which is what the time a query takes comes from. The tables with a row or a few per member
+// (users, sessions, progress) and the reports are read whole where the question is about all of
+// them; whole says which, and the bound still holds them.
+func TestDBQueryPlans(t *testing.T) {
+	e := newEnv(t)
+	db := e.a.db
+	for _, q := range []string{
+		`INSERT INTO users (username, pw_hash, last_seen, stats) SELECT 'm' || g, 'x', now() - (g % 60) * interval '1 day', jsonb_build_object('xp', g * 7 % 5000) FROM generate_series(1, 500) g`,
+		`INSERT INTO posts (user_id, body, created_at, hidden_at) SELECT 1 + (g * 7919) % 500, 'post ' || g, now() - (10000 - g) * interval '13 minutes', CASE WHEN g % 97 = 0 THEN now() END FROM generate_series(1, 10000) g`,
+		`INSERT INTO comments (post_id, user_id, body, created_at) SELECT 1 + (g * 31) % 10000, 1 + (g * 13) % 500, 'c' || g, now() - (30000 - g) * interval '4 minutes' FROM generate_series(1, 30000) g`,
+		`INSERT INTO comments (post_id, user_id, body, parent_id) SELECT c.post_id, 1 + (c.id * 17) % 500, 'r' || c.id, c.id FROM comments c WHERE c.id % 5 = 0`,
+		`INSERT INTO likes (post_id, user_id) SELECT p, u FROM generate_series(1, 10000) p, generate_series(1, 500) u WHERE (p * 31 + u * 17) % 100 < 2`,
+		`INSERT INTO comment_likes (comment_id, user_id) SELECT c, 1 + (c * 7) % 500 FROM generate_series(1, 30000, 3) c`,
+		`INSERT INTO notifications (user_id, actor_id, kind, post_id, comment_id, read) SELECT 1 + g % 500, 1 + (g * 11) % 500, 'comment', 1 + (g * 37) % 10000, 1 + (g * 41) % 30000, g % 3 = 0 FROM generate_series(1, 20000) g`,
+		`INSERT INTO bookmarks (user_id, kind, ref) SELECT DISTINCT 1 + g % 500, 'post', (1 + (g * 43) % 10000)::text FROM generate_series(1, 5000) g`,
+		`INSERT INTO sessions (token_hash, user_id, expires_at) SELECT 's' || g, 1 + g % 500, now() + interval '30 days' FROM generate_series(1, 1500) g`,
+		`INSERT INTO progress (user_id, prop, state) SELECT g, 'nunchaku', '{"sessions":[{"date":"2026-11-03","minutes":20},{"date":"2026-10-20","minutes":15}]}' FROM generate_series(1, 500) g`,
+		`INSERT INTO reports (reporter_id, target_kind, target_id, reason, status) SELECT 1 + g % 500, 'post', g, 'spam', CASE WHEN g % 4 = 0 THEN 'open' ELSE 'resolved' END FROM generate_series(1, 200) g`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	const viewer = 5
+	var newest, mine []int64
+	if err := db.QueryRow(`SELECT array_agg(id) FROM (SELECT id FROM posts ORDER BY id DESC LIMIT $1) p`, pageSize).Scan(pq.Array(&newest)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT array_agg(ref::bigint) FROM bookmarks WHERE user_id = $1 AND kind = 'post'`, viewer).Scan(pq.Array(&mine)); err != nil || len(mine) == 0 {
+		t.Fatalf("member %d has no bookmarks to read: %v", viewer, err)
+	}
+	var roots []int64
+	if err := db.QueryRow(`SELECT array_agg(id) FROM comments WHERE post_id = ANY($1) AND parent_id IS NULL`, pq.Array(newest)).Scan(pq.Array(&roots)); err != nil {
+		t.Fatal(err)
+	}
+	// The tables that grow with every post, like and comment: reading one whole is what an index is for.
+	grows := map[string]bool{"posts": true, "comments": true, "likes": true, "comment_likes": true, "notifications": true, "bookmarks": true}
+	var none []int64
+	for _, c := range []struct {
+		name  string
+		sql   string
+		args  []any
+		most  float64 // rows the plan may read, counting every step
+		whole string  // small tables this one reads from end to end, by design
+	}{
+		{"timeline, first page", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 1500, ""},
+		{"timeline, an older page", feedSQL, []any{viewer, 5000, 0, 0, pageSize + 1, false, pq.Array(none)}, 1500, ""},
+		{"timeline as a moderator sees it", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, true, pq.Array(none)}, 1500, ""},
+		{"one member's posts", feedSQL, []any{viewer, 0, 7, 0, pageSize + 1, false, pq.Array(none)}, 1500, ""},
+		{"one post", feedSQL, []any{viewer, 0, 0, 4321, 2, false, pq.Array(none)}, 300, ""},
+		{"the posts a member bookmarked", feedSQL, []any{viewer, 0, 0, 0, len(mine) + 1, false, pq.Array(mine)}, 1500, ""},
+		{"the comments under a page of posts", commentsSQL(feedCommentsSQL), []any{viewer, pq.Array(newest), previewComments}, 1500, ""},
+		{"the replies under those comments", commentsSQL(repliesSQL), []any{viewer, pq.Array(roots), previewReplies}, 1500, ""},
+		{"notifications", notificationsSQL, []any{viewer, maxNotifList}, 400, ""},
+		{"the unread count of the bell", unreadSQL, []any{viewer}, 400, ""},
+		{"bookmarks", bookmarksSQL, []any{viewer}, 200, ""},
+		{"people", peopleSQL, nil, 1500, "users"},
+		{"dashboard, totals", dashTotalsSQL, nil, 1500, "users"},
+		{"dashboard, active members", dashActiveSQL, nil, 12000, "users sessions progress"},
+		{"dashboard, open reports", dashOpenSQL, nil, 800, "reports"},
+		{"dashboard, the weeks", dashWeeksSQL, []any{dashWeeks}, 60000, "progress reports"},
+	} {
+		var raw []byte
+		if err := db.QueryRow(`EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, BUFFERS OFF) `+c.sql, c.args...).Scan(&raw); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		var out []struct {
+			Plan planNode `json:"Plan"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil || len(out) != 1 {
+			t.Errorf("%s: the plan cannot be read: %v", c.name, err)
+			continue
+		}
+		read := 0.0
+		scanned := map[string]bool{}
+		out[0].Plan.walk(func(n planNode) {
+			read += (n.Rows + n.Removed) * max(n.Loops, 1)
+			if n.Type == "Seq Scan" {
+				scanned[n.Relation] = true
+				if grows[n.Relation] {
+					t.Errorf("%s: reads the whole of %s (%.0f rows) where an index should answer", c.name, n.Relation, (n.Rows+n.Removed)*max(n.Loops, 1))
+				} else if !strings.Contains(" "+c.whole+" ", " "+n.Relation+" ") {
+					t.Errorf("%s: reads the whole of %s, which this query was not expected to", c.name, n.Relation)
+				}
+			}
+		})
+		for _, w := range strings.Fields(c.whole) {
+			if !scanned[w] {
+				t.Logf("%s: no longer reads %s whole; take it off the list", c.name, w)
+			}
+		}
+		if read > c.most {
+			t.Errorf("%s: the plan reads %.0f rows, more than the %.0f it may", c.name, read, c.most)
+		}
+		t.Logf("%-36s %6.0f rows read", c.name, read)
+	}
+	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
+	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {
+		if e.count(`SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`, idx) != 1 {
+			t.Errorf("the index %s is missing", idx)
+		}
 	}
 }
