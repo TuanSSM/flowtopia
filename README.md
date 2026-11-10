@@ -554,6 +554,30 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |
 
+## Fitting the suggestions
+
+Next-trick suggestions start from weights worked out from the physics and say they are early. Once
+30 pairs of skills have a shared Works or Blocked mark (the admin dashboard counts toward it), the
+weights can be fitted on what members found and measured on pairs held out
+([docs/suggestions.md](docs/suggestions.md)). `.github/workflows/fit_suggest.yml` does that from an
+instance, started by hand:
+
+```sh
+openssl rand -hex 32                                          # a token; put it in the instance's .env as FLOWA_COUNTS_TOKEN
+gh secret set FLOWA_COUNTS_TOKEN                              # and in the repository, the same value
+gh workflow run fit_suggest -f instance=https://flowa.example.org
+gh workflow run fit_suggest -f instance=https://flowa.example.org -f dry_run=true   # fetch, fit and show; open nothing
+```
+
+The token lets the workflow read `GET /api/suggest/counts` without an account, and nothing else:
+how often each pair was marked, with no member in it. It is 32 characters or more, or the server
+does not start; unset, only a signed-in admin can export the counts. The workflow takes an `https`
+address only, fits with `sim/fit-suggest.js`, runs the gate (`test/suggest-gate.js`: at least 30
+pairs, an AUC of 0.75, better than the prerequisite graph alone), and opens a pull request that
+changes `web/suggest-weights.json` and carries the numbers. With fewer than 30 pairs, or weights
+that do not pass, it says so and opens nothing. Merging that pull request is what takes the "early"
+label off the combo builder.
+
 ## Releases
 
 `.github/workflows/release_tag.yml` tags a release of `main`, builds its image and publishes its

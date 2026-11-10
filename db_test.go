@@ -2411,3 +2411,68 @@ func TestDBQueryPlans(t *testing.T) {
 		}
 	}
 }
+
+// The fit workflow reads the shared counts with a token and no account (FLOWA_COUNTS_TOKEN): every
+// prop's pairs, to the one who has the token, and to nobody when there is no token or the wrong one.
+func TestDBCountsToken(t *testing.T) {
+	e := newEnv(t)
+	_, member := e.user("bea", "user")
+	if _, err := e.a.db.Exec(`INSERT INTO transition_counts (prop, a, b, works, bridge, blocked) VALUES
+		('nunchaku', 'F5', 'F7', 3, 0, 1), ('poi', 'A1', 'A2', 0, 2, 0), ('staff', 'S1', 'S2', 0, 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	const token = "0123456789abcdef0123456789abcdef0123456789abcdef"
+	ask := func(bearer string) (int, map[string]any) {
+		hdr := map[string]string{}
+		if bearer != "" {
+			hdr["Authorization"] = bearer
+		}
+		code, out, _ := e.doH("", "GET", "/api/suggest/counts", nil, hdr)
+		return code, out
+	}
+	// No token is set: nothing opens the counts but a session, and a made-up token is turned away.
+	if code, _ := ask("Bearer " + token); code != 401 {
+		t.Fatalf("with no token set, a token got %d, want 401", code)
+	}
+	if code, _ := ask("Bearer "); code != 401 {
+		t.Fatalf("with no token set, an empty token got %d, want 401: an unset token must not equal an empty one", code)
+	}
+	if code, _ := ask(""); code != 401 {
+		t.Fatalf("without a session or a token: %d, want 401", code)
+	}
+	e.a.countsTok = token
+	code, out := ask("Bearer " + token)
+	counts, _ := out["counts"].([]any)
+	if code != 200 || len(counts) != 2 {
+		t.Fatalf("with the token: %d and %v, want 200 and the two pairs anyone marked, of every prop", code, out["_raw"])
+	}
+	if first := counts[0].(map[string]any); first["prop"] != "nunchaku" || num(first["works"]) != 3 || num(first["blocked"]) != 1 {
+		t.Fatalf("the first pair: %v", first)
+	}
+	for name, bearer := range map[string]string{
+		"a wrong token":               "Bearer " + strings.Repeat("x", len(token)),
+		"the token with one more":     "Bearer " + token + "0",
+		"the start of the token":      "Bearer " + token[:32],
+		"an empty token":              "Bearer ",
+		"the token under another way": "Basic " + token,
+	} {
+		if code, _ := ask(bearer); code != 401 {
+			t.Errorf("%s got %d, want 401", name, code)
+		}
+	}
+	// The token opens this one answer and nothing else, and a member's session works as before.
+	if code, _, _ := e.doH("", "GET", "/api/admin/dashboard", nil, map[string]string{"Authorization": "Bearer " + token}); code != 401 {
+		t.Errorf("the token on the dashboard: %d, want 401", code)
+	}
+	if code, _, _ := e.doH("", "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []any{}}, map[string]string{"Authorization": "Bearer " + token}); code != 401 {
+		t.Errorf("the token on a write: %d, want 401", code)
+	}
+	if got := e.must(200, member, "GET", "/api/suggest/counts?prop=nunchaku", nil)["counts"].([]any); len(got) != 1 {
+		t.Errorf("a member's own read: %v", got)
+	}
+	// With suggestions switched off there is nothing to read, token or not.
+	e.setFlag("suggest", false)
+	if code, _ := ask("Bearer " + token); code != 404 {
+		t.Errorf("with the suggest flag off: %d, want 404", code)
+	}
+}

@@ -114,6 +114,7 @@ type app struct {
 	flagMu    sync.Mutex // guards flagCache and flagsAt
 	lim       limits
 	hosts     []string     // names the server answers to besides addresses and private names (FLOWA_HOSTS)
+	countsTok string       // lets the fit workflow read the shared transition counts without an account (FLOWA_COUNTS_TOKEN); "" means no token opens them
 	proxies   []*net.IPNet // reverse proxies whose forwarding headers are believed (FLOWA_TRUSTED_PROXIES)
 	fetch     *fetcher     // link previews; nil means no fetching
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
@@ -3770,6 +3771,40 @@ func (a *app) handleTransitionLabels(w http.ResponseWriter, r *http.Request, u *
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// countsToken reads FLOWA_COUNTS_TOKEN: the secret the fit workflow sends to read the shared
+// transition counts of every prop without an account. Empty means there is none. A short one is
+// refused at start, because this is the only thing between the internet and that answer.
+func countsToken(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	if len(s) < 32 || strings.ContainsAny(s, " \t\r\n") {
+		return "", fmt.Errorf("FLOWA_COUNTS_TOKEN must be at least 32 characters with no spaces (for example: openssl rand -hex 32); the one given has %d", len(s))
+	}
+	return s, nil
+}
+
+// countsByToken answers GET /api/suggest/counts for the fit workflow (.github/workflows/fit_suggest.yml):
+// a request that carries "Authorization: Bearer <FLOWA_COUNTS_TOKEN>" gets the counts of every prop
+// without signing in. The counts name no member, so the token opens nothing personal. Any other
+// request goes on to next, which wants a session as before.
+func (a *app) countsByToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		got, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !bearer {
+			next(w, r)
+			return
+		}
+		if a.countsTok == "" || subtle.ConstantTimeCompare([]byte(got), []byte(a.countsTok)) != 1 {
+			logRefusal(w, "a token that does not open the counts", "from "+limitKey(a.clientIP(r)))
+			fail(w, http.StatusUnauthorized, "That token does not open the counts.")
+			return
+		}
+		a.writeCounts(w, "")
+	}
+}
+
 // handleTransitionCounts returns the shared counts for one prop, or for every prop to an admin
 // exporting them for sim/fit-suggest.js.
 func (a *app) handleTransitionCounts(w http.ResponseWriter, r *http.Request, u *user) {
@@ -3782,6 +3817,11 @@ func (a *app) handleTransitionCounts(w http.ResponseWriter, r *http.Request, u *
 		fail(w, http.StatusNotFound, "Unknown prop.")
 		return
 	}
+	a.writeCounts(w, prop)
+}
+
+// writeCounts writes the pairs of one prop, or of every prop when prop is "", that anyone has marked.
+func (a *app) writeCounts(w http.ResponseWriter, prop string) {
 	rows, err := a.db.Query(`SELECT prop, a, b, works, bridge, blocked FROM transition_counts WHERE ($1 = '' OR prop = $1) AND works + bridge + blocked > 0 ORDER BY prop, a, b`, prop)
 	if err != nil {
 		a.serverError(w, err)
@@ -4274,7 +4314,7 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("GET /api/admin/dashboard", a.authed(permDashboard, a.handleDashboard))
 	mux.HandleFunc("GET /catalog/{file}", a.handleCatalogFile)
 	mux.HandleFunc("POST /api/suggest/labels", a.flagged("suggest", a.authed("", a.handleTransitionLabels)))
-	mux.HandleFunc("GET /api/suggest/counts", a.flagged("suggest", a.authed("", a.handleTransitionCounts)))
+	mux.HandleFunc("GET /api/suggest/counts", a.flagged("suggest", a.countsByToken(a.authed("", a.handleTransitionCounts))))
 	mux.HandleFunc("POST /api/suggest/usage", a.flagged("suggest", a.authed("", a.handleSuggestUsage)))
 	ed := func(perm string, h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
 		return a.flagged("catalogEditor", a.authed(perm, h))
@@ -4596,6 +4636,9 @@ func main() {
 	}
 	log.Printf("visitor addresses: forwarding headers believed from %d trusted proxy ranges", len(a.proxies))
 	if a.homeURL, err = homeLink(os.Getenv("FLOWA_HOME_URL")); err != nil {
+		log.Fatal(err)
+	}
+	if a.countsTok, err = countsToken(os.Getenv("FLOWA_COUNTS_TOKEN")); err != nil {
 		log.Fatal(err)
 	}
 	for _, h := range strings.Split(os.Getenv("FLOWA_HOSTS"), ",") {

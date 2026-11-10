@@ -45,7 +45,7 @@ trap cleanup EXIT
 compose() { docker compose --env-file "$work/.env" --project-directory "$work" -f compose.yml -p flowa-check "$@"; }
 with() {
   (
-    unset FLOWA_BIND FLOWA_DOMAIN FLOWA_HOSTS FLOWA_TRUSTED_PROXIES FLOWA_PROXY_NET FLOWA_HOME_URL COMPOSE_PROFILES ADMIN_USER ADMIN_PASSWORD VERSION
+    unset FLOWA_BIND FLOWA_DOMAIN FLOWA_HOSTS FLOWA_TRUSTED_PROXIES FLOWA_PROXY_NET FLOWA_HOME_URL FLOWA_COUNTS_TOKEN COMPOSE_PROFILES ADMIN_USER ADMIN_PASSWORD VERSION
     export POSTGRES_PASSWORD=flowa-test-only
     while [ "$1" != -- ]; do export "${1?}"; shift; done
     shift

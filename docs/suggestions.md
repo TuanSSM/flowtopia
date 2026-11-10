@@ -75,7 +75,9 @@ dashboard.
 ## Fitting, and the gate
 
 `node sim/fit-suggest.js counts.json --write` fits the weights by logistic regression (weights kept at
-zero or above, so more change never helps) on the counts an admin exports from `GET /api/suggest/counts`,
+zero or above, so more change never helps) on the counts an admin exports from `GET /api/suggest/counts`
+(or the `fit_suggest` workflow fetches with `FLOWA_COUNTS_TOKEN` and turns into a pull request; README,
+Fitting the suggestions),
 holds out a fifth of the pairs (chosen by a hash, so it is deterministic), and reports the area under the
 ROC curve for Works against Blocked, next to a baseline that knows only the prerequisite graph.
 
