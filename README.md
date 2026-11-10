@@ -216,7 +216,9 @@ host); production passes the release tag, such as `v1.2.0`. Unset, it reads `dev
   `schema_migrations`), each applied once at start. An hourly job removes expired or unused
   sessions, notifications read more than 180 days ago, and link previews no post uses.
 
-The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
+The app itself is plain HTTP, so on its own port passwords cross the network unencrypted: keep that
+port to the machine or the LAN, and open Flowa to anyone else through the proxy profile
+([HTTPS](#https)), which encrypts every connection. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
 outbound requests the server makes are link previews to Instagram, TikTok and YouTube. Every response
 forbids framing by other sites and MIME sniffing and sends no referrer.
