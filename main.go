@@ -3900,35 +3900,51 @@ func validAvatar(raw json.RawMessage) error {
 
 const dashWeeks = 12
 
+// The admin dashboard's four questions. The first three read small tables whole, on purpose: users,
+// sessions and progress hold a row or a few per member, and open reports are few by their nature.
+const dashTotalsSQL = `SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`
+
+// Active: signed in or saved progress within the window.
+const dashActiveSQL = `WITH act AS (SELECT user_id, created_at AS t FROM sessions UNION ALL SELECT user_id, updated_at FROM progress
+		UNION ALL SELECT id, last_seen FROM users WHERE last_seen IS NOT NULL)
+	SELECT count(DISTINCT user_id) FILTER (WHERE t > now() - interval '7 days'), count(DISTINCT user_id) FILTER (WHERE t > now() - interval '30 days') FROM act`
+
+const dashOpenSQL = `SELECT count(DISTINCT (target_kind, target_id)) FROM reports WHERE status = 'open'`
+
+// dashWeeksSQL counts sessions, posts, comments and reports for each of the last $1 weeks. A week is
+// the rows from its Monday up to the next, written as a range so that posts_created and
+// comments_created (migration 6) answer it: asked as date_trunc('week', created_at) = week, every
+// week read every post and every comment, a third of a second for twelve weeks of 10,000 posts.
+// The practice sessions live inside the progress documents; they are unpacked once (MATERIALIZED),
+// not once per week.
+const dashWeeksSQL = `WITH weeks AS (SELECT generate_series(date_trunc('week', now()) - ($1 - 1) * interval '1 week', date_trunc('week', now()), interval '1 week') AS w),
+	sess AS MATERIALIZED (SELECT w, count(*) AS n FROM (SELECT CASE WHEN s->>'date' ~ '^\d{4}-\d{2}-\d{2}$' THEN date_trunc('week', (s->>'date')::date) END AS w
+		FROM progress, jsonb_array_elements(CASE WHEN jsonb_typeof(state->'sessions') = 'array' THEN state->'sessions' ELSE '[]' END) s) x GROUP BY w)
+	SELECT weeks.w,
+		COALESCE((SELECT n FROM sess WHERE sess.w = weeks.w), 0),
+		(SELECT count(*) FROM posts p WHERE p.created_at >= weeks.w AND p.created_at < weeks.w + interval '1 week'),
+		(SELECT count(*) FROM comments c WHERE c.created_at >= weeks.w AND c.created_at < weeks.w + interval '1 week'),
+		(SELECT count(*) FROM reports r WHERE r.created_at >= weeks.w AND r.created_at < weeks.w + interval '1 week')
+	FROM weeks ORDER BY weeks.w`
+
 // handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
 // for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
 func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 	out := map[string]any{"version": a.version}
 	var users, mods, admins, active7, active30, open int
-	err := a.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`).Scan(&users, &mods, &admins)
+	err := a.db.QueryRow(dashTotalsSQL).Scan(&users, &mods, &admins)
 	if err == nil {
-		// Active: signed in or saved progress within the window.
-		err = a.db.QueryRow(`WITH act AS (SELECT user_id, created_at AS t FROM sessions UNION ALL SELECT user_id, updated_at FROM progress
-				UNION ALL SELECT id, last_seen FROM users WHERE last_seen IS NOT NULL)
-			SELECT count(DISTINCT user_id) FILTER (WHERE t > now() - interval '7 days'), count(DISTINCT user_id) FILTER (WHERE t > now() - interval '30 days') FROM act`).Scan(&active7, &active30)
+		err = a.db.QueryRow(dashActiveSQL).Scan(&active7, &active30)
 	}
 	if err == nil {
-		err = a.db.QueryRow(`SELECT count(DISTINCT (target_kind, target_id)) FROM reports WHERE status = 'open'`).Scan(&open)
+		err = a.db.QueryRow(dashOpenSQL).Scan(&open)
 	}
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
 	out["totals"] = map[string]int{"users": users, "moderators": mods, "admins": admins, "active7": active7, "active30": active30, "openReports": open}
-	rows, err := a.db.Query(`WITH weeks AS (SELECT generate_series(date_trunc('week', now()) - ($1 - 1) * interval '1 week', date_trunc('week', now()), interval '1 week') AS w),
-		sess AS (SELECT CASE WHEN s->>'date' ~ '^\d{4}-\d{2}-\d{2}$' THEN date_trunc('week', (s->>'date')::date) END AS w
-			FROM progress, jsonb_array_elements(CASE WHEN jsonb_typeof(state->'sessions') = 'array' THEN state->'sessions' ELSE '[]' END) s)
-		SELECT weeks.w,
-			(SELECT count(*) FROM sess WHERE sess.w = weeks.w),
-			(SELECT count(*) FROM posts p WHERE date_trunc('week', p.created_at) = weeks.w),
-			(SELECT count(*) FROM comments c WHERE date_trunc('week', c.created_at) = weeks.w),
-			(SELECT count(*) FROM reports r WHERE date_trunc('week', r.created_at) = weeks.w)
-		FROM weeks ORDER BY weeks.w`, dashWeeks)
+	rows, err := a.db.Query(dashWeeksSQL, dashWeeks)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -4028,6 +4044,14 @@ var migrations = []string{schema, schemaSocial,
 	CREATE UNIQUE INDEX IF NOT EXISTS users_one_owner ON users (owner) WHERE owner;
 	UPDATE users u SET last_seen = (SELECT max(GREATEST(s.created_at, s.last_seen)) FROM sessions s WHERE s.user_id = u.id) WHERE u.last_seen IS NULL;
 	UPDATE users SET owner = true WHERE id = (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE owner)`,
+	// 6: indexes for what the plans showed (TestDBQueryPlans, with 10,000 posts and 500 members). The
+	// timeline looked for the viewer's own likes, of posts and of comments, by reading every like
+	// there is; the admin dashboard counted posts and comments per week by reading all of them for
+	// each week. Indexes only: nothing a row holds changes, so going back to an earlier build is safe.
+	`CREATE INDEX IF NOT EXISTS likes_user ON likes (user_id, post_id);
+	CREATE INDEX IF NOT EXISTS comment_likes_user ON comment_likes (user_id, comment_id);
+	CREATE INDEX IF NOT EXISTS posts_created ON posts (created_at);
+	CREATE INDEX IF NOT EXISTS comments_created ON comments (created_at)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -5051,11 +5075,16 @@ func statNum(raw json.RawMessage, key string) float64 {
 	return f
 }
 
+// peopleSQL is the people list: the hundred members with the most XP. It reads the users table whole
+// and sorts it, on purpose: the table has one row per member, and for the few hundred a household
+// server holds that is the cheapest plan there is (TestDBQueryPlans keeps count of the rows).
+const peopleSQL = `SELECT ` + userCols + ` FROM users u
+	ORDER BY CASE WHEN NOT u.stats_hidden AND jsonb_typeof(u.stats->'xp') = 'number' THEN (u.stats->>'xp')::numeric ELSE 0 END DESC, u.id LIMIT 100`
+
 // handleUserList is the people list: everyone, with the stats they reported, most XP first.
 // handleUserList is the people list: the 100 members with the most XP (hidden stats count as none).
 func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
-	rows, err := a.db.Query(`SELECT ` + userCols + ` FROM users u
-		ORDER BY CASE WHEN NOT u.stats_hidden AND jsonb_typeof(u.stats->'xp') = 'number' THEN (u.stats->>'xp')::numeric ELSE 0 END DESC, u.id LIMIT 100`)
+	rows, err := a.db.Query(peopleSQL)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -5323,11 +5352,17 @@ func (a *app) notifyAt(userID, actorID int64, kind string, postID, commentID int
 	}
 }
 
-func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *user) {
-	rows, err := a.db.Query(`SELECT n.id, n.kind, COALESCE(n.actor_id, 0), COALESCE(n.post_id, 0), COALESCE(n.comment_id, 0),
+// notificationsSQL is a member's newest notifications ($1 the member, $2 how many); unreadSQL counts
+// the ones not read yet, which the bell asks for on every page.
+const notificationsSQL = `SELECT n.id, n.kind, COALESCE(n.actor_id, 0), COALESCE(n.post_id, 0), COALESCE(n.comment_id, 0),
 		COALESCE(c.parent_id, c.id, 0), n.text, n.read, n.created_at
 		FROM notifications n LEFT JOIN comments c ON c.id = n.comment_id
-		WHERE n.user_id = $1 ORDER BY n.id DESC LIMIT $2`, u.ID, maxNotifList)
+		WHERE n.user_id = $1 ORDER BY n.id DESC LIMIT $2`
+
+const unreadSQL = `SELECT count(*) FROM notifications WHERE user_id = $1 AND NOT read`
+
+func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *user) {
+	rows, err := a.db.Query(notificationsSQL, u.ID, maxNotifList)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -5351,7 +5386,7 @@ func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *use
 		return
 	}
 	var unread int
-	if err := a.db.QueryRow(`SELECT count(*) FROM notifications WHERE user_id = $1 AND NOT read`, u.ID).Scan(&unread); err != nil {
+	if err := a.db.QueryRow(unreadSQL, u.ID).Scan(&unread); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -5436,6 +5471,22 @@ type post struct {
 	Links []linkCard `json:"links,omitempty"`
 }
 
+// feedSQL is a page of posts, newest first: the timeline, one member's posts, one post, or the posts
+// with given ids. $1 is the viewer, $2 "older than this post", $3 "by this member", $4 "this post",
+// $5 how many, $6 whether the viewer may see hidden posts, $7 the ids; $2, $3, $4 and $7 are left out
+// with 0 or NULL. The viewer's own like is found through likes_user (migration 6): without it this
+// read every like there is, once per page.
+const feedSQL = `SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
+		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
+		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL), p.hidden_reason
+		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) AND ($7::bigint[] IS NULL OR p.id = ANY($7))
+		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) ORDER BY p.id DESC LIMIT $5`
+
+// feedCommentsSQL is the newest top-level comments of each of those posts ($2 the posts, $3 how many
+// of each); repliesSQL the newest replies under each of those comments. Both go through queryComments.
+const feedCommentsSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
+	FROM comments c WHERE c.post_id = ANY($2) AND c.parent_id IS NULL) c WHERE c.rn <= $3 ORDER BY c.id`
+
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
 // liked each one, every comment, and the users involved. With ids, it reads those posts
 // instead of a page (the viewer's bookmarks).
@@ -5445,11 +5496,7 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) 
 		limit = len(ids) + 1
 	}
 	// Hidden posts are seen only by their author and by those who may hide posts.
-	rows, err := a.db.Query(`SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
-		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
-		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL), p.hidden_reason
-		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) AND ($7::bigint[] IS NULL OR p.id = ANY($7))
-		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) ORDER BY p.id DESC LIMIT $5`,
+	rows, err := a.db.Query(feedSQL,
 		viewer.ID, before, byUser, only, limit, can(viewer, permPostHide), pq.Array(ids))
 	if err != nil {
 		return nil, err
@@ -5481,8 +5528,7 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) 
 	}
 	if len(ids) > 0 {
 		// The newest top-level comments of each post, shown oldest first.
-		roots, err := a.queryComments(viewer, `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
-			FROM comments c WHERE c.post_id = ANY($2) AND c.parent_id IS NULL) c WHERE c.rn <= $3 ORDER BY c.id`, pq.Array(ids), previewComments)
+		roots, err := a.queryComments(viewer, feedCommentsSQL, pq.Array(ids), previewComments)
 		if err != nil {
 			return nil, err
 		}
@@ -5936,10 +5982,14 @@ func (a *app) handleBookmark(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"on": on})
 }
 
+// bookmarksSQL is everything a member has bookmarked, newest first; the posts among them are then
+// read with feedSQL by id.
+const bookmarksSQL = `SELECT kind, ref FROM bookmarks WHERE user_id = $1 ORDER BY created_at DESC, ref`
+
 // handleBookmarks lists the viewer's bookmarks, newest first: skill and combo refs, and the bookmarked
 // posts in full, as the timeline shows them. A post the viewer may no longer see is left out.
 func (a *app) handleBookmarks(w http.ResponseWriter, _ *http.Request, u *user) {
-	rows, err := a.db.Query(`SELECT kind, ref FROM bookmarks WHERE user_id = $1 ORDER BY created_at DESC, ref`, u.ID)
+	rows, err := a.db.Query(bookmarksSQL, u.ID)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -5987,12 +6037,20 @@ const commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.bod
 	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
 	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL`
 
+const repliesSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
+		FROM comments c WHERE c.parent_id = ANY($2)) c WHERE c.rn <= $3`
+
+// commentsSQL wraps inner, a query over the comments table, into the one queryComments runs.
+func commentsSQL(inner string) string {
+	return `SELECT ` + commentCols + ` FROM (` + inner + `) c ORDER BY c.id`
+}
+
 // queryComments runs inner, a query over the comments table whose first parameter is $2, and
 // returns its rows oldest first, with likes and reply counts as seen by viewer ($1).
 // A hidden comment is shown in full to its author and moderators; to everyone else it is left
 // out, or kept as an empty placeholder when it has replies that are still shown.
 func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment, error) {
-	rows, err := a.db.Query(`SELECT `+commentCols+` FROM (`+inner+`) c ORDER BY c.id`, append([]any{viewer.ID}, args...)...)
+	rows, err := a.db.Query(commentsSQL(inner), append([]any{viewer.ID}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -6031,8 +6089,7 @@ func (a *app) attachReplies(viewer *user, roots []*comment) error {
 	for i, c := range roots {
 		ids[i], byID[c.ID] = c.ID, c
 	}
-	reps, err := a.queryComments(viewer, `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
-		FROM comments c WHERE c.parent_id = ANY($2)) c WHERE c.rn <= $3`, pq.Array(ids), previewReplies)
+	reps, err := a.queryComments(viewer, repliesSQL, pq.Array(ids), previewReplies)
 	if err != nil {
 		return err
 	}

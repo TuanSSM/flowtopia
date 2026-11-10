@@ -104,7 +104,7 @@ version, the number of migrations the build knows, whether TLS roots are present
 
 ```sh
 docker exec nunchaku /nunchaku -healthcheck
-# {"ok":true,"database":true,"schema":5,"migrations":5,"tlsRoots":true,"version":"main.abc1234"}
+# {"ok":true,"database":true,"schema":6,"migrations":6,"tlsRoots":true,"version":"v1.3.0"}
 ```
 
 That is the probe the image's health check runs and the one `deploy.sh` waits on. The database is asked
@@ -260,7 +260,10 @@ in the container's environment, when set, is shown instead.
   green run closes it. When a migration is added, keep a backup of the schema before it:
   `test/restore.sh --fixture` on the commit before, and commit the file it writes.
 - The schema changes through numbered migrations (`migrations` in `main.go`, recorded in
-  `schema_migrations`), each applied once at start. An hourly job removes expired or unused
+  `schema_migrations`), each applied once at start. The queries behind the timeline, the people list,
+  the notifications, the bookmarks and the admin dashboard are read with `EXPLAIN ANALYZE` by
+  `TestDBQueryPlans` on 500 members and 10,000 posts: none may read a table that grows with use from
+  end to end, and each has a bound on the rows it reads. An hourly job removes expired or unused
   sessions, notifications read more than 180 days ago, and link previews no post uses.
 
 The app itself is plain HTTP, so on its own port passwords cross the network unencrypted: keep that
