@@ -3,10 +3,10 @@
 #
 #   lint         gofmt, go vet, staticcheck; JS syntax and catalog format; Python syntax; workflow lint
 #   unit         go build + go test; the physics suite over every demo clip; bundles reproducible
-#   integration  real server against Postgres: the database tests, compose.yml started as on a new
-#                machine, a release image built and deployed with deploy.sh, a backup taken and
-#                restored with backup.sh, and each browser suite in test/browser driven through
-#                headless Firefox, one job per suite, in parallel
+#   integration  real server against Postgres: the database tests, a release image built and
+#                deployed with deploy.sh, a backup taken and restored with backup.sh, and each
+#                browser suite in test/browser driven through headless Firefox, one job per suite,
+#                in parallel
 #   screenshots  pictures of the pages and demos, pushed to the ci-screenshots branch
 #   docs         Markdown links and the front matter of the Claude Code files
 #   pr_summary   one sticky comment on the PR with the results and the size of the change
@@ -166,12 +166,7 @@ jobs:
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
       - name: Shell scripts
-        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/compose.sh test/db-image.sh build-image.sh test/release.sh test/restore.sh
-      # What compose.yml resolves to, without starting anything: the app published on this machine only
-      # unless FLOWA_BIND says otherwise, the database not at all, and with FLOWA_DOMAIN the name answered
-      # and only the proxy's network believed. The compose suite asks running containers.
-      - name: compose.yml says who can reach the app
-        run: test/compose.sh
+        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/db-image.sh build-image.sh test/release.sh test/restore.sh
       - name: The rules that choose which jobs run
         run: test/ci-plan.sh --self-test
       - name: Reading the pinned Postgres image from compose.yml
@@ -290,11 +285,10 @@ jobs:
         if: matrix.suite == 'release'
         with:
           node-version: ${{ env.NODE_VERSION }}
-      # db: the Go tests that need Postgres (db_test.go), each in its own schema. compose: the two
-      # containers of compose.yml, built and started on this runner (test/compose.sh --up). release: the
+      # db: the Go tests that need Postgres (db_test.go), each in its own schema. release: the
       # release image pushed to a registry on this runner and deployed from it (test/release.sh).
       # restore: the restore drill (test/restore.sh), which restore_drill.yml also runs every week.
-      # None of the three uses the Postgres service above. Every other suite is a test/browser script. Headless
+      # Neither of those two uses the Postgres service above. Every other suite is a test/browser script. Headless
       # Firefox only gets WebGL (software, llvmpipe) when a display exists, so they run under Xvfb;
       # without it the 3D figure cannot be tested.
       - name: Run the ${{ matrix.suite }} suite
@@ -308,9 +302,8 @@ jobs:
             cat report/line.txt
             exit "${code:-0}"
           fi
-          if [ "$SUITE" = compose ] || [ "$SUITE" = release ] || [ "$SUITE" = restore ]; then
-            case "$SUITE" in compose) script=(test/compose.sh --up) ;; *) script=("test/$SUITE.sh") ;; esac
-            "${script[@]}" | tee report/result.txt || code=$?
+          if [ "$SUITE" = release ] || [ "$SUITE" = restore ]; then
+            "test/$SUITE.sh" | tee report/result.txt || code=$?
             cp report/result.txt report/out.txt   # its TIME lines, for the slowest checks table
             grep -E '^[0-9]+ passed, ' report/result.txt | tail -1 > report/line.txt || true
             exit "${code:-0}"

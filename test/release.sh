@@ -32,7 +32,7 @@ docker info >/dev/null 2>&1 || { echo "the Docker daemon is not running" >&2; ex
 docker buildx version >/dev/null 2>&1 || { echo "docker buildx is not installed" >&2; exit 2; }
 if curl -s -o /dev/null -m 2 http://127.0.0.1:5000/v2/; then echo "port 5000 is in use on this machine; the registry for the checks cannot start" >&2; exit 2; fi
 if ! $only_image; then
-  taken=$(docker ps -a --format '{{.Names}}' | grep -E '^(nunchaku|nunchaku-db|nunchaku-proxy)$' | paste -sd' ')
+  taken=$(docker ps -a --format '{{.Names}}' | grep -E '^(nunchaku|nunchaku-db)$' | paste -sd' ')
   [ -z "$taken" ] || { echo "containers named $taken exist: this machine runs Flowa, and the deploy checks would replace them (--image runs the rest)" >&2; exit 2; }
   ! docker image inspect nunchaku:latest >/dev/null 2>&1 || { echo "an image nunchaku:latest exists: this machine deploys Flowa (--image runs the rest)" >&2; exit 2; }
   if curl -s -o /dev/null -m 2 http://127.0.0.1:3169/; then echo "port 3169 is in use on this machine (--image runs the rest)" >&2; exit 2; fi
@@ -46,7 +46,7 @@ export BUILDX_BUILDER=flowa-release-check
 # and names of its own for the volume and the networks.
 deploy() {
   (
-    unset FLOWA_BIND FLOWA_DOMAIN FLOWA_HOSTS FLOWA_TRUSTED_PROXIES FLOWA_PROXY_NET FLOWA_HOME_URL FLOWA_COUNTS_TOKEN COMPOSE_PROFILES ADMIN_USER ADMIN_PASSWORD VERSION
+    unset FLOWA_HOSTS FLOWA_TRUSTED_PROXIES FLOWA_HOME_URL FLOWA_COUNTS_TOKEN COMPOSE_PROFILES ADMIN_USER ADMIN_PASSWORD VERSION
     export POSTGRES_PASSWORD=flowa-test-only COMPOSE_PROJECT_NAME=flowa-check COMPOSE_ENV_FILES="$work/.env" FLOWA_IMAGE="$repo"
     ./deploy.sh "$@"
   ) >"$work/deploy.log" 2>&1

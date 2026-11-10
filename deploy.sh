@@ -98,7 +98,7 @@ esac
 
 data_folder
 # Start what changed: the app, whose image is new, and any other service whose settings in compose.yml
-# or .env moved. The database and the proxy are left running when nothing of theirs did. Should docker
+# or .env moved. The database is left running when nothing of its own did. Should docker
 # compose have left the app's old container in place, the app alone is made again from the new image.
 docker compose up -d --no-build
 running() { docker inspect nunchaku --format '{{.Image}}' 2>/dev/null; }
@@ -113,28 +113,6 @@ fi
 # The container that answers must be the image just made or pulled.
 [ "$(running)" = "$wanted" ] || { echo "the running container is not the new image" >&2; exit 1; }
 echo "nunchaku: ${HEALTH:-healthy}"
-# And the published port answers from the host, at the address it is published on: this machine only
-# unless FLOWA_BIND in .env names another (compose.yml). "Every address" is asked by loopback.
-at=$(docker compose port nunchaku 3169) || { echo "docker compose did not say where port 3169 is published" >&2; exit 1; }
-case "$at" in
-  0.0.0.0:*) ask="127.0.0.1:${at##*:}" ;;
-  "[::]":*) ask="[::1]:${at##*:}" ;;
-  *) ask="$at" ;;
-esac
-curl -fsS -m 5 "http://$ask/healthz" >/dev/null
-case "$at" in
-  127.*|"[::1]":*) echo "published on $at: only this machine can open it. To open it to the LAN, set FLOWA_BIND in .env (README, Run)." ;;
-  *) echo "published on $at" ;;
-esac
-# The reverse proxy, where the "proxy" profile is on (COMPOSE_PROFILES=proxy in .env). The app is up
-# either way; a proxy that is not serving is said, and fails the deploy so that it is seen.
-if state=$(docker inspect nunchaku-proxy --format '{{.State.Status}}' 2>/dev/null); then
-  domain=$(docker inspect nunchaku-proxy --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^FLOWA_DOMAIN=//p')
-  if [ "$state" = running ] && [ -n "$domain" ]; then
-    echo "proxy: https://${domain%%,*} (a first certificate can take a minute: docker logs nunchaku-proxy)"
-  else
-    echo "proxy: not serving (state: $state${domain:+, for $domain}). The app is up; see docker logs nunchaku-proxy" >&2
-    exit 1
-  fi
-fi
+# And the published port answers from the host.
+curl -fsS -m 5 http://127.0.0.1:3169/healthz >/dev/null
 echo "deployed $version in $((SECONDS - began)) s"

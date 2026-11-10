@@ -1,6 +1,6 @@
-# Dependabot looks at the images compose.yml pins by version and digest (Postgres, and Caddy for the
-# proxy profile) once a week and opens a pull request when a version or a digest has moved. The pull
-# request runs process_pr like any other; for compose.yml that is lint and every integration suite,
+# Dependabot looks at the image compose.yml pins by version and digest (Postgres) once a week and
+# opens a pull request when the version or the digest has moved. The pull request runs process_pr
+# like any other; for compose.yml that is lint and every integration suite,
 # with the database started from the image the pull request names (test/db-image.sh).
 # Titles are Conventional Commits titles (chore(deps): ...), which the `changes` job checks.
 version: 2

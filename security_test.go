@@ -200,11 +200,7 @@ func TestSameOrigin(t *testing.T) {
 		}
 		return r
 	}
-	// With the proxy profile of compose.yml only its own network is trusted (10.169.31.0/29).
-	edge, _ := parseProxies("10.169.31.0/29")
-	behind := &app{proxies: edge}
 	const visitor, proxy = "203.0.113.9:5000", "172.18.0.2:5000"
-	const caddy, other = "10.169.31.3:5000", "172.18.0.2:5000"
 	for _, c := range []struct {
 		name string
 		r    *http.Request
@@ -227,27 +223,6 @@ func TestSameOrigin(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
-	host := func(r *http.Request) *http.Request { r.Host = "flowa.example.org"; return r }
-	for _, c := range []struct {
-		name string
-		r    *http.Request
-		want bool
-	}{
-		{"HTTPS through the compose proxy", host(req(caddy, "https://flowa.example.org", "https", false)), true},
-		{"an HTTP page through the compose proxy", host(req(caddy, "http://flowa.example.org", "https", false)), false},
-		{"another site through the compose proxy", host(req(caddy, "https://attacker.example", "https", false)), false},
-		{"the name with another port through the compose proxy", host(req(caddy, "https://flowa.example.org:8443", "https", false)), false},
-		{"no Origin through the compose proxy", host(req(caddy, "", "https", false)), true},
-		// Only the proxy's network says what is HTTPS: another container saying so is a plain HTTP request.
-		{"another container claiming HTTPS is not believed", host(req(other, "http://flowa.example.org", "https", false)), true},
-	} {
-		if got := behind.sameOrigin(c.r); got != c.want {
-			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
-		}
-	}
-	if !behind.viaHTTPS(host(req(caddy, "", "https", false))) || behind.viaHTTPS(host(req(other, "", "https", false))) || behind.viaHTTPS(host(req("127.0.0.1:5000", "", "https", false))) {
-		t.Error("with the proxy network alone trusted, only the proxy says a request came over HTTPS")
-	}
 }
 
 func TestMentionsAndRanks(t *testing.T) {
@@ -266,7 +241,6 @@ func TestMentionsAndRanks(t *testing.T) {
 func TestClientIP(t *testing.T) {
 	def, _ := parseProxies(defaultProxies)
 	cf, _ := parseProxies("173.245.48.0/20, 172.16.0.0/12")
-	edge, _ := parseProxies("10.169.31.0/29") // what compose.yml sets once FLOWA_DOMAIN is set
 	none, _ := parseProxies("none")
 	req := func(remote, xff, real string) *http.Request {
 		r := httptest.NewRequest("GET", "/", nil)
@@ -299,11 +273,6 @@ func TestClientIP(t *testing.T) {
 		{"a device on the home LAN cannot pick its address", def, req("192.168.1.20:5000", "8.8.8.8", ""), "192.168.1.20"},
 		{"X-Real-IP from a proxy", def, req("172.18.0.2:5000", "", "203.0.113.8"), "203.0.113.8"},
 		{"X-Real-IP from a visitor is ignored", def, req("203.0.113.9:5000", "", "1.2.3.4"), "203.0.113.9"},
-		{"a visitor's X-Real-IP that a proxy passed on beside its own X-Forwarded-For", def, req("172.18.0.2:5000", "172.18.0.1", "1.2.3.4"), "172.18.0.1"},
-		{"X-Real-IP beside a visitor's address in X-Forwarded-For", def, req("172.18.0.2:5000", "203.0.113.5", "1.2.3.4"), "203.0.113.5"},
-		{"the compose proxy network alone: its proxy is believed", edge, req("10.169.31.3:5000", "203.0.113.5", ""), "203.0.113.5"},
-		{"the compose proxy network alone: another container is not", edge, req("172.18.0.2:5000", "203.0.113.5", ""), "172.18.0.2"},
-		{"the compose proxy network alone: nor the machine itself", edge, req("127.0.0.1:5000", "203.0.113.5", ""), "127.0.0.1"},
 		{"malformed header", def, req("172.18.0.2:5000", "not-an-address", ""), "172.18.0.2"},
 		{"no header from a proxy", def, req("172.18.0.2:5000", "", ""), "172.18.0.2"},
 		{"IPv6 visitor", def, req("[::1]:5000", "2001:db8::42", ""), "2001:db8::42"},

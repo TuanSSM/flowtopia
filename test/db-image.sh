@@ -25,7 +25,7 @@ self_test() {
   local t fails=0 d=sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
   t=$(mktemp -d); trap 'rm -rf "$t"' RETURN
   expect() {   # expect <name> <image line of the db service> <output wanted, or FAIL>
-    printf 'services:\n  db:\n    container_name: x\n%s\n  proxy:\n    image: caddy:2.11.9-alpine@%s\n' "$2" "$d" > "$t/c.yml"
+    printf 'services:\n  db:\n    container_name: x\n%s\n  other:\n    image: busybox:1.36.1@%s\n' "$2" "$d" > "$t/c.yml"
     local got; got=$(image "$t/c.yml" 2>/dev/null) || got=FAIL
     if [ "$got" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: $3"; echo "  got:  $got"; fails=$((fails + 1)); fi
   }

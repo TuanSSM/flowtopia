@@ -55,10 +55,10 @@ proxy too. `TestClientIP` and `TestDBLimitsBehindProxy` cover it.
 
 - **Publishing the port on one address, TLS, and pinning Postgres by digest.** These depend on the
   owner's network (LAN address, a reverse proxy, how updates are taken) and change how the app is
-  reached; the README describes the options. The port is done since, in the
-  [OPS epic](epic-ops/todo.md): published on the machine itself unless `FLOWA_BIND` names an address.
-  So is TLS, as a recipe: the `proxy` profile in `compose.yml` (README, HTTPS). And Postgres is
-  pinned by version and digest, with Dependabot opening the pull request when it moves.
+  reached; the README describes the options. Postgres is pinned since, by version and digest, with
+  Dependabot opening the pull request when it moves ([OPS epic](epic-ops/todo.md)). The port and
+  TLS were built there too and taken out again at the owner's request: the port is published as
+  before, and TLS is the owner's own reverse proxy.
 - **Moving progress from client-owned documents to server-checked state.** Stats and badges are
   reported by the browser by design; the limits above bound the damage, and changing the model is
   an epic of its own.
