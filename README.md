@@ -531,7 +531,9 @@ the standard body with a note. `node test/presets.js`, `node test/stickers.js`,
 palette contrast and download size; `node test/body3d.js` poses the 3D figure without a browser and
 checks that no prop is drawn into the body on any clip and that every avatar part shows;
 `node test/skin-once.js` checks that a frame which is the one already drawn (a page drawn again
-while paused, a still step of a combo) is not posed or skinned a second time; `test/browser/avatar.py`
+while paused, a still step of a combo) is not posed or skinned a second time;
+`node --expose-gc test/alloc.js` checks that a playing demo keeps no memory over 300 frames and
+bounds what one frame allocates; `test/browser/avatar.py`
 covers the pages, parts, the frame budget and that such an unchanged frame renders nothing. Details, sources for the preset sizes, and licences: [docs/avatars.md](docs/avatars.md).
 
 ## Pull requests

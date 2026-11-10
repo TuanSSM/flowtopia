@@ -5,7 +5,7 @@ Category: perf. Size: M. Each item is one pull request or one commit of one, wit
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#31](https://github.com/TuanSSM/flowtopia/issues/31)). 1 of 6 items done.
+**Status:** in progress (issue [#31](https://github.com/TuanSSM/flowtopia/issues/31)). 2 of 6 items done.
 
 Measured today: about 58 ms a frame on the Pi's Firefox for the standard figure and 59 ms for the
 heaviest avatar ([avatars.md](../avatars.md), Cost). Targets: under 33 ms on the Pi, under 16 ms on
@@ -49,8 +49,25 @@ third slower than the heavier one timed after it). A pixel is read back after ev
   there. On the Pi: `SAME_FRAME_BUDGET_MS=2 FRAME_BUDGET_MS=80 test/browser/run.sh avatar.py`, and
   write the "unchanged demo frame" line it prints here. Nothing in CI covers a lost WebGL context;
   it was tried by hand with a throwaway script.
-- [ ] **No allocations per frame.** Vectors, matrices and the skin buffers reused; the player makes
+- [x] **No allocations per frame.** Vectors, matrices and the skin buffers reused; the player makes
   no new arrays while playing. DoD: a heap snapshot over 300 frames grows by under 100 KB.
+  Done: over 300 frames of a playing demo the heap holds between 33 KB less and 6 KB more over
+  seven runs, and no more in typed-array buffers (`node --expose-gc test/alloc.js`, in the unit job; limit 100 KB).
+  That number was already near zero before, because the garbage was collected; what changed is how
+  much garbage a frame makes, which is what costs pauses. A whole frame of nunchaku F5 allocated
+  3,073 KB and now allocates 37 to 42 KB (double staff F5: 3,129 KB, now 67 to 81 KB); the figure's share went from 2,988 KB to about 2 KB. The
+  largest part, 2.95 MB a frame, was `Math.hypot` in the skinning loop, which puts its arguments on
+  the heap for each of 28,374 vertices; it is a written-out square root now, and skinning takes
+  0.81 ms where it took 1.74 ms (Node). Vectors and quaternions in posing, props and the camera
+  come from a pool taken back at the start of each pose; the trail works a point out from its own
+  keys instead of blending a whole frame per point. The test also bounds what one frame may
+  allocate (figure 8 KB, the pose path 40 KB, a whole frame 60 KB with one prop and 105 KB with two),
+  which is the part that fails
+  when the work is undone. Skinned positions and normals of 1,288 frames are the same numbers as
+  before, and 32 contact-sheet tiles are pixel-identical.
+  Not literally "no new arrays": the player's pose path (`rig`, `handPose`, `parts`, `pose`) still
+  works in plain `[x, y, z]` arrays that the build-time physics shares, 16 to 19 KB a frame, and was
+  left as it is.
 - [ ] **A lighter body mesh.** The X Bot decimated once at build time (target: half the triangles),
   committed like the bundle and checked against its source in CI. DoD: `node test/body3d.js` still
   within 25 mm on the rig and every part proud; contact sheets before and after match.
