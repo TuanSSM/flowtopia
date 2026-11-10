@@ -7,7 +7,10 @@ open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui
 COARSE=os.environ.get('FLOWA_POINTER')=='coarse'
 if COARSE: open(prof+'/user.js','a').write('user_pref("ui.primaryPointerCapabilities",1);user_pref("ui.allPointerCapabilities",1);')
 FIREFOX=os.environ.get('FIREFOX') or next((b for b in ('firefox-esr','firefox') if shutil.which(b)),'firefox-esr')
-ff=subprocess.Popen([FIREFOX,'--headless','--marionette','-no-remote','-profile',prof]+(['--remote-allow-system-access'] if COARSE else []),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+# Zooming the page for phone() is done from the browser's own context, which Firefox allows only when asked:
+# by a flag in Firefox 140, by an environment variable in later ones. Both are given, and only for a touch run.
+ff=subprocess.Popen([FIREFOX,'--headless','--marionette','-no-remote','-profile',prof]+(['--remote-allow-system-access'] if COARSE else []),
+    env=dict(os.environ,MOZ_REMOTE_ALLOW_SYSTEM_ACCESS='1') if COARSE else None,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 # The profile grows to about 100 MB per run; it is removed when the suite ends, however it ends.
 def _cleanup():
     try: ff.kill(); ff.wait(5)
