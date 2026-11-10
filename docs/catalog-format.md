@@ -47,6 +47,14 @@ Rules:
   `hands`: one, both or unknown; `grip`: handle, end, middle or unknown; `source`: where plane and direction
   came from, clip, description or unknown. Values come from the skill's clip or its own text
   (`node sim/motion.js` proposes them), never from general knowledge; unknown is a valid answer.
+- **concepts** (optional, on the catalog and on a skill): the ideas that carry over from one prop to
+  another. There are five: `plane`, `timing` (timing and direction), `weave`, `isolation` and
+  `extension`. A catalog names the ones it teaches, each with a sentence of 10 to 240 characters on
+  what it means for this prop: `"concepts": { "plane": "The flat sheet a circle is drawn in: wall,
+  face or table." }`. A skill lists up to three of its catalog's concepts, each once:
+  `"concepts": ["plane"]`. Both are set by a person in the skill map editor (the sentences under
+  Branches, the tick boxes in the skill form) and never worked out from a skill's text
+  ([catalog-method.md](catalog-method.md)); a catalog concept no skill names is a warning.
 - **aliases** (optional): `{ "OLD": "NEW" }` from an id a skill used to have to its current id. An alias
   cannot also be a skill, and must point at a current skill. Progress recorded under the old id moves to
   the new one when it loads. Ids are never reused for a different skill.

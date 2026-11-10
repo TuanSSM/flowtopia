@@ -1073,6 +1073,9 @@ func TestDBCatalogs(t *testing.T) {
 	if !strings.Contains(strings.Join(kinds, ","), "renamed") || strings.Contains(strings.Join(kinds, ","), "added") || len(diff["blocked"].([]any)) != 0 {
 		t.Fatalf("rename diff: %v", diff["_raw"])
 	}
+	if whole := fmt.Sprint(diff["map"]); !strings.Contains(whole, "aliases") || strings.Contains(whole, "skills") {
+		t.Fatalf("the rename adds an alias, a change to the map itself and not a skill: %v", whole)
+	}
 	if out := e.must(200, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{"note": "clearer name"}); num(out["rev"]) != 2 {
 		t.Fatalf("publish: %v", out)
 	}
@@ -1097,6 +1100,36 @@ func TestDBCatalogs(t *testing.T) {
 	if out := e.must(200, admin, "POST", "/api/admin/catalog/poi/revisions/1/restore", nil); num(out["rev"]) != 3 {
 		t.Fatalf("restore: %v", out)
 	}
+	// Shared concepts: naming one changes the map itself, ticking it changes the skill, and a concept
+	// no skill names is a note, not a problem.
+	_, live := e.do("", "GET", "/catalog/poi.json", nil)
+	named := cloneJSON(live)
+	delete(named, "_raw") // the test helper's copy of the response text is not part of the map
+	named["concepts"] = map[string]any{"plane": "The flat sheet a circle is drawn in: wall, wheel or floor."}
+	out = e.must(200, mod, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": named})
+	if len(out["errors"].([]any)) != 0 || !strings.Contains(fmt.Sprint(out["warnings"]), "no skill names it") {
+		t.Fatalf("a concept no skill names should be a note: %v", out["_raw"])
+	}
+	diff = e.must(200, mod, "GET", "/api/admin/catalog/poi/diff", nil)
+	if len(diff["changes"].([]any)) != 0 || fmt.Sprint(diff["map"]) != "[concepts]" {
+		t.Fatalf("a named concept is a change to the map and to no skill: %v", diff["_raw"])
+	}
+	first := named["skills"].([]any)[0].(map[string]any)
+	first["concepts"] = []any{"plane"}
+	out = e.must(200, mod, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": named})
+	if len(out["errors"].([]any)) != 0 || strings.Contains(fmt.Sprint(out["warnings"]), "no skill names it") {
+		t.Fatalf("a ticked concept: %v", out["_raw"])
+	}
+	diff = e.must(200, mod, "GET", "/api/admin/catalog/poi/diff", nil)
+	if ch := diff["changes"].([]any); len(ch) != 1 || ch[0].(map[string]any)["id"] != first["id"] || fmt.Sprint(ch[0].(map[string]any)["fields"]) != "[concepts]" {
+		t.Fatalf("a ticked concept is a change to that skill: %v", diff["_raw"])
+	}
+	first["concepts"] = []any{"weave"}
+	if out = e.must(200, mod, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": named}); !strings.Contains(fmt.Sprint(out["errors"]), "not one of this catalog's concepts") {
+		t.Fatalf("a concept the map does not name should be a problem: %v", out["_raw"])
+	}
+	e.must(400, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{})
+	e.must(200, mod, "DELETE", "/api/admin/catalog/poi/draft", nil)
 	// Export: the catalog format, as a download that passes validation.
 	r := httptest.NewRequest("GET", "/api/admin/catalog/poi/revisions/2", nil)
 	r.AddCookie(&http.Cookie{Name: cookieName, Value: mod})

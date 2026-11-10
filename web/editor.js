@@ -68,6 +68,9 @@ function edSkillsView() {
       ${field('refs', `References (keys of the catalog's refs: ${esc(Object.keys(ed.draft.refs || {}).slice(0, 8).join(', '))}${Object.keys(ed.draft.refs || {}).length > 8 ? ', …' : ''})`, `<input type="text" data-ed="refs" data-words="1" value="${esc((s.refs || []).join(' '))}">`)}
       <fieldset class="ed-motion"><legend class="small">How it moves (for next-trick suggestions; unknown unless the clip or the text says)</legend>
         <div class="grid g3">${Object.entries(MOTION).map(([k, vals]) => `<label class="field">${k[0].toUpperCase() + k.slice(1)}<select data-edm="${k}">${vals.map(v => `<option ${(s.motion || {})[k] === v ? 'selected' : ''}>${v}</option>`).join('')}</select>${msgHTML(`${at}.motion.${k}`)}</label>`).join('')}</div>${msgHTML(`${at}.motion`)}</fieldset>
+      <fieldset class="ed-concepts"><legend class="small">Shared ideas this skill is about (up to 3; chosen by hand, for the "you know this from another prop" hint)</legend>
+        ${CONCEPTS.some(k => conceptsOf(ed.draft)[k] !== undefined) ? `<div class="row wrap" style="gap:14px">${CONCEPTS.filter(k => conceptsOf(ed.draft)[k] !== undefined).map(k => `<label class="check" data-tip="${esc(String(conceptsOf(ed.draft)[k]))}"><input type="checkbox" data-edc="${k}" ${Array.isArray(s.concepts) && s.concepts.includes(k) ? 'checked' : ''}><span>${CONCEPT_NAMES[k]}</span></label>`).join('')}</div>` : '<p class="tiny muted">This map names no shared concept yet. Name them under Branches, each with a sentence on what it means for this prop.</p>'}
+        ${msgHTML(`${at}.concepts`)}</fieldset>
       <div class="row wrap" style="gap:14px">${[['star', 'Unconfirmed by a source'], ['care', 'Needs the safety note'], ['retired', 'Retired (hidden; progress kept)']].map(([k, n]) => `<label class="check"><input type="checkbox" data-ed="${k}" data-bool="1" ${s[k] ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>
     </form></div>`;
 }
@@ -76,7 +79,17 @@ function edBranchesView() {
   return `<div class="card"><div class="stack" style="gap:10px">${b.map((x, i) => `<div class="grid ed-row" data-i="${i}"><span class="tag">${esc(x.k)}</span>
       <label class="field">Name<input type="text" data-edb="name" data-i="${i}" maxlength="40" value="${esc(x.name)}">${msgHTML(`branches.${i}.name`)}</label>
       <label class="field">Blurb<input type="text" data-edb="blurb" data-i="${i}" maxlength="120" value="${esc(x.blurb)}">${msgHTML(`branches.${i}.blurb`)}</label></div>`).join('')}</div>
-    ${msgHTML('branches')}<button class="btn sm" data-act="ed-add-branch" style="margin-top:10px" ${b.length >= 11 ? 'disabled' : ''}>${icon('plus')}Branch</button></div>`;
+    ${msgHTML('branches')}<button class="btn sm" data-act="ed-add-branch" style="margin-top:10px" ${b.length >= 11 ? 'disabled' : ''}>${icon('plus')}Branch</button></div>${edConceptsCard()}`;
+}
+// The shared concepts this map teaches: a sentence names one, an empty box leaves it out. Which
+// skills are about a concept is ticked in the skill form, by a person.
+const CONCEPT_NAMES = { plane: 'Plane', timing: 'Timing and direction', weave: 'Weave', isolation: 'Isolation', extension: 'Extension' };
+const conceptsOf = d => d.concepts && typeof d.concepts === 'object' && !Array.isArray(d.concepts) ? d.concepts : {};
+function edConceptsCard() {
+  const c = conceptsOf(ed.draft);
+  return `<div class="card ed-concept-list" style="margin-top:14px"><div class="card-h"><h2 class="grow">Shared concepts</h2><span class="sub">Ideas that carry over to other props</span></div>
+    <p class="tiny muted">Write a sentence on what the idea means for this prop to name it, in the words its own sources use. Leave the box empty and this map does not teach it. Skills are ticked by hand in the skill form.</p>
+    <div class="stack" style="gap:10px;margin-top:10px">${CONCEPTS.map(k => `<label class="field">${CONCEPT_NAMES[k]}<input type="text" data-edk="${k}" maxlength="240" value="${esc(typeof c[k] === 'string' ? c[k] : '')}">${msgHTML(`concepts.${k}`)}</label>`).join('')}</div>${msgHTML('concepts')}</div>`;
 }
 function edPhasesView() {
   const ph = ed.draft.phases || [];
@@ -97,11 +110,12 @@ function edReviewView() {
   if (!ed.diff) { edLoadDiff(); return '<div class="card"><div class="empty small">Comparing with the published map…</div></div>'; }
   const d = ed.diff, kinds = { added: 'New', changed: 'Changed', retired: 'Retired', renamed: 'Renamed', removed: 'Removed' };
   const rows = d.changes.map(c => `<tr><td><span class="tag">${esc(c.id)}</span></td><td>${kinds[c.kind]}${c.to ? ` to ${esc(c.to)}` : ''}${c.fields ? ` <span class="tiny">${esc(c.fields.join(', '))}</span>` : ''}</td><td class="num">${c.people ? `${c.people} ${c.people === 1 ? 'person' : 'people'}` : '<span class="tiny">nobody</span>'}</td></tr>`).join('');
-  const problems = [...d.errors, ...d.blocked];
+  const problems = [...d.errors, ...d.blocked], whole = d.map || [];
   return `<div class="card"><div class="card-h"><h2 class="grow">What publishing changes</h2><span class="sub">People with progress on each skill</span></div>
-    ${rows ? `<div class="table-wrap"><table class="table"><thead><tr><th>Skill</th><th>Change</th><th>Affects</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty small">The draft is the same as the published map.</div>'}
+    ${rows ? `<div class="table-wrap"><table class="table"><thead><tr><th>Skill</th><th>Change</th><th>Affects</th></tr></thead><tbody>${rows}</tbody></table></div>` : whole.length ? '' : '<div class="empty small">The draft is the same as the published map.</div>'}
+    ${whole.length ? `<p class="small ed-whole" style="margin-top:12px">${rows ? 'Also changed' : 'Changed'} for the whole map: ${esc(whole.join(', '))}.</p>` : ''}
     ${problems.length ? `<div class="notice warn" style="margin-top:12px"><b>Cannot publish yet:</b><ul>${problems.map(p => `<li>${esc(p.msg)}</li>`).join('')}</ul></div>` : ''}
-    ${canDo('catalog.publish') ? `<div class="row wrap" style="gap:8px;margin-top:14px"><input type="text" id="ed-note" maxlength="200" placeholder="What changed, for the history (optional)" class="grow" aria-label="Note"><button class="btn primary" data-act="ed-publish" ${problems.length || !rows ? 'disabled' : ''}>Publish for everyone</button></div>` : '<p class="tiny" style="margin-top:12px">An admin publishes drafts.</p>'}</div>`;
+    ${canDo('catalog.publish') ? `<div class="row wrap" style="gap:8px;margin-top:14px"><input type="text" id="ed-note" maxlength="200" placeholder="What changed, for the history (optional)" class="grow" aria-label="Note"><button class="btn primary" data-act="ed-publish" ${problems.length || (!rows && !whole.length) ? 'disabled' : ''}>Publish for everyone</button></div>` : '<p class="tiny" style="margin-top:12px">An admin publishes drafts.</p>'}</div>`;
 }
 async function edLoadDiff() {
   const r = await api(`admin/catalog/${ed.prop}/diff`);
@@ -222,9 +236,23 @@ document.addEventListener('input', e => {
     else s[d.ed] = t.value;
     if (s[d.ed] === undefined) delete s[d.ed];
     edTouch();
+  } else if (d.edc !== undefined && t.closest('#ed-skill')) {
+    // A shared concept ticked or unticked: kept in the order of the list, and left out when none is ticked.
+    const s = ed.draft.skills[Number(t.closest('#ed-skill').dataset.i)], on = new Set(Array.isArray(s.concepts) ? s.concepts : []);
+    if (t.checked) on.add(d.edc); else on.delete(d.edc);
+    if (on.size) s.concepts = CONCEPTS.filter(k => on.has(k)); else delete s.concepts;
+    edTouch();
   } else if (d.edm !== undefined && t.closest('#ed-skill')) {
     const s = ed.draft.skills[Number(t.closest('#ed-skill').dataset.i)];
     s.motion = { ...(s.motion || {}), [d.edm]: t.value };
+    edTouch();
+  } else if (d.edk !== undefined) {
+    // A concept's sentence: the map names the concept while the box has text. Kept in the order of the list.
+    const c = { ...conceptsOf(ed.draft) }, v = t.value.trim();
+    if (v) c[d.edk] = v; else delete c[d.edk];
+    const next = {};
+    for (const k of [...CONCEPTS, ...Object.keys(c)]) if (c[k] !== undefined && !(k in next)) next[k] = c[k];
+    if (Object.keys(next).length) ed.draft.concepts = next; else delete ed.draft.concepts;
     edTouch();
   } else if (d.edb !== undefined) { ed.draft.branches[Number(d.i)][d.edb] = t.value; edTouch(); }
   else if (d.edp !== undefined) { const p = ed.draft.phases[Number(d.i)]; p[d.edp] = d.words ? words(t.value) : t.value; edTouch(); }

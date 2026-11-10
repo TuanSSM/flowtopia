@@ -4,6 +4,10 @@
 // both must agree on test/catalog-fixtures. Returns errors (the catalog cannot be used) and
 // warnings (worth a look), each with the path of the field it is about, for the editor to show.
 const MOTION = { plane: ['wall', 'face', 'table', 'mixed', 'unknown'], direction: ['forward', 'reverse', 'either', 'unknown'], hands: ['one', 'both', 'unknown'], grip: ['handle', 'end', 'middle', 'unknown'], source: ['clip', 'description', 'unknown'] };
+// The ideas that carry over from one prop to another. A catalog names the ones it teaches, each with a
+// sentence on what it means for that prop, and a skill lists the ones it is about. They are chosen by
+// a person in the editor and never worked out from a skill's text.
+const CONCEPTS = ['plane', 'timing', 'weave', 'isolation', 'extension'];
 function checkCatalog(c) {
   const errs = [], warn = [], E = (path, msg) => errs.push({ path, msg }), W = (path, msg) => warn.push({ path, msg });
   if (!c || typeof c !== 'object' || Array.isArray(c)) { E('', 'not a catalog object'); return { errs, warn }; }
@@ -11,6 +15,16 @@ function checkCatalog(c) {
   for (const k of ['id', 'name', 'about', 'careNote']) if (!str(c[k], 1, 600)) E(k, `missing or bad "${k}"`);
   const branches = Array.isArray(c.branches) ? c.branches : [], skills = Array.isArray(c.skills) ? c.skills : [];
   const refs = c.refs && typeof c.refs === 'object' && !Array.isArray(c.refs) ? c.refs : {};
+  const concepts = {}, taught = new Set();
+  if (c.concepts !== undefined) {
+    if (!c.concepts || typeof c.concepts !== 'object' || Array.isArray(c.concepts)) E('concepts', 'concepts must be an object: a concept and a sentence on what it means for this prop');
+    else for (const [k, v] of Object.entries(c.concepts)) {
+      if (!CONCEPTS.includes(k)) E(`concepts.${k}`, `concepts has no "${k}"; the concepts are ${CONCEPTS.join(', ')}`);
+      else if (!str(v, 10, 240)) E(`concepts.${k}`, `concept ${k}: needs a sentence of 10 to 240 characters`);
+      else if (/[—–]/.test(v)) E(`concepts.${k}`, `concept ${k}: contains a long dash; use plain punctuation`);
+      else concepts[k] = v;
+    }
+  }
   if (branches.length < 5 || branches.length > 11) E('branches', `needs 5 to 11 branches, has ${branches.length}`);
   const bk = new Set();
   branches.forEach((b, i) => {
@@ -45,6 +59,14 @@ function checkCatalog(c) {
       else for (const [k, v] of Object.entries(s.motion)) {
         if (!MOTION[k]) E(`${at}.motion.${k}`, `${who}: motion has no field "${k}"`);
         else if (!MOTION[k].includes(v)) E(`${at}.motion.${k}`, `${who}: motion ${k} must be one of ${MOTION[k].join(', ')}`);
+      }
+    }
+    if (s.concepts !== undefined) {
+      // The shared ideas this skill is about: up to three, each one the catalog itself names.
+      if (!Array.isArray(s.concepts) || s.concepts.length > 3 || s.concepts.some(k => typeof k !== 'string') || new Set(s.concepts).size !== s.concepts.length) E(at + '.concepts', `${who}: concepts must be a list of up to 3 different concepts`);
+      else for (const k of s.concepts) {
+        if (!Object.prototype.hasOwnProperty.call(concepts, k)) E(at + '.concepts', `${who}: "${k}" is not one of this catalog's concepts`);
+        else taught.add(k);
       }
     }
     const text = [s.name, s.desc, s.drill, ...(Array.isArray(s.steps) ? s.steps : []), ...(Array.isArray(s.watch) ? s.watch : [])].join(' ');
@@ -106,6 +128,7 @@ function checkCatalog(c) {
       if (!live(to)) E('aliases.' + from, `alias ${from}: points at ${to}, which is not a current skill`);
     }
   }
+  for (const k of Object.keys(concepts)) if (!taught.has(k)) W(`concepts.${k}`, `concept ${k}: no skill names it`);
   return { errs, warn };
 }
-if (typeof module !== 'undefined') module.exports = { checkCatalog, MOTION };
+if (typeof module !== 'undefined') module.exports = { checkCatalog, MOTION, CONCEPTS };
