@@ -385,7 +385,7 @@ button:disabled { opacity: .6; cursor: default; }
 .pal-hint { padding: 8px 16px 10px; border-top: 1px solid var(--line); color: var(--ink-3); }
 .tip { position: fixed; z-index: 80; pointer-events: none; padding: 5px 9px; border-radius: 7px; background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 520; white-space: nowrap; }
 /* Words for a screen reader only: a small box nothing can be seen of. */
-.say { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.say { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }   /* placed, or it would sit under the page and make it 1 px taller than the window */
 .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 90; padding: 9px 15px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 13px; font-weight: 520; box-shadow: var(--shadow); max-width: calc(100vw - 32px); }
 
 @media (max-width: 1080px) {

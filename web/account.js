@@ -129,7 +129,7 @@ function aboutDirty() {
 // and keep what was typed here, so saving again lays only this edit on top.
 function aboutRebase(f, old, typed) {
   const fresh = aboutOf(me);
-  if (typed.bio === old.bio) f.bio.value = fresh.bio;
+  if (typed.bio === old.bio) { f.bio.value = fresh.bio; if (f.bio.dataset.count) recount(f.bio); }   // the counter follows the text the page put in
   for (const k in fresh.links) if (typed.links[k] === old.links[k]) f[k].value = fresh.links[k];
   for (const k of ['autoPost', 'shareTransitions', 'askTransitions']) if (typed[k] === old[k]) f[k].checked = fresh[k];
   f.dataset.base = JSON.stringify(fresh);

@@ -212,6 +212,9 @@ try:
     wait_for("return !!document.querySelector('.land #demo-cv')",'the demo on the landing page',20)
     caption('landing','.land #demo-cv','.land .demo-cap')
     page('sign in','#/signin')
+    # A page shorter than the window must not scroll: an element kept for screen readers only, left
+    # under the page, makes it one pixel taller and gives everyone a scroll bar.
+    check('a page shorter than the window is no taller than it',lambda: js("const d=document.documentElement;return d.scrollHeight<=d.clientHeight&&d.scrollWidth<=d.clientWidth"),lambda: js("const d=document.documentElement;return [d.scrollHeight,d.clientHeight,d.scrollWidth,d.clientWidth]"))
     U,PW,AG='#auth-form [name=username]','#auth-form [name=password]','#auth-form [name=again]'
     check('sign in: the username and the password say they are required',field(U)['required'] and field(PW)['required'],lambda: (field(U),field(PW)))
     wrong(lambda: js("const f=document.querySelector('#auth-form');f.elements.username.value='admin';f.elements.password.value='not-the-password';f.requestSubmit()"),
