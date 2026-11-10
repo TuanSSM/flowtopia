@@ -29,6 +29,10 @@ paths:
   `deploy.sh` for real (pull, next release, rollback, refusals, `--build`). Like `compose.sh --up` it
   refuses to run where Flowa is deployed; `--image` runs the image checks alone. What `deploy.sh` or
   `build-image.sh` learn to do gets a check there.
+- `test/restore.sh` is the restore drill and the `restore` suite; `restore_drill.yml` runs it weekly and
+  opens an issue when it fails. It uses names and ports of its own, so it may run anywhere. A pull
+  request that adds a migration also adds the backup of the schema before it to `testdata/backups`
+  (`test/restore.sh --fixture` on the commit before), so the drill keeps restoring old backups.
 - `test/compose.sh` checks `compose.yml` and the `Caddyfile`: without arguments what the file resolves
   to (lint), with `--up` the running containers and the proxy profile over HTTPS (the `compose`
   integration suite). `--up` uses the real names and ports (3169, 80, 443), so it refuses to run where
