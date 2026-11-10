@@ -196,6 +196,26 @@ function needMet(need) {
   return (both ? worst(id) : best(id)) >= 2;
 }
 const unlocked = id => SK[id].needs.every(needMet);
+// What a member already knows of a skill's shared concepts from their other props. For each concept
+// the skill lists and its map names: the other props of theirs whose map names it too and where a
+// skill that lists it is Clean or better, with the best such skill. A hint only: it unlocks nothing.
+function knownFrom(id) {
+  const here = CATALOGS[CID].concepts || {}, s = SK[id], out = [];
+  if (!me || !Array.isArray(s.concepts)) return out;
+  for (const c of s.concepts) {
+    if (typeof here[c] !== 'string' || !CONCEPT_NAMES[c]) continue;
+    const from = [];
+    for (const p of myProps()) {
+      const there = (CATALOGS[p.id] || {}).concepts || {};
+      if (p.id === CID || typeof there[c] !== 'string') continue;
+      const via = inProp(p.id, () => SKILLS.filter(x => Array.isArray(x.concepts) && x.concepts.includes(c)).map(x => ({ id: x.id, name: x.name, lv: best(x.id) })).filter(x => x.lv >= 2).sort((a, b) => b.lv - a.lv)[0]);
+      if (via) from.push({ prop: p, via });
+    }
+    if (from.length) out.push({ c, text: here[c], from });
+  }
+  return out;
+}
+const knownHTML = id => knownFrom(id).map(k => `<p class="notice known-from" style="margin-top:10px" data-concept="${k.c}">You know the ${esc(CONCEPT_NAMES[k.c])} from ${k.from.map(f => `${esc(f.prop.name.toLowerCase())} (<a href="#/prop/${f.prop.id}/${f.via.id[0]}/${f.via.id}">${esc(f.via.name)}</a>, ${LEVELS[f.via.lv].n.toLowerCase()})`).join(' and ')}. Here: ${esc(k.text)}</p>`).join('');
 function status(id) {
   if (!me) return 'open'; // guests browse the map without progress
   const b = best(id);
@@ -435,6 +455,7 @@ function renderPanel(id) {
   <h2 style="margin-top:4px">${esc(s.name)}</h2><p class="muted small" style="margin-top:6px">${esc(s.desc)}</p>
   ${s.star ? `<p class="notice warn" style="margin-top:10px">Unconfirmed: no source I could open confirms this name or how it is done. Check it against a video or instructor.</p>` : ''}
   ${locked && me ? `<p class="notice" style="margin-top:10px">Prerequisites are not Clean yet. They are a suggested order, so you can still log progress.</p>` : ''}
+  ${knownHTML(id)}
   ${s.care && flags.details ? `<p class="notice warn" style="margin-top:10px">${esc(CATALOGS[CID].careNote)}</p>` : ''}
   ${flags.demos && Demo.has(CID, id) ? `<section><div class="sec-t">Demo</div>${Demo.html(CID, id, state.settings.dominant, esc)}</section>` : ''}
   ${flags.details && s.steps.length ? `<section><div class="sec-t">How to do it</div><ol class="steps">${s.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol></section>

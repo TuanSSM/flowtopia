@@ -54,7 +54,9 @@ Rules:
   face or table." }`. A skill lists up to three of its catalog's concepts, each once:
   `"concepts": ["plane"]`. Both are set by a person in the skill map editor (the sentences under
   Branches, the tick boxes in the skill form) and never worked out from a skill's text
-  ([catalog-method.md](catalog-method.md)); a catalog concept no skill names is a warning.
+  ([catalog-method.md](catalog-method.md)); a catalog concept no skill names is a warning. The page uses
+  them for one thing: a skill's guide says "You know the plane from poi" when another of the
+  member's props names the same concept and a skill that lists it is Clean there.
 - **aliases** (optional): `{ "OLD": "NEW" }` from an id a skill used to have to its current id. An alias
   cannot also be a skill, and must point at a current skill. Progress recorded under the old id moves to
   the new one when it loads. Ids are never reused for a different skill.

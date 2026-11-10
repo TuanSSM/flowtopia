@@ -141,5 +141,39 @@ try:
     js("history.back()");idle()
     check('Back closes that one too',lambda: not tip() and 'practice' in seen(),lambda: (tip()[:60],seen()),20)
     api(op,'flags',{'flags':{'tour':False}},'PUT')
+    # A shared concept that is Clean on another prop is said on the skill as a hint, only when both maps
+    # name the concept, and it unlocks nothing.
+    api(op,'flags',{'flags':{'catalogEditor':True}},'PUT');api(op,'me',{'props':['nunchaku','poi']},'PUT')
+    get=lambda path: json.loads(op.open(BASE+path,timeout=20).read())
+    def publish(prop,sentence,sids):
+        c=get(f'catalog/{prop}.json');c.pop('concepts',None)
+        if sentence: c['concepts']={'plane':sentence}
+        for s in c['skills']:
+            s.pop('concepts',None)
+            if sentence and s['id'] in sids: s['concepts']=['plane']
+        api(op,f'admin/catalog/{prop}/draft',{'body':c},'PUT');api(op,f'admin/catalog/{prop}/publish',{'note':'concepts, for the test'})
+    def level(prop,sid,key,v):
+        d=get(f'api/progress/{prop}');st=d['state'] or {};st.setdefault('skills',{})[sid]={key:v}
+        api(op,f'progress/{prop}',{'rev':d['rev'],'state':st},'PUT')
+    nun=get('catalog/nunchaku.json');poi=get('catalog/poi.json')
+    mine=get('api/progress/nunchaku')['state'].get('skills',{})
+    N=next(s for s in nun['skills'] if s['needs'] and not any(n.rstrip('!') in mine for n in s['needs']))  # a skill whose prerequisites are not met
+    P=next(s for s in poi['skills'] if s.get('track','one')=='one')
+    def hint():
+        load(BASE+f"?k={time.monotonic()}#/prop/nunchaku/{N['id'][0]}/{N['id']}")
+        wait_for(lambda: js("return (document.querySelector('#panel')||{dataset:{}}).dataset.id")==N['id'],'the skill guide to open',20)
+        return js("return [...document.querySelectorAll('#panel .known-from')].map(e=>e.textContent).join(' | ')")
+    publish('nunchaku','The flat sheet a circle is drawn in beside or in front of the body.',[N['id']])
+    level('poi',P['id'],'O',2)
+    check('no hint while the other map does not name the concept',hint()=='',hint)
+    publish('poi','The flat sheet a circle is drawn in: wall, wheel or floor.',[P['id']])
+    level('poi',P['id'],'O',1)
+    check('no hint while the skill on the other prop is not Clean',hint()=='',hint)
+    level('poi',P['id'],'O',2)
+    h=hint()
+    check('with both maps naming it and the level Clean, the skill says where the concept is known from','You know the plane from poi' in h and P['name'] in h and 'clean' in h and 'beside or in front of the body' in h,h)
+    check('the hint unlocks nothing: the skill still says its prerequisites are not Clean','Prerequisites are not Clean yet' in txt('#panel'),txt('#panel')[:200])
+    publish('nunchaku','The flat sheet a circle is drawn in beside or in front of the body.',[next(s['id'] for s in nun['skills'] if s['id']!=N['id'])])
+    check('no hint on a skill that does not list the concept',hint()=='',hint)
 finally:
     done()
