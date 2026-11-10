@@ -6,10 +6,10 @@ Commits title of the category's type. An item is checked only when its DoD holds
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
 **Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 3 of 7 items done.
-Three more are built and tested and wait for something that cannot be done from a pull request: the
+Four more are built and tested and wait for something that cannot be done from a pull request: the
 reverse proxy recipe for the owner's recorded run with a public name, Postgres by digest for
-Dependabot's first update pull request, and the release's image for a first release and a deploy of
-it on the Pi.
+Dependabot's first update pull request, the release's image for a first release and a deploy of
+it on the Pi, and the restore drill for its first runs on `main`.
 
 - [x] **Health.** `GET /healthz`: schema version, whether TLS roots are present, database reachable,
   `VERSION`. DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
@@ -91,3 +91,18 @@ it on the Pi.
 - [ ] **Restore drill.** A weekly workflow restores the newest backup format (a fixture produced by
   `backup.sh`) into a scratch Postgres and runs the Go tests against it. DoD: green weekly; a
   failure opens an issue.
+  Built: `backup.sh --restore FILE` is the restore, in one transaction, refused while the app runs,
+  so the drill runs the command the README gives and not a copy of it. `test/restore.sh` fills a
+  database through the app (admin, member, progress, post, comment, like), takes the backup with
+  `backup.sh`, restores it into an empty Postgres from the pinned image, compares every table row
+  for row, starts the app on it, signs both accounts in and reads the post and the progress back,
+  shows that a restore is refused while the app runs and that a dump cut short or a file that is no
+  dump changes nothing, runs the Go database tests against the restored server, and restores each
+  backup of an earlier schema kept in `testdata/backups` (schema 5 is there) under today's app.
+  `restore_drill.yml` runs it on Tuesdays and by hand; a failed run opens "The restore drill failed"
+  or adds to it, and the next green run closes it. `process_pr` runs the same script as the `restore`
+  suite for the backup, the Postgres pin and `main.go`.
+  Open, and why the box is not ticked: the workflow has not run on `main`. A schedule and the step
+  that opens the issue only exist there. After the merge: one run by hand, one with
+  `rehearse_failure` to see the issue opened, one more to see it closed; then tick this with the run
+  numbers.

@@ -22,8 +22,11 @@ paths:
 - Before pushing: `gofmt -l . && go vet ./...`. CI also runs staticcheck; treat its findings as
   errors.
 - Schema changes are new entries appended to `migrations` in `main.go`; never edit or reorder one
-  that has shipped. `TestDBMigrations` checks they apply once. A migration that removes or rewrites
-  data must say in its PR that `./deploy.sh --rollback` cannot go back past it.
+  that has shipped. `TestDBMigrations` checks they apply once, and the restore drill
+  (`test/restore.sh`) restores a backup of each earlier schema kept in `testdata/backups` and starts
+  the app on it: keep one of the schema before yours (`test/restore.sh --fixture` before your
+  change). A migration that removes or rewrites data must say in its PR that `./deploy.sh --rollback`
+  cannot go back past it.
 - New write endpoints get an allowance in `limits` (`allowed(w, a.lim.x, u, "...")`); pictures go
   through `cleanImage`; acting on someone else's content checks `outranks`. Responses already carry
   the security headers from `secure`; do not set weaker ones per handler.

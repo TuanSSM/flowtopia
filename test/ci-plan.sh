@@ -12,9 +12,10 @@
 set -euo pipefail
 
 # Every suite, in the order the summary lists them. Each one is a job in the integration matrix.
-# compose and release are not browser suites: test/compose.sh --up starts compose.yml and asks who can
-# reach the app; test/release.sh builds the release image and deploys it with deploy.sh.
-ALL="db compose release combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
+# compose, release and restore are not browser suites: test/compose.sh --up starts compose.yml and asks
+# who can reach the app; test/release.sh builds the release image and deploys it with deploy.sh;
+# test/restore.sh is the restore drill, a backup taken and put back with backup.sh.
+ALL="db compose release restore combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
 BROWSER="combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
 # Suites that play demo clips or draw the figure, for changes to the clips or the 3D figure. The touch suite
 # is one of them: it measures the avatar editor and the landing page's demo on a phone.
@@ -45,11 +46,13 @@ plan() {
       # workflow does and deploys it with deploy.sh; the compose suite builds it too.
       Dockerfile|.dockerignore) lint=true; suites compose release ;;
       deploy.sh|build-image.sh|test/release.sh|.github/workflows/release_tag.yml) lint=true; suites release ;;
-      # The other workflow and release files, the backup script, the checks lint runs on the docs and on
-      # the browser tests' sleeps, and the table of slowest checks for the PR comment: their checks are
-      # in lint (actionlint, the git-cliff preview, shellcheck, the scripts' own self-tests); nothing
-      # the tests run reads them.
-      .github/*|cliff.toml|backup.sh|test/docs.sh|test/sleeps.sh|test/slowest.sh) lint=true ;;
+      # The backup, the drill that restores it, and the backups of earlier versions the drill keeps.
+      backup.sh|test/restore.sh|testdata/backups/*|.github/workflows/restore_drill.yml) lint=true; suites restore ;;
+      # The other workflow and release files, the checks lint runs on the docs and on the browser tests'
+      # sleeps, and the table of slowest checks for the PR comment: their checks are in lint
+      # (actionlint, the git-cliff preview, shellcheck, the scripts' own self-tests); nothing the tests
+      # run reads them.
+      .github/*|cliff.toml|test/docs.sh|test/sleeps.sh|test/slowest.sh) lint=true ;;
       # Go tests only: the unit job runs them, and the db suite the ones that need Postgres.
       *_test.go) lint=true; unit=true; suites db ;;
       *.go|go.mod|go.sum) everything ;;
@@ -83,13 +86,14 @@ self_test() {
     local got; got=$(tr ',' '\n' <<<"$1" | plan | paste -sd' ')
     if [ "$got" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: $2"; echo "  got:  $got"; fails=$((fails + 1)); fi
   }
-  local all='["db","compose","release","combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
+  local all='["db","compose","release","restore","combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
   local browser='["combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
   expect "README.md,docs/epics.md,.claude/rules/go-server.md" 'code=false lint=false unit=false screenshots=false suites=[]'
   expect "main.go" "code=true lint=true unit=true screenshots=true suites=$all"
   expect "docs/x.md,go.sum" "code=true lint=true unit=true screenshots=true suites=$all"
   expect ".github/workflows/process_pr.yml" "code=true lint=true unit=true screenshots=true suites=$all"
-  expect "cliff.toml,CLAUDE.md,backup.sh,.github/dependabot.yml" 'code=true lint=true unit=false screenshots=false suites=[]'
+  expect "cliff.toml,CLAUDE.md,.github/dependabot.yml" 'code=true lint=true unit=false screenshots=false suites=[]'
+  expect "backup.sh,test/restore.sh,testdata/backups/flowa-schema5.dump,.github/workflows/restore_drill.yml" 'code=true lint=true unit=false screenshots=false suites=["restore"]'
   expect ".github/workflows/release_tag.yml" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "deploy.sh,build-image.sh,test/release.sh" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "compose.yml" "code=true lint=true unit=false screenshots=false suites=$all"
