@@ -90,6 +90,15 @@ changes are saved is a live region too. `a11y.py` checks the labels at every sto
 what a field points at by id is on the page and that no id is used twice, and sends three forms wrong
 to hear the error come and go.
 
+A person who asked their system for less motion (`prefers-reduced-motion`) gets each demo as a still
+with a Play button: on the landing page, in a skill guide, in the combo player and in the avatar editor.
+Nothing starts by itself, a demo they started stops when its page is left, and the setting is followed
+while Flowa is open. Nothing slides, drops or fades: the skill panel, the achievement card, the menu of
+a narrow window and the steps of the guided tour are there at once. `FLOWA_MOTION=reduce
+test/browser/run.sh pages.py <dir>` starts Firefox with that setting and takes 7 more pictures
+(`still-*.png`) with checks that each canvas holds still until Play and that no element of those pages
+has an animation, a transition or smooth scrolling.
+
 The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the guided tour (`tour/`) and the
 3D figure (`figure/`).
 
@@ -529,7 +538,7 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/contrast.js` (the page's colours in both themes: text at 4.5:1, icons and the edges of fields at 3:1); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
 | `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, the same bytes when built twice; then `deploy.sh` pulls and starts one, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them |
-| `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
+| `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, then a second run with reduced motion (`FLOWA_MOTION=reduce`) for the pages where something moves, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |
 

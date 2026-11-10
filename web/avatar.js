@@ -52,7 +52,7 @@ function pageAvatar(arg) {
   <div class="page-h"><div class="grow"><h1>Your avatar</h1><p>It plays your demos and combos, and appears on your stickers and streak overlays.</p></div></div>
   <div class="av-wrap">
     <div class="av-stage card"><canvas id="av-cv" width="560" height="560" tabindex="0" role="img" aria-label="Your avatar, turning slowly. Drag it, or use the left and right arrow keys, to turn it."></canvas>
-      <div class="row av-tools"><button class="btn sm" data-act="av-random">${icon('star')}Surprise me</button><button class="btn sm" data-act="av-undo" ${AV.undo.length ? '' : 'disabled'}>Undo</button><span class="tiny grow" style="text-align:right">Drag to turn</span></div>${no3d}</div>
+      <div class="row av-tools"><button class="btn sm" data-act="av-random">${icon('star')}Surprise me</button><button class="btn sm" data-act="av-undo" ${AV.undo.length ? '' : 'disabled'}>Undo</button>${avMotionBtn()}<span class="tiny grow" style="text-align:right">Drag to turn</span></div>${no3d}</div>
     <div class="av-panel card">
       <div class="seg av-tabs" role="tablist" aria-label="Category">${AV_TABS.map(([k, n]) => `<button role="tab" class="${AV.tab === k ? 'on' : ''}" aria-selected="${AV.tab === k}" data-act="av-tab" data-v="${k}">${n}</button>`).join('')}</div>
       <div class="av-fields" role="tabpanel">${fields}${tab[0] === 'body' ? '<p class="tiny">Each demo plays on your body when it passes the same reach and overlap checks as on the standard body; any other plays on the standard body and says so.</p>' : ''}</div>
@@ -64,6 +64,9 @@ function pageAvatar(arg) {
 
 // After each render: start the preview on the editor or on a profile, and keep the demo player's
 // avatar the signed-in user's.
+// The avatar plays by itself, except for a person who asked their system for less motion: they get it
+// standing still, with this button to play and pause it.
+const avMotionBtn = () => Demo.still() ? `<button class="btn sm" data-act="av-motion">${Demo.previewState.playing ? 'Pause' : 'Play'}</button>` : '';
 function avatarMount() {
   const key = avOn() && hasAvatar(me) ? JSON.stringify(me.avatarCfg) : '';
   if (key !== AV.shown) { AV.shown = key; Demo.avatar(key ? me.avatarCfg : null); }
@@ -108,6 +111,7 @@ document.addEventListener('click', e => {
     case 'av-save': avSave(); break;
     case 'av-skip': AV.first = false; AV.draft = null; location.hash = '#/'; break;
     case 'av-remove': updateMe({ avatarCfg: {} }, 'Avatar removed. Demos use the standard figure.').then(ok => { if (ok) { AV.draft = null; render(); } }); break;
+    case 'av-motion': Demo.previewState.playing = !Demo.previewState.playing; t.textContent = Demo.previewState.playing ? 'Pause' : 'Play'; break;
     case 'av-play': { const cv = document.getElementById('av-other'); if (cv) { cv.dataset.key = d.key; document.querySelectorAll('[data-act=av-play]').forEach(b => { b.classList.toggle('on', b === t); b.setAttribute('aria-pressed', b === t); }); avatarMount(); } break; }
   }
 });
@@ -123,7 +127,7 @@ function avatarOnProfile(u, clean) {
   const first = list[0][0] + ':' + list[0][1], name = (cid, id) => CATALOGS[cid]?.skills.find(s => s.id === id)?.name || id;
   return `<section class="card av-prof"><div class="card-h"><h2>${esc(u.displayName || u.username)}'s avatar</h2></div>
     <canvas id="av-other" width="400" height="400" data-key="${esc(first)}" data-user="${esc(u.username)}" tabindex="0" role="img" aria-label="${esc(u.displayName || u.username)}'s avatar playing a skill they have clean. Drag to turn."></canvas>
-    <div class="chips">${list.slice(0, 12).map(([cid, id], i) => `<button class="chip ${i ? '' : 'on'}" data-act="av-play" data-key="${esc(cid + ':' + id)}" aria-pressed="${!i}">${esc(id)} ${esc(name(cid, id))}</button>`).join('')}</div>
+    <div class="chips">${avMotionBtn()}${list.slice(0, 12).map(([cid, id], i) => `<button class="chip ${i ? '' : 'on'}" data-act="av-play" data-key="${esc(cid + ':' + id)}" aria-pressed="${!i}">${esc(id)} ${esc(name(cid, id))}</button>`).join('')}</div>
     <p class="tiny">Skills they have marked Clean that have a demo.</p></section>`;
 }
 

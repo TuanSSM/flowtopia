@@ -2,11 +2,15 @@
 # Signed in as the test admin with nunchaku chosen, a sample combo, and a few skills marked.
 # Writes <name>.png per page at desktop and phone width, a demo contact sheet, and index.json
 # ([{file, title}]) in the order to show them.
+# With FLOWA_MOTION=reduce the browser says the person asked for less motion (prefers-reduced-motion), and
+# this takes a second, shorter set instead, named still-<name>.png and added to the index.json that is
+# there: the pages where something moves by itself, each with checks that it now does not.
 import sys,os,io,json
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from h import *
 from PIL import Image
 out=sys.argv[1];os.makedirs(out,exist_ok=True);made=[]
+if STILL and os.path.exists(f'{out}/index.json'): made=[m for m in json.load(open(f'{out}/index.json')) if not m['file'].startswith('still-')]
 def settle():
     # A picture is taken of a page that has stopped changing: its requests answered, the 3D figure there
     # (or known to be missing), its pictures loaded and two frames drawn.
@@ -20,8 +24,110 @@ def page(name,title,h,w=1440,ht=1000,full=True):
     img.save(f'{out}/{name}.png',optimize=True);made.append({'file':name+'.png','title':title});check(f'{name} ({img.width}x{img.height})',True)
 def add(sid):
     js("const s=document.querySelector('[data-pick=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));s.parentElement.querySelector('[data-act=add-chosen]').click()",sid);idle()
+# Everything on the page, and what is drawn before and after each element, that still has an animation, a
+# transition longer than nothing, or smooth scrolling; and the animations the browser is running now.
+MOTION=r"""
+const out=[],cls=e=>e.tagName.toLowerCase()+(e.id?'#'+e.id:'')+(typeof e.className==='string'&&e.className.trim()?'.'+e.className.trim().split(/\s+/).join('.'):'');
+for(const e of document.querySelectorAll('*'))for(const p of [null,'::before','::after']){
+  const s=getComputedStyle(e,p);
+  if(s.animationName!=='none')out.push(cls(e)+(p||'')+': animation '+s.animationName);
+  if(s.transitionDuration.split(',').some(d=>parseFloat(d)>0))out.push(cls(e)+(p||'')+': transition '+s.transitionProperty+' '+s.transitionDuration);
+  if(s.scrollBehavior==='smooth')out.push(cls(e)+(p||'')+': smooth scrolling');
+}
+for(const a of document.getAnimations())out.push('running: '+(a.animationName||a.transitionProperty||'animation'));
+return out;
+"""
+PLAY="return (document.querySelector(arguments[0])||{}).textContent"
+def calm(name):
+    bad=js(MOTION);check(f'{name}: nothing on the page animates, fades or scrolls smoothly',not bad,bad[:6])
+def paused(name,cv,btn,what):
+    # A demo that opened by itself: its picture holds, its button offers Play, and Play starts it.
+    wait_for(f"return !!document.querySelector('{cv}')",f'{what} to be on the page',20);figure(40);idle();frames()
+    check(f'{name}: {what} opens as a still, with a Play button',holds(cv) and js(PLAY,btn)=='Play',lambda: (js(SNAP,cv),js(PLAY,btn)))
+def played(name,cv,btn,what):
+    click(btn);check(f'{name}: Play starts {what}, and the button then offers Pause',moves(cv) and js(PLAY,btn)=='Pause',lambda: (js(SNAP,cv),js(PLAY,btn)))
+def reduced(op):
+    DEMO,COMBO='[data-act=demo][data-k=play]','[data-act=combo-demo][data-k=play]'
+    check('the browser says less motion was asked for',js("return matchMedia('(prefers-reduced-motion: reduce)').matches"),lambda: 'the pref ui.prefersReducedMotion did not reach the page')
+    # The rule above is shown to find what it looks for: a style that wins over the page's own is found, and
+    # one written on an element without !important, as the guided tour writes its fade, is switched off.
+    js("const d=document.createElement('div');d.id='motion-probe';d.innerHTML='<i id=\"mp1\" style=\"transition:opacity 1s !important\"></i><i id=\"mp2\" style=\"transition:opacity 1s\"></i><i id=\"mp3\" style=\"animation:slide 1s infinite !important\"></i><i id=\"mp4\" style=\"animation:slide 1s infinite;scroll-behavior:smooth\"></i>';document.body.append(d)")
+    bad=js(MOTION);found=sorted({b.split(':')[0] for b in bad if b.startswith('i#mp')})
+    check('the rule finds an animation and a transition that are forced, and none that the page switches off',found==['i#mp1','i#mp3'] and any(b.startswith('running') for b in bad),bad)
+    js("document.querySelector('#motion-probe').remove()")
+    # The landing page plays one demo for a visitor. Here it waits.
+    page('still-landing','Reduced motion: landing page, the demo waits for Play','#/')
+    paused('landing','.land #demo-cv',DEMO,'the demo');calm('landing');played('landing','.land #demo-cv',DEMO,'the demo')
+    signin()
+    if js("return !!document.querySelector('input[name=prop]')"): js("for(const i of document.querySelectorAll('input[name=prop]'))i.checked=i.value==='nunchaku';document.querySelector('#props-form').requestSubmit()");idle()
+    # A skill guide: the demo of a move that repeats waits at its start with its whole path drawn; one that
+    # does not repeat waits half way through. The panel does not slide in (calm finds its animation if it does).
+    page('still-skill','Reduced motion: skill guide, the demo waits for Play (F5)','#/prop/nunchaku/F/F5')
+    paused('skill guide','#panel #demo-cv',DEMO,'the demo');calm('skill guide')
+    check('a move that repeats waits at its start',js("return [window.Demo.clip().loop,window.Demo.state.phase]")==[True,0],lambda: js("return [window.Demo.clip().loop,window.Demo.state.phase]"))
+    played('skill guide','#panel #demo-cv',DEMO,'the demo')
+    # Another skill opened while this one plays, and this one opened again, each wait: playing is asked for per demo.
+    nav('#/prop/nunchaku/F/F6');paused('the next skill guide','#panel #demo-cv',DEMO,'the demo')
+    check('a move that does not repeat waits half way through',js("return [!!window.Demo.clip().loop,window.Demo.state.phase]")==[False,0.5],lambda: js("return [!!window.Demo.clip().loop,window.Demo.state.phase]"))
+    played('the next skill guide','#panel #demo-cv',DEMO,'the demo')
+    nav('#/practice');nav('#/prop/nunchaku/F/F6');paused('a skill guide left while playing and opened again','#panel #demo-cv',DEMO,'the demo')
+    # The setting is followed while the page is open: taken back, the demo plays as it does for everyone; asked
+    # for again, it stops. The change is told to the page the way the browser tells it.
+    js("window.Demo.calm.dispatchEvent(new MediaQueryListEvent('change',{media:window.Demo.calm.media,matches:false}))")
+    check('when the setting is taken back the demo plays by itself again',moves('#panel #demo-cv') and js(PLAY,DEMO)=='Pause',lambda: js(PLAY,DEMO))
+    js("window.Demo.calm.dispatchEvent(new MediaQueryListEvent('change',{media:window.Demo.calm.media,matches:true}))")
+    check('when the setting is asked for the demo stops where it is',holds('#panel #demo-cv') and js(PLAY,DEMO)=='Play',lambda: js(PLAY,DEMO))
+    page('still-skill-phone','Reduced motion: skill guide, phone','#/prop/nunchaku/F/F5',w=420,ht=900)
+    paused('skill guide, phone','#panel #demo-cv',DEMO,'the demo');calm('skill guide, phone')
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    # A combo: its player waits on the first skill.
+    nav('#/combos');js("const f=document.querySelector('#combo-form');f.name.value='Sample combo';f.requestSubmit()");idle()
+    for sid in ['F5','F7','R1']: add(sid)
+    nav('#/practice')
+    page('still-combos','Reduced motion: combos, the player waits for Play','#/combos')
+    paused('combos','#combo-cv',COMBO,'the combo');calm('combos')
+    check('the combo waits on its first skill',js("return [window.Demo.combo.i,window.Demo.combo.t,window.Demo.combo.playing]")==[0,0,False],lambda: js("return [window.Demo.combo.i,window.Demo.combo.t,window.Demo.combo.playing]"))
+    played('combos','#combo-cv',COMBO,'the combo')
+    nav('#/practice');nav('#/combos');paused('combos left while playing and opened again','#combo-cv',COMBO,'the combo')
+    # A logged session unlocks an achievement; its card is there at once, without dropping in. Then the
+    # dashboard with the heatmap, which is drawn whole, and its bars, which do not grow.
+    nav('#/practice');js("const f=document.querySelector('#log-form');f.minutes.value='35';f.requestSubmit()")
+    wait_for("return !!document.querySelector('#unlock .unlock-card')",'the card of an unlocked achievement',20)
+    card=js("const s=getComputedStyle(document.querySelector('#unlock .unlock-card'));return [s.animationName,s.opacity,s.transform]")
+    check('the achievement card is there at once: no animation, fully drawn, in its place',card==['none','1','none'],card);calm('practice, with the achievement card')
+    page('still-dashboard','Reduced motion: dashboard, with the heatmap','#/')
+    heat=js("const h=document.querySelector('.heat');if(!h)return null;const s=getComputedStyle(h);return [s.animationName,s.opacity,h.querySelectorAll('rect').length>100,[...h.querySelectorAll('rect')].every(r=>getComputedStyle(r).opacity==='1'&&getComputedStyle(r).animationName==='none')]")
+    check('the heatmap is drawn whole at once: no animation on it or its days',heat==['none','1',True,True],heat);calm('dashboard')
+    # The menu of a narrow window opens without sliding.
+    cmd('WebDriver:SetWindowRect',width=420,height=900);wait_for("return getComputedStyle(document.querySelector('.menu-btn')).display!=='none'",'the window to be narrow enough for the menu button')
+    click('.menu-btn');side=js("const s=getComputedStyle(document.querySelector('#side'));return [s.transitionDuration,s.transform]")
+    check('the menu of a narrow window is open at once',side==['0s','none'],side);calm('menu, narrow window')
+    js("document.body.classList.remove('nav-open')");cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    # The avatar plays a move by itself in its editor; here it stands, with a button to play it.
+    api(op,'flags',{'flags':{'avatars':True}},'PUT')
+    api(op,'me',{'avatarCfg':{'v':1,'body':'average','build':'average','skin':'#a0603f','hair':'ponytail','hairColor':'#1c1714','eyes':'round','brows':'arched','mouth':'smile','top':'tshirt','topColor':'#2a7fa8','bottoms':'leggings','bottomsColor':'#2b2b2b','shoes':'trainers','shoesColor':'#f2f0e9','hat':'none','hatColor':'#c4572e','glasses':'round','wristbands':'yes','wristColor':'#d9a441','props':{'nunchaku':'#e0533a'}}},'PUT')
+    load()
+    page('still-avatar','Reduced motion: avatar editor, the avatar waits for Play','#/avatar')
+    paused('avatar editor','#av-cv','[data-act=av-motion]','the avatar');calm('avatar editor');played('avatar editor','#av-cv','[data-act=av-motion]','the avatar')
+    # The guided tour, for someone new: its steps and the dark sheet around the highlight do not fade.
+    api(op,'flags',{'flags':{'tour':True,'avatars':False}},'PUT')
+    js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+    load(BASE+'?tour#/signup');wait_for("return !!document.querySelector('#auth-form')",'the form for a new account',20)
+    js("const f=document.querySelector('#auth-form');f.elements.username.value='calm';f.elements.password.value=f.elements.again.value='flowa-test-only';f.requestSubmit()")
+    wait_for(lambda: js("return (document.querySelector('.nav-profile .tiny')||{}).textContent")=='@calm','@calm to be signed in',30);idle()
+    js("for(const i of document.querySelectorAll('input[name=prop]'))i.checked=i.value==='nunchaku';document.querySelector('#props-form').requestSubmit()")
+    TOUR="[...document.querySelectorAll('[role=alertdialog] button')]"
+    FLOAT="const f=document.querySelector('.react-joyride__floater');if(!f)return null;const s=getComputedStyle(f);return [s.transitionDuration,s.opacity]"
+    wait_for(f"return {TOUR}.length>0",'the guided tour to open',30);idle()
+    check('the first step of the tour is there at once: no fade on it',lambda: js(FLOAT)==['0s','1'],lambda: js(FLOAT));calm('guided tour')
+    page('still-tour','Reduced motion: guided tour','#/',full=False)
+    js(f"{TOUR}.find(b=>b.textContent.startsWith('Next')).click()")
+    wait_for(f"return {TOUR}.some(b=>b.textContent.startsWith('Back'))",'the second step of the tour');idle()
+    check('the second step of the tour is there at once too',lambda: js(FLOAT)==['0s','1'],lambda: js(FLOAT));calm('guided tour, second step')
 try:
     op=admin();start()
+    # The second set, for less motion, is all this run takes: done() below still counts its checks.
+    if STILL: reduced(op);json.dump(made,open(f'{out}/index.json','w'));raise SystemExit(0)
     # What a visitor sees first: the landing page with a demo and the map in small.
     page('landing','Landing page','#/')
     page('landing-phone','Landing page, phone','#/',w=420,ht=900)

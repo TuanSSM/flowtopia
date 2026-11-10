@@ -6,8 +6,22 @@ import { Joyride, EVENTS, STATUS } from 'react-joyride';
 
 let show = () => {};
 
+// Whether the person asked their system for less motion, now and while the tour is open.
+const calm = matchMedia('(prefers-reduced-motion: reduce)');
+function useStill() {
+  const [still, setStill] = useState(calm.matches);
+  useEffect(() => {
+    const on = e => setStill(e.matches);
+    // An old browser has the setting but not this way of hearing it change; there the tour keeps what it read at the start.
+    calm.addEventListener?.('change', on);
+    return () => calm.removeEventListener?.('change', on);
+  }, []);
+  return still;
+}
+
 function Tour() {
   const [tour, setTour] = useState(null);
+  const still = useStill();
   const controls = useRef(null);
   const ended = useRef(false);
   show = setTour;
@@ -36,7 +50,7 @@ function Tour() {
         overlayColor: 'rgba(0, 0, 0, 0.6)', zIndex: 200, width: 340, spotlightRadius: 12, spotlightPadding: 6,
         skipBeacon: true, showProgress: true, buttons: ['back', 'skip', 'primary'],
         overlayClickAction: false, dismissKeyAction: false, blockTargetInteraction: true,
-        scrollOffset: 90, scrollDuration: tour.still ? 0 : 300,
+        scrollOffset: 90, scrollDuration: still ? 0 : 300,
       }}
       styles={{
         tooltip: { borderRadius: 14, fontSize: 14, lineHeight: 1.5, border: `1px solid ${c.line}` },
@@ -44,6 +58,9 @@ function Tour() {
         tooltipContent: { padding: '8px 0 4px' },
         buttonPrimary: { borderRadius: 9, fontSize: 13, fontWeight: 560, padding: '8px 13px' },
         buttonBack: quiet, buttonSkip: quiet,
+        // With less motion the step does not fade in and the page jumps to it. The fade of the dark sheet
+        // around the highlight is set inside the library; app.css turns that one off, with every other.
+        ...(still ? { floater: { transition: 'none' } } : {}),
       }}
       onEvent={(data, ctl) => {
         controls.current = ctl;
@@ -64,7 +81,7 @@ createRoot(root).render(<Tour />);
 
 window.FlowaTour = {
   start(steps, colors, onEnd) {
-    show({ id: Date.now(), steps, colors, onEnd, still: matchMedia('(prefers-reduced-motion: reduce)').matches });
+    show({ id: Date.now(), steps, colors, onEnd });
   },
   stop() { show(null); },
 };

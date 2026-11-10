@@ -5,7 +5,7 @@ Category: improvement. Size: S. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#36](https://github.com/TuanSSM/flowtopia/issues/36)). 3 of 5 items done.
+**Status:** in progress (issue [#36](https://github.com/TuanSSM/flowtopia/issues/36)). 4 of 5 items done.
 
 - [ ] **Focus.** Every control reachable by Tab in reading order, a visible focus ring in both
   themes, dialogs trap focus and return it. DoD: a keyboard-only browser test signs in, logs a
@@ -25,9 +25,34 @@ Commits title of the category's type. An item is checked only when its DoD holds
   inputs behind "Picture" and "Import JSON" cannot be reached by keyboard (Focus), form errors are
   hidden alerts until shown and the "Saving" note is not a live region (Forms). Not done: listening
   with a real screen reader.
-- [ ] **Reduced motion.** With `prefers-reduced-motion`, demos open on a still with a Play button,
+- [x] **Reduced motion.** With `prefers-reduced-motion`, demos open on a still with a Play button,
   the tour does not animate, the heatmap does not fade in. DoD: `pages.py` with the media feature
   emulated.
+  Done: `FLOWA_MOTION=reduce test/browser/run.sh pages.py <dir>` starts Firefox with the pref
+  `ui.prefersReducedMotion` set to 1 (`h.py`) and takes a second, shorter set: 7 pictures named
+  `still-*.png`, added to the same `index.json`, and 36 checks. The screenshots job runs it after the
+  first set, so the pictures are in the pull request's comment. The demo on the landing page, in a
+  skill guide and in the combo player, and the avatar in its editor, each open as a still with a Play
+  button (two readings of the canvas 0.4 s apart are the same), and Play starts them. A move that
+  repeats waits at its start with its whole path drawn; one that does not waits half way through. A
+  demo started by hand stops when its page is left, and the next one opens paused again. Every
+  element of each page, and what is drawn before and after it, is asked for its computed style: no
+  animation, no transition longer than 0 s, no smooth scrolling, and the browser runs no animation.
+  That covers the skill panel (it slid in), the achievement card (it dropped in), the menu of a narrow
+  window, the bars, and the guided tour's steps and the dark sheet around its highlight.
+  What was there before: the stylesheet already switched animations and transitions off, the player
+  already started paused and the tour already scrolled without gliding. What was missing, and the
+  checks found on the tree before (6 of the first 16 failed): once Play had been pressed, every later
+  demo played by itself; the setting was read once, when the page loaded; a paused demo of a move that
+  does not repeat showed its first frame with no path; the avatar in its editor and on a profile
+  always played, with no button; smooth scrolling and the styles of `::before` and `::after` were
+  not covered. The setting is now followed while the page is open, by the player and by the tour.
+  The heatmap has no fade in this tree; the check keeps it so. The 3D figure has no motion of its
+  own: it is drawn only when a player draws a frame.
+  Seen and left: a demo or a combo that a person starts plays round and round until they pause it,
+  as it does for everyone. The avatar's canvas is still labelled "turning slowly", which it does not
+  do. Not run here: the Firefox pref itself. The suite was run on Chromium with the media feature
+  emulated; Firefox reads the pref in CI.
 - [x] **Contrast.** Text and controls at 4.5:1 (3:1 for large text and icons) in both themes,
   checked by a script over the computed styles of each page. DoD: in lint next to
   `test/avatar-colors.js`.

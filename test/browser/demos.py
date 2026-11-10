@@ -3,7 +3,7 @@ import sys,os,json
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from h import *
 index=json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','..','web','clips','index.json')))
-SNAP="const c=document.querySelector('#demo-cv');if(!c)return null;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let h=0,set=new Set();for(let i=0;i<d.length;i+=4*41){h=(h*31+d[i]+d[i+1]*3+d[i+2]*7)>>>0;set.add(d[i]<<16|d[i+1]<<8|d[i+2])}return [h,set.size]"
+# SNAP (h.py) reads the demo's canvas as a number that changes when the picture does, and its count of colours.
 text=lambda: js("return document.querySelector('.demo').textContent")
 def ready(): poll(lambda: js("return !!window.Demo.clip()"),4)  # a skill whose clip never comes fails the check that looks at it
 try:

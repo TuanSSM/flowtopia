@@ -378,6 +378,13 @@ jobs:
         env:
           FLOWA_PREVIEW_BASE: http://127.0.0.1:3199
         run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
+      # The same script with Firefox told that the person asked for less motion (prefers-reduced-motion): a
+      # shorter set of pictures, still-*.png, added to the same index.json, with checks that nothing on those
+      # pages moves by itself and that Play starts each demo.
+      - name: Take them again with reduced motion
+        env:
+          FLOWA_MOTION: reduce
+        run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
@@ -385,9 +392,11 @@ jobs:
           name: screenshots
           path: ${{ runner.temp }}/shots
           retention-days: 14
+      # Runs after a failed step too: when the pictures with reduced motion fail, the first set is
+      # still worth showing. Without a list of pictures there is nothing to publish.
       - name: Publish to the ci-screenshots branch
         id: publish
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
         env:
           TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -396,6 +405,7 @@ jobs:
           SHOTS: ${{ runner.temp }}/shots
         run: |
           set -u
+          [ -f "$SHOTS/index.json" ] || { echo "no list of pictures at $SHOTS/index.json: nothing to publish"; exit 0; }
           url="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
           d="$RUNNER_TEMP/ci-screenshots"
           if ! git clone -q --depth 1 --branch ci-screenshots "$url" "$d" 2>/dev/null; then
@@ -526,7 +536,7 @@ jobs:
             echo "| lint | $(icon "$LINT" lint) | gofmt, go vet, staticcheck, JS/Python syntax, catalogs, actionlint |"
             echo "| unit tests | $(icon "$UNIT" unit) | ${PHYSICS:-go build, go test, physics suite, bundles} |"
             echo "| integration tests | $(icon "$INTEG" suites) | $INTEG_DETAIL |"
-            echo "| screenshots | $(icon "$SCREENS" screenshots) | pages at desktop and phone width, demo sheet |"
+            echo "| screenshots | $(icon "$SCREENS" screenshots) | pages at desktop and phone width, demo sheet, and the pages that move again with reduced motion |"
             echo
             if [ -s slowest.md ]; then
               echo '**Slowest checks** (seconds, each counted from the check before it):'

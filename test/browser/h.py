@@ -6,6 +6,10 @@ open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui
 # FLOWA_POINTER=coarse makes Firefox report a touch screen (pointer: coarse, no hover), as a phone does.
 COARSE=os.environ.get('FLOWA_POINTER')=='coarse'
 if COARSE: open(prof+'/user.js','a').write('user_pref("ui.primaryPointerCapabilities",1);user_pref("ui.allPointerCapabilities",1);')
+# FLOWA_MOTION=reduce makes Firefox report that the person asked their system for less motion
+# (prefers-reduced-motion: reduce), as pages.py asks for its second set of pictures.
+STILL=os.environ.get('FLOWA_MOTION')=='reduce'
+if STILL: open(prof+'/user.js','a').write('user_pref("ui.prefersReducedMotion",1);')
 FIREFOX=os.environ.get('FIREFOX') or next((b for b in ('firefox-esr','firefox') if shutil.which(b)),'firefox-esr')
 # Zooming the page for phone() is done from the browser's own context, which Firefox allows only when asked:
 # by a flag in Firefox 140, by an environment variable in later ones. Both are given, and only for a touch run.
@@ -104,6 +108,15 @@ def figure(timeout=30):
 def frames(n=2):
     # Lets the page draw n frames, so a picture taken next shows what the last step changed.
     js("let n=arguments[0];return new Promise(r=>{const f=()=>n-->0?requestAnimationFrame(f):r(1);f()})",n)
+# A canvas as a number that changes when its picture does, and how many colours it holds: [number, colours].
+SNAP="const c=document.querySelector(arguments[0]||'#demo-cv');if(!c)return null;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let h=0,set=new Set();for(let i=0;i<d.length;i+=4*41){h=(h*31+d[i]+d[i+1]*3+d[i+2]*7)>>>0;set.add(d[i]<<16|d[i+1]<<8|d[i+2])}return [h,set.size]"
+def holds(sel='#demo-cv',secs=.4):
+    # True when the canvas is drawn and shows the same picture after a while.
+    a=js(SNAP,sel);time.sleep(secs)  # fixed: a picture counts as still only if it has not changed after a while
+    return bool(a) and a[1]>=4 and js(SNAP,sel)==a
+def moves(sel='#demo-cv',timeout=2):
+    # True when the canvas shows another picture within the time: a clip that plays draws a new frame.
+    a=js(SNAP,sel);return bool(a) and poll(lambda: (lambda s: bool(s) and s[0]!=a[0])(js(SNAP,sel)),timeout)[1]
 click=lambda sel: js("document.querySelector(arguments[0]).click()",sel)
 txt=lambda sel: js("const e=document.querySelector(arguments[0]);return e?e.textContent.trim():null",sel)
 errs=[];times=[];clock=[time.monotonic()]
