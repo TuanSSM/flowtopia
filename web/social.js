@@ -97,6 +97,8 @@ function feedHTML(key, empty) {
   if (!social.posts.length) return `<div class="empty">${empty}</div>`;
   return social.posts.map(postCard).join('') + (social.more ? `<button class="btn" data-act="more-posts" style="justify-self:center">Load more</button>` : '');
 }
+// Whose post it is, in words, for the names of the comment box under it and of its picture.
+const postBy = p => { const u = social.users[p.userId]; return u ? `the post by ${u.displayName || u.username}` : 'this post'; };
 function postCard(p) {
   const u = social.users[p.userId] || {}, mine = p.userId === me.id || canDo('content.delete');
   const tags = p.data?.tags || (p.skill ? [{ prop: p.prop, skill: p.skill }] : []);
@@ -110,7 +112,7 @@ function postCard(p) {
     body = `<div class="ms ${stk ? 'has-sticker' : ''}">${stk}<div class="row" style="gap:10px"><span class="badge-ic on">${icon('trophy')}</span><b>Unlocked ${keys.length === 1 ? 'an achievement' : keys.length + ' achievements'}</b></div>
       <div class="chips" style="margin-top:10px">${keys.map(k => { const b = badgeByKey(k); return `<span class="chip ok" data-tip="${esc(b?.desc || '')}">${icon(b?.icon || 'medal')}${esc(b?.name || k)}</span>`; }).join('')}</div></div>`;
   } else {
-    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${(p.links || []).map(c => linkCardHTML(p, c)).join('')}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
+    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${(p.links || []).map(c => linkCardHTML(p, c)).join('')}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="Picture in ${esc(postBy(p))}" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
   }
   const thread = threadHTML(p);
   return `<article class="card post" data-post="${p.id}">
@@ -186,7 +188,7 @@ function threadHTML(p) {
   // notification, offers the rest only when the post has comments that are not on the page.
   const more = full && !full.thread ? full.more : (p.commentCount || 0) > shown;
   const open = social.openCmts.has(p.id) || roots.length > 0;
-  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-k="c:${p.id}:0" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment" ${sendOff(`c:${p.id}:0`)}>${icon('send')}</button></form></div>`;
+  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-k="c:${p.id}:0" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" aria-label="Comment on ${esc(postBy(p))}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment" ${sendOff(`c:${p.id}:0`)}>${icon('send')}</button></form></div>`;
 }
 // Loads the next page of a post's comments; the first call replaces the feed's preview.
 async function moreComments(postId) {
@@ -347,10 +349,10 @@ function composer() {
   const sugg = social.pickOpen ? [] : suggestedTags();
   return `<form class="card compose" id="compose-form" data-k="post"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
     <textarea name="body" maxlength="2000" rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
-    ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt=""><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>${social.draftStill ? '<p class="tiny still-note">Animated pictures are kept as a still.</p>' : ''}` : ''}
+    ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt="The picture you attached"><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>${social.draftStill ? '<p class="tiny still-note">Animated pictures are kept as a still.</p>' : ''}` : ''}
     <div class="row wrap link-offer" ${social.linkOffer ? '' : 'hidden'}><span class="tiny grow">${social.linkOffer ? `${esc(SITE_NAMES[siteOf(social.linkOffer)])} link found` : ''}</span><button type="button" class="btn sm" data-act="link-attach">${icon('link')}Attach as a card</button></div>
-    <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
-    ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
+    <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}" aria-label="Tag a trick or combo">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
+    ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}" aria-label="Tag ${esc(t.skill)}, ${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
     <div class="row wrap" style="gap:8px"><label class="btn sm">${icon('image')}Picture<input type="file" accept="image/*" data-change="compose-img" hidden></label>
       <span class="grow"></span><button class="btn primary sm" type="submit" ${sendOff('post')}>${icon('send')}Post</button></div></div></div></form>`;
 }
@@ -451,7 +453,7 @@ async function loadBookmarks() {
 function bmButton(kind, ref, act = false) {
   if (!me || !flags.bookmarks) return '';
   const on = bmHas(kind, ref);
-  return `<button class="${act ? 'act' : 'icon-btn'} bm ${on ? 'on' : ''}" data-act="bookmark" data-kind="${kind}" data-ref="${esc(ref)}" aria-pressed="${on}" aria-label="${on ? 'Remove bookmark' : 'Bookmark this ' + kind}" data-tip="${on ? 'Bookmarked' : 'Bookmark'}">${icon('bookmark')}</button>`;
+  return `<button class="${act ? 'act' : 'icon-btn'} bm ${on ? 'on' : ''}" data-act="bookmark" data-kind="${kind}" data-ref="${esc(ref)}" aria-pressed="${on}" aria-label="Bookmark this ${kind}" data-tip="${on ? 'Bookmarked' : 'Bookmark'}">${icon('bookmark')}</button>`;
 }
 async function toggleBookmark(kind, ref) {
   const k = bmKey(kind, ref), was = BM.set.has(k);

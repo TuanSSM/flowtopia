@@ -210,8 +210,7 @@ function showUnlock(keys) {
   const el = $('#unlock'), b = badgeByKey(keys[0]);
   const stk = stickerImg(b?.group, me && me.avatarCfg, ui.prop, 'sticker unlock-sticker');
   el.innerHTML = `<a href="#/achievements" class="unlock-card">${stk || `<span class="badge-ic on">${icon(b?.icon || 'medal')}</span>`}<span><span class="tiny">Achievement${keys.length > 1 ? 's' : ''} unlocked</span><b>${esc(b?.name || keys[0])}${keys.length > 1 ? ` and ${keys.length - 1} more` : ''}</b></span></a>`;
-  el.hidden = false;
-  clearTimeout(unlockT); unlockT = setTimeout(() => el.hidden = true, 6000);
+  clearTimeout(unlockT); unlockT = setTimeout(() => el.innerHTML = '', 6000);
 }
 
 /* ---------- views ---------- */
@@ -411,7 +410,7 @@ function openShare() {
   el.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="share-t">
     <div class="row"><h2 id="share-t" class="grow">Share your streak</h2><button class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
     <p class="small muted" style="margin-top:4px">A transparent PNG to lay over your own photo or video, for Instagram, TikTok or anywhere else.</p>
-    <div class="share-body"><div class="share-prev ${share.fmt}"><canvas id="share-cv" aria-label="Streak overlay preview"></canvas></div>
+    <div class="share-body"><div class="share-prev ${share.fmt}"><canvas id="share-cv" role="img" aria-label="Streak overlay preview"></canvas></div>
       <div class="stack" style="gap:10px">
         <div class="tpl-row" role="radiogroup" aria-label="Template">${SHARE_TEMPLATES.map(([k, n, d]) => `<button class="tpl ${share.tpl === k ? 'on' : ''}" data-act="share-tpl" data-v="${k}" role="radio" aria-checked="${share.tpl === k}" data-tip="${esc(d)}"><canvas data-tpl="${k}" width="60" height="${story ? 106 : 60}" aria-hidden="true"></canvas><span>${n}</span></button>`).join('')}</div>
         <div class="row wrap" style="gap:8px"><div class="seg" role="group" aria-label="Format"><button class="${story ? 'on' : ''}" data-act="share-fmt" data-v="story">Story 9:16</button><button class="${!story ? 'on' : ''}" data-act="share-fmt" data-v="square">Square</button></div>

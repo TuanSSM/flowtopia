@@ -481,12 +481,14 @@ const Demo = (() => {
     hand: "Hand-driven: a rigid prop goes where the hand takes it, so this traces the move's defined path on a jointed figure. Grip and finger work are not shown.",
     still: 'A still picture. The view buttons turn it.',
   };
+  // The canvas is a picture for a screen reader. Its name is its own label (which clip, seen from where)
+  // followed by the caption under it, so what the page says of the clip is said of the picture too.
   function html(cid, id, dominant, esc) {
     const key = cid + ':' + id;
     if (st.id !== key) { st.id = key; st.variant = 0; st.phase = 0; st.hand = dominant; }
     const e = index[key], v = variant(), pic = v.m === 'still';
     return `<div class="demo">
-      <canvas id="demo-cv" width="720" height="720" role="img" aria-label="${pic ? 'Picture' : 'Demonstration'}: ${esc(v.n)}, ${viewName()} view. The steps below describe it in text."></canvas>
+      <canvas id="demo-cv" width="720" height="720" role="img" aria-label="${pic ? 'Picture' : 'Demonstration'}: ${esc(v.n)}, ${viewName()} view. The steps below describe it in text." aria-labelledby="demo-cv demo-cap${unfit(v.f) ? ' demo-body' : ''}"></canvas>
       ${e.v.length > 1 ? `<div class="chips demo-var">${e.v.map((s, i) => `<button class="chip ${i === st.variant ? 'on' : ''}" data-act="demo" data-k="variant" data-v="${i}" aria-pressed="${i === st.variant}">${esc(s.n)}</button>`).join('')}</div>` : ''}
       <div class="demo-ctl">
         <div class="seg" role="group" aria-label="Camera view">${segBtn('view', 'angle', '3/4', st.view === 'angle', 'Three-quarter view')}${segBtn('view', 'front', 'Front', st.view === 'front')}${segBtn('view', 'side', 'Side', st.view === 'side')}</div>
@@ -495,8 +497,8 @@ const Demo = (() => {
         <button class="btn sm" data-act="demo" data-k="play">${st.playing ? 'Pause' : 'Play'}</button>
         <button class="btn sm" data-act="demo" data-k="gif" data-tip="Download this clip as a GIF">GIF</button>`}
       </div>
-      <p class="tiny">${esc(CAPTION[v.m] || '')} ${esc(v.note || e.note || '')}</p>
-      ${unfit(v.f) ? `<p class="tiny demo-body">Shown on the standard body: on your ${esc(presetOf(av).replace('-', ', '))} avatar this clip does not pass the body checks yet (${esc(unfit(v.f))}).</p>` : ''}
+      <p class="tiny demo-cap" id="demo-cap">${esc(CAPTION[v.m] || '')} ${esc(v.note || e.note || '')}</p>
+      ${unfit(v.f) ? `<p class="tiny demo-body" id="demo-body">Shown on the standard body: on your ${esc(presetOf(av).replace('-', ', '))} avatar this clip does not pass the body checks yet (${esc(unfit(v.f))}).</p>` : ''}
     </div>`;
   }
   function act(d) {
@@ -567,7 +569,7 @@ const Demo = (() => {
     if (!steps.length) return `<div class="cb-stage"><div class="cb-empty"><div><b>Nothing to play yet</b><span>Add a skill and it plays here.</span></div></div>${foot}</div>`;
     const missing = steps.filter(x => !x.v).length;
     return `<div class="cb-stage">
-      <canvas id="combo-cv" width="720" height="720" role="img" aria-label="The combo's skills, demonstrated one after another, ${viewName()} view."></canvas>
+      <canvas id="combo-cv" width="720" height="720" role="img" aria-label="The combo's skills, demonstrated one after another, ${viewName()} view. Now:" aria-labelledby="combo-cv combo-now combo-cap"></canvas>
       <div class="cb-prog" id="combo-prog" aria-hidden="true">${steps.map(x => `<i style="flex-grow:${stepSecs(x)}"><b></b></i>`).join('')}</div>
       <div class="cb-now"><span id="combo-now" aria-live="off"></span><span id="combo-time" class="num"></span></div>
       <div class="demo-ctl">
@@ -576,7 +578,7 @@ const Demo = (() => {
         <span class="ctl-l"><span class="tiny" aria-hidden="true">Speed</span><div class="seg" role="group" aria-label="Speed">${[[1, '1×', 'Real speed'], [0.5, '½', 'Half speed'], [0.25, '¼', 'Quarter speed']].map(([x, l, a]) => segBtn('speed', x, l, st.speed === x, a, 'combo-demo')).join('')}</div></span>
         <span class="ctl-l"><span class="tiny" aria-hidden="true">View</span><div class="seg" role="group" aria-label="Camera view">${segBtn('view', 'angle', '3/4', st.view === 'angle', 'Three-quarter view', 'combo-demo')}${segBtn('view', 'front', 'Front', st.view === 'front', '', 'combo-demo')}${segBtn('view', 'side', 'Side', st.view === 'side', '', 'combo-demo')}</div></span>
       </div>
-      <p class="tiny">Each skill plays whole cycles of its demo, as many as you set. The links between skills are not animated.${missing ? ` ${missing} ${missing === 1 ? 'skill has' : 'skills have'} no demo yet and ${missing === 1 ? 'shows' : 'show'} as a name card.` : ''}</p>
+      <p class="tiny" id="combo-cap">Each skill plays whole cycles of its demo, as many as you set. The links between skills are not animated.${missing ? ` ${missing} ${missing === 1 ? 'skill has' : 'skills have'} no demo yet and ${missing === 1 ? 'shows' : 'show'} as a name card.` : ''}</p>
       ${foot}
     </div>`;
   }

@@ -42,7 +42,7 @@ function targetHTML(it) {
   const t = it.target || {};
   if (t.gone) return '<p class="small muted">It has been deleted since it was reported.</p>';
   const hidden = t.hidden ? `<span class="chip warn">${icon('lock')}Hidden: ${esc(t.hiddenReason)}</span>` : '';
-  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body">${richText(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="">` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
+  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body">${richText(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="Picture in the reported post">` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
   if (it.kind === 'comment') return `<div class="mq-target"><p class="small">${richText(t.body)}</p><div class="row wrap" style="gap:6px"><a class="small" href="#/post/${t.postId}/${it.id}">Open the comment</a>${hidden}</div></div>`;
   const a = it.author || {};
   return `<div class="mq-target"><p class="small">${a.bio ? richText(a.bio) : '<span class="muted">No bio.</span>'}</p><a class="small" href="#/u/${esc(a.username)}">Open the profile</a></div>`;
