@@ -28,6 +28,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -164,20 +165,35 @@ func (a *app) trustedProxy(ip net.IP) bool {
 	return false
 }
 
+// tenths is how the limiters count: a whole event is ten, so a request that was only partly the
+// visitor's doing (a username that turned out to be taken, a post the server turned down) can cost
+// a tenth of one.
+const tenths = 10
+
 type failCount struct {
-	n     int
+	n     int // in tenths of an event
 	reset time.Time
 }
 
+// aged is a counter with its key, in the queue that keeps counters in the order they were made.
+type aged struct {
+	key string
+	f   *failCount
+}
+
 // limiter counts events per key in a fixed window, under its own lock. It holds at most maxKeys
-// keys: when full it drops expired ones, and if it is still full a new key counts as over the
-// limit, so a flood of new keys cannot make it grow without bound.
+// keys: when full it drops the ones whose window has passed, and if it is still full it forgets
+// the oldest counter to make room. The cap bounds memory; it never refuses a visitor, so a flood
+// of new keys cannot stop everyone else from signing up or signing in.
 type limiter struct {
 	mu      sync.Mutex
 	n       int
 	window  time.Duration
 	maxKeys int
 	m       map[string]*failCount
+	// Every counter in the order it was made. The window is the same for all, so this is also the
+	// order they run out in, and the oldest is always at the front.
+	order []aged
 }
 
 func newLimiter(n int, window time.Duration) *limiter {
@@ -189,31 +205,59 @@ func (l *limiter) over(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	f := l.m[key]
-	return f != nil && time.Now().Before(f.reset) && f.n >= l.n
+	return f != nil && time.Now().Before(f.reset) && f.n >= l.n*tenths
 }
 
-// add counts one event for key and reports whether it is still within the limit.
-func (l *limiter) add(key string) bool {
+// add counts one event for key and reports whether there was room for it.
+func (l *limiter) add(key string) bool { return l.addWeight(key, tenths) }
+
+// addWeight counts w tenths of an event for key and reports whether there was room for it: whether
+// the count before it was under the limit. Whole events therefore stop at the limit exactly, and a
+// member whose count holds a few tenths from requests that were turned down still gets the last
+// whole one. A negative w gives part of an earlier count back.
+func (l *limiter) addWeight(key string, w int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
 	f := l.m[key]
 	if f == nil || now.After(f.reset) {
-		if f == nil && len(l.m) >= l.maxKeys {
-			for k, g := range l.m {
-				if now.After(g.reset) {
-					delete(l.m, k)
-				}
-			}
-			if len(l.m) >= l.maxKeys {
-				return false
-			}
+		if w <= 0 {
+			return true // nothing to give back in a window that has passed
 		}
+		l.makeRoom(now)
 		f = &failCount{reset: now.Add(l.window)}
 		l.m[key] = f
+		l.order = append(l.order, aged{key, f})
 	}
-	f.n++
-	return f.n <= l.n
+	if w > 0 && f.n >= l.n*tenths {
+		return false // full: nothing more to count until the window passes
+	}
+	f.n = max(f.n+w, 0)
+	return true
+}
+
+// forget drops the count for key, as after a correct password.
+func (l *limiter) forget(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.m, key)
+}
+
+// makeRoom drops the counters whose window has passed and then, while the limiter is still full,
+// the oldest one. The caller holds the lock.
+func (l *limiter) makeRoom(now time.Time) {
+	for len(l.order) > 0 {
+		o := l.order[0]
+		current := l.m[o.key] == o.f // not replaced by a later window, and not forgotten
+		if current && !now.After(o.f.reset) && len(l.m) < l.maxKeys {
+			return
+		}
+		if current {
+			delete(l.m, o.key)
+		}
+		l.order[0] = aged{}
+		l.order = l.order[1:]
+	}
 }
 
 // limits are the allowances: failed sign-ins (per address and username, per address, per account),
@@ -234,13 +278,94 @@ func newLimits() limits {
 	}
 }
 
-// allowed counts a write by u against l and answers 429 when the allowance is used up.
-func allowed(w http.ResponseWriter, l *limiter, u *user, what string) bool {
-	if l.add(strconv.FormatInt(u.ID, 10)) {
-		return true
+// allowed refuses a member who has used up the allowance l, with a 429. Otherwise it counts the
+// write and returns the writer the handler must answer through: when the handler turns the request
+// down (too long, not found, muted), nine tenths of the count are given back. A typo therefore
+// does not cost a post, and a flood of bad requests still runs out, ten times later.
+func allowed(w http.ResponseWriter, l *limiter, u *user, what string) (http.ResponseWriter, bool) {
+	key := strconv.FormatInt(u.ID, 10)
+	if !l.add(key) {
+		logRefusal("too many "+what, "by member "+key)
+		fail(w, http.StatusTooManyRequests, "That is more "+what+" than Flowa takes in an hour. Wait a while and try again.")
+		return w, false
 	}
-	fail(w, http.StatusTooManyRequests, "That is more "+what+" than Flowa takes in an hour. Wait a while and try again.")
-	return false
+	return &refunding{ResponseWriter: w, l: l, key: key}, true
+}
+
+// refunding gives most of a counted write back when the answer is an error.
+type refunding struct {
+	http.ResponseWriter
+	l    *limiter
+	key  string
+	done bool
+}
+
+func (r *refunding) WriteHeader(code int) {
+	if !r.done {
+		r.done = true
+		if code >= 400 {
+			r.l.addWeight(r.key, 1-tenths)
+		}
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *refunding) Write(b []byte) (int, error) {
+	r.done = true // a body without a status is a 200
+	return r.ResponseWriter.Write(b)
+}
+
+// refusals remembers what logRefusal wrote in the minute that began at since.
+var refusals = struct {
+	mu      sync.Mutex
+	since   time.Time
+	seen    map[string]bool
+	dropped int
+}{seen: map[string]bool{}}
+
+// maxRefusalLines is how many refusals are written to the log in one minute, whoever they are for.
+const maxRefusalLines = 120
+
+// logRefusal writes one line for a refused sign-in or a used-up allowance: what was refused and
+// for whom (an address, a /64 or a member's number; never a username or a password, because
+// people type passwords into the username box). A key gets one line a minute and all keys together
+// get maxRefusalLines, with the rest counted in one line, so a flood cannot fill the log.
+func logRefusal(what, who string) {
+	now := time.Now()
+	refusals.mu.Lock()
+	defer refusals.mu.Unlock()
+	if now.Sub(refusals.since) >= time.Minute {
+		if refusals.dropped > 0 {
+			log.Printf("refused: %d more in the minute from %s, not listed", refusals.dropped, refusals.since.UTC().Format("15:04:05 UTC"))
+		}
+		refusals.since, refusals.seen, refusals.dropped = now, map[string]bool{}, 0
+	}
+	line := what + " " + who
+	if refusals.seen[line] {
+		return
+	}
+	if len(refusals.seen) >= maxRefusalLines {
+		refusals.dropped++
+		return
+	}
+	refusals.seen[line] = true
+	log.Printf("refused: %s", line)
+}
+
+// limitKey is what the limits count an address by. An IPv4 address counts as itself. An IPv6
+// address counts as its /64, because one home or one phone is given a whole /64 and could
+// otherwise come from a new address for every request.
+func limitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.Unmap().WithZone("")
+	if addr.Is4() {
+		return addr.String()
+	}
+	p, _ := addr.Prefix(64)
+	return p.String()
 }
 
 type user struct {
@@ -400,13 +525,18 @@ func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	return true
 }
 
-func sameOrigin(r *http.Request) bool {
+// sameOrigin reports whether a write comes from Flowa's own pages: the Origin names this host, and
+// a request that arrived over HTTPS does not come from a plain HTTP page, which anyone on the
+// visitor's network could have written. The other way round is let through: an HTTPS page writing
+// to what looks like plain HTTP is what a proxy that ends TLS without saying so looks like, and
+// refusing it would lock everyone out.
+func (a *app) sameOrigin(r *http.Request) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {
 		return true
 	}
 	u, err := url.Parse(o)
-	return err == nil && u.Host == r.Host
+	return err == nil && u.Host == r.Host && (u.Scheme == "https" || !a.viaHTTPS(r))
 }
 
 // privateSuffixes are name endings that only resolve inside a home network or a private VPN.
@@ -456,10 +586,10 @@ func (a *app) secure(next http.Handler) http.Handler {
 }
 
 // guard refuses writes that a foreign page or a plain HTML form could send.
-func guard(next http.Handler) http.Handler {
+func (a *app) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if !sameOrigin(r) {
+			if !a.sameOrigin(r) {
 				fail(w, http.StatusForbidden, "Cross-origin write refused.")
 				return
 			}
@@ -657,8 +787,15 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, "New sign-ups are turned off. Ask the admin for an account.")
 		return
 	}
-	if !a.lim.signup.add(a.clientIP(r)) {
+	// Only what costs something is counted: a new account is one, a name that is taken is a tenth
+	// (it tells the visitor whether an account exists), and a form the server turns down is free.
+	from := limitKey(a.clientIP(r))
+	tooMany := func() {
+		logRefusal("too many new accounts", "from "+from)
 		fail(w, http.StatusTooManyRequests, "Too many new accounts from this address. Try again in an hour.")
+	}
+	if a.lim.signup.over(from) {
+		tooMany()
 		return
 	}
 	var in credentials
@@ -681,10 +818,26 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "Keep the display name under 40 characters.")
 		return
 	}
+	// Looked up before the password is hashed, so asking for a taken name costs no CPU.
+	var taken bool
+	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE username = $1)`, name).Scan(&taken); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if taken {
+		a.lim.signup.addWeight(from, 1)
+		fail(w, http.StatusConflict, "That username is taken.")
+		return
+	}
+	if !a.lim.signup.add(from) {
+		tooMany()
+		return
+	}
 	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) VALUES ($1, $2, $3) RETURNING `+userCols,
 		name, display, hashPassword(in.Password)))
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == "23505" {
+		a.lim.signup.addWeight(from, 1-tenths) // someone took the name in between: a tenth, as above
 		fail(w, http.StatusConflict, "That username is taken.")
 		return
 	}
@@ -751,14 +904,22 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.ToLower(strings.TrimSpace(in.Username))
-	ip := a.clientIP(r)
+	ip := limitKey(a.clientIP(r))
 	key := ip + "|" + name
-	// Failures are counted per address and username, per address (guessing across many accounts)
-	// and per account (guessing from many addresses).
-	if a.lim.signin.over(key) || a.lim.signinIP.over(ip) || a.lim.account.over(name) {
-		fail(w, http.StatusTooManyRequests, "Too many failed attempts. Wait ten minutes and try again.")
+	// Failures are counted per address and username, and per address (guessing across many
+	// accounts). Those two refuse before the password is looked at: they are per visitor, and
+	// they are what keeps guessing from using the CPU.
+	const wait = "Too many failed attempts. Wait ten minutes and try again."
+	if a.lim.signin.over(key) || a.lim.signinIP.over(ip) {
+		logRefusal("too many sign-in attempts", "from "+ip)
+		fail(w, http.StatusTooManyRequests, wait)
 		return
 	}
+	// Failures are also counted per account (guessing from many addresses). That count must not
+	// refuse the right password, or anyone could lock a member or the admin out by guessing at
+	// their name. So the password is still checked: the right one signs in, a wrong one is told to
+	// wait and learns nothing more.
+	locked := a.lim.account.over(name)
 	var hash string
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, u.pw_hash FROM users u WHERE u.username = $1`, name), &hash)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -770,10 +931,17 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !checkPassword(hash, in.Password) {
 		a.lim.signin.add(key)
 		a.lim.signinIP.add(ip)
+		if locked {
+			logRefusal("too many sign-in attempts on one account", "from "+ip)
+			fail(w, http.StatusTooManyRequests, wait)
+			return
+		}
 		a.lim.account.add(name)
+		logRefusal("wrong username or password", "from "+ip)
 		fail(w, http.StatusUnauthorized, "Wrong username or password.")
 		return
 	}
+	a.lim.account.forget(name)
 	if u.SuspendedUntil != nil {
 		msg := "Your account is suspended until " + u.SuspendedUntil.UTC().Format("2 January 2006, 15:04 UTC") + "."
 		if u.SuspendReason != "" {
@@ -939,6 +1107,7 @@ func (a *app) handlePassword(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	uid := strconv.FormatInt(u.ID, 10)
 	if a.lim.password.over(uid) {
+		logRefusal("too many wrong current passwords", "by member "+uid)
 		fail(w, http.StatusTooManyRequests, "Too many wrong passwords. Wait ten minutes and try again.")
 		return
 	}
@@ -3146,7 +3315,8 @@ func (a *app) handleTransitionLabels(w http.ResponseWriter, r *http.Request, u *
 	// Without consent only withdrawals are taken: a browser takes its marks back out after the
 	// profile has turned sharing off, so the change back to untested must still be accepted.
 	sharing := a.pref(u, "shareTransitions", false)
-	if !allowed(w, a.lim.marks, u, "suggestion updates") {
+	w, ok := allowed(w, a.lim.marks, u, "suggestion updates")
+	if !ok {
 		return
 	}
 	var in struct {
@@ -3241,7 +3411,8 @@ func (a *app) handleTransitionCounts(w http.ResponseWriter, r *http.Request, u *
 // handleSuggestUsage adds to this week's counts of suggestions shown, added to a combo, and later
 // marked Works. No user is recorded.
 func (a *app) handleSuggestUsage(w http.ResponseWriter, r *http.Request, u *user) {
-	if !allowed(w, a.lim.marks, u, "suggestion updates") {
+	w, ok := allowed(w, a.lim.marks, u, "suggestion updates")
+	if !ok {
 		return
 	}
 	var in struct {
@@ -3662,7 +3833,7 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /api/previews/{file}", a.authed("", a.handlePreviewImage))
 	mux.HandleFunc("GET /", a.handleStatic(assets))
-	return a.secure(guard(mux))
+	return a.secure(a.guard(mux))
 }
 
 // rootsPresent says whether there is anything to check a server's certificate against: the system's
@@ -4330,7 +4501,11 @@ var badgeKeys = map[string]bool{
 	"share-streak": true}
 
 func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user) {
-	if muted(w, u) || !allowed(w, a.lim.badges, u, "badge updates") {
+	if muted(w, u) {
+		return
+	}
+	w, ok := allowed(w, a.lim.badges, u, "badge updates")
+	if !ok {
 		return
 	}
 	var in struct {
@@ -4365,7 +4540,7 @@ func (a *app) handleAchievements(w http.ResponseWriter, r *http.Request, u *user
 		a.notify(u.ID, 0, "achievement", 0, got)
 	}
 	var postID int64
-	if len(fresh) > 0 && (in.Post == nil || *in.Post) && a.pref(u, "autoPost", true) {
+	if len(fresh) > 0 && (in.Post == nil || *in.Post) && a.pref(u, "autoPost", true) && a.flagsCached()["community"] {
 		data, _ := json.Marshal(map[string]any{"achievements": fresh})
 		prop := ""
 		for _, p := range knownProps {
@@ -4767,7 +4942,11 @@ func muted(w http.ResponseWriter, u *user) bool {
 }
 
 func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) {
-	if muted(w, u) || !allowed(w, a.lim.posts, u, "posts") {
+	if muted(w, u) {
+		return
+	}
+	w, ok := allowed(w, a.lim.posts, u, "posts")
+	if !ok {
 		return
 	}
 	var in struct {
@@ -4896,7 +5075,8 @@ func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, b
 }
 
 func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
-	if !allowed(w, a.lim.likes, u, "likes") {
+	w, ok := allowed(w, a.lim.likes, u, "likes")
+	if !ok {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -4974,7 +5154,8 @@ func (a *app) bookmarkRef(w http.ResponseWriter, u *user, kind, ref string) bool
 
 // handleBookmark adds the bookmark, or removes it when it is already there, and says which.
 func (a *app) handleBookmark(w http.ResponseWriter, r *http.Request, u *user) {
-	if !allowed(w, a.lim.bookmarks, u, "bookmarks") {
+	w, ok := allowed(w, a.lim.bookmarks, u, "bookmarks")
+	if !ok {
 		return
 	}
 	var in struct{ Kind, Ref string }
@@ -5244,7 +5425,11 @@ func startsWithMention(text, name string) bool {
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
-	if muted(w, u) || !allowed(w, a.lim.comments, u, "comments") {
+	if muted(w, u) {
+		return
+	}
+	w, ok := allowed(w, a.lim.comments, u, "comments")
+	if !ok {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -5462,7 +5647,8 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 
 // handleLikeComment toggles a like on a comment in one statement either way.
 func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user) {
-	if !allowed(w, a.lim.likes, u, "likes") {
+	w, ok := allowed(w, a.lim.likes, u, "likes")
+	if !ok {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -5503,24 +5689,29 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 }
 
 func (a *app) socialRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/users", a.authed("", a.handleUserList))
+	// The community flag turns the timeline off for the API too, not only in the menu, and the game
+	// flag does the same for badges. Pictures stay: the profile and the admin pages show them.
+	social := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+		return a.flagged("community", a.authed("", h))
+	}
+	mux.HandleFunc("GET /api/users", social(a.handleUserList))
 	mux.HandleFunc("GET /api/users/{id}/avatar", a.authed("", a.handleAvatar))
-	mux.HandleFunc("GET /api/users/{username}", a.authed("", a.handleUserProfile))
-	mux.HandleFunc("GET /api/posts", a.authed("", a.handleGetPosts))
-	mux.HandleFunc("POST /api/posts", a.authed("", a.handleCreatePost))
-	mux.HandleFunc("GET /api/posts/{id}", a.authed("", a.handleGetPost))
-	mux.HandleFunc("DELETE /api/posts/{id}", a.authed("", a.handleDeletePost))
-	mux.HandleFunc("POST /api/posts/{id}/like", a.authed("", a.handleLike))
+	mux.HandleFunc("GET /api/users/{username}", social(a.handleUserProfile))
+	mux.HandleFunc("GET /api/posts", social(a.handleGetPosts))
+	mux.HandleFunc("POST /api/posts", social(a.handleCreatePost))
+	mux.HandleFunc("GET /api/posts/{id}", social(a.handleGetPost))
+	mux.HandleFunc("DELETE /api/posts/{id}", social(a.handleDeletePost))
+	mux.HandleFunc("POST /api/posts/{id}/like", social(a.handleLike))
 	mux.HandleFunc("GET /api/bookmarks", a.flagged("bookmarks", a.authed("", a.handleBookmarks)))
 	mux.HandleFunc("POST /api/bookmarks", a.flagged("bookmarks", a.authed("", a.handleBookmark)))
-	mux.HandleFunc("POST /api/posts/{id}/comments", a.authed("", a.handleComment))
-	mux.HandleFunc("GET /api/posts/{id}/comments", a.authed("", a.handleGetComments))
-	mux.HandleFunc("DELETE /api/comments/{id}", a.authed("", a.handleDeleteComment))
-	mux.HandleFunc("PUT /api/comments/{id}", a.authed("", a.handleEditComment))
-	mux.HandleFunc("GET /api/comments/{id}/replies", a.authed("", a.handleGetReplies))
-	mux.HandleFunc("GET /api/comments/{id}/thread", a.authed("", a.handleThread))
-	mux.HandleFunc("POST /api/comments/{id}/like", a.authed("", a.handleLikeComment))
-	mux.HandleFunc("POST /api/achievements", a.authed("", a.handleAchievements))
-	mux.HandleFunc("GET /api/notifications", a.authed("", a.handleNotifications))
-	mux.HandleFunc("PUT /api/notifications/read", a.authed("", a.handleReadNotifications))
+	mux.HandleFunc("POST /api/posts/{id}/comments", social(a.handleComment))
+	mux.HandleFunc("GET /api/posts/{id}/comments", social(a.handleGetComments))
+	mux.HandleFunc("DELETE /api/comments/{id}", social(a.handleDeleteComment))
+	mux.HandleFunc("PUT /api/comments/{id}", social(a.handleEditComment))
+	mux.HandleFunc("GET /api/comments/{id}/replies", social(a.handleGetReplies))
+	mux.HandleFunc("GET /api/comments/{id}/thread", social(a.handleThread))
+	mux.HandleFunc("POST /api/comments/{id}/like", social(a.handleLikeComment))
+	mux.HandleFunc("POST /api/achievements", a.flagged("game", a.authed("", a.handleAchievements)))
+	mux.HandleFunc("GET /api/notifications", social(a.handleNotifications))
+	mux.HandleFunc("PUT /api/notifications/read", social(a.handleReadNotifications))
 }

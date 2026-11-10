@@ -58,9 +58,11 @@ services:
     cpus: "2"
     mem_limit: 384m
     pids_limit: 256
+    # Refused sign-ins and used-up allowances are logged (one line per address per minute), so the
+    # log keeps enough to look back over an incident: 5 files of 5 MB.
     logging:
       driver: json-file
-      options: { max-size: 1m, max-file: "2" }
+      options: { max-size: 5m, max-file: "5" }
 
 volumes:
   pgdata:

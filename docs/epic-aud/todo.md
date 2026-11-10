@@ -5,7 +5,7 @@ Category: fix. Size: M. Each item is one pull request or one commit of one, with
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 1 of 7 items done.
+**Status:** in progress (issue [#29](https://github.com/TuanSSM/flowtopia/issues/29)). 2 of 7 items done.
 
 The items, their causes, fixes and tests are in [audit-plan.md](../audit-plan.md); this list is the
 order and the DoD of each pull request. Nothing is added to a PR beyond its table.
@@ -15,9 +15,12 @@ order and the DoD of each pull request. Nothing is added to a PR beyond its tabl
   the start log shows `TLS roots: present`. Go has no supported way to count a pool, so the test
   proves trust in two named roots (Let's Encrypt, Google) where the plan asked for a count over 100.
   The card on stage needs a deploy, so it is checked under "The audit run again".
-- [ ] **PR 2, limits.** `fix(server): limits count attempts fairly and cannot lock people out`
+- [x] **PR 2, limits.** `fix(server): limits count attempts fairly and cannot lock people out`
   (UN-05, SEC-04, SEC-05, SEC-10, UN-06, MAP-03, SEC-16, SEC-15). DoD: the eight tests in the plan
-  pass; `TestDBFlagsGateAPI` shows `community` and `game` off give 404 on their routes.
+  pass; `TestDBFlagsGateAPI` shows `community` and `game` off give 404 on their routes. Three fixes
+  differ from the first plan, with the reasons in its table: a request the server turns down costs
+  a tenth of an allowance instead of nothing, the Origin check refuses an HTTP page writing to an
+  HTTPS site and not the reverse, and a member's picture stays reachable with `community` off.
 - [ ] **PR 3, nothing lost on the client.** `fix(ui): keep drafts and edits safe across sign-out,
   slow networks and devices` (UN-04, UN-01, UN-02, UN-03, UN-14, UN-07, UN-13, UN-09, UN-10, UN-11).
   DoD: `TestDBIdempotentPost` and `TestDBProfileRev` pass; the `social.py`, `combo.py` and

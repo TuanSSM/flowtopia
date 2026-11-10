@@ -91,7 +91,10 @@ loopback and Docker networks (`127.0.0.0/8`, `::1`, `172.16.0.0/12`), which cove
 host or in Docker. Set `FLOWA_TRUSTED_PROXIES` in `.env` (addresses or ranges, comma-separated) for any
 other setup: for example add Cloudflare's ranges when Cloudflare sits in front of your proxy, or `none`
 when visitors connect directly. The proxy must send `X-Forwarded-For` (Traefik, Caddy and Cloudflare do;
-in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
+in nginx, `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). A proxy that ends TLS should
+also send `X-Forwarded-Proto: https` (the same three do; in nginx,
+`proxy_set_header X-Forwarded-Proto $scheme;`): Flowa then marks its cookie Secure and refuses a write
+that an `http://` page tries to make to the HTTPS site.
 
 The admin dashboard shows the running version, from `VERSION` in the container's environment.
 `deploy.sh` sets it to `main.<short commit hash>` of the checkout it deploys (the Pi is the staging
@@ -122,6 +125,17 @@ Limits: at most two password hashes run at once; failed sign-ins are counted per
 (8 in 10 minutes), per address (30) and per account (20); 10 sign-ups per address per hour; 5 wrong
 current passwords per member in 10 minutes; and per member per hour, 30 posts, 120 comments, 600 likes,
 60 badge updates and 120 suggestion updates. A post or comment notifies at most 10 mentioned people.
+What is counted is what costs something. A sign-up form the server turns down is free and a taken name
+costs a tenth of a sign-up; a post, comment or like the server turns down costs a tenth of one that goes
+through. An IPv6 visitor is counted by their /64, which is what one home or phone gets, not by each of
+its addresses. An account with 20 wrong guesses against it is not locked: a wrong password is told to
+wait, the right one signs in and clears the count, so nobody can lock a member or an admin out by
+guessing. Each limiter remembers at most 20 000 visitors and forgets the oldest when full.
+
+Refusals are logged, one line per kind and visitor per minute and at most 120 lines a minute, such as
+`refused: too many sign-in attempts from 203.0.113.7` or `refused: too many posts by member 12`. A line
+never holds a username or a password. `docker logs nunchaku 2>&1 | grep refused:` shows them; the app
+keeps 5 log files of 5 MB.
 Pictures are decoded and encoded again on upload, which keeps only the pixels (no camera location),
 and other people's pictures are fetched by URL rather than carried in every list. Sessions end after
 30 days, or after 14 days unused; the profile can sign out every other device. The review behind these
@@ -131,7 +145,9 @@ is [docs/hardening-plan.md](docs/hardening-plan.md).
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
 on the Admin page. No restart is needed. Every flag is on by default; an admin turns off what gets in the
-way, and a flag an admin has set keeps that setting. `signups` opens or closes sign-up, `tour` runs the
+way, and a flag an admin has set keeps that setting. A flag that is off turns off the feature's API as
+well as its pages: with `community` off the timeline, comments, likes, people and notifications answer
+404, and with `game` off so do badges. `signups` opens or closes sign-up, `tour` runs the
 guided tour, `community` is the timeline, public profiles, people list and notifications, `game` is XP,
 levels, streak sharing, challenges, achievements and quests, `moderation` is reports, the queue, hiding,
 mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and

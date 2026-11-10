@@ -419,7 +419,7 @@ function openShare() {
         ${shareAvatarOK() ? `<div class="seg" role="group" aria-label="Avatar">${SHARE_AVATAR.map(([k, n]) => `<button class="${share.avatar === k ? 'on' : ''}" data-act="share-av" data-v="${k}" aria-pressed="${share.avatar === k}">${n}</button>`).join('')}</div>` : ''}
         <button class="btn primary" data-act="share-do" data-v="download">${icon('download')}Download PNG overlay</button>
         ${navigator.canShare ? `<button class="btn" data-act="share-do" data-v="share">${icon('share')}Share to an app…</button>` : ''}
-        <button class="btn" data-act="share-do" data-v="post">${icon('send')}Post to the Flowa timeline</button>
+        ${flags.community ? `<button class="btn" data-act="share-do" data-v="post">${icon('send')}Post to the Flowa timeline</button>` : ''}
         <div class="row wrap" style="gap:6px"><a class="btn sm" href="https://www.instagram.com/" target="_blank" rel="noopener noreferrer">${icon('instagram')}Open Instagram</a><a class="btn sm" href="https://www.tiktok.com/" target="_blank" rel="noopener noreferrer">${icon('tiktok')}Open TikTok</a><button class="btn sm" data-act="share-do" data-v="copy">Copy caption</button></div>
         <p class="tiny">${st.current}-day streak, best ${st.best}. The PNG has a transparent background: add it over your own photo or video as a sticker or image layer in the app you post from. Nothing leaves this page until you share or post it.</p>
       </div></div></div>`;
