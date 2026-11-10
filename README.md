@@ -70,6 +70,16 @@ visible control without a name or picture without an alternative (about 4,700 co
 pictures over 68 stops). It checks that a name exists, not that it is a good one, and it is no
 substitute for listening with a screen reader, which has not been done yet.
 
+Text, icons and the edges of fields stand out from what is behind them in both themes: 4.5:1 for text,
+3:1 for large text, icons, the edge of a field and the ring around a chosen option. `node test/contrast.js`
+reads this from `web/app.css` in lint, hover and focus included, and fails on a colour, a background or a
+fade it has not been told how to place. It reads plain rules and `@media` blocks: a rule inside
+`@supports` or `@layer`, a colour that a narrower `@media` block overrides, `color: inherit` on a
+coloured background and a state marked only by an outline or a side border are not seen by it yet.
+`test/browser/contrast.py` reads it from the computed styles of
+55 stops in each theme, about 20,000 pairs of colours. Neither judges what is drawn over a picture, a
+gradient or the demo canvas; the walk counts those as skipped.
+
 The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the guided tour (`tour/`) and the
 3D figure (`figure/`).
 
@@ -506,9 +516,9 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | --- | --- |
 | `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to `deploy.sh`, `build-image.sh`, `release_tag.yml` or the `Dockerfile` runs `lint` and the `release` suite, one to `backup.sh` or the drill `lint` and the `restore` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
-| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
+| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/contrast.js` (the page's colours in both themes: text at 4.5:1, icons and the edges of fields at 3:1); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, the same bytes when built twice; then `deploy.sh` pulls and starts one, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, the same bytes when built twice; then `deploy.sh` pulls and starts one, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |

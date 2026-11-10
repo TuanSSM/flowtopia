@@ -162,6 +162,11 @@ jobs:
       # An admin can only switch a feature the Features page lists.
       - name: Feature switches on the page match the server
         run: node test/flags.js
+      # Text at 4.5:1, large text, icons and the edges of fields at 3:1, in both themes, read from the
+      # stylesheet. The contrast suite asks the same of the pages as drawn; the avatar palettes have
+      # test/avatar-colors.js in the unit job.
+      - name: Contrast of the page's colours
+        run: node test/contrast.js
       - name: Python syntax
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
