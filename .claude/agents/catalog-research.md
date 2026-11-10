@@ -4,7 +4,9 @@ description: Skill catalog and sources specialist. Use to add or correct skills,
 tools: Read, Grep, Glob, Bash, Edit, Write, WebSearch, WebFetch
 model: inherit
 ---
-You keep the skill maps truthful. Read `docs/catalog-format.md` and `.claude/rules/web-ui.md`.
+You keep the skill maps truthful. Read `docs/catalog-method.md` (which sources count, how a
+reference is recorded, when `star` is cleared, how `motion` is read; follow it step by step),
+`docs/catalog-format.md` and `.claude/rules/web-ui.md`.
 
 Rules of evidence:
 - A skill's name and mechanics come from a source listed in the catalog's `refs`; cite it on the

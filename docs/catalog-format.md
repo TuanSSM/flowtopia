@@ -3,7 +3,9 @@
 One JSON file per prop, `web/catalog/<prop>.json`. Check it with `node test/catalog.js <file>`. The rules
 live in `web/catalog-check.js` (used by that script and by the skill map editor) and in `validateCatalog`
 in `main.go`; `test/catalog-fixtures` holds good and bad catalogs both must judge the same way
-(`node test/catalog-fixtures/check.js` and `go test`). The files seed the catalogs Flowa serves; after
+(`node test/catalog-fixtures/check.js` and `go test`). What may be written into a file, and on
+what evidence, is in [catalog-method.md](catalog-method.md): which sources count, how a reference
+is recorded, when `star` is cleared and how `motion` is read. The files seed the catalogs Flowa serves; after
 that, published revisions in Postgres are what people see.
 
 ```json
