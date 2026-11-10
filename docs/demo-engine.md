@@ -12,7 +12,7 @@ kind of clip means, what is checked, and what was tried and left out.
 | `sim/specs.js` | at build time | The list of skills that have a demo, with their notes. |
 | `sim/compose.js` | at build time | Puts the hands together into one scene: both hands, the body pose and every prop, 100 frames a second. |
 | `sim/check.js` | at build time | Measurements on a scene: overlaps, reach, speed, legs, balance, turn inside the hand. |
-| `sim/bake.js` | `./deploy.sh` | Writes `web/clips/<hash>.json` and `web/clips/index.json`. |
+| `sim/bake.js` | by hand after a change to `sim/`, and by `./deploy.sh --build` | Writes `web/clips/<hash>.json` and `web/clips/index.json`. |
 | `web/demo.js` | in the browser | The player: the jointed figure, the props, labels, views, GIF export. No physics. |
 | `test/physics.js`, `test/expect.js` | `node test/physics.js` | Every clip against its physics, its definition, and the body. |
 
