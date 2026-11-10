@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -381,5 +382,185 @@ func TestProbeURL(t *testing.T) {
 		if got := probeURL(listen); got != want {
 			t.Errorf("probeURL(%q) = %q, want %q", listen, got, want)
 		}
+	}
+}
+
+// logLines sends requests through h and returns what the request log wrote for them, one decoded line each.
+func logLines(t *testing.T, a *app, h http.Handler, reqs ...*http.Request) []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	a.reqLog.mu.Lock()
+	a.reqLog.out = &buf
+	a.reqLog.mu.Unlock()
+	for _, r := range reqs {
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	var out []map[string]any
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if l == "" {
+			continue
+		}
+		m := map[string]any{}
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatalf("a request log line is not JSON: %q", l)
+		}
+		m["_raw"] = l
+		out = append(out, m)
+	}
+	return out
+}
+
+// TestRequestLog: one line per request with the method, the route's pattern, the status, the time taken
+// and the bytes answered, plus what was refused when a limit said no. Never a path, a query or a body.
+func TestRequestLog(t *testing.T) {
+	db, err := sql.Open("postgres", "postgres://x:x@127.0.0.1:1/x?sslmode=disable&connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := newApp(db, t.TempDir())
+	a.hosts = []string{"example.com"}
+	h := a.routes(map[string]asset{"/app.js": {body: []byte("let x=1"), ctype: "text/javascript", etag: `"e"`}})
+	req := func(method, path, body string, hdr map[string]string) *http.Request {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.RemoteAddr = "203.0.113.9:5000"
+		for k, v := range hdr {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+	one := func(what string, r *http.Request) map[string]any {
+		t.Helper()
+		lines := logLines(t, a, h, r)
+		if len(lines) != 1 {
+			t.Fatalf("%s: %d lines, want 1: %v", what, len(lines), lines)
+		}
+		return lines[0]
+	}
+	is := func(what string, l map[string]any, method, route string, status int) {
+		t.Helper()
+		if l["method"] != method || l["route"] != route || l["status"] != float64(status) {
+			t.Fatalf("%s: got %s, want method %s, route %q, status %d", what, l["_raw"], method, route, status)
+		}
+		if ms, ok := l["ms"].(float64); !ok || ms < 0 || ms > 5000 {
+			t.Fatalf("%s: the time taken is %v", what, l["ms"])
+		}
+		if _, err := time.Parse("2006-01-02T15:04:05.000Z", fmt.Sprint(l["time"])); err != nil {
+			t.Fatalf("%s: the time is %v", what, l["time"])
+		}
+	}
+
+	// The fields, on a request that fails: the database is down, so /healthz answers 503.
+	l := one("a failed probe", req("GET", "/healthz", "", nil))
+	is("a failed probe", l, "GET", "/healthz", 503)
+	if l["bytes"] != float64(len("{\"ok\":false}\n")) {
+		t.Fatalf("a failed probe: bytes %v, want the length of the answer", l["bytes"])
+	}
+	if _, has := l["refused"]; has {
+		t.Fatalf("a request no limit refused says refused: %s", l["_raw"])
+	}
+
+	// The pattern, never the path: no name, no id, no query string, no body.
+	l = one("a route with a name in it", req("GET", "/api/previews/secret-name.jpg?token=hunter2", "", nil))
+	is("a route with a name in it", l, "GET", "/api/previews/{file}", 401)
+	l = one("a cross-origin write", req("POST", "/api/signin", `{"username":"sandy","password":"hunter2"}`,
+		map[string]string{"Origin": "https://attacker.example", "Content-Type": "application/json"}))
+	is("a cross-origin write", l, "POST", "/api/signin", 403)
+	for _, secret := range []string{"secret-name", "hunter2", "sandy", "attacker", "203.0.113.9"} {
+		for _, r := range []*http.Request{
+			req("GET", "/api/previews/secret-name.jpg?token=hunter2", "", map[string]string{"Cookie": "flowa=hunter2", "User-Agent": "attacker"}),
+			req("POST", "/api/signin?next=secret-name", `{"username":"sandy","password":"hunter2"}`, map[string]string{"Origin": "https://attacker.example"}),
+			req("GET", "/secret-name/hunter2", "", nil),
+		} {
+			if l := one("a request with things to keep out of the log", r); strings.Contains(fmt.Sprint(l["_raw"]), secret) {
+				t.Fatalf("the log line carries %q: %s", secret, l["_raw"])
+			}
+		}
+	}
+
+	// A request turned away before the routes are reached still says where it was going.
+	r := req("GET", "/api/me", "", nil)
+	r.Host = "flowa.attacker.example"
+	is("a foreign Host", one("a foreign Host", r), "GET", "/api/me", 421)
+	// A method no route uses is a word the visitor chose: it is not written out.
+	l = one("an invented method", req("BREW", "/api/me", "", nil))
+	if l["method"] != "other" || l["route"] != "" || strings.Contains(fmt.Sprint(l["_raw"]), "BREW") {
+		t.Fatalf("an invented method: got %s, want method other and no route", l["_raw"])
+	}
+	is("HEAD on a GET route", one("HEAD on a GET route", req("HEAD", "/api/previews/x.jpg", "", nil)), "HEAD", "/api/previews/{file}", 401)
+
+	// A refusal names itself on the request's line. Thirty failed sign-ins from one address use up its allowance.
+	for i := 0; i < 30; i++ {
+		a.lim.signinIP.add("203.0.113.9")
+	}
+	l = one("a refused sign-in", req("POST", "/api/signin", `{"username":"sandy","password":"x"}`, map[string]string{"Content-Type": "application/json"}))
+	is("a refused sign-in", l, "POST", "/api/signin", 429)
+	if l["refused"] != "too many sign-in attempts from 203.0.113.9" {
+		t.Fatalf("a refused sign-in: refused is %v", l["refused"])
+	}
+
+	// Lines that say nothing are left out: a page file served, and a file not changed.
+	if lines := logLines(t, a, h, req("GET", "/app.js", "", nil), req("GET", "/app.js", "", map[string]string{"If-None-Match": `"e"`})); len(lines) != 0 {
+		t.Fatalf("page files served without an error were logged: %v", lines)
+	}
+	is("a page file that is not there", one("a page file that is not there", req("GET", "/nothing.js", "", nil)), "GET", "/", 404)
+
+	// A minute's lines run out; what came after is counted, and the count is written when the next minute begins.
+	a.reqLog.mu.Lock()
+	a.reqLog.since, a.reqLog.n, a.reqLog.dropped = time.Now(), maxRequestLines-1, 0
+	a.reqLog.mu.Unlock()
+	if lines := logLines(t, a, h, req("GET", "/nothing.js", "", nil), req("GET", "/nothing.js", "", nil), req("GET", "/nothing.js", "", nil)); len(lines) != 1 {
+		t.Fatalf("with one line left in the minute, three requests wrote %d lines, want 1", len(lines))
+	}
+	a.reqLog.mu.Lock()
+	a.reqLog.since = a.reqLog.since.Add(-2 * time.Minute)
+	a.reqLog.mu.Unlock()
+	lines := logLines(t, a, h, req("GET", "/nothing.js", "", nil))
+	if len(lines) != 2 || lines[0]["unlisted"] != float64(2) || lines[0]["since"] == nil || lines[1]["route"] != "/" {
+		t.Fatalf("after a full minute: got %v, want a line counting 2 unlisted requests and then the request's own", lines)
+	}
+}
+
+// TestRequestLogHandlers covers what a handler can do that the routes of TestRequestLog do not: write
+// nothing, panic, and refuse through a writer that is wrapped.
+func TestRequestLogHandlers(t *testing.T) {
+	a := newApp(nil, t.TempDir())
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /quiet/{id}", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) { panic("boom") })
+	mux.HandleFunc("GET /late", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte("12345"))
+		w.WriteHeader(http.StatusTeapot) // a second status is not the one that was sent
+		w.Write([]byte("678"))
+	})
+	mux.HandleFunc("POST /wrapped", func(w http.ResponseWriter, _ *http.Request) {
+		rw := &refunding{ResponseWriter: w, l: a.lim.posts, key: "7"}
+		logRefusal(rw, "too many test posts", "by member 7")
+		fail(rw, http.StatusTooManyRequests, "no")
+	})
+	h := a.logged(mux, mux)
+	get := func(method, path string) map[string]any {
+		t.Helper()
+		lines := logLines(t, a, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() { recover() }() // net/http does this for a real connection
+			h.ServeHTTP(w, r)
+		}), httptest.NewRequest(method, path, nil))
+		if len(lines) != 1 {
+			t.Fatalf("%s %s: %d lines, want 1", method, path, len(lines))
+		}
+		return lines[0]
+	}
+	if l := get("GET", "/quiet/42"); l["status"] != float64(200) || l["bytes"] != float64(0) || l["route"] != "/quiet/{id}" {
+		t.Fatalf("a handler that writes nothing: %s", l["_raw"])
+	}
+	if l := get("GET", "/boom"); l["status"] != float64(500) || l["route"] != "/boom" {
+		t.Fatalf("a handler that panics: %s", l["_raw"])
+	}
+	if l := get("GET", "/late"); l["status"] != float64(202) || l["bytes"] != float64(8) {
+		t.Fatalf("a handler that sets the status twice: %s", l["_raw"])
+	}
+	if l := get("POST", "/wrapped"); l["status"] != float64(429) || l["refused"] != "too many test posts by member 7" {
+		t.Fatalf("a refusal through a wrapped writer: %s", l["_raw"])
 	}
 }

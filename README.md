@@ -172,8 +172,24 @@ guessing. Each limiter remembers at most 20 000 visitors and forgets the oldest 
 
 Refusals are logged, one line per kind and visitor per minute and at most 120 lines a minute, such as
 `refused: too many sign-in attempts from 203.0.113.7` or `refused: too many posts by member 12`. A line
-never holds a username or a password. `docker logs nunchaku 2>&1 | grep refused:` shows them; the app
-keeps 5 log files of 5 MB.
+never holds a username or a password. `docker logs nunchaku 2>&1 | grep refused:` shows them.
+
+Every request also gets one line of JSON in the same log, with the method, the route, the status, the
+time it took and the bytes answered:
+
+```
+{"time":"2026-11-10T19:05:24.123Z","method":"POST","route":"/api/posts/{id}/comments","status":200,"ms":12.4,"bytes":310}
+```
+
+The route is the pattern the request matched, never the address asked for, so a line holds no id, no
+name and no query string, and no visitor's address or member either. The one exception is a request a
+limit or the sign-in refused: its line also carries `refused` with the same words as the refusal line
+above. Two kinds of request are left out because their lines would say nothing: a `/healthz` probe
+answered 200 (Docker sends one every half minute) and a page file served without an error. At most 240
+request lines are written in a minute; what came after is counted in one line
+(`{"time":...,"unlisted":1234,"since":...}`). `docker logs nunchaku 2>&1 | grep '^{' | jq 'select(.status >= 500)'`
+shows the requests that failed. The app keeps 10 log files of 10 MB, which is a day of the most both
+kinds of line can write, and months of ordinary use.
 Pictures are decoded and encoded again on upload, which keeps only the pixels (no camera location),
 and other people's pictures are fetched by URL rather than carried in every list. Sessions end after
 30 days, or after 14 days unused; the profile can sign out every other device. The review behind these

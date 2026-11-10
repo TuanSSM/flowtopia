@@ -5,7 +5,7 @@ Category: improvement. Size: M. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 1 of 7 items done.
+**Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 2 of 7 items done.
 
 - [x] **Health.** `GET /healthz`: schema version, whether TLS roots are present, database reachable,
   `VERSION`. DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
@@ -13,8 +13,13 @@ Commits title of the category's type. An item is checked only when its DoD holds
   for visitors); `TestHealthz`, `TestDBHealthz`, `TestProbeURL`; `deploy.sh` waits on
   `docker exec nunchaku /nunchaku -healthcheck`. The number of TLS roots is not something Go reports, so
   the answer says whether there are any.
-- [ ] **Structured request log.** One line per request: method, route, status, duration, bytes,
+- [x] **Structured request log.** One line per request: method, route, status, duration, bytes,
   the limit key when refused. DoD: `TestRequestLog`; the log cap in `compose.yml` reviewed.
+  Done: one line of JSON with the route's pattern, never the path; `TestRequestLog`,
+  `TestRequestLogHandlers`, `TestDBRequestLog`. Healthy `/healthz` probes and page files served without
+  an error get no line, and a minute holds at most 240 lines with the rest counted. The log cap went
+  from 5 files of 5 MB to 10 of 10 MB: a day of the most the request lines and the refusal lines can
+  write together.
 - [ ] **Loopback by default.** The app publishes on `127.0.0.1:3169` unless `FLOWA_BIND` says
   otherwise; the README says why. DoD: a fresh `compose up` is reachable from the host only.
 - [ ] **Reverse proxy recipe.** A `proxy` profile in `compose.yml` with Caddy, automatic

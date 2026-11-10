@@ -25,6 +25,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -119,15 +120,16 @@ type app struct {
 	version   string       // what VERSION says this build is (main.<commit> on the Pi, a release tag in production); "dev" if unset
 	flagCache map[string]bool
 	flagsAt   time.Time
-	sent      *onceStore // posts and comments that named themselves, so a repeat is not a second one
-	healthMu  sync.Mutex // guards healthAt and healthWas
-	healthAt  time.Time  // when the database was last asked for GET /healthz
-	healthWas health     // what it said then
+	sent      *onceStore  // posts and comments that named themselves, so a repeat is not a second one
+	reqLog    *requestLog // one line per request; see logged
+	healthMu  sync.Mutex  // guards healthAt and healthWas
+	healthAt  time.Time   // when the database was last asked for GET /healthz
+	healthWas health      // what it said then
 }
 
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: "dev", sent: &onceStore{m: map[string]*onceEntry{}}}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: "dev", sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard}}
 }
 
 // A post or a comment can name itself with an Idempotency-Key header: a random key the page makes
@@ -406,7 +408,7 @@ func newLimits() limits {
 func allowed(w http.ResponseWriter, l *limiter, u *user, what string) (http.ResponseWriter, bool) {
 	key := strconv.FormatInt(u.ID, 10)
 	if !l.add(key) {
-		logRefusal("too many "+what, "by member "+key)
+		logRefusal(w, "too many "+what, "by member "+key)
 		fail(w, http.StatusTooManyRequests, "That is more "+what+" than Flowa takes in an hour. Wait a while and try again.")
 		return w, false
 	}
@@ -436,6 +438,9 @@ func (r *refunding) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
+// Unwrap gives the writer underneath, for http.ResponseController and for noteRefusal.
+func (r *refunding) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 // refusals remembers what logRefusal wrote in the minute that began at since.
 var refusals = struct {
 	mu      sync.Mutex
@@ -450,8 +455,10 @@ const maxRefusalLines = 120
 // logRefusal writes one line for a refused sign-in or a used-up allowance: what was refused and
 // for whom (an address, a /64 or a member's number; never a username or a password, because
 // people type passwords into the username box). A key gets one line a minute and all keys together
-// get maxRefusalLines, with the rest counted in one line, so a flood cannot fill the log.
-func logRefusal(what, who string) {
+// get maxRefusalLines, with the rest counted in one line, so a flood cannot fill the log. The request's
+// own line in the request log names the refusal too, whether or not it got a line here.
+func logRefusal(w http.ResponseWriter, what, who string) {
+	noteRefusal(w, what+" "+who)
 	now := time.Now()
 	refusals.mu.Lock()
 	defer refusals.mu.Unlock()
@@ -969,7 +976,7 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// (it tells the visitor whether an account exists), and a form the server turns down is free.
 	from := limitKey(a.clientIP(r))
 	tooMany := func() {
-		logRefusal("too many new accounts", "from "+from)
+		logRefusal(w, "too many new accounts", "from "+from)
 		fail(w, http.StatusTooManyRequests, "Too many new accounts from this address. Try again in an hour.")
 	}
 	if a.lim.signup.over(from) {
@@ -1089,7 +1096,7 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	// they are what keeps guessing from using the CPU.
 	const wait = "Too many failed attempts. Wait ten minutes and try again."
 	if a.lim.signin.over(key) || a.lim.signinIP.over(ip) {
-		logRefusal("too many sign-in attempts", "from "+ip)
+		logRefusal(w, "too many sign-in attempts", "from "+ip)
 		fail(w, http.StatusTooManyRequests, wait)
 		return
 	}
@@ -1110,12 +1117,12 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 		a.lim.signin.add(key)
 		a.lim.signinIP.add(ip)
 		if locked {
-			logRefusal("too many sign-in attempts on one account", "from "+ip)
+			logRefusal(w, "too many sign-in attempts on one account", "from "+ip)
 			fail(w, http.StatusTooManyRequests, wait)
 			return
 		}
 		a.lim.account.add(name)
-		logRefusal("wrong username or password", "from "+ip)
+		logRefusal(w, "wrong username or password", "from "+ip)
 		fail(w, http.StatusUnauthorized, "Wrong username or password.")
 		return
 	}
@@ -1352,7 +1359,7 @@ func (a *app) handlePassword(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	uid := strconv.FormatInt(u.ID, 10)
 	if a.lim.password.over(uid) {
-		logRefusal("too many wrong current passwords", "by member "+uid)
+		logRefusal(w, "too many wrong current passwords", "by member "+uid)
 		fail(w, http.StatusTooManyRequests, "Too many wrong passwords. Wait ten minutes and try again.")
 		return
 	}
@@ -4207,7 +4214,151 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /api/previews/{file}", a.authed("", a.handlePreviewImage))
 	mux.HandleFunc("GET /", a.handleStatic(assets))
-	return a.secure(a.guard(mux))
+	return a.logged(mux, a.secure(a.guard(mux)))
+}
+
+/* ---------- request log ----------
+
+One line of JSON per request, on the same stream as the rest of the log:
+
+	{"time":"2026-11-10T19:05:24.123Z","method":"POST","route":"/api/posts/{id}/comments","status":201,"ms":12.4,"bytes":310}
+
+The route is the pattern the request matched, never the path, so no id, name or query string is
+written; there is no address and no member either. A request that was refused by a limit or at
+sign-in also carries "refused" with what logRefusal says about it, which is the one place an address
+or a member's number appears. Two kinds of request are left out because their lines say nothing: a
+/healthz probe answered 200 (Docker sends one every half minute) and a page file served without an
+error. All lines together get maxRequestLines a minute, with the rest counted in one line
+({"time":...,"unlisted":1234,"since":...}), so a flood cannot push the lines of an incident out of
+the log: compose.yml sizes the log to hold a full day of the most both logs can write. */
+
+// maxRequestLines is how many request lines are written in one minute.
+const maxRequestLines = 240
+
+// requestLog writes the request lines and keeps count of the minute that began at since.
+type requestLog struct {
+	mu      sync.Mutex
+	out     io.Writer
+	since   time.Time
+	n       int // lines written in this minute
+	dropped int // requests in this minute that got no line
+}
+
+// requestLine is one request in the log.
+type requestLine struct {
+	Time    string  `json:"time"`   // when the answer was finished, UTC
+	Method  string  `json:"method"` // "other" for a method no route uses
+	Route   string  `json:"route"`  // the pattern matched, "" when none was
+	Status  int     `json:"status"`
+	Ms      float64 `json:"ms"`                // from the request's headers read to the answer finished
+	Bytes   int64   `json:"bytes"`             // of the answer's body
+	Refused string  `json:"refused,omitempty"` // what was refused and for whom, when a limit or the sign-in did
+}
+
+// write puts one line in the log, or counts it when this minute's lines are used up.
+func (l *requestLog) write(now time.Time, line requestLine) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Sub(l.since) >= time.Minute {
+		if l.dropped > 0 {
+			b, _ := json.Marshal(map[string]any{"time": stampMs(now), "unlisted": l.dropped, "since": stampMs(l.since)})
+			l.out.Write(append(b, '\n'))
+		}
+		l.since, l.n, l.dropped = now, 0, 0
+	}
+	if l.n >= maxRequestLines {
+		l.dropped++
+		return
+	}
+	l.n++
+	b, _ := json.Marshal(line)
+	l.out.Write(append(b, '\n'))
+}
+
+// stampMs is a time as the request log writes it.
+func stampMs(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
+
+// counted is the writer a request is answered through, so its line can say how it went.
+type counted struct {
+	http.ResponseWriter
+	status  int
+	bytes   int64
+	refused string
+}
+
+func (c *counted) WriteHeader(code int) {
+	if c.status == 0 {
+		c.status = code
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *counted) Write(b []byte) (int, error) {
+	if c.status == 0 {
+		c.status = http.StatusOK // a body without a status is a 200
+	}
+	n, err := c.ResponseWriter.Write(b)
+	c.bytes += int64(n)
+	return n, err
+}
+
+// Unwrap gives the writer underneath, for http.ResponseController.
+func (c *counted) Unwrap() http.ResponseWriter { return c.ResponseWriter }
+
+// noteRefusal puts what was refused on the request's line. w is the writer the handler answers through,
+// which may be wrapped (refunding).
+func noteRefusal(w http.ResponseWriter, what string) {
+	for w != nil {
+		if c, ok := w.(*counted); ok {
+			c.refused = what
+			return
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return
+		}
+		w = u.Unwrap()
+	}
+}
+
+// logMethods are the methods written as they are. Anything else is a word the visitor chose, and it
+// is written as "other".
+var logMethods = map[string]bool{"GET": true, "HEAD": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true, "OPTIONS": true}
+
+// logged writes the request's line once it is answered. The route is looked up here and not read
+// from what the mux leaves behind, so a request turned away before the mux (a foreign Host, a
+// cross-origin write) still says where it was going.
+func (a *app) logged(mux *http.ServeMux, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		_, pattern := mux.Handler(r)
+		route := pattern
+		if i := strings.IndexByte(route, ' '); i >= 0 {
+			route = route[i+1:] // "GET /api/me": the method has its own field
+		}
+		c := &counted{ResponseWriter: w}
+		returned := false
+		defer func() {
+			if c.status == 0 {
+				c.status = http.StatusOK // nothing written is an empty 200
+				if !returned {
+					c.status = http.StatusInternalServerError // the handler panicked; the server drops the connection
+				}
+			}
+			quiet := c.status < 400 && (route == "/" || (route == "/healthz" && c.status == http.StatusOK))
+			if !quiet {
+				method := r.Method
+				if !logMethods[method] {
+					method = "other"
+				}
+				now := time.Now()
+				a.reqLog.write(now, requestLine{Time: stampMs(now), Method: method, Route: route, Status: c.status,
+					Ms: math.Round(float64(now.Sub(start).Microseconds())/100) / 10, Bytes: c.bytes, Refused: c.refused})
+			}
+		}()
+		next.ServeHTTP(c, r)
+		returned = true
+	})
 }
 
 // health is what GET /healthz says about the running instance.
@@ -4385,6 +4536,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	a.reqLog.out = log.Writer()
 	srv := &http.Server{Addr: *listen, Handler: a.routes(assets), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
