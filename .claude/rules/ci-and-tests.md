@@ -40,7 +40,10 @@ paths:
   not happen (a tour that must not open), or sampling a picture that should be moving or still. It
   carries `# fixed: <why>` on the same line. `test/sleeps.sh` in the lint job fails on a sleep without
   one; run it before pushing a change to a suite.
-- A test prints `PASS`, `FAIL` or `SKIP` per check and `FAILURES:` at the end; `run.sh` exits
+- A test prints `PASS`, `FAIL` or `SKIP` per check, then `TIME <seconds> <name>` per check with the
+  slowest first, and `FAILURES:` at the end. A check's time runs from the check before it, so the steps
+  that led to it are counted in. `run.sh` shows the slowest five; `test/slowest.sh` makes the table of
+  the five slowest across all suites for the PR comment. `run.sh` exits
   non-zero on a failure and counts skips. A check that cannot run in an environment is skipped
   with a reason, never passed.
 - Screenshots: `pages.py` writes the pages and a demo sheet plus `index.json`; the job pushes

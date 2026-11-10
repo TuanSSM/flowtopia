@@ -32,10 +32,10 @@ plan() {
     docs_only=false
     case "$f" in
       .github/workflows/process_pr.yml|test/ci-plan.sh) everything ;;
-      # Release, deploy and container files, and the checks lint runs on the docs and on the browser
-      # tests' sleeps: their checks are in lint (actionlint, the git-cliff preview, shellcheck, the
-      # sleep check's own self-test); nothing the tests run reads them.
-      .github/*|cliff.toml|deploy.sh|backup.sh|compose.yml|Dockerfile|test/docs.sh|test/sleeps.sh) lint=true ;;
+      # Release, deploy and container files, the checks lint runs on the docs and on the browser tests'
+      # sleeps, and the table of slowest checks for the PR comment: their checks are in lint (actionlint,
+      # the git-cliff preview, shellcheck, the scripts' own self-tests); nothing the tests run reads them.
+      .github/*|cliff.toml|deploy.sh|backup.sh|compose.yml|Dockerfile|test/docs.sh|test/sleeps.sh|test/slowest.sh) lint=true ;;
       # Go tests only: the unit job runs them, and the db suite the ones that need Postgres.
       *_test.go) lint=true; unit=true; suites db ;;
       *.go|go.mod|go.sum) everything ;;
@@ -77,7 +77,7 @@ self_test() {
   expect ".github/workflows/process_pr.yml" "code=true lint=true unit=true screenshots=true suites=$all"
   expect ".github/workflows/release_tag.yml,cliff.toml,CLAUDE.md" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "deploy.sh,backup.sh,compose.yml" 'code=true lint=true unit=false screenshots=false suites=[]'
-  expect "test/sleeps.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
+  expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "test/physics.js,test/catalog-fixtures/bad-cycle.json" 'code=true lint=true unit=true screenshots=false suites=[]'
   expect "figure/src/body.js" 'code=true lint=true unit=true screenshots=false suites=[]'

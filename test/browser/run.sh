@@ -25,5 +25,7 @@ for i in $(seq 1 30); do curl -fsS -m 2 http://127.0.0.1:3170/healthz >/dev/null
 timeout "${LIMIT:-500}" python3 -I "$@" > $W/out.txt 2>&1; code=$?
 kill "$(cat $W/dev.pid)" 2>/dev/null
 echo "$(grep -c '^PASS' $W/out.txt) passed, $(grep -c '^FAIL ' $W/out.txt) failed, $(grep -c '^SKIP ' $W/out.txt) skipped"
-grep -E '^FAIL|Error|Traceback|FAILURES' -A2 $W/out.txt | cut -c1-300 | head -40
+grep -v '^TIME ' $W/out.txt | grep -E '^FAIL|Error|Traceback|FAILURES' -A2 | cut -c1-300 | head -40
+# The slowest checks, in seconds: each one's time runs from the check before it.
+grep '^TIME ' $W/out.txt | head -5 | sed 's/^TIME /slow: /' | cut -c1-120
 [ $code -eq 0 ] && grep -q '^FAILURES: none' $W/out.txt
