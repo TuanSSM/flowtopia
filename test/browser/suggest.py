@@ -1,5 +1,6 @@
 # Next-trick suggestions in the combo builder: the list and its reasons, adding one, "Not a good fit",
-# sharing marks with consent and taking them back, and the usage counts on the dashboard.
+# sharing marks with consent and taking them back, the usage counts on the dashboard, and the "early"
+# label, which is there with the starting weights and gone with fitted ones.
 import sys,os
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from h import *
@@ -47,6 +48,14 @@ try:
     js("ntFlushUsage()");idle()
     nav('#/admin/dashboard');wait_for("return document.querySelectorAll('.stat').length>=6",'the dashboard to show its numbers',20)
     check('the dashboard shows how many suggestions were added and later worked','Suggestions added to a combo' in txt('main') and 'later marked Works' in txt('main'))
+    # The label follows the weights file. The page is given weights that were fitted and measured, as a
+    # passing gate commits them (test/suggest-gate.js), and the list no longer calls itself early.
+    load(BASE+'?fitted=1#/')
+    js("""const f=window.fetch;window.fetch=function(u,...a){return String(u).endsWith('suggest-weights.json')
+      ?f.call(window,u,...a).then(r=>r.json()).then(w=>new Response(JSON.stringify(Object.assign(w,{early:false,pairs:42,auc:0.81,baseline:0.62})),{headers:{'Content-Type':'application/json'}}))
+      :f.call(window,u,...a)}""")
+    nav('#/combos');listed()
+    check('with weights that were fitted and measured, the list is there and no longer says it is early',len(items())>=1 and not js("return !!document.querySelector('.nt-early')") and 'Early suggestions' not in txt('.nt'),txt('.nt')[:160])
     # Off: no list.
     api(op,'flags',{'flags':{'suggest':False}},'PUT');load(BASE+'?off=1#/combos')
     check('with the flag off there is no list',not js("return !!document.querySelector('.nt')"))

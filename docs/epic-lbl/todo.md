@@ -5,7 +5,7 @@ Category: feature. Size: S. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#39](https://github.com/TuanSSM/flowtopia/issues/39)). 1 of 4 items done.
+**Status:** in progress (issue [#39](https://github.com/TuanSSM/flowtopia/issues/39)). 2 of 4 items done.
 
 - [ ] **The prompt.** After a combo run is logged, for each transition the member has not marked:
   "How did <a> into <b> go?" Works, Needs a bridge, Blocked, Skip; once per transition; only with
@@ -24,5 +24,12 @@ Commits title of the category's type. An item is checked only when its DoD holds
 - [ ] **The fit by workflow.** `fit_suggest.yml`, run by hand with an instance URL and a read token
   in a secret: fetches `GET /api/suggest/counts`, runs `sim/fit-suggest.js --write`, opens a PR with
   the AUC and the baseline in the body. DoD: run once on stage data.
-- [ ] **The label goes.** When `test/suggest-gate.js` sees fitted weights that pass, the "early"
+- [x] **The label goes.** When `test/suggest-gate.js` sees fitted weights that pass, the "early"
   label is removed from the builder. DoD: the browser check for the label flips with the weights.
+  Done: the builder already took the label from `web/suggest-weights.json` (`early`), and
+  `test/suggest-gate.js` already refuses a file that is fitted and still says early, or early and
+  not the starting weights. What was missing was the check on the page. `suggest.py` now has both
+  halves: with the committed weights the list says "Early suggestions", and when the page is given
+  weights that were fitted and measured (the same file with `early` false, as the fit writes it)
+  the list is there without the label. Nothing in the page changed. The label itself goes on the
+  day the fit's pull request merges, which is the next item.
