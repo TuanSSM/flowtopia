@@ -3,8 +3,11 @@ import json,socket,subprocess,tempfile,time,base64,urllib.request,http.cookiejar
 BASE='http://127.0.0.1:3170/'
 prof=tempfile.mkdtemp(dir=os.environ.get('RUNNER_TEMP'))  # a snap Firefox (CI) cannot read /tmp
 open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui.systemUsesDarkTheme",1);user_pref("signon.rememberSignons",false);user_pref("webgl.force-enabled",true);user_pref("webgl.disable-fail-if-major-performance-caveat",true);\n')
+# FLOWA_POINTER=coarse makes Firefox report a touch screen (pointer: coarse, no hover), as a phone does.
+COARSE=os.environ.get('FLOWA_POINTER')=='coarse'
+if COARSE: open(prof+'/user.js','a').write('user_pref("ui.primaryPointerCapabilities",1);user_pref("ui.allPointerCapabilities",1);')
 FIREFOX=os.environ.get('FIREFOX') or next((b for b in ('firefox-esr','firefox') if shutil.which(b)),'firefox-esr')
-ff=subprocess.Popen([FIREFOX,'--headless','--marionette','-no-remote','-profile',prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ff=subprocess.Popen([FIREFOX,'--headless','--marionette','-no-remote','-profile',prof]+(['--remote-allow-system-access'] if COARSE else []),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 # The profile grows to about 100 MB per run; it is removed when the suite ends, however it ends.
 def _cleanup():
     try: ff.kill(); ff.wait(5)
@@ -51,6 +54,14 @@ def start(w=1440,h=1100):
     cmd('WebDriver:NewSession',capabilities={});cmd('WebDriver:SetWindowRect',width=w,height=h)
     cmd('WebDriver:Navigate',url=BASE);time.sleep(2.5)
     js("window.__e=[];window.addEventListener('error',e=>__e.push(e.message+' @'+(e.filename||'').split('/').pop()+':'+e.lineno));window.addEventListener('unhandledrejection',e=>__e.push('rej '+String(e.reason)));document.addEventListener('securitypolicyviolation',e=>__e.push('CSP '+e.violatedDirective))")
+def phone(width=390):
+    # A Firefox window is never narrower than 450 px, so the page is zoomed until the window holds `width` px
+    # of it. Zoom is set from the browser's own side, which is why a touch run starts Firefox with system access.
+    cmd('WebDriver:SetWindowRect',width=450,height=900);w=js("return innerWidth")
+    cmd('Marionette:SetContext',value='chrome')
+    try: js("return FullZoom.setZoom(arguments[0],gBrowser.selectedBrowser)",w/width)
+    finally: cmd('Marionette:SetContext',value='content')
+    time.sleep(1);return js("return innerWidth")
 def signin(name='admin'):
     # Checking a password takes a second or two on a small machine, so wait for the page to show who signed in.
     nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value='flowa-test-only';f.requestSubmit()",name)

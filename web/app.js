@@ -584,6 +584,16 @@ const pageOff = what => `<div class="empty">${what} is turned off on this Flowa.
 function renderSide(route) {
   const a = (href, ic, label, on) => `<a class="nav-a ${on ? 'on' : ''}" href="${href}" ${on ? 'aria-current="page"' : ''}>${icon(ic)}${label}</a>`;
   const curId = route[0] || 'dashboard';
+  const sync = () => `<div id="sync" class="sync ${syncState === 'ok' ? '' : syncState}"><span class="dot"></span><span>${{ ok: 'All changes saved', saving: 'Saving…', err: 'Not saved, retrying' }[syncState]}</span></div>`;
+  // A new member has no props yet, so nothing else in the menu would open: it lists only what does.
+  if (me && !me.onboarded) {
+    const on = curId === 'profile';
+    $('#side').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
+    <a class="nav-profile ${on ? 'on' : ''}" href="#/profile" ${on ? 'aria-current="page"' : ''}>${avatarHTML(me)}<span class="grow"><b>${esc(me.displayName || me.username)}</b><span class="tiny">@${esc(me.username)}</span></span></a>
+    ${a('#/', 'home', 'Choose your props', !on && curId !== 'settings')}
+    <div class="side-foot">${a('#/settings', 'gear', 'Settings', curId === 'settings')}${sync()}</div>`;
+    return;
+  }
   const props = myProps().map(p => {
     const cat = CATALOGS[p.id];
     if (!cat) {
@@ -612,7 +622,7 @@ function renderSide(route) {
     ${props}
     <div class="side-foot">${me && flags.moderation && canDo('report.resolve') ? a('#/mod', 'inbox', `Moderation${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : ''}${me && adminTabs().length ? a('#/admin', 'shield', 'Admin', curId === 'admin') : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}
     <a class="nav-a" href="${esc(HOME_URL)}">${icon('ext')}Raspi home</a>
-    ${me ? `<div id="sync" class="sync ${syncState === 'ok' ? '' : syncState}"><span class="dot"></span><span>${{ ok: 'All changes saved', saving: 'Saving…', err: 'Not saved, retrying' }[syncState]}</span></div>` : ''}</div>`;
+    ${me ? sync() : ''}</div>`;
 }
 // Branch pages live at #/prop/<prop>/F/F1; inside the app that is the 'branch' route,
 // with the prop as its fourth part. Older #/branch/... and #/map links still work.
@@ -658,8 +668,9 @@ function render() {
   }
   if (me && (p === 'signin' || p === 'signup')) { location.hash = '#/'; return; }
   // A new user picks their props before anything else.
-  const first = !!me && !me.onboarded;
-  renderSide(first ? ['welcome'] : route);
+  // Until then only their profile and Settings open, and the menu lists only those.
+  const fresh = !!me && !me.onboarded, first = fresh && p !== 'settings' && p !== 'profile';
+  renderSide(route);
   const title = first ? 'Welcome' : !p ? (me ? 'Dashboard' : 'Welcome') : p === 'branch' ? (BR[a]?.name || 'Branch') : p === 'u' && a ? '@' + a : TITLES[p] || 'Not found';
   const scoped = me && !first && (!p || ['branch', 'practice', 'combos', 'plan', 'maps', 'prop'].includes(p));
   $('#crumb').innerHTML = `Flowa / ${scoped ? esc(curProp().name) + ' / ' : ''}<b>${esc(title)}</b>`;
@@ -692,7 +703,8 @@ function render() {
   lastRouteKey = key;
   const skill = !first && p === 'branch' && SK[b] ? b : null;
   if (!skill || document.activeElement?.dataset?.change !== 'note') renderPanel(skill);
-  if (!first && !skill) maybeTour(!p ? 'dashboard' : p === 'prop' ? 'maps' : p);
+  if (!skill) Demo.mount(); // a demo on the page itself, as on the landing page
+  if (!fresh && !skill) maybeTour(!p ? 'dashboard' : p === 'prop' ? 'maps' : p);
 }
 
 let toastT;
@@ -707,21 +719,34 @@ const pages = () => [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#
 function palItems(q) {
   q = q.trim().toLowerCase();
   const found = pages().filter(([n]) => n.toLowerCase().includes(q)).map(([n, h]) => ({ tag: '', n, h }));
-  const sk = SKILLS.filter(s => !q || s.id.toLowerCase().startsWith(q) || s.name.toLowerCase().includes(q) || s.desc.toLowerCase().includes(q)).map(s => ({ tag: s.id, n: s.name, h: skillHref(s.id) }));
+  const hit = s => !q || s.id.toLowerCase().startsWith(q) || s.name.toLowerCase().includes(q) || (s.desc || '').toLowerCase().includes(q);
+  // Skills come from every prop the member has, the one on screen first. With more than one prop each skill names its own.
+  const props = palProps();
+  const sk = props.flatMap(p => liveSkills(p.id).filter(hit).map(s => ({ tag: s.id, n: s.name, h: `#/prop/${p.id}/${s.b}/${s.id}`, prop: props.length > 1 ? p.name : '' })));
   return (q ? [...sk, ...found] : [...found, ...sk]).slice(0, 40);
+}
+// A catalog's skills that are still in use, whether or not that prop is the one on screen.
+const liveSkills = id => { const c = CATALOGS[id]; return !c ? [] : c.live || c.skills.filter(s => !s.retired); };
+const palProps = () => [curProp(), ...myProps().filter(p => p.id !== ui.prop)].filter(p => CATALOGS[p.id]);
+// What a search covers, in words: a member's own props, or every prop for a visitor.
+function palScope() {
+  const names = palProps().map(p => p.name);
+  const list = names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names[0] || '';
+  if (!me || !(me.props || []).length) return `Searches the pages and the skills of every prop: ${list}.`;
+  return `Searches the pages and the skills of your props: ${list}.${names.length < PROPS.length ? ' Add a prop in your profile to search it too.' : ''}`;
 }
 let palPrevFocus = null;
 function openPalette() {
   palPrevFocus = document.activeElement;
   const el = $('#palette'); el.hidden = false;
-  el.innerHTML = `<div class="pal-box" role="dialog" aria-modal="true" aria-label="Search"><input type="search" id="pal-q" placeholder="Search skills and pages" autocomplete="off" aria-label="Search skills and pages"><div class="pal-list" id="pal-list"></div></div>`;
+  el.innerHTML = `<div class="pal-box" role="dialog" aria-modal="true" aria-label="Search"><input type="search" id="pal-q" placeholder="Search skills and pages" autocomplete="off" aria-label="Search skills and pages"><div class="pal-list" id="pal-list"></div><p class="pal-hint tiny" id="pal-hint">${esc(palScope())}</p></div>`;
   ui.palIdx = 0; drawPal(); $('#pal-q').focus();
 }
 function closePalette() { $('#palette').hidden = true; $('#palette').innerHTML = ''; palPrevFocus?.focus?.(); }
 function drawPal() {
   const items = palItems($('#pal-q').value);
   ui.palIdx = Math.min(ui.palIdx, Math.max(items.length - 1, 0));
-  $('#pal-list').innerHTML = items.map((x, i) => `<a class="pal-i ${i === ui.palIdx ? 'on' : ''}" href="${x.h}" data-act="pal-go"><span class="tag">${x.tag}</span><span class="grow">${esc(x.n)}</span></a>`).join('') || '<div class="empty small">No matches</div>';
+  $('#pal-list').innerHTML = items.map((x, i) => `<a class="pal-i ${i === ui.palIdx ? 'on' : ''}" href="${x.h}" data-act="pal-go"><span class="tag">${x.tag}</span><span class="grow">${esc(x.n)}</span>${x.prop ? `<span class="pal-p">${esc(x.prop)}</span>` : ''}</a>`).join('') || '<div class="empty small">No matches</div>';
   $('.pal-i.on')?.scrollIntoView({ block: 'nearest' });
 }
 
@@ -739,7 +764,7 @@ document.addEventListener('click', e => {
     case 'pal-go': closePalette(); break;
     case 'view': ui.graphView = d.v; localStorage.setItem('nf-view', d.v); render(); break;
     case 'level': setLevel(d.id, d.side, Number(d.v)); break;
-    case 'demo': Demo.act(d); renderPanel(parseRoute()[2]); break;
+    case 'demo': { Demo.act(d); const sid = parseRoute()[2]; if (SK[sid] && !$('#panel').hidden) renderPanel(sid); else render(); break; }
     case 'combo-open': ui.comboOpen = d.id; render(); break;
     case 'combo-rep': if (combo) { const r = (combo.reps ||= []), i = Number(d.i); r[i] = Math.max(1, Math.min(9, (r[i] || 1) + Number(d.d))); commit(); } break;
     case 'combo-move': if (combo) { const i = Number(d.i), r = (combo.reps ||= []); if (i > 0) { [combo.seq[i - 1], combo.seq[i]] = [combo.seq[i], combo.seq[i - 1]]; [r[i - 1], r[i]] = [r[i] || 1, r[i - 1] || 1]; commit(); } } break;

@@ -293,6 +293,12 @@ a.chip:hover, button.chip:hover { background: var(--hover); text-decoration: non
 .hero { text-align: center; padding: 34px 16px 30px; display: grid; gap: 12px; justify-items: center; }
 .hero h1 { font-size: 34px; }
 .hero p { color: var(--ink-2); max-width: 520px; font-size: 15px; }
+.land { margin-bottom: 16px; align-items: start; }
+.map-thumb { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--side); }
+.map-thumb:hover { border-color: var(--line-2); }
+.map-thumb b { font-size: 11px; font-weight: 650; color: var(--ink-3); text-align: center; }
+.map-thumb .mt-c { display: flex; flex-wrap: wrap; justify-content: center; align-content: flex-start; gap: 3px; min-height: 22px; padding: 4px 2px; border-radius: 6px; background: var(--card-2); }
+.map-thumb i { width: 7px; height: 7px; border-radius: 2px; background: var(--accent); }
 .auth { max-width: 400px; margin: 24px auto; display: grid; gap: 14px; }
 .form-err { color: var(--bad); font-size: 13px; }
 .form-err[hidden] { display: none; }
@@ -350,6 +356,8 @@ button:disabled { opacity: .6; cursor: default; }
 .pal-list { max-height: 52vh; overflow-y: auto; padding: 6px; }
 .pal-i { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 8px; text-align: left; color: var(--ink); }
 .pal-i.on { background: var(--accent-soft); }
+.pal-p { flex: none; font-size: 11.5px; color: var(--ink-3); }
+.pal-hint { padding: 8px 16px 10px; border-top: 1px solid var(--line); color: var(--ink-3); }
 .tip { position: fixed; z-index: 80; pointer-events: none; padding: 5px 9px; border-radius: 7px; background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 520; white-space: nowrap; }
 .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 90; padding: 9px 15px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 13px; font-weight: 520; box-shadow: var(--shadow); max-width: calc(100vw - 32px); }
 
@@ -731,12 +739,35 @@ tr[hidden] { display: none; }
 .ms.has-sticker > :not(.sticker) { grid-column: 1; }
 .ms-sticker { grid-column: 2; grid-row: 1 / span 2; width: 96px; height: 96px; }
 .unlock-sticker { width: 56px; height: 56px; margin: -6px 0; }
-/* Phones: the preview on top, smaller, and each row of options or colours scrolls sideways, so it
-   all works with one thumb. */
+/* Phones: the preview on top, smaller. Options and colours wrap onto more rows, so nothing is wider
+   than the screen and every choice is in sight. */
 @media (max-width: 760px) {
-  .av-wrap { grid-template-columns: 1fr; }
+  .av-wrap { grid-template-columns: minmax(0, 1fr); }
   .av-stage { position: static; }
-  .av-stage canvas { max-width: 300px; }
-  .av-sw, .av-field .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
-  .av-field .chips .chip { flex: none; }
+  .av-stage canvas { max-width: min(300px, 100%); }
+  .av-tabs { flex-wrap: wrap; max-width: 100%; }
+  .av-tools { flex-wrap: wrap; }
+}
+
+/* ---------- touch screens ----------
+   A finger needs about 44 px each way. Where the pointer is coarse every control grows to that, by
+   its smallest size and its padding. With a mouse none of this applies, so desktop layouts stay. */
+@media (pointer: coarse) {
+  .btn, .seg button, .seg a, .seg-r span, .chip:is(a, button), .nav-a, .nav-profile, .act, .cmt-a, .tr, .qs, .cell, .sk-row, .br-row, .pal-i, .pick-i, .cb-main,
+  .search-btn, .icon-btn, .icon-btn.xs, .lv button, .sw, .check, select, select.sm,
+  input[type=text], input[type=date], input[type=number], input[type=search], input[type=password] { min-height: 44px; }
+  .btn, .seg button, .seg a, .seg-r span, .chip:is(a, button), .act, .cmt-a, .tr, .qs, .cell, .icon-btn, .icon-btn.xs, .sw, select, select.sm { min-width: 44px; }
+  .btn, .seg button, .seg a, .seg-r span, .chip:is(a, button), .cmt-a, .tr, .qs { justify-content: center; }
+  .seg button, .seg-r span { display: inline-flex; align-items: center; }
+  .cell { display: flex; align-items: center; }
+  .cmt-acts { gap: 2px; margin-left: -8px; } .cmt-a { padding: 0 8px; }
+  summary { padding-block: 13px; }
+  /* A name that is a link on a line of its own: tall enough to hit, and the line keeps its text size. */
+  .post-name, .cmt-name, .map .mh { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; }
+  /* A link that stands alone, not inside a sentence: beside a card's heading, in the list of references, under a picture. */
+  a.small, .refs a, .page-h p > a, .stat .foot a, a:has(> .avatar) { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; }
+  .refs a { justify-content: flex-start; }
+  .cb-reps { height: auto; } .cb-reps button { width: 44px; height: 44px; }
+  .search-btn { min-width: 44px; justify-content: center; }
+  .search-btn kbd { display: none; }
 }

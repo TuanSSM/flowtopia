@@ -101,5 +101,40 @@ try:
     check('the next edit saves on top without another clash',bool(again) and d['rev']==rev+1 and d['state']['skills']['F5'].get(side5)==2,(rev,d['rev']))
     cmd('WebDriver:SetWindowRect',width=480,height=900);time.sleep(.8);shot('/tmp/flowa-test/combo-narrow.png')
     check('no page overflow on a narrow screen',js("return document.documentElement.scrollWidth<=innerWidth"))
+    cmd('WebDriver:SetWindowRect',width=1280,height=900)
+    # ---- Search: it covers every prop the member has, says so, and names the prop of each skill it finds.
+    def fresh(tag):
+        cmd('WebDriver:Navigate',url=BASE+f'?{tag}#/');until(lambda: js("return !!document.querySelector('.nav-profile .tiny')&&document.querySelector('.nav-profile .tiny').textContent==='@admin'"));time.sleep(1.5)
+    def search(q):
+        js("if(document.querySelector('#palette').hidden)openPalette();const i=document.querySelector('#pal-q');i.value=arguments[0];i.dispatchEvent(new Event('input',{bubbles:true}))",q);time.sleep(.5)
+        return js("return [...document.querySelectorAll('.pal-i')].map(a=>[a.querySelector('.pal-p')?.textContent||'',a.getAttribute('href'),a.querySelector('.grow').textContent])")
+    api(op,'me',{'props':['nunchaku']},'PUT');fresh('one')
+    rows=search('butterfly')
+    check('with one prop the search says so and finds only its skills',txt('#pal-hint')=='Searches the pages and the skills of your props: Nunchaku. Add a prop in your profile to search it too.' and not any(r[0] or '/prop/poi/' in r[1] for r in rows),(txt('#pal-hint'),rows[:4]))
+    api(op,'me',{'props':['nunchaku','poi']},'PUT');fresh('two')
+    rows=search('butterfly');poi=[r for r in rows if r[0]=='Poi']
+    check('with two props the search names both',txt('#pal-hint')=='Searches the pages and the skills of your props: Nunchaku and Poi. Add a prop in your profile to search it too.',txt('#pal-hint'))
+    check("a skill of the member's other prop is found and carries the prop's name",bool(poi) and all(r[1].startswith('#/prop/poi/') for r in poi) and all(r[0]=='Nunchaku' for r in rows if r[1].startswith('#/prop/nunchaku/') and r[1].count('/')==4),rows[:6])
+    if poi:
+        js("document.querySelector('.pal-i[href=\"'+arguments[0]+'\"]').click()",poi[0][1]);time.sleep(3)
+        check('choosing it opens that skill on its own prop',js("return location.hash")==poi[0][1] and js("return !document.querySelector('#panel').hidden&&document.querySelector('#panel').dataset.id")==poi[0][1].split('/')[-1] and 'Poi' in txt('#crumb'),(js("return location.hash"),txt('#crumb')))
+    api(op,'me',{'props':['nunchaku']},'PUT')
+    # ---- A tour belongs to its section: leaving the section closes it for good, and the next page is free.
+    api(op,'me',{'seen':[]},'PUT');api(op,'flags',{'flags':{'tour':True}},'PUT');fresh('tour')
+    tip=lambda: js("const t=document.querySelector('.react-joyride__tooltip');return t?t.innerText:''")
+    seen=lambda: js("return fetch('api/me').then(r=>r.json()).then(d=>d.user.seen||[])")
+    up=until(lambda: 'Welcome to Flowa' in tip())
+    check('the dashboard tour opens for a member who has not seen it',bool(up),tip()[:80])
+    nav('#/settings',1.5)
+    gone=until(lambda: not tip() and 'dashboard' in seen())
+    check('leaving the section closes the tour and remembers it as seen',bool(gone) and txt('#main h1')=='Settings',(tip()[:60],seen()))
+    check('the page behind is not blocked',js("return !document.querySelector('.react-joyride__overlay')&&!document.body.classList.contains('nav-open')"))
+    nav('#/',3)
+    check('going back does not bring the tour back',not tip() and js("return location.hash")=='#/',tip()[:60])
+    nav('#/practice',1)
+    check('the next section gets its own tour',bool(until(lambda: 'Log a session' in tip())),tip()[:80])
+    js("history.back()");time.sleep(1)
+    check('Back closes that one too',bool(until(lambda: not tip() and 'practice' in seen())),(tip()[:60],seen()))
+    api(op,'flags',{'flags':{'tour':False}},'PUT')
 finally:
     done()

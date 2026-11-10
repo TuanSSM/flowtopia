@@ -48,7 +48,7 @@ function pageAvatar(arg) {
     ? myProps().map(p => `<div class="av-field"><div class="lbl small">${esc(p.name)}</div><div class="av-sw" role="group" aria-label="${esc(p.name)} colour"><button class="chip ${!c.props?.[p.id] ? 'on' : ''}" data-act="av-prop" data-k="${p.id}" data-v="" aria-pressed="${!c.props?.[p.id]}">Theme colour</button>${d.propColors.map((h, i) => `<button class="sw ${c.props?.[p.id] === h ? 'on' : ''}" style="--c:${h}" data-act="av-prop" data-k="${p.id}" data-v="${h}" aria-pressed="${c.props?.[p.id] === h}" aria-label="${esc(p.name)} colour ${i + 1} of ${d.propColors.length}" data-tip="${h}"></button>`).join('')}</div></div>`).join('')
     : tab[2].map(k => d.options[k] ? opt(k) : col(k)).join('');
   const no3d = !flags.model3d ? '<p class="tiny">The 3D figure is turned off here, so the preview shows the drawn figure without your colours.</p>' : '';
-  return `${AV.first ? `<div class="card av-first"><b>Make your avatar</b><p class="small">It plays your demos and combos and shows up on your stickers. Here is a random one to start from: change anything, or skip and do it later from your profile.</p><div class="row" style="gap:8px"><button class="btn primary" data-act="av-save">Keep this avatar</button><button class="btn" data-act="av-skip">Skip for now</button></div></div>` : ''}
+  return `${AV.first ? `<div class="card av-first"><b>Make your avatar</b><p class="small">It plays your demos and combos and shows up on your stickers. Here is a random one to start from: change anything, or skip and do it later from your profile.</p><div class="row wrap" style="gap:8px"><button class="btn primary" data-act="av-save">Keep this avatar</button><button class="btn" data-act="av-skip">Skip for now</button></div></div>` : ''}
   <div class="page-h"><div class="grow"><h1>Your avatar</h1><p>It plays your demos and combos, and appears on your stickers and streak overlays.</p></div></div>
   <div class="av-wrap">
     <div class="av-stage card"><canvas id="av-cv" width="560" height="560" tabindex="0" role="img" aria-label="Your avatar, turning slowly. Drag it, or use the left and right arrow keys, to turn it."></canvas>
@@ -57,7 +57,7 @@ function pageAvatar(arg) {
       <div class="seg av-tabs" role="tablist" aria-label="Category">${AV_TABS.map(([k, n]) => `<button role="tab" class="${AV.tab === k ? 'on' : ''}" aria-selected="${AV.tab === k}" data-act="av-tab" data-v="${k}">${n}</button>`).join('')}</div>
       <div class="av-fields" role="tabpanel">${fields}${tab[0] === 'body' ? '<p class="tiny">Each demo plays on your body when it passes the same reach and overlap checks as on the standard body; any other plays on the standard body and says so.</p>' : ''}</div>
       <label class="check"><input type="checkbox" id="av-headshot" ${AV.headshot ? 'checked' : ''}><span>Use a picture of my avatar as my profile picture</span></label>
-      <div class="row" style="gap:8px"><button class="btn primary" data-act="av-save">Save avatar</button>${hasAvatar(me) ? '<button class="btn" data-act="av-remove">Remove avatar</button>' : ''}<a class="btn" href="#/profile">Back to profile</a></div>
+      ${AV.first ? '' : `<div class="row wrap" style="gap:8px"><button class="btn primary" data-act="av-save">Save avatar</button>${hasAvatar(me) ? '<button class="btn" data-act="av-remove">Remove avatar</button>' : ''}<a class="btn" href="#/profile">Back to profile</a></div>`}
     </div>
   </div>`;
 }
