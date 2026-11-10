@@ -16,14 +16,16 @@ a mid-range phone, the same picture.
   for every PR that touches `figure/` or `web/demo.js`.
   Done: `test/browser/avatar.py` times one frame of nunchaku F5 at 720 px on the 3D figure, on the
   3D figure with the heaviest avatar, and on the drawn figure (the path without WebGL), each the
-  median of 60 drawings after one to warm up. A pixel is read back after every drawing, because a
+  median of 60 drawings after 20 to warm up (with one warm-up drawing the path timed first read a
+third slower than the heavier one timed after it). A pixel is read back after every drawing, because a
   canvas only notes what to draw until someone looks: without that the drawn figure timed at
   0.1 ms. The page's clock is no longer rounded to a millisecond in the test browser. The suite
   prints a `frame ms` line, the workflow keeps it with the suite's results, and the summary job
   writes "Demo frame, ms" into the comment whenever the avatar suite ran. That is every change to
   `web/demo.js`, `web/figure3d.js`, the clips or `sim/`; a change in `figure/` always comes with the
   rebuilt `web/figure3d.js`, which CI checks, so it is covered. The comment on the pull request
-  that added this carries the first line. The paths today are two; the shader path of a later item
+  that added this (#67) carries the first line: on the runner, in software, about 25 to 34 ms for
+  the 3D figure and 1.1 ms for the drawn one. The paths today are two; the shader path of a later item
   adds a third to the same line.
 - [ ] **Skin only on change.** No skinning when the pose is the one already drawn (paused, a still,
   the same frame at a lower play speed). DoD: a paused demo costs under 2 ms a frame on the Pi.

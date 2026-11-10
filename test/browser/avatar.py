@@ -133,13 +133,14 @@ try:
     api(op,'flags',{'flags':{'avatars':True}},'PUT')
     reload('#/prop/nunchaku/F/F5');figure_ready();wait_for("return !!window.Demo.clip()",'the demo to load its clip',20)
     # ---- Frame time: one frame of a demo (nunchaku F5, 720 px) on each path the player has, the median of 60
-    # drawings after one to warm up. The 3D figure is skinned and drawn through WebGL, in software here; the
+    # drawings after 20 to warm up (with one, the path timed first read a third slower than the heavier one
+    # timed after it: the browser was still compiling the drawing code). The 3D figure is skinned and drawn through WebGL, in software here; the
     # drawn figure is what a browser without WebGL gets. A pixel is read back after each drawing: a canvas
     # only notes what to draw until someone looks, and without the look the drawn figure would time at nothing. The "frame ms" line goes into the pull request's
     # comment (process_pr.yml), so a change to the player or the figure shows what it cost before it merges.
     FRAME="""const D=window.Demo,c=D.clip();if(!c)return null;const cv=document.createElement('canvas');cv.width=cv.height=720;const x=cv.getContext('2d'),col=D.colors(),who=arguments[0],flat=arguments[1];
       if(flat)D.figure(false);
-      try{D.draw(x,720,c,0,'angle',false,col,false,who);const t=[];for(let i=0;i<60;i++){const t0=performance.now();D.draw(x,720,c,i/60,'angle',false,col,false,who);x.getImageData(360,360,1,1);t.push(performance.now()-t0)}
+      try{for(let i=0;i<20;i++)D.draw(x,720,c,i/20,'angle',false,col,false,who);const t=[];for(let i=0;i<60;i++){const t0=performance.now();D.draw(x,720,c,i/60,'angle',false,col,false,who);x.getImageData(360,360,1,1);t.push(performance.now()-t0)}
         t.sort((a,b)=>a-b);return Math.round((t[29]+t[30])/2*10)/10}
       finally{if(flat)D.figure(true)}"""
     base=js(FRAME,None,False);ms=js(FRAME,HEAVY,False);flat=js(FRAME,None,True)
