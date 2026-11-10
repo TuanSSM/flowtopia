@@ -187,6 +187,14 @@ its shading there and the props carry the contrast.
 The frame budget in CI is 33 ms for one demo frame with the heaviest avatar, in the runner's
 software WebGL (`FRAME_BUDGET_MS` in `test/browser/avatar.py`).
 
+That suite times one frame of nunchaku F5 at 720 px on each path the player has: the 3D figure,
+the 3D figure with the heaviest avatar, and the drawn figure a browser without WebGL gets. Each is
+the median of 60 drawings, with a pixel read back after every one so that the drawing has really
+happened. It prints the three numbers as a `frame ms` line, and `process_pr` puts that line into the
+pull request's comment whenever the suite ran, which it does for every change to `web/demo.js`, the
+figure bundle, the clips or `sim/`. The numbers are the runner's; the Pi's are in the table above
+and are measured there by running the suite with `FRAME_BUDGET_MS` set.
+
 ## Licences
 
 - **Base model.** `web/assets/human.glb` is the "X Bot" mannequin from the three.js examples

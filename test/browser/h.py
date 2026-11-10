@@ -2,7 +2,7 @@
 import json,socket,subprocess,tempfile,time,base64,urllib.request,http.cookiejar,os,shutil,atexit
 BASE='http://127.0.0.1:3170/'
 prof=tempfile.mkdtemp(dir=os.environ.get('RUNNER_TEMP'))  # a snap Firefox (CI) cannot read /tmp
-open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui.systemUsesDarkTheme",1);user_pref("signon.rememberSignons",false);user_pref("webgl.force-enabled",true);user_pref("webgl.disable-fail-if-major-performance-caveat",true);\n')
+open(prof+'/user.js','w').write('user_pref("marionette.port",2935);user_pref("ui.systemUsesDarkTheme",1);user_pref("signon.rememberSignons",false);user_pref("webgl.force-enabled",true);user_pref("webgl.disable-fail-if-major-performance-caveat",true);user_pref("privacy.reduceTimerPrecision",false);\n')  # the page's clock is not rounded to a millisecond, so a frame can be timed
 # FLOWA_POINTER=coarse makes Firefox report a touch screen (pointer: coarse, no hover), as a phone does.
 COARSE=os.environ.get('FLOWA_POINTER')=='coarse'
 if COARSE: open(prof+'/user.js','a').write('user_pref("ui.primaryPointerCapabilities",1);user_pref("ui.allPointerCapabilities",1);')
