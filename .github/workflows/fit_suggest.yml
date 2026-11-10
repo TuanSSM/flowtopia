@@ -1,0 +1,155 @@
+# fit_suggest: fit the next-trick suggestion weights on the transition marks an instance's members
+# have shared, and open a pull request with the result. Run it by hand from the Actions tab
+# (fit_suggest, Run workflow), or: gh workflow run fit_suggest -f instance=https://flowa.example.org
+#
+# It reads GET /api/suggest/counts of the instance with the repository secret FLOWA_COUNTS_TOKEN,
+# which is the FLOWA_COUNTS_TOKEN in that instance's .env. The counts say how often a pair of skills
+# was marked Works, Needs a bridge or Blocked and name no member. sim/fit-suggest.js fits the weights
+# and measures them on pairs it held out; test/suggest-gate.js decides whether they may ship: at
+# least 30 pairs, an AUC of 0.75, and better than the prerequisite graph alone. With fewer than 30
+# pairs there is nothing to fit, and the run says how many there are and stops, without a pull request.
+#
+# The pull request carries web/suggest-weights.json only. A pull request opened by a workflow does
+# not start process_pr by itself, so this workflow starts it on the branch; its result is the check
+# main requires. Merging it is what takes the "early" label off the combo builder.
+name: fit_suggest
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance:
+        description: "Address of the instance, like https://flowa.example.org"
+        type: string
+        required: true
+      dry_run:
+        description: "Only fetch, fit and show the result; open no pull request"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fit_suggest
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash   # -e and -o pipefail, so a failure under tee still fails the step
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  fit:
+    name: fit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write        # to push the branch with the new weights
+      pull-requests: write   # to open the pull request
+      actions: write         # to start process_pr on that branch
+    steps:
+      - name: Fits are made from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run this workflow on main, not ${GITHUB_REF_NAME}: the pull request is opened against main."
+          exit 1
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Over HTTPS only, so the token cannot be read on the way, and nothing of the answer but its
+      # shape is trusted: it is data for a fit, never a script.
+      - name: Fetch the shared counts
+        env:
+          INSTANCE: ${{ inputs.instance }}
+          TOKEN: ${{ secrets.FLOWA_COUNTS_TOKEN }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::The repository has no secret FLOWA_COUNTS_TOKEN. Make one (openssl rand -hex 32), put it in the instance's .env and in Settings, Secrets and variables, Actions."; exit 1; }
+          url="${INSTANCE%/}"
+          [[ "$url" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || { echo "::error::'$INSTANCE' is not an https address like https://flowa.example.org"; exit 1; }
+          code=$(curl -sS -m 30 --proto '=https' --max-filesize 2000000 -o counts.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$url/api/suggest/counts") || { echo "::error::$url did not answer"; exit 1; }
+          case "$code" in
+            200) ;;
+            401) echo "::error::$url turned the token down: FLOWA_COUNTS_TOKEN here and in its .env are not the same, or it has none."; exit 1 ;;
+            404) echo "::error::$url has suggestions switched off (the suggest flag), or is older than the counts token."; exit 1 ;;
+            *) echo "::error::$url answered $code"; exit 1 ;;
+          esac
+          jq -e '.counts | type == "array" and all(.[]; (.prop | type == "string") and (.a | type == "string") and (.b | type == "string")
+            and ([.works, .bridge, .blocked] | all(type == "number" and . >= 0)))' counts.json >/dev/null \
+            || { echo "::error::$url answered something that is not a list of counts"; exit 1; }
+          echo "$(jq '.counts | length' counts.json) pairs with a mark, $(jq '[.counts[] | select(.works > 0 or .blocked > 0)] | length' counts.json) of them Works or Blocked"
+
+      - name: Fit and measure
+        id: fit
+        run: |
+          node sim/fit-suggest.js counts.json --write > fit.json
+          cat fit.json
+          {
+            echo "pairs=$(jq -r .pairs fit.json)"
+            echo "early=$(jq -r .early fit.json)"
+            echo "auc=$(jq -r '.auc // "none"' fit.json)"
+            echo "baseline=$(jq -r '.baseline // "none"' fit.json)"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "# Suggestion weights"
+            echo
+            jq -r '"\(.pairs) pairs of skills marked Works or Blocked. \(.note)"' fit.json
+            jq -r 'if .early then "Nothing was fitted: the weights stay the starting ones." else "AUC \(.auc) on held-out pairs, against \(.baseline) for the prerequisite graph alone." end' fit.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      # The same checks the pull request will meet: the gate on the weights, and the scores they give.
+      - name: The gate
+        id: gate
+        run: |
+          node test/suggest-gate.js | tee gate.txt || {
+            echo "The fitted weights do not pass the gate, so no pull request is opened: $(cat gate.txt)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          node test/suggest.js | tail -1
+
+      - name: Open the pull request
+        if: ${{ !inputs.dry_run && steps.fit.outputs.early == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIRS: ${{ steps.fit.outputs.pairs }}
+          AUC: ${{ steps.fit.outputs.auc }}
+          BASELINE: ${{ steps.fit.outputs.baseline }}
+          INSTANCE: ${{ inputs.instance }}
+        run: |
+          if git diff --quiet -- web/suggest-weights.json; then
+            echo "The fit gives the weights main already has; no pull request." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          branch="fit/suggest-$(date -u +%Y%m%d-%H%M)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add web/suggest-weights.json
+          git commit -q -m "feat(suggest): fit the suggestion weights on $PAIRS shared pairs" \
+            -m "Fitted by sim/fit-suggest.js on the transition marks shared on ${INSTANCE%/}: $PAIRS pairs of skills marked Works or Blocked. On the pairs held out, the area under the ROC curve is $AUC, against $BASELINE for the prerequisite graph alone. With fitted weights the combo builder no longer says its suggestions are early."
+          git push -q origin "$branch"
+          {
+            echo "The weights for next-trick suggestions, fitted on what members marked."
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Pairs of skills marked Works or Blocked | $PAIRS |"
+            echo "| AUC on the pairs held out | $AUC |"
+            echo "| AUC of the prerequisite graph alone | $BASELINE |"
+            echo "| Gate (\`test/suggest-gate.js\`) | $(cat gate.txt) |"
+            echo
+            echo "From ${INSTANCE%/}, by the \`fit_suggest\` workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. The counts name no member and are not in this pull request; only \`web/suggest-weights.json\` changes."
+            echo
+            echo "Merging this takes the \"early\" label off the combo builder (\`test/browser/suggest.py\` checks both states). \`process_pr\` was started on this branch by the workflow, because a pull request a workflow opens does not start it."
+          } > body.md
+          gh pr create --base main --head "$branch" --title "feat(suggest): fit the suggestion weights on $PAIRS shared pairs" --body-file body.md | tee pr.txt
+          gh workflow run process_pr.yml --ref "$branch"
+          echo "Opened $(tail -1 pr.txt) and started process_pr on $branch." >> "$GITHUB_STEP_SUMMARY"
+      - name: Not enough pairs yet
+        if: ${{ steps.fit.outputs.early == 'true' }}
+        env:
+          PAIRS: ${{ steps.fit.outputs.pairs }}
+        run: |
+          echo "$PAIRS of the 30 pairs the fit needs: nothing to open a pull request with. The admin dashboard of the instance shows the pace." >> "$GITHUB_STEP_SUMMARY"

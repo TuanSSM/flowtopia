@@ -595,3 +595,30 @@ func TestRequestLogHandlers(t *testing.T) {
 		t.Fatalf("a refusal through a wrapped writer: %s", l["_raw"])
 	}
 }
+
+// FLOWA_COUNTS_TOKEN is the one thing between anyone and the shared counts, so a short one stops the
+// server at start, and the message does not repeat it.
+func TestCountsToken(t *testing.T) {
+	long := strings.Repeat("ab12", 8) // 32 characters
+	for _, c := range []struct {
+		name, in, want string
+		ok             bool
+	}{
+		{"unset", "", "", true},
+		{"only spaces", "   ", "", true},
+		{"32 characters", long, long, true},
+		{"spaces around it", "  " + long + "\n", long, true},
+		{"longer", long + long, long + long, true},
+		{"31 characters", long[:31], "", false},
+		{"a word", "secret", "", false},
+		{"a space inside", long[:16] + " " + long[16:], "", false},
+	} {
+		got, err := countsToken(c.in)
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("%s: got %q, %v; want %q, ok %v", c.name, got, err, c.want, c.ok)
+		}
+		if err != nil && strings.TrimSpace(c.in) != "" && strings.Contains(err.Error(), strings.TrimSpace(c.in)) {
+			t.Errorf("%s: the message repeats the token: %v", c.name, err)
+		}
+	}
+}
