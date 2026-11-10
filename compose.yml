@@ -53,7 +53,9 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # Extra names the app answers to, comma-separated (IP addresses, localhost and private
       # names such as raspi or raspi.local always work). The proxy's FLOWA_DOMAIN is added to them.
-      FLOWA_HOSTS: "${FLOWA_HOSTS:-}${FLOWA_DOMAIN:+,${FLOWA_DOMAIN}}"
+      # Every reference has a default (":-"), the inner ones too: docker compose reads a nested one
+      # even when the outer is unset, and warns about a variable without a default on every command.
+      FLOWA_HOSTS: "${FLOWA_HOSTS:-}${FLOWA_DOMAIN:+,${FLOWA_DOMAIN:-}}"
       # A link for admins to the start page of this machine, in the Staff group of the menu.
       # An http or https address, like http://raspi.local:8080/. Unset: no link.
       FLOWA_HOME_URL: ${FLOWA_HOME_URL:-}

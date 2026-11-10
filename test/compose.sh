@@ -52,33 +52,39 @@ with() {
     "$@"
   )
 }
-resolved() { with "$@" -- compose config --format json; }   # resolved [NAME=value ...]: compose.yml as JSON
+# resolved [NAME=value ...]: compose.yml as JSON. What docker compose has to say beside it (warnings,
+# or the error when it refuses the file) goes to $work/said, so it can neither break the JSON nor be lost.
+resolved() { with "$@" -- compose config --format json 2>"$work/said"; }
 app_env() { jq -r --arg k "$1" '.services.nunchaku.environment[$k] // ""'; }
 ports_of() { jq -r --arg s "$1" '.services[$s].ports // [] | map("\(.host_ip // "every address"):\(.published)->\(.target)/\(.protocol)") | join(" ")'; }
 
 # ---- what compose.yml resolves to: the app's port ----
 published() {   # published <address expected> <name of the check> [NAME=value ...]
   local want=$1 name=$2; shift 2
-  is "$name" "$(resolved "$@" 2>&1 | ports_of nunchaku 2>&1)" "$want:3169->3169/tcp"
+  is "$name" "$(resolved "$@" | ports_of nunchaku 2>&1)" "$want:3169->3169/tcp"
 }
 published 127.0.0.1 "without FLOWA_BIND the app is published on this machine only"
 published 127.0.0.1 "an empty FLOWA_BIND means this machine only too" FLOWA_BIND=
 published 0.0.0.0 "FLOWA_BIND=0.0.0.0 publishes on every address" FLOWA_BIND=0.0.0.0
 published 192.168.1.20 "FLOWA_BIND takes one LAN address" FLOWA_BIND=192.168.1.20
 published ::1 "FLOWA_BIND takes an IPv6 address without brackets" FLOWA_BIND=::1
-if out=$(resolved "FLOWA_BIND=not an address" 2>&1); then bad "a FLOWA_BIND that is no address stops compose" "compose accepted it"
-elif grep -qi 'invalid ip' <<<"$out"; then ok "a FLOWA_BIND that is no address stops compose"
-else bad "a FLOWA_BIND that is no address stops compose" "it failed for another reason: $(tail -1 <<<"$out")"; fi
-is "the database is not published" "$(resolved 2>/dev/null | ports_of db)" ""
+if resolved "FLOWA_BIND=not an address" >/dev/null; then bad "a FLOWA_BIND that is no address stops compose" "compose accepted it"
+elif grep -qi 'invalid ip' "$work/said"; then ok "a FLOWA_BIND that is no address stops compose"
+else bad "a FLOWA_BIND that is no address stops compose" "it failed for another reason: $(tail -1 "$work/said")"; fi
+is "the database is not published" "$(resolved | ports_of db)" ""
 
 # ---- what compose.yml resolves to: the proxy profile ----
 net='10.169.31.0/29'   # the edge network's range in compose.yml
-plain=$(resolved 2>&1)
+plain=$(resolved)
+# A machine that sets nothing but the password is told nothing: a warning here would be printed by every
+# docker compose command on every deployment that does not use the proxy.
+is "with only the password set, docker compose has nothing to warn about" "$(paste -sd' ' "$work/said" | cut -c1-300)" ""
 is "the proxy is not started unless its profile is asked for" "$(jq -r '.services | keys | join(" ")' <<<"$plain")" "db nunchaku"
 is "without FLOWA_DOMAIN the app is left to its own choice of trusted proxies" "$(app_env FLOWA_TRUSTED_PROXIES <<<"$plain")" ""
 is "without FLOWA_DOMAIN the app answers to no extra name" "$(app_env FLOWA_HOSTS <<<"$plain")" ""
 is "the network the app shares with the proxy has a fixed range" "$(jq -r '.networks.edge.ipam.config | map(.subnet) | join(" ")' <<<"$plain")" "$net"
-on=$(resolved COMPOSE_PROFILES=proxy FLOWA_DOMAIN=flowa.example.org 2>&1)
+on=$(resolved COMPOSE_PROFILES=proxy FLOWA_DOMAIN=flowa.example.org)
+is "nor with the proxy's two settings" "$(paste -sd' ' "$work/said" | cut -c1-300)" ""
 is "COMPOSE_PROFILES=proxy adds the proxy" "$(jq -r '.services | keys | join(" ")' <<<"$on")" "db nunchaku proxy"
 is "with FLOWA_DOMAIN the app answers to that name" "$(app_env FLOWA_HOSTS <<<"$on" | tr ',' '\n' | grep -c '^flowa\.example\.org$')" "1"
 is "with FLOWA_DOMAIN only the proxy's network is believed about a visitor's address" "$(app_env FLOWA_TRUSTED_PROXIES <<<"$on")" "$net"
@@ -88,10 +94,10 @@ is "the proxy is given the name" "$(jq -r '.services.proxy.environment.FLOWA_DOM
 is "the proxy cannot reach the database's network" "$(jq -r '.services.proxy.networks | keys | join(" ")' <<<"$on")" "edge"
 if jq -r '.services.proxy.image' <<<"$on" | grep -Eq '^caddy:[0-9]+\.[0-9]+\.[0-9]+-alpine@sha256:[0-9a-f]{64}$'; then ok "the proxy's image is pinned by version and digest"
 else bad "the proxy's image is pinned by version and digest" "it is $(jq -r '.services.proxy.image' <<<"$on")"; fi
-kept=$(resolved FLOWA_DOMAIN=flowa.example.org FLOWA_HOSTS=raspi.example,other.example FLOWA_TRUSTED_PROXIES=none 2>&1)
+kept=$(resolved FLOWA_DOMAIN=flowa.example.org FLOWA_HOSTS=raspi.example,other.example FLOWA_TRUSTED_PROXIES=none)
 is "names the owner listed are kept beside the proxy's" "$(app_env FLOWA_HOSTS <<<"$kept")" "raspi.example,other.example,flowa.example.org"
 is "the owner's FLOWA_TRUSTED_PROXIES wins over the proxy's network" "$(app_env FLOWA_TRUSTED_PROXIES <<<"$kept")" "none"
-moved=$(resolved FLOWA_DOMAIN=flowa.example.org FLOWA_PROXY_NET=10.9.8.0/28 2>&1)
+moved=$(resolved FLOWA_DOMAIN=flowa.example.org FLOWA_PROXY_NET=10.9.8.0/28)
 is "FLOWA_PROXY_NET moves the network and what the app believes together" "$(jq -r '.networks.edge.ipam.config[0].subnet' <<<"$moved") $(app_env FLOWA_TRUSTED_PROXIES <<<"$moved")" "10.9.8.0/28 10.9.8.0/28"
 
 [ "${1:-}" = --up ] || { finish; exit; }
