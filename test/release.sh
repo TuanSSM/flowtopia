@@ -5,10 +5,13 @@
 #   test/release.sh            the image checks, then the deploy checks
 #   test/release.sh --image    the image checks only, for a machine that must not be deployed to
 # The image checks: both architectures under one name, the digest printed, the same commit giving the
-# same bytes, the version compiled in, nothing pushed without --push.
-# The deploy checks: a release is pulled and started and says its version; the next one replaces it and
-# leaves the database running; --rollback goes back; a release that does not exist, or an image that says
-# it is another version, is refused and what runs is left alone; --build builds from the checkout.
+# same bytes (also from brotli copies another brotli made), the version compiled in, a brotli copy of
+# each page file made for it, nothing pushed without --push.
+# The deploy checks: a release is pulled and started and says its version; it sends a script under its
+# hashed name with brotli and leaves its page's files in data/ for the release after it; the next one
+# replaces it and leaves the database running; --rollback goes back; a release that does not exist, or an
+# image that says it is another version, is refused and what runs is left alone; --build builds from the
+# checkout.
 # The deploy checks run deploy.sh for real, with the names and the port of the real service, so they
 # refuse to start where Flowa runs: this is for CI and a spare machine, never the Pi that serves. Nothing
 # is read from .env. The registry, the builder, the containers, the volume and the images are removed at
@@ -61,6 +64,7 @@ cleanup() {
   docker image rm -f "$repo:v9.9.6" "$repo:v9.9.8" "$repo:v9.9.9" >/dev/null 2>&1
   docker buildx rm -f "$BUILDX_BUILDER" >/dev/null 2>&1
   docker rm -f flowa-registry-check >/dev/null 2>&1
+  rm -f brotli/not-a-copy   # should a build have failed before brotli.js removed it
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -90,10 +94,20 @@ is "the binary in the image says the version it was built as" "$(docker run --rm
 is "the image names the commit it was built from" "$(docker image inspect "$repo:v9.9.8" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" "$(git rev-parse HEAD)"
 is "the image's time is the commit's, not the build's" "$(date -u -d "$(docker image inspect "$repo:v9.9.8" --format '{{.Created}}')" +%s)" "$(git log -1 --format=%ct)"
 is "the image runs as user 1000" "$(docker image inspect "$repo:v9.9.8" --format '{{.Config.User}}')" "1000:1000"
+# build-image.sh compresses the page's files before it compiles (brotli.js): each copy unpacks to its file.
+if said=$(node brotli.js --check 2>&1); then ok "the build made a brotli copy of every page file that gains by one"
+else bad "the build made a brotli copy of every page file that gains by one" "$(tail -3 <<<"$said" | paste -sd' ' | cut -c1-300)"; fi
 # The same commit again, with nothing kept from the first build: the same bytes, so the same digest.
+# The brotli copies are left where they are, under a stamp that says another brotli made them and next
+# to a file that is no copy. brotli.js must make every copy again and remove the file: the binary embeds
+# the whole folder, and would otherwise be other bytes than a clean checkout builds.
 docker buildx prune -af >/dev/null 2>&1
 go clean -cache >/dev/null 2>&1
+echo "brotli 0.0.0, made elsewhere" > brotli.stamp
+echo "not a copy" > brotli/not-a-copy
 is "the same commit builds the same bytes" "$(./build-image.sh "$repo" v9.9.8 --push 2>/dev/null)" "$first"
+if [ ! -e brotli/not-a-copy ] && said=$(node brotli.js --check 2>&1); then ok "copies another brotli made, and a file that is no copy, do not get into the build"
+else bad "copies another brotli made, and a file that is no copy, do not get into the build" "$(tail -3 <<<"${said:-brotli/not-a-copy is still there}" | paste -sd' ' | cut -c1-300)"; fi
 second=$(./build-image.sh "$repo" v9.9.9 --push 2>/dev/null)
 if [[ "$second" =~ ^$repo:v9\.9\.9@sha256:[0-9a-f]{64}$ ]] && [ "${second##*@}" != "${first##*@}" ]; then ok "another version is another image"
 else bad "another version is another image" "$second"; fi
@@ -118,6 +132,18 @@ else
   finish; exit
 fi
 is "what runs says it is that release" "$(says)" "v9.9.8"
+# What a browser gets from it: the page names its scripts by the hash of their bytes, and such a name
+# is sent with brotli, to be kept for good. The copy is unpacked here and compared with the file.
+script=$(curl -fsS -m 5 http://127.0.0.1:3169/ | grep -oE 'src="app\.[0-9a-f]{16}\.js"' | cut -d'"' -f2)
+head=$(curl -fsS -m 5 -o "$work/app.br" -D - -H 'Accept-Encoding: gzip, br' "http://127.0.0.1:3169/${script:-app.js}" | tr -d '\r')
+if [ -n "$script" ] && grep -qix 'content-encoding: br' <<<"$head" && grep -qix 'cache-control: public, max-age=31536000, immutable' <<<"$head" &&
+  node -e 'const fs = require("fs"); process.exit(require("zlib").brotliDecompressSync(fs.readFileSync(process.argv[1])).equals(fs.readFileSync("web/app.js")) ? 0 : 1)' "$work/app.br"; then
+  ok "the image sends a script under its hashed name with brotli, to be kept for good"
+else bad "the image sends a script under its hashed name with brotli, to be kept for good" "${script:-the page names no app.<hash>.js}: $(paste -sd' ' <<<"$head" | cut -c1-300)"; fi
+# The read-only container can write the one file the release after this one needs: the files this
+# page names, to go on answering them for an hour.
+if [ -s data/static-kept.json.gz ]; then ok "the release leaves its page's files in data/ for the one after it"
+else bad "the release leaves its page's files in data/ for the one after it" "$(docker logs nunchaku 2>&1 | grep 'static files' | paste -sd' ' | cut -c1-300)"; fi
 if grep -Eq '^deployed v9\.9\.8 in [0-9]+ s$' "$work/deploy.log"; then ok "deploy.sh says what it deployed and how long it took ($(grep '^deployed' "$work/deploy.log"))"
 else bad "deploy.sh says what it deployed and how long it took" "$(log)"; fi
 db=$(docker inspect nunchaku-db --format '{{.Id}} {{.State.StartedAt}}')

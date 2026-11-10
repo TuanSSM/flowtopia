@@ -46,6 +46,9 @@ plan() {
       # The settings a deployment starts from: the release suite deploys with a file made like it.
       .env.example) lint=true; suites release ;;
       deploy.sh|build-image.sh|test/release.sh|.github/workflows/release_tag.yml) lint=true; suites release ;;
+      # The brotli copies of the page's files, made before a release is compiled: the unit job makes them,
+      # checks they unpack to their files and has the server send them; the release suite asks the image.
+      brotli.js|brotli/*) lint=true; unit=true; suites release ;;
       # The backup, the drill that restores it, and the backups of earlier versions the drill keeps.
       backup.sh|test/restore.sh|testdata/backups/*|.github/workflows/restore_drill.yml) lint=true; suites restore ;;
       # The other workflow and release files, the checks lint runs on the docs and on the browser tests'
@@ -98,6 +101,7 @@ self_test() {
   expect "backup.sh,test/restore.sh,testdata/backups/flowa-schema5.dump,.github/workflows/restore_drill.yml" 'code=true lint=true unit=false screenshots=false suites=["restore"]'
   expect ".github/workflows/release_tag.yml" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "deploy.sh,build-image.sh,test/release.sh" 'code=true lint=true unit=false screenshots=false suites=["release"]'
+  expect "brotli.js,brotli/.gitignore" 'code=true lint=true unit=true screenshots=false suites=["release"]'
   expect "compose.yml" "code=true lint=true unit=false screenshots=false suites=$all"
   expect "test/db-image.sh,.github/dependabot.yml" "code=true lint=true unit=false screenshots=false suites=$all"
   expect "Dockerfile,.dockerignore,.env.example" 'code=true lint=true unit=false screenshots=false suites=["release"]'

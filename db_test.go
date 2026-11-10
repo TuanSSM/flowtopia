@@ -64,7 +64,7 @@ func newEnv(t *testing.T) *tenv {
 	t.Cleanup(func() { db.Close() })
 	a := newApp(db, t.TempDir())
 	a.hosts = []string{"example.com"} // the Host httptest gives requests
-	return &tenv{t: t, a: a, h: a.routes(map[string]asset{})}
+	return &tenv{t: t, a: a, h: a.routes(staticOf(t, nil))}
 }
 
 // user makes an account and a session; it returns the user's id and session token.
@@ -1267,7 +1267,7 @@ func TestDBLinkCards(t *testing.T) {
 
 func TestDBStaticCSP(t *testing.T) {
 	e := newEnv(t)
-	e.h = e.a.routes(map[string]asset{"/index.html": {body: []byte("<!doctype html>"), ctype: "text/html", etag: `"1"`}})
+	e.h = e.a.routes(staticOf(t, map[string]string{"index.html": "<!doctype html>"}))
 	get := func() string {
 		w := httptest.NewRecorder()
 		e.h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))

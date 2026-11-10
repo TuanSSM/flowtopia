@@ -1,0 +1,2 @@
+# What brotli.js writes here is made from web/ at build time and is not kept in git.
+*.br

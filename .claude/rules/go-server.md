@@ -18,7 +18,12 @@ paths:
 - `go test ./...` is in CI; `main_test.go` covers link cleaning, mentions, stats, tags and
   combos. New logic that is not a thin handler (parsing, scoring, migrations) gets a test there.
 - The binary is built on the host (`CGO_ENABLED=0`), the image is `FROM scratch`: no cgo, no
-  files read from disk except `-data` for backups.
+  files read from disk except `-data`, for backups and for the page files of the build before
+  (`static-kept.json.gz`: only scripts and style sheets are taken from it, each checked against the
+  hash in its name, and they are sent to be kept for five minutes, never as `immutable`).
+- Page files are served from the table `newStatic` builds at start (README, Static files): hashed
+  names are `immutable`, plain names and `index.html` are `no-cache` with an `ETag`. A file
+  `index.html` names gets its hashed name by itself; do not set cache headers per file.
 - Before pushing: `gofmt -l . && go vet ./...`. CI also runs staticcheck; treat its findings as
   errors.
 - Schema changes are new entries appended to `migrations` in `main.go`; never edit or reorder one
