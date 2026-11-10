@@ -87,7 +87,7 @@ async function ntSyncAll(all) {
       const doc = p.id === ui.prop ? { state } : docs[p.id];
       if (!doc || !(await ntSync(p.id, doc))) continue;
       if (p.id === ui.prop) commit();
-      else { const r = await api('progress/' + p.id, 'PUT', { rev: docs[p.id].rev, state: doc.state }); if (r.ok) docs[p.id].rev = r.data.rev; }
+      else { const r = await api('progress/' + p.id, 'PUT', { rev: docs[p.id].rev, state: doc.state }); if (r.ok) { docs[p.id].rev = r.data.rev; synced[p.id] = JSON.stringify(doc.state); } }
     }
   } finally { NT.syncing = false; }
 }

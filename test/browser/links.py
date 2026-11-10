@@ -71,6 +71,28 @@ try:
         before=code(viewer,thumb) if thumb else 0
         api(mo,'mod/actions',{'action':'hide','kind':'post','id':hp,'reason':'spam'})
         check('a hidden post’s preview is no longer served to others',before==200 and code(viewer,thumb)==404,(before,code(viewer,thumb) if thumb else None))
+        # A link that was attached and then taken off is not lost, and only a link the server takes is offered.
+        reload(BASE+'?draft=1#/timeline')
+        offer=lambda: js("const r=document.querySelector('.link-offer');return r.hidden?'':r.textContent.trim()")
+        draft=lambda: js("return [document.querySelector('#compose-form textarea').value,document.querySelectorAll('.draft-chips .link-chip').length]")
+        compose('Watch this (https://youtu.be/dQw4w9WgXcQ).')
+        check('a link at the end of a sentence is offered without the bracket and the full stop','YouTube link found' in offer(),offer())
+        click('[data-act=link-attach]');time.sleep(.6)
+        check('attaching takes exactly the link out of the text',draft()==['Watch this ().',1],draft())
+        click('[data-act=link-rm]');time.sleep(.6)
+        check('removing the card puts the link back in the text and offers it again',draft()==['Watch this (). https://youtu.be/dQw4w9WgXcQ',0] and 'YouTube link found' in offer(),(draft(),offer()))
+        click('[data-act=link-attach]');time.sleep(.6)
+        compose('Same one again https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=5')
+        check('the same video written another way is not offered twice',offer()=='' and draft()[1]==1,(offer(),draft()))
+        click('[data-act=link-rm]');time.sleep(.6)
+        compose('')
+        for bad,why in (('https://www.youtube.com/watch?v=short','a video id of the wrong length'),('https://youtube.com:8443/watch?v=dQw4w9WgXcQ','a port in the address'),('https://www.instagram.com/flowa_test/','a profile, not a post')):
+            compose('Look '+bad)
+            check(f'no card is offered for {why}',offer()=='',offer())
+        compose('')
+        try: api(op,'posts',{'body':'x','links':['https://www.youtube.com/watch?v=short']});named=None
+        except urllib.error.HTTPError as e: named=(e.code,json.loads(e.read()).get('error',''))
+        check('a link the server refuses is named in the answer',bool(named) and named[0]==400 and 'https://www.youtube.com/watch?v=short' in named[1] and named[1].startswith('This link cannot be a card'),named)
         # With link cards off, the composer offers nothing.
         api(op,'flags',{'flags':{'linkCards':False}},'PUT');time.sleep(2.2)
         reload(BASE+'?off=1#/timeline')

@@ -15,7 +15,7 @@ def saved_combo(want):
 def add(sid):
     js("const s=document.querySelector('[data-change=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}))",sid);time.sleep(1.1)
 try:
-    admin();start();signin()
+    op=admin();start();signin()
     if js("return !!document.querySelector('input[name=prop]')"): js("for(const i of document.querySelectorAll('input[name=prop]'))i.checked=i.value==='nunchaku';document.querySelector('#props-form').requestSubmit()");time.sleep(3.5)
     nav('#/combos',2.5)
     js("const f=document.querySelector('#combo-form');f.name.value='Test loop';f.requestSubmit()");time.sleep(1.2)
@@ -61,6 +61,33 @@ try:
     check('only one combo is open; the other is a single line',js("return document.querySelectorAll('.cb').length")==1 and js("return document.querySelectorAll('.cb-row').length")==1 and 'Test loop' in txt('.cb-row'))
     click('.cb-row');time.sleep(1.2)
     check('clicking a closed combo opens it and plays it',js("return document.querySelector('.cb h2').textContent")=='Test loop' and js("return !!document.querySelector('#combo-cv')"))
+    # Two devices on one account: the other one levels a skill while this page still holds the older copy.
+    # Saving here must keep both changes, and the combos made above.
+    def doc(): return json.loads(op.open(BASE+'api/progress/nunchaku',timeout=20).read())
+    def until(fn,n=40):
+        for _ in range(n):
+            v=fn()
+            if v: return v
+            time.sleep(.5)
+        return fn()
+    nav('#/prop/nunchaku/F/F1',2)
+    side=js("return document.querySelector('#panel [data-act=level][data-id=F1]').dataset.side")
+    time.sleep(2);d=doc();combos=[c['name'] for c in d['state']['combos']];now=time.strftime('%Y-%m-%dT%H:%M:%S.000Z',time.gmtime())
+    d['state']['skills']['F1']={side:3,'updated':now};d['state']['events'].insert(0,{'t':now,'id':'F1','side':'' if side=='O' else side,'from':0,'to':3})
+    api(op,'progress/nunchaku',{'rev':d['rev'],'state':d['state']},'PUT')
+    nav('#/prop/nunchaku/F/F5',2)
+    side5=js("return document.querySelector('#panel [data-act=level][data-id=F5]').dataset.side")
+    click('#panel [data-act=level][data-id=F5][data-v="2"]')
+    both=until(lambda: (lambda k: k.get('F1',{}).get(side)==3 and k.get('F5',{}).get(side5)==2)(doc()['state']['skills']))
+    d=doc()
+    check('a skill levelled here and another levelled on a second device both survive',bool(both) and [c['name'] for c in d['state']['combos']]==combos and {'F1','F5'}<={e['id'] for e in d['state']['events']},(d['state']['skills'].get('F1'),d['state']['skills'].get('F5')))
+    check('the page says both sets of changes were kept',js("const e=document.querySelector('#toast');return !e.hidden&&e.textContent")=='Changed on another device too. Both sets of changes were kept.',txt('#toast'))
+    nav('#/prop/nunchaku/F/F1',2)
+    check("the other device's level shows on this page without a reload",js("return document.querySelector('#panel [data-act=level][data-id=F1].on')?.dataset.v")=='3')
+    rev=d['rev'];click('#panel [data-act=level][data-id=F1][data-v="1"]')
+    again=until(lambda: doc()['state']['skills']['F1'].get(side)==1)
+    d=doc()
+    check('the next edit saves on top without another clash',bool(again) and d['rev']==rev+1 and d['state']['skills']['F5'].get(side5)==2,(rev,d['rev']))
     cmd('WebDriver:SetWindowRect',width=480,height=900);time.sleep(.8);shot('/tmp/flowa-test/combo-narrow.png')
     check('no page overflow on a narrow screen',js("return document.documentElement.scrollWidth<=innerWidth"))
 finally:

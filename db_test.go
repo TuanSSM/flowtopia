@@ -89,6 +89,13 @@ func (e *tenv) session(id int64) string {
 // do sends a request as the session's user and decodes the JSON answer.
 func (e *tenv) do(tok, method, path string, body any) (int, map[string]any) {
 	e.t.Helper()
+	code, out, _ := e.doH(tok, method, path, body, nil)
+	return code, out
+}
+
+// doH is do with request headers, and it also returns the headers of the answer.
+func (e *tenv) doH(tok, method, path string, body any, hdr map[string]string) (int, map[string]any, http.Header) {
+	e.t.Helper()
 	var rd *bytes.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -98,6 +105,9 @@ func (e *tenv) do(tok, method, path string, body any) (int, map[string]any) {
 	}
 	r := httptest.NewRequest(method, path, rd)
 	r.Header.Set("Content-Type", "application/json")
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
 	if tok != "" {
 		r.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
 	}
@@ -106,7 +116,7 @@ func (e *tenv) do(tok, method, path string, body any) (int, map[string]any) {
 	out := map[string]any{}
 	json.Unmarshal(w.Body.Bytes(), &out)
 	out["_raw"] = w.Body.String()
-	return w.Code, out
+	return w.Code, out, w.Result().Header
 }
 
 // from sends a request with no session from the given address ("203.0.113.9:5000") and returns the
@@ -1506,4 +1516,251 @@ func TestDBBookmarks(t *testing.T) {
 	}
 	e.setFlag("bookmarks", false)
 	e.must(404, kim, "GET", "/api/bookmarks", nil)
+}
+
+// A post or a comment sent twice under one Idempotency-Key is made once: the second tap on a
+// slow network, or the retry after a lost answer, gets the first one back.
+func TestDBIdempotentPost(t *testing.T) {
+	e := newEnv(t)
+	_, ann := e.user("ann", "user")
+	_, bob := e.user("bob", "user")
+	key := func(k string) map[string]string { return map[string]string{"Idempotency-Key": k} }
+	postID := func(out map[string]any) int64 {
+		t.Helper()
+		list, _ := out["posts"].([]any)
+		if len(list) != 1 {
+			t.Fatalf("no post in the answer: %v", out["_raw"])
+		}
+		return num(list[0].(map[string]any)["id"])
+	}
+	posts := func() int { return e.count(`SELECT count(*) FROM posts`) }
+
+	// The same key twice: one post, the same answer, and the repeat says it is one.
+	code, out, h := e.doH(ann, "POST", "/api/posts", map[string]any{"body": "first drop"}, key("key-aaaa-0001"))
+	if code != 200 || h.Get("Idempotency-Replayed") != "" {
+		t.Fatalf("first: %d %v %v", code, out["_raw"], h)
+	}
+	first := postID(out)
+	code, out, h = e.doH(ann, "POST", "/api/posts", map[string]any{"body": "first drop"}, key("key-aaaa-0001"))
+	if code != 200 || postID(out) != first || h.Get("Idempotency-Replayed") != "true" || posts() != 1 {
+		t.Fatalf("repeat: %d, post %d want %d, replayed %q, %d posts", code, postID(out), first, h.Get("Idempotency-Replayed"), posts())
+	}
+	// Another member with the same key, and the same member with another key, each make their own.
+	if _, out, _ = e.doH(bob, "POST", "/api/posts", map[string]any{"body": "mine"}, key("key-aaaa-0001")); postID(out) == first {
+		t.Fatal("bob was given ann's post")
+	}
+	if _, out, _ = e.doH(ann, "POST", "/api/posts", map[string]any{"body": "second"}, key("key-aaaa-0002")); postID(out) == first || posts() != 3 {
+		t.Fatalf("a new key must make a new post: %d posts", posts())
+	}
+	// Without a key nothing is remembered: two requests are two posts.
+	e.post(ann, "plain")
+	e.post(ann, "plain")
+	if posts() != 5 {
+		t.Fatalf("%d posts, want 5", posts())
+	}
+	// A key that is not a key is refused before anything is written.
+	for _, bad := range []string{"short", "has space in it", strings.Repeat("k", 65), "semi;colon-key"} {
+		if code, _, _ := e.doH(ann, "POST", "/api/posts", map[string]any{"body": "x"}, key(bad)); code != 400 {
+			t.Fatalf("key %q: %d, want 400", bad, code)
+		}
+	}
+	// A try that was turned down is forgotten, so the corrected post goes through under the same key.
+	if code, _, _ := e.doH(ann, "POST", "/api/posts", map[string]any{"body": "   "}, key("key-aaaa-0003")); code != 400 {
+		t.Fatalf("empty post: %d", code)
+	}
+	if code, out, h := e.doH(ann, "POST", "/api/posts", map[string]any{"body": "now with words"}, key("key-aaaa-0003")); code != 200 || h.Get("Idempotency-Replayed") != "" || posts() != 6 {
+		t.Fatalf("corrected post: %d %v, %d posts", code, out["_raw"], posts())
+	}
+	// Eight copies at once, as a burst of taps would send them: one post, eight identical answers.
+	ids := make(chan int64, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			code, out, _ := e.doH(ann, "POST", "/api/posts", map[string]any{"body": "burst"}, key("key-aaaa-0004"))
+			list, _ := out["posts"].([]any)
+			if code != 200 || len(list) != 1 {
+				ids <- -int64(code)
+				return
+			}
+			ids <- num(list[0].(map[string]any)["id"])
+		}()
+	}
+	burst := <-ids
+	for i := 1; i < 8; i++ {
+		if id := <-ids; id != burst || id <= 0 {
+			t.Fatalf("burst answers differ: %d and %d", burst, id)
+		}
+	}
+	if posts() != 7 {
+		t.Fatalf("%d posts after the burst, want 7", posts())
+	}
+
+	// Comments: the same key on the same post is one comment, and the key is separate per post.
+	path := fmt.Sprintf("/api/posts/%d/comments", first)
+	code, out, _ = e.doH(bob, "POST", path, map[string]any{"body": "nice"}, key("key-bbbb-0001"))
+	if code != 200 {
+		t.Fatalf("comment: %d %v", code, out["_raw"])
+	}
+	cid := num(out["comment"].(map[string]any)["id"])
+	code, out, h = e.doH(bob, "POST", path, map[string]any{"body": "nice"}, key("key-bbbb-0001"))
+	if code != 200 || num(out["comment"].(map[string]any)["id"]) != cid || postID(out) != first || h.Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("repeated comment: %d %v", code, out["_raw"])
+	}
+	if n := e.count(`SELECT count(*) FROM comments`); n != 1 {
+		t.Fatalf("%d comments, want 1", n)
+	}
+	if n := e.count(`SELECT count(*) FROM notifications WHERE kind = 'comment'`); n != 1 {
+		t.Fatalf("ann was told %d times about one comment", n)
+	}
+	other := e.post(ann, "another post")
+	if _, out, _ = e.doH(bob, "POST", fmt.Sprintf("/api/posts/%d/comments", other), map[string]any{"body": "nice"}, key("key-bbbb-0001")); num(out["comment"].(map[string]any)["id"]) == cid {
+		t.Fatal("the key of a comment on one post answered for another post")
+	}
+	// A repeat of a comment that was removed since says so; it does not write it again.
+	e.a.db.Exec(`DELETE FROM comments WHERE id = $1`, cid)
+	if code, _, _ := e.doH(bob, "POST", path, map[string]any{"body": "nice"}, key("key-bbbb-0001")); code != 404 {
+		t.Fatalf("repeat of a removed comment: %d, want 404", code)
+	}
+
+	// A repeat is a read: it is answered when the hourly allowance is used up, and costs nothing.
+	e.a.lim.posts = newLimiter(1, time.Hour)
+	if code, _, _ := e.doH(bob, "POST", "/api/posts", map[string]any{"body": "last one"}, key("key-cccc-0001")); code != 200 {
+		t.Fatalf("post within the allowance: %d", code)
+	}
+	if code, _, h := e.doH(bob, "POST", "/api/posts", map[string]any{"body": "last one"}, key("key-cccc-0001")); code != 200 || h.Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("repeat with the allowance used up: %d", code)
+	}
+	if code, _, _ := e.doH(bob, "POST", "/api/posts", map[string]any{"body": "one more"}, key("key-cccc-0002")); code != 429 {
+		t.Fatalf("a new post over the allowance: %d, want 429", code)
+	}
+	// The refused one was forgotten too: once there is room, its key makes the post.
+	e.a.lim.posts = newLimiter(5, time.Hour)
+	if code, _, h := e.doH(bob, "POST", "/api/posts", map[string]any{"body": "one more"}, key("key-cccc-0002")); code != 200 || h.Get("Idempotency-Replayed") != "" {
+		t.Fatalf("after the allowance came back: %d", code)
+	}
+
+	// Keys are forgotten after the window, and the store never grows past its cap.
+	s := e.a.sent
+	s.mu.Lock()
+	for _, en := range s.m {
+		en.at = time.Now().Add(-onceWindow - time.Minute)
+	}
+	s.swept = time.Time{}
+	s.mu.Unlock()
+	before := posts()
+	if code, _, h := e.doH(ann, "POST", "/api/posts", map[string]any{"body": "first drop"}, key("key-aaaa-0001")); code != 200 || h.Get("Idempotency-Replayed") != "" || posts() != before+1 {
+		t.Fatalf("a key older than the window must make a new post: %d, %d posts", code, posts())
+	}
+	s.mu.Lock()
+	left := len(s.m)
+	s.mu.Unlock()
+	if left != 1 {
+		t.Fatalf("%d keys remembered after the sweep, want 1", left)
+	}
+}
+
+// A profile save writes only what it names, and a save made against an older copy of the bio,
+// links and preferences is turned down instead of undoing what another device saved.
+func TestDBProfileRev(t *testing.T) {
+	e := newEnv(t)
+	_, phone := e.user("pat", "user")
+	id := int64(e.count(`SELECT id FROM users WHERE username = 'pat'`))
+	laptop := e.session(id)
+	userOf := func(out map[string]any) map[string]any { t.Helper(); return out["user"].(map[string]any) }
+	rev := func(tok string) string {
+		t.Helper()
+		r, _ := userOf(e.must(200, tok, "GET", "/api/me", nil))["rev"].(string)
+		if r == "" {
+			t.Fatal("GET /api/me carries no rev")
+		}
+		return r
+	}
+	start := rev(phone)
+	if rev(laptop) != start {
+		t.Fatal("two sessions of one member see different revs")
+	}
+	// The phone saves a bio. The answer carries the new rev.
+	out := e.must(200, phone, "PUT", "/api/me", map[string]any{"bio": "Poi since 2019.", "rev": start})
+	afterBio, _ := userOf(out)["rev"].(string)
+	if afterBio == "" || afterBio == start {
+		t.Fatalf("rev after a bio change: %q (was %q)", afterBio, start)
+	}
+	// The laptop, still on the old copy, saves a link: turned down, nothing written, and the
+	// answer carries the account as it is now so the page can show it.
+	code, out := e.do(laptop, "PUT", "/api/me", map[string]any{"links": map[string]string{"instagram": "pat.spins"}, "rev": start})
+	if code != 409 || userOf(out)["bio"] != "Poi since 2019." || userOf(out)["rev"] != afterBio || !strings.Contains(fmt.Sprint(out["error"]), "another device") {
+		t.Fatalf("stale save: %d %v", code, out["_raw"])
+	}
+	if n := e.count(`SELECT count(*) FROM users WHERE username = 'pat' AND links = '{}'::jsonb`); n != 1 {
+		t.Fatal("a refused save wrote its link")
+	}
+	// Saved again on the fresh rev, the link lands and the bio is still there.
+	out = e.must(200, laptop, "PUT", "/api/me", map[string]any{"links": map[string]string{"instagram": "pat.spins"}, "rev": afterBio})
+	u := userOf(out)
+	if u["bio"] != "Poi since 2019." || fmt.Sprint(u["links"]) != "map[instagram:pat.spins]" {
+		t.Fatalf("after the second save: %v", out["_raw"])
+	}
+	afterLink, _ := u["rev"].(string)
+	// Links and preferences are kept per key: naming one leaves the others, an empty one goes.
+	out = e.must(200, phone, "PUT", "/api/me", map[string]any{"links": map[string]string{"youtube": "@patspins"}, "prefs": map[string]bool{"autoPost": true}})
+	u = userOf(out)
+	if l := u["links"].(map[string]any); l["instagram"] != "pat.spins" || l["youtube"] == nil {
+		t.Fatalf("links after adding one: %v", u["links"])
+	}
+	out = e.must(200, phone, "PUT", "/api/me", map[string]any{"links": map[string]string{"instagram": ""}, "prefs": map[string]bool{"shareTransitions": true}})
+	u = userOf(out)
+	if l := u["links"].(map[string]any); len(l) != 1 || l["youtube"] == nil {
+		t.Fatalf("links after clearing one: %v", u["links"])
+	}
+	if p := u["prefs"].(map[string]any); p["autoPost"] != true || p["shareTransitions"] != true {
+		t.Fatalf("prefs kept per key: %v", u["prefs"])
+	}
+	if u["rev"] == afterLink {
+		t.Fatal("the rev did not move with the links")
+	}
+	// What the page writes by itself does not move the rev and does not need one: stats, the
+	// notes already read, the display name, the picture. A save made on the same rev still lands.
+	cur := rev(laptop)
+	e.must(200, phone, "PUT", "/api/me", map[string]any{"stats": map[string]any{"xp": 120, "level": 2}})
+	e.must(200, phone, "PUT", "/api/me", map[string]any{"seen": []string{"tour"}})
+	e.must(200, phone, "PUT", "/api/me", map[string]any{"displayName": "Pat"})
+	e.must(200, phone, "PUT", "/api/me", map[string]any{"avatar": dataURL(t, "jpeg", 40, 40, nil)})
+	if rev(laptop) != cur {
+		t.Fatal("stats, seen, name or picture moved the profile rev")
+	}
+	out = e.must(200, laptop, "PUT", "/api/me", map[string]any{"bio": "Poi and staff.", "rev": cur})
+	u = userOf(out)
+	// And the bio save did not put back the old stats, name, picture or read notes it had loaded.
+	if u["displayName"] != "Pat" || fmt.Sprint(u["seen"]) != "[tour]" || u["avatar"] == "" || !strings.Contains(fmt.Sprint(u["stats"]), "120") {
+		t.Fatalf("a bio save overwrote other fields: %v", out["_raw"])
+	}
+	// A stats write that arrives after the bio save keeps the bio (it used to write every column).
+	e.must(200, phone, "PUT", "/api/me", map[string]any{"stats": map[string]any{"xp": 130, "level": 2}})
+	if got := userOf(e.must(200, phone, "GET", "/api/me", nil))["bio"]; got != "Poi and staff." {
+		t.Fatalf("bio after a later stats write: %v", got)
+	}
+	// A wrong rev is refused whatever else the body holds, and a body that fails its checks is a
+	// 400 before the rev is looked at. An empty body changes nothing and answers with the account.
+	e.must(409, phone, "PUT", "/api/me", map[string]any{"stats": map[string]any{"xp": 1}, "rev": "0000000000000000"})
+	e.must(400, phone, "PUT", "/api/me", map[string]any{"bio": strings.Repeat("x", 301), "rev": "0000000000000000"})
+	e.must(400, phone, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"nope": true}})
+	if got := userOf(e.must(200, phone, "PUT", "/api/me", map[string]any{})); got["bio"] != "Poi and staff." || got["rev"] == "" {
+		t.Fatalf("empty save: %v", got)
+	}
+	// Only the owner's own copy carries the rev.
+	_, other := e.user("quin", "user")
+	if raw := e.must(200, other, "GET", "/api/users/pat", nil)["_raw"].(string); strings.Contains(raw, `"rev"`) {
+		t.Fatalf("someone else's view of the profile carries a rev: %s", raw)
+	}
+	// Two saves at once on the same rev: exactly one wins.
+	cur = rev(phone)
+	codes := make(chan int, 2)
+	for _, b := range []string{"From the phone.", "From the laptop."} {
+		go func() {
+			c, _ := e.do(phone, "PUT", "/api/me", map[string]any{"bio": b, "rev": cur})
+			codes <- c
+		}()
+	}
+	if a, b := <-codes, <-codes; a+b != 200+409 {
+		t.Fatalf("two saves on one rev answered %d and %d, want one 200 and one 409", a, b)
+	}
 }

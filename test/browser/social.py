@@ -188,5 +188,106 @@ try:
     click(f'.post[data-post="{rp}"] [data-act=bookmark]');time.sleep(1.2)
     check('removing a bookmark on the page takes the post off it and off the server',js("return !document.querySelector('.post[data-post=\"'+arguments[0]+'\"]')",str(rp)) and bm()['postIds']==[],bm()['postIds'])
     check('a bad bookmark is refused',refused(op,'bookmarks',{'kind':'skill','ref':'drums:F1'}))
+    # Nothing lost and nothing doubled: quick double submits, a lost answer, an empty comment, a post
+    # that went away, pictures with see-through parts, the leave warning, and a draft at sign-out.
+    bodies=lambda t: [p['body'] for p in get(op,'posts')['posts'] if p['body']==t]
+    toastIs=lambda t: js("const e=document.querySelector('#toast');return !e.hidden&&e.textContent")==t
+    leaving="const e=new Event('beforeunload',{cancelable:true});window.dispatchEvent(e);return e.defaultPrevented"
+    typed="const t=document.querySelector('#compose-form textarea');t.value=arguments[0];t.dispatchEvent(new Event('input',{bubbles:true}))"
+    def pick(sel,b64,name,kind):
+        # Puts a file on a hidden file input the way a person choosing it would.
+        js("const u=Uint8Array.from(atob(arguments[1]),c=>c.charCodeAt(0)),d=new DataTransfer();d.items.add(new File([u],arguments[2],{type:arguments[3]}));const i=document.querySelector(arguments[0]);i.files=d.files;i.dispatchEvent(new Event('change',{bubbles:true}))",sel,b64,name,kind)
+    corner="return (async()=>{const i=new Image();i.src=arguments[0];await i.decode();const c=document.createElement('canvas');c.width=i.naturalWidth;c.height=i.naturalHeight;const g=c.getContext('2d');g.drawImage(i,0,0);return [...g.getImageData(1,1,1,1).data]})()"
+    import zlib,struct
+    chunk=lambda k,d: struct.pack('>I',len(d))+k+d+struct.pack('>I',zlib.crc32(k+d))
+    clear_png=base64.b64encode(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',64,64,8,6,0,0,0))+chunk(b'IDAT',zlib.compress((b'\0'+b'\0'*256)*64))+chunk(b'IEND',b'')).decode()
+    one_gif='R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+    mine=api(op,f'posts/{rp}/comments',{'body':'Mine to edit'})['comment']['id']
+    quiet=lambda: js("document.querySelector('#toast').hidden=true")
+    nav('#/practice',.8);nav('#/timeline',2.5)
+    check('with nothing typed, leaving the page is not held up',js(leaving) is False and js("return socialDraft()") is False)
+    before=get(op,f'posts/{rp}')['posts'][0]['commentCount']
+    js("const f=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .cmt-form:not(.reply-form)');f.body.value='   ';f.requestSubmit()",str(rp));time.sleep(.8)
+    check('a comment of only spaces is not sent, and the page says why',toastIs('Write something first.') and get(op,f'posts/{rp}')['posts'][0]['commentCount']==before,txt('#toast'))
+    quiet();js("document.activeElement.blur();document.querySelector('[data-act=cmt-edit][data-id=\"'+arguments[0]+'\"]').click()",str(mine));time.sleep(.6)
+    js("const t=document.querySelector('.cmt-edit textarea');t.value='  \\n ';t.form.requestSubmit()");time.sleep(.8)
+    said=toastIs('Write something first.');open_still=js("return !!document.querySelector('.cmt-edit')")
+    js("document.activeElement.blur();document.querySelector('[data-act=cmt-edit-cancel]').click()");time.sleep(.6)
+    check('an edit emptied to spaces is not saved, and the page says why',said and open_still and txt(f'#c-{mine} .cmt-body')=='Mine to edit',(said,open_still,txt(f'#c-{mine} .cmt-body')))
+    quiet();js("document.querySelector('[data-act=cmt-reply][data-id=\"'+arguments[0]+'\"]').click()",str(mine));time.sleep(.6)
+    js("const i=document.querySelector('.reply-form input');i.value='   ';i.form.requestSubmit()");time.sleep(.8)
+    said=toastIs('Write something first.')
+    js("document.activeElement.blur();document.querySelector('[data-act=reply-cancel]').click()");time.sleep(.6)
+    check('a reply of only spaces is not sent either',said and get(op,f'posts/{rp}')['posts'][0]['commentCount']==before and js("return !document.querySelector('.reply-form')"),said)
+    js("const f=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .cmt-form:not(.reply-form)');f.body.value='half a thought'",str(rp))
+    check('a half-written comment holds the page when leaving',js(leaving) is True)
+    js("const f=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .cmt-form:not(.reply-form)');f.body.value=''",str(rp))
+    # With the cursor resting in a comment box the page is not redrawn: a post sent from the composer must still leave it empty.
+    js("document.querySelector('.post[data-post=\"'+arguments[0]+'\"] .cmt-form:not(.reply-form)').body.focus();const f=document.querySelector('#compose-form');f.body.value='Posted with the cursor elsewhere';f.requestSubmit()",str(rp))
+    wait(lambda: bodies('Posted with the cursor elsewhere'),n=20);time.sleep(1)
+    check('a post sent while the cursor rests in a comment box empties the composer',js("return [document.activeElement.tagName,document.querySelector('#compose-form textarea').value]")==['INPUT',''] and toastIs('Posted.') and len(bodies('Posted with the cursor elsewhere'))==1,js("return [document.activeElement.tagName,document.querySelector('#compose-form textarea').value]"))
+    js("document.activeElement.blur()")
+    js(typed,'A draft worth keeping')
+    check('a draft in the composer holds the page when leaving',js(leaving) is True and js("return socialDraft()") is True)
+    js(typed,'')
+    check('an emptied composer lets the page go again',js(leaving) is False)
+    off=js("const f=document.querySelector('#compose-form');f.body.value='Sent twice by a quick thumb';f.requestSubmit();const off=f.querySelector('button[type=submit]').disabled;f.requestSubmit();return off")
+    wait(lambda: bodies('Sent twice by a quick thumb'),n=20);time.sleep(1.5)
+    check('two quick taps on Post make one post, and the button is off while it sends',off is True and len(bodies('Sent twice by a quick thumb'))==1 and js("return [...document.querySelectorAll('.post-body')].filter(b=>b.textContent==='Sent twice by a quick thumb').length")==1,(off,len(bodies('Sent twice by a quick thumb'))))
+    # The server saves the post but the answer never arrives: sending the same draft again must not make a second one.
+    js("const real=window.fetch;window.__lost=0;window.fetch=function(u,o){if(o&&o.method==='POST'&&String(u)==='api/posts'&&!window.__lost){window.__lost=1;return real.call(window,u,o).then(()=>{throw new TypeError('lost')})}return real.call(window,u,o)}")
+    js("const f=document.querySelector('#compose-form');f.body.value='The answer got lost on the way';f.requestSubmit()")
+    wait(lambda: bodies('The answer got lost on the way'),n=20);time.sleep(1)
+    kept=js("return [window.__lost,document.querySelector('#compose-form textarea').value,document.querySelector('#compose-form button[type=submit]').disabled]")
+    check('when the answer is lost the draft stays and the button comes back',kept==[1,'The answer got lost on the way',False] and toastIs('Could not reach the Pi.'),kept)
+    js("document.querySelector('#compose-form').requestSubmit()");time.sleep(2)
+    check('sending the same draft again does not post it twice',len(bodies('The answer got lost on the way'))==1 and js("return [...document.querySelectorAll('.post-body')].filter(b=>b.textContent==='The answer got lost on the way').length")==1 and js("return document.querySelector('#compose-form textarea').value")=='',len(bodies('The answer got lost on the way')))
+    # A like on a post that was deleted elsewhere is taken back.
+    gone=api(sam,'posts',{'body':'Here now, gone in a moment'})['posts'][0]['id']
+    nav('#/practice',.8);nav('#/timeline',2.5)
+    api(sam,f'posts/{gone}',{},'DELETE')
+    click(f'.post[data-post="{gone}"] [data-act=like]');time.sleep(1.5)
+    heart=js("const b=document.querySelector('.post[data-post=\"'+arguments[0]+'\"] [data-act=like]');return b&&[b.classList.contains('on'),b.getAttribute('aria-pressed'),b.querySelector('.num').textContent]",str(gone))
+    check('liking a post that was just deleted turns the heart back off and says so',heart==[False,'false',''] and toastIs('No such post.'),(heart,txt('#toast')))
+    # Pictures: see-through parts become white, not black, and an animated picture says it is kept as a still.
+    pick('[data-change=compose-img]',clear_png,'clear.png','image/png')
+    src=wait(lambda: js("return document.querySelector('.compose-img img')?.src"),n=20)
+    px=js(corner,src) if src else None
+    check('a see-through picture lands on white in the composer',bool(px) and min(px[:3])>=245,px)
+    check('a still picture carries no note about animation',js("return !document.querySelector('.still-note')"))
+    click('[data-act=compose-img-rm]');time.sleep(.5)
+    pick('[data-change=compose-img]',one_gif,'spin.gif','image/gif')
+    wait(lambda: js("return !!document.querySelector('.compose-img img')"),n=20)
+    check('an animated picture is marked as kept as a still',txt('.still-note')=='Animated pictures are kept as a still.',txt('.still-note'))
+    click('[data-act=compose-img-rm]');time.sleep(.5)
+    check('removing the picture removes the note',js("return !document.querySelector('.still-note')&&!document.querySelector('.compose-img')"))
+    nav('#/profile',1.5)
+    pick('[data-change=avatar]',clear_png,'clear.png','image/png')
+    wait(lambda: toastIs('Picture updated.'),n=20)
+    av=get(op,'me')['user']['avatar'];px=js(corner,av) if av.startswith('data:image/jpeg') else None
+    check('a see-through profile picture lands on white',bool(px) and min(px[:3])>=245,px)
+    pick('[data-change=avatar]',one_gif,'spin.gif','image/gif')
+    check('an animated profile picture says it is kept as a still',bool(wait(lambda: toastIs('Picture updated. Animated pictures are kept as a still.'),n=20)),txt('#toast'))
+    # The About form against an edit from another device: neither side's change is lost.
+    nav('#/practice',.8);nav('#/profile',1.5)
+    js("document.querySelector('#about-form').bio.value='Typed here while the phone changed a link.'")
+    check('an unsaved About form holds the page when leaving',js("return aboutDirty()") is True and js(leaving) is True)
+    api(op,'me',{'links':{'tiktok':'from.the.phone'}},'PUT')
+    js("document.querySelector('#about-form').requestSubmit()");time.sleep(1.5)
+    form=js("const f=document.querySelector('#about-form');return [f.bio.value,f.tiktok.value,f.instagram.value]")
+    check('saving over a newer profile is refused with the reason, the typed bio stays and the new link shows',form==['Typed here while the phone changed a link.','from.the.phone','flowa_test'] and 'changed on another device' in (txt('#about-err') or '') and get(op,'me')['user']['bio'].startswith('Nunchaku since'),(form,txt('#about-err')))
+    js("document.querySelector('#about-form').requestSubmit()");time.sleep(1.5)
+    me=get(op,'me')['user']
+    check('saving again puts the edit on top and keeps the other device\'s link',me['bio']=='Typed here while the phone changed a link.' and me['links']=={'instagram':'flowa_test','tiktok':'from.the.phone','youtube':'FlowaTube'} and js("return aboutDirty()") is False,(me['bio'],me['links']))
+    # A draft does not follow the next person who signs in on this browser.
+    nav('#/timeline',2.5)
+    js(typed,'Private until I post it')
+    pick('[data-change=compose-img]',clear_png,'clear.png','image/png')
+    wait(lambda: js("return !!document.querySelector('.compose-img img')"),n=20)
+    nav('#/profile',1.5);click('[data-act=signout]');wait(lambda: toastIs('Signed out.'),n=20)
+    nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value='sam';f.elements.password.value='flowa-test-only';f.requestSubmit()");time.sleep(2.5)
+    nav('#/timeline',2.5)
+    left=js("const f=document.querySelector('#compose-form');return f&&[f.body.value,!!document.querySelector('.compose-img'),socialDraft()]")
+    check('after sign-out the next person on this browser finds an empty composer',left==['',False,False] and get(sam,'me')['user']['username']=='sam' and 'Private until' not in js("return document.body.textContent"),left)
 finally:
     done()

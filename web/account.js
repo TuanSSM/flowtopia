@@ -2,11 +2,14 @@
 // Accounts, props and onboarding. Loaded before app.js, which calls into it.
 let me = null, perms = []; // perms: what the signed-in user may do, from the server
 const docs = {}; // progress per prop for the signed-in user: { rev, state }
+// Per prop, the progress as the server last had it (JSON). When a save meets a newer copy from
+// another device, this is the common starting point the two sets of edits are compared against.
+const synced = {};
 
-async function api(path, method = 'GET', body) {
+async function api(path, method = 'GET', body, headers) {
   try {
     const opt = { method, cache: 'no-store' };
-    if (method !== 'GET') { opt.headers = { 'Content-Type': 'application/json' }; opt.body = JSON.stringify(body ?? {}); }
+    if (method !== 'GET') { opt.headers = { 'Content-Type': 'application/json', ...headers }; opt.body = JSON.stringify(body ?? {}); }
     const r = await fetch('api/' + path, opt);
     let data = null;
     try { data = await r.json(); } catch { /* no body */ }
@@ -36,6 +39,7 @@ async function loadSession() {
   me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || [];
   setAchievements(r.data.achievements);
   for (const k in docs) delete docs[k];
+  for (const k in synced) delete synced[k];
   if (!myProps().some(p => p.id === ui.prop)) ui.prop = myProps()[0].id;
   useCatalog(ui.prop);
   if (!me) { state = blank(); rev = 0; return; }
@@ -43,6 +47,7 @@ async function loadSession() {
     const d = await api('progress/' + p.id);
     if (!d.ok) throw new Error(d.status);
     docs[p.id] = { rev: d.data.rev, state: normalize(d.data.state) };
+    synced[p.id] = JSON.stringify(docs[p.id].state);
     docs[p.id].migrated = applyAliases(docs[p.id].state, p.id);
   }));
   state = docs[ui.prop].state; rev = docs[ui.prop].rev;
@@ -59,6 +64,7 @@ async function switchProp(id) {
       const d = await api('progress/' + id);
       if (!d.ok) { toast(d.error); return; }
       docs[id] = { rev: d.data.rev, state: normalize(d.data.state) };
+      synced[id] = JSON.stringify(docs[id].state);
       docs[id].migrated = applyAliases(docs[id].state, id);
     }
     state = docs[id].state; rev = docs[id].rev;
@@ -75,6 +81,43 @@ async function updateMe(patch, done) {
   const r = await api('me', 'PUT', patch);
   if (r.ok) { me = r.data.user; if (done) toast(done); } else toast(r.error);
   return r.ok;
+}
+
+// The About form as an account holds it, and as the form stands now. A save sends only what was
+// changed between the two, with the rev the form was drawn from, so a save on one device does not
+// undo a save made on another.
+const aboutOf = u => ({
+  rev: u.rev || '', bio: u.bio || '',
+  links: Object.fromEntries(Object.keys(LINK_KINDS).map(k => [k, (u.links || {})[k] || ''])),
+  autoPost: (u.prefs || {}).autoPost !== false, shareTransitions: !!(u.prefs || {}).shareTransitions,
+});
+const aboutNow = f => ({
+  bio: f.bio.value.trim(), links: Object.fromEntries(Object.keys(LINK_KINDS).map(k => [k, f[k].value.trim()])),
+  autoPost: f.autoPost.checked, shareTransitions: f.shareTransitions.checked,
+});
+function aboutPatch(base, now) {
+  const p = {}, links = {}, prefs = {};
+  if (now.bio !== base.bio) p.bio = now.bio;
+  for (const k in now.links) if (now.links[k] !== base.links[k]) links[k] = now.links[k];
+  for (const k of ['autoPost', 'shareTransitions']) if (now[k] !== base[k]) prefs[k] = now[k];
+  if (Object.keys(links).length) p.links = links;
+  if (Object.keys(prefs).length) p.prefs = prefs;
+  return p;
+}
+function aboutBase(f) { try { return JSON.parse(f.dataset.base); } catch { return aboutOf(me); } }
+// True while the About form on the page holds an edit that has not been saved.
+function aboutDirty() {
+  const f = document.getElementById('about-form');
+  return !!(f && me && Object.keys(aboutPatch(aboutBase(f), aboutNow(f))).length);
+}
+// The profile was changed elsewhere: show the fresh copy in every field this form did not touch
+// and keep what was typed here, so saving again lays only this edit on top.
+function aboutRebase(f, old, typed) {
+  const fresh = aboutOf(me);
+  if (typed.bio === old.bio) f.bio.value = fresh.bio;
+  for (const k in fresh.links) if (typed.links[k] === old.links[k]) f[k].value = fresh.links[k];
+  for (const k of ['autoPost', 'shareTransitions']) if (typed[k] === old[k]) f[k].checked = fresh[k];
+  f.dataset.base = JSON.stringify(fresh);
 }
 
 /* ---------- small views ---------- */
@@ -253,7 +296,7 @@ function pageProfile() {
       <label class="field">New password<input type="password" name="next" autocomplete="new-password" minlength="8" maxlength="200" required></label>
       <p class="form-err" id="pw-err" role="alert" hidden></p>
       <div class="row wrap" style="gap:8px"><button class="btn" type="submit">Change password</button><button class="btn" type="button" data-act="signout-others">Sign out other devices</button></div><p class="tiny">Changing the password also signs out your other devices. A device unused for 14 days is signed out by itself.</p></div></form>
-    <form class="card span-2" id="about-form"><div class="card-h"><h2 class="grow">About you</h2>${flags.community ? `<a class="small" href="#/u/${esc(me.username)}">View your public profile</a>` : ''}</div>
+    <form class="card span-2" id="about-form" data-base="${esc(JSON.stringify(aboutOf(me)))}"><div class="card-h"><h2 class="grow">About you</h2>${flags.community ? `<a class="small" href="#/u/${esc(me.username)}">View your public profile</a>` : ''}</div>
       <div class="stack" style="gap:12px">
         <label class="field">Bio<textarea name="bio" maxlength="300" placeholder="What you spin, where you practise, what you are working toward">${esc(me.bio || '')}</textarea></label>
         <div class="grid links-grid">${Object.entries(LINK_KINDS).map(([k, L]) => `<label class="field social-${k}">${icon(k)} ${L.name}<input type="text" name="${k}" maxlength="120" value="${esc((me.links || {})[k] || '')}" placeholder="${L.hint} or just the handle" autocapitalize="none" spellcheck="false"></label>`).join('')}</div>
@@ -331,9 +374,12 @@ document.addEventListener('change', async e => {
     img.src = url; await img.decode();
     const c = document.createElement('canvas'), s = Math.min(img.naturalWidth, img.naturalHeight);
     c.width = c.height = 160;
-    c.getContext('2d').drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, 160, 160);
+    const g = c.getContext('2d');
+    // JPEG has no transparency: without a white sheet under it, a see-through picture turns black.
+    g.fillStyle = '#fff'; g.fillRect(0, 0, 160, 160);
+    g.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, 160, 160);
     URL.revokeObjectURL(url);
-    await updateMe({ avatar: c.toDataURL('image/jpeg', 0.85) }, 'Picture updated.');
+    await updateMe({ avatar: c.toDataURL('image/jpeg', 0.85) }, f.type === 'image/gif' ? 'Picture updated. Animated pictures are kept as a still.' : 'Picture updated.');
   } catch { toast('That file could not be read as a picture.'); }
   render();
 });
@@ -364,10 +410,12 @@ document.addEventListener('submit', async e => {
     }
     render();
   } else if (f.id === 'about-form') {
-    const links = {};
-    for (const k in LINK_KINDS) links[k] = f[k].value;
-    const before = !!(me.prefs || {}).shareTransitions;
-    const r = await api('me', 'PUT', { bio: f.bio.value, links, prefs: { autoPost: f.autoPost.checked, shareTransitions: f.shareTransitions.checked } });
+    if (f.dataset.busy) return;
+    const base = aboutBase(f), typed = aboutNow(f), before = !!(me.prefs || {}).shareTransitions;
+    f.dataset.busy = '1';
+    const r = await api('me', 'PUT', { ...aboutPatch(base, typed), rev: base.rev });
+    delete f.dataset.busy;
+    if (r.status === 409 && r.data?.user) { me = r.data.user; if (f.isConnected) aboutRebase(f, base, typed); delete social.profile[me.username]; }
     if (!r.ok) { showErr('about-err', r.error); return; }
     me = r.data.user; showErr('about-err', ''); document.activeElement?.blur?.(); delete social.profile[me.username];
     if (before !== !!me.prefs?.shareTransitions) await ntSyncAll(true); // share every mark, or take them all back
