@@ -346,7 +346,9 @@ and stickers.
 
 Everything is worked out in the browser from the progress documents (`web/game.js`); the server
 only records which achievements were unlocked and when, and the level, XP, streak and totals each
-user reports for their profile and the people list (the community section of `main.go`).
+user reports for their profile and the people list (the community section of `main.go`). A design
+for working them out on the server instead is in [docs/progress-server.md](docs/progress-server.md);
+it is a proposal, not built yet.
 
 - **XP.** A skill variant earns 10, 40, 100 or 200 XP at levels 1 to 4. A session is 10 XP plus one
   per minute up to 120. A phase gate is 150 XP and a track week 40. A ready combo is 50 XP and each

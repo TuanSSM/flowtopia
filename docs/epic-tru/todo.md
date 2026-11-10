@@ -5,11 +5,20 @@ Category: improvement. Size: L. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#38](https://github.com/TuanSSM/flowtopia/issues/38)). 0 of 6 items done.
+**Status:** design written, waiting for review (issue [#38](https://github.com/TuanSSM/flowtopia/issues/38)). 0 of 6 items done.
 
 - [ ] **Design.** A note in `docs/` on the tables (`sessions`, `levels`), the rules moved to the
   server (XP, streak, badges), the migration, the flag and allowlist, and how the document and the
   tables stay in sync during the transition. DoD: reviewed by the owner; linked from the README.
+  Built: the note is [progress-server.md](../progress-server.md), linked from the README's
+  Gamification section. It covers the document and the rules as they are, the tables and endpoints,
+  the rules in Go with the test that holds them equal to the page's, the migration, the flag and
+  allowlist, how both stores are written during the transition, the order of pull requests and what
+  a rollback can go back past.
+  Open, and why the box is not ticked: the owner has not reviewed it, and thirteen of the fourteen
+  decisions it asks for (Q1 to Q14 at its top) are not answered; Q4, a bug, was fixed in #71. Some would change the items below if they are
+  answered as it recommends: the paths are nested under `/api/progress/{prop}/` (Q9), and gates and
+  combo runs, which the two tables do not cover, get tables of their own as a seventh item (Q1).
 - [ ] **Tables and API.** `sessions(user, prop, at, minutes, skills, note)` and
   `levels(user, prop, skill, variant, level, at)`; `POST /api/sessions`, `PUT /api/levels`, with the
   existing `rev` flow. DoD: `db_test.go` cases; migration under the lock.
