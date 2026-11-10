@@ -12,10 +12,11 @@
 set -euo pipefail
 
 # Every suite, in the order the summary lists them. Each one is a job in the integration matrix.
-ALL="db combo demos social mod editor suggest links avatar demos-avatars combo-avatars"
-BROWSER="combo demos social mod editor suggest links avatar demos-avatars combo-avatars"
-# Suites that play demo clips or draw the figure, for changes to the clips or the 3D figure.
-FIGURE="combo demos suggest avatar demos-avatars combo-avatars"
+ALL="db combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
+BROWSER="combo demos social mod editor suggest links avatar touch demos-avatars combo-avatars"
+# Suites that play demo clips or draw the figure, for changes to the clips or the 3D figure. The touch suite
+# is one of them: it measures the avatar editor and the landing page's demo on a phone.
+FIGURE="combo demos suggest avatar touch demos-avatars combo-avatars"
 
 plan() {
   local lint=false unit=false shots=false docs_only=true f s
@@ -67,8 +68,8 @@ self_test() {
     local got; got=$(tr ',' '\n' <<<"$1" | plan | paste -sd' ')
     if [ "$got" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: $2"; echo "  got:  $got"; fails=$((fails + 1)); fi
   }
-  local all='["db","combo","demos","social","mod","editor","suggest","links","avatar","demos-avatars","combo-avatars"]'
-  local browser='["combo","demos","social","mod","editor","suggest","links","avatar","demos-avatars","combo-avatars"]'
+  local all='["db","combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
+  local browser='["combo","demos","social","mod","editor","suggest","links","avatar","touch","demos-avatars","combo-avatars"]'
   expect "README.md,docs/epics.md,.claude/rules/go-server.md" 'code=false lint=false unit=false screenshots=false suites=[]'
   expect "main.go" "code=true lint=true unit=true screenshots=true suites=$all"
   expect "docs/x.md,go.sum" "code=true lint=true unit=true screenshots=true suites=$all"
@@ -78,8 +79,8 @@ self_test() {
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "test/physics.js,test/catalog-fixtures/bad-cycle.json" 'code=true lint=true unit=true screenshots=false suites=[]'
   expect "figure/src/body.js" 'code=true lint=true unit=true screenshots=false suites=[]'
-  expect "web/figure3d.js,figure/src/body.js" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","demos-avatars","combo-avatars"]'
-  expect "web/clips/nunchaku/F5.json" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","demos-avatars","combo-avatars"]'
+  expect "web/figure3d.js,figure/src/body.js" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","demos-avatars","combo-avatars"]'
+  expect "web/clips/nunchaku/F5.json" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","demos-avatars","combo-avatars"]'
   expect "web/social.js" "code=true lint=true unit=true screenshots=true suites=$browser"
   expect "test/browser/mod.py" 'code=true lint=true unit=false screenshots=false suites=["mod"]'
   expect "test/browser/avatar.py,test/browser/demos.py" 'code=true lint=true unit=false screenshots=false suites=["demos","avatar","demos-avatars"]'

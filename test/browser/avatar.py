@@ -45,8 +45,20 @@ try:
     start()
     # ---- First run: after picking props a new member is offered the editor, and can skip or keep.
     account('newbie',onboard=False);signin_as('newbie')
+    # Before props are chosen the menu lists only what opens: the profile, the chooser and Settings.
+    menu=lambda: js("return [...document.querySelectorAll('#side a,#side button')].map(e=>e.getAttribute('href')||e.dataset.act)")
+    check('before props are chosen the menu lists only the profile, the chooser and Settings',menu()==['#/profile','#/','#/settings'],menu())
+    nav('#/settings',1.5)
+    check('Settings opens before props are chosen',txt('#main h1')=='Settings' and js("return document.querySelector('#side a[href=\"#/settings\"]').getAttribute('aria-current')")=='page',txt('#main h1'))
+    nav('#/profile',1.5)
+    check('so does the profile, with Sign out',txt('#main h1')=='Profile' and js("return !!document.querySelector('#main [data-act=signout]')"),txt('#main h1'))
+    nav('#/practice',1.5)
+    check('every other page still asks for props first',js("return !!document.querySelector('#props-form[data-first]')") and menu()==['#/profile','#/','#/settings'],menu())
     js("const f=document.querySelector('#props-form');f.querySelector('input[value=nunchaku]').checked=true;f.requestSubmit()")
     wait(lambda: js("return !!document.querySelector('.av-first')"))
+    check('the full menu is back once props are chosen',len(menu())>8 and '#/practice' in menu(),menu())
+    btns=js("return [...document.querySelectorAll('#main .btn')].filter(b=>/av-save|av-skip|av-remove/.test(b.dataset.act||'')||b.getAttribute('href')==='#/profile').map(b=>b.textContent)")
+    check('the avatar offer has one set of buttons: keep or skip',btns==['Keep this avatar','Skip for now'],btns)
     first=js("return window.AV.draft&&JSON.stringify(window.AV.draft)") or '{}'
     check('after choosing props a new member is offered the editor',js("return location.hash")=='#/avatar/first' and js("return !!document.querySelector('.av-first')"))
     check('the editor starts from a random complete avatar',json.loads(first).get('v')==1 and len(json.loads(first))>=20,first)
@@ -60,6 +72,8 @@ try:
     check('keeping the offered avatar saves it',json.loads(my_cfg())==json.loads(draft),(my_cfg(),draft))
     # ---- The editor.
     nav('#/avatar',2);figure_ready();time.sleep(1.5)
+    btns=js("return [...document.querySelectorAll('#main .btn')].filter(b=>/av-save|av-skip|av-remove/.test(b.dataset.act||'')||b.getAttribute('href')==='#/profile').map(b=>b.textContent)")
+    check('opened later, the editor has its own Save, Remove and Back',btns==['Save avatar','Remove avatar','Back to profile'],btns)
     shot_if('avatar-editor')
     a=snap('#av-cv');click('[data-act=av-tab][data-v=hair]');time.sleep(.4)
     cur=json.loads(js("return JSON.stringify(window.AV.draft)"))

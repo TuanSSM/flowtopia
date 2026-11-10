@@ -46,8 +46,17 @@ named but not described.
 - **Gamification:** XP and levels, a practice streak across props, weekly challenges, achievements, and
   the Plan as quests. See [Gamification](#gamification).
 
-Search with `Ctrl K` or `/`. The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the
-guided tour (`tour/`) and the 3D figure (`figure/`).
+Search with `Ctrl K`, `/` or the Search button. It covers the pages and the skills of every prop you chose
+(every prop for a visitor), says so under the results, and names the prop beside each skill when there is
+more than one. The landing page plays one demo, the prop's signature move, and shows the skill map in small.
+
+On a touch screen (`pointer: coarse`) every control is at least 44 x 44 px, by its smallest size and its
+padding; with a mouse the layouts are unchanged. The words follow: a touch screen is told about the Search
+button, not `Ctrl K`. `test/browser/touch.py` measures every control on each page at 390 px wide with a touch
+pointer and checks that no page scrolls sideways, the avatar editor on every tab at 360 px too.
+
+The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the guided tour (`tour/`) and the
+3D figure (`figure/`).
 
 **What comes next** is in [docs/roadmap.md](docs/roadmap.md): replies, moderators and a skill map editor,
 link cards for Instagram, TikTok and YouTube, next-trick suggestions from the geometry of moves, and
@@ -298,7 +307,11 @@ Admin API (permission in brackets): `PUT /api/admin/users/{id}/role` (user.role)
 New users get a guided tour built with [React Joyride](https://react-joyride.com): one after
 choosing props, and a short one on the first visit to each section. It is behind the `tour`
 flag; when the flag is off, a short note is shown instead. Finished tours are remembered on
-the account, and Profile has a "Replay the tour" button.
+the account, and Profile has a "Replay the tour" button. A tour belongs to its section: going Back or
+following a link out of the section closes it and counts it as seen, so it never sits over the next page.
+
+Until a new member has chosen their props the menu lists only what opens: their profile, the chooser and
+Settings.
 
 The rest of the UI is plain JS, so the tour is a separate React bundle, `web/tour.js`, loaded
 only when a tour starts. Its source is `tour/src/tour.jsx`, and the steps are in `TOURS` in
@@ -355,7 +368,8 @@ Browser tests live in `test/browser` (`test/browser/run.sh combo.py`); they use 
 
 The avatar editor (`#/avatar`, `web/avatar.js`) has a live 3D preview that turns with a drag and a tab
 each for face, hair, outfit, accessories, props and body; "Surprise me" picks a random avatar and Undo
-steps back. New members are offered it, with a random avatar, right after choosing their props. A
+steps back. New members are offered it, with a random avatar, right after choosing their props, with one
+pair of buttons: Keep this avatar, or Skip for now. On a phone the rows of colours and options wrap. A
 picture of the avatar's head can become the profile picture. On someone's profile, their avatar plays a
 skill they have marked Clean.
 
@@ -381,8 +395,8 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on |
-| `screenshots` | `test/browser/pages.py`: the main pages at desktop and phone width and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service: `db` (the Go tests that need Postgres) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px |
+| `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |
 

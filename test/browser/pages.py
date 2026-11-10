@@ -15,7 +15,15 @@ def page(name,title,h,w=1440,ht=1000,wait=1.8,full=True):
 def add(sid):
     js("const s=document.querySelector('[data-pick=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));s.parentElement.querySelector('[data-act=add-chosen]').click()",sid);time.sleep(1)
 try:
-    op=admin();start();signin()
+    op=admin();start()
+    # What a visitor sees first: the landing page with a demo and the map in small.
+    for _ in range(40):
+        if js("return !!(window.Figure3D&&(window.Figure3D.ready||window.Figure3D.failed))"): break
+        time.sleep(.5)
+    page('landing','Landing page','#/',wait=3)
+    page('landing-phone','Landing page, phone','#/',w=420,ht=900,wait=2.5)
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    signin()
     if js("return !!document.querySelector('input[name=prop]')"): js("for(const i of document.querySelectorAll('input[name=prop]'))i.checked=i.value==='nunchaku';document.querySelector('#props-form').requestSubmit()");time.sleep(3)
     # Some progress so the dashboard and map are not empty.
     for sid,v in [('F1',4),('F2',4),('F3',3),('F4',2)]:
@@ -85,6 +93,13 @@ try:
     cols=3;rows=(len(tiles)+cols-1)//cols;sheet=Image.new('RGB',(cols*SZ,max(1,rows)*SZ),(30,30,30))
     for i,t in enumerate(tiles): sheet.paste(t,((i%cols)*SZ,(i//cols)*SZ))
     sheet.save(f'{out}/demos.png',optimize=True);made.append({'file':'demos.png','title':f'Demos ({len(tiles)} of them, {fig})'});check(f'demo sheet ({len(tiles)} tiles, {fig})',len(tiles)>0,len(tiles))
+    # First run: a new member before any prop is chosen. The menu lists only what opens.
+    new=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()));api(new,'signup',{'username':'newcomer','password':'flowa-test-only'})
+    js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+    cmd('WebDriver:Navigate',url=BASE+'?first#/signin');time.sleep(3);signin('newcomer')
+    side=js("return [...document.querySelectorAll('#side a,#side button')].map(e=>e.getAttribute('href')||e.dataset.act)")
+    check('first run: the menu lists only the profile, the chooser and Settings',side==['#/profile','#/','#/settings'],side)
+    page('first-run','First run: choosing props','#/',wait=2)
     json.dump(made,open(f'{out}/index.json','w'))
 finally:
     done()

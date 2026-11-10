@@ -29,6 +29,8 @@ async function api(path, method = 'GET', body, headers) {
 }
 
 const propById = id => PROPS.find(p => p.id === id);
+// A touch screen has no Ctrl K: the words name the Search button there.
+const coarse = () => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 // A signed-in user sees the props they chose; everyone else sees all of them.
 function myProps() {
   const mine = me ? PROPS.filter(p => (me.props || []).includes(p.id)) : [];
@@ -175,7 +177,7 @@ const TOURS = {
     { t: '#side a[href="#/maps"]', nav: 1, n: 'Skill maps', c: 'One map per prop, showing every skill and what it unlocks.' },
     { t: '#side a[href="#/practice"]', nav: 1, n: 'Practice, Combos and Plan', c: 'Log sessions in Practice, test sequences in Combos, and follow the gates in Plan.' },
     { t: '.nav-group', nav: 1, n: 'Your props', c: 'The props you chose are listed here. Each one opens to show its branches.' },
-    { t: '.search-btn', n: 'Search', c: 'Press Ctrl K or / to jump to any skill or page.' },
+    { t: '.search-btn', n: 'Search', c: coarse() ? 'Tap Search to jump to any skill or page.' : 'Press Ctrl K or / to jump to any skill or page.' },
     { t: '.prop-tabs', n: 'Switch props', c: 'Each prop has its own dashboard, practice log, combos and plan.' },
     { t: '[data-tour=stats]', n: 'At a glance', c: 'Clean skills, practice this week, your streak, and gates passed.' },
     { t: '[data-tour=next]', n: 'What to do next', c: 'Your next gate, and the skills whose prerequisites you have met.' },
@@ -217,7 +219,7 @@ const TOURS = {
     { t: '#password-form', n: 'Password', c: 'There is no email on file, so only the admin can reset a forgotten password.' },
   ],
 };
-let tourBusy = false, tourBroken = false;
+let tourBusy = false, tourBroken = false, tourOn = '';
 function loadTour() {
   if (window.FlowaTour) return Promise.resolve();
   return new Promise((ok, bad) => {
@@ -238,7 +240,8 @@ async function maybeTour(key) {
     tourBroken = true; tourBusy = false; render(); return;
   }
   await new Promise(r => setTimeout(r, 350)); // let the page settle
-  if (tourKeyNow() !== key || !me) { tourBusy = false; return; }
+  // The reader moved on while the tour was loading: this one is dropped and the page they are on gets its own.
+  if (tourKeyNow() !== key || !me) { tourBusy = false; if (me) maybeTour(tourKeyNow()); return; }
   const narrow = matchMedia('(max-width: 820px)').matches;
   const drawer = want => {
     if (document.body.classList.contains('nav-open') === want) return Promise.resolve();
@@ -251,21 +254,53 @@ async function maybeTour(key) {
   }));
   if (!steps.length) { tourBusy = false; return; }
   const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  tourOn = key;
   window.FlowaTour.start(steps, { accent: v('--accent'), card: v('--card-2'), text: v('--ink'), muted: v('--ink-2'), line: v('--line-2') }, async () => {
+    tourOn = '';
     document.body.classList.remove('nav-open');
     if (me) await updateMe({ seen: [...new Set([...(me.seen || []), key])] });
     tourBusy = false;
     render();
   });
 }
+// Back, or any link, takes the reader out of the section a tour is about. The tour closes with it and that
+// section counts as seen, so the tour neither sits over the next page nor comes back. This listener is added
+// before the one that draws the page, so the next page finds no tour running and can start its own.
+window.addEventListener('hashchange', () => {
+  if (!tourOn || tourKeyNow() === tourOn) return;
+  const key = tourOn;
+  tourOn = '';
+  window.FlowaTour?.stop();
+  document.body.classList.remove('nav-open');
+  tourBusy = false;
+  if (!me) return;
+  me.seen = [...new Set([...(me.seen || []), key])];
+  api('me', 'PUT', { seen: me.seen });
+});
 
 /* ---------- pages ---------- */
+// The move a prop is best known for, when its demo is baked.
+function signatureMove() {
+  const key = (Demo.SIGNATURE.find(([k]) => k.startsWith(CID + ':')) || [''])[0], id = key.split(':')[1];
+  return id && SK[id] && Demo.has(CID, id) ? id : '';
+}
+// The whole skill map as a small picture: a column for each branch, a row for each tier, a dot for each skill.
+function mapThumb() {
+  let h = '';
+  for (let t = 1; t <= 5; t++) for (const b of BRANCHES) h += `<span class="mt-c">${'<i></i>'.repeat(SKILLS.filter(s => s.b === b.k && s.tier === t).length)}</span>`;
+  return `<a class="map-thumb" href="#/prop/${CID}" style="grid-template-columns:repeat(${BRANCHES.length}, minmax(0, 1fr))" aria-label="Open the ${esc(curProp().name)} skill map: ${SKILLS.length} skills in ${BRANCHES.length} branches">${BRANCHES.map(b => `<b>${esc(b.k)}</b>`).join('')}${h}</a>`;
+}
 function pageWelcome() {
+  const sig = flags.demos ? signatureMove() : '', prop = curProp().name;
+  const show = BRANCHES.length ? `<div class="grid g2 land">${sig ? `<div class="card"><div class="card-h"><h2 class="grow">${esc(prop)}: ${esc(SK[sig].name)}</h2><a class="small" href="${skillHref(sig)}">Open its guide</a></div>${Demo.html(CID, sig, 'R', esc)}</div>` : ''}
+    <div class="card"><div class="card-h"><h2 class="grow">The ${esc(prop)} map</h2><a class="small" href="#/maps">All skill maps</a></div>${mapThumb()}
+      <p class="tiny" style="margin-top:10px">${SKILLS.length} skills in ${BRANCHES.length} branches. Each column is a branch and each dot is a skill, from the first ones at the top to the hardest at the bottom.</p></div></div>` : '';
   return `<div class="hero"><img src="icon.svg" alt="" width="56" height="56"><h1>Flowa</h1>
     <p>Skill maps, guides and simulated demos for flow arts props, with your own progress saved to your account.</p>
     <div class="row wrap" style="justify-content:center"><a class="btn primary" href="#/signin">Sign in</a>${flags.signups ? '<a class="btn" href="#/signup">Create an account</a>' : ''}<a class="btn" href="#/maps">Browse skill maps</a></div></div>
+  ${show}
   <div class="grid g2"><div class="card"><div class="card-h"><h2>Without an account</h2></div><ul class="steps">
-      <li>Browse the skill maps and every branch graph.</li><li>Read each skill's guide and references, and watch its demo.</li><li>Search skills with Ctrl K.</li></ul></div>
+      <li>Browse the skill maps and every branch graph.</li><li>Read each skill's guide and references, and watch its demo.</li><li>${coarse() ? 'Search skills with the Search button at the top.' : 'Search skills with Ctrl K, or the Search button.'}</li></ul></div>
     <div class="card"><div class="card-h"><h2>With an account</h2></div><ul class="steps">
       <li>Track your level on every skill, for each hand.</li><li>Log practice, and see your streak and heatmap.</li><li>Build combos and test their transitions.</li><li>Follow the plan and tick off gates.</li><li>Choose your props and keep notes.</li></ul></div></div>`;
 }
