@@ -10,13 +10,18 @@ def get(op,path): return json.loads(op.open(BASE+'api/'+path,timeout=20).read())
 def code_of(op,path):
     try: op.open(BASE+'api/'+path,timeout=20);return 200
     except urllib.error.HTTPError as e: return e.code
+def fill_signin(tag,name,pw):
+    # Sign out, load the page afresh, then find the form and fill it in within one script. The page before may
+    # itself be showing a sign-in form, and a form that is found in one step can be gone by the next.
+    js("window.__old=1;return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+    for go in range(3):
+        cmd('WebDriver:Navigate',url=BASE+f'?u={tag}{go or ""}#/signin')
+        for _ in range(40):
+            if js("if(window.__old)return false;const f=document.querySelector('#auth-form');if(!f)return false;f.elements.username.value=arguments[0];f.elements.password.value=arguments[1];f.requestSubmit();return true",name,pw): return
+            time.sleep(.5)
+    raise RuntimeError('the sign-in form never appeared: '+str(js("return document.body.innerText.slice(0,300)")))
 def as_user(name,pw=PW):
-    js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
-    cmd('WebDriver:Navigate',url=BASE+f'?u={name}#/signin')
-    for _ in range(40):
-        if js("return !!document.querySelector('#auth-form')"): break
-        time.sleep(.5)
-    js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value=arguments[1];f.requestSubmit()",name,pw)
+    fill_signin(name,name,pw)
     for _ in range(40):
         if js("return location.hash!=='#/signin'&&!document.querySelector('#auth-form')&&(document.querySelector('.nav-profile .tiny')||{}).textContent===arguments[0]",'@'+name): break
         time.sleep(.5)
@@ -133,10 +138,7 @@ try:
     nav('#/admin',1.5);nav('#/admin/accounts',2.5)
     check('opening the accounts tab again fetches the list',wait(lambda: 'Muted until' in (txt('tr[data-user=moe]') or '')),txt('tr[data-user=moe]'))
     # The suspended person is told when it ends, in the same form the accounts page uses.
-    js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
-    cmd('WebDriver:Navigate',url=BASE+'?u=sam2#/signin')
-    wait(lambda: js("return !!document.querySelector('#auth-form')"),40)
-    js("const f=document.querySelector('#auth-form');f.elements.username.value='sam';f.elements.password.value=arguments[0];f.requestSubmit()",PW)
+    fill_signin('sam2','sam',PW)
     err=wait(lambda: js("return document.querySelector('#auth-err').textContent"),30) or ''
     told=(re.search(WHEN,err) or [None,None])[1]
     check('a suspended sign-in gives the end time in the same form as the accounts page',bool(sus_when) and told==sus_when and 'Repeated abuse' in err,(sus_when,err))
