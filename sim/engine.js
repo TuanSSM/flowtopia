@@ -9,6 +9,7 @@ const fs = require('fs'), path = require('path');
 const Demo = (0, eval)(fs.readFileSync(path.join(__dirname, '..', 'web', 'demo.js'), 'utf8').replace('const Demo =', 'globalThis.Demo =') + ';Demo');
 const { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip } = Demo.v, { rig, caps: capsOf } = Demo;
 const TAU = Math.PI * 2, { sin, cos, sqrt } = Math;
+const Chain = require('./chain.js');
 
 /* ---------- physical constants (metres, seconds) ---------- */
 const STICK = 0.30, LINK = 0.09;      // 12 inch sticks, 3.5 inch cord
@@ -69,6 +70,14 @@ function eightTall(o) {
 const ROD = 0.0225, BALL = 0.05;     // stick radius, poi head radius
 const BOUNCE = 0.35, GRIP_MU = 0.3;  // fraction of speed returned by a bounce; friction
 const SOFT = 0.4;                    // below this speed (m/s) nothing bounces: it just rests
+// With `chain` in a wrist model the cord or tether is a chain of points that can lie on the body and
+// grip it (sim/chain.js), in place of the one stiff link. These are its assumed weights: a 90 g poi
+// head on a 10 g tether, 150 g sticks on a 5 g cord. The line grips skin as the props do. A line
+// pulled harder than its chain can follow stops the clip with an error (Chain.SUBSTEPS).
+const HEAD_KG = 0.09, TETHER_KG = 0.01, STICK_KG = 0.15, CORD_KG = 0.005, LINE_MU = GRIP_MU;
+// What the line can touch: every capsule but the arm that holds it (side 'R' or 'L'), which the body
+// checks leave out too, because the line leaves from a fist with no wrist. `own` in the option adds that arm.
+const lineCaps = (body, opt, side) => (opt.own ? body : body.filter(c => !(c.side === side && /arm/.test(c.name))));
 const cap = (a, b, r, name) => ({ a, b, r, name });
 const STILL = capsOf(rig({})).filter(c => !/arm/.test(c.name));
 // The whole body for a working hand (k is -1 for the right), the other hand, and a body pose.
@@ -190,8 +199,40 @@ function makeSim(dr) {
   const angle = () => { const b = bsAt(phi), r = sub(mul(add(p1, p2), 0.5), dr.at(phi)); return Math.atan2(dot(r, b.b), dot(r, b.a)); };
   phi = angle();
   let phi0 = phi;
-  return {
+  // The cord as a chain, the striker's two masses on its end. The striker meets the body as before;
+  // the cord meets the body but not its own handle, which it grows out of.
+  let cord = null, was = null, on = new Set();
+  if (dr.chain) {
+    // Laid taut from the handle toward the striker, and the striker moved along that line so that its
+    // head is one cord from the handle: a cord that starts a hair too long or too short would be put
+    // right in a single substep, which reads as a pull of hundreds of newtons.
+    const N = Chain.links(LINK), A = linkEnd(), slip = sub(add(A, mul(norm(sub(head, A)), LINK)), head);
+    p1 = add(p1, slip); p2 = add(p2, slip); o1 = add(o1, slip); o2 = add(o2, slip);
+    const pts = Array.from({ length: N }, (_, i) => mix(A, add(head, slip), i / N));
+    cord = Chain.makeChain({ points: pts, masses: pts.map((_, i) => (i ? CORD_KG / (N - 1) : Infinity)), length: LINK, mu: LINE_MU, velocities: [...pts, p1, p2].map(vel),
+      rod: { points: [p1, p2], inner: INNER, a: W1, b: W2, mass: STICK_KG } });
+  }
+  const cordStep = damp => {
+    t += H;
+    const q = held(), A = add(q.h, mul(q.d, GRIP)), all = bodyAt(q.h, k, dr.other && dr.other(t, handAngle()), bodyNow()), body = lineCaps(all, dr.chain, k < 0 ? 'R' : 'L'), N = cord.n;
+    cord.hold(0, A); cord.step(H, body, was, damp); was = body;
+    p1 = cord.pos(N); p2 = cord.pos(N + 1); o1 = sub(p1, mul(cord.vel(N), H)); o2 = sub(p2, mul(cord.vel(N + 1), H));
+    const m = { p1, p2, o1, o2 }, hits = touchRod(m, [...all, cap(sub(q.h, mul(q.d, BUTT)), A, ROD, 'handle')], true, H);
+    ({ p1, p2, o1, o2 } = m);
+    if (hits.length) { cord.set(N, p1, mul(sub(p1, o1), 1 / H)); cord.set(N + 1, p2, mul(sub(p2, o2), 1 / H)); }
+    for (const h of hits) contacts.push({ t, ...h });
+    // The cord coming to lie on a part of the body is recorded once, when it first does.
+    const now = new Set(cord.touching().map(x => x.c));
+    for (const c of now) if (!on.has(c)) contacts.push({ t, name: 'cord on the ' + body[c].name, speed: 0 });
+    on = now;
+  };
+  const sim = {
+    cord,
     step(damp) {
+      if (cord) cordStep(damp); else sim.stiff(damp);
+      sim.follow();
+    },
+    stiff(damp) {
       const keep = 1 - damp * H, n1 = add(add(p1, mul(sub(p1, o1), keep)), g), n2 = add(add(p2, mul(sub(p2, o2), keep)), g);
       o1 = p1; o2 = p2; p1 = n1; p2 = n2; t += H;
       const q = held(), A = add(q.h, mul(q.d, GRIP));
@@ -208,6 +249,8 @@ function makeSim(dr) {
         // While touching, keep the stick out of the body as the cord pulls on it.
         if (hits.length) { const mm = { p1, p2, o1, o2 }; touchRod(mm, caps, false, H); ({ p1, p2, o1, o2 } = mm); }
       }
+    },
+    follow() {
       // Follow the striker's angle, and lead it more when the swing is slower than wanted.
       // The trim term remembers how much lead it takes to hold the speed.
       let d = angle() - phi; d -= TAU * Math.round(d / TAU); phi += d;
@@ -235,9 +278,11 @@ function makeSim(dr) {
     setWant(w) { want = w; },
     setWarp(f) { warp = f; },
     resync() { phi = angle(); },
-    save: () => ({ p1, p2, o1, o2, phi, lead, trim, speed, t }),
+    // Stops and throws rewind the swing; the chain keeps no copy of itself, so they keep the stiff cord.
+    save: () => { if (cord) throw new Error('a swing with a chain for its cord cannot be rewound'); return { p1, p2, o1, o2, phi, lead, trim, speed, t }; },
     load(v) { ({ p1, p2, o1, o2, phi, lead, trim, speed, t } = v); frozen = null; },
   };
+  return sim;
 }
 
 // Run until the swing repeats itself. Extra damping at first stands in for the hand
@@ -328,8 +373,44 @@ function makeMass(dr) {
   const angle = () => { const b = bsAt(phi), r = sub(p, dr.at(phi)); return Math.atan2(dot(r, b.b), dot(r, b.a)); };
   phi = angle();
   const phi0 = phi;
-  return {
+  // The tether as a chain from the fist to the head. The head meets the body as before (it bounces);
+  // the line meets every capsule, moving with the body.
+  let line = null, was = null, on = new Set();
+  if (dr.chain) {
+    // Laid straight from where the hand will be on the first step (it leads the head from the start) toward
+    // the head, and the head put exactly one tether from that hand, for the same reason as the cord above.
+    const N = Chain.links(TETHER), om = mul(cross(bsAt(0).a, bsAt(0).b), s * want), from = pivot(phi + s * lead * (dr.behind ? -1 : 1));
+    const slip = sub(add(from, mul(norm(sub(p, from)), TETHER)), p);
+    p = add(p, slip); o = add(o, slip);
+    const pts = Array.from({ length: N + 1 }, (_, i) => mix(from, p, i / N));
+    line = Chain.makeChain({ points: pts, length: TETHER, masses: pts.map((_, i) => (i === 0 ? Infinity : i === N ? HEAD_KG : TETHER_KG / (N - 1))), radius: pts.map((_, i) => (i === N ? -1 : Chain.THICK)),
+      mu: LINE_MU, velocities: pts.map(q => cross(om, sub(q, dr.at(0)))) });
+  }
+  const lineStep = damp => {
+    t += H;
+    th = phi + s * lead * (dr.behind ? -1 : 1); held = pivot(th);
+    const all = bodyAt(dr.pose(th), -1, dr.other && dr.other(th), dr.body && dr.body(th)), body = lineCaps(all, dr.chain, 'R'), N = line.n;
+    line.hold(0, held); line.step(H, body, was, damp); was = body;
+    p = line.pos(N); o = sub(p, mul(line.vel(N), H));
+    const m = { p, o }, hits = touchBall(m, all, H);
+    ({ p, o } = m);
+    if (hits.length) line.set(N, p, mul(sub(p, o), 1 / H));
+    for (const h of hits) contacts.push({ t, ...h });
+    // The line coming to rest on a part of the body is recorded once, when it first lies there.
+    const now = new Set(line.touching().map(x => x.c));
+    for (const c of now) if (!on.has(c)) contacts.push({ t, name: 'tether on the ' + body[c].name, speed: 0 });
+    on = now;
+  };
+  const sim = {
+    line,
     step(damp) {
+      if (line) lineStep(damp); else sim.stiff(damp);
+      let d = angle() - phi; d -= TAU * Math.round(d / TAU); phi += d;
+      speed += (s * d / H - speed) * H / 0.2;
+      trim = clamp(trim + 0.1 * gain * (want - speed) * H, -0.2, 0.9);
+      lead = clamp(trim + 0.08 * gain * (want - speed), -0.3, 1.1);
+    },
+    stiff(damp) {
       const n = add(add(p, mul(sub(p, o), 1 - damp * H)), g);
       o = p; p = n; t += H;
       th = phi + s * lead * (dr.behind ? -1 : 1); held = pivot(th);
@@ -338,10 +419,6 @@ function makeMass(dr) {
       const m = { p, o };
       for (const h of touchBall(m, bodyAt(dr.pose(th), -1, dr.other && dr.other(th), dr.body && dr.body(th)), H)) contacts.push({ t, ...h });
       ({ p, o } = m);
-      let d = angle() - phi; d -= TAU * Math.round(d / TAU); phi += d;
-      speed += (s * d / H - speed) * H / 0.2;
-      trim = clamp(trim + 0.1 * gain * (want - speed) * H, -0.2, 0.9);
-      lead = clamp(trim + 0.08 * gain * (want - speed), -0.3, 1.1);
     },
     sample: () => ({ h: dr.pose(th), ...(dr.off ? { o: held } : null), P: p, ...(dr.body ? dr.body(th) : null) }),
     contacts,
@@ -349,6 +426,7 @@ function makeMass(dr) {
     angle: () => phi,
     turned: () => s * (phi - phi0),
   };
+  return sim;
 }
 // Poi planes use the same axes as the nunchaku ones, under their poi names.
 const PB = { wheel: BASIS.wall, wall: BASIS.face, flat: BASIS.table };

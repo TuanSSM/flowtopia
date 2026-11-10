@@ -8,6 +8,7 @@ kind of clip means, what is checked, and what was tried and left out.
 | File | Runs | Job |
 | --- | --- | --- |
 | `sim/engine.js` | at build time | The physics: nunchaku (two rods and a cord), poi (weight on a tether), contact, throws, bounces. |
+| `sim/chain.js` | at build time | A tether or cord as a chain of points that can lie on the body and grip it. No clip uses it yet. |
 | `sim/moves.js` | at build time | Families of moves: body movement, figure-8s, hand-over-hand rotors, unit-circle patterns, solved poi paths, still pictures, and the posture search. |
 | `sim/specs.js` | at build time | The list of skills that have a demo, with their notes. |
 | `sim/compose.js` | at build time | Puts the hands together into one scene: both hands, the body pose and every prop, 100 frames a second. |
@@ -15,6 +16,7 @@ kind of clip means, what is checked, and what was tried and left out.
 | `sim/bake.js` | by hand after a change to `sim/`, and by `./deploy.sh --build` | Writes `web/clips/<hash>.json` and `web/clips/index.json`. |
 | `web/demo.js` | in the browser | The player: the jointed figure, the props, labels, views, GIF export. No physics. |
 | `test/physics.js`, `test/expect.js` | `node test/physics.js` | Every clip against its physics, its definition, and the body. |
+| `test/chain.js` | `node test/physics.js`, or on its own | Known answers for the chain: 55 checks, each with its tolerance and where it comes from. |
 
 The browser used to run the simulation itself. It now plays clips that were worked out and checked
 ahead of time, so what is tested is exactly what is shown, a demo opens at once, and a simulation
@@ -95,6 +97,166 @@ set. `fitted()` tries a grid of hand positions, lean angles and elbow positions 
 that leaves the prop clearest. The choice is stored in `sim/fits.json`, so rebuilding gives the
 same clip. If nothing on the grid is clear, the move gets no demo.
 
+## A tether that touches: the chain
+
+A wrap needs the line itself to lie on an arm and hold there. The engine's tether is one stiff link
+from the hand to the head, and its cord one link from the handle to the striker, and neither can
+touch anything. `sim/chain.js` is the line as a chain of points. A wrist model that carries `chain`
+gets it in place of the stiff link (`makeMass` for a poi, `makeSim` for a nunchaku, where the
+striker's two masses ride on the last link). Without `chain` nothing changes: the bake of this
+branch and the bake of the commit before it give the same bytes for all 167 clips.
+
+**What it models.** Points 10 mm apart joined by links that keep their length (or stretch a stated
+amount per newton, if asked); gravity and drag; contact with every capsule of the body except the
+arm that holds the line (the body checks leave that arm out too, because the line leaves from a
+fist with no wrist; `own` in the option adds it); and Coulomb friction, sticking and sliding,
+against the capsule's own motion where the point touches, so a line on a moving arm is carried by
+it. The head of a poi and the striker meet the body as they did before. What the line touched in
+a step, in any of its substeps, goes into the clip's contact list, which the suite reads.
+
+**The method** is position-based dynamics with small steps (XPBD). Each engine step of 1/1500 s is
+cut into 4 substeps. In each: the points move; the link lengths are put right; points inside a
+capsule are moved out the shortest way (the side or the round end by the same rule, so there is no
+seam); then what a point moved along the surface is taken back, in full while it is under the
+friction coefficient times how far the point was pushed out (it sticks), and by that much when over
+(it slides). Two things differ from the textbook form, both measured:
+
+- The lengths are solved all at once. In a chain a link shares a point only with its two
+  neighbours, so the equations are tridiagonal and one sweep solves them exactly. Correcting links
+  one after another lets a 90 g head stretch a 10 g tether; this does not.
+- The points are moved along the directions the links had when the substep began, not the ones
+  they end with. The second way lost 0.47% of a 60 degree swing's energy every second at this
+  step (4.7% over 10 s, in proportion to the substep); the first loses none that adds up (0.03%).
+
+Step, substeps, sweeps and the order of points and capsules are fixed, there are no random numbers,
+and nothing is read by the order of an object's keys: the same run hashes to the same bytes twice,
+and again with a capsule's fields written in another order.
+
+**The numbers, and where they come from.**
+
+| Choice | Value | Bound it comes from |
+| --- | --- | --- |
+| Link | 10 mm (55 for a tether, 9 for a cord) | The middle of a link cuts inside a round part by link squared over 8 times (part radius + line radius): 0.26 mm on the thinnest part of the body the engine passes (the shin above the ankle, 45 mm), 0.23 mm on a forearm (50 mm). A nunchaku handle (22.5 mm, 0.47 mm) is not passed yet: a cord does not meet its own handle. |
+| Substep | 1/6000 s | Links and contact are solved in turn, so a line pressed on a part gives a little: substep squared times wrap angle times link angle over point mass, 0.17 mm per newton for a full turn on a forearm. A poi spinning pulls about 5 N. Three substeps would give 1.8 times that. The limit below also hangs on it. |
+| Sweeps | 1 per substep | The substeps are the iterations. What a second sweep would remove is 0.001 mm a link at 5 N on a forearm, a twenty-sixth of the give. Two were tried: every check comes out the same. |
+| Line | 4 mm half thickness; 10 g tether with a 90 g head; 5 g cord with 150 g sticks; friction 0.3 | Assumed, not measured. The thickness is the one the body checks use for a tether. |
+
+**The limit, and what keeps a line out of a part.** The points of a taut line shake sideways faster
+the harder it is pulled, and the substep follows that only up to point mass times link over substep
+squared: 66.7 N for the tether, 225 N for the cord. A substep in which any link is pulled harder,
+or comes out not a number, throws, and the clip fails with that error. The chain never hands back a
+state worked out past its limit.
+
+That limit, and not a bound on speed, is what keeps a fast line out of a part. Shown, for a loose
+10 g line thrown broadside across a part, meeting it at its middle or a third along, with friction
+0, 0.3 and 0.6 (six throws for each line of the table), on the thinnest part of the body and on one
+as thin as a handle:
+
+| Speed | 45 mm part | 22.5 mm part |
+| --- | --- | --- |
+| 9 m/s (the fastest a hand may move) | all 6 fold round it; pull 25.7 N at most; points go 3.8 mm in at most; nearest link 0.27 mm inside (0.34 mm allowed) | all 6 fold; 16.4 N; 2.4 mm; 0.52 mm (0.62 mm allowed) |
+| 16.9 m/s (the fastest a prop may) | 5 fold, 1 stopped by the limit; nearest link 0.31 mm (0.42 mm) | all 6 fold; 52.3 N; 0.67 mm (0.78 mm) |
+| 25.9 m/s (the two together) | all 6 stopped | all 6 stopped |
+
+The allowance is what the middle of a link cuts in when the link is longer by one substep of
+flight, which it can be at the blow. In none of the 36 throws was a line handed back with a link
+through the part. With the limit switched off the same throws run away and end with links through
+the axis; that is the mutation the check is there for. The clips' own fastest prop point moves at
+16.6 m/s and their fastest hand at 6.1 m/s. So: up to 9 m/s a line is shown to fold round a part
+for any friction from 0 to 0.6; faster, it may be stopped instead, and it is not shown to fold.
+
+A stiff line that snaps taut is the same limit seen another way: it stops a head moving away in a
+single substep, a pull of head times speed over substep, 65 N at 0.12 m/s. Faster than that a stiff
+90 g poi is stopped (shown at 0.44 m/s, 238 N). A line given some stretch takes the snap as a
+spring does: with 0.1 mm per newton the same 0.44 m/s peaks at 13.5 N. Wraps will probably need
+that stretch, or more substeps, which raise the limit by their square.
+
+**Known answers** (`node test/chain.js`, 70 checks). Each tolerance is worked out from the link,
+the substep or the set-up, in a comment beside the check.
+
+| Set-up | Expected | Got | Allowed |
+| --- | --- | --- | --- |
+| Laid flat over a smooth cylinder, equal loads, let go: the arc it lies on | 18 points, 17 links, 180.63 degrees (the only count that fits straight links and mirror halves) | 18 points, 180.73 degrees | 0.2 degrees |
+| The same: symmetry, hanging length, tension | mirror halves; 190.30 mm; 0.9810 N | within 0.001 mm; 190.34 mm; 0.9805 N | 0.01 mm; 0.1 mm; 0.5% |
+| No point or link inside the cylinder | points on the surface; link middles 0.232 mm in | 0.000 mm; 0.233 mm | 0.000001 mm; 0.242 mm |
+| Friction 0.2, a quarter turn: pull at which it slides, times the load | 1.3758 (a smooth rope: 1.3691) | 1.3757 (-0.01%) | +0.10%, -0.12% |
+| Friction 0.2, half a turn | 1.8781 (1.8745) | 1.8779 (-0.01%) | +0.10%, -0.14% |
+| Friction 0.5, a quarter turn | 2.2099 (2.1933) | 2.2084 (-0.07%) | +0.10%, -0.16% |
+| Friction 0.5, half a turn | 4.8382 (4.8105) | 4.8283 (-0.21%) | +0.10%, -0.29% |
+| Sliding along a part at 1 m/s, sliding friction 0.5; on a part with its own 0.2 | stops in 101.94 mm; 254.84 mm | 101.85 mm; 254.76 mm | 0.2 mm |
+| At rest, sticking friction 0.3, pushed at 0.25 g; at 0.35 g | stays; slides 66.22 mm in 0.3 s | 0.0000 mm; 66.25 mm | 0.001 mm; 0.2 mm |
+| Hanging free, a 5 degree swing | 1.47509 s, the equivalent pendulum (540.2 mm) | 1.47524 s (+0.01%) | 0.1% |
+| The same through the engine, stiff tether against chain | they differ by the tether's weight, -0.90% | -0.89% | 0.1% |
+| Energy of a 60 degree swing over 10 s, no drag | kept | 0.03% of the swing | 1% |
+| One turn round an upright capsule, pulled tight: whole length; length round it | 645.05 mm; 339.46 mm (338.81 mm without the pitch) | 645.04 mm; 339.42 mm | 0.06 mm |
+| The same: evenness of the pitch; the pitch; pull along the axis in tail and turn; tension | even; 21.06 mm; equal; 4.295 N | 0.0006 mm; 21.01 mm; 0.01% apart; 4.302 N | 0.005 mm; 0.12 mm; 0.05%; 3% |
+| Pushed along a level capsule at 0.5 m/s2 | 90 mm after 0.6 s; the seam at 0.8944 s | 90.03 mm; 0.8947 s | 0.1 mm; 1 ms |
+| Over the round end | every touching point 54 mm from the end's centre; never slowed, and pushed on; off before the tip; then free fall at (0.5, -9.81, 0) m/s2 | within 0.003 mm for 59 steps; 0.000 mm/s lost, 2.0 mm/s gained; off at 23.9 mm of 54 mm, 0.9367 s; (0.5000, -9.8100, 0.0000) | 0.01 mm, 30 steps; 1 mm/s, over 0.1 mm/s; 10 mm short of the tip; 0.01 m/s2 |
+| A snap: 90 g moving away at 0.44 m/s, 0.1 mm of stretch per newton | peaks at 13.50 N | 13.52 N | 3% |
+| The friction test on a cylinder moving at 2.5 m/s | holds and slides at the same pulls | it does, and stays within 0.000 mm of the cylinder along its axis | 0.1 mm |
+| A cylinder rising at 3 m/s2 | carries the load at 1.2810 N, and the load rises with it | 1.2801 N; 0.04 mm behind after 1.5 m | 0.5%; 0.3 mm |
+| Through the engine: a poi spin and a nunchaku swing settle and loop; a tether past its own arm | tether and cord their lengths; 0.7 s and 0.56 s a turn; the arm is touched only when asked for, and then listed | 549.99 to 550.00 mm, cord 90.19 mm; 0.700 s, 0.560 s; as expected | 1.5 mm; 2%; exact |
+
+The friction limits are compared with what a chain of straight links holds, not with the smooth
+rope's exp(friction times angle), which they approach as links shorten. A point with a link either
+side holds (c + mu s) / (c - mu s), c and s the cos and sin of half a link's angle. The first
+point on the cylinder has only its own link's half turn. The last has that and whatever of the wrap
+is left over after whole links, which the surface's push does not halve, so it holds
+(c + mu s) / (cos psi - mu sin psi). That last term is why a quarter turn (8.47 links) sits 0.49%
+and 0.76% over the smooth rope while half a turn (16.94 links) sits 0.20% and 0.58% over. What is
+left, all on the low side, is the solver's give moving the last point: up to 0.02% to 0.19%, which
+is in the allowance and is what was found.
+
+Corrected after a first run or after review, each because the reasoning was wrong or the check said
+more than it tested, not to pass:
+
+- The friction limits were first compared with the smooth rope at 0.6% to 1.1%, with a half per
+  cent for "the rest"; the comparison is now with the links' own limit at 0.1% and the give.
+- The drape was first checked for "180 degrees", which any line with two hanging ends shows; it is
+  now the arc it lies on, counted in points.
+- The turn round a capsule was first held to the smooth figures at 0.6 mm and 1 mm, wider than the
+  0.65 mm the pitch adds; it is now held to the links' figures at 0.06 mm.
+- The round end was first tested at 2 m/s2, where the line flies off the seam and never rides it;
+  a capsule with no round end passed. It is now ridden at 0.5 m/s2.
+- The pendulum is compared with the equivalent pendulum of a tether that has weight, because a
+  tether light enough to ignore is past the limit.
+- "A line cannot pass through a part" was claimed from one throw at friction 0.3. The table above
+  is what is shown, and the limit is now in the chain, strict, and tested.
+- The energy bound of 1% was first missed by the textbook form (4.7%), which is why the directions
+  are taken as they are.
+
+Each of these was checked by breaking the engine on purpose in a scratch copy and seeing the test
+fail: 25 changes (no round end, friction half a per cent off either way, contact 0.02 mm out, the
+limit off, contacts read from the last substep only, the holding arm's rule, and so on), all caught.
+
+**What it costs.** One simulated second of a poi spin costs about 50 ms with the chain and 16 ms
+with the stiff tether on the machine this was written on, about 3 times (2.5 to 3.4 over several
+runs; the test checks that ratio, under 6, and not the milliseconds). That machine ran the suite in
+43 s where the Pi takes about 150 s, so times here are multiplied by 3.5 for the Pi; this was not
+measured on a Pi. A chain clip that settles and records in 33 simulated seconds is then about 1.6 s
+here and 6 s on the Pi. The known answers take 8 s on their own, and `node test/physics.js` took
+49 s and 51 s in two runs with them: about 180 s on the Pi, against the 240 s the epic allows.
+
+That leaves about 60 s on the Pi, or ten chain clips at this cost, and the ratio limit of 6 in the
+test was set for six. The chain is hoped to carry about 30 skills
+([contact-review.md](contact-review.md)); at 6 s each that alone is 180 s and would pass the
+allowance. The next item has to settle chain clips for less (a shorter settle, a start nearer the
+repeating swing, fewer capsules handed to the line) or the allowance has to be looked at again.
+
+**What it does not model yet.**
+
+- The line touching itself: two turns of a wrap pass through each other.
+- A capsule turning about its own axis (a forearm rolling over): only the motion of its two ends
+  is seen. Friction on a moving capsule is tested at steady speed and at steady acceleration, not
+  on one that swings.
+- Twist in the line, and any stiffness in bending.
+- The head and the striker on the surface: they keep their own contact (a bounce), so a head lying
+  on an arm at the end of a wrap is not yet held there by friction as the line is.
+- A line meeting a handle: no handle is passed to it. The cord does not meet its own.
+- Stops and throws with a chain: they rewind the swing, and the chain keeps no copy of itself.
+- The points of the line in a clip: the frames still hold the hand and the head only, so the
+  player draws the line straight. Showing it bent is part of the next item.
+
 ## Tried and left out
 
 - **Double staff shoulder reel (W2).** With the body fitted to the drawn model, the short staff
@@ -128,9 +290,9 @@ same clip. If nothing on the grid is clear, the move gets no demo.
 
 ## Where it is still weak
 
-1. **Nothing wraps or rolls.** Tethers and cords are not colliders and there is no rolling
-   contact, so wraps, wrist rolls and all contact staff are still out. This is the largest group
-   left (about 110 skills).
+1. **Nothing wraps or rolls yet.** A tether or cord can now be a chain that touches the body (see
+   above), but no move uses it, and there is no rolling contact, so wraps, wrist rolls and all
+   contact staff are still out. This is the largest group left (about 110 skills).
 2. **The hand holds but does not work.** The 3D hand has a thumb and fingers that close round
    the prop, and the forearm turns with the palm, but there is still no finger model in the
    physics: the test measures how far a prop turns inside the hand (often 360 degrees or more

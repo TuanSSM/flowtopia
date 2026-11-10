@@ -64,7 +64,9 @@ back and hit its own handle. The bounce demo fades gradually for that reason.
 1. **The tether and cord are not colliders.** A poi tether passes through an arm, so wraps
    (arm wrap, leg wrap, air wrap, hyperloop) cannot be shown, and neither can nunchaku wrist
    and finger rolls. This needs the tether modelled as a chain of points with contact and
-   friction. It is the single biggest unlock: about 30 skills.
+   friction. It is the single biggest unlock: about 30 skills. The chain now exists
+   (`sim/chain.js`, [demo-engine.md](demo-engine.md#a-tether-that-touches-the-chain)); the
+   moves that use it do not yet.
 2. **No rolling or resting contact for rigid props.** Contact staff (halo, fishtail, steve,
    conveyor) needs a staff rolling on a moving body without slipping. Nothing here does that.
 3. **The body does not push back with its own motion.** A moving arm is treated as still at
