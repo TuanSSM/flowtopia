@@ -51,8 +51,13 @@ def start(w=1440,h=1100):
     cmd('WebDriver:NewSession',capabilities={});cmd('WebDriver:SetWindowRect',width=w,height=h)
     cmd('WebDriver:Navigate',url=BASE);time.sleep(2.5)
     js("window.__e=[];window.addEventListener('error',e=>__e.push(e.message+' @'+(e.filename||'').split('/').pop()+':'+e.lineno));window.addEventListener('unhandledrejection',e=>__e.push('rej '+String(e.reason)));document.addEventListener('securitypolicyviolation',e=>__e.push('CSP '+e.violatedDirective))")
-def signin():
-    nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value='admin';f.elements.password.value='flowa-test-only';f.requestSubmit()");time.sleep(2.5)
+def signin(name='admin'):
+    # Checking a password takes a second or two on a small machine, so wait for the page to show who signed in.
+    nav('#/signin',.8);js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value='flowa-test-only';f.requestSubmit()",name)
+    for _ in range(60):
+        if js("return (document.querySelector('.nav-profile .tiny')||{}).textContent")=='@'+name: break
+        time.sleep(.5)
+    time.sleep(1.5)
 def done():
     # A suite that skipped never opened a page; Firefox is closed either way, so none is left running.
     try:

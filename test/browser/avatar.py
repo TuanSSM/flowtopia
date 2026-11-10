@@ -25,7 +25,7 @@ def signin_as(name):
     cmd('WebDriver:Navigate',url=BASE+f'?as={name}#/signin') # a new query string forces a full load
     if not wait(lambda: js("return !!document.querySelector('#auth-form')")): print('no sign-in form:',js("return location.href+' '+document.querySelector('#main')?.textContent.slice(0,200)"))
     js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value='flowa-test-only';f.requestSubmit()",name)
-    wait(lambda: js("return !!document.querySelector('.nav-profile, #props-form')"));time.sleep(1.2)
+    wait(lambda: js("return (document.querySelector('.nav-profile .tiny')||{}).textContent")=='@'+name);time.sleep(1.2)
 def my_cfg(): return js("return fetch('api/me').then(r=>r.json()).then(d=>JSON.stringify(d.user.avatarCfg||{}))")
 def snap(sel): return js("const c=document.querySelector(arguments[0]);if(!c)return null;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let h=0;for(let i=0;i<d.length;i+=4*7)h=(h*31+d[i]+d[i+1]*3+d[i+2]*7)>>>0;return h",sel)
 def shot_if(name):
@@ -152,7 +152,7 @@ try:
     # ---- Stickers: the unlock card and the milestone post show the avatar.
     api(op,'flags',{'flags':{'demos':False}},'PUT')
     nav('#/practice',2)
-    js("const s=document.querySelector('[data-change=focus-add]');if(s){s.value='F7';s.dispatchEvent(new Event('change',{bubbles:true}))}");time.sleep(.6)
+    js("const s=document.querySelector('[data-pick=focus-add]');if(s){s.value='F7';s.dispatchEvent(new Event('change',{bubbles:true}));s.parentElement.querySelector('[data-act=add-chosen]').click()}");time.sleep(.6)
     js("const f=document.querySelector('#log-form');f.minutes.value='20';f.requestSubmit()")
     card=wait(lambda: js("return !document.querySelector('#unlock').hidden&&document.querySelector('#unlock').textContent.includes('First steps')&&!!document.querySelector('#unlock img.unlock-sticker')"),n=20)
     check('unlocking First steps shows the avatar sticker on the card',card)

@@ -14,7 +14,6 @@ const adminTabs = () => [
 const REASONS = [['spam', 'Spam'], ['harassment', 'Harassment'], ['unsafe', 'Unsafe advice'], ['offtopic', 'Not about flow arts'], ['other', 'Other']];
 const DURATIONS = [['1h', '1 hour', 1], ['1d', '1 day', 24], ['3d', '3 days', 72], ['7d', '1 week', 168], ['30d', '30 days', 720]];
 const mod = { queue: null, history: null, audit: null, auditMore: false, filter: { actor: '', action: '' }, tab: 'queue', count: 0 };
-const fmtWhen = t => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 /* ---------- reporting ---------- */
 const canReport = ownerId => flags.moderation && me && ownerId !== me.id;
@@ -24,10 +23,10 @@ function openReport(kind, id, what) {
   el.innerHTML = `<form class="modal-box narrow" id="report-form" data-kind="${kind}" data-id="${id}" role="dialog" aria-modal="true" aria-labelledby="rep-t">
     <div class="row"><h2 id="rep-t" class="grow">Report ${esc(what)}</h2><button type="button" class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
     <p class="small muted" style="margin-top:4px">A moderator will look at it. The person you report is not told who reported them.</p>
-    <div class="stack" style="gap:6px;margin-top:12px">${REASONS.map(([k, n], i) => `<label class="check"><input type="radio" name="reason" value="${k}" ${i ? '' : 'checked'}><span>${n}</span></label>`).join('')}</div>
+    <div class="stack" role="radiogroup" aria-label="What is wrong with it" style="gap:6px;margin-top:12px">${REASONS.map(([k, n]) => `<label class="check"><input type="radio" name="reason" value="${k}" required><span>${n}</span></label>`).join('')}</div>
     <label class="field" style="margin-top:10px">Anything the moderator should know (optional)<textarea name="note" maxlength="500" rows="2"></textarea></label>
     <p class="form-err" id="rep-err" role="alert" hidden></p>
-    <div class="row" style="margin-top:12px;justify-content:flex-end"><button type="button" class="btn" data-act="modal-close">Cancel</button><button class="btn primary" type="submit">Send report</button></div></form>`;
+    <div class="row" style="margin-top:12px;justify-content:flex-end"><button type="button" class="btn" data-act="modal-close">Cancel</button><button class="btn primary" type="submit" disabled>Send report</button></div></form>`;
   $('#report-form input').focus();
 }
 
@@ -104,7 +103,7 @@ async function modAction(body) {
   if (!r.ok) { toast(r.error); return false; }
   return true;
 }
-function refreshAfterMod() { mod.queue = null; mod.history = null; mod.dash = null; social.stale = true; for (const k in social.profile) delete social.profile[k]; ui.users = null; render(); }
+function refreshAfterMod() { mod.queue = null; mod.history = null; mod.dash = null; social.stale = true; for (const k in social.profile) delete social.profile[k]; render(); if (ui.users) loadUsers(); }
 
 /* ---------- the admin area ---------- */
 function pageAdmin(tab) {
@@ -119,13 +118,20 @@ function adminFeatures() {
   return `<div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every user, straight away</span></div>
     <div class="stack" style="gap:8px">${FLAGS.map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
 }
+// The accounts list is never kept from one visit to the next: it is fetched when the tab opens
+// and again after every action on an account, so a row cannot say Active after a suspension.
 async function loadUsers() {
   const r = await api('admin/users');
   if (!r.ok) { toast(r.error); return; }
   ui.users = r.data.users;
+  // The list also says whether this admin is still the owner, which decides what the rows offer.
+  const self = ui.users.find(u => u.id === me.id);
+  if (self) me.owner = !!self.owner;
   render();
 }
+window.addEventListener('hashchange', () => { ui.users = null; ui.rolePick = null; });
 const RANK_NAMES = { user: 'User', moderator: 'Moderator', admin: 'Admin' };
+const ROLE_ASK = { user: 'a user', moderator: 'a moderator', admin: 'an admin' };
 function adminAccounts() {
   if (!ui.users) { loadUsers(); return '<div class="card"><div class="empty small">Loading accounts…</div></div>'; }
   const f = ui.userFilter || { q: '', role: '', status: '' }, q = f.q.trim().toLowerCase();
@@ -133,13 +139,20 @@ function adminAccounts() {
   const list = ui.users.filter(u => (!q || u.username.includes(q) || (u.displayName || '').toLowerCase().includes(q)) && (!f.role || u.role === f.role) && (!f.status || status(u) === f.status));
   const rows = list.map(u => {
     const self = u.id === me.id, st = status(u), outrank = { user: 0, moderator: 1, admin: 2 }[me.role] > { user: 0, moderator: 1, admin: 2 }[u.role];
-    const role = canDo('user.role') && !self ? `<select data-change="user-role" data-id="${u.id}" aria-label="Role of @${esc(u.username)}">${Object.entries(RANK_NAMES).map(([k, n]) => `<option value="${k}" ${u.role === k ? 'selected' : ''}>${n}</option>`).join('')}</select>` : `<span class="chip ${u.role === 'user' ? '' : 'ok'}">${RANK_NAMES[u.role]}</span>`;
+    // A role is chosen and then confirmed. The list is offered only where the server would take the
+    // change: not for yourself, not for the owner, and for another admin only to the owner.
+    const pick = ui.rolePick?.id === u.id ? ui.rolePick.role : null;
+    const ownerChip = u.owner ? '<span class="chip" data-tip="The one admin whose role cannot be changed. Only the owner changes another admin\'s role, and can hand ownership to another admin.">Owner</span>' : '';
+    const role = canDo('user.role') && !self && !u.owner && (u.role !== 'admin' || me.owner)
+      ? `<select data-change="user-role" data-id="${u.id}" aria-label="Role of @${esc(u.username)}">${Object.entries(RANK_NAMES).map(([k, n]) => `<option value="${k}" ${(pick || u.role) === k ? 'selected' : ''}>${n}</option>`).join('')}</select>${pick ? `<span class="role-ask" role="group" aria-label="Confirm the role change"><span class="small">Make @${esc(u.username)} ${ROLE_ASK[pick]}?</span><span class="row" style="gap:6px"><button class="btn sm primary" data-act="role-apply">Apply</button><button class="btn sm" data-act="role-cancel">Cancel</button></span></span>` : ''}`
+      : `<span class="row wrap" style="gap:4px"><span class="chip ${u.role === 'user' ? '' : 'ok'}">${RANK_NAMES[u.role]}</span>${ownerChip}</span>`;
     const stChip = st === 'active' ? '<span class="tiny">Active</span>' : `<span class="chip warn" data-tip="${esc(st === 'muted' ? u.muteReason : u.suspendReason)}">${st === 'muted' ? 'Muted' : 'Suspended'} until ${esc(fmtWhen(st === 'muted' ? u.mutedUntil : u.suspendedUntil))}</span>`;
     const modBtns = flags.moderation && !self && outrank ? `${canDo('user.mute') ? (u.mutedUntil ? `<button class="btn sm" data-act="mod-do" data-do="unmute" data-kind="user" data-id="${u.id}">Unmute</button>` : `<button class="btn sm" data-act="mod-open" data-do="mute" data-kind="user" data-id="${u.id}" data-name="${esc(u.username)}">Mute…</button>`) : ''}${canDo('user.suspend') ? (u.suspendedUntil ? `<button class="btn sm" data-act="mod-do" data-do="unsuspend" data-kind="user" data-id="${u.id}">Lift suspension</button>` : `<button class="btn sm" data-act="mod-open" data-do="suspend" data-kind="user" data-id="${u.id}" data-name="${esc(u.username)}">Suspend…</button>`) : ''}${canDo('badge.revoke') ? `<button class="btn sm" data-act="mod-do" data-do="${u.statsHidden ? 'show_stats' : 'hide_stats'}" data-kind="user" data-id="${u.id}">${u.statsHidden ? 'Show stats' : 'Hide stats'}</button>` : ''}` : '';
-    const mgmt = canDo('user.manage') ? `<button class="btn sm" data-act="user-pw" data-id="${u.id}" data-name="${esc(u.username)}">Reset password</button>${self ? '' : `<button class="btn sm danger" data-act="user-del" data-id="${u.id}" data-name="${esc(u.username)}">Delete</button>`}` : '';
+    const mgmt = canDo('user.manage') ? `<button class="btn sm" data-act="user-pw" data-id="${u.id}" data-name="${esc(u.username)}">Reset password</button>${self || u.owner ? '' : `<button class="btn sm danger" data-act="user-del" data-id="${u.id}" data-name="${esc(u.username)}">Delete</button>`}` : '';
+    const hand = me.owner && !self && u.role === 'admin' && !u.suspendedUntil ? `<button class="btn sm" data-act="user-owner" data-id="${u.id}" data-name="${esc(u.username)}">Make owner</button>` : '';
     return `<tr data-user="${esc(u.username)}"><td><span class="row" style="gap:8px">${avatarHTML(u)}<span><a href="#/u/${esc(u.username)}"><b style="font-weight:560">${esc(u.displayName)}</b></a><br><span class="tiny">@${esc(u.username)}</span></span></span></td>
       <td>${role}</td><td>${stChip}</td><td class="small" style="white-space:nowrap">${u.lastActive ? esc(new Date(u.lastActive).toLocaleDateString()) : '<span class="tiny">Never</span>'}</td>
-      <td><span class="row wrap" style="gap:6px;justify-content:flex-end">${modBtns}${mgmt}</span></td></tr>`;
+      <td><span class="row wrap" style="gap:6px;justify-content:flex-end">${modBtns}${hand}${mgmt}</span></td></tr>`;
   }).join('');
   return `<div class="card"><div class="row wrap" style="gap:8px;margin-bottom:12px">
       <input type="search" id="user-q" class="grow" placeholder="Search by name" value="${esc(f.q)}" aria-label="Search accounts" style="min-width:160px">
@@ -148,7 +161,7 @@ function adminAccounts() {
       <span class="sub tiny">${list.length} of ${ui.users.length}</span></div>
     <div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last active</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">No accounts match.</td></tr>'}</tbody></table></div></div>`;
 }
-const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft' };
+const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft' };
 async function loadAudit(more) {
   const f = mod.filter, before = more && mod.audit?.length ? mod.audit[mod.audit.length - 1].id : 0;
   const r = await api(`admin/audit?actor=${encodeURIComponent(f.actor)}&action=${encodeURIComponent(f.action)}&before=${before}`);
@@ -161,6 +174,7 @@ function adminAudit() {
   const detail = e => {
     const d = e.detail || {};
     if (e.action === 'role') return `${esc(d.from)} to ${esc(d.to)}`;
+    if (e.action === 'owner') return `from @${esc(d.from)}`;
     if (e.action === 'flags') return Object.entries(d).map(([k, v]) => `${esc(k)} ${v ? 'on' : 'off'}`).join(', ');
     if (e.action === 'resolve') return `${esc(d.outcome)}, ${d.reports} ${d.reports === 1 ? 'report' : 'reports'}`;
     if (d.until) return `until ${esc(fmtWhen(d.until))}`;
@@ -171,7 +185,7 @@ function adminAudit() {
   const rows = mod.audit.map(e => `<tr><td class="small" style="white-space:nowrap">${esc(fmtWhen(e.at))}</td><td class="small">@${esc(e.actor || 'deleted')}</td>
     <td class="small">${esc(ACTION_NAMES[e.action] || e.action)} ${e.target ? '@' + esc(e.target) : e.kind && e.kind !== 'user' ? esc(e.kind) + ' ' + e.targetId : ''}</td><td class="small muted">${detail(e)}</td><td class="small">${esc(e.reason)}</td></tr>`).join('');
   return `<div class="card"><form class="row wrap" id="audit-form" style="gap:8px;margin-bottom:12px"><input type="search" name="actor" placeholder="Who acted (username)" value="${esc(mod.filter.actor)}" style="width:200px" aria-label="Who acted">
-      <select name="action" style="width:auto" aria-label="Action"><option value="">Every action</option>${Object.entries(ACTION_NAMES).map(([k, n]) => `<option value="${k}" ${mod.filter.action === k ? 'selected' : ''}>${n.replace(/ (of|on|by)$/, '')}</option>`).join('')}</select><button class="btn sm" type="submit">Filter</button></form>
+      <select name="action" style="width:auto" aria-label="Action"><option value="">Every action</option>${Object.entries(ACTION_NAMES).map(([k, n]) => `<option value="${k}" ${mod.filter.action === k ? 'selected' : ''}>${n.replace(/ (of|on|by|to)$/, '')}</option>`).join('')}</select><button class="btn sm" type="submit">Filter</button></form>
     <div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Detail</th><th>Reason</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">Nothing recorded yet.</td></tr>'}</tbody></table></div>
     ${mod.auditMore ? '<button class="btn sm" data-act="audit-more" style="margin-top:10px">Load more</button>' : ''}</div>`;
 }
@@ -236,28 +250,50 @@ document.addEventListener('click', async e => {
     case 'user-del':
       if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.`)) {
         const r = await api('admin/users/' + d.id, 'DELETE');
-        if (r.ok) { toast('Account deleted.'); await loadUsers(); } else toast(r.error);
+        toast(r.ok ? 'Account deleted.' : r.error); await loadUsers();
       }
       break;
     case 'user-pw': {
-      const next = prompt(`New password for @${d.name} (at least 8 characters). They will be signed out everywhere.`);
+      const next = prompt(`New password for @${d.name}: 8 characters or more, not a common password and not their username. They will be signed out everywhere.`);
       if (!next) break;
       const r = await api(`admin/users/${d.id}/password`, 'PUT', { next });
       toast(r.ok ? 'Password changed.' : r.error);
-      break;
+      loadUsers(); break;
     }
+    case 'role-cancel': { const id = ui.rolePick?.id; ui.rolePick = null; render(); focusRole(id); break; }
+    case 'role-apply': {
+      const p = ui.rolePick;
+      if (!p) break;
+      ui.rolePick = null;
+      const r = await api(`admin/users/${p.id}/role`, 'PUT', { role: p.role });
+      toast(r.ok ? 'Role changed.' : r.error);
+      await loadUsers(); focusRole(p.id); break;
+    }
+    case 'user-owner':
+      if (confirm(`Hand ownership of this Flowa to @${d.name}? You stay an admin, but only @${d.name} can then change an admin's role or hand ownership back.`)) {
+        const r = await api(`admin/users/${d.id}/owner`, 'PUT');
+        toast(r.ok ? `@${d.name} is the owner now.` : r.error);
+        await loadUsers();
+      }
+      break;
   }
 });
 document.addEventListener('change', async e => {
   const t = e.target, d = t.dataset;
   if (d.change === 'user-role') {
-    const r = await api(`admin/users/${d.id}/role`, 'PUT', { role: t.value });
-    toast(r.ok ? 'Role changed.' : r.error);
-    ui.users = null; render();
+    // Choosing only asks: arrow keys and typing change a list's value as they go, so nothing is
+    // sent until Apply. Choosing the role they have already takes the question away.
+    const id = Number(d.id), u = ui.users?.find(x => x.id === id);
+    ui.rolePick = u && u.role !== t.value ? { id, role: t.value } : null;
+    render(); focusRole(id);
+  } else if (t.name === 'reason' && t.form?.id === 'report-form') {
+    t.form.querySelector('[type=submit]').disabled = false;
   } else if (d.change === 'user-filter') {
     ui.userFilter = { ...(ui.userFilter || { q: '', role: '', status: '' }), [d.k]: t.value }; render();
   }
 });
+// After the accounts table is drawn again, the keyboard stays on the role list it was on.
+const focusRole = id => id && document.querySelector(`select[data-change="user-role"][data-id="${id}"]`)?.focus();
 document.addEventListener('input', e => {
   if (e.target.id !== 'user-q') return;
   ui.userFilter = { ...(ui.userFilter || { q: '', role: '', status: '' }), q: e.target.value };

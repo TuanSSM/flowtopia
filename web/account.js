@@ -6,6 +6,17 @@ const docs = {}; // progress per prop for the signed-in user: { rev, state }
 // another device, this is the common starting point the two sets of edits are compared against.
 const synced = {};
 
+// One way to write a moment, everywhere: the reader's own time zone and format, with the year
+// only when it is not this one. The server writes times into its messages as RFC 3339 in UTC
+// ("suspended until 2026-03-01T09:00:00Z"), and localTimes turns each into that same form, so a
+// mute and a suspension that end together read the same.
+const fmtWhen = t => {
+  const d = new Date(t);
+  if (isNaN(d)) return String(t);
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', ...(d.getFullYear() !== new Date().getFullYear() && { year: 'numeric' }) });
+};
+const localTimes = s => String(s ?? '').replace(/\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ/g, fmtWhen);
+
 async function api(path, method = 'GET', body, headers) {
   try {
     const opt = { method, cache: 'no-store' };
@@ -13,7 +24,7 @@ async function api(path, method = 'GET', body, headers) {
     const r = await fetch('api/' + path, opt);
     let data = null;
     try { data = await r.json(); } catch { /* no body */ }
-    return { ok: r.ok, status: r.status, data, error: data?.error || 'Something went wrong.' };
+    return { ok: r.ok, status: r.status, data, error: localTimes(data?.error || 'Something went wrong.') };
   } catch { return { ok: false, status: 0, data: null, error: 'Could not reach the Pi.' }; }
 }
 
@@ -284,7 +295,7 @@ function pageChooser() {
     <div class="row" style="margin-top:16px"><button class="btn primary" type="submit">Continue</button></div></form>`;
 }
 function pageProfile() {
-  const status = [me.mutedUntil && `You are muted until ${new Date(me.mutedUntil).toLocaleString()}${me.muteReason ? `. Reason: ${me.muteReason}` : ''}. You can read and like, but not post or comment.`, me.statsHidden && 'A moderator hid your level and XP from other people.'].filter(Boolean);
+  const status = [me.mutedUntil && `You are muted until ${fmtWhen(me.mutedUntil)}${me.muteReason ? `. Reason: ${me.muteReason}` : ''}. You can read and like, but not post or comment.`, me.statsHidden && 'A moderator hid your level and XP from other people.'].filter(Boolean);
   return `${status.map(s => `<p class="notice warn" style="margin-bottom:12px">${esc(s)}</p>`).join('')}<div class="page-h"><div class="grow"><h1>Profile</h1><p>@${esc(me.username)} · ${me.role !== 'user' ? RANK_NAMES[me.role] + ' · ' : ''}joined ${esc(new Date(me.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p></div>
     ${flags.tour ? '<button class="btn" data-act="tour-replay">Replay the tour</button>' : ''}<button class="btn" data-act="signout">Sign out</button></div>
   <div class="grid g2">

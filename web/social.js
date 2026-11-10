@@ -175,13 +175,16 @@ function replyForm(p, root) {
 }
 function threadHTML(p) {
   const roots = rootsOf(p), full = social.full[p.id];
+  // Of what is on the page, the comments the post's own count includes: not deleted, not hidden.
   let shown = 0;
   const items = roots.map(c => {
     const reps = repliesOf(c), hidden = (c.replyCount || 0) - reps.length, loading = social.fullReplies[c.id]?.loading;
-    shown += 1 + reps.length;
+    shown += [c, ...reps].filter(x => !x.deleted && !x.hidden).length;
     return `<div class="thr">${commentHTML(p, c, false)}${reps.map(r => commentHTML(p, r, true)).join('')}${hidden > 0 ? `<button class="more-replies" data-act="more-replies" data-id="${c.id}" ${loading ? 'disabled' : ''}>View ${hidden} more ${hidden === 1 ? 'reply' : 'replies'}</button>` : ''}${replyForm(p, c.id)}</div>`;
   }).join('');
-  const more = full ? full.more : (p.commentCount || 0) > shown;
+  // A page of comments says whether another follows. A preview, or one thread opened from a
+  // notification, offers the rest only when the post has comments that are not on the page.
+  const more = full && !full.thread ? full.more : (p.commentCount || 0) > shown;
   const open = social.openCmts.has(p.id) || roots.length > 0;
   return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-k="c:${p.id}:0" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment" ${sendOff(`c:${p.id}:0`)}>${icon('send')}</button></form></div>`;
 }
@@ -214,7 +217,7 @@ async function loadThread(postId, commentId) {
   if (!r.ok) { toast(r.error); return; }
   const root = r.data.comments[0];
   Object.assign(social.users, r.data.users);
-  social.full[postId] = { list: [root], more: true, thread: true };
+  social.full[postId] = { list: [root], thread: true };
   social.fullReplies[root.id] = { list: root.replies || [], more: false, thread: true };
   social.openCmts.add(postId);
   render();
@@ -335,7 +338,7 @@ function linkCardHTML(p, c) {
   const meta = c.status === 'pending' ? '<span class="tiny">Getting the preview…</span>' : `<b class="lc-title">${esc(c.title || `${site} ${c.kind === 'reel' ? 'reel' : c.kind === 'short' ? 'short' : c.site === 'instagram' ? 'post' : 'video'}`)}</b>${c.author ? `<span class="tiny">${esc(c.author)}</span>` : ''}`;
   return `<div class="lc ${c.thumb ? '' : 'plain'}">${media}<a class="lc-meta" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer"><span class="lc-site social-${esc(c.site)}">${icon(c.site)}${esc(site)}</span>${meta}<span class="tiny lc-open">Open on ${esc(site)} ${icon('ext')}</span></a></div>`;
 }
-const mutedNote = () => me.mutedUntil ? `You are muted until ${new Date(me.mutedUntil).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${me.muteReason ? `: ${me.muteReason}` : ''}. You can still read and like.` : '';
+const mutedNote = () => me.mutedUntil ? `You are muted until ${fmtWhen(me.mutedUntil)}${me.muteReason ? `: ${me.muteReason}` : ''}. You can still read and like.` : '';
 function composer() {
   if (me.mutedUntil) return `<div class="card notice warn muted-note">${icon('lock')} ${esc(mutedNote())}</div>`;
   const chips = social.draftTags.map(t => trickChip(t.prop, t.skill, `<button type="button" class="x" data-act="tag-rm" data-prop="${t.prop}" data-skill="${esc(t.skill)}" aria-label="Remove ${esc(t.skill)}">${icon('x')}</button>`, false)).join('')
@@ -414,7 +417,7 @@ function notifText(n) {
     case 'reply': return `<b>${who}</b> replied to your comment`;
     case 'comment_like': return `<b>${who}</b> liked your comment`;
     case 'achievement': { const b = badgeByKey(n.text); return `Achievement unlocked: <b>${esc(b?.name || n.text)}</b>`; }
-    default: return esc(n.text);
+    default: return esc(localTimes(n.text)); // a mute or suspension carries its end time
   }
 }
 function bellHTML() {

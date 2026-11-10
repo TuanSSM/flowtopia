@@ -266,3 +266,96 @@ func TestRootsPresent(t *testing.T) {
 		t.Fatalf("the check did not run in the second process:\n%s", out)
 	}
 }
+
+func TestCleanName(t *testing.T) {
+	const refused = "\x00"
+	for in, want := range map[string]string{
+		"Pat Spins":             "Pat Spins",
+		"  Pat \t  Spins \n":    "Pat Spins",
+		"Pat\u200b Spi\u2060ns": "Pat Spins", // zero-width space and word joiner go
+		"\ufeffPat":             "Pat",       // a byte order mark from a paste
+		"\u200b\u200b\u200b":    refused,     // nothing to see
+		"\u200d\u200c":          refused,     // joiners with nothing to join
+		"\u3164\u3164":          refused,     // Hangul fillers: letters to Unicode, blank to a reader
+		"\u2800\u2800\u2800":    refused,     // blank braille
+		"   ":                   refused,
+		"":                      refused,
+		"\U0001F525\U0001F525":  refused, // no letter or digit
+		"...":                   refused,
+		"\u202enimda":           refused,              // right-to-left override: reads as "admin"
+		"Pat\u2066x\u2069":      refused,              // isolates
+		"Pat\u200e Spins\u200f": "Pat Spins",          // plain direction marks are dropped
+		"\u0639\u0644\u064a":    "\u0639\u0644\u064a", // Arabic needs no controls
+		"\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645":                          "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",                          // Persian: the joiner between letters stays
+		"Pat \U0001F468\u200d\U0001F469\u200d\U0001F467":                            "Pat \U0001F468\u200d\U0001F469\u200d\U0001F467",                            // a family emoji stays whole
+		"Jo \U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F": "Jo \U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F", // the flag of Scotland
+		"Jo\U000E0041\U000E0042":                                                    "Jo",                                                                        // tags with no flag before them carry hidden text
+		"7":                                                                         "7",
+		strings.Repeat("d", 40):                                                     strings.Repeat("d", 40),
+		strings.Repeat("d", 41):                                                     refused,
+		strings.Repeat("\u200b", 60) + "Pat":                                        "Pat", // counted after cleaning
+		"Zo\u00eb":                                                                  "Zo\u00eb",
+	} {
+		got, msg := cleanName(in)
+		if want == refused {
+			if msg == "" {
+				t.Errorf("cleanName(%q) = %q, want it refused", in, got)
+			}
+			continue
+		}
+		if msg != "" || got != want {
+			t.Errorf("cleanName(%q) = %q, %q; want %q", in, got, msg, want)
+		}
+	}
+	// The bio keeps its lines; what cannot be seen goes, and a direction override is refused.
+	if got, ok := visibleText("\u200b\u200b\r\nPoi since 2019.\n\tStaff too.\x07"); !ok || strings.TrimSpace(got) != "Poi since 2019.\n Staff too." {
+		t.Errorf("bio: %q, %v", got, ok)
+	}
+	if _, ok := visibleText("fine\u202e reversed"); ok {
+		t.Error("a bio with a direction override must be refused")
+	}
+}
+
+func TestPasswordPolicy(t *testing.T) {
+	for _, c := range []struct{ pw, user, want string }{
+		{"short", "pat", "8 to 200"},
+		{strings.Repeat("x", 201), "pat", "8 to 200"},
+		{"password", "pat", "most used"},
+		{"PassWord1", "pat", "most used"},  // whatever the case
+		{" iloveyou ", "pat", "most used"}, // spaces around it do not make it another password
+		{"1q2w3e4r5t", "pat", "most used"},
+		{"patricia.spins", "patricia.spins", "username"},
+		{"Patricia.Spins", "patricia.spins", "username"},
+		{"correct horse battery staple", "pat", ""},
+		{"flowa-test-only", "admin", ""},
+		{"patricia.spins1", "patricia.spins", ""},
+	} {
+		got := passwordProblem(c.pw, c.user)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("passwordProblem(%q, %q) = %q, want it to mention %q", c.pw, c.user, got, c.want)
+		}
+	}
+	// The list: 1,000 entries, each one that the length rule would let through, each lower case.
+	words := strings.Fields(commonPasswordList)
+	if len(words) != 1000 || len(commonPasswords) != 1000 {
+		t.Fatalf("%d words, %d distinct; want 1000 of each", len(words), len(commonPasswords))
+	}
+	for _, w := range words {
+		if len(w) < 8 || w != strings.ToLower(w) {
+			t.Errorf("%q does not belong in the list: under 8 characters or not lower case", w)
+		}
+	}
+	// New hashes get the full count; an older hash still checks, and says how many rounds it has.
+	if pwRounds < 600000 {
+		t.Errorf("pwRounds is %d, want at least 600000", pwRounds)
+	}
+	if h := hashPassword("a new password 9"); hashRounds(h) != pwRounds || !checkPassword(h, "a new password 9") || checkPassword(h, "a new password 8") {
+		t.Errorf("a new hash: %d rounds", hashRounds(h))
+	}
+	if h := hashWith("an older password 7", 200000); hashRounds(h) != 200000 || !checkPassword(h, "an older password 7") {
+		t.Errorf("an older hash: %d rounds", hashRounds(h))
+	}
+	if hashRounds("x") != 0 || hashRounds("md5$1$a$b") != 0 {
+		t.Error("a hash that cannot be read has no round count")
+	}
+}

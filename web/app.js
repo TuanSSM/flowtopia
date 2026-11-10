@@ -78,6 +78,8 @@ const FLAGS = [
   ['videoEmbeds', 'Play YouTube in place', 'A play button on YouTube cards that loads the video from youtube-nocookie.com inside Flowa. Adds that one site to the page security policy while on.'],
   ['suggest', 'Next-trick suggestions', 'The combo builder suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links directly. Members can share their transition marks anonymously to improve it.'],
   ['avatars', 'Avatars', 'Members build an avatar that plays their demos and combos (on their body preset where the clip passes its body checks), shows on their profile, and appears on stickers and streak overlays. Needs the 3D figure.'],
+  ['moderation', 'Reports and moderation', 'Members can report posts, comments and profiles, and moderators get the Moderation page with the queue, mutes and suspensions. When off, the Report buttons and that page are hidden; suspensions already given still hold.'],
+  ['catalogEditor', 'Skill map editor', 'Admins edit the skill catalogs in the browser and publish them for everyone. When off, the editor is hidden and nothing can be changed; what was last published stays in use.'],
   ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and the Plan as quests.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
@@ -458,7 +460,7 @@ function pagePractice() {
     <div class="form-grid">
       <label class="field">Date<input type="date" name="date" value="${dayKey()}" max="${dayKey()}" required></label>
       <label class="field">Minutes<input type="number" name="minutes" min="1" max="600" value="25" required></label>
-      ${curProp().ready ? `<label class="field span-mobile">Add a skill you worked on<select data-change="focus-add"><option value="">Choose a skill</option>${skillOptions()}</select></label>` : ''}
+      ${curProp().ready ? `<label class="field span-mobile">Add a skill you worked on<span class="add-pick"><select data-pick="focus-add"><option value="">Choose a skill</option>${skillOptions()}</select><button type="button" class="btn" data-act="add-chosen" disabled>Add</button></span></label>` : ''}
       ${focus ? `<div class="chips span-all">${focus}</div>` : ''}
       <label class="field span-all">Notes<textarea name="notes" placeholder="What worked, what to fix next time"></textarea></label>
     </div>
@@ -504,7 +506,7 @@ function pageCombos() {
         <div class="cb-side">
           <ol class="cb-steps">${steps || '<li class="small muted" style="padding:8px 2px">Start with two skills you can already do.</li>'}</ol>
           ${nextTrickHTML(c)}
-          <select data-change="combo-add" data-id="${esc(c.id)}" aria-label="Add skill to ${esc(c.name)}"><option value="">+ Add a skill</option>${skillOptions()}</select>
+          <span class="add-pick"><select data-pick="combo-add" data-id="${esc(c.id)}" aria-label="Skill to add to ${esc(c.name)}"><option value="">Choose a skill to add</option>${skillOptions()}</select><button type="button" class="btn" data-act="add-chosen" disabled>Add</button></span>
           <div class="cb-runs"><span class="small muted num grow">${cleanRuns} clean of ${runs} full runs</span>
             <button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="1">${icon('check')}Clean run</button><button class="btn sm" data-act="combo-run" data-id="${esc(c.id)}" data-clean="0">${icon('x')}Dropped</button>${flags.community && seq.length >= 2 ? `<button class="btn sm" data-act="combo-publish" data-id="${esc(c.id)}" data-tip="Share this combo on the timeline">${icon('send')}Publish</button>` : ''}</div>
         </div>
@@ -743,6 +745,7 @@ document.addEventListener('click', e => {
     case 'combo-move': if (combo) { const i = Number(d.i), r = (combo.reps ||= []); if (i > 0) { [combo.seq[i - 1], combo.seq[i]] = [combo.seq[i], combo.seq[i - 1]]; [r[i - 1], r[i]] = [r[i] || 1, r[i - 1] || 1]; commit(); } } break;
     case 'combo-demo': Demo.comboAct(d); render(); break;
     case 'focus-del': ui.draftFocus = ui.draftFocus.filter(x => x !== d.id); render(); break;
+    case 'add-chosen': addChosen(t.parentElement.querySelector('select[data-pick]')); break;
     case 'session-del':
       if (confirm('Delete this session?')) { state.sessions = state.sessions.filter(s => s.id !== d.id); commit(); }
       break;
@@ -778,17 +781,25 @@ document.addEventListener('click', e => {
       break;
   }
 });
+// Adding from a list of skills takes a deliberate step: the Add button beside the list, or Enter
+// in it. Choosing alone adds nothing, because arrow keys and typing a letter change a list's value
+// on the way to the skill that is wanted.
+function addChosen(sel) {
+  const v = sel?.value, d = sel?.dataset;
+  if (!v) return;
+  if (d.pick === 'focus-add') { if (!ui.draftFocus.includes(v)) ui.draftFocus.push(v); render(); }
+  else if (d.pick === 'combo-add') {
+    const c = state.combos.find(x => x.id === d.id);
+    if (!c) return;
+    (c.seq ||= []).push(v); (c.reps ||= [])[c.seq.length - 1] = 1; commit();
+  }
+  // The page was drawn again: the keyboard goes back to the same list, ready for the next skill.
+  [...document.querySelectorAll(`select[data-pick="${d.pick}"]`)].find(s => (s.dataset.id || '') === (d.id || ''))?.focus();
+}
 document.addEventListener('change', async e => {
   const t = e.target, d = t.dataset;
+  if (d.pick) { const b = t.parentElement.querySelector('[data-act="add-chosen"]'); if (b) b.disabled = !t.value; return; }
   switch (d.change) {
-    case 'focus-add':
-      if (t.value && !ui.draftFocus.includes(t.value)) ui.draftFocus.push(t.value);
-      t.value = ''; render(); break;
-    case 'combo-add': {
-      const c = state.combos.find(x => x.id === d.id);
-      if (c && t.value) { (c.seq ||= []).push(t.value); (c.reps ||= [])[c.seq.length - 1] = 1; commit(); }
-      break;
-    }
     case 'flag': setFlag(d.k, t.checked); break;
     case 'gate': if (t.checked) state.gates[d.id] = dayKey(); else delete state.gates[d.id]; commit(); break;
     case 'setting': state.settings[d.k] = t.value.trim(); t.blur(); commit(); break;
@@ -833,6 +844,7 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Enter') { const x = $('.pal-i.on'); if (x) { location.hash = x.getAttribute('href'); closePalette(); } }
     return;
   }
+  if (e.key === 'Enter' && e.target.matches?.('select[data-pick]')) { e.preventDefault(); addChosen(e.target); return; }
   if (e.key === 'Escape') {
     document.body.classList.remove('nav-open');
     const [p, a, b] = parseRoute();

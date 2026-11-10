@@ -59,8 +59,9 @@ const (
 	sessionTTL  = 30 * 24 * time.Hour
 	sessionIdle = "14 days" // a session unused this long ends (a Postgres interval)
 	cookieName  = "flowa_session"
-	// PBKDF2-SHA256 rounds. 200,000 takes about 0.7 s on this Pi 4; raise it on faster hardware.
-	pwRounds   = 200000
+	// PBKDF2-SHA256 rounds for a new hash: the 600,000 OWASP asks for, about 1.7 s on this Pi 4. A
+	// hash made with fewer is made again at that member's next sign-in (handleSignin).
+	pwRounds   = 600000
 	maxFails   = 8
 	failWindow = 10 * time.Minute
 )
@@ -490,6 +491,8 @@ type user struct {
 	SuspendReason  string     `json:"suspendReason,omitempty"`
 	StatsHidden    bool       `json:"statsHidden,omitempty"`
 	LastActive     *time.Time `json:"lastActive,omitempty"` // filled only in the admin accounts list
+	// Owner marks the one admin whose role nobody can change and who alone changes another admin's.
+	Owner bool `json:"owner,omitempty"`
 	// AvatarCfg is the avatar the user built (web/avatar-def.json lists every option); public.
 	AvatarCfg json.RawMessage `json:"avatarCfg"`
 	// Rev names the state of the profile text (see profileRev); only the owner's own copy carries it.
@@ -509,7 +512,7 @@ func profileRev(u *user) string {
 	return hashOf(b)
 }
 
-const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden, u.avatar_cfg"
+const userCols = "u.id, u.username, u.display_name, u.role, u.props, u.seen, u.onboarded, u.avatar, u.bio, u.links, u.prefs, u.stats, u.created_at, u.muted_until, u.mute_reason, u.suspended_until, u.suspend_reason, u.stats_hidden, u.avatar_cfg, u.owner"
 
 type scanner interface{ Scan(...any) error }
 
@@ -520,7 +523,7 @@ func scanUser(row scanner, extra ...any) (*user, error) {
 	var muted, suspended sql.NullTime
 	var avcfg []byte
 	dst := append([]any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &props, &seen, &u.Onboarded, &u.Avatar, &u.Bio, &links, &prefs, &stats, &u.Created,
-		&muted, &u.MuteReason, &suspended, &u.SuspendReason, &u.StatsHidden, &avcfg}, extra...)
+		&muted, &u.MuteReason, &suspended, &u.SuspendReason, &u.StatsHidden, &avcfg, &u.Owner}, extra...)
 	if err := row.Scan(dst...); err != nil {
 		return nil, err
 	}
@@ -553,11 +556,15 @@ func pbkdf2Key(pw string, salt []byte, rounds, n int) []byte {
 	return key
 }
 
-func hashPassword(pw string) string {
+func hashPassword(pw string) string { return hashWith(pw, pwRounds) }
+
+// hashWith makes a hash with a given round count. The count is stored in the hash, so hashes
+// made before the count was raised still check.
+func hashWith(pw string, rounds int) string {
 	salt := make([]byte, 16)
 	rand.Read(salt)
-	key := pbkdf2Key(pw, salt, pwRounds, 32)
-	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", pwRounds, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
+	key := pbkdf2Key(pw, salt, rounds, 32)
+	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", rounds, base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
 }
 
 func checkPassword(hash, pw string) bool {
@@ -575,6 +582,16 @@ func checkPassword(hash, pw string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
+// hashRounds is the round count a stored hash was made with, or 0 when it cannot be read.
+func hashRounds(hash string) int {
+	parts := strings.Split(hash, "$")
+	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
+		return 0
+	}
+	n, _ := strconv.Atoi(parts[1])
+	return n
+}
+
 // A hash to burn the same time on when the username does not exist.
 var dummyHash = hashPassword("not a real password")
 
@@ -588,7 +605,9 @@ func (a *app) startSession(w http.ResponseWriter, r *http.Request, id int64) err
 	rand.Read(raw)
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	exp := time.Now().Add(sessionTTL)
-	if _, err := a.db.Exec(`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`, tokenHash(token), id, exp); err != nil {
+	// The account remembers when it was last used, so "Last active" outlives its sessions.
+	if _, err := a.db.Exec(`WITH s AS (INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3))
+		UPDATE users SET last_seen = now() WHERE id = $2`, tokenHash(token), id, exp); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", Expires: exp, HttpOnly: true,
@@ -610,7 +629,8 @@ func (a *app) currentUser(r *http.Request) *user {
 		return nil
 	}
 	if stale {
-		a.db.Exec(`UPDATE sessions SET last_seen = now() WHERE token_hash = $1`, th)
+		a.db.Exec(`WITH s AS (UPDATE sessions SET last_seen = now() WHERE token_hash = $1 RETURNING user_id)
+			UPDATE users u SET last_seen = now() FROM s WHERE u.id = s.user_id`, th)
 	}
 	return u
 }
@@ -886,9 +906,26 @@ type credentials struct {
 	DisplayName string `json:"displayName"`
 }
 
-func validPassword(w http.ResponseWriter, pw string) bool {
+// passwordProblem says why a password cannot be used for the account with this username, or ""
+// when it can. Besides the length it refuses the username itself and the passwords most people
+// pick (commonPasswords), whatever the case: those are the first ones anyone guessing would try.
+func passwordProblem(pw, username string) string {
 	if len(pw) < 8 || len(pw) > 200 {
-		fail(w, http.StatusBadRequest, "Use a password of at least 8 characters.")
+		return "Use a password of 8 to 200 characters."
+	}
+	low := strings.ToLower(strings.TrimSpace(pw))
+	if username != "" && low == strings.ToLower(username) {
+		return "The password cannot be the username."
+	}
+	if commonPasswords[low] {
+		return "That password is one of the most used, so it is among the first anyone would try. Choose another."
+	}
+	return ""
+}
+
+func validPassword(w http.ResponseWriter, pw, username string) bool {
+	if msg := passwordProblem(pw, username); msg != "" {
+		fail(w, http.StatusBadRequest, msg)
 		return false
 	}
 	return true
@@ -924,16 +961,16 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "Usernames are 3 to 24 characters: letters, digits, dot, dash or underscore.")
 		return
 	}
-	if !validPassword(w, in.Password) {
+	if !validPassword(w, in.Password, name) {
 		return
 	}
-	display := strings.TrimSpace(in.DisplayName)
-	if display == "" {
-		display = name
-	}
-	if len([]rune(display)) > 40 {
-		fail(w, http.StatusBadRequest, "Keep the display name under 40 characters.")
-		return
+	display := name
+	if strings.TrimSpace(in.DisplayName) != "" {
+		var msg string
+		if display, msg = cleanName(in.DisplayName); msg != "" {
+			fail(w, http.StatusBadRequest, msg)
+			return
+		}
 	}
 	// Looked up before the password is hashed, so asking for a taken name costs no CPU.
 	var taken bool
@@ -1060,12 +1097,20 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	}
 	a.lim.account.forget(name)
 	if u.SuspendedUntil != nil {
-		msg := "Your account is suspended until " + u.SuspendedUntil.UTC().Format("2 January 2006, 15:04 UTC") + "."
+		msg := "Your account is suspended until " + stamp(*u.SuspendedUntil) + "."
 		if u.SuspendReason != "" {
 			msg += " Reason: " + u.SuspendReason
 		}
 		fail(w, http.StatusForbidden, msg)
 		return
+	}
+	// A hash made with fewer rounds than new ones get is made again now, the one moment the
+	// password is known. It replaces the stored hash only if that is still the one just checked,
+	// and a failure here does not stop the sign-in.
+	if hashRounds(hash) < pwRounds {
+		if _, err := a.db.Exec(`UPDATE users SET pw_hash = $3 WHERE id = $1 AND pw_hash = $2`, u.ID, hash, hashPassword(in.Password)); err != nil {
+			log.Printf("error: making the password hash again: %v", err)
+		}
 	}
 	if err := a.startSession(w, r, u.ID); err != nil {
 		a.serverError(w, err)
@@ -1116,9 +1161,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		cols = append(cols, col+" = $"+strconv.Itoa(len(args)))
 	}
 	if in.DisplayName != nil {
-		d := strings.TrimSpace(*in.DisplayName)
-		if d == "" || len([]rune(d)) > 40 {
-			fail(w, http.StatusBadRequest, "The display name needs 1 to 40 characters.")
+		d, msg := cleanName(*in.DisplayName)
+		if msg != "" {
+			fail(w, http.StatusBadRequest, msg)
 			return
 		}
 		set("display_name", d)
@@ -1161,8 +1206,13 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		set("avatar", v)
 	}
 	if in.Bio != nil {
-		b := strings.TrimSpace(*in.Bio)
-		if len([]rune(b)) > maxBio {
+		b, ok := visibleText(*in.Bio)
+		if !ok {
+			fail(w, http.StatusBadRequest, "The bio cannot hold characters that change the direction of the text.")
+			return
+		}
+		// Trimmed after the unseen characters are gone, so the first line always shows something.
+		if b = strings.TrimSpace(b); len([]rune(b)) > maxBio {
 			fail(w, http.StatusBadRequest, "Keep the bio under 300 characters.")
 			return
 		}
@@ -1179,7 +1229,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 			}
 			h, good := cleanLink(k, v)
 			if !good {
-				fail(w, http.StatusBadRequest, "That does not look like a "+k+" handle or link.")
+				fail(w, http.StatusBadRequest, "That does not look like "+linkNames[k]+" handle or link.")
 				return
 			}
 			links[k] = h
@@ -1287,7 +1337,7 @@ func (a *app) handlePassword(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusForbidden, "The current password is wrong.")
 		return
 	}
-	if !validPassword(w, in.Next) {
+	if !validPassword(w, in.Next, u.Username) {
 		return
 	}
 	// Changing the password signs out every other device.
@@ -1470,8 +1520,9 @@ func (a *app) backup() {
 /* ---------- admin ---------- */
 
 func (a *app) handleUsers(w http.ResponseWriter, _ *http.Request, _ *user) {
-	// Last active: the latest sign-in or progress save.
-	rows, err := a.db.Query(`SELECT ` + userCols + `, GREATEST((SELECT max(created_at) FROM sessions s WHERE s.user_id = u.id), (SELECT max(updated_at) FROM progress p WHERE p.user_id = u.id))
+	// Last active: the latest sign-in, hour of use or progress save. The account keeps its own
+	// record (last_seen), because a suspension or a password reset removes the sessions.
+	rows, err := a.db.Query(`SELECT ` + userCols + `, GREATEST(u.last_seen, (SELECT max(created_at) FROM sessions s WHERE s.user_id = u.id), (SELECT max(updated_at) FROM progress p WHERE p.user_id = u.id))
 		FROM users u ORDER BY u.id`)
 	if err != nil {
 		a.serverError(w, err)
@@ -1503,13 +1554,18 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 	}
 	// Only user.manage reaches here (admins); the last admin is protected below.
 	var name, role string
-	err := a.db.QueryRow(`SELECT username, role FROM users WHERE id = $1`, id).Scan(&name, &role)
+	var owner bool
+	err := a.db.QueryRow(`SELECT username, role, owner FROM users WHERE id = $1`, id).Scan(&name, &role, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return
 	}
 	if err != nil {
 		a.serverError(w, err)
+		return
+	}
+	if owner {
+		fail(w, http.StatusForbidden, "The owner's account cannot be deleted.")
 		return
 	}
 	// Admins are peers: one cannot delete another (change their role first, which is audited).
@@ -1547,13 +1603,23 @@ func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, u *use
 	var in struct {
 		Next string `json:"next"`
 	}
-	if !readJSON(w, r, 4096, &in) || !validPassword(w, in.Next) {
+	if !readJSON(w, r, 4096, &in) {
 		return
 	}
 	// Your own password changes on the profile, with the current one; another admin's never here,
 	// or one admin could sign in as another.
 	if id == u.ID {
 		fail(w, http.StatusBadRequest, "Change your own password on your profile.")
+		return
+	}
+	// The name is read only to refuse a password that repeats it; whether this admin may reset
+	// this account at all is decided by the update below.
+	var name string
+	if err := a.db.QueryRow(`SELECT username FROM users WHERE id = $1`, id).Scan(&name); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
+	if !validPassword(w, in.Next, name) {
 		return
 	}
 	res, err := a.db.Exec(`UPDATE users SET pw_hash = $2 WHERE id = $1 AND role = ANY($3)`, id, hashPassword(in.Next), pq.Array(below(u.Role)))
@@ -1573,7 +1639,8 @@ func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, u *use
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleSetRole changes someone's role. Nobody changes their own, and Flowa always keeps an admin.
+// handleSetRole changes someone's role. Nobody changes their own, the owner's never changes, only
+// the owner changes another admin's, and Flowa always keeps an admin.
 func (a *app) handleSetRole(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
@@ -1598,7 +1665,8 @@ func (a *app) handleSetRole(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	defer tx.Rollback()
 	var old string
-	err = tx.QueryRow(`SELECT role FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&old)
+	var owner bool
+	err = tx.QueryRow(`SELECT role, owner FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&old, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return
@@ -1608,6 +1676,15 @@ func (a *app) handleSetRole(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	next := in.Role
+	if owner && next != old {
+		fail(w, http.StatusForbidden, "The owner's role cannot be changed. The owner can hand ownership to another admin first.")
+		return
+	}
+	// Admins are peers: one cannot take another's role away. That is the owner's to decide.
+	if old == "admin" && next != "admin" && !u.Owner {
+		fail(w, http.StatusForbidden, "Only the owner can change an admin's role.")
+		return
+	}
 	if old == "admin" && next != "admin" {
 		var admins int
 		if err := tx.QueryRow(`SELECT count(*) FROM (SELECT 1 FROM users WHERE role = 'admin' FOR UPDATE) x`).Scan(&admins); err != nil {
@@ -1637,6 +1714,92 @@ func (a *app) handleSetRole(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	a.notify(id, u.ID, "moderation", 0, "Your role is now "+in.Role+".")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "role": in.Role})
+}
+
+// handleSetOwner hands ownership to another admin. Only the owner can, and there is always
+// exactly one: the two rows change together, and the database refuses a second owner.
+func (a *app) handleSetOwner(w http.ResponseWriter, r *http.Request, u *user) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	// Both rows are locked in id order, so two requests cannot wait on each other.
+	rows, err := tx.Query(`SELECT id, username, role, owner, suspended_until IS NOT NULL AND suspended_until > now() FROM users WHERE id IN ($1, $2) ORDER BY id FOR UPDATE`, u.ID, id)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var mine, found, suspended bool
+	var name, role string
+	for rows.Next() {
+		var rid int64
+		var rname, rrole string
+		var rowner, rsusp bool
+		if err := rows.Scan(&rid, &rname, &rrole, &rowner, &rsusp); err != nil {
+			rows.Close()
+			a.serverError(w, err)
+			return
+		}
+		if rid == u.ID {
+			mine = rowner
+		} else {
+			found, name, role, suspended = true, rname, rrole, rsusp
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if !mine {
+		fail(w, http.StatusForbidden, "Only the owner can hand ownership over.")
+		return
+	}
+	if id == u.ID {
+		fail(w, http.StatusBadRequest, "You are the owner already.")
+		return
+	}
+	if !found {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
+	if role != "admin" {
+		fail(w, http.StatusBadRequest, "Only an admin can become the owner. Make them an admin first.")
+		return
+	}
+	if suspended {
+		fail(w, http.StatusBadRequest, "A suspended account cannot become the owner.")
+		return
+	}
+	if _, err := tx.Exec(`UPDATE users SET owner = false WHERE id = $1`, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if _, err := tx.Exec(`UPDATE users SET owner = true WHERE id = $1`, id); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "owner", "user", id, id, "", map[string]any{"from": u.Username, "to": name}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.notify(id, u.ID, "moderation", 0, "You are now the owner of this Flowa: the one admin whose role cannot be changed, and the only one who can change another admin's.")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ensureOwner makes the longest-standing admin the owner when there is none: on a fresh database
+// once the admin account exists, and on one where the admin was made by hand.
+func (a *app) ensureOwner() error {
+	_, err := a.db.Exec(`UPDATE users SET owner = true WHERE id = (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1)
+		AND NOT EXISTS (SELECT 1 FROM users WHERE owner)`)
+	return err
 }
 
 /* ---------- moderation: reports, the queue, actions ---------- */
@@ -1946,7 +2109,7 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 	case "mute":
 		res, err = tx.Exec(`UPDATE users SET muted_until = $2, mute_reason = $3 WHERE id = $1`, owner, until, reason)
 		detail["until"] = until
-		msg = "You are muted until " + until.UTC().Format("2 January 2006, 15:04 UTC") + ", so you cannot post or comment. Reason: " + reason
+		msg = "You are muted until " + stamp(until) + ", so you cannot post or comment. Reason: " + reason
 	case "unmute":
 		res, err = tx.Exec(`UPDATE users SET muted_until = NULL, mute_reason = '' WHERE id = $1 AND muted_until > now()`, owner)
 		msg = "You can post and comment again."
@@ -1956,7 +2119,7 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 			_, err = tx.Exec(`DELETE FROM sessions WHERE user_id = $1`, owner)
 		}
 		detail["until"] = until
-		msg = "Your account was suspended until " + until.UTC().Format("2 January 2006, 15:04 UTC") + ". Reason: " + reason
+		msg = "Your account was suspended until " + stamp(until) + ". Reason: " + reason
 	case "unsuspend":
 		res, err = tx.Exec(`UPDATE users SET suspended_until = NULL, suspend_reason = '' WHERE id = $1 AND suspended_until > now()`, owner)
 		msg = "Your suspension was lifted."
@@ -3704,7 +3867,8 @@ func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 	err := a.db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`).Scan(&users, &mods, &admins)
 	if err == nil {
 		// Active: signed in or saved progress within the window.
-		err = a.db.QueryRow(`WITH act AS (SELECT user_id, created_at AS t FROM sessions UNION ALL SELECT user_id, updated_at FROM progress)
+		err = a.db.QueryRow(`WITH act AS (SELECT user_id, created_at AS t FROM sessions UNION ALL SELECT user_id, updated_at FROM progress
+				UNION ALL SELECT id, last_seen FROM users WHERE last_seen IS NOT NULL)
 			SELECT count(DISTINCT user_id) FILTER (WHERE t > now() - interval '7 days'), count(DISTINCT user_id) FILTER (WHERE t > now() - interval '30 days') FROM act`).Scan(&active7, &active30)
 	}
 	if err == nil {
@@ -3813,6 +3977,16 @@ var migrations = []string{schema, schemaSocial,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 		PRIMARY KEY (user_id, kind, ref)
 	)`,
+	// 5: the account remembers when it was last used (sessions go at a suspension or a password
+	// reset), and one admin is the owner. The database itself keeps the owner an admin and refuses
+	// a second one. Written so that running it twice changes nothing.
+	`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ;
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS owner BOOLEAN NOT NULL DEFAULT false;
+	ALTER TABLE users DROP CONSTRAINT IF EXISTS users_owner_is_admin;
+	ALTER TABLE users ADD CONSTRAINT users_owner_is_admin CHECK (NOT owner OR role = 'admin');
+	CREATE UNIQUE INDEX IF NOT EXISTS users_one_owner ON users (owner) WHERE owner;
+	UPDATE users u SET last_seen = (SELECT max(GREATEST(s.created_at, s.last_seen)) FROM sessions s WHERE s.user_id = u.id) WHERE u.last_seen IS NULL;
+	UPDATE users SET owner = true WHERE id = (SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE owner)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -3990,6 +4164,7 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(permUserManage, a.handleDeleteUser))
 	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(permUserManage, a.handleResetPassword))
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.authed(permUserRole, a.handleSetRole))
+	mux.HandleFunc("PUT /api/admin/users/{id}/owner", a.authed(permUserRole, a.handleSetOwner))
 	mux.HandleFunc("GET /api/admin/audit", a.authed(permAudit, a.handleAudit))
 	mux.HandleFunc("GET /api/admin/dashboard", a.authed(permDashboard, a.handleDashboard))
 	mux.HandleFunc("GET /catalog/{file}", a.handleCatalogFile)
@@ -4085,6 +4260,9 @@ func main() {
 	a.fetch = newFetcher(os.Getenv("FLOWA_PREVIEW_BASE"), os.Getenv("FLOWA_PREVIEW_BASE") != "")
 	a.fetch.off = os.Getenv("FLOWA_PREVIEW_FETCH") == "off"
 	if _, err := a.seedAdmin(os.Getenv("ADMIN_USER"), os.Getenv("ADMIN_PASSWORD")); err != nil {
+		log.Fatal(err)
+	}
+	if err := a.ensureOwner(); err != nil {
 		log.Fatal(err)
 	}
 	if err := a.seedCatalogs(); err != nil {
@@ -4287,12 +4465,88 @@ const (
 // Social networks a profile can link to. The value stored is the handle, not a URL.
 var linkKinds = []string{"instagram", "tiktok", "youtube"}
 
+// linkNames is each kind as a sentence names it, with its article.
+var linkNames = map[string]string{"instagram": "an Instagram", "tiktok": "a TikTok", "youtube": "a YouTube"}
+
 var (
 	handleRE   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,60}$`)
 	ytHandleRE = regexp.MustCompile(`^[A-Za-z0-9._@/-]{1,80}$`)
 	achKeyRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9:_-]{0,60}$`)
 	mentionRE  = regexp.MustCompile(`(?:^|[^a-z0-9._-])@([a-z0-9][a-z0-9._-]{2,23})`)
 )
+
+// bidiOverride reports the characters that force the direction of the text after them:
+// embeddings, overrides and isolates. Inside a name they can make "nimda" read as "admin", so
+// text holding one is refused. The plain direction marks are only dropped (they draw nothing):
+// some keyboards add them when two scripts are mixed.
+func bidiOverride(r rune) bool { return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) }
+
+// unseen reports characters that draw nothing though Unicode does not class them as format
+// characters: the Hangul fillers, the blank braille pattern and the combining grapheme joiner.
+func unseen(r rune) bool {
+	switch r {
+	case 0x034F, 0x115F, 0x1160, 0x2800, 0x3164, 0xFFA0:
+		return true
+	}
+	return false
+}
+
+// visibleText drops what a reader cannot see: format characters (Unicode category Cf), the
+// unseen ones above, and control characters other than a line break (a tab becomes a space). Two
+// uses of format characters are kept, because taking them out changes what is drawn: a joiner
+// between two letters or symbols (Persian and Indic spelling, emoji such as a family), and the
+// tags that turn a black flag into the flag of England, Scotland or Wales. It reports false for
+// text that holds a direction override.
+func visibleText(s string) (string, bool) {
+	in := []rune(strings.ReplaceAll(s, "\r\n", "\n"))
+	out := make([]rune, 0, len(in))
+	joinable := func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsMark(r) || unicode.Is(unicode.So, r) || unicode.Is(unicode.Sk, r)
+	}
+	flag := false // inside the tag run after a black flag
+	for i, r := range in {
+		tag := r >= 0xE0020 && r <= 0xE007F
+		switch {
+		case bidiOverride(r):
+			return "", false
+		case tag && flag:
+			out = append(out, r)
+			flag = r != 0xE007F
+			continue
+		case r == 0x200C || r == 0x200D:
+			if len(out) > 0 && joinable(out[len(out)-1]) && i+1 < len(in) && joinable(in[i+1]) {
+				out = append(out, r)
+			}
+		case r == '\n':
+			out = append(out, r)
+		case r == '\t':
+			out = append(out, ' ')
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r), unseen(r):
+		default:
+			out = append(out, r)
+		}
+		flag = r == 0x1F3F4
+	}
+	return string(out), true
+}
+
+// cleanName makes a display name safe to show next to other names: nothing unseen in it, one
+// space between words, and at least one letter or digit, so a name can always be read and told
+// from another. It returns the name, or why it cannot be used.
+func cleanName(s string) (string, string) {
+	v, ok := visibleText(s)
+	if !ok {
+		return "", "The display name cannot hold characters that change the direction of the text."
+	}
+	v = strings.Join(strings.FieldsFunc(v, unicode.IsSpace), " ")
+	if n := len([]rune(v)); n == 0 || n > 40 {
+		return "", "The display name needs 1 to 40 characters."
+	}
+	if !strings.ContainsFunc(v, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+		return "", "The display name needs at least one letter or digit."
+	}
+	return v, ""
+}
 
 // cleanLink turns a pasted URL or handle into a bare handle, or reports it as invalid.
 // An empty value is valid and removes the link.
@@ -5109,12 +5363,17 @@ func cleanCombo(c *postCombo) bool {
 	return true
 }
 
+// stamp writes a time into a message as RFC 3339 in UTC, to the second. Every time a person is
+// told about goes out this way, and the page shows it in the reader's own time zone and format
+// (localTimes in web/account.js); the same moment used to read differently from place to place.
+func stamp(t time.Time) string { return t.UTC().Truncate(time.Second).Format(time.RFC3339) }
+
 // muted answers the request when the user is muted, and reports whether they were.
 func muted(w http.ResponseWriter, u *user) bool {
 	if u.MutedUntil == nil {
 		return false
 	}
-	msg := "You are muted until " + u.MutedUntil.UTC().Format("2 January 2006, 15:04 UTC") + ", so you cannot post or comment."
+	msg := "You are muted until " + stamp(*u.MutedUntil) + ", so you cannot post or comment."
 	if u.MuteReason != "" {
 		msg += " Reason: " + u.MuteReason
 	}
@@ -5946,3 +6205,88 @@ func (a *app) socialRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/notifications", social(a.handleNotifications))
 	mux.HandleFunc("PUT /api/notifications/read", social(a.handleReadNotifications))
 }
+
+/* ---------- passwords nobody should pick ---------- */
+
+// commonPasswordList is the 1,000 most used passwords of 8 characters or more, lower case, most
+// used first. They are the first 1,000 that long in the list of the 100,000 passwords seen most
+// often in breaches, published by the UK National Cyber Security Centre with Have I Been Pwned
+// (PwnedPasswordsTop100k). Contains public sector information licensed under the Open Government
+// Licence v3.0. Shorter ones are refused by length already. Being common, some are crude.
+const commonPasswordList = `
+123456789 password 12345678 password1 1234567890 iloveyou 1q2w3e4r5t qwertyuiop 1qaz2wsx myspace1 homelesspa 1q2w3e4r qwerty123 target123 987654321
+1g2w3e4r zag12wsx gwerty123 asdfghjkl 123123123 computer princess football sunshine 1234qwer iloveyou1 fuckyou1 789456123 princess1 11111111
+passer2009 abcd1234 football1 superman jordan23 12qwaszx baseball 123456789a fqrg7cs493 88888888 michael1 linkedin babygirl1 blink182 qwer1234
+liverpool michelle j38ifubn q1w2e3r4 0123456789 iloveyou2 jennifer 147258369 babygirl jessica1 fuckyou2 0987654321 anthony1 q1w2e3r4t5y6 baseball1
+qazwsxedc 1111111111 basketball passw0rd trustno1 chocolate qwerty12 charlie1 pakistan samantha asdf1234 asshole1 superman1 fuk19600 butterfly
+29rsavoy sunshine1 internet alexander 00000000 12341234 whatever qweasdzxc 1qazxsw2 password12 password2 hello123 3rjs1la7qe 12344321 vqsablpzla
+brandon1 starwars jonathan cjmasterinf 1234567891 12345qwert q1w2e3r4t5 a123456789 christian 12345678910 diosesfiel dpbk1234 pe#5gz29ptzmse mercedes
+victoria matthew1 benjamin 123654789 elizabeth barcelona computer1 michelle1 william1 11223344 welcome1 zaq12wsx jasmine1 liverpool1 1qaz2wsx3edc
+metallica slipknot chicken1 87654321 0000000000 spiderman 147852369 butterfly1 tinkerbell danielle nicholas qwerty12345 1234554321 asdfasdf pokemon1
+123qweasd chelsea1 chocolate1 1234567a juventus 111222tianya america1 999999999 jennifer1 freedom1 741852963 qwertyui 1password cocacola a838hfid
+1234abcd myspace123 madison1 samantha1 elizabeth1 mustang1 november diamond1 valentina whatever1 n0=acc3ss super123 password123 spongebob1 hellokitty
+alexandra 1q2w3e4r5t6y december a1b2c3d4 patricia friends1 123hfjdk147 123456789q beautiful carolina 4815162342 heather1 sojdlg123aljg sebastian
+caroline startfinding midnight iw14fi9j yankees1 elephant scorpion bubbles1 fuckoff1 cowboys1 patrick1 veronica melissa1 september alexander1
+iloveyou! raiders1 zxcvbnm1 12121212 spongebob stephanie lovelove precious manchester cristina a1234567 qqww1122 jackson1 asdfghjkl1 qazwsx123
+newyork1 poohbear richard1 destiny1 slipknot1 monster1 blessed1 spiderman1 emmanuel charlotte maverick creative beautiful1 softball 421uiopy258
+brittany aa123456 kristina garfield scooter1 myspace2 steelers isabella 1a2b3c4d 9876543210 12345678a kimberly 1v7upjw3nt babyboy1 brittany1 123456abc
+forever1 1122334455 metallica1 1029384756 cameron1 california christian1 password! 963852741 danielle1 samsung1 gangsta1 icecream letmein1
+qwerty123456 qwert123 uqa9ebw445 leonardo christine bismillah iloveyou12 snickers arsenal1 fernando swordfish marlboro qwerty1234 twilight yagjecc826
+dolphin1 loveyou1 tiffany1 hardcore rockstar playboy1 greenday angelina starwars1 123qwe123 sz9kqcctwy courtney crystal1 abc123456 marseille password3
+alejandro justinbieb poohbear1 corvette jackass1 jonathan1 lollipop motorola nicholas1 friendster angel123 portugal iloveme1 brooklyn darkness
+rainbow1 snowball 1234512345 shannon1 123qweasdzxc victoria1 catherine pa55word password. logitech remember popcorn1 isabelle p3rat54797 steelers1
+lakers24 lizottes blessing rockstar1 aaaaaaaa florida1 peaches1 love4ever goodluck santiago strawberry abcdefg1 bigdaddy thunder1 asdfghjk vanessa1
+happy123 fuckyou! iverson3 svetlana satan666 superstar babygurl1 fyfcnfcbz qwert12345 chester1 loverboy azertyuiop 5555555555 angelica yourmom1
+bullshit christopher love1234 evildick midnight1 williams 55555555 charles1 sweetpea rush2112 greenday1 sunflower 1123581321 precious1 brooklyn1
+stephanie1 undertaker sweetheart ihateyou fktrcfylh 123698745 21212121 lebron23 paradise kawasaki polniypizdec0211 a12345678 money123 22222222
+3d8cubaj2e vladimir abc12345 shopping career121 12345qwerty christina qq123456 scarface dolphins giovanni soccer12 facebook changeme zxcvbnm123
+password11 123454321 qw123321 australia southside1 soccer10 maryjane rebecca1 getmoney1 brianna1 realmadrid westside linkinpark asdasdasd francesco
+inuyasha 111222333 ig4abox4 sterling ronaldo7 savannah bigdaddy1 courtney1 123456aa valentin chicago1 cjkysirj jesus123 warcraft mahalkita monkey123
+hollister1 alessandro w5txn36alfw password7 awesome1 bestfriend gabriel1 gateway1 volleyball yuantuo2012 princess12 chouchou bitch123 champion
+element1 fishing1 teddybear natalie1 passwort francesca qwerasdf apple123 gabriela mariposa abcdefgh cheyenne babygirl12 zachary1 antonio1 veronika
+111111111 nintendo happiness monkey12 engineer bitches1 estrella grandma1 princesa virginia scarface1 chris123 anderson abcdefg123 77777777 blahblah
+aleksandr giuseppe softball1 vkontakte simpsons godisgood twilight1 pumpkin1 147896325 loveyou2 ladybug1 benjamin1 kingkong fuckyou123 florence
+adgjmptw cookies1 margarita hallo123 pass1234 children zzzzzzzz cristian password5 mamapapa soccer11 hollywood password01 inuyasha1 amoremio serenity
+sabrina1 n8zgt5p0shw= rangers1 123456qwerty nirvana1 business panasonic gangster 25802580 colorado microsoft superstar1 groupd2013 31415926 dbrnjhbz
+airforce1 3odi15ngxb internet1 westside1 christina1 flowers1 icecream1 bulldog1 redneck1 johncena1 myspace! asdasd123 kathleen cupcake1 skittles
+frankie1 p@ssw0rd christmas qti7zxh18u football12 snickers1 lasvegas september1 123456789m marshall minecraft terminator security drowssap 123456789z
+19871987 poiuytrewq jackson5 kimberly1 rammstein alexandre scotland asdfjkl: motdepasse harrypotter babydoll 192837465 321654987 iloveyou. truelove
+runescape1 casanova spencer1 francisco chocolat christophe phoenix1 jesus777 99999999 1qaz1qaz killer123 rhbcnbyf alejandra stonecold a1s2d3f4
+mitchell g9l2d1fzpy babygirl2 19851985 welcome123 franklin carpediem aaaaaaaaaa zaq1xsw2 megaparol12345 admin123 handsome shithead anastasia 12369874
+savannah1 sweetie1 diwtgm8492 1234567q margaret muhammad maxwell1 123456654321 india123 platinum gangster1 passport jesuschrist hotmail1 katherine
+myspace12 123321123 snowball1 asdfghjkl: patches1 d1lakiss trouble1 69696969 valentine hercules beatrice wolverine jamesbond 19841984 maradona
+green123 amsterdam mercedes1 yahoo.com 19861986 goldfish james123 lawrence winston1 princess2 14789632 idontknow hollywood1 diamonds trinity1
+ihateyou1 cutiepie soccer13 bulldogs onelove1 success1 einstein forever21 135792468 nathalie hahahaha harrison timothy1 123456123 1234asdf anhyeuem
+buttercup argentina cocacola1 soccer123 omsairam georgia1 stephen1 johncena maryjane1 dragonball stargate colombia 19891989 infinity trfnthbyf
+redskins digital1 sexybitch1 dinosaur 7894561230 sureno13 penelope 19921992 runescape paintball1 test1234 summer08 ciaociao football2 swimming
+telechargement orlando1 nonmember password4 shithead1 thuglife vrbgqns997 nothing1 tequiero comeon11 lacrosse scoobydoo zxcv1234 123789456 bullshit1
+monique1 wordpass 1qa2ws3ed cutiepie1 sebastian1 gordon24 sexygirl1 ilovegod kittycat cleopatra 19821982 qwerty321 porsche1 password13 19801980
+david123 teddybear1 baseball12 katerina 11112222 qazwsx12 fuckyou69 golfcourse martinez elephant1 ilovejesus 123456123456 houston1 allison1 smoke420
+godzilla peterpan buddy123 iloveme2 skittles1 x4ivyga51f 9-11-1961 pineapple panthers napoleon chopper1 drummer1 11235813 federico music123 startrek
+vincent1 qazxswedc mohammed qwe12345 cambiami iloveyou3 christine1 friendship pa55w0rd pokemon123 mountain 12301230 raymond1 bradley1 packers1
+isabella1 19831983 123456789s catalina wildcats michigan butthead myspace. 13131313 vampires charmed1 strength panther1 cdtnkfyf charlotte1 barcelona1
+hardcore1 1loveyou pussycat spitfire tnk0mk16vx babygurl qweasd123 bluebird 123456987 carolina1 asdqwe123 sexygirl 2012comeer medicine something
+naruto123 10101010 fordf150 asd123456 ilovehim1 moonlight 10203040 yfdbufnjh10305070 johnson1 password10 birthday baseball2 dearbook 19951995
+password0 blackberry lilwayne1 66666666 firebird salvador drpepper melanie1 mypassword thebest1 natasha1 ferrari1 fuku00198 pebbles1 abigail1
+spartan117 qwerty11 cassandra tiger123 genesis1 guinness personal alabama1 jaimatadi darkangel evony192 19881988 budlight1 predator ka_djkhjsy6
+alejandro1 newport1 montana1 20102010 fuckme69 sporting indonesia fernanda devil666 aquarius dragon123 mexican1 12qw23we 1234567890q 44444444 lovelife
+sample123 penguin1 bearshare remember1 lorraine aaliyah1 blondie1 jeremiah capricorn 12131415 wrestling1 cherokee asdfasdf1 kenneth1 blablabla
+veronica1 summer09 passer2011 cricket1 cooldude 123qwerty myspace3 skateboard sk84life westlife defender dumbass1 vampire1 darkness1 daniel123
+azerty123 assassin testtest youbye123 dragons1 14531453 federica explorer dickhead babylove formula1 password9 wangyut2 cheyenne1 monkeys1 dominique
+tokiohotel alexandra1 papillon dolphins1 babyblue pitbull1 miranda1 sebastien teacher1 monalisa ekaterina 19941994 jeffrey1 sapphire england1 19931993
+1234567899 1myspace dragon12 killer12 agent007 123456789j getmoney 33333333 idontknow1 wrestling jamaica1 lucky123 salvatore loverboy1 19901990
+panthers1 lollipop1 kkkkkkkk 1princess death666 19811981 9999999999 watermelon iloveyou7 special1 bluefish american dodgers1 blahblah1 karolina
+justice1 shadow12 qazwsxedcrfv babydoll1 123456qwe bulldogs1 369258147 bollocks dalejr88 abcde12345 password00 6hbf28w791 broncos1 sweetpea1 kitty123
+buttercup1 987456321 lilmama1 kissmyass stellina 123456asd dragonfly loser123 dominic1 password8 lindsey1 ronaldinho summer07 hotstuff qweqweqwe
+19911991 candy123 0.00000000 nightmare password69 thailand password22 sexymama1 february lovebug1 viktoria newlife1 redwings aspirine charlene
+dickhead1 123456789k master123 geronimo atlanta1 mommy123 scorpio1 yousuck1 barbara1 justdoit pakistan1 19781978 josephine qawsedrf ladygaga lover123
+yankees2 godislove
+`
+
+var commonPasswords = func() map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(commonPasswordList) {
+		m[w] = true
+	}
+	return m
+}()
