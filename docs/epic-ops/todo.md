@@ -5,7 +5,7 @@ Category: improvement. Size: M. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 2 of 7 items done.
+**Status:** in progress (issue [#35](https://github.com/TuanSSM/flowtopia/issues/35)). 3 of 7 items done.
 
 - [x] **Health.** `GET /healthz`: schema version, whether TLS roots are present, database reachable,
   `VERSION`. DoD: `TestHealthz`; `deploy.sh` waits on it instead of the port.
@@ -20,8 +20,18 @@ Commits title of the category's type. An item is checked only when its DoD holds
   an error get no line, and a minute holds at most 240 lines with the rest counted. The log cap went
   from 5 files of 5 MB to 10 of 10 MB: a day of the most the request lines and the refusal lines can
   write together.
-- [ ] **Loopback by default.** The app publishes on `127.0.0.1:3169` unless `FLOWA_BIND` says
+- [x] **Loopback by default.** The app publishes on `127.0.0.1:3169` unless `FLOWA_BIND` says
   otherwise; the README says why. DoD: a fresh `compose up` is reachable from the host only.
+  Done: `compose.yml` publishes on `${FLOWA_BIND:-127.0.0.1}` in the long form, which takes an IPv6
+  address as written. `test/compose.sh` in lint reads what the file resolves to (unset, empty, every
+  address, one LAN address, IPv6, a value that is no address, and no port on the database); the new
+  `compose` integration suite runs `test/compose.sh --up`, which builds and starts both containers and
+  asks `/healthz` by loopback (answers) and by the machine's other addresses (does not), then starts the
+  app with `FLOWA_BIND=0.0.0.0` and asks again (answers), so the refusal is shown to be the setting's
+  doing. `deploy.sh` checks the address the port is published on, not always loopback, and says where
+  that is. This breaks a deployment that is opened from the LAN or through a proxy in another
+  container until `FLOWA_BIND` is set in `.env`, so the change is marked breaking. IPv6 is checked in
+  what the file resolves to, not on running containers: the runner's Docker has no IPv6.
 - [ ] **Reverse proxy recipe.** A `proxy` profile in `compose.yml` with Caddy, automatic
   certificates for `FLOWA_DOMAIN`, `FLOWA_TRUSTED_PROXIES` set to the proxy network, HSTS. DoD: the
   README's steps from clone to HTTPS run on a clean machine (recorded once by hand); `TestSameOrigin`
