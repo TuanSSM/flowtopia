@@ -438,7 +438,7 @@ profile, with `FLOWA_TRUSTED_PROXIES` set for it; the app bound to loopback by d
 pinned by digest with a documented update step; the arm64 image built by the release workflow and
 pulled by `deploy.sh`, so the Pi stops building; a weekly CI job that restores the latest backup
 format into a scratch database and runs the Go tests against it; `GET /healthz` with the schema
-version and TLS root count; one structured log line per request. **Out of scope.** Multi-instance,
+version and whether TLS roots are present; one structured log line per request. **Out of scope.** Multi-instance,
 metrics dashboards, email alerts.
 
 **Success.** A fresh machine goes from `git clone` to HTTPS in the README's steps; the restore

@@ -5,7 +5,9 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -292,5 +294,92 @@ func TestClientIP(t *testing.T) {
 	}
 	if _, err := parseProxies("10.0.0.0/8, bogus"); err == nil {
 		t.Error("a bad entry in FLOWA_TRUSTED_PROXIES must be refused")
+	}
+}
+
+// probe asks /healthz from the given address with the given headers and returns the status and the answer.
+func probe(t *testing.T, h http.Handler, remote string, hdr map[string]string) (int, map[string]any) {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/healthz", nil)
+	r.RemoteAddr = remote
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("the health answer may be kept by a cache: Cache-Control %q", cc)
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("the health answer is not JSON: %q", w.Body.String())
+	}
+	return w.Code, out
+}
+
+// TestHealthz covers what needs no database: an instance whose database does not answer says so with
+// 503, and only a probe from the machine itself is told more than that. TestDBHealthz covers a working one.
+func TestHealthz(t *testing.T) {
+	// Nothing listens on port 1, so every query fails at once, as with a database that is down.
+	db, err := sql.Open("postgres", "postgres://x:x@127.0.0.1:1/x?sslmode=disable&connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := newApp(db, t.TempDir())
+	a.hosts = []string{"example.com"}
+	a.version = "v9.9.9"
+	h := a.routes(map[string]asset{})
+
+	code, out := probe(t, h, "127.0.0.1:4000", nil)
+	if code != 503 || out["ok"] != false || out["database"] != false {
+		t.Fatalf("with the database down a local probe gets %d %v, want 503 with ok and database false", code, out)
+	}
+	if out["version"] != "v9.9.9" || out["migrations"] != float64(len(migrations)) || out["schema"] != float64(0) {
+		t.Fatalf("a local probe is told %v, want the version, %d migrations and schema 0", out, len(migrations))
+	}
+	if _, ok := out["tlsRoots"].(bool); !ok {
+		t.Fatalf("a local probe is not told whether TLS roots are present: %v", out)
+	}
+
+	// Everyone else learns only whether it works.
+	strangers := []struct {
+		what, remote string
+		hdr          map[string]string
+	}{
+		{"a visitor", "203.0.113.9:5000", nil},
+		{"someone on the home network", "192.168.1.20:5000", nil},
+		{"the Docker host", "172.18.0.1:5000", nil},
+		{"a visitor behind a proxy in Docker", "172.18.0.2:5000", map[string]string{"X-Forwarded-For": "203.0.113.9"}},
+		{"a visitor behind a proxy on this machine", "127.0.0.1:5000", map[string]string{"X-Forwarded-For": "203.0.113.9"}},
+		{"a visitor behind a proxy that sends X-Real-IP", "127.0.0.1:5000", map[string]string{"X-Real-IP": "203.0.113.9"}},
+		{"a visitor behind a proxy that sends Forwarded", "[::1]:5000", map[string]string{"Forwarded": "for=203.0.113.9"}},
+		{"a visitor behind a proxy that sends Via", "127.0.0.1:5000", map[string]string{"Via": "1.1 caddy"}},
+	}
+	for _, c := range strangers {
+		code, out := probe(t, h, c.remote, c.hdr)
+		if code != 503 || len(out) != 1 || out["ok"] != false {
+			t.Fatalf("%s gets %d %v, want 503 and only ok", c.what, code, out)
+		}
+	}
+	if code, out := probe(t, h, "[::1]:4000", nil); code != 503 || out["version"] != "v9.9.9" {
+		t.Fatalf("a local probe over IPv6 gets %d %v, want the full answer", code, out)
+	}
+}
+
+func TestProbeURL(t *testing.T) {
+	for listen, want := range map[string]string{
+		":3169":             "http://127.0.0.1:3169/healthz",
+		"0.0.0.0:3169":      "http://127.0.0.1:3169/healthz",
+		"[::]:8080":         "http://127.0.0.1:8080/healthz",
+		"localhost:3169":    "http://127.0.0.1:3169/healthz",
+		"127.0.0.1:3170":    "http://127.0.0.1:3170/healthz",
+		"192.168.1.5:3169":  "http://192.168.1.5:3169/healthz",
+		"[fd00::5]:3169":    "http://[fd00::5]:3169/healthz",
+		"flowa.example:443": "http://flowa.example:443/healthz",
+	} {
+		if got := probeURL(listen); got != want {
+			t.Errorf("probeURL(%q) = %q, want %q", listen, got, want)
+		}
 	}
 }
