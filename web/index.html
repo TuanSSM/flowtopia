@@ -15,7 +15,9 @@
 <body>
 <div id="app" class="shell">
   <div class="scrim" data-act="nav-close" aria-hidden="true"></div>
-  <nav id="side" class="side" aria-label="Main"></nav>
+  <!-- The menu is drawn again on every change, into #menu. The note under it that says whether changes are
+       saved is a live region, so it is not drawn again with the menu: only its words change. -->
+  <nav id="side" class="side" aria-label="Main"><div id="menu" class="side-menu"></div><div id="sync" class="sync" role="status" hidden><span class="dot"></span><span></span></div></nav>
   <div class="content">
     <header class="top">
       <button class="icon-btn menu-btn" data-act="nav-open" aria-label="Open navigation"></button>
@@ -29,11 +31,13 @@
 </div>
 <div id="palette" class="palette" hidden></div>
 <div id="modal" class="modal" hidden></div>
-<!-- Short messages. A screen reader says what is put into a live region it already knows, so these three
-     are on the page from the start and are emptied, not hidden, when there is nothing to say. -->
+<!-- Short messages. A screen reader says what is put into a live region it already knows, so these four
+     are on the page from the start and are emptied, not hidden, when there is nothing to say. #say holds
+     what there is nothing to show for: the room left in a text box, a picture or a tag added to a draft. -->
 <div id="unlock" class="unlock" role="status"></div>
 <div id="tip" class="tip" role="status"></div>
 <div id="toast" class="toast" role="status"></div>
+<div id="say" class="say" role="status"></div>
 <script src="props.js"></script>
 <script src="data.js"></script>
 <script src="demo.js"></script>

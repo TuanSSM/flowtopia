@@ -66,6 +66,8 @@ const EDGE = {
   '.node.ready': ['--card'], '.node.sel': ['--card'], '.cell.ready': ['--card-2'], '.key u.k-ready': ['--bg'],
   '.prop-card.on': ['--bg'], '.prop-pick:has(input:checked)': ['--bg', '--card'], '.tpl.on': ['--side'],
   '.week-dots .today i': ['--card'],
+  // A field an error is about: its edge turns to the colour of the error, on whatever a form stands on.
+  '[aria-invalid=true]:not([type=checkbox]):not([type=radio])': ['--bg', '--side', '--card', '--card-2'],
 };
 // Borders and rings that mark nothing a person needs to find: the words inside or beside say it.
 const DECOR = {

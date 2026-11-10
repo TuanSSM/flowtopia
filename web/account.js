@@ -147,7 +147,9 @@ function propTabs() {
   if (list.length < 2) return '';
   return `<div class="seg prop-tabs" role="group" aria-label="Prop">${list.map(p => `<button class="${p.id === ui.prop ? 'on' : ''}" data-act="prop" data-v="${p.id}" aria-pressed="${p.id === ui.prop}">${esc(p.name)}</button>`).join('')}</div>`;
 }
-const propChecks = picked => `<div class="prop-grid">${PROPS.map(p => `<label class="prop-pick"><input type="checkbox" name="prop" value="${p.id}" ${picked.includes(p.id) ? 'checked' : ''}>
+// The boxes are one question, so they are a named group, and the group points at the place for "Pick at
+// least one prop."
+const propChecks = picked => `<div class="prop-grid" role="group" aria-label="Your props" aria-describedby="props-err">${PROPS.map(p => `<label class="prop-pick"><input type="checkbox" name="prop" value="${p.id}" ${picked.includes(p.id) ? 'checked' : ''}>
   <span><b>${esc(p.name)}</b><span class="tiny">${esc(p.kind)}</span><span class="chip ${p.ready ? 'ok' : ''}">${p.ready ? 'Skill map ready' : 'Practice log only, for now'}</span></span></label>`).join('')}</div>`;
 
 // First-visit notes, shown once per section and remembered on the account.
@@ -315,7 +317,7 @@ function pageAuth(mode) {
     ${up ? '<label class="field">Display name (optional)<input type="text" name="displayName" autocomplete="name" maxlength="40"></label>' : ''}
     <label class="field">Password<input type="password" name="password" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="8" maxlength="200" required></label>
     ${up ? '<label class="field">Repeat password<input type="password" name="again" autocomplete="new-password" maxlength="200" required></label><p class="tiny">At least 8 characters. No email is needed, so nothing can be sent to you if you forget it.</p>' : ''}
-    <p class="form-err" id="auth-err" role="alert" hidden></p>
+    <p class="form-err" id="auth-err" role="alert"></p>
     <button class="btn primary" type="submit">${up ? 'Create account' : 'Sign in'}</button>
     <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : flags.signups ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p></form>`;
 }
@@ -331,7 +333,7 @@ function pageChooser() {
   const used = PROPS.filter(p => docs[p.id]?.rev > 0).map(p => p.id);
   return `<form class="chooser" id="props-form" data-first="1"><div class="page-h"><div><h1>Welcome, ${esc(me.displayName || me.username)}</h1>
     <p>Which props do you use? Flowa shows only these. You can change them later in your profile.</p></div></div>
-    ${propChecks(used)}<p class="form-err" id="props-err" role="alert" hidden></p>
+    ${propChecks(used)}<p class="form-err" id="props-err" role="alert"></p>
     <div class="row" style="margin-top:16px"><button class="btn primary" type="submit">Continue</button></div></form>`;
 }
 function pageProfile() {
@@ -345,19 +347,19 @@ function pageProfile() {
     <form class="card" id="password-form"><div class="card-h"><h2>Password</h2></div><div class="stack" style="gap:10px">
       <label class="field">Current password<input type="password" name="current" autocomplete="current-password" required></label>
       <label class="field">New password<input type="password" name="next" autocomplete="new-password" minlength="8" maxlength="200" required></label>
-      <p class="form-err" id="pw-err" role="alert" hidden></p>
+      <p class="form-err" id="pw-err" role="alert"></p>
       <div class="row wrap" style="gap:8px"><button class="btn" type="submit">Change password</button><button class="btn" type="button" data-act="signout-others">Sign out other devices</button></div><p class="tiny">Changing the password also signs out your other devices. A device unused for 14 days is signed out by itself.</p></div></form>
     <form class="card span-2" id="about-form" data-base="${esc(JSON.stringify(aboutOf(me)))}"><div class="card-h"><h2 class="grow">About you</h2>${flags.community ? `<a class="small" href="#/u/${esc(me.username)}">View your public profile</a>` : ''}</div>
       <div class="stack" style="gap:12px">
-        <label class="field">Bio<textarea name="bio" maxlength="300" placeholder="What you spin, where you practise, what you are working toward">${esc(me.bio || '')}</textarea></label>
+        <div class="stack" style="gap:4px"><label class="field">Bio<textarea name="bio" ${countAttrs('bio-count', me.bio, 300)} placeholder="What you spin, where you practise, what you are working toward">${esc(me.bio || '')}</textarea></label>${countHTML('bio-count', me.bio, 300)}</div>
         <div class="grid links-grid">${Object.entries(LINK_KINDS).map(([k, L]) => `<label class="field social-${k}">${icon(k)} ${L.name}<input type="text" name="${k}" maxlength="120" value="${esc((me.links || {})[k] || '')}" placeholder="${L.hint} or just the handle" autocapitalize="none" spellcheck="false"></label>`).join('')}</div>
         <label class="check" ${flags.community && flags.game ? '' : 'hidden'}><input type="checkbox" name="autoPost" ${(me.prefs || {}).autoPost === false ? '' : 'checked'}><span>Post my milestones to the timeline automatically (new badges)</span></label>
         <label class="check" ${flags.suggest ? '' : 'hidden'}><input type="checkbox" name="shareTransitions" ${(me.prefs || {}).shareTransitions ? 'checked' : ''}><span>Help improve next-trick suggestions: share which transitions work, are blocked or need a bridge in my combos. Only counts per pair of skills are kept, with no name. Turning it off takes my marks back out.</span></label>
         <label class="check" ${flags.suggest ? '' : 'hidden'}><input type="checkbox" name="askTransitions" ${(me.prefs || {}).askTransitions === false ? '' : 'checked'}><span>After I log a combo run, ask me how each transition I have not marked went. One question per transition, and only while sharing above is on.</span></label>
-        <p class="form-err" id="about-err" role="alert" hidden></p>
+        <p class="form-err" id="about-err" role="alert"></p>
         <div><button class="btn" type="submit">Save</button></div></div></form>
     <form class="card span-2" id="props-form"><div class="card-h"><h2>Your props</h2></div>${propChecks(me.props || [])}
-      <p class="form-err" id="props-err" role="alert" hidden></p><div class="row" style="margin-top:14px"><button class="btn" type="submit">Save props</button></div></form>
+      <p class="form-err" id="props-err" role="alert"></p><div class="row" style="margin-top:14px"><button class="btn" type="submit">Save props</button></div></form>
   </div>`;
 }
 function propPlaceholder(p) {
@@ -390,7 +392,56 @@ function pageDashLite() {
 const needCatalog = title => `<div class="page-h"><div><h1>${title}</h1><p>${esc(curProp().name)}</p></div></div>${propPlaceholder(curProp())}`;
 
 /* ---------- events ---------- */
-const showErr = (id, msg) => { const el = $('#' + id); if (el) { el.textContent = msg; el.hidden = !msg; } };
+// What is wrong with a form, under it. The place for the words (.form-err) is a live region that is drawn
+// with the form and stays, empty, so a screen reader says what is put into it. The fields the words are
+// about are marked invalid and point at them, so the error is read again with the field; both marks go
+// when the words go.
+const descOf = f => (f.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+const descSet = (f, ids) => ids.length ? f.setAttribute('aria-describedby', ids.join(' ')) : f.removeAttribute('aria-describedby');
+function showErr(id, msg, fields = []) {
+  const el = $('#' + id);
+  if (!el) return;
+  el.textContent = msg;
+  for (const f of document.querySelectorAll(`[aria-invalid][aria-describedby~="${id}"]`)) { f.removeAttribute('aria-invalid'); descSet(f, descOf(f).filter(x => x !== id)); }
+  if (msg) for (const f of fields) if (f) { f.setAttribute('aria-invalid', 'true'); descSet(f, [...descOf(f).filter(x => x !== id), id]); }
+}
+// The fields a refusal is about, by its words: the first pattern that fits names them ("Wrong username or
+// password." is about two). A refusal that fits none, like too many tries or no connection, marks no field.
+const errFields = (form, msg, rules) => (rules.find(([re]) => re.test(msg)) || [0, []])[1].map(n => form.elements[n]);
+// Whether what is in a field now could be sent: something in it when it is required, and within its lengths.
+// The browser's own check is not asked, because it only counts what a person typed, not a draft put back.
+const fieldOK = f => !(f.required && !f.value.trim()) && !(f.minLength > 0 && f.value.length < f.minLength) && !(f.maxLength > 0 && f.value.length > f.maxLength);
+
+/* ---------- the room left in a text box ---------- */
+// A box with a limit has a counter beside it, which it points at, so the count is read with the box. It
+// shows from 100 characters left. Typing does not say the count each time: it is said when it passes 20
+// left, when nothing is left, and when the text is too long (a draft put back by the page can be).
+const COUNT_FROM = 100, COUNT_SAY = 20;
+const chars = n => `${n} ${n === 1 ? 'character' : 'characters'}`;
+const countWords = (len, max) => len > max ? `${chars(len - max)} too many` : len === max ? 'No characters left' : max - len <= COUNT_FROM ? `${chars(max - len)} left` : '';
+const countBand = (len, max) => len > max ? 'over' : len === max ? 'full' : max - len <= COUNT_SAY ? 'near' : '';
+// For a template: the attributes of the box, and the counter that goes beside it.
+const countAttrs = (id, text, max) => `maxlength="${max}" data-count="${id}" data-band="${countBand(String(text || '').length, max)}" aria-describedby="${id}"${String(text || '').length > max ? ' aria-invalid="true"' : ''}`;
+const countHTML = (id, text, max) => `<span class="count tiny num ${String(text || '').length > max ? 'over' : ''}" id="${id}">${countWords(String(text || '').length, max)}</span>`;
+// Brings the counter of a box up to date. aloud says a change of band, which is what typing asks for and
+// what the page emptying a box after sending does not.
+function recount(f, aloud) {
+  const c = document.getElementById(f.dataset.count), max = f.maxLength, len = f.value.length, band = countBand(len, max);
+  if (c) { c.textContent = countWords(len, max); c.classList.toggle('over', len > max); }
+  if (len > max) f.setAttribute('aria-invalid', 'true');
+  if (band !== f.dataset.band) { f.dataset.band = band; if (aloud) say(band ? countWords(len, max) + '.' : ''); }
+}
+document.addEventListener('input', e => {
+  const f = e.target;
+  if (!f.matches?.('input, textarea, select')) return;
+  if (f.dataset.count) recount(f, true);
+  if (f.name === 'prop' && f.checked) showErr('props-err', '');
+  // The next thing typed that could be sent takes the error away, from this field and the others it marked.
+  if (f.getAttribute('aria-invalid') === 'true' && fieldOK(f)) {
+    for (const id of descOf(f)) if (document.getElementById(id)?.classList.contains('form-err')) showErr(id, '');
+    f.removeAttribute('aria-invalid'); // marked by its counter or by a message, with no error under the form
+  }
+});
 document.addEventListener('click', async e => {
   const t = e.target.closest('[data-act]');
   if (!t) return;
@@ -440,14 +491,14 @@ document.addEventListener('submit', async e => {
   if (f.id === 'auth-form') {
     const up = f.dataset.mode === 'signup', body = { username: f.username.value, password: f.password.value };
     if (up) {
-      if (f.password.value !== f.again.value) { showErr('auth-err', 'The two passwords do not match.'); return; }
+      if (f.password.value !== f.again.value) { showErr('auth-err', 'The two passwords do not match.', [f.again]); return; }
       body.displayName = f.displayName.value;
     }
     const btn = f.querySelector('button[type=submit]');
     btn.disabled = true; showErr('auth-err', '');
     const r = await api(up ? 'signup' : 'signin', 'POST', body);
     btn.disabled = false;
-    if (!r.ok) { showErr('auth-err', r.error); return; }
+    if (!r.ok) { showErr('auth-err', r.error, errFields(f, r.error, [[/^too many/i, []], [/wrong username or password/i, ['username', 'password']], [/password/i, ['password']], [/username/i, ['username']], [/display name/i, ['displayName']]])); return; }
     document.activeElement?.blur?.();
     location.hash = '#/';
     try { await load(); } catch { toast('Signed in, but your progress did not load. Reload the page.'); }
@@ -455,6 +506,7 @@ document.addEventListener('submit', async e => {
   } else if (f.id === 'props-form') {
     const props = [...f.querySelectorAll('input[name=prop]:checked')].map(i => i.value);
     if (!props.length) { showErr('props-err', 'Pick at least one prop.'); return; }
+    showErr('props-err', '');
     if (await updateMe({ props }, f.dataset.first ? '' : 'Props saved.')) {
       try { await load(); } catch { /* keeps the old view */ }
       // New users are offered the avatar editor next, with a random avatar, and can skip it.
@@ -468,7 +520,7 @@ document.addEventListener('submit', async e => {
     const r = await api('me', 'PUT', { ...aboutPatch(base, typed), rev: base.rev });
     delete f.dataset.busy;
     if (r.status === 409 && r.data?.user) { me = r.data.user; if (f.isConnected) aboutRebase(f, base, typed); delete social.profile[me.username]; }
-    if (!r.ok) { showErr('about-err', r.error); return; }
+    if (!r.ok) { showErr('about-err', r.error, errFields(f, r.error, [[/\bbio\b/i, ['bio']], ...Object.entries(LINK_KINDS).map(([k, L]) => [new RegExp(L.name, 'i'), [k]])])); return; }
     me = r.data.user; showErr('about-err', ''); document.activeElement?.blur?.(); delete social.profile[me.username];
     if (before !== !!me.prefs?.shareTransitions) await ntSyncAll(true); // share every mark, or take them all back
     toast('Profile saved.'); render();
@@ -477,7 +529,7 @@ document.addEventListener('submit', async e => {
     await updateMe({ displayName: f.displayName.value }, 'Name saved.'); render();
   } else if (f.id === 'password-form') {
     const r = await api('me/password', 'PUT', { current: f.current.value, next: f.next.value });
-    if (!r.ok) { showErr('pw-err', r.error); return; }
+    if (!r.ok) { showErr('pw-err', r.error, errFields(f, r.error, [[/^too many/i, []], [/current password/i, ['current']], [/password/i, ['next']]])); return; }
     document.activeElement?.blur?.(); f.reset(); showErr('pw-err', ''); toast('Password changed.');
   }
 });

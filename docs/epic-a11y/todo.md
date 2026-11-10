@@ -5,7 +5,7 @@ Category: improvement. Size: S. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#36](https://github.com/TuanSSM/flowtopia/issues/36)). 2 of 5 items done.
+**Status:** in progress (issue [#36](https://github.com/TuanSSM/flowtopia/issues/36)). 3 of 5 items done.
 
 - [ ] **Focus.** Every control reachable by Tab in reading order, a visible focus ring in both
   themes, dialogs trap focus and return it. DoD: a keyboard-only browser test signs in, logs a
@@ -68,5 +68,31 @@ Commits title of the category's type. An item is checked only when its DoD holds
   and left: the search box in the palette shows no focus ring (Focus); the tour's Next button is
   put right by a rule in `app.css` over the colours the tour is handed, where the tour itself
   should ask for the right one.
-- [ ] **Forms.** Labels bound to inputs, errors announced, the composer's limits announced. DoD:
+- [x] **Forms.** Labels bound to inputs, errors announced, the composer's limits announced. DoD:
   the lint script checks label binding.
+  Done: `test/browser/a11y.py` checks it at the same 68 stops, and fails on any. Like Names it is the
+  browser suite and not a step of lint: read from the source, 6 of the 67 fields in `web/*.js` cannot
+  be tied to a label (the skill map editor builds its fields in one helper and wraps them in another),
+  so a reading of the source would fail on a tree that is right. The rule for a field is narrower than
+  the rule for a name: a wrapping `<label>`, `for`, `aria-label` or `aria-labelledby`, never a title or
+  a placeholder, and a radio button in a named group. What `aria-labelledby`, `aria-describedby` and
+  `for` point at must be on the page, and no id may be used twice. The suite proves the rules on 21
+  made-up fields first. Before the fixes, of 212 fields 3 had no label (the list in the trick picker,
+  at 3 stops), no pointer led nowhere and no id was used twice; now none.
+  Errors: the place for an error under a form is a `role="alert"` that is drawn with the form and
+  stays, empty and out of the flow, so its words are said when they are put in. The fields an error is
+  about get `aria-invalid` and point at it with `aria-describedby`; both go at the next thing typed
+  that could be sent. The suite sends three forms wrong (a wrong password, a short one, a post of 2001
+  characters) and checks each step, and that two passwords that differ mark the second.
+  Limits: a text box with a limit (a post, a comment, a reply, a comment being edited, the bio, the
+  note on a report, the reason of a moderation action) points at a counter that shows from 100
+  characters left. The count is said at 20 left, at none and when the text is too long, through `#say`,
+  a live region for what is said and not shown. A trick tagged or untagged says how many of the 10 the
+  post carries, and a picture says it was attached and whether it was made smaller. The note under the
+  menu ("Saving", "Not saved, retrying") is a live region that is no longer redrawn with the menu.
+  Seen and left: every save says "Saving" and then "All changes saved", which is a lot to hear while
+  marking levels; whether that should be only the failure and the recovery is for someone who listens
+  with a screen reader to say. In the skill map editor a problem is written inside the field's label,
+  so it is read as part of the field's name (the field is now marked invalid too), not as its
+  description. An error the server words without naming a field (too many tries, no connection) marks
+  no field. Not done: listening with a real screen reader.

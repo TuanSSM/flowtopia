@@ -80,6 +80,16 @@ coloured background and a state marked only by an outline or a side border are n
 55 stops in each theme, about 20,000 pairs of colours. Neither judges what is drawn over a picture, a
 gradient or the demo canvas; the walk counts those as skipped.
 
+Every field has a label bound to it: a `<label>` around it or pointing at it, or an `aria-label` where a
+visible label would be wrong. A placeholder or a title is not a label. An error under a form is put into
+a live region that was drawn with the form, and the fields it is about are marked invalid and point at
+it until the next thing typed that could be sent. A text box with a limit (a post has 2000 characters, a
+comment 1000, the bio 300) shows a counter from 100 characters left, and the count is said at 20 left, at
+none and when the text is too long, not at each letter. The note under the menu that says whether
+changes are saved is a live region too. `a11y.py` checks the labels at every stop (212 fields), that
+what a field points at by id is on the page and that no id is used twice, and sends three forms wrong
+to hear the error come and go.
+
 The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the guided tour (`tour/`) and the
 3D figure (`figure/`).
 
