@@ -28,7 +28,12 @@ function holder(p, i, f) {
 function overlaps(sc) {
   const N = sc.fr.length, n = Math.min(N, 300), air = sc.meta && sc.meta.air, prop = [0, ''], limb = [0, ''], grip = [0, ''];
   let at = 0;
-  const note = (w, pen, where) => { if (pen > w[0]) { w[0] = pen; w[1] = `${where} (${Math.round(at * 100)}% through)`; } };
+  // The worst case is the deepest there is, to the last bit. What is named with it (which part, and how
+  // far through the clip) moves on to a later moment only when it is deeper there by more than a
+  // micrometre, so the moment named is within a micrometre of the worst. A loop often reaches the same
+  // depth two or four times, which of them is deeper in the last bit differs from one JavaScript engine
+  // to the next, and the name goes into web/clips/presets.json. w[2] is the depth at the moment named.
+  const note = (w, pen, where) => { if (pen > w[0]) { w[0] = pen; if (!(pen <= w[2] + 1e-6)) { w[2] = pen; w[1] = `${where} (${Math.round(at * 100)}% through)`; } } };
   for (let s = 0; s < n; s++) {
     const i = Math.floor(s * N / n); at = i / N;
     const f = sc.fr[i], J = Demo.rig(f), hold = {}, inAir = air && i / N >= air.from && i / N < air.to;

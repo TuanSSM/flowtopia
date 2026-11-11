@@ -174,11 +174,20 @@ const Demo = (() => {
     delete c.data;
     return c;
   }
+  // Every number that is stored is rounded to a stated step, so that the same motion gives the same bytes,
+  // and so the same file name, on any machine. Sines, cosines and angles can differ in their last bit from
+  // one JavaScript engine to the next; a simulated loop's length carried that through unrounded
+  // (docs/demo-engine.md, "The same clips on any machine").
+  //   positions, in frames, labels and planes: 0.1 mm, a twentieth of a pixel on a figure drawn 1,000 pixels tall.
+  //   dur: 1 microsecond. The frames fix the timing no finer than 10 microseconds (0.1 mm at 10 m/s), and a loop
+  //     of half a second played for ten minutes ends under 1 ms from where it would be, a fraction of one screen frame.
+  //   every other number (trail as a part of the loop; sizes, zoom and label offsets from the move list): 1e-4.
+  //     For the trail that is under 1 mm of the longest path a tip draws; the others are written with fewer decimals.
+  const r4 = x => Math.round(x * 1e4) / 1e4, r6 = x => Math.round(x * 1e6) / 1e6;
+  const rounded = v => typeof v === 'number' ? r4(v) : Array.isArray(v) ? v.map(rounded) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, rounded(x)])) : v;
   function pack(c) {
-    const first = c.fr[0], keys = Object.keys(first).filter(k => c.fr.some(f => len(sub(f[k], first[k])) > 5e-5)), q = x => Math.round(x * 1e4);
-    const out = { ...c, n: c.fr.length, keys, const: Object.fromEntries(Object.keys(first).filter(k => !keys.includes(k)).map(k => [k, first[k].map(x => q(x) / 1e4)])), data: c.fr.flatMap(f => keys.flatMap(k => f[k].map(q))) };
-    delete out.fr;
-    return out;
+    const { fr, ...rest } = c, first = fr[0], keys = Object.keys(first).filter(k => fr.some(f => len(sub(f[k], first[k])) > 5e-5)), q = x => Math.round(x * 1e4);
+    return { ...rounded(rest), dur: r6(c.dur), n: fr.length, keys, const: Object.fromEntries(Object.keys(first).filter(k => !keys.includes(k)).map(k => [k, first[k].map(r4)])), data: fr.flatMap(f => keys.flatMap(k => f[k].map(q))) };
   }
   // The two stored frames the phase ph (0 to 1) falls between (fa, fb), and how far from the first to the second (ft).
   let fa = 0, fb = 0, ft = 0;

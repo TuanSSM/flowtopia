@@ -245,6 +245,21 @@ jobs:
           node sim/features.js
           git diff --exit-code --stat web/clips/features.json || {
             echo "::error::web/clips/features.json is stale; run node sim/features.js and commit"; exit 1; }
+      # Same sources, same bytes: the committed clips must be the ones the bake gives here, on another
+      # Node and another processor than the one that baked them (about 40 s). The posture search reads
+      # sim/fits.json and does not run again; a posture that is missing from it is searched for and
+      # written, and shows here as a change. When the bake differs, --diff names each clip and the first
+      # number in it that differs, both values in full (docs/demo-engine.md, "The same clips on any machine").
+      - name: Clips are the ones the bake gives
+        run: |
+          node sim/bake.js
+          changed="$(git status --porcelain web/clips sim/fits.json)"
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            node sim/bake.js --diff || true
+            echo "::error::web/clips or sim/fits.json is not what the bake gives; run node sim/bake.js and commit web/clips and sim/fits.json. If your bake gives what is committed, a number differs between JavaScript engines, and the log names it"
+            exit 1
+          fi
       # Body presets keep each move's shape, sticker poses pass the body checks, avatar colours read
       # on both themes, the 3D figure stays within its download size, and, posed in Node as in the
       # browser, no prop is drawn into its body on any clip, every avatar part shows, a pose that

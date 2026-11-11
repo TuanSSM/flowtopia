@@ -45,7 +45,7 @@ if (!process.env.ONLY) {
 }
 
 const { shapes, floorErrors, bodyErrors } = require('../sim/check.js'), R = { ROD: E.ROD, BALL: E.BALL }, P = require('../sim/presets.js');
-const presetFile = P.load(), perPreset = Object.fromEntries(P.PRESETS.map(p => [p.id, { ok: 0, no: 0 }])); let stale = 0;
+const presetFile = P.load(), perPreset = Object.fromEntries(P.PRESETS.map(p => [p.id, { ok: 0, no: 0 }])); let stale = 0, unbaked = 0;
 
 console.log('clip'.padEnd(46) + 'frames  checks');
 for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) {
@@ -137,10 +137,13 @@ for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) 
   const an = bodyErrors(c, sp);
   errs.push(...an.errs);
   // The same checks on every body preset. A clip that fails on one is not offered on it (the demo
-  // plays it on the standard body and says why); web/clips/presets.json must say the same.
+  // plays it on the standard body and says why); web/clips/presets.json must say the same. That file
+  // lists clips by their file name, so a clip that has not been baked as it is now has nothing to be
+  // compared with: the comparison is skipped for it, said on its line and counted in the last line.
   const fails = P.check(c, sp), f = B.fileOf(c).f, had = presetFile.fail[f] || {};
   for (const p of P.PRESETS) perPreset[p.id][fails[p.id] ? 'no' : 'ok']++;
-  if (B.baked(f) && JSON.stringify(Object.keys(fails).sort()) !== JSON.stringify(Object.keys(had).sort())) { stale++; errs.push('web/clips/presets.json is stale for this clip: run node sim/bake.js'); }
+  if (!B.baked(f)) { unbaked++; notes.push('SKIP comparison with web/clips/presets.json: this clip is not the one in web/clips'); }
+  else if (JSON.stringify(Object.keys(fails).sort()) !== JSON.stringify(Object.keys(had).sort())) { stale++; errs.push('web/clips/presets.json is stale for this clip: run node sim/bake.js'); }
   if (Object.keys(fails).length) notes.push(`not on ${Object.keys(fails).length} of ${P.PRESETS.length} body presets`);
   // The figure's hand is a closed fist with no wrist, so how the prop turns inside it is measured, not enforced.
   if (an.twist > 3.6) notes.push(`${deg(an.twist)} degrees of turn inside the hand, which the figure does not show`);
@@ -167,5 +170,7 @@ for (const { key, prop, id, sp, scene: c, error } of B.build(process.env.ONLY)) 
 console.log('\nbody preset'.padEnd(20) + 'offered  not offered');
 for (const p of P.PRESETS) console.log(p.id.padEnd(19) + String(perPreset[p.id].ok).padEnd(9) + perPreset[p.id].no);
 if (stale) console.log(`${stale} clips disagree with web/clips/presets.json`);
-console.log(`${total} clips, problems: ${bad}`);
+// A clip that is not the baked one is not a fault of the clip (a move being worked on is tested before it
+// is baked), so it does not fail here. CI bakes and fails when web/clips is not what the bake gives.
+console.log(`${total} clips, problems: ${bad}` + (unbaked ? `, skipped: ${unbaked} comparisons with web/clips/presets.json (clips changed since the last bake; run node sim/bake.js)` : ''));
 process.exit(bad ? 1 : 0);
