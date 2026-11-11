@@ -13,7 +13,7 @@ kind of clip means, what is checked, and what was tried and left out.
 | `sim/specs.js` | at build time | The list of skills that have a demo, with their notes. |
 | `sim/compose.js` | at build time | Puts the hands together into one scene: both hands, the body pose and every prop, 100 frames a second. |
 | `sim/check.js` | at build time | Measurements on a scene: overlaps, reach, speed, legs, balance, turn inside the hand. |
-| `sim/bake.js` | by hand after a change to `sim/`, and by `./deploy.sh --build` | Writes `web/clips/<hash>.json` and `web/clips/index.json`. |
+| `sim/bake.js` | by hand after a change to `sim/`, by `./deploy.sh --build`, and by CI to check the committed clips | Writes `web/clips/<hash>.json` and `web/clips/index.json`. `--diff` says how the clips differ from the last commit. |
 | `web/demo.js` | in the browser | The player: the jointed figure, the props, labels, views, GIF export. No physics. |
 | `test/physics.js`, `test/expect.js` | `node test/physics.js` | Every clip against its physics, its definition, and the body. |
 | `test/chain.js` | `node test/physics.js`, or on its own | Known answers for the chain: 55 checks, each with its tolerance and where it comes from. |
@@ -96,6 +96,95 @@ A hand-driven move is fixed by its definition only up to where the hand is held 
 set. `fitted()` tries a grid of hand positions, lean angles and elbow positions and keeps the one
 that leaves the prop clearest. The choice is stored in `sim/fits.json`, so rebuilding gives the
 same clip. If nothing on the grid is clear, the move gets no demo.
+
+## The same clips on any machine
+
+A clip's file is named by the hash of its bytes, and `index.json` and `presets.json` list clips by
+that name. So a bake gives the committed files only when every byte comes out the same, on any
+machine and any version of Node.
+
+**What differed.** Arithmetic and square roots give the same bits on every JavaScript engine.
+Sines, cosines and angles (`Math.sin`, `Math.cos`, `Math.atan2`) need not: an engine may be one
+unit in the last place off, and engines differ in where. A bake calls them more than 21 million
+times, most of them inside simulated swings where each step feeds the next, so two engines end up
+with slightly different swings. Positions are stored to 0.1 mm, and the frames came out the same
+to the byte. The length of a simulated loop (`dur`) is found by the simulation, from the part of a
+step at which the repeat ends, and was stored as it came. Between the committed clips and a bake
+with Node 22 on an x86 machine it differed by up to 7.2e-13 s in all 41 simulated loops that end
+part-way through a step, and with it `trail`, the hash, the file name and the entries in the two
+lists. Nothing checked this, because CI never baked.
+
+There is one engine at hand and not two, so the second one is stood in for: every sine, cosine and
+angle is made wrong by one unit in the last place, up, down or not at all. That gives the same
+picture as the committed clips did (the same 41 loops, `dur` off by up to 1e-12 s, every stored
+frame the same), and it is where the other figures in this section come from. Positions then
+differ by a few millionths of a nanometre as a rule and by 1.5 nm at most.
+
+**What is rounded** when a clip is packed (`pack` in `web/demo.js`), so that a difference in the
+last bits does not reach the file:
+
+| Number | Step | Why that is fine enough |
+| --- | --- | --- |
+| Positions: frames, labels, planes | 0.1 mm | A twentieth of a pixel on a figure drawn 1,000 pixels tall. |
+| `dur` | 1 microsecond | The frames fix the timing no finer than 10 microseconds (0.1 mm at 10 m/s). A loop of half a second played for ten minutes ends under 1 ms from where it would be. |
+| Every other number: `trail`, sizes, zoom, label offsets | 0.0001 | For `trail`, a part of the loop, that is under 1 mm of the longest path a tip draws. The rest are written in the move list with fewer decimals. |
+
+The lists beside the clips were rounded already: `d` in `index.json` to 0.01 s, every measure in
+`features.json` to 0.001 (and measured from the stored clips, not from the simulation), and the
+reasons in `presets.json` are text with a depth in whole millimetres and a whole percentage.
+`sim/fits.json` holds values from the search grid as the move list writes them, under names made
+of a family, a direction and a count, so it reads the same on every engine and a bake with the
+committed file never searches.
+
+One thing in `presets.json` was a matter of last bits without being a number. The reason a clip is
+not offered on a body names the worst overlap and how far through the clip it is. A loop reaches
+the same depth two or four times, and which of them is deeper in the last bit decided the
+percentage. The name now moves on to a later moment only when the overlap there is deeper by more
+than a micrometre (`note` in `sim/check.js`); the depth that is compared with the tolerances is
+still the deepest, to the last bit. That changed the percentage in 32 of the 348 reasons and
+nothing else.
+
+**Whole-number decisions** were tested with the same stand-in, several times over.
+
+- How many steps a repeat takes. The repeat ends part-way through a step, and the count of whole
+  steps and the part are added, so the length does not jump when the count changes. It does change
+  for one clip: the hand model holds `nunchaku:M4` to the rate it wants so exactly that its two
+  turns take 3,360 steps to within 2e-11 of a step. One run counts 3,361 samples and nearly a whole
+  step more, another 3,362 and nearly nothing more; `dur` is 2.24 s either way, within 1e-12 s.
+- How many steps a swing takes to settle. This one would move every frame of the clip by a step.
+  The nearest any settling comes to a step is 1.3e-4 rad, against differences of 1e-11 rad.
+- How many frames a clip has. The nearest any loop's length comes to another count is 0.03 of a
+  frame.
+
+**What rounding cannot rule out.** A number that lies within the engines' difference of the middle
+between two steps rounds up on one engine and down on another. Among today's clips the nearest
+`dur` is 8e-8 s from such a middle, against a difference of 1e-12 s. No position that differs is
+nearer than 1.9 nm to one, and none is nearer than about 12 times its own difference. A later
+clip can land closer. The check below will say so.
+
+**The check.** The unit job of CI runs `node sim/bake.js` (about 40 s; the posture search does not
+run, because every posture is in `sim/fits.json`) and fails when `git status` shows a change in
+`web/clips` or `sim/fits.json`. It then prints `node sim/bake.js --diff`: each clip that differs
+by move and variant, with the first field or stored number that differs and both values in full.
+`node test/physics.js` compares `presets.json` with its own run of the body checks only for clips
+that are baked as they are now; for any other it says `SKIP` on the clip's line and counts it in
+the last line. It does not fail for that, because a move being worked on is tested before it is
+baked; the bake check is what fails.
+
+**When the check fails.** Run `node sim/bake.js` and look at `git status web/clips sim/fits.json`.
+
+- It shows changes: the clips were not baked after the last change to `sim/` or to `pack`. Commit
+  them, with `docs/demo-coverage.md` after `node test/coverage.js`.
+- It shows none: your engine and CI's give different bytes from the same sources. The log of the
+  failed step names the clip and the number. A stored position that differs by 0.0001 lies on a
+  rounding middle: move the clip by something that does not matter (its start, a hand position by
+  a millimetre) and bake again. Anything larger, or another frame count, is a decision that falls
+  differently on the two engines, and is a fault in the move or the engine to find, not to round
+  away.
+
+Baking twice on one machine gives the same bytes, and so does a bake with every sine, cosine and
+angle wrong in the last place, or with every `dur` moved by 1e-12 s. Whether Node 24 on CI's
+processor gives the committed bytes is what the first run of the check shows.
 
 ## A tether that touches: the chain
 
