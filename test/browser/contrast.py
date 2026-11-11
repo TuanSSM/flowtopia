@@ -48,8 +48,11 @@ const where=e=>{const p=e.parentElement&&e.parentElement.closest('[class]');retu
 const shown=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden'&&!e.closest('[hidden]')&&(!e.checkVisibility||e.checkVisibility());
 const PICTURE=/^(canvas|img|video|iframe)$/i;
 const media=[...document.querySelectorAll('canvas,img,video,iframe')].filter(shown).map(m=>[m,m.getBoundingClientRect()]);
+// The window as a box laid over it fills it: without the scroll bar, which Firefox draws beside the page and
+// counts in innerWidth, so that a sheet over the whole page is narrower than innerWidth there.
+const VW=document.documentElement.clientWidth,VH=document.documentElement.clientHeight;
 const sheets=[...document.body.querySelectorAll('*')].filter(v=>{const s=getComputedStyle(v);if(s.position!=='fixed'||!shown(v))return false;
-  const r=v.getBoundingClientRect(),c=P(s.backgroundColor);return r.left<=0&&r.top<=0&&r.right>=innerWidth&&r.bottom>=innerHeight&&c&&c[3]>0});
+  const r=v.getBoundingClientRect(),c=P(s.backgroundColor);return r.left<=0&&r.top<=0&&r.right>=VW&&r.bottom>=VH&&c&&c[3]>0});
 const lost=e=>{
   const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;
   if(x<0||y<0||x>=innerWidth||y>=innerHeight)return sheets.some(v=>!v.contains(e))?'behind':'';
