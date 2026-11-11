@@ -38,7 +38,8 @@ function richText(s) {
     ? `<a href="${part}" target="_blank" rel="noopener noreferrer">${part}</a>`
     : part.replace(/(^|[^\w.-])@([a-z0-9][a-z0-9._-]{2,23})/gi, (m, pre, n) => `${pre}<a href="#/u/${n.toLowerCase()}">@${n}</a>`)).join('').replace(/\n/g, '<br>');
 }
-// A photo for a post: shrunk to fit the server's limit.
+// A photo for a post: shrunk to fit the server's limit. Gives the picture as a data URL, its size in px,
+// and whether it had to be made smaller than the file was.
 async function shrinkImage(file, max = 1280, q = 0.82) {
   const url = URL.createObjectURL(file), img = new Image();
   img.src = url;
@@ -53,7 +54,7 @@ async function shrinkImage(file, max = 1280, q = 0.82) {
     g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
     g.drawImage(img, 0, 0, c.width, c.height);
     const out = c.toDataURL('image/jpeg', quality);
-    if (out.length <= 390000 || side < 320) return out;
+    if (out.length <= 390000 || side < 320) return { url: out, w: c.width, h: c.height, smaller: k < 1 };
     if (quality < 0.5) { quality = q; side = Math.round(side * 0.75); }
   }
 }
@@ -165,7 +166,7 @@ function commentHTML(p, c, reply) {
   const canEdit = mine && !c.deleted && Date.now() - new Date(c.created) < EDIT_MS;
   const editing = social.editing === c.id;
   const body = c.deleted ? `<span class="small cmt-gone">${c.removed ? 'Comment removed by a moderator' : 'Comment deleted'}</span>`
-    : editing ? `<form class="cmt-edit" data-k="e:${c.id}" data-id="${c.id}" data-post="${p.id}"><textarea name="body" maxlength="1000" rows="2" aria-label="Edit comment">${esc(c.body)}</textarea><span class="row" style="gap:6px"><button class="btn sm primary" type="submit" ${sendOff(`e:${c.id}`)}>Save</button><button class="btn sm" type="button" data-act="cmt-edit-cancel">Cancel</button></span></form>`
+    : editing ? `<form class="cmt-edit" data-k="e:${c.id}" data-id="${c.id}" data-post="${p.id}"><textarea name="body" ${countAttrs(`count-e${c.id}`, c.body, 1000)} rows="2" aria-label="Edit comment" required>${esc(c.body)}</textarea><span class="row" style="gap:6px"><button class="btn sm primary" type="submit" ${sendOff(`e:${c.id}`)}>Save</button><button class="btn sm" type="button" data-act="cmt-edit-cancel">Cancel</button><span class="grow"></span>${countHTML(`count-e${c.id}`, c.body, 1000)}</span></form>`
     : `<span class="small cmt-body">${richText(c.body)}</span>`;
   const acts = c.deleted || editing ? '' : `<span class="cmt-acts"><button class="cmt-a ${c.liked ? 'on' : ''}" data-act="cmt-like" data-id="${c.id}" aria-pressed="${c.liked}" aria-label="Like comment">${icon('heart')}${c.likes ? `<span class="num">${c.likes}</span>` : ''}</button><button class="cmt-a" data-act="cmt-reply" data-id="${c.id}" data-post="${p.id}" data-root="${reply ? c.parentId : c.id}">Reply</button>${canEdit ? `<button class="cmt-a" data-act="cmt-edit" data-id="${c.id}">Edit</button>` : ''}${canDel ? `<button class="cmt-a" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}">Delete</button>` : ''}${canReport(c.userId) ? `<button class="cmt-a" data-act="report" data-kind="comment" data-id="${c.id}" data-what="this comment">Report</button>` : ''}${c.hidden && canDo('post.hide') && !mine ? `<button class="cmt-a" data-act="mod-do" data-do="restore" data-kind="comment" data-id="${c.id}">Restore</button>` : ''}</span>${c.hidden ? `<span class="tiny cmt-hidden">${icon('lock')} Hidden by a moderator: ${esc(c.hidden)}</span>` : ''}`;
   return `<div class="cmt ${reply ? 'reply' : ''} ${social.focus === c.id ? 'focus' : ''}" id="c-${c.id}">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row" style="gap:6px"><a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a><span class="tiny">${ago(c.created)}${c.edited ? ' · edited' : ''}</span></span>${body}${acts}</div></div>`;
@@ -173,7 +174,7 @@ function commentHTML(p, c, reply) {
 function replyForm(p, root) {
   const r = social.replyTo;
   if (!r || r.root !== root) return '';
-  return `<form class="cmt-form reply-form" data-k="c:${p.id}:${r.parent}" data-id="${p.id}" data-parent="${r.parent}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" value="${esc(r.prefill)}" aria-label="Reply to ${esc(r.name)}" autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send reply" ${sendOff(`c:${p.id}:${r.parent}`)}>${icon('send')}</button><button class="icon-btn" type="button" data-act="reply-cancel" aria-label="Cancel reply">${icon('x')}</button></form>`;
+  return `<form class="cmt-form reply-form" data-k="c:${p.id}:${r.parent}" data-id="${p.id}" data-parent="${r.parent}">${avatarHTML(me, 'sm')}<input type="text" name="body" ${countAttrs(`count-r${r.parent}`, r.prefill, 1000)} value="${esc(r.prefill)}" aria-label="Reply to ${esc(r.name)}" autocomplete="off" required><button class="icon-btn" type="submit" aria-label="Send reply" ${sendOff(`c:${p.id}:${r.parent}`)}>${icon('send')}</button><button class="icon-btn" type="button" data-act="reply-cancel" aria-label="Cancel reply">${icon('x')}</button>${countHTML(`count-r${r.parent}`, r.prefill, 1000)}</form>`;
 }
 function threadHTML(p) {
   const roots = rootsOf(p), full = social.full[p.id];
@@ -188,7 +189,7 @@ function threadHTML(p) {
   // notification, offers the rest only when the post has comments that are not on the page.
   const more = full && !full.thread ? full.more : (p.commentCount || 0) > shown;
   const open = social.openCmts.has(p.id) || roots.length > 0;
-  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-k="c:${p.id}:0" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" maxlength="1000" placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" aria-label="Comment on ${esc(postBy(p))}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment" ${sendOff(`c:${p.id}:0`)}>${icon('send')}</button></form></div>`;
+  return `<div class="cmts" ${open ? '' : 'hidden'}>${more ? `<button class="more-replies" data-act="more-comments" data-id="${p.id}" ${full?.loading ? 'disabled' : ''}>${full ? 'View more comments' : `View all ${p.commentCount} comments`}</button>` : ''}${items}<form class="cmt-form" data-k="c:${p.id}:0" data-id="${p.id}">${avatarHTML(me, 'sm')}<input type="text" name="body" ${countAttrs(`count-c${p.id}`, '', 1000)} placeholder="${me.mutedUntil ? 'You are muted' : 'Write a comment. Use @name to mention someone.'}" aria-label="Comment on ${esc(postBy(p))}" autocomplete="off" required ${me.mutedUntil ? 'disabled' : ''}><button class="icon-btn" type="submit" aria-label="Send comment" ${sendOff(`c:${p.id}:0`)}>${icon('send')}</button>${countHTML(`count-c${p.id}`, '', 1000)}</form></div>`;
 }
 // Loads the next page of a post's comments; the first call replaces the feed's preview.
 async function moreComments(postId) {
@@ -282,10 +283,12 @@ function pickAdd(item) {
   if (item.kind === 'combo') {
     const c = item.combo;
     social.draftCombo = social.draftCombo?.id === c.id ? null : { id: c.id, name: c.name, role: c.role || '', prop: item.prop, seq: [...c.seq], reps: c.seq.map((_, i) => (c.reps || [])[i] || 1) };
+    say(social.draftCombo ? `Combo ${c.name} attached.` : `Combo ${c.name} removed.`);
   } else {
     const t = { prop: item.prop, skill: item.id };
-    if (hasTag(t)) social.draftTags = social.draftTags.filter(x => tagKey(x) !== tagKey(t));
-    else if (social.draftTags.length < MAX_TAGS) social.draftTags.push(t);
+    // How many tricks the post carries is said with each one, and at the last one that no more fit.
+    if (hasTag(t)) { social.draftTags = social.draftTags.filter(x => tagKey(x) !== tagKey(t)); say(`${t.skill} removed, ${social.draftTags.length} of ${MAX_TAGS} tricks.`); }
+    else if (social.draftTags.length < MAX_TAGS) { social.draftTags.push(t); say(`${t.skill} tagged, ${social.draftTags.length} of ${MAX_TAGS} tricks.${social.draftTags.length === MAX_TAGS ? ' No more fit on this post.' : ''}`); }
     else toast(`Up to ${MAX_TAGS} tricks on a post.`);
   }
   render();
@@ -308,7 +311,7 @@ function pickListHTML() {
 }
 function picker() {
   return `<div class="picker" role="dialog" aria-label="Tag tricks and combos"><div class="row" style="gap:6px"><input type="search" id="pick-q" value="${esc(social.pickQ)}" placeholder="Search tricks and combos" autocomplete="off" aria-label="Search tricks and combos"><button type="button" class="btn sm" data-act="pick-close">Done</button></div>
-    <div class="pick-list" role="listbox">${pickListHTML()}</div></div>`;
+    <div class="pick-list" role="listbox" aria-label="Tricks and combos" aria-multiselectable="true">${pickListHTML()}</div></div>`;
 }
 function refreshPicker() { const l = $('.pick-list'); if (l) { l.innerHTML = pickListHTML(); $('.pick-i.on')?.scrollIntoView({ block: 'nearest' }); } }
 /* ---------- links to Instagram, TikTok and YouTube ---------- */
@@ -348,13 +351,14 @@ function composer() {
     + (social.draftCombo ? `<span class="chip trick combo-chip">${icon('link')}<span class="trick-n">${esc(social.draftCombo.name)}</span><button type="button" class="x" data-act="combo-rm-draft" aria-label="Remove combo">${icon('x')}</button></span>` : '');
   const sugg = social.pickOpen ? [] : suggestedTags();
   return `<form class="card compose" id="compose-form" data-k="post"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
-    <textarea name="body" maxlength="2000" rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
+    <textarea name="body" ${countAttrs('compose-count', social.draftBody, 2000)} rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
     ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt="The picture you attached"><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>${social.draftStill ? '<p class="tiny still-note">Animated pictures are kept as a still.</p>' : ''}` : ''}
     <div class="row wrap link-offer" ${social.linkOffer ? '' : 'hidden'}><span class="tiny grow">${social.linkOffer ? `${esc(SITE_NAMES[siteOf(social.linkOffer)])} link found` : ''}</span><button type="button" class="btn sm" data-act="link-attach">${icon('link')}Attach as a card</button></div>
     <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}" aria-label="Tag a trick or combo">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
     ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}" aria-label="Tag ${esc(t.skill)}, ${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
+    <p class="form-err" id="compose-err" role="alert"></p>
     <div class="row wrap" style="gap:8px"><label class="btn sm">${icon('image')}Picture<input type="file" accept="image/*" data-change="compose-img" hidden></label>
-      <span class="grow"></span><button class="btn primary sm" type="submit" ${sendOff('post')}>${icon('send')}Post</button></div></div></div></form>`;
+      <span class="grow"></span>${countHTML('compose-count', social.draftBody, 2000)}<button class="btn primary sm" type="submit" ${sendOff('post')}>${icon('send')}Post</button></div></div></div></form>`;
 }
 // The Combos page's Publish button: bring the combo to the composer with a line to edit.
 function publishCombo(c) {
@@ -555,7 +559,7 @@ document.addEventListener('click', async e => {
     case 'more-comments': moreComments(id); break;
     case 'more-replies': moreReplies(id); break;
     case 'more-posts': loadFeed(social.key, true); break;
-    case 'compose-img-rm': social.draftImg = ''; social.draftStill = false; leaveCompose(); render(); break;
+    case 'compose-img-rm': social.draftImg = ''; social.draftStill = false; leaveCompose(); render(); say('Picture removed.'); break;
     case 'link-attach': {
       const u = social.linkOffer;
       if (!u) break;
@@ -575,7 +579,7 @@ document.addEventListener('click', async e => {
     case 'pick-close': social.pickOpen = false; leaveCompose(); render(); $('#compose-form textarea')?.focus(); break;
     case 'pick-add': { const it = pickItems(social.pickQ)[Number(d.i)]; if (it) pickAdd(it); $('#pick-q')?.focus(); break; }
     case 'sugg-add': pickAdd({ kind: 'skill', prop: d.prop, id: d.skill }); break;
-    case 'tag-rm': social.draftTags = social.draftTags.filter(x => tagKey(x) !== `${d.prop}:${d.skill}`); leaveCompose(); render(); break;
+    case 'tag-rm': social.draftTags = social.draftTags.filter(x => tagKey(x) !== `${d.prop}:${d.skill}`); leaveCompose(); render(); say(`${d.skill} removed, ${social.draftTags.length} of ${MAX_TAGS} tricks.`); break;
     case 'combo-rm-draft': social.draftCombo = null; leaveCompose(); render(); break;
     case 'combo-publish': { const c = state.combos.find(x => x.id === d.id); if (c) publishCombo(c); break; }
   }
@@ -604,7 +608,8 @@ document.addEventListener('change', async e => {
   try {
     const img = await shrinkImage(f);
     if (social.gen !== gen) return;
-    social.draftImg = img; social.draftStill = f.type === 'image/gif';
+    social.draftImg = img.url; social.draftStill = f.type === 'image/gif';
+    say(`Picture attached${img.smaller ? `, made smaller to fit: ${img.w} by ${img.h} px` : ''}.${social.draftStill ? ' Animated pictures are kept as a still.' : ''}`);
   } catch { toast('That file could not be read as a picture.'); }
   render();
 });
@@ -615,6 +620,9 @@ document.addEventListener('submit', async e => {
     if (social.sending.has('post')) return;
     const body = f.body.value.trim();
     if (!body && !social.draftImg && !social.draftCombo && !social.draftLinks.length) { toast('Write something, add a picture or attach a combo.'); return; }
+    // The box takes no more than its limit from the keyboard, but a draft the page put back can be longer.
+    if (f.body.value.length > f.body.maxLength) { showErr('compose-err', `A post holds ${f.body.maxLength} characters. This one has ${f.body.value.length}.`, [f.body]); f.body.focus(); return; }
+    showErr('compose-err', '');
     const gen = social.gen, send = { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo, links: social.draftLinks };
     setSending('post', true);
     const r = await api('posts', 'POST', send, { 'Idempotency-Key': onceKey('post', send) });
@@ -624,7 +632,7 @@ document.addEventListener('submit', async e => {
     delete social.keys.post;
     social.draftBody = ''; social.draftImg = ''; social.draftStill = false; social.draftTags = []; social.draftCombo = null; social.draftLinks = []; social.linkOffer = ''; social.pickOpen = false; leaveCompose();
     // With the cursor resting in a comment box the page is not redrawn, so the sent text is cleared here: left in place it invites a second Post.
-    if (f.isConnected) f.body.value = '';
+    if (f.isConnected) { f.body.value = ''; recount(f.body); }
     Object.assign(social.users, r.data.users);
     const made = r.data.posts[0];
     if (social.key !== 'all') social.stale = true; else if (!social.posts.some(p => p.id === made.id)) social.posts.unshift(made);
@@ -633,7 +641,7 @@ document.addEventListener('submit', async e => {
     e.preventDefault();
     const id = Number(f.dataset.id), parentId = Number(f.dataset.parent || 0), body = f.body.value.trim(), k = f.dataset.k;
     if (social.sending.has(k)) return;
-    if (!body) { toast('Write something first.'); f.body.focus(); return; }
+    if (!body) { toast('Write something first.'); f.body.setAttribute('aria-invalid', 'true'); f.body.focus(); return; }
     const gen = social.gen, send = { body, parentId };
     setSending(k, true);
     const r = await api(`posts/${id}/comments`, 'POST', send, { 'Idempotency-Key': onceKey(k, send) });
@@ -659,7 +667,7 @@ document.addEventListener('submit', async e => {
     e.preventDefault();
     const id = Number(f.dataset.id), body = f.body.value.trim(), k = f.dataset.k;
     if (social.sending.has(k)) return;
-    if (!body) { toast('Write something first.'); f.body.focus(); return; }
+    if (!body) { toast('Write something first.'); f.body.setAttribute('aria-invalid', 'true'); f.body.focus(); return; }
     const gen = social.gen;
     setSending(k, true);
     const r = await api('comments/' + id, 'PUT', { body });

@@ -22,12 +22,23 @@ async function edLoad(prop) {
 function edCheck() { ed.checks = checkCatalog(ed.draft); }
 const msgsFor = (path, exact) => [...ed.checks.errs.map(m => ({ ...m, err: true })), ...ed.checks.warn].filter(m => exact ? m.path === path : m.path === path || m.path.startsWith(path + '.'));
 const msgHTML = path => `<span class="ed-msg" data-path="${esc(path)}">${msgsFor(path, true).map(m => `<span class="${m.err ? 'bad' : 'warn'}">${esc(m.msg)}</span>`).join('')}</span>`;
+// A field with a problem written under it is marked invalid, so the problem is said with the field and
+// not only shown in red. The message sits inside the field's label and is read as part of its name.
+function edMark() {
+  for (const el of document.querySelectorAll('label .ed-msg')) {
+    const f = el.closest('label').querySelector('input, select, textarea');
+    if (f) el.querySelector('.bad') ? f.setAttribute('aria-invalid', 'true') : f.removeAttribute('aria-invalid');
+  }
+}
 // Updates the messages and buttons in place, so typing never loses its focus.
 function edRefreshChecks() {
   edCheck();
   for (const el of document.querySelectorAll('.ed-msg')) el.innerHTML = msgsFor(el.dataset.path, true).map(m => `<span class="${m.err ? 'bad' : 'warn'}">${esc(m.msg)}</span>`).join('');
+  edMark();
   for (const el of document.querySelectorAll('.ed-skill')) el.classList.toggle('has-err', ed.checks.errs.some(m => m.path.startsWith(`skills.${el.dataset.i}.`) || m.path === `skills.${el.dataset.i}`));
-  const sum = $('#ed-sum'); if (sum) sum.innerHTML = edSummary();
+  // The count of problems is a live region: it is written again only when it changed, so typing that
+  // changes nothing says nothing.
+  const sum = $('#ed-sum'), now = edSummary(); if (sum && sum.dataset.now !== now) { sum.innerHTML = now; sum.dataset.now = now; }
   const save = $('[data-act=ed-save]'); if (save) save.disabled = !ed.dirty;
 }
 function edSummary() {
@@ -102,7 +113,7 @@ function edPhasesView() {
 function edJSONView() {
   return `<div class="card stack" style="gap:8px"><p class="small muted">The whole catalog, for what the forms do not cover: references, the week-by-week track and aliases. Apply checks it like any change.</p>
     <textarea id="ed-json" rows="24" spellcheck="false" class="mono" aria-label="Catalog as JSON">${esc(JSON.stringify(ed.draft, null, 1))}</textarea>
-    <p class="form-err" id="ed-json-err" role="alert" hidden></p><div><button class="btn" data-act="ed-json">Apply</button></div></div>`;
+    <p class="form-err" id="ed-json-err" role="alert"></p><div><button class="btn" data-act="ed-json">Apply</button></div></div>`;
 }
 function edReviewView() {
   if (ed.dirty) return `<div class="card"><p class="small">Save the draft first, so the review matches what will be published.</p><button class="btn primary" data-act="ed-save" style="margin-top:10px">Save draft</button></div>`;
@@ -139,10 +150,11 @@ adminMaps = () => {
     if (!ed.busy) { ed.busy = true; edLoad(prop).finally(() => { ed.busy = false; }); }
     return '<div class="card"><div class="empty small">Loading the skill map…</div></div>';
   }
+  queueMicrotask(edMark); // once the page that asked for this view has drawn it
   const D = ed.data, view = ED_VIEWS.find(v => v[0] === ed.view) ? ed.view : 'skills';
   const body = { skills: edSkillsView, branches: edBranchesView, phases: edPhasesView, json: edJSONView, review: edReviewView, history: edHistoryView }[view]();
   return `<div class="row wrap" style="gap:8px;margin-bottom:12px"><div class="seg" role="group" aria-label="Prop">${PROPS.map(p => `<a class="${p.id === prop ? 'on' : ''}" href="#/admin/maps/${p.id}">${esc(p.name)}</a>`).join('')}</div>
-      <span class="grow"></span><span id="ed-sum" class="row" style="gap:6px">${edSummary()}</span></div>
+      <span class="grow"></span><span id="ed-sum" class="row" role="status" data-now="${esc(edSummary())}" style="gap:6px">${edSummary()}</span></div>
     ${D.shippedUpdate ? `<p class="notice" style="margin-bottom:12px">Flowa was updated with a newer version of this map than the one published here. <button class="btn sm" data-act="ed-shipped">Load it as the draft</button></p>` : ''}
     <div class="card ed-bar"><span class="small grow">Published revision ${D.rev}${D.draft ? ' · a saved draft is open' : ''}</span>
       <button class="btn sm" data-act="ed-save" ${ed.dirty ? '' : 'disabled'}>Save draft</button>${D.draft || ed.dirty ? '<button class="btn sm" data-act="ed-discard">Discard draft</button>' : ''}</div>
@@ -198,7 +210,7 @@ document.addEventListener('click', async e => {
       ed.draft.branches.push({ k, name: '', blurb: '' }); edTouch(); render(); break;
     }
     case 'ed-json': {
-      try { ed.draft = JSON.parse($('#ed-json').value); } catch (err) { const el = $('#ed-json-err'); el.textContent = 'Not valid JSON: ' + err.message; el.hidden = false; break; }
+      try { ed.draft = JSON.parse($('#ed-json').value); } catch (err) { showErr('ed-json-err', 'Not valid JSON: ' + err.message, [$('#ed-json')]); break; }
       edTouch(); render(); toast('Applied. Check the problems, then save the draft.'); break;
     }
     case 'ed-save': await edSave(); break;

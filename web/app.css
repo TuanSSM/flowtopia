@@ -104,6 +104,8 @@ svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor;
 .nav-pct { margin-left: auto; font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .side-foot { margin-top: auto; padding-top: 14px; }
 .side-staff { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); } .side-staff .nav-h { padding-top: 0; }
+.side-menu { display: contents; }
+.sync[hidden] { display: none; }
 .sync { display: flex; align-items: center; gap: 8px; padding: 8px 10px 2px; font-size: 12px; color: var(--ink-3); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none; }
 .sync.saving .dot { background: var(--accent); }
@@ -310,7 +312,19 @@ a.chip:hover, button.chip:hover { background: var(--hover); text-decoration: non
 .map-thumb i { width: 7px; height: 7px; border-radius: 2px; background: var(--accent); }
 .auth { max-width: 400px; margin: 24px auto; display: grid; gap: 14px; }
 .form-err { color: var(--bad); font-size: 13px; }
-.form-err[hidden] { display: none; }
+/* The place for an error stays on the page while it is empty, so a screen reader hears what is put into it;
+   taken out of the flow, it leaves no gap in the form. */
+.form-err:empty { position: absolute; margin: 0; }
+[aria-invalid=true]:not([type=checkbox]):not([type=radio]) { border-color: var(--bad); }
+/* The room left in a text box. It is pointed at by the box, which works while it is not drawn. */
+.count { flex: none; }
+.count:empty { display: none; }
+.count.over { color: var(--bad); }
+.modal-box > .count, .cmt-form > .count { display: block; flex-basis: 100%; text-align: right; margin-top: 4px; }
+.modal-box > .count:empty, .cmt-form > .count:empty { display: none; }
+/* The counter of a comment box takes a line of its own under the box; the box keeps the row it had. */
+.cmt-form { flex-wrap: wrap; }
+.cmt-form input { flex: 1 1 0; width: auto; min-width: 0; }
 .span-2 { grid-column: 1 / -1; }
 .chooser { max-width: 820px; }
 input[type=password] { width: 100%; height: 36px; padding: 0 10px; background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-s); font-size: 13.5px; }
@@ -370,6 +384,8 @@ button:disabled { opacity: .6; cursor: default; }
 .pal-p { flex: none; font-size: 11.5px; color: var(--ink-3); }
 .pal-hint { padding: 8px 16px 10px; border-top: 1px solid var(--line); color: var(--ink-3); }
 .tip { position: fixed; z-index: 80; pointer-events: none; padding: 5px 9px; border-radius: 7px; background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 520; white-space: nowrap; }
+/* Words for a screen reader only: a small box nothing can be seen of. */
+.say { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }   /* placed, or it would sit under the page and make it 1 px taller than the window */
 .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 90; padding: 9px 15px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 13px; font-weight: 520; box-shadow: var(--shadow); max-width: calc(100vw - 32px); }
 
 @media (max-width: 1080px) {

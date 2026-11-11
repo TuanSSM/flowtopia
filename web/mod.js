@@ -24,8 +24,8 @@ function openReport(kind, id, what) {
     <div class="row"><h2 id="rep-t" class="grow">Report ${esc(what)}</h2><button type="button" class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
     <p class="small muted" style="margin-top:4px">A moderator will look at it. The person you report is not told who reported them.</p>
     <div class="stack" role="radiogroup" aria-label="What is wrong with it" style="gap:6px;margin-top:12px">${REASONS.map(([k, n]) => `<label class="check"><input type="radio" name="reason" value="${k}" required><span>${n}</span></label>`).join('')}</div>
-    <label class="field" style="margin-top:10px">Anything the moderator should know (optional)<textarea name="note" maxlength="500" rows="2"></textarea></label>
-    <p class="form-err" id="rep-err" role="alert" hidden></p>
+    <label class="field" style="margin-top:10px">Anything the moderator should know (optional)<textarea name="note" ${countAttrs('rep-count', '', 500)} rows="2"></textarea></label>${countHTML('rep-count', '', 500)}
+    <p class="form-err" id="rep-err" role="alert"></p>
     <div class="row" style="margin-top:12px;justify-content:flex-end"><button type="button" class="btn" data-act="modal-close">Cancel</button><button class="btn primary" type="submit" disabled>Send report</button></div></form>`;
   $('#report-form input').focus();
 }
@@ -93,8 +93,8 @@ function openAction(d) {
     <div class="row"><h2 id="act-t" class="grow">${esc(title)}</h2><button type="button" class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
     <p class="small muted" style="margin-top:4px">${help}</p>
     ${timed ? `<div class="seg" role="radiogroup" aria-label="For how long" style="margin-top:12px;flex-wrap:wrap">${DURATIONS.map(([k, n], i) => `<label class="seg-r"><input type="radio" name="dur" value="${k}" ${i === 1 ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>` : ''}
-    <label class="field" style="margin-top:12px">Reason, shown to them<textarea name="reason" maxlength="300" rows="2" required></textarea></label>
-    <p class="form-err" id="act-err" role="alert" hidden></p>
+    <label class="field" style="margin-top:12px">Reason, shown to them<textarea name="reason" ${countAttrs('act-count', '', 300)} rows="2" required></textarea></label>${countHTML('act-count', '', 300)}
+    <p class="form-err" id="act-err" role="alert"></p>
     <div class="row" style="margin-top:12px;justify-content:flex-end"><button type="button" class="btn" data-act="modal-close">Cancel</button><button class="btn primary" type="submit">${esc(title.split(' ')[0])}</button></div></form>`;
   $('#action-form textarea').focus();
 }
@@ -308,14 +308,14 @@ document.addEventListener('submit', async e => {
   if (f.id === 'report-form') {
     e.preventDefault();
     const r = await api('reports', 'POST', { kind: f.dataset.kind, id: Number(f.dataset.id), reason: f.reason.value, note: f.note.value });
-    if (!r.ok) { const el = $('#rep-err'); el.textContent = r.error; el.hidden = false; return; }
+    if (!r.ok) { showErr('rep-err', r.error, errFields(f, r.error, [[/\bnote\b/i, ['note']]])); return; }
     closeModal(); toast('Thank you. A moderator will look at it.');
   } else if (f.id === 'action-form') {
     e.preventDefault();
     const dd = f.dataset, body = { action: dd.do, kind: dd.kind, id: Number(dd.id), reason: f.reason.value };
     if (f.dur) { const h = DURATIONS.find(x => x[0] === f.dur.value)[2]; body.until = new Date(Date.now() + h * 36e5).toISOString().replace(/\.\d+Z$/, 'Z'); }
     const r = await api('mod/actions', 'POST', body);
-    if (!r.ok) { const el = $('#act-err'); el.textContent = r.error; el.hidden = false; return; }
+    if (!r.ok) { showErr('act-err', r.error, errFields(f, r.error, [[/\breason\b/i, ['reason']]])); return; }
     closeModal(); toast('Done. They have been told.'); refreshAfterMod();
   } else if (f.id === 'audit-form') {
     e.preventDefault();

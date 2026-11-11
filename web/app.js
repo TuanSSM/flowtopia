@@ -95,10 +95,14 @@ function normalize(s) {
 }
 function setSync(v) {
   syncState = v;
-  const el = $('#sync');
-  if (!el) return;
-  el.className = 'sync ' + (v === 'ok' ? '' : v);
-  el.lastElementChild.textContent = { ok: 'All changes saved', saving: 'Saving…', err: 'Not saved, retrying' }[v];
+  drawSync();
+}
+// The note under the menu. It is a live region that stays on the page, so only its words are changed, and
+// only when they differ: a screen reader then says each change once.
+function drawSync() {
+  const el = $('#sync'), words = { ok: 'All changes saved', saving: 'Saving…', err: 'Not saved, retrying' }[syncState];
+  el.hidden = !me; el.className = 'sync ' + (syncState === 'ok' ? '' : syncState);
+  if (el.lastElementChild.textContent !== (me ? words : '')) el.lastElementChild.textContent = me ? words : '';
 }
 function commit() {
   if (!me) { render(); return; }
@@ -632,14 +636,14 @@ const pageOff = what => `<div class="empty">${what} is turned off on this Flowa.
 function renderSide(route) {
   const a = (href, ic, label, on) => `<a class="nav-a ${on ? 'on' : ''}" href="${href}" ${on ? 'aria-current="page"' : ''}>${icon(ic)}${label}</a>`;
   const curId = route[0] || 'dashboard';
-  const sync = () => `<div id="sync" class="sync ${syncState === 'ok' ? '' : syncState}"><span class="dot"></span><span>${{ ok: 'All changes saved', saving: 'Saving…', err: 'Not saved, retrying' }[syncState]}</span></div>`;
+  drawSync();
   // A new member has no props yet, so nothing else in the menu would open: it lists only what does.
   if (me && !me.onboarded) {
     const on = curId === 'profile';
-    $('#side').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
+    $('#menu').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
     <a class="nav-profile ${on ? 'on' : ''}" href="#/profile" ${on ? 'aria-current="page"' : ''}>${avatarHTML(me)}<span class="grow"><b>${esc(me.displayName || me.username)}</b><span class="tiny">@${esc(me.username)}</span></span></a>
     ${a('#/', 'home', 'Choose your props', !on && curId !== 'settings')}
-    <div class="side-foot">${a('#/settings', 'gear', 'Settings', curId === 'settings')}${sync()}</div>`;
+    <div class="side-foot">${a('#/settings', 'gear', 'Settings', curId === 'settings')}</div>`;
     return;
   }
   const props = myProps().map(p => {
@@ -657,7 +661,7 @@ function renderSide(route) {
   const profile = me
     ? `<a class="nav-profile ${curId === 'profile' ? 'on' : ''}" href="#/profile" ${curId === 'profile' ? 'aria-current="page"' : ''}>${avatarHTML(me)}<span class="grow"><b>${esc(me.displayName || me.username)}</b><span class="tiny">@${esc(me.username)}</span></span></a>`
     : `<a class="nav-profile ${curId === 'signin' || curId === 'signup' ? 'on' : ''}" href="#/signin">${avatarHTML(null)}<span class="grow"><b>Sign in</b><span class="tiny">or create an account</span></span></a>`;
-  $('#side').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
+  $('#menu').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
     ${profile}
     ${a('#/', 'home', me ? 'Dashboard' : 'Welcome', curId === 'dashboard')}
     ${me && flags.community ? a('#/timeline', 'feed', 'Timeline', curId === 'timeline' || curId === 'post' || curId === 'u') : ''}
@@ -667,8 +671,7 @@ function renderSide(route) {
     ${me && flags.game ? a('#/achievements', 'trophy', 'Achievements', curId === 'achievements') : ''}
     <div class="nav-h">Props</div>
     ${props}
-    <div class="side-foot">${staff.length ? `<div class="side-staff"><div class="nav-h">Staff</div>${staff.map(([n, h, ic]) => h === '#/mod' ? a(h, ic, `${n}${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : h === '#/admin' ? a(h, ic, n, curId === 'admin') : `<a class="nav-a" href="${esc(h)}" rel="noopener noreferrer">${icon(ic)}${n}</a>`).join('')}</div>` : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}
-    ${me ? sync() : ''}</div>`;
+    <div class="side-foot">${staff.length ? `<div class="side-staff"><div class="nav-h">Staff</div>${staff.map(([n, h, ic]) => h === '#/mod' ? a(h, ic, `${n}${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : h === '#/admin' ? a(h, ic, n, curId === 'admin') : `<a class="nav-a" href="${esc(h)}" rel="noopener noreferrer">${icon(ic)}${n}</a>`).join('')}</div>` : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}</div>`;
 }
 // The pages for the people who run this Flowa, for the menu and the search: the moderation queue, the admin
 // area, and for admins the start page of the machine itself when the server names one (FLOWA_HOME_URL).
@@ -763,6 +766,13 @@ let toastT;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg;
   clearTimeout(toastT); toastT = setTimeout(() => t.textContent = '', 4500);
+}
+// Said, not shown: for what a person who sees the page needs no words for, such as the room left in a text
+// box or a tag joining a draft. Polite, so it waits for the screen reader to finish its sentence.
+let sayT;
+function say(msg) {
+  const t = $('#say'); t.textContent = msg;
+  clearTimeout(sayT); sayT = setTimeout(() => t.textContent = '', 4500);
 }
 
 /* ---------- command palette ---------- */
