@@ -73,18 +73,18 @@ substitute for listening with a screen reader, which has not been done yet.
 Text, icons and the edges of fields stand out from what is behind them in both themes: 4.5:1 for text,
 3:1 for large text, icons, the edge of a field and the ring around a chosen option. `node test/contrast.js`
 reads this from `web/app.css` in lint, hover and focus included, and fails on a colour, a background, a
-tint or a fade it has not been told how to place. It reads rules inside `@media`, `@supports` and
-`@layer` where they stand, and a rule that such a block changes is checked outside the block and inside
-it. It places a colour by its own rule, its token or a table, never by matching selectors against a
-page, so it is a first net and not the judge. It does not see which rules meet on one element, a
-state shown by a tint alone (the chosen entry of the menu or of a list), or a state marked by a
-border written whole on a rule of one class, which it takes for the frame of a box. It also reads
-the CSS the stylesheet uses today and not all of CSS: an edge in a colour it cannot read (a named
-colour, `hsl()`), a mark written as a logical border or as the second ring of a list, nested rules,
-and a token changed outside `:root` pass unseen for now. `test/browser/contrast.py` reads the same
-from the computed styles of 58 stops in each theme, about 18,500 pairs of colours on Chromium, and
-fails when something cannot be judged for a reason it was not told of. Neither judges what is drawn
-over a picture, a gradient or the demo canvas; the walk counts those as skipped.
+tint or a fade it has not been told how to place. It reads the CSS this stylesheet is written in, not
+all of CSS, and where it cannot read it fails and says what to write instead: a colour it cannot turn
+into numbers, a nested rule, a token set outside the three theme blocks, a property that paints and
+is not one it places. Where it refuses something sound, a table in the script allows it. It places a
+colour by its own rule, its token or a table, never by matching selectors against a page, so it is a
+first net and not the judge: it does not see which rules meet on one element, a state shown by a tint
+alone (the chosen entry of the menu or of a list), a state marked by a border written whole on a rule
+of one class, or a class or colour a script puts on an element. `test/browser/contrast.py` is the
+judge: it reads the same from the computed styles of 58 stops in each theme, about 18,500 pairs of
+colours on Chromium, fails when something cannot be judged for a reason it was not told of, and holds
+what it counts as hidden or dimmed behind a dialog to the stops that open one. Neither judges what is
+drawn over a picture, a gradient or the demo canvas; the walk counts those as skipped.
 
 Every field has a label bound to it: a `<label>` around it or pointing at it, or an `aria-label` where a
 visible label would be wrong. A placeholder or a title is not a label. An error under a form is put into
