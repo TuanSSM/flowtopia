@@ -8,7 +8,7 @@
 //   colours used there). That covers each rule that sets such a colour and no background.
 // - A rule that sets a colour and a background is one pair, checked as written.
 // - A rule that sets any other colour, or one over a tint, is listed below with what it is drawn on
-//   (ON). A rule that is in none of these fails: a new colour cannot slip by. The same holds for a new
+//   (ON). A rule that is in none of these fails. The same holds for a new
 //   background, a tint without what is under it, a fade, a filter, a ring or border that marks a state,
 //   the edge of a field and a colour set in a template.
 // - A rule inside @media, @supports or @layer is read where it stands. Where such a block changes

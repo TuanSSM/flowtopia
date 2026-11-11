@@ -64,7 +64,7 @@ Commits title of the category's type. An item is checked only when its DoD holds
   and a background of its own is checked as written, hover included; field edges, focus rings and
   the ring around a chosen option reach 3:1. A rule whose colour, background, fade, filter or state
   ring it cannot place fails, and so does a colour in a template that is not a colour for words.
-  533 checks.
+  541 checks.
   `test/browser/contrast.py` is the `integration (contrast)` suite. It first proves its arithmetic
   on pieces with known answers (black on white 21:1, #777 on white 4.48:1, half white over black,
   the size where text counts as large, a background from an ancestor, a faded parent), then walks

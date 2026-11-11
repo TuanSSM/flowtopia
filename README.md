@@ -76,9 +76,12 @@ reads this from `web/app.css` in lint, hover and focus included, and fails on a 
 tint or a fade it has not been told how to place. It reads rules inside `@media`, `@supports` and
 `@layer` where they stand, and a rule that such a block changes is checked outside the block and inside
 it. It places a colour by its own rule, its token or a table, never by matching selectors against a
-page, so three things are not seen by it: which rules meet on one element, a state shown by a tint
-alone (the chosen entry of the menu or of a list), and a state marked by a border written whole on a
-rule of one class, which it takes for the frame of a box. `test/browser/contrast.py` reads the same
+page, so it is a first net and not the judge. It does not see which rules meet on one element, a
+state shown by a tint alone (the chosen entry of the menu or of a list), or a state marked by a
+border written whole on a rule of one class, which it takes for the frame of a box. It also reads
+the CSS the stylesheet uses today and not all of CSS: an edge in a colour it cannot read (a named
+colour, `hsl()`), a mark written as a logical border or as the second ring of a list, nested rules,
+and a token changed outside `:root` pass unseen for now. `test/browser/contrast.py` reads the same
 from the computed styles of 58 stops in each theme, about 18,500 pairs of colours on Chromium, and
 fails when something cannot be judged for a reason it was not told of. Neither judges what is drawn
 over a picture, a gradient or the demo canvas; the walk counts those as skipped.
