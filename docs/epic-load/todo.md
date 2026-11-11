@@ -5,8 +5,9 @@ Category: perf. Size: M. Each item is one pull request or one commit of one, wit
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#32](https://github.com/TuanSSM/flowtopia/issues/32)). 0 of 6 items done.
-The queries are read and indexed; that box waits for the time on the Pi.
+**Status:** in progress (issue [#32](https://github.com/TuanSSM/flowtopia/issues/32)). 1 of 6 items done.
+The page's files are hashed and compressed. The queries are read and indexed; that box waits for the
+time on the Pi.
 
 - [ ] **Measure first.** Bytes and requests before first paint, and time to first demo frame, on
   the Pi over a throttled connection in `pages.py`, printed in the PR comment. DoD: the two numbers
@@ -14,9 +15,36 @@ The queries are read and indexed; that box waits for the time on the Pi.
 - [ ] **The figure on demand.** `web/figure3d.js` and `human.glb` are fetched when a demo first
   opens; the 2D figure draws until they arrive. DoD: no request for either on the dashboard; a demo
   still opens at once the second time.
-- [ ] **Hashed, precompressed assets.** The embedded files get a content hash in their name at
+- [x] **Hashed, precompressed assets.** The embedded files get a content hash in their name at
   build time, gzip and brotli variants, `Cache-Control: immutable`; `index.html` stays uncached.
   DoD: `TestStaticHashed`; a changed file gets a new name; the old name still serves for an hour.
+  Built: every embedded file but `index.html` and the catalogs answers under
+  `name.<16 hex of its SHA-256>.ext` with `immutable` for a year, and `index.html` (`no-cache`, with
+  an `ETag` that changes when any file it names does) is
+  rewritten by the server to name its 17 scripts, its style sheet and its icon that way, so no file
+  in `web/` changed. The 159 baked clips are already named by the hash of their bytes; the server
+  checks that and sends them as `immutable` under the name they have. Each file is sent as brotli,
+  gzip or as it is, by what the browser takes. The first load, counted as `index.html` and the 20
+  files it names, went from 426 KB to 139 KB with gzip and 120 KB with brotli, and a second visit
+  asks for two of the 21. The groups, the numbers and the reasons are in the README under
+  [Static files](../../README.md#static-files).
+  It differs from the plan's wording in two ways. Hashing and gzip happen when the server starts,
+  from the embedded bytes (147 ms for 188 files on a four-core x86 machine; the Pi logs its own
+  time), so `go run` and `go test` need nothing generated; only brotli is made at build time, by
+  `brotli.js`, because Go's standard library cannot write it. And "the old name still serves" is
+  kept to the letter for scripts and the style sheet: the build before leaves them in
+  `data/static-kept.json.gz`, and the new build sends those bytes under the old names for one hour
+  after it first started, to be kept five minutes and not for good, because a file in `data/` is
+  not trusted as the binary is. The icon's old name gets 404, for the same reason. Sending
+  the new file under the old name, or a redirect to it, was the cheaper choice and was not taken: a
+  page would then run scripts of two builds together. The page has no check of the version yet (the
+  service worker item below is to add it), so an old page keeps running old scripts until it is
+  reloaded, as it did before this change.
+  Left for later: the files the page's scripts fetch by name (`figure3d.js`, `assets/human.glb`,
+  `tour.js`, the three lists in `clips/`, `avatar-def.json`, `suggest-weights.json`) are compressed
+  but still asked about on each visit (a 304); hashed names for them need a change in those scripts,
+  which fits "The figure on demand" and the service worker. The catalogs come from the database
+  (414 KB for the five, sent as they are unless a proxy compresses them) and are not part of this.
 - [ ] **Clip index per prop.** `web/clips/index.json` split per prop, loaded with the catalog.
   DoD: opening the nunchaku map fetches no poi clip metadata.
 - [ ] **Service worker for the shell.** Caches `index.html`, the scripts, the styles and the

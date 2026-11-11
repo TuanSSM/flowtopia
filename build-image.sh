@@ -10,8 +10,11 @@
 # The same commit gives the same bytes: Go builds are reproducible with -trimpath, and every time stamp in
 # the image is the commit's (SOURCE_DATE_EPOCH), so the digest printed for a tag can be built again and
 # compared. For that reason no build record (provenance) is attached: it would carry the time of the build.
-# Needs Go, and Docker with buildx; --push needs a builder that can push more than one architecture (the
-# workflow makes one: docker buildx create --driver docker-container --use).
+# The page's files are compressed with brotli first (brotli.js) and compiled in with the rest. The copies
+# depend on the commit's files and on the brotli in Node, nothing else: copies another brotli made are made
+# again, so the same commit builds the same bytes wherever the same Node does (the workflow pins it).
+# Needs Go, Node, and Docker with buildx; --push needs a builder that can push more than one architecture
+# (the workflow makes one: docker buildx create --driver docker-container --use).
 set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/.local/go/bin:$PATH"
@@ -29,6 +32,8 @@ if [ "$mode" = --push ] && ! git diff --quiet HEAD; then
   echo "this checkout has changes that are not committed; an image pushed from it would not be what its commit builds" >&2
   exit 1
 fi
+command -v node >/dev/null || { echo "node is not installed; brotli.js needs it to compress the page's files before the binary is compiled" >&2; exit 1; }
+node brotli.js >&2
 commit=$(git rev-parse HEAD)
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 export SOURCE_DATE_EPOCH

@@ -4,9 +4,11 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -33,8 +35,10 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -53,6 +57,13 @@ import (
 
 //go:embed web
 var webFS embed.FS
+
+// brotliFS is what brotli.js wrote at build time: each file of web/ compressed, under the file's path
+// with the hash of its bytes added. The folder's .gitignore is its one file in git, so there is always
+// something to embed; a build that did not run the script has no brotli and serves gzip.
+//
+//go:embed all:brotli
+var brotliFS embed.FS
 
 const (
 	maxProgress = 512 << 10 // one progress document; a full map of notes is far smaller
@@ -4311,58 +4322,488 @@ func (a *app) seedAdmin(name, pw string) (int64, error) {
 	return id, err
 }
 
+/* ---------- static files ----------
+
+The page's files are compiled into the binary (web/). At start each one is hashed and compressed once;
+after that a request is a look in a table and a write. A file answers to two names:
+
+  - its own (/app.js), sent with an ETag and "no-cache": the browser keeps it, asks each time, and is
+    told 304 with no body while the file is the same. The page's scripts fetch by these names (the
+    clips and their lists, the 3D figure and its model, the tour, the avatar parts), and so do
+    bookmarks and the browser tests.
+  - its name with the first 16 hex characters of the SHA-256 of its bytes in it
+    (/app.0123456789abcdef.js), sent as "immutable" for a year: another file is another name, so the
+    browser never asks again. index.html is rewritten at start to name its scripts, its style sheet
+    and its icon this way.
+
+index.html is "no-cache" under its one name, and it is the only way to the hashed names. The web
+manifest stays under its own name too, because some browsers know an installed app by that address.
+A baked clip is already named by the hash of its bytes (sim/bake.js); that is checked here, and a clip
+that passes is sent as "immutable" under the name it has. The catalogs are not in the table:
+handleCatalogFile serves them from the database.
+
+gzip is made here, at start, from the embedded bytes. Brotli is made at build time by brotli.js into
+brotli/, because the standard library has no encoder for it; a build that did not run the script
+(go run, go test) has none and sends gzip, and a browser that takes neither gets the file as it is.
+A compressed copy is used only when it is at least a tenth smaller than the file.
+
+After a deploy, a page loaded from the build before may still ask for that build's hashed names: a tab
+the browser restores from its cache is not asked whether its page is still current. The new binary
+does not have those bytes. So each build writes the files its page names into the data folder
+(keptName), and the build after it answers them from there for keepOldFor after it first started,
+then says 404. What is sent is the old file, so an old page gets scripts that belong together and
+never a mix of two builds.
+
+The data folder can be written to, the binary cannot, so the record is not believed like the binary
+is. Only scripts and style sheets are taken from it, each only under the name its own bytes hash to:
+never a page, and not the icon, which opened by itself is a document that can run a script. An old
+name is sent with the CSP of an API answer and for a browser to keep for five minutes, not for good,
+so what a record said once is gone with the record. */
+
+const (
+	cacheAsk     = "no-cache"                            // keep it, and ask each time whether it changed
+	cacheForGood = "public, max-age=31536000, immutable" // one year, and never ask
+	cacheOld     = "private, max-age=300"                // an old name: this browser alone, for five minutes
+	keepOldFor   = time.Hour                             // how long the names of the build before are answered
+	keptName     = "static-kept.json.gz"                 // the record of those builds, in the data folder
+	keptBuilds   = 3                                     // earlier builds answered at once, when deploys follow each other within the hour
+	keptLimit    = 32 << 20                              // bytes read from the record at most
+)
+
+// asset is one file as it is sent.
 type asset struct {
-	body  []byte
+	body  []byte // the file
+	gz    []byte // gzip of it; nil when that is not a tenth smaller
+	br    []byte // brotli of it, from brotli.js; nil when the build has none
 	ctype string
-	etag  string
+	hash  string // the first 16 hex characters of the SHA-256 of body: the ETag, and the part in the hashed name
 }
 
-func loadAssets() (map[string]asset, error) {
-	out := map[string]asset{}
-	err := fs.WalkDir(webFS, "web", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
+// kept is a file of an earlier build and when its name stops being answered.
+type kept struct {
+	*asset
+	until time.Time
+}
+
+// static is the table the page's files are served from. Nothing in it changes after start.
+type static struct {
+	plain  map[string]*asset // by the file's own name, "/app.js"
+	hashed map[string]*asset // by its name with the hash in it, "/app.0123456789abcdef.js"
+	fixed  map[string]bool   // own names that are the hash of the bytes already (the baked clips)
+	old    map[string]kept   // hashed names of earlier builds, from the data folder
+	told   []string          // the hashed names index.html names
+	build  string            // the hash of index.html as it is sent: it changes when any file it names does
+	now    func() time.Time  // the clock, for the hour an old name lasts; a test sets it
+	nBr    int               // files with a brotli copy
+	saved  [3]int            // bytes of all files: as they are, with gzip where it is used, with brotli where it is used
+}
+
+// staticTypes are the content types of the kinds of file in web/. A host's own list of types is not
+// asked for these, so the answer is the same on every machine.
+var staticTypes = map[string]string{
+	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+	".json": "application/json", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json",
+	".glb": "model/gltf-binary",
+}
+
+// packed are the kinds of file that are compressed already; compressing them again gains nothing.
+var packed = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".avif": true,
+	".woff": true, ".woff2": true, ".mp4": true, ".webm": true}
+
+// worth says whether a compressed copy of z bytes is worth sending instead of the n bytes of the file.
+func worth(z, n int) bool { return z > 0 && z*10 <= n*9 }
+
+// newAsset hashes one file and makes its gzip. name is its path, for the content type.
+func newAsset(name string, body []byte) *asset {
+	sum := sha256.Sum256(body)
+	ext := path.Ext(name)
+	f := &asset{body: body, hash: hex.EncodeToString(sum[:8]), ctype: staticTypes[ext]}
+	if f.ctype == "" {
+		f.ctype = mime.TypeByExtension(ext)
+	}
+	if f.ctype == "" {
+		f.ctype = http.DetectContentType(body)
+	}
+	if !packed[ext] {
+		var b bytes.Buffer
+		zw := gzip.NewWriter(&b) // the default level: the best one takes twice as long for half a percent fewer bytes
+		zw.Write(body)
+		zw.Close()
+		if worth(b.Len(), len(body)) {
+			f.gz = b.Bytes()
 		}
-		b, err := webFS.ReadFile(p)
-		if err != nil {
-			return err
+	}
+	return f
+}
+
+// hashedName puts a file's hash into its name, before the extension: app.js becomes app.<hash>.js.
+func hashedName(name, hash string) string {
+	ext := path.Ext(name)
+	return strings.TrimSuffix(name, ext) + "." + hash + ext
+}
+
+// keepable says whether a file may go into the record of a build and be taken from it: a script or a
+// style sheet under its hashed name, with the bytes that hash stands for.
+func keepable(name string, body []byte) bool {
+	m := keptForm.FindStringSubmatch(name)
+	if m == nil {
+		return false
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:8]) == m[1]
+}
+
+var (
+	keptForm = regexp.MustCompile(`\.([0-9a-f]{16})\.(js|css)$`)
+	// A file index.html asks for: src="..." or href="...".
+	pageRef = regexp.MustCompile(`\b(src|href)="([^"]*)"`)
+	// A baked clip: sim/bake.js names it by the first 12 hex characters of the SHA-1 of its JSON.
+	clipName = regexp.MustCompile(`^clips/([0-9a-f]{12})\.json$`)
+)
+
+// selfNamed says whether a file is a baked clip that is named by the hash of its own bytes.
+func selfNamed(name string, body []byte) bool {
+	m := clipName.FindStringSubmatch(name)
+	if m == nil {
+		return false
+	}
+	sum := sha1.Sum(body) // not for secrecy: it is the hash sim/bake.js names the file by
+	return hex.EncodeToString(sum[:6]) == m[1]
+}
+
+// newStatic builds the table from the page's files and, when the build made them, their brotli copies
+// (br holds <path>.<hash of the file>.br; nil for none). A brotli copy of other bytes than the file's
+// has another hash in its name and is never found, so a stale one cannot be sent.
+func newStatic(web, br fs.FS) (*static, error) {
+	s := &static{plain: map[string]*asset{}, hashed: map[string]*asset{}, fixed: map[string]bool{}, old: map[string]kept{}, now: time.Now}
+	var names []string
+	err := fs.WalkDir(web, ".", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && !strings.HasPrefix(p, "catalog/") {
+			names = append(names, p)
 		}
-		sum := sha256.Sum256(b)
-		ct := mime.TypeByExtension(filepath.Ext(p))
-		if ct == "" {
-			ct = http.DetectContentType(b)
-		}
-		out["/"+strings.TrimPrefix(p, "web/")] = asset{b, ct, `"` + hex.EncodeToString(sum[:8]) + `"`}
-		return nil
+		return err
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	// Compressing is most of the work; each file is its own job, one job per processor at a time.
+	files, errs := make([]*asset, len(names)), make([]error, len(names))
+	var wg sync.WaitGroup
+	turn := make(chan struct{}, runtime.NumCPU())
+	for i, p := range names {
+		turn <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-turn }()
+			body, err := fs.ReadFile(web, p)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			f := newAsset(p, body)
+			if br != nil && !packed[path.Ext(p)] && p != "index.html" {
+				if z, err := fs.ReadFile(br, p+"."+f.hash+".br"); err == nil && worth(len(z), len(body)) {
+					f.br = z
+				}
+			}
+			files[i] = f
+		})
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	for i, p := range names {
+		f := files[i]
+		s.plain["/"+p] = f
+		if p == "index.html" {
+			continue
+		}
+		s.hashed["/"+hashedName(p, f.hash)] = f
+		if selfNamed(p, f.body) {
+			s.fixed["/"+p] = true
+		}
+		s.count(f)
+	}
+	// The page, naming its files by their hashed names. A reference written another way (a leading
+	// slash, a query) is left as it is and keeps working under the plain name.
+	if page, ok := s.plain["/index.html"]; ok {
+		body := pageRef.ReplaceAllFunc(page.body, func(m []byte) []byte {
+			sub := pageRef.FindSubmatch(m)
+			ref := string(sub[2])
+			f, ok := s.plain["/"+ref]
+			if !ok || ref == "index.html" || path.Ext(ref) == ".webmanifest" {
+				return m
+			}
+			name := hashedName(ref, f.hash)
+			s.told = append(s.told, name)
+			return []byte(string(sub[1]) + `="` + name + `"`)
+		})
+		page = newAsset("index.html", body)
+		s.plain["/index.html"], s.build = page, page.hash
+		s.count(page)
+	}
+	return s, nil
 }
 
-func (a *app) handleStatic(assets map[string]asset) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if p == "/" {
-			p = "/index.html"
+// count adds one file to the sizes the start line reports.
+func (s *static) count(f *asset) {
+	gz, br := len(f.body), len(f.body)
+	if f.gz != nil {
+		gz, br = len(f.gz), len(f.gz)
+	}
+	if f.br != nil {
+		br = len(f.br)
+		s.nBr++
+	}
+	s.saved[0] += len(f.body)
+	s.saved[1] += gz
+	s.saved[2] += br
+}
+
+// keptBuild is the files one build's page names, as the record in the data folder holds them.
+type keptBuild struct {
+	Build string            `json:"build"`          // the hash of that build's index.html
+	Until time.Time         `json:"until,omitzero"` // when its names stop being answered; not set for the build that runs
+	Files map[string][]byte `json:"files"`          // hashed name, as the page writes it, to the file
+}
+
+// keepOld reads the record of earlier builds from the data folder, takes their files into the table
+// until their time, and writes the record back with this build in it for the one that comes next.
+// It returns how many old names it answers. An error costs old names and nothing else, and says
+// whose: a record that cannot be read, those of pages loaded before this start; one that cannot be
+// written, those of pages loaded from this build, after the next one starts.
+func (s *static) keepOld(dir string) (int, error) {
+	if s.build == "" {
+		return 0, nil
+	}
+	file := filepath.Join(dir, keptName)
+	builds, readErr := readKept(file)
+	if readErr != nil {
+		readErr = fmt.Errorf("the record of the build before cannot be read, so pages loaded before this start get 404 for their old files: %w", readErr)
+	}
+	now, changed, listed := s.now(), readErr != nil, false
+	var next []keptBuild
+	for _, b := range builds {
+		if b.Build == s.build {
+			listed = listed || b.Until.IsZero()
+			continue
 		}
-		f, ok := assets[p]
-		if !ok {
+		// The hour starts when the build after it first starts, and a restart does not start it again.
+		// A time further away than that was written by a clock that was wrong, or not by this program.
+		if latest := now.Add(keepOldFor); b.Until.IsZero() || b.Until.After(latest) {
+			b.Until, changed = latest, true
+		}
+		if !b.Until.After(now) {
+			changed = true
+			continue
+		}
+		next = append(next, b)
+	}
+	slices.SortFunc(next, func(a, b keptBuild) int { return b.Until.Compare(a.Until) })
+	if len(next) > keptBuilds {
+		next, changed = next[:keptBuilds], true
+	}
+	// The builds are in order, the one answered longest first, so a name two of them share keeps
+	// the later time.
+	for _, b := range next {
+		for name, body := range b.Files {
+			_, current := s.hashed["/"+name]
+			if _, twice := s.old["/"+name]; current || twice || !keepable(name, body) {
+				continue
+			}
+			s.old["/"+name] = kept{newAsset(name, body), b.Until}
+		}
+	}
+	if listed && !changed {
+		return len(s.old), readErr
+	}
+	mine := keptBuild{Build: s.build, Files: map[string][]byte{}}
+	for _, name := range s.told {
+		if body := s.hashed["/"+name].body; keepable(name, body) {
+			mine.Files[name] = body
+		}
+	}
+	var out bytes.Buffer
+	zw := gzip.NewWriter(&out)
+	err := json.NewEncoder(zw).Encode(append(next, mine))
+	if err == nil {
+		err = zw.Close()
+	}
+	if err == nil {
+		err = writeAtomic(file, out.Bytes())
+	}
+	if err != nil {
+		err = fmt.Errorf("this build's page files cannot be written for the build after it, so pages loaded from this one will get 404 for their old files after the next deploy: %w", err)
+	}
+	return len(s.old), errors.Join(readErr, err)
+}
+
+// readKept reads the record of earlier builds; none yet is not an error.
+func readKept(file string) ([]keptBuild, error) {
+	f, err := os.Open(file)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	var builds []keptBuild
+	if err := json.NewDecoder(io.LimitReader(zr, keptLimit)).Decode(&builds); err != nil {
+		return nil, err
+	}
+	return builds, nil
+}
+
+// loadStatic builds the table from the files compiled in, takes over the names of the build before,
+// and says in the log what it made and how long that took.
+func loadStatic(dataDir string) (*static, error) {
+	began := time.Now()
+	web, err := fs.Sub(webFS, "web")
+	if err != nil {
+		return nil, err
+	}
+	br, err := fs.Sub(brotliFS, "brotli")
+	if err != nil {
+		return nil, err
+	}
+	s, err := newStatic(web, br)
+	if err != nil {
+		return nil, err
+	}
+	old, err := s.keepOld(dataDir)
+	if err != nil {
+		for _, what := range strings.Split(err.Error(), "\n") { // reading and writing can both fail: a line each
+			log.Printf("static files: %s", what)
+		}
+	}
+	log.Printf("static files: %d hashed and compressed in %d ms: %d KB as they are, %d KB with gzip, %d KB with brotli (%d copies from the build); index.html names %d by hash, %d clips are named by their own; old names still answered: %d",
+		len(s.plain), time.Since(began).Milliseconds(), s.saved[0]/1000, s.saved[1]/1000, s.saved[2]/1000, s.nBr, len(s.told), len(s.fixed), old)
+	return s, nil
+}
+
+// find looks a path up: the file, and how long a browser may keep it. nil when there is none. An old
+// name is the one answer that did not come out of the binary; cacheOld tells handleStatic so.
+func (s *static) find(p string) (*asset, string) {
+	if p == "/" {
+		p = "/index.html"
+	}
+	if f, ok := s.plain[p]; ok {
+		if s.fixed[p] {
+			return f, cacheForGood
+		}
+		return f, cacheAsk
+	}
+	if f, ok := s.hashed[p]; ok {
+		return f, cacheForGood
+	}
+	if k, ok := s.old[p]; ok && s.now().Before(k.until) {
+		return k.asset, cacheOld
+	}
+	return nil, ""
+}
+
+// acceptsEncoding reads an Accept-Encoding header: whether brotli and gzip may be sent. A coding the
+// header gives q=0 may not, and "*" speaks for the codings it does not name.
+func acceptsEncoding(header string) (br, gz bool) {
+	q := map[string]float64{}
+	for _, part := range strings.Split(header, ",") {
+		name, params, _ := strings.Cut(part, ";")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			continue
+		}
+		weight := 1.0
+		for _, p := range strings.Split(params, ";") {
+			if k, v, ok := strings.Cut(p, "="); ok && strings.EqualFold(strings.TrimSpace(k), "q") {
+				f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+				if err != nil {
+					f = 0 // a weight that cannot be read is not a yes
+				}
+				weight = f
+			}
+		}
+		q[name] = weight
+	}
+	can := func(name string) bool {
+		if w, ok := q[name]; ok {
+			return w > 0
+		}
+		return q["*"] > 0
+	}
+	return can("br"), can("gzip") || can("x-gzip")
+}
+
+// etagIn says whether an If-None-Match header names the tag.
+func etagIn(header, tag string) bool {
+	for _, t := range strings.Split(header, ",") {
+		if t = strings.TrimPrefix(strings.TrimSpace(t), "W/"); t == tag || t == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// send answers with the file: brotli when the browser takes it and the build has it, else gzip, else
+// the file as it is. Each of the three has its own ETag. A request for a part of the file (Range) is
+// answered from the file as it is, where the positions mean what the browser thinks they mean.
+func (f *asset) send(w http.ResponseWriter, r *http.Request, cache string) {
+	h := w.Header()
+	h.Set("Content-Type", f.ctype)
+	h.Set("Cache-Control", cache)
+	h.Set("Vary", "Accept-Encoding")
+	var body []byte
+	enc := ""
+	if r.Header.Get("Range") == "" {
+		br, gz := acceptsEncoding(strings.Join(r.Header.Values("Accept-Encoding"), ","))
+		switch {
+		case br && f.br != nil:
+			body, enc = f.br, "br"
+		case gz && f.gz != nil:
+			body, enc = f.gz, "gzip"
+		}
+	}
+	if enc == "" {
+		// ServeContent does the rest: If-None-Match, Range, If-Range, HEAD and the length.
+		h.Set("ETag", `"`+f.hash+`"`)
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(f.body))
+		return
+	}
+	tag := `"` + f.hash + "-" + enc + `"`
+	h.Set("ETag", tag)
+	if etagIn(r.Header.Get("If-None-Match"), tag) {
+		h.Del("Content-Type")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	h.Set("Content-Encoding", enc)
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	if r.Method != http.MethodHead {
+		w.Write(body)
+	}
+}
+
+// handleStatic answers every path no other route takes: a file from the table with the page's CSP, or 404.
+func (a *app) handleStatic(s *static) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		f, cache := s.find(r.URL.Path)
+		if f == nil {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", f.ctype)
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("ETag", f.etag)
-		w.Header().Set("Content-Security-Policy", csp(a.flagsCached()["videoEmbeds"]))
-		if r.Header.Get("If-None-Match") == f.etag {
-			w.WriteHeader(http.StatusNotModified)
-			return
+		if cache != cacheOld { // an old name keeps the CSP every API answer has, which allows nothing
+			w.Header().Set("Content-Security-Policy", csp(a.flagsCached()["videoEmbeds"]))
 		}
-		w.Write(f.body)
+		f.send(w, r, cache)
 	}
 }
 
 // routes builds the HTTP handler: every API route, the static files, and the write guard.
-func (a *app) routes(assets map[string]asset) http.Handler {
+func (a *app) routes(st *static) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
 	mux.HandleFunc("GET /api/me", a.handleMe)
@@ -4403,7 +4844,7 @@ func (a *app) routes(assets map[string]asset) http.Handler {
 	mux.HandleFunc("POST /api/mod/actions", a.flagged("moderation", a.authed("", a.handleModAction)))
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /api/previews/{file}", a.authed("", a.handlePreviewImage))
-	mux.HandleFunc("GET /", a.handleStatic(assets))
+	mux.HandleFunc("GET /", a.handleStatic(st))
 	return a.logged(mux, a.secure(a.guard(mux)))
 }
 
@@ -4645,7 +5086,7 @@ func rootsPresent() bool {
 
 func main() {
 	listen := flag.String("listen", ":3169", "listen address")
-	dataDir := flag.String("data", "/data", "directory for backups")
+	dataDir := flag.String("data", "/data", "directory for backups and for the page files kept for the build after this one")
 	probe := flag.Bool("healthcheck", false, "ask the local server's /healthz, print the answer, and exit 0 if it is healthy")
 	showVersion := flag.Bool("version", false, "print the version this binary was built as, and exit")
 	flag.Parse()
@@ -4668,11 +5109,6 @@ func main() {
 		}
 		return
 	}
-
-	mime.AddExtensionType(".webmanifest", "application/manifest+json")
-	mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
-	mime.AddExtensionType(".css", "text/css; charset=utf-8")
-	mime.AddExtensionType(".svg", "image/svg+xml")
 
 	if err := os.MkdirAll(filepath.Join(*dataDir, "backups"), 0o755); err != nil {
 		log.Fatal(err)
@@ -4729,13 +5165,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	assets, err := loadAssets()
+	st, err := loadStatic(*dataDir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	a.reqLog.out = log.Writer()
-	srv := &http.Server{Addr: *listen, Handler: a.routes(assets), ReadHeaderTimeout: 5 * time.Second,
+	srv := &http.Server{Addr: *listen, Handler: a.routes(st), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

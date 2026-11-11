@@ -361,7 +361,7 @@ func TestHealthz(t *testing.T) {
 	a := newApp(db, t.TempDir())
 	a.hosts = []string{"example.com"}
 	a.version = "v9.9.9"
-	h := a.routes(map[string]asset{})
+	h := a.routes(staticOf(t, nil))
 
 	code, out := probe(t, h, "127.0.0.1:4000", nil)
 	if code != 503 || out["ok"] != false || out["database"] != false {
@@ -451,7 +451,7 @@ func TestRequestLog(t *testing.T) {
 	defer db.Close()
 	a := newApp(db, t.TempDir())
 	a.hosts = []string{"example.com"}
-	h := a.routes(map[string]asset{"/app.js": {body: []byte("let x=1"), ctype: "text/javascript", etag: `"e"`}})
+	h := a.routes(staticOf(t, map[string]string{"app.js": "let x=1"}))
 	req := func(method, path, body string, hdr map[string]string) *http.Request {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.RemoteAddr = "203.0.113.9:5000"

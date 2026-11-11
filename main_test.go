@@ -1,17 +1,31 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -415,4 +429,664 @@ func TestGate(t *testing.T) {
 			t.Errorf("%s: gateOpens(%d, %d) = %q, want %q", c.name, c.pairs, c.recent, got, c.want)
 		}
 	}
+}
+
+// staticOf builds the table of static files from files given by name, without brotli copies.
+func staticOf(t testing.TB, files map[string]string) *static {
+	t.Helper()
+	web := fstest.MapFS{}
+	for name, body := range files {
+		web[name] = &fstest.MapFile{Data: []byte(body)}
+	}
+	st, err := newStatic(web, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// gunzip unpacks a gzip body, or fails the test.
+func gunzip(t testing.TB, what string, b []byte) []byte {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("%s: not gzip: %v", what, err)
+	}
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("%s: gzip that does not unpack: %v", what, err)
+	}
+	return out
+}
+
+// sha1Name is the name sim/bake.js gives a clip with this JSON.
+func sha1Name(body string) string {
+	sum := sha1.Sum([]byte(body))
+	return hex.EncodeToString(sum[:6])
+}
+
+// TestStaticHashed: the page's files answer under a name with the hash of their bytes in it, for good
+// and compressed; index.html names them so and is asked for each time; a changed file gets a new name,
+// and the name it had goes on answering, with the bytes it had, for an hour after the next build starts.
+func TestStaticHashed(t *testing.T) {
+	// Nothing listens on port 1: the feature flags cannot be read, so the page's CSP is the plain one.
+	db, err := sql.Open("postgres", "postgres://x:x@127.0.0.1:1/x?sslmode=disable&connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := newApp(db, t.TempDir())
+	a.hosts = []string{"example.com"} // the Host httptest gives requests
+	const forGood = "public, max-age=31536000, immutable"
+	const forNow = "private, max-age=300" // an old name: five minutes in the one browser, never for good
+	ask := func(st *static, method, path string, hdr ...string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, path, nil)
+		for i := 0; i+1 < len(hdr); i += 2 {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+		w := httptest.NewRecorder()
+		a.routes(st).ServeHTTP(w, r)
+		return w
+	}
+	// answers checks the status and the headers every file carries, and that the length said is the length sent.
+	answers := func(what string, w *httptest.ResponseRecorder, status int, cache, encoding string) {
+		t.Helper()
+		h := w.Header()
+		if w.Code != status || h.Get("Cache-Control") != cache || h.Get("Content-Encoding") != encoding {
+			t.Fatalf("%s: status %d, Cache-Control %q, Content-Encoding %q; want %d, %q, %q", what, w.Code, h.Get("Cache-Control"), h.Get("Content-Encoding"), status, cache, encoding)
+		}
+		if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("X-Frame-Options") != "DENY" || h.Get("Vary") != "Accept-Encoding" || h.Get("ETag") == "" {
+			t.Fatalf("%s: headers %v; want nosniff, no framing, Vary: Accept-Encoding and an ETag", what, h)
+		}
+		if status == http.StatusOK && h.Get("Content-Length") != strconv.Itoa(w.Body.Len()) {
+			t.Fatalf("%s: Content-Length %q for a body of %d bytes", what, h.Get("Content-Length"), w.Body.Len())
+		}
+	}
+	gone := func(what string, w *httptest.ResponseRecorder) {
+		t.Helper()
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s: status %d with %d bytes, want 404", what, w.Code, w.Body.Len())
+		}
+	}
+	refs := func(page []byte) (out []string) {
+		for _, m := range regexp.MustCompile(`\b(?:src|href)="([^"]*)"`).FindAllSubmatch(page, -1) {
+			out = append(out, string(m[1]))
+		}
+		return out
+	}
+	hash16 := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:8]) }
+
+	// A page that names four files, and files it does not name, with brotli copies named as brotli.js
+	// names them. The server never unpacks brotli, so any bytes stand in for it here; node brotli.js
+	// --check is what shows that the real copies unpack to their files.
+	long := func(s string) string { return strings.Repeat(s+"\n", 40) }
+	page := `<!doctype html><link rel="icon" href="icon.svg"><link rel="manifest" href="manifest.webmanifest">` +
+		`<link rel="stylesheet" href="app.css"><script src="app.js"></script><a href="https://example.org/">out</a>`
+	clip := long(`{"clip":1}`)
+	files := func(appJS string) fstest.MapFS {
+		return fstest.MapFS{
+			"index.html":                        {Data: []byte(page)},
+			"app.js":                            {Data: []byte(appJS)},
+			"app.css":                           {Data: []byte(long("main { color: red }"))},
+			"icon.svg":                          {Data: []byte(long(`<svg xmlns="http://www.w3.org/2000/svg"/>`))},
+			"manifest.webmanifest":              {Data: []byte(`{"name":"Flowa"}`)},
+			"tiny.js":                           {Data: []byte("1")},
+			"photo.png":                         {Data: []byte(long("named like a picture"))},
+			"clips/index.json":                  {Data: []byte(long(`{"a":1}`))},
+			"clips/" + sha1Name(clip) + ".json": {Data: []byte(clip)},
+			"clips/0123456789ab.json":           {Data: []byte(long(`{"clip":2}`))},
+			"catalog/poi.json":                  {Data: []byte(`{}`)},
+		}
+	}
+	js1, js2 := long("let build = 1"), long("let build = 2")
+	web1, web2 := files(js1), files(js2)
+	brotli := fstest.MapFS{
+		"app.js." + hash16([]byte(js1)) + ".br":               {Data: []byte("brotli of build 1")},
+		"app.js." + hash16([]byte(js2)) + ".br":               {Data: []byte("brotli of build 2")},
+		"app.css.0000000000000000.br":                         {Data: []byte("brotli of an app.css that was")},
+		"photo.png." + hash16(web1["photo.png"].Data) + ".br": {Data: []byte("brotli of a picture")},
+		"tiny.js." + hash16([]byte("1")) + ".br":              {Data: []byte("longer than the file")},
+		"index.html." + hash16([]byte(page)) + ".br":          {Data: []byte("brotli of the page as it is in web/")},
+	}
+	build := func(web, br fs.FS) *static {
+		t.Helper()
+		st, err := newStatic(web, br)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	st1 := build(web1, brotli)
+	name := func(st *static, plain string) string {
+		t.Helper()
+		f, ok := st.plain["/"+plain]
+		if !ok {
+			t.Fatalf("no file %s in the table", plain)
+		}
+		return "/" + hashedName(plain, f.hash)
+	}
+
+	t.Run("the page names its files by their hash", func(t *testing.T) {
+		w := ask(st1, "GET", "/")
+		answers("the page", w, 200, "no-cache", "")
+		if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+			t.Fatalf("the page is %q", ct)
+		}
+		if w.Header().Get("Content-Security-Policy") != csp(false) {
+			t.Fatalf("the page's CSP is %q", w.Header().Get("Content-Security-Policy"))
+		}
+		want := []string{name(st1, "icon.svg")[1:], "manifest.webmanifest", name(st1, "app.css")[1:], name(st1, "app.js")[1:], "https://example.org/"}
+		if got := refs(w.Body.Bytes()); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the page names %v, want %v", got, want)
+		}
+		if again := ask(st1, "GET", "/index.html"); !bytes.Equal(again.Body.Bytes(), w.Body.Bytes()) || again.Header().Get("Cache-Control") != "no-cache" {
+			t.Fatal("/index.html is not the page / is")
+		}
+		if !regexp.MustCompile(`^/app\.[0-9a-f]{16}\.js$`).MatchString(name(st1, "app.js")) {
+			t.Fatalf("the hashed name of app.js is %s", name(st1, "app.js"))
+		}
+		for plain, ctype := range map[string]string{"app.js": "text/javascript; charset=utf-8", "app.css": "text/css; charset=utf-8", "icon.svg": "image/svg+xml"} {
+			w := ask(st1, "GET", name(st1, plain))
+			answers(plain+" by its hashed name", w, 200, forGood, "")
+			if w.Header().Get("Content-Type") != ctype || !bytes.Equal(w.Body.Bytes(), web1[plain].Data) {
+				t.Fatalf("%s by its hashed name: type %q, %d bytes", plain, w.Header().Get("Content-Type"), w.Body.Len())
+			}
+		}
+		// The manifest keeps its address, and is asked for each time like the page.
+		w = ask(st1, "GET", "/manifest.webmanifest")
+		answers("the manifest", w, 200, "no-cache", "")
+		if w.Header().Get("Content-Type") != "application/manifest+json" {
+			t.Fatalf("the manifest is %q", w.Header().Get("Content-Type"))
+		}
+	})
+
+	t.Run("brotli, then gzip, then the file as it is", func(t *testing.T) {
+		app := name(st1, "app.js")
+		w := ask(st1, "GET", app, "Accept-Encoding", "gzip, deflate, br, zstd")
+		answers("a browser that takes brotli", w, 200, forGood, "br")
+		if w.Body.String() != "brotli of build 1" {
+			t.Fatalf("the brotli sent is %q, not the copy the build made of this file", w.Body.String())
+		}
+		w = ask(st1, "GET", app, "Accept-Encoding", "gzip, deflate")
+		answers("a browser that takes gzip", w, 200, forGood, "gzip")
+		if !bytes.Equal(gunzip(t, "app.js", w.Body.Bytes()), []byte(js1)) || w.Body.Len() >= len(js1) {
+			t.Fatal("the gzip sent does not unpack to the file, or is no smaller")
+		}
+		for _, c := range []struct{ accept, encoding string }{
+			{"", ""}, {"identity", ""}, {"gzip;q=0", ""}, {"gzip; q=0.0, br;q=0", ""}, {"*;q=0", ""}, {"deflate, zstd", ""},
+			{"gzip;q=0, br", "br"}, {"br;q=0, gzip", "gzip"}, {"GZIP", "gzip"}, {"x-gzip", "gzip"}, {"*", "br"}, {"br;q=0, *", "gzip"},
+			{"gzip;q=0.001", "gzip"}, {"gzip;q=nonsense", ""}, {" br ; Q=0.5 , gzip", "br"},
+		} {
+			var hdr []string
+			if c.accept != "" {
+				hdr = []string{"Accept-Encoding", c.accept}
+			}
+			w := ask(st1, "GET", app, hdr...)
+			answers("Accept-Encoding: "+c.accept, w, 200, forGood, c.encoding)
+			if c.encoding == "" && w.Body.String() != js1 {
+				t.Fatalf("Accept-Encoding: %s: the body is not the file", c.accept)
+			}
+		}
+		// Each form has its own ETag.
+		tags := map[string]bool{}
+		for _, accept := range []string{"identity", "gzip", "br"} {
+			tags[ask(st1, "GET", app, "Accept-Encoding", accept).Header().Get("ETag")] = true
+		}
+		if len(tags) != 3 {
+			t.Fatalf("the three forms share an ETag: %v", tags)
+		}
+		// A brotli copy of other bytes, of a kind that is compressed already, or bigger than the file is not used.
+		for plain, encoding := range map[string]string{"app.css": "gzip", "photo.png": "", "tiny.js": "", "clips/index.json": "gzip"} {
+			answers(plain+" with brotli asked for", ask(st1, "GET", "/"+plain, "Accept-Encoding", "br, gzip"), 200, "no-cache", encoding)
+		}
+		if w := ask(st1, "GET", "/", "Accept-Encoding", "br"); w.Header().Get("Content-Encoding") != "" {
+			t.Fatal("the page was sent as the brotli of the page before its names were written in")
+		}
+		// The build after has brotli for its own app.js and never the other build's.
+		st2 := build(web2, brotli)
+		if w := ask(st2, "GET", name(st2, "app.js"), "Accept-Encoding", "br"); w.Body.String() != "brotli of build 2" {
+			t.Fatalf("the second build sent %q", w.Body.String())
+		}
+	})
+
+	t.Run("HEAD, Range and a browser that asks again", func(t *testing.T) {
+		app := name(st1, "app.js")
+		for _, accept := range []string{"identity", "gzip", "br"} {
+			full := ask(st1, "GET", app, "Accept-Encoding", accept)
+			head := ask(st1, "HEAD", app, "Accept-Encoding", accept)
+			if head.Code != 200 || head.Body.Len() != 0 || head.Header().Get("Content-Length") != strconv.Itoa(full.Body.Len()) || head.Header().Get("ETag") != full.Header().Get("ETag") {
+				t.Fatalf("HEAD with %s: status %d, %d bytes of body, Content-Length %q; GET sent %d bytes", accept, head.Code, head.Body.Len(), head.Header().Get("Content-Length"), full.Body.Len())
+			}
+			// Under the plain name, asked again with the ETag: not sent again.
+			first := ask(st1, "GET", "/app.js", "Accept-Encoding", accept)
+			answers("app.js by its own name, "+accept, first, 200, "no-cache", map[string]string{"identity": "", "gzip": "gzip", "br": "br"}[accept])
+			again := ask(st1, "GET", "/app.js", "Accept-Encoding", accept, "If-None-Match", first.Header().Get("ETag"))
+			answers("app.js asked again, "+accept, again, 304, "no-cache", "")
+			if again.Body.Len() != 0 {
+				t.Fatalf("a 304 with a body of %d bytes", again.Body.Len())
+			}
+			if other := ask(st1, "GET", "/app.js", "Accept-Encoding", accept, "If-None-Match", `"0000000000000000"`); other.Code != 200 {
+				t.Fatalf("an ETag that is not the file's got %d", other.Code)
+			}
+			if list := ask(st1, "GET", "/app.js", "Accept-Encoding", accept, "If-None-Match", `"x", W/`+first.Header().Get("ETag")); list.Code != 304 {
+				t.Fatalf("the file's ETag in a list got %d", list.Code)
+			}
+		}
+		// A part of the file is a part of the file as it is, whatever the browser would take.
+		w := ask(st1, "GET", app, "Range", "bytes=4-8", "Accept-Encoding", "gzip, br")
+		if w.Code != http.StatusPartialContent || w.Body.String() != js1[4:9] || w.Header().Get("Content-Encoding") != "" ||
+			w.Header().Get("Content-Range") != "bytes 4-8/"+strconv.Itoa(len(js1)) || w.Header().Get("Content-Length") != "5" {
+			t.Fatalf("Range: status %d, body %q, headers %v", w.Code, w.Body.String(), w.Header())
+		}
+		if w := ask(st1, "GET", app, "Range", "bytes=999999-"); w.Code != http.StatusRequestedRangeNotSatisfiable {
+			t.Fatalf("a range past the end got %d", w.Code)
+		}
+		if w := ask(st1, "GET", app, "Range", "bytes=0-3", "If-Range", `"another"`); w.Code != 200 || w.Body.String() != js1 {
+			t.Fatalf("a range of a file that changed got %d and %d bytes, want the whole file", w.Code, w.Body.Len())
+		}
+		if w := ask(st1, "POST", app, "Content-Type", "application/json", "Origin", "http://example.com"); w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST to a file got %d", w.Code)
+		}
+	})
+
+	t.Run("a clip named by its own hash is kept for good", func(t *testing.T) {
+		answers("a clip whose name is its hash", ask(st1, "GET", "/clips/"+sha1Name(clip)+".json", "Accept-Encoding", "gzip"), 200, forGood, "gzip")
+		answers("a clip whose name is not its hash", ask(st1, "GET", "/clips/0123456789ab.json"), 200, "no-cache", "")
+		answers("the list of clips", ask(st1, "GET", "/clips/index.json"), 200, "no-cache", "")
+	})
+
+	t.Run("what is not a file is not answered", func(t *testing.T) {
+		app := name(st1, "app.js")
+		for _, p := range []string{"/app.0000000000000000.js", "/app..js", "/app.js.br", app + ".br", "/app.js." + hash16([]byte(js1)) + ".br",
+			"/clips/", "/clips", "/.gitignore", "/brotli/.gitignore", "/catalog/", "/index." + st1.build + ".html", "/web/app.js", "/nothing.js",
+			strings.Replace(app, ".js", ".css", 1), strings.ToUpper(app)} {
+			gone(p, ask(st1, "GET", p))
+		}
+		// A path that climbs out is cleaned by the router before it is looked up, and names no file then.
+		for _, p := range []string{"/../main.go", "/clips/../../main.go", "/clips/%2e%2e/%2e%2e/main.go", "//app.js/..", "/..%2fmain.go"} {
+			w := ask(st1, "GET", p)
+			if loc := w.Header().Get("Location"); loc != "" && w.Code >= 300 && w.Code < 400 {
+				w = ask(st1, "GET", loc)
+			}
+			if w.Code == 200 && !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
+				t.Fatalf("%s was answered with a file of type %q", p, w.Header().Get("Content-Type"))
+			}
+			if strings.Contains(w.Body.String(), "package main") {
+				t.Fatalf("%s sent the source", p)
+			}
+		}
+	})
+
+	t.Run("a changed file gets a new name", func(t *testing.T) {
+		st2 := build(web2, nil)
+		if name(st1, "app.js") == name(st2, "app.js") {
+			t.Fatalf("app.js changed and is still %s", name(st2, "app.js"))
+		}
+		for _, same := range []string{"app.css", "icon.svg", "clips/index.json"} {
+			if name(st1, same) != name(st2, same) {
+				t.Fatalf("%s did not change and went from %s to %s", same, name(st1, same), name(st2, same))
+			}
+		}
+		p1, p2 := ask(st1, "GET", "/"), ask(st2, "GET", "/")
+		if p1.Header().Get("ETag") == p2.Header().Get("ETag") || st1.build == st2.build {
+			t.Fatal("the page names another app.js and has the ETag it had")
+		}
+		if got := refs(p2.Body.Bytes()); !slices.Contains(got, name(st2, "app.js")[1:]) || slices.Contains(got, name(st1, "app.js")[1:]) {
+			t.Fatalf("the second build's page names %v", got)
+		}
+		// A browser that has the first page is told it changed.
+		if w := ask(st2, "GET", "/", "If-None-Match", p1.Header().Get("ETag")); w.Code != 200 {
+			t.Fatalf("the first page's ETag got %d from the second build", w.Code)
+		}
+		// A file the page does not name changes no name the page holds, so the page is the same page.
+		web3 := files(js1)
+		web3["clips/index.json"] = &fstest.MapFile{Data: []byte(long(`{"a":2}`))}
+		st3 := build(web3, nil)
+		if st3.build != st1.build || name(st3, "clips/index.json") == name(st1, "clips/index.json") {
+			t.Fatal("a change to a file the page does not name changed the page, or did not change the file's name")
+		}
+		// The same files give the same table.
+		if again := build(web1, brotli); again.build != st1.build || !reflect.DeepEqual(again.told, st1.told) {
+			t.Fatal("the same files built twice gave two different pages")
+		}
+	})
+
+	t.Run("the old name serves for an hour", func(t *testing.T) {
+		dir := t.TempDir()
+		now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+		// start is a build starting on the data folder: its table, and how many old names it answers.
+		start := func(web fs.FS) (*static, int) {
+			t.Helper()
+			st := build(web, nil)
+			st.now = func() time.Time { return now }
+			n, err := st.keepOld(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return st, n
+		}
+		first, n := start(web1)
+		if n != 0 {
+			t.Fatalf("the first build on a data folder answers %d old names", n)
+		}
+		old := name(first, "app.js")
+		now = now.Add(24 * time.Hour)
+		second, n := start(web2)
+		if n != 1 {
+			t.Fatalf("the second build answers %d old names, want 1: only app.js changed", n)
+		}
+		// The old name gets the old file, not the new one: an old page's scripts belong together.
+		w := ask(second, "GET", old)
+		answers("the old name, just after the deploy", w, 200, forNow, "")
+		if w.Body.String() != js1 || w.Header().Get("Content-Type") != "text/javascript; charset=utf-8" {
+			t.Fatalf("the old name sent %d bytes of type %q, want the old file", w.Body.Len(), w.Header().Get("Content-Type"))
+		}
+		// It did not come out of the binary, so it is not kept for good, by no shared cache, and it
+		// carries the CSP of an API answer, which allows nothing, not the page's.
+		if cc := w.Header().Get("Cache-Control"); strings.Contains(cc, "immutable") || strings.Contains(cc, "public") {
+			t.Fatalf("the old name is sent with Cache-Control %q", cc)
+		}
+		if got := w.Header().Get("Content-Security-Policy"); got != "default-src 'none'; frame-ancestors 'none'" {
+			t.Fatalf("the old name is sent with the CSP %q", got)
+		}
+		w = ask(second, "GET", old, "Accept-Encoding", "gzip")
+		answers("the old name, compressed", w, 200, forNow, "gzip")
+		if !bytes.Equal(gunzip(t, "the old app.js", w.Body.Bytes()), []byte(js1)) {
+			t.Fatal("the old name's gzip does not unpack to the old file")
+		}
+		if w := ask(second, "GET", name(second, "app.js")); w.Body.String() != js2 {
+			t.Fatal("the new name does not send the new file")
+		}
+		answers("a name both builds have", ask(second, "GET", name(first, "app.css")), 200, forGood, "")
+		gone("a hash no build had", ask(second, "GET", "/app.0000000000000000.js"))
+
+		// A restart half an hour in does not start the hour again.
+		now = now.Add(30 * time.Minute)
+		if second, n = start(web2); n != 1 {
+			t.Fatalf("after a restart the second build answers %d old names, want 1", n)
+		}
+		now = now.Add(29 * time.Minute)
+		answers("the old name after 59 minutes", ask(second, "GET", old), 200, forNow, "")
+		now = now.Add(2 * time.Minute)
+		gone("the old name after 61 minutes", ask(second, "GET", old))
+		answers("the new name after 61 minutes", ask(second, "GET", name(second, "app.js")), 200, forGood, "")
+		if second, n = start(web2); n != 0 {
+			t.Fatalf("a start after the hour still answers %d old names", n)
+		}
+		gone("the old name after a start past the hour", ask(second, "GET", old))
+
+		// Going back (deploy.sh --rollback) is a deploy like any other: the build that ran is the old one now.
+		now = now.Add(24 * time.Hour)
+		back, n := start(web1)
+		if n != 1 {
+			t.Fatalf("after going back, %d old names are answered, want 1", n)
+		}
+		if w := ask(back, "GET", name(second, "app.js")); w.Code != 200 || w.Body.String() != js2 {
+			t.Fatalf("after going back, the name of the build that ran got %d", w.Code)
+		}
+		if w := ask(back, "GET", old); w.Code != 200 || w.Body.String() != js1 {
+			t.Fatalf("after going back, the build's own name got %d", w.Code)
+		}
+
+		// Five deploys ten minutes apart: the pages of the three before the last still get their files.
+		now = now.Add(24 * time.Hour)
+		var names []string
+		for i := 3; i <= 6; i++ {
+			st, _ := start(files(long(fmt.Sprintf("let build = %d", i))))
+			names = append(names, name(st, "app.js"))
+			now = now.Add(10 * time.Minute)
+		}
+		last, n := start(files(long("let build = 7")))
+		if n != keptBuilds {
+			t.Fatalf("after five deploys in under an hour, %d old names are answered, want the %d the record keeps", n, keptBuilds)
+		}
+		for i, p := range names {
+			if w := ask(last, "GET", p); (w.Code == 200) != (i > 0) {
+				t.Fatalf("the name of deploy %d of 5 got %d", i+1, w.Code)
+			}
+		}
+
+		// What a build writes for the next one is the scripts and the style sheet its page names, not the icon.
+		written, err := readKept(filepath.Join(dir, keptName))
+		if err != nil || len(written) == 0 {
+			t.Fatalf("the record cannot be read back: %v", err)
+		}
+		for _, b := range written {
+			if len(b.Files) != 2 {
+				t.Fatalf("the record of build %s holds %d files, want its app.js and its app.css", b.Build, len(b.Files))
+			}
+			for f := range b.Files {
+				if !strings.HasSuffix(f, ".js") && !strings.HasSuffix(f, ".css") {
+					t.Fatalf("the record holds %s", f)
+				}
+			}
+		}
+
+		// The record is a file in the data folder. What it says is checked, not believed: a file whose
+		// bytes do not hash to its name is not sent, nothing but a script or a style sheet is taken from
+		// it (a page, or a picture that is a document, could run a script from the app's own address),
+		// and no name is answered for longer than the hour.
+		now = now.Add(24 * time.Hour)
+		planted := "/evil." + hash16([]byte("something else")) + ".js"
+		honest := "/app." + hash16([]byte("let old = 1")) + ".js"
+		html := []byte(`<script src="` + honest[1:] + `"></script>`)
+		svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script href="` + honest[1:] + `"/></svg>`)
+		record := []keptBuild{{Build: "0123456789abcdef", Until: now.Add(1000 * time.Hour), Files: map[string][]byte{
+			planted[1:]: []byte("alert(1)"), honest[1:]: []byte("let old = 1"), "../../etc/passwd": []byte("x"), "app.js": []byte("let planted = 1"),
+			"x." + hash16(html) + ".html": html, "icon." + hash16(svg) + ".svg": svg, "x." + hash16(html): html, "x." + hash16(html) + ".js.html": html}}}
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if err := json.NewEncoder(zw).Encode(record); err != nil {
+			t.Fatal(err)
+		}
+		zw.Close()
+		if err := os.WriteFile(filepath.Join(dir, keptName), buf.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		st, n := start(web1)
+		if n != 1 {
+			t.Fatalf("of a record with one honest file, %d are answered", n)
+		}
+		gone("a file under a name its bytes do not hash to", ask(st, "GET", planted))
+		gone("a page under the name its bytes hash to", ask(st, "GET", "/x."+hash16(html)+".html"))
+		gone("a picture under the name its bytes hash to", ask(st, "GET", "/icon."+hash16(svg)+".svg"))
+		gone("a page under a name with no kind", ask(st, "GET", "/x."+hash16(html)))
+		gone("a page under a name that only has .js in it", ask(st, "GET", "/x."+hash16(html)+".js.html"))
+		answers("a script under the name its bytes hash to", ask(st, "GET", honest), 200, forNow, "")
+		if w := ask(st, "GET", "/app.js"); w.Body.String() != js1 {
+			t.Fatal("the record replaced a file of the build")
+		}
+		now = now.Add(61 * time.Minute)
+		gone("a record that says a thousand hours, after 61 minutes", ask(st, "GET", honest))
+
+		// A record that cannot be read costs the old names and nothing else, and is written anew.
+		if err := os.WriteFile(filepath.Join(dir, keptName), []byte("not gzip"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		st = build(web1, nil)
+		if n, err := st.keepOld(dir); err == nil || n != 0 {
+			t.Fatalf("a record that is not gzip: %d names, error %v", n, err)
+		}
+		answers("the page, with a record that cannot be read", ask(st, "GET", "/"), 200, "no-cache", "")
+		if _, n := start(web2); n != 1 {
+			t.Fatalf("the build after a record that could not be read answers %d old names, want 1", n)
+		}
+		// A data folder that cannot be written to: the same.
+		st = build(web1, nil)
+		if _, err := st.keepOld(filepath.Join(dir, "missing")); err == nil {
+			t.Fatal("a data folder that is not there gave no error")
+		}
+		answers("the page, with no data folder", ask(st, "GET", "/"), 200, "no-cache", "")
+	})
+
+	// The files compiled into this binary: what a browser gets from a deployed Flowa.
+	t.Run("the files compiled in", func(t *testing.T) {
+		web, _ := fs.Sub(webFS, "web")
+		br, _ := fs.Sub(brotliFS, "brotli")
+		st := build(web, br)
+		raw := func(plain string) []byte {
+			t.Helper()
+			b, err := webFS.ReadFile("web/" + plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b
+		}
+		pageW := ask(st, "GET", "/", "Accept-Encoding", "gzip")
+		answers("the page", pageW, 200, "no-cache", "gzip")
+		served := gunzip(t, "the page", pageW.Body.Bytes())
+		embedded, got := refs(raw("index.html")), refs(served)
+		if len(got) != len(embedded) || len(got) < 10 {
+			t.Fatalf("the page as served names %d files, the page in web/ %d", len(got), len(embedded))
+		}
+		hashed := 0
+		for i, ref := range got {
+			plain := embedded[i]
+			if plain == "manifest.webmanifest" {
+				if ref != plain {
+					t.Fatalf("the manifest is named %s; it keeps its address", ref)
+				}
+				continue
+			}
+			// Every script, the style sheet and the icon: named by hash, and each form of it is the file.
+			if ref != hashedName(plain, hash16(raw(plain))) {
+				t.Fatalf("the page names %s as %s, want its hashed name: write it as a plain relative path in index.html", plain, ref)
+			}
+			hashed++
+			f := st.plain["/"+plain]
+			w := ask(st, "GET", "/"+ref)
+			answers(ref, w, 200, forGood, "")
+			if !bytes.Equal(w.Body.Bytes(), raw(plain)) || w.Header().Get("Content-Type") != staticTypes[path.Ext(plain)] {
+				t.Fatalf("%s is not %s, or has the type %q", ref, plain, w.Header().Get("Content-Type"))
+			}
+			if f.gz != nil {
+				w = ask(st, "GET", "/"+ref, "Accept-Encoding", "gzip")
+				answers(ref+" with gzip", w, 200, forGood, "gzip")
+				if !bytes.Equal(gunzip(t, ref, w.Body.Bytes()), raw(plain)) {
+					t.Fatalf("the gzip of %s does not unpack to %s", ref, plain)
+				}
+			}
+			// With brotli asked for: the build's copy when it made one, else what gzip gives.
+			w = ask(st, "GET", "/"+ref, "Accept-Encoding", "gzip, br")
+			switch {
+			case f.br != nil:
+				answers(ref+" with brotli", w, 200, forGood, "br")
+				if !bytes.Equal(w.Body.Bytes(), f.br) {
+					t.Fatalf("the brotli of %s is not the copy the build made", ref)
+				}
+			case f.gz != nil:
+				answers(ref+" with brotli asked for and none made", w, 200, forGood, "gzip")
+			default:
+				answers(ref+" with brotli asked for and nothing smaller", w, 200, forGood, "")
+			}
+		}
+		if hashed != len(st.told) || hashed < 10 {
+			t.Fatalf("%d names in the page are hashed; the table says it told %d", hashed, len(st.told))
+		}
+		// Every file under its own name: sent once, then 304. The clips sim/bake.js wrote are named by
+		// the SHA-1 of their bytes and kept for good; if this fails, bake.js names them another way now
+		// and selfNamed in main.go must follow.
+		clips, plainNames := 0, 0
+		err := fs.WalkDir(web, ".", func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || strings.HasPrefix(p, "catalog/") {
+				return err
+			}
+			plainNames++
+			cache := "no-cache"
+			if strings.HasPrefix(p, "clips/") && !slices.Contains([]string{"clips/index.json", "clips/features.json", "clips/presets.json"}, p) {
+				cache = forGood
+				clips++
+			}
+			want := raw(p)
+			if p == "index.html" {
+				want = served
+			}
+			w := ask(st, "GET", "/"+p)
+			answers(p, w, 200, cache, "")
+			if !bytes.Equal(w.Body.Bytes(), want) {
+				t.Fatalf("/%s is not the file", p)
+			}
+			if again := ask(st, "GET", "/"+p, "If-None-Match", w.Header().Get("ETag")); again.Code != 304 || again.Body.Len() != 0 {
+				t.Fatalf("/%s asked again with its ETag got %d and %d bytes", p, again.Code, again.Body.Len())
+			}
+			if st.plain["/"+p].gz != nil {
+				z := ask(st, "GET", "/"+p, "Accept-Encoding", "gzip")
+				answers(p+" with gzip", z, 200, cache, "gzip")
+				if !bytes.Equal(gunzip(t, p, z.Body.Bytes()), want) {
+					t.Fatalf("the gzip of /%s does not unpack to the file", p)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if clips == 0 || clips != len(st.fixed) || plainNames != len(st.plain) {
+			t.Fatalf("%d clips, %d of them kept for good; %d files, %d in the table", clips, len(st.fixed), plainNames, len(st.plain))
+		}
+		// The 3D figure's model is the largest file: it must be worth compressing, and say what it is.
+		if f := st.plain["/assets/human.glb"]; f == nil || f.gz == nil || f.ctype != "model/gltf-binary" {
+			t.Fatal("assets/human.glb is not in the table with a gzip copy and its type")
+		}
+		t.Logf("%d files, %d KB as they are, %d KB with gzip, %d KB with brotli (%d files have a brotli copy)", len(st.plain), st.saved[0]/1000, st.saved[1]/1000, st.saved[2]/1000, st.nBr)
+
+		// Brotli is made by brotli.js before a release is compiled, not in a plain checkout. CI makes
+		// it and sets FLOWA_WANT_BROTLI, so that there this cannot be skipped.
+		t.Run("brotli from the build", func(t *testing.T) {
+			if st.nBr == 0 {
+				if os.Getenv("FLOWA_WANT_BROTLI") != "" {
+					t.Fatal("FLOWA_WANT_BROTLI is set and no file has a brotli copy: run node brotli.js before go test")
+				}
+				t.Skip("this build has no brotli copies (node brotli.js makes them); gzip is what it serves")
+			}
+			// Some copies and not all: web/ was edited since node brotli.js ran, as in any checkout that
+			// built once. Those files are sent as gzip, which is right, so that is said and not failed,
+			// except where FLOWA_WANT_BROTLI says the copies were just made.
+			problems := staleBrotli(st)
+			for _, p := range problems {
+				if os.Getenv("FLOWA_WANT_BROTLI") != "" {
+					t.Errorf("%s; run node brotli.js", p)
+				} else {
+					t.Logf("%s (sent as gzip; node brotli.js makes the copies again)", p)
+				}
+			}
+			t.Logf("%d of %d files have a brotli copy; %d that could have one do not", st.nBr, len(st.plain), len(problems))
+		})
+	})
+
+	// What "brotli from the build" reports, on a build whose copies are known: one for app.js, one of
+	// an app.css that was, none for the rest.
+	t.Run("a file changed since its brotli copy was made is found", func(t *testing.T) {
+		got := staleBrotli(st1)
+		for _, want := range []string{"/app.css", "/icon.svg", "/clips/index.json"} {
+			if !slices.ContainsFunc(got, func(p string) bool { return strings.HasPrefix(p, want+" ") }) {
+				t.Errorf("%s has a gzip copy and no brotli copy, and is not reported: %v", want, got)
+			}
+		}
+		for _, p := range got {
+			for _, not := range []string{"/app.js ", "/index.html ", "/photo.png ", "/tiny.js "} {
+				if strings.HasPrefix(p, not) {
+					t.Errorf("reported, though nothing is wrong with it: %s", p)
+				}
+			}
+		}
+	})
+}
+
+// staleBrotli lists what is wrong with a build's brotli copies, one line per file: a file that gzip
+// makes smaller and that has no brotli copy (it changed since node brotli.js ran), or a copy that is
+// larger than the gzip. index.html never has one: the server rewrites it.
+func staleBrotli(st *static) (out []string) {
+	for p, f := range st.plain {
+		switch {
+		case p == "/index.html" || f.gz == nil:
+		case f.br == nil:
+			out = append(out, p+" has a gzip copy and no brotli copy")
+		case len(f.br) > len(f.gz):
+			out = append(out, fmt.Sprintf("%s has a brotli copy of %d bytes, larger than its gzip of %d bytes", p, len(f.br), len(f.gz)))
+		}
+	}
+	slices.Sort(out)
+	return out
 }

@@ -137,7 +137,69 @@ before the checkout's commit (`git fetch --tags` first) and says so when the che
 `./deploy.sh v1.3.0@sha256:...` holds the pull to one digest, the one in the release notes.
 `FLOWA_IMAGE` in the environment names another place to pull from. Releases up to v1.2.0 have no
 image; for those, and for trying `main` before it is released, `./deploy.sh --build` builds from the
-checkout as before, which needs Go and Node. The script ends with what it deployed and how long it took.
+checkout as before, which needs Go and Node (it bakes the clips and compresses the page's files with brotli). The script ends with what it deployed and how long it took.
+
+### Static files
+
+The page's files are compiled into the binary. At start the server hashes and compresses each one
+once and says so in the log (`static files: 188 hashed and compressed in 147 ms ...` on a four-core
+x86 machine; the Pi prints its own time). They are served in three groups:
+
+| Group | Files | How a browser keeps them |
+| --- | --- | --- |
+| The page | `index.html`, `manifest.webmanifest` | `Cache-Control: no-cache` with an `ETag`: asked for each time, answered 304 with no body while unchanged. The manifest keeps its address because some browsers know an installed app by it. |
+| Named by hash | the 17 scripts, the style sheet and the icon `index.html` names, as `app.<16 hex of the SHA-256>.js`; the 159 baked clips, which `sim/bake.js` already names by the hash of their bytes | `Cache-Control: public, max-age=31536000, immutable`: fetched once and never asked for again. The server writes the hashed names into `index.html` at start, so nothing in `web/` changes. |
+| By their own name | what the page's scripts fetch: `figure3d.js`, `assets/human.glb`, `tour.js`, `clips/index.json`, `clips/presets.json`, `clips/features.json`, `avatar-def.json`, `suggest-weights.json`; and every file above under its plain name, for bookmarks and the browser tests | `no-cache` with an `ETag`, like the page. Moving these to hashed names needs a change in the scripts that fetch them and is left for later. |
+
+Each file is sent as brotli when the browser takes it and the build made a copy, else as gzip, else
+as it is (`Vary: Accept-Encoding`, an `ETag` for each form, `q=0` respected; a `Range` request is
+answered from the file as it is). gzip is made at start, at the default level: the best level
+took twice as long for half a percent fewer bytes. Brotli is made by `node brotli.js` before
+the binary is compiled, into `brotli/` (not in git), because Go's standard library cannot write it:
+`build-image.sh` and `./deploy.sh --build` run it, so a release has brotli; `go run` and `go test`
+from a plain checkout have none and send gzip. A copy is named after the hash of the file it was
+made from, so one that is out of date is never sent; `go test` says which files have none and
+fails over it only where the copies were just made (`FLOWA_WANT_BROTLI=1`, as in CI). The binary
+embeds the whole folder, so `brotli.js` keeps it to what a clean checkout would get: `brotli.stamp`
+(not in git, not embedded) says which brotli made the copies and with what settings, every copy is
+made again when that differs from the Node at hand, and any other file in the folder is removed.
+`node brotli.js --check` fails on a copy that does not unpack to its file, a missing copy, a
+stray file or another stamp. Browsers ask for brotli over HTTPS only: on
+the LAN by plain HTTP they get gzip. Behind a reverse proxy that ends TLS they get brotli if the
+proxy passes on what is already compressed; that has not been tried against a proxy here.
+
+The first load of the page, counted as the bytes of `index.html` and of the 20 files it names (17
+scripts, the style sheet, the icon and the manifest; not the catalogs, the clips or the 3D figure,
+which the scripts fetch): 426 KB before, when nothing was compressed unless a proxy did it;
+139 KB with gzip; 120 KB for a browser that takes brotli (the page itself comes as gzip). On a
+second visit only the page and the manifest of these are asked for, and both get a 304. The 3D
+figure (`figure3d.js` and `human.glb`): 3,512 KB as they are, 1,362 KB with gzip, 1,039 KB with
+brotli.
+
+A changed file gets a new name, and a page loaded before a deploy may still ask for the old one (a
+tab the browser restores from its cache is not asked whether the page changed). The new binary
+does not have the old bytes, so each build writes the 17 scripts and the style sheet its page names
+to `data/static-kept.json.gz` (about 200 KB), and the build after it answers those names from there
+for one hour after it first started, then with 404. What is sent is the old file, never the new
+one under the old name: the scripts of a page are written to work with each other, and a page that
+ran a mix of two builds could fail in ways a reload would not explain. The hour starts once (a
+restart does not start it again), `--rollback` works the same way round, and the files of at most
+three earlier builds are kept. The old name of the icon gets 404: a missing icon breaks nothing.
+
+The binary cannot be written to and `data/` can, so the record is not trusted as the binary is.
+Only scripts and style sheets are taken from it, and each only under the name its own bytes hash
+to: not a page, and not a picture, since an SVG opened by itself is a document that can run a
+script. An old name is sent as `Cache-Control: private, max-age=300`, never `immutable`, and with
+the CSP of an API answer, which allows nothing. What is left: whoever can write to `data/` can
+have a script or a style sheet of their own answered at the app's address under such a name, for
+up to an hour after each start of the app and five minutes more in a browser that fetched it, and
+again for as long as they can write the file again. A page only runs it if something else lets them
+put a script tag into the page, which the CSP's `script-src 'self'` would then not stop. So `data/`
+should be writable by the app's user alone, as for the backups. If the record cannot be read, the
+log says so and pages loaded before that start get 404 for their old files; if it cannot be
+written, the same goes for pages loaded from that build, after the next deploy. `deploy.sh` says
+so beforehand when user 1000 cannot write in `data/` itself, and carries on. Nothing else
+changes. A hashed name that no build had is always 404.
 
 `deploy.sh` starts what changed: the app, and the database only when its settings or pinned image
 moved. It keeps the image that was running as `nunchaku:previous` and goes back to it by itself if
@@ -227,6 +289,9 @@ in the container's environment, when set, is shown instead.
   reset) does not make them read "Never".
 - `data/backups/progress-DATE.json` is written by the app before the first change each day, kept
   14 days. It holds progress documents only.
+- `data/static-kept.json.gz` is written by the app at start: the scripts and the style sheet of the
+  running build's page, so that the next one can answer their names for an hour ([Static files](#static-files)). It holds
+  no member data and can be deleted at any time.
 - `./backup.sh` writes a full, compressed dump of the database (accounts, posts, comments, progress,
   catalogs, everything) to `data/backups/flowa-DATE.dump`, checks it can be read back, and keeps 14.
   Run it daily from cron: `17 3 * * * /home/pi/nunchaku/backup.sh >> /home/pi/nunchaku/data/backups/backup.log 2>&1`.
@@ -543,11 +608,11 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to `deploy.sh`, `build-image.sh`, `release_tag.yml` or the `Dockerfile` runs `lint` and the `release` suite, one to `backup.sh` or the drill `lint` and the `restore` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to `deploy.sh`, `build-image.sh`, `release_tag.yml` or the `Dockerfile` runs `lint` and the `release` suite, one to `brotli.js` those and `unit tests`, one to `backup.sh` or the drill `lint` and the `restore` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/contrast.js` (the page's colours in both themes: text at 4.5:1, icons and the edges of fields at 3:1); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
-| `unit tests` | `go build`, `go test -race`, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, the same bytes when built twice; then `deploy.sh` pulls and starts one, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them |
+| `unit tests` | `go build`, `go test -race`, `node brotli.js` and `node brotli.js --check` (a brotli copy of every page file, each unpacking to its file) with `TestStaticHashed` again on a binary that has them, `node test/physics.js` (every clip), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, a brotli copy of every page file, the same bytes when built twice, the second time over brotli copies stamped as another brotli's and a stray file; then `deploy.sh` pulls and starts one, which sends a script under its hashed name with brotli and leaves its page's files in `data/`, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, then a second run with reduced motion (`FLOWA_MOTION=reduce`) for the pages where something moves, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |
@@ -588,7 +653,8 @@ gh workflow run release_tag -f dry_run=true       # show the version and the not
 ```
 
 The image is built from the commit being tagged by `build-image.sh`, with the Dockerfile
-`./deploy.sh --build` uses, for arm64 and amd64, and pushed to `ghcr.io/tuanssm/flowtopia:<tag>` before
+`./deploy.sh --build` uses, for arm64 and amd64, after `brotli.js` has compressed the page's files (the
+copies depend on the commit's files and on Node's brotli, which the workflow pins with Node 24), and pushed to `ghcr.io/tuanssm/flowtopia:<tag>` before
 the tag is made, so a build that fails leaves no tag behind. The tag is compiled into the binary, and
 the notes end with the image's name and digest. The same commit gives the same digest (Go builds
 reproducibly, and every time stamp in the image is the commit's), so it can be checked by building

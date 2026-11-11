@@ -46,12 +46,14 @@ keep_previous() {
 # root, and the app would stop at start because it cannot write there.
 data_folder() {
   mkdir -p data/backups
-  [ "$(stat -c %u data/backups)" = 1000 ] && return
-  [ $(( 0$(stat -c %a data/backups) & 2 )) -ne 0 ] && return   # anyone may write
-  chown -R 1000:1000 data 2>/dev/null || {
+  theirs() { [ "$(stat -c %u "$1")" = 1000 ] || [ $(( 0$(stat -c %a "$1") & 2 )) -ne 0 ]; }   # user 1000 owns it, or anyone may write
+  theirs data/backups || chown -R 1000:1000 data 2>/dev/null || {
     echo "data/ must belong to user 1000, which the app runs as: sudo chown -R 1000:1000 data" >&2
     exit 1
   }
+  # In data/ itself the app keeps the page files of the running build, to go on answering their names
+  # for an hour after the next deploy. Without it the app runs all the same, so this is said and no more.
+  theirs data || echo "note: user 1000, which the app runs as, cannot write in data/ itself: pages loaded before a deploy will get 404 for their old files until: sudo chown 1000:1000 data"
 }
 
 case "${1:-}" in
@@ -65,6 +67,8 @@ case "${1:-}" in
     [ -d figure/node_modules ] && (cd figure && npm run --silent build)
     # Work out the demo clips (physics simulation and checks happen here, not in the browser).
     node sim/bake.js
+    # Compress the page's files with brotli, to be compiled in; a second run only does what changed.
+    node brotli.js
     go vet ./...
     go test -count=1 ./...   # the database tests skip without TEST_DATABASE_URL; the rest must pass
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.buildVersion=$version" -o nunchaku .

@@ -147,7 +147,7 @@ jobs:
 
       - name: JavaScript syntax
         run: |
-          for f in sim/*.js web/*.js test/*.js; do node --check "$f"; done
+          for f in brotli.js sim/*.js web/*.js test/*.js; do node --check "$f"; done
       - name: Catalog format
         run: |
           node test/catalog.js web/catalog/*.json
@@ -213,6 +213,15 @@ jobs:
         run: CGO_ENABLED=0 go build -trimpath ./...
       - name: go test
         run: go test -race -count=1 ./...
+
+      # A release is compiled with a brotli copy of each page file (brotli.js, run by build-image.sh).
+      # Made here the same way: every copy must unpack to its file, and the server must send them
+      # (the check that go test skipped above for want of them; FLOWA_WANT_BROTLI forbids skipping).
+      - name: Brotli copies of the page's files
+        run: |
+          node brotli.js
+          node brotli.js --check
+          FLOWA_WANT_BROTLI=1 go test -count=1 -run TestStaticHashed ./...
 
       - name: Physics and anatomy of every demo clip
         id: physics

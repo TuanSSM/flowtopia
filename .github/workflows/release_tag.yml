@@ -40,6 +40,7 @@ concurrency:
 
 env:
   GIT_CLIFF_VERSION: "2.14.2"
+  NODE_VERSION: 24   # as in process_pr.yml: its brotli makes the copies the image carries
 
 jobs:
   release:
@@ -117,6 +118,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: stable   # what process_pr builds and tests with
+      # build-image.sh compresses the page's files with brotli before it compiles (brotli.js).
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
       - name: The commit builds and its tests pass
         run: |
           go vet ./...
