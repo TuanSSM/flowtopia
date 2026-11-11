@@ -972,6 +972,9 @@ document.addEventListener('pointerover', e => {
   tip.style.top = (r.top > 34 ? r.top - 32 : r.bottom + 6) + 'px';
 });
 window.addEventListener('hashchange', render);
+// Less motion can be asked for, and taken back, while Flowa is open: the demos stop where they are and
+// show Play, or start again as they do for everyone else. The styles follow by themselves (app.css).
+Demo.calm?.addEventListener?.('change', e => { Demo.setStill(e.matches); render(); });
 
 /* ---------- boot ---------- */
 $('.menu-btn').innerHTML = icon('menu');

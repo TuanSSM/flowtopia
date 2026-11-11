@@ -109,9 +109,12 @@ self_test() {
   expect "web/clips/nunchaku/F5.json" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","a11y","demos-avatars","combo-avatars"]'
   expect "web/demo.js,web/avatar.js" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","a11y","contrast","demos-avatars","combo-avatars"]'
   expect "web/social.js" "code=true lint=true unit=true screenshots=true suites=$browser"
+  # The screenshots job also takes its pictures with reduced motion and checks the demos, the styles and
+  # the guided tour there, so a change to the player, the styles or the tour's bundle must take them.
   expect "web/app.css" "code=true lint=true unit=true screenshots=true suites=$browser"
   expect "test/contrast.js" 'code=true lint=true unit=true screenshots=false suites=[]'
   expect "test/browser/contrast.py" 'code=true lint=true unit=false screenshots=false suites=["contrast"]'
+  expect "tour/src/tour.jsx,web/tour.js" "code=true lint=true unit=true screenshots=true suites=$browser"
   expect "test/browser/mod.py" 'code=true lint=true unit=false screenshots=false suites=["mod"]'
   expect "test/browser/avatar.py,test/browser/demos.py" 'code=true lint=true unit=false screenshots=false suites=["demos","avatar","demos-avatars"]'
   expect "test/browser/stub.py" 'code=true lint=true unit=false screenshots=true suites=["links"]'

@@ -422,8 +422,18 @@ const Demo = (() => {
   }
 
   /* ---------- player ---------- */
-  const still = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const st = { id: '', variant: 0, view: 'angle', hand: 'R', speed: 0.5, playing: !still, phase: 0 };
+  // A person who asked their system for less motion (prefers-reduced-motion) gets every demo as a still
+  // with a Play button. Nothing starts by itself: a demo opens paused each time, on a frame that shows the
+  // move (poster), and one they started stops when its page is left. What they start plays until they
+  // pause it. The page listens on `calm` and tells the player when the setting changes while it is open
+  // (setStill).
+  const calm = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+  let still = !!calm && calm.matches;
+  const st = { id: '', variant: 0, view: 'angle', hand: 'R', speed: 0.5, playing: !still, phase: 0, poster: still };
+  function setStill(on) { still = on; st.playing = cs.playing = pv.playing = !on; } // what was playing stops on the frame it had reached
+  // The frame a paused demo opens on. A move that repeats is shown at its start with its whole path drawn;
+  // one that does not (a throw, a stall) half way through, with the path that led there.
+  const posterPhase = clip => clip.loop || clip.still ? 0 : 0.5;
   let index = {}; const cache = new Map();
   // The list of demos is small and loaded once; each clip is fetched when it is first shown.
   async function init() {
@@ -451,7 +461,10 @@ const Demo = (() => {
     const cv = document.getElementById('demo-cv'), v = variant();
     if (!cv || !v) return false;
     const ctx = cv.getContext('2d'), clip = clipNow();
-    if (clip) { draw(ctx, cv.width, clip, st.phase, st.view, v.one && st.hand === 'L', tint(colors(), st.id.split(':')[0]), !st.playing); return true; }
+    if (clip) {
+      if (st.poster) { st.poster = false; if (!st.playing) st.phase = posterPhase(clip); }
+      draw(ctx, cv.width, clip, st.phase, st.view, v.one && st.hand === 'L', tint(colors(), st.id.split(':')[0]), !st.playing); return true;
+    }
     const col = colors();
     ctx.fillStyle = col.bg; ctx.fillRect(0, 0, cv.width, cv.width);
     ctx.fillStyle = col.link; ctx.font = `${cv.width / 26}px system-ui, sans-serif`; ctx.textAlign = 'center';
@@ -460,6 +473,7 @@ const Demo = (() => {
   }
   function tick(ts) {
     raf = 0;
+    if (still && !document.getElementById('demo-cv')) { st.playing = false; st.poster = true; return; } // its page was left
     const clip = variant() && clipNow();
     if (!clip || !st.playing || clip.still) { paint(); return; }
     st.phase = (st.phase + Math.min(ts - last, 100) / 1000 * st.speed / clip.dur) % 1;
@@ -485,7 +499,7 @@ const Demo = (() => {
   // followed by the caption under it, so what the page says of the clip is said of the picture too.
   function html(cid, id, dominant, esc) {
     const key = cid + ':' + id;
-    if (st.id !== key) { st.id = key; st.variant = 0; st.phase = 0; st.hand = dominant; }
+    if (st.id !== key) { st.id = key; st.variant = 0; st.phase = 0; st.hand = dominant; if (still) { st.playing = false; st.poster = true; } }
     const e = index[key], v = variant(), pic = v.m === 'still';
     return `<div class="demo">
       <canvas id="demo-cv" width="720" height="720" role="img" aria-label="${pic ? 'Picture' : 'Demonstration'}: ${esc(v.n)}, ${viewName()} view. The steps below describe it in text." aria-labelledby="demo-cv demo-cap${unfit(v.f) ? ' demo-body' : ''}"></canvas>
@@ -504,7 +518,7 @@ const Demo = (() => {
   function act(d) {
     if (d.k === 'play') st.playing = !st.playing;
     else if (d.k === 'gif') download();
-    else if (d.k === 'variant') { st.variant = Number(d.v); st.phase = 0; }
+    else if (d.k === 'variant') { st.variant = Number(d.v); st.phase = 0; st.poster = still && !st.playing; }
     else if (d.k === 'speed') st.speed = Number(d.v);
     else st[d.k] = d.v;
   }
@@ -527,7 +541,7 @@ const Demo = (() => {
     const cv = document.getElementById('combo-cv'), step = cs.steps[cs.i];
     if (!cv || !step) return false;
     const ctx = cv.getContext('2d'), W = cv.width, col = tint(colors(), cs.sig.split('|')[1]), clip = comboClip(step), d = step.v && step.v.d || 1;
-    if (clip) draw(ctx, W, clip, clip.still ? 0 : clip.loop ? cs.t / d : Math.min((cs.t % d) / d, 0.999), st.view, step.v.one && cs.hand === 'L', col, false);
+    if (clip) draw(ctx, W, clip, clip.still ? 0 : clip.loop ? cs.t / d : Math.min((cs.t % d) / d, 0.999), st.view, step.v.one && cs.hand === 'L', col, still && !cs.playing);
     else {
       ctx.fillStyle = col.bg; ctx.fillRect(0, 0, W, W); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = col.ink; ctx.font = `600 ${W / 14}px system-ui, sans-serif`; ctx.fillText(step.sid, W / 2, W * 0.43);
@@ -546,7 +560,7 @@ const Demo = (() => {
   function comboTick(ts) {
     craf = 0;
     const step = cs.steps[cs.i];
-    if (!step || !document.getElementById('combo-cv')) return;
+    if (!step || !document.getElementById('combo-cv')) { if (still) cs.playing = false; return; } // its page was left
     if (cs.playing) {
       cs.t += Math.min(ts - clast, 100) / 1000 * st.speed;
       if (cs.t >= stepSecs(step)) { cs.i = (cs.i + 1) % cs.steps.length; cs.t = 0; }
@@ -564,6 +578,7 @@ const Demo = (() => {
   function comboStage(id, cid, seq, reps, nameOf, dominant, esc, foot = '') {
     const sig = id + '|' + cid + '|' + seq.join(','), same = cs.sig === sig;
     const steps = seq.map((sid, i) => ({ sid, name: nameOf(sid), v: index[cid + ':' + sid]?.v[0], reps: reps[i] || 1 }));
+    if (still && cs.sig.split('|')[0] !== id) cs.playing = false; // another combo opens paused
     if (!same) Object.assign(cs, { sig, i: cs.sig.split('|')[0] === id ? Math.min(cs.i, Math.max(seq.length - 1, 0)) : 0, t: 0, hand: dominant });
     cs.steps = steps;
     if (!steps.length) return `<div class="cb-stage"><div class="cb-empty"><div><b>Nothing to play yet</b><span>Add a skill and it plays here.</span></div></div>${foot}</div>`;
@@ -594,7 +609,7 @@ const Demo = (() => {
   // Plays one clip (or the figure standing) in a canvas, at a yaw the page can turn with a drag,
   // in a given person's avatar.
   const STAND = { fr: [{}], props: [], dur: 1, still: true };
-  const pv = { cv: null, key: '', yaw: 0.5, t: 0, raf: 0, last: 0, who: undefined, playing: true };
+  const pv = { cv: null, key: '', yaw: 0.5, t: 0, raf: 0, last: 0, who: undefined, playing: !still };
   function preview(cv, key, opts = {}) {
     Object.assign(pv, { cv, key: key || '', who: 'who' in opts ? opts.who : undefined });
     if (opts.yaw != null) pv.yaw = opts.yaw;
@@ -604,11 +619,11 @@ const Demo = (() => {
   const firstClip = cid => Object.keys(index).find(k => k.startsWith(cid + ':') && index[k].v[0].m !== 'still') || '';
   function previewTick(ts) {
     pv.raf = 0;
-    if (!pv.cv || !pv.cv.isConnected) { pv.cv = null; return; }
+    if (!pv.cv || !pv.cv.isConnected) { pv.cv = null; if (still) pv.playing = false; return; }
     const v = pv.key && index[pv.key]?.v[0], clip = (v && fetchClip(v.f, () => {})) || STAND, who = pv.who === undefined ? av : pv.who;
     if (pv.playing) pv.t += Math.min(ts - pv.last, 100) / 1000 * 0.5;
     pv.last = ts;
-    draw(pv.cv.getContext('2d'), pv.cv.width, clip, clip.still ? 0 : (pv.t / clip.dur) % 1, pv.yaw, false, tint(colors(), pv.key.split(':')[0], who), false, who);
+    draw(pv.cv.getContext('2d'), pv.cv.width, clip, clip.still ? 0 : (pv.t / clip.dur) % 1, pv.yaw, false, tint(colors(), pv.key.split(':')[0], who), still && !pv.playing, who);
     pv.raf = requestAnimationFrame(previewTick);
   }
 
@@ -708,6 +723,6 @@ const Demo = (() => {
 
   return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, pack, unpack, mirror, sPoints, propsOf, stage,
     index: () => index, clip: () => { const v = variant(); return v && cache.get(v.f); },
-    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, FRAMES, avatar, presetOf, preview, previewState: pv, firstClip, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
+    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, FRAMES, avatar, presetOf, preview, previewState: pv, firstClip, calm, still: () => still, setStill, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
 })();
 if (typeof window !== 'undefined') window.Demo = Demo;

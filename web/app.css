@@ -408,7 +408,11 @@ button:disabled { opacity: .6; cursor: default; }
   h1 { font-size: 21px; }
   .panel { width: 100vw; }
 }
-@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+/* For a person who asked their system for less motion nothing slides, drops, fades or scrolls smoothly:
+   the skill panel, the menu on a narrow window, the achievement card and the bars change at once. This
+   also reaches what the guided tour draws, whose own styles ask for a fade. The demos are stopped by the
+   player (demo.js), not here. */
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 .nav-group.here { color: var(--accent-ink); }
 
 /* Combos: a stage that plays the sequence, beside the sequence itself */
