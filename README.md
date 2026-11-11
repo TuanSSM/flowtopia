@@ -553,7 +553,9 @@ also runs) and stored in `web/clips`, where it is committed: a release's image h
 and the body: reach, limbs clear of the body and each other, hand speed, legs, feet and balance.
 Contact details are in [docs/contact-review.md](docs/contact-review.md).
 
-Not modelled: wraps and rolls, rolling contact, a wrist or fingers, poi weaves and turns.
+Not modelled: wraps and rolls, rolling contact, a wrist or fingers, poi weaves and turns. The
+engine can now treat a tether or cord as a chain of points that lies on the body and grips it
+(`sim/chain.js`, checked against known answers by `node test/chain.js`); no demo uses it yet.
 
 The figure is a rigged 3D model (`web/assets/human.glb`, drawn by `web/figure3d.js`, built from
 `figure/` with three.js). It is posed from the same joints as the drawn figure and skinned on the
