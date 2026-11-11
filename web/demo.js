@@ -180,14 +180,31 @@ const Demo = (() => {
     delete out.fr;
     return out;
   }
-  // The frame at phase ph (0 to 1), mirrored for the left hand when asked.
+  // The two stored frames the phase ph (0 to 1) falls between (fa, fb), and how far from the first to the second (ft).
+  let fa = 0, fb = 0, ft = 0;
+  function between(clip, ph) {
+    const N = clip.fr.length;
+    let x;
+    if (clip.loop) { x = (((ph % 1) + 1) % 1) * N; fa = Math.floor(x) % N; fb = (fa + 1) % N; }
+    else { x = clamp(ph, 0, 1) * (N - 1); fa = Math.floor(x); fb = Math.min(fa + 1, N - 1); }
+    ft = x - Math.floor(x);
+  }
+  // The frame at phase ph, mirrored for the left hand when asked.
   function pose(clip, ph, mir) {
-    const fr = clip.fr, N = fr.length;
-    let x, i, j;
-    if (clip.loop) { x = (((ph % 1) + 1) % 1) * N; i = Math.floor(x) % N; j = (i + 1) % N; }
-    else { x = clamp(ph, 0, 1) * (N - 1); i = Math.floor(x); j = Math.min(i + 1, N - 1); }
-    const f = blend(fr[i], fr[j], x - Math.floor(x));
+    between(clip, ph);
+    const f = blend(clip.fr[fa], clip.fr[fb], ft);
     return fit(mir ? mirror(f) : f);
+  }
+  // Where the point of prop i that leaves a trail is at phase ph: what parts() gives as `tip` for the frame
+  // pose() makes, worked out from that point's own numbers alone (test/alloc.js holds the two to each
+  // other). A trail asks for it at 26 or 96 phases on every drawing, and making each of those frames whole
+  // for one point was most of what a drawing allocated.
+  function tipAt(clip, pr, i, ph, mir) {
+    between(clip, ph);
+    const a = clip.fr[fa], b = clip.fr[fb], dy = BODY.sc === 1 ? 0 : lift();
+    // One value of that frame as pose() leaves it: blended, mirrored, and moved to fit the body unless it is a direction.
+    const K = k => { const key = i + '.' + k, p = a[key], q = b[key]; let v = p === q ? p : mix(p, q, ft); if (mir) v = flip(v); return dy && !DIRKEY.test(key) ? [v[0], v[1] + dy, v[2]] : v; };
+    return pr.kind === 'poi' ? K('P') : pr.kind === 'nunchaku' ? K('T') : pr.kind === 'staff' ? K(pr.tip || 'a') : pr.kind === 'buugeng' ? sPoints(K('c'), K('u'), K('v'))[0] : null;
   }
   const other = s => s === 'L' ? 'R' : 'L';
   const propsOf = (clip, mir) => mir ? clip.props.map(p => p.hand ? { ...p, hand: other(p.hand) } : p) : clip.props;
@@ -341,7 +358,8 @@ const Demo = (() => {
     for (const p of props) if (p.hand) busy[p.hand] = true;
     if (solid) {
       // The model, its props and their shading come from three.js; trails and labels are drawn over it here.
-      const sg = stage(clip, f, props), { J, hands, near } = sg, list = sg.list.map(it => ({ ...it, color: col[it.role] })), R = [cy, 0, k * sy], D = [-k * sy, 0, cy], U = sub([0, cos(tilt), 0], mul(D, sin(tilt)));
+      const { J, hands, near, list } = stage(clip, f, props), R = [cy, 0, k * sy], D = [-k * sy, 0, cy], U = sub([0, cos(tilt), 0], mul(D, sin(tilt)));
+      for (const it of list) it.color = col[it.role]; // the list is this frame's own, so the colours go straight onto it
       if (!near) {
         const sh = pr([J.pelvis[0], 0, J.pelvis[2]]), g = ctx.createRadialGradient(sh[0], sh[1], 0, sh[0], sh[1], 0.42 * S);
         g.addColorStop(0, 'rgba(0,0,0,.35)'); g.addColorStop(1, 'rgba(0,0,0,0)');
@@ -379,7 +397,7 @@ const Demo = (() => {
       if (!pt.tip || clip.still) return;
       // Trail of the prop's marked point, newest first.
       const span = full ? (clip.loop ? 1 : 0.3) : clip.loop ? clip.trail : 0.07, n = full || span > 0.6 ? 96 : 26;
-      tips.push(Array.from({ length: n }, (_, j) => pr(parts(p, i, pose(clip, clip.loop ? ph - j / n * span : Math.max(ph - j / n * span, 0), mir)).tip)));
+      tips.push(Array.from({ length: n }, (_, j) => pr(tipAt(clip, p, i, clip.loop ? ph - j / n * span : Math.max(ph - j / n * span, 0), mir))));
     });
     items.sort((a, b) => a.z - b.z);
     for (const it of items) {
@@ -721,7 +739,7 @@ const Demo = (() => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, pack, unpack, mirror, sPoints, propsOf, stage,
+  return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, tipAt, pack, unpack, mirror, sPoints, propsOf, stage,
     index: () => index, clip: () => { const v = variant(); return v && cache.get(v.f); },
     v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, FRAMES, avatar, presetOf, preview, previewState: pv, firstClip, calm, still: () => still, setStill, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
 })();

@@ -10,6 +10,7 @@ const V = a => new THREE.Vector3(a[0], a[1], a[2]);
 const F = { ready: false, failed: false, nopose: typeof window !== "undefined" && !!window.__nopose };
 let renderer, scene, camera, model, sun;
 const bone = {}, rest = {}, fingers = { L: [], R: [] }, handRest = {};
+let posedBones = []; // the names of the bones a pose moves, each with its rest in `rest`
 const cyl = [], ball = [], mats = new Map(), skins = [];
 
 /* ---------- nothing done twice ---------- */
@@ -21,13 +22,16 @@ const cyl = [], ball = [], mats = new Map(), skins = [];
 // later is compared without being listed here. One request is remembered, not a history of them.
 const memo = () => ({ num: new Float64Array(256), word: [], at: [], n: 0, w: 0, len: -1, words: -1, same: false, held: false });
 const posed = memo(), drawn = memo(), count = { poses: 0, skins: 0, renders: 0, reused: 0 };
+function number(k, x) {
+  if (k.n === k.num.length) { const a = new Float64Array(k.n * 2); a.set(k.num); k.num = a; }
+  if (!Object.is(k.num[k.n], x)) { k.num[k.n] = x; k.same = false; }
+  k.n++;
+}
 function note(k, v) {
-  if (typeof v === 'number') {
-    if (k.n === k.num.length) { const a = new Float64Array(k.n * 2); a.set(k.num); k.num = a; }
-    if (!Object.is(k.num[k.n], v)) { k.num[k.n] = v; k.same = false; }
-    k.n++;
-  } else if (v !== null && typeof v === 'object') {
-    if (Array.isArray(v)) { note(k, v.length); for (let i = 0; i < v.length; i++) note(k, v[i]); }
+  if (typeof v === 'number') number(k, v);
+  else if (v !== null && typeof v === 'object') {
+    // Most of a request is points, [x, y, z]: their numbers are taken here, without a call of `note` for each.
+    if (Array.isArray(v)) { number(k, v.length); for (let i = 0; i < v.length; i++) { const x = v[i]; if (typeof x === 'number') number(k, x); else note(k, x); } }
     else for (const p in v) { note(k, p); note(k, v[p]); }
   } else {
     // A word (a colour, a grip, a name) or nothing at all, with its place among the numbers.
@@ -46,14 +50,31 @@ function unchanged(k) {
 // Whatever changes the body without being part of a request (another build, another avatar) drops both.
 const forget = () => { posed.held = drawn.held = false; };
 
+/* ---------- nothing made for a frame ---------- */
+// The working of a frame needs a few hundred vectors and quaternions that nobody keeps. They are lent
+// from a pool, one after another, and all taken back when the next staging starts, so a frame makes
+// none. A lent vector is zero and a lent quaternion is no rotation, as new ones are. What is kept from
+// one frame to the next (the rest pose, the frame of each hand) has a place of its own instead.
+const pool = { v: [], q: [], nv: 0, nq: 0 };
+const takeBack = () => { pool.nv = pool.nq = 0; };
+const tv = () => (pool.v[pool.nv++] || (pool.v[pool.nv - 1] = new THREE.Vector3())).set(0, 0, 0);
+const tq = () => (pool.q[pool.nq++] || (pool.q[pool.nq - 1] = new THREE.Quaternion())).identity();
+const pt = a => tv().set(a[0], a[1], a[2]), cp = v => tv().copy(v); // a point given as [x, y, z]; a copy of a vector to work on
+const basis = new THREE.Matrix4(), cut = new THREE.Plane(), CUT = [cut], NOCUT = [];
+
 function find(root, name) { let hit = null; root.traverse(o => { if (!hit && o.isBone && o.name.replace(/^mixamorig:?/, '') === name) hit = o; }); return hit; }
-const wpos = o => o.getWorldPosition(new THREE.Vector3()), wquat = o => o.getWorldQuaternion(new THREE.Quaternion());
+// Where a bone is and how it is turned, in the world: into `to`, or into a new one where the answer is kept.
+const wpos = (o, to = new THREE.Vector3()) => o.getWorldPosition(to), wquat = (o, to = new THREE.Quaternion()) => o.getWorldQuaternion(to);
 // A rotation taking the frame (x, n, w) of the rest pose to the same frame now.
-function frameQuat(x, n, w) { return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, n, w)); }
-function handFrame(x, w, side) {
-  const X = x.clone().normalize(), W = w.clone().sub(X.clone().multiplyScalar(w.dot(X))).normalize(), N = new THREE.Vector3().crossVectors(X, W).multiplyScalar(side === 'L' ? -1 : 1);
+function frameQuat(x, n, w, q = new THREE.Quaternion()) { return q.setFromRotationMatrix(basis.makeBasis(x, n, w)); }
+// The frame of a hand, into `fr`: each hand has one for the pose being made (handNow); the rest pose gets its own.
+const newFrame = () => ({ X: new THREE.Vector3(), N: new THREE.Vector3(), W: new THREE.Vector3(), q: new THREE.Quaternion() });
+const handNow = { L: newFrame(), R: newFrame() }, side0 = new THREE.Vector3();
+function handFrame(x, w, side, fr = newFrame()) {
+  fr.X.copy(x).normalize(); fr.W.copy(w).sub(side0.copy(fr.X).multiplyScalar(w.dot(fr.X))).normalize(); fr.N.crossVectors(fr.X, fr.W).multiplyScalar(side === 'L' ? -1 : 1);
   // A right-handed set for the matrix: (X, N, W) for the right hand, (X, -N, W) mirrored for the left.
-  return { X, N, W, q: frameQuat(X, new THREE.Vector3().crossVectors(W, X), W) };
+  frameQuat(fr.X, side0.crossVectors(fr.W, fr.X), fr.W, fr.q);
+  return fr;
 }
 
 // url: the model file. bytes: its contents instead, for Node, where the tests pose and measure the
@@ -83,6 +104,7 @@ async function load(url, bytes) {
     model.scale.multiplyScalar(1.43 / wpos(bone.LeftArm).y);
     model.updateMatrixWorld(true);
     const chain = { LeftShoulder: 'LeftArm', RightShoulder: 'RightArm', LeftArm: 'LeftForeArm', LeftForeArm: 'LeftHand', RightArm: 'RightForeArm', RightForeArm: 'RightHand', LeftUpLeg: 'LeftLeg', LeftLeg: 'LeftFoot', LeftFoot: 'LeftToeBase', RightUpLeg: 'RightLeg', RightLeg: 'RightFoot', RightFoot: 'RightToeBase' };
+    posedBones = names;
     for (const n of names) rest[n] = { q: wquat(bone[n]), dir: chain[n] ? wpos(bone[chain[n]]).sub(wpos(bone[n])).normalize() : null, local: bone[n].quaternion.clone(), pos: bone[n].position.clone() };
     rest.hipOff = wpos(bone.Hips).y - wpos(bone.LeftUpLeg).y; // the hips bone sits a little above the hip joints
     rest.scale = model.scale.x;
@@ -138,23 +160,23 @@ async function load(url, bytes) {
 // Put a bone at a world position with a world rotation.
 function place(b, pos, q) {
   b.parent.updateWorldMatrix(true, false);
-  if (pos) b.position.copy(b.parent.worldToLocal(pos.clone()));
-  b.quaternion.copy(wquat(b.parent).invert().multiply(q));
+  if (pos) b.position.copy(b.parent.worldToLocal(cp(pos)));
+  b.quaternion.copy(wquat(b.parent, tq()).invert().multiply(q));
 }
 // Point a bone from one joint to the next, turning it the short way from its rest direction.
 // With `flex` and `want` it is then rolled about its own axis so that the direction it bends
 // in rest (flex) faces `want`: the elbow toward the forearm, the knee toward the shin, the
 // forearm's palm side toward the palm. `keep` leaves the bone where its parent put it.
 function aim(n, from, to, flex, want, keep) {
-  const d = to.clone().sub(from); if (d.lengthSq() < 1e-10) return;
+  const d = cp(to).sub(from); if (d.lengthSq() < 1e-10) return;
   d.normalize();
-  let q = new THREE.Quaternion().setFromUnitVectors(rest[n].dir, d);
+  let q = tq().setFromUnitVectors(rest[n].dir, d);
   if (flex && want) {
-    const w = want.clone().sub(d.clone().multiplyScalar(want.dot(d))), f = flex.clone().applyQuaternion(q);
-    f.sub(d.clone().multiplyScalar(f.dot(d)));
+    const w = cp(want).sub(cp(d).multiplyScalar(want.dot(d))), f = cp(flex).applyQuaternion(q);
+    f.sub(cp(d).multiplyScalar(f.dot(d)));
     if (w.lengthSq() > 1e-8 && f.lengthSq() > 1e-8) {
       w.normalize(); f.normalize();
-      q = new THREE.Quaternion().setFromAxisAngle(d, Math.atan2(new THREE.Vector3().crossVectors(f, w).dot(d), f.dot(w))).multiply(q);
+      q = tq().setFromAxisAngle(d, Math.atan2(tv().crossVectors(f, w).dot(d), f.dot(w))).multiply(q);
     }
   }
   place(bone[n], keep ? null : from, q.multiply(rest[n].q));
@@ -162,66 +184,70 @@ function aim(n, from, to, flex, want, keep) {
 // The part of `v` at right angles to the unit vector `d`, padded with `fallback` as it gets short,
 // so a straight limb still knows which way it would bend.
 function across(v, d, fallback) {
-  const w = v.clone().sub(d.clone().multiplyScalar(v.dot(d))), L = w.length();
-  return L > 0.06 ? w : w.add(fallback.clone().multiplyScalar(0.06 - L));
+  const w = cp(v).sub(cp(d).multiplyScalar(v.dot(d))), L = w.length();
+  return L > 0.06 ? w : w.add(cp(fallback).multiplyScalar(0.06 - L));
 }
 
+// What each side's joints are called in the rig (shL, elL, hipL, kneeL, fL, tL) and its bones in the model.
+const SIDES = [['L', 'Left'], ['R', 'Right']].map(([s, S]) => ({ s, sh: 'sh' + s, el: 'el' + s, hip: 'hip' + s, knee: 'knee' + s, f: 'f' + s, t: 't' + s, UpLeg: S + 'UpLeg', Leg: S + 'Leg', Foot: S + 'Foot', Shoulder: S + 'Shoulder', Arm: S + 'Arm', ForeArm: S + 'ForeArm', Hand: S + 'Hand' }));
+// How far each joint of a thumb and of a finger curls, in radians, from the knuckle out, closed and open.
+const CURL = { thumb: [0.35, 0.45, 0.6], thumbOpen: [0.05, 0.05, 0.05], finger: [1.35, 1.6, 1.1], fingerOpen: [0.16, 0.16, 0.1] };
+const UPY = new THREE.Vector3(0, 1, 0), SOLE = new THREE.Vector3(0, -0.035, 0);
 function poseBody(J, hands) {
   count.poses++;
-  const left = V(J.left), up = V(J.up), fwd = new THREE.Vector3().crossVectors(left, up), UP = new THREE.Vector3(0, 1, 0);
-  for (const n in rest) if (bone[n]) { bone[n].quaternion.copy(rest[n].local); bone[n].position.copy(rest[n].pos); }
-  place(bone.Hips, V(J.pelvis).add(up.clone().multiplyScalar(rest.hipOff)), frameQuat(left, up, fwd).multiply(rest.Hips.q));
+  const left = pt(J.left), up = pt(J.up), fwd = tv().crossVectors(left, up);
+  for (const n of posedBones) { bone[n].quaternion.copy(rest[n].local); bone[n].position.copy(rest[n].pos); }
+  place(bone.Hips, pt(J.pelvis).add(cp(up).multiplyScalar(rest.hipOff)), frameQuat(left, up, fwd, tq()).multiply(rest.Hips.q));
   // The head stays nearer upright than the trunk, as a person's does when they lean.
-  const level = new THREE.Quaternion().setFromUnitVectors(up, up.clone().multiplyScalar(0.4).add(UP.clone().multiplyScalar(0.6)).normalize()), half = new THREE.Quaternion().slerp(level, 0.5);
-  place(bone.Neck, null, half.clone().multiply(wquat(bone.Neck)));
-  place(bone.Head, null, half.clone().multiply(wquat(bone.Head)));
-  for (const [s, S] of [['L', 'Left'], ['R', 'Right']]) {
-    const h = hands[s], fr = handFrame(V(h.x), V(h.w), s), k = handRest[s].grip / 0.085;
-    const sh = V(J['sh' + s]), el = V(J['el' + s]), hip = V(J['hip' + s]), knee = V(J['knee' + s]), foot = V(J['f' + s]), toe = V(J['t' + s]);
+  const level = tq().setFromUnitVectors(up, cp(up).multiplyScalar(0.4).add(cp(UPY).multiplyScalar(0.6)).normalize()), half = tq().slerp(level, 0.5);
+  place(bone.Neck, null, tq().copy(half).multiply(wquat(bone.Neck, tq())));
+  place(bone.Head, null, tq().copy(half).multiply(wquat(bone.Head, tq())));
+  for (const d of SIDES) {
+    const s = d.s, h = hands[s], fr = handFrame(pt(h.x), pt(h.w), s, handNow[s]), k = handRest[s].grip / 0.085;
+    const sh = pt(J[d.sh]), el = pt(J[d.el]), hip = pt(J[d.hip]), knee = pt(J[d.knee]), foot = pt(J[d.f]), toe = pt(J[d.t]);
     // The wrist sits behind the grip and under the stick, as in the drawn hand.
-    const wrist = V(h.o).add(fr.W.clone().multiplyScalar(-0.085 * k)).add(fr.N.clone().multiplyScalar(-(h.r + 0.01)));
+    const wrist = pt(h.o).add(cp(fr.W).multiplyScalar(-0.085 * k)).add(cp(fr.N).multiplyScalar(-(h.r + 0.01)));
     // Legs: the knee bends backward and points where the toes point; the shin's front faces the toes.
-    const thigh = knee.clone().sub(hip).normalize(), shin = foot.clone().sub(knee).normalize();
-    aim(S + 'UpLeg', hip, knee, rest.fwd.clone().negate(), across(shin, thigh, toe.clone().negate()));
-    aim(S + 'Leg', knee, foot, rest.fwd, across(toe, shin, fwd));
-    aim(S + 'Foot', foot, foot.clone().add(toe.clone().multiplyScalar(0.14)).add(new THREE.Vector3(0, -0.035, 0)));
+    const thigh = cp(knee).sub(hip).normalize(), shin = cp(foot).sub(knee).normalize();
+    aim(d.UpLeg, hip, knee, cp(rest.fwd).negate(), across(shin, thigh, cp(toe).negate()));
+    aim(d.Leg, knee, foot, rest.fwd, across(toe, shin, fwd));
+    aim(d.Foot, foot, cp(foot).add(cp(toe).multiplyScalar(0.14)).add(SOLE));
     // Shoulder: the collarbone lifts as the hand goes up, and the arm starts from its tip.
-    const lift = Math.max(0, Math.min(1, (V(h.o).y - sh.y) / 0.45)) * 0.1;
-    aim(S + 'Shoulder', wpos(bone[S + 'Shoulder']), sh.clone().add(up.clone().multiplyScalar(lift)), null, null, true);
-    const start = wpos(bone[S + 'Arm']);
+    const lift = Math.max(0, Math.min(1, (h.o[1] - sh.y) / 0.45)) * 0.1;
+    aim(d.Shoulder, wpos(bone[d.Shoulder], tv()), cp(sh).add(cp(up).multiplyScalar(lift)), null, null, true);
+    const start = wpos(bone[d.Arm], tv());
     // Upper arm: rolled so the elbow is a hinge that bends toward the forearm; when the arm is
     // straight the crease faces forward and a little in, as at rest.
-    const upper = el.clone().sub(start).normalize(), fore = wrist.clone().sub(el).normalize();
-    aim(S + 'Arm', start, el, rest.fwd, across(fore, upper, fwd.clone().add(left.clone().multiplyScalar(s === 'L' ? -0.5 : 0.5))), true);
+    const upper = cp(el).sub(start).normalize(), fore = cp(wrist).sub(el).normalize();
+    aim(d.Arm, start, el, rest.fwd, across(fore, upper, cp(fwd).add(cp(left).multiplyScalar(s === 'L' ? -0.5 : 0.5))), true);
     // Forearm: turned (pronation or supination) so its palm side follows the hand, within what a forearm can do.
-    const q0 = new THREE.Quaternion().setFromUnitVectors(rest[S + 'ForeArm'].dir, fore), n0 = handRest[s].N.clone().applyQuaternion(q0);
-    const want = across(fr.N, fore, n0), have = n0.clone().sub(fore.clone().multiplyScalar(n0.dot(fore))).normalize(); want.normalize();
-    const turn = Math.max(-1.75, Math.min(1.75, Math.atan2(new THREE.Vector3().crossVectors(have, want).dot(fore), have.dot(want))));
-    place(bone[S + 'ForeArm'], el, new THREE.Quaternion().setFromAxisAngle(fore, turn).multiply(q0).multiply(rest[S + 'ForeArm'].q));
-    place(bone[S + 'Hand'], wrist, fr.q.clone().multiply(handRest[s].q.clone().invert()).multiply(handRest[s].bq));
+    const q0 = tq().setFromUnitVectors(rest[d.ForeArm].dir, fore), n0 = cp(handRest[s].N).applyQuaternion(q0);
+    const want = across(fr.N, fore, n0), have = cp(n0).sub(cp(fore).multiplyScalar(n0.dot(fore))).normalize(); want.normalize();
+    const turn = Math.max(-1.75, Math.min(1.75, Math.atan2(tv().crossVectors(have, want).dot(fore), have.dot(want))));
+    place(bone[d.ForeArm], el, tq().setFromAxisAngle(fore, turn).multiply(q0).multiply(rest[d.ForeArm].q));
+    place(bone[d.Hand], wrist, tq().copy(fr.q).multiply(tq().copy(handRest[s].q).invert()).multiply(handRest[s].bq));
     // Fingers close round what is held, less tightly round something thick.
     const closed = h.grip !== 'open', tight = Math.min(1.15, Math.sqrt(0.012 / Math.max(h.r || 0.012, 0.006)));
     for (const f of fingers[s]) {
-      const a = f.thumb ? (closed ? [0.35, 0.45, 0.6] : [0.05, 0.05, 0.05])[f.j - 1] : (closed ? [1.35, 1.6, 1.1].map(x => x * tight) : [0.16, 0.16, 0.1])[f.j - 1];
-      f.b.quaternion.copy(f.local).multiply(new THREE.Quaternion().setFromAxisAngle(f.axis, a));
+      const a = f.thumb ? (closed ? CURL.thumb : CURL.thumbOpen)[f.j - 1] : closed ? CURL.finger[f.j - 1] * tight : CURL.fingerOpen[f.j - 1];
+      f.b.quaternion.copy(f.local).multiply(tq().setFromAxisAngle(f.axis, a));
     }
   }
 }
 
 const mat = (color = '#888888') => { if (!mats.has(color)) mats.set(color, new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.05 })); return mats.get(color); };
-const UPY = new THREE.Vector3(0, 1, 0);
 function props(items) {
   let nc = 0, nb = 0;
   for (const it of items) {
     if (it.c) {
       const m = ball[nb] || (ball[nb] = scene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16))) && scene.children[scene.children.length - 1]); nb++;
-      m.visible = true; m.material = mat(it.color); m.position.copy(V(it.c)); m.scale.setScalar(it.r);
+      m.visible = true; m.material = mat(it.color); m.position.fromArray(it.c); m.scale.setScalar(it.r);
     } else for (let i = 0; i < it.pts.length; i++) {
       // A tube from point to point, with a rounded joint at each point.
       const e = ball[nb] || (ball[nb] = scene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16))) && scene.children[scene.children.length - 1]); nb++;
-      e.visible = true; e.material = mat(it.color); e.position.copy(V(it.pts[i])); e.scale.setScalar(it.w / 2);
+      e.visible = true; e.material = mat(it.color); e.position.fromArray(it.pts[i]); e.scale.setScalar(it.w / 2);
       if (i === it.pts.length - 1) break;
-      const a = V(it.pts[i]), b = V(it.pts[i + 1]), d = b.clone().sub(a), L = d.length(); if (L < 1e-6) continue;
+      const a = pt(it.pts[i]), b = pt(it.pts[i + 1]), d = cp(b).sub(a), L = d.length(); if (L < 1e-6) continue;
       const m = cyl[nc] || (cyl[nc] = scene.add(new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 20, 1, true))) && scene.children[scene.children.length - 1]); nc++;
       m.visible = true; m.material = mat(it.color); m.position.copy(a.add(b).multiplyScalar(0.5)); m.quaternion.setFromUnitVectors(UPY, d.normalize()); m.scale.set(it.w / 2, L, it.w / 2);
     }
@@ -246,7 +272,8 @@ function skin() {
         px += w * (bm[m] * x + bm[m + 4] * y + bm[m + 8] * z + bm[m + 12]); py += w * (bm[m + 1] * x + bm[m + 5] * y + bm[m + 9] * z + bm[m + 13]); pz += w * (bm[m + 2] * x + bm[m + 6] * y + bm[m + 10] * z + bm[m + 14]);
         nx += w * (bm[m] * a + bm[m + 4] * b + bm[m + 8] * c); ny += w * (bm[m + 1] * a + bm[m + 5] * b + bm[m + 9] * c); nz += w * (bm[m + 2] * a + bm[m + 6] * b + bm[m + 10] * c);
       }
-      const s = sum || 1, l = Math.hypot(nx, ny, nz) || 1;
+      // The length written out: V8 puts each number handed to Math.hypot on the heap, 3 MB for one skinning.
+      const s = sum || 1, l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
       P[i * 3] = px / s; P[i * 3 + 1] = py / s; P[i * 3 + 2] = pz / s; N[i * 3] = nx / l; N[i * 3 + 1] = ny / l; N[i * 3 + 2] = nz / l;
     }
     k.out.attributes.position.needsUpdate = true; k.out.attributes.normal.needsUpdate = true;
@@ -258,6 +285,7 @@ function skin() {
 // Pose the body, skin it and place the props: what render and probe share. The body is posed and
 // skinned only when the joints and the hands are not the ones it was last skinned for.
 function stage(J, hands, items) {
+  takeBack();
   drawn.held = false; // the scene is being changed, so the picture is of something else until render says otherwise
   begin(posed); note(posed, F.nopose); note(posed, J); note(posed, hands);
   if (!unchanged(posed)) { if (!F.nopose) poseBody(J, hands); skin(); posed.held = true; }
@@ -283,11 +311,12 @@ function render(W, J, hands, items, cam) {
   kept = false;
   if (renderer.domElement.width !== W) renderer.setSize(W, W, false);
   stage(J, hands, items);
-  const R = V(cam.right), U = V(cam.up), T = V(cam.toward), c = R.clone().multiplyScalar(cam.cx).add(U.clone().multiplyScalar(cam.cy));
+  const R = pt(cam.right), U = pt(cam.up), T = pt(cam.toward), c = cp(R).multiplyScalar(cam.cx).add(cp(U).multiplyScalar(cam.cy));
   camera.left = -cam.half; camera.right = cam.half; camera.top = cam.half; camera.bottom = -cam.half; camera.updateProjectionMatrix();
-  camera.position.copy(c.clone().add(T.clone().multiplyScalar(20))); camera.up.copy(U); camera.lookAt(c);
-  renderer.clippingPlanes = cam.cut ? [new THREE.Plane(T.clone(), cam.cut - c.dot(T))] : [];
-  sun.position.copy(c.clone().add(T.clone().multiplyScalar(4)).add(U.clone().multiplyScalar(3)).add(R.clone().multiplyScalar(-2.5))); sun.target.position.copy(c);
+  camera.position.copy(cp(c).add(cp(T).multiplyScalar(20))); camera.up.copy(U); camera.lookAt(c);
+  if (cam.cut) { cut.normal.copy(T); cut.constant = cam.cut - c.dot(T); }
+  renderer.clippingPlanes = cam.cut ? CUT : NOCUT;
+  sun.position.copy(cp(c).add(cp(T).multiplyScalar(4)).add(cp(U).multiplyScalar(3)).add(cp(R).multiplyScalar(-2.5))); sun.target.position.copy(c);
   renderer.render(scene, camera); count.renders++;
   drawn.held = true;
   return renderer.domElement;

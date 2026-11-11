@@ -202,6 +202,13 @@ rendered, compares each request with them, and hands the kept picture out
 changed one takes 41 to 95 ms, depending on what else the machine is doing. The bound in CI is 5 ms (`SAME_FRAME_BUDGET_MS` in
 `test/browser/avatar.py`); the target on the Pi is 2 ms and has not been measured there yet.
 
+Playing leaves the memory where it was. The figure poses and skins with vectors and quaternions lent
+from a pool and with buffers made once per mesh: a frame allocates about 2 KB of short-lived numbers
+where it was 3 MB, nearly all of that from `Math.hypot` in the skinning loop, and 300 frames hold
+nothing more on the heap (`node --expose-gc test/alloc.js`, limit 100 KB). The player (`web/demo.js`)
+works in plain `[x, y, z]` arrays shared with the physics and still allocates 37 to 81 KB for a frame (one prop at the low end, two at the high end),
+trail included, down from 85 to 141 KB.
+
 ## Licences
 
 - **Base model.** `web/assets/human.glb` is the "X Bot" mannequin from the three.js examples

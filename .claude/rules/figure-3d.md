@@ -29,6 +29,9 @@ paths:
   again when a request is the same by value (`node test/skin-once.js`). Anything that changes the
   figure without passing through the arguments of `render` or `stage` (a new avatar, body or
   material) must call `forget()`, or a stale picture is shown.
+- Code that runs every frame takes its vectors and quaternions from the pool (`tv()`, `tq()`,
+  `pt()`, `cp()`), never `new` or `.clone()`, and avoids `Math.hypot` in loops (it allocates per
+  call). `node --expose-gc test/alloc.js` bounds what a frame allocates.
 - `figure/src/figure.js` loads in Node without WebGL (`load(url, bytes)`), which is how
   `test/body3d.js` poses the figure against every clip and measures the props against the skin.
   Keep `probe`, `partReport` and `stage` working there: no `document`, `window` or renderer in the

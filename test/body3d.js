@@ -86,7 +86,7 @@ function parts(F) {
 }
 
 // The figure, loaded as the browser loads it but without WebGL: for this test and the others that pose it
-// in Node (test/skin-once.js).
+// in Node (test/skin-once.js, test/alloc.js).
 async function figure() {
   globalThis.window = globalThis;
   await import('../figure/src/figure.js');
