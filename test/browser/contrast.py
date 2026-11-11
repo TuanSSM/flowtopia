@@ -6,8 +6,10 @@
 # colour or lands on a surface the stylesheet did not plan for. It does not see hover and focus states: those
 # are in test/contrast.js alone.
 # Not judged, and counted, each kind apart:
-# - what a person cannot see or sees dimmed: something opaque lies over it (the panel over the page), or it
-#   lies behind the sheet that dims the page for a dialog or the menu;
+# - what a person cannot see or sees dimmed: something lies over it (the panel over the page), or it lies
+#   behind the sheet that dims the page for a dialog or the menu. Neither count is free: a stop that opens
+#   no dialog may have nothing behind a sheet and at most a quarter as much hidden as judged, and a stop
+#   that opens one must judge what is in the dialog. A sheet left up by accident fails the next stop;
 # - a control that is switched off, which the standard leaves out; checkboxes, radio buttons and sliders,
 #   which the browser draws; drawings that are not icons (charts, rings, the heatmap);
 # - text and icons on a gradient, over a picture or over a canvas, where the colour behind is not one
@@ -24,11 +26,11 @@ from h import *
 # first background that is opaque. A background picture or gradient on the way, or a canvas, picture or frame
 # lying under the element, ends it without an answer.
 # What lies over an element is asked of the browser at the element's middle, for what is inside the window:
-# an opaque box, a picture or a canvas over it hides it; a sheet that lets some of the page through dims it.
-# Outside the window the browser cannot be asked, so there a sheet that covers the whole window (the one
-# behind a dialog) stands for it.
+# a box with a background, a picture or a canvas over it hides it; the sheet that covers the whole window
+# and lets some of the page through (the one behind a dialog) dims it. Outside the window the browser
+# cannot be asked, so there such a sheet, if one is up, stands for it.
 LIB=r"""
-const root=document.querySelector(arguments[0]||'body'),KNOWN=arguments[2]||[];
+const root=document.querySelector(arguments[0]||'body'),KNOWN=arguments[2]||[],DIALOG=arguments[3]||'';
 const P=s=>{s=(s||'').trim();let m;
   const pc=(x,one)=>x.endsWith('%')?parseFloat(x)/100*one:parseFloat(x),al=x=>x==null?1:pc(x,1);
   if(s==='transparent')return [0,0,0,0];
@@ -46,16 +48,19 @@ const where=e=>{const p=e.parentElement&&e.parentElement.closest('[class]');retu
 const shown=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden'&&!e.closest('[hidden]')&&(!e.checkVisibility||e.checkVisibility());
 const PICTURE=/^(canvas|img|video|iframe)$/i;
 const media=[...document.querySelectorAll('canvas,img,video,iframe')].filter(shown).map(m=>[m,m.getBoundingClientRect()]);
+// The window as a box laid over it fills it: without the scroll bar, which Firefox draws beside the page and
+// counts in innerWidth, so that a sheet over the whole page is narrower than innerWidth there.
+const VW=document.documentElement.clientWidth,VH=document.documentElement.clientHeight;
 const sheets=[...document.body.querySelectorAll('*')].filter(v=>{const s=getComputedStyle(v);if(s.position!=='fixed'||!shown(v))return false;
-  const r=v.getBoundingClientRect(),c=P(s.backgroundColor);return r.left<=0&&r.top<=0&&r.right>=innerWidth&&r.bottom>=innerHeight&&c&&c[3]>0});
+  const r=v.getBoundingClientRect(),c=P(s.backgroundColor);return r.left<=0&&r.top<=0&&r.right>=VW&&r.bottom>=VH&&c&&c[3]>0});
 const lost=e=>{
   const r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;
   if(x<0||y<0||x>=innerWidth||y>=innerHeight)return sheets.some(v=>!v.contains(e))?'behind':'';
   const hit=document.elementsFromPoint(x,y),at=hit.findIndex(h=>h===e||e.contains(h)||h.contains(e));
   for(const h of hit.slice(0,Math.max(at,0)))for(let a=h;a&&!a.contains(e);a=a.parentElement){
     const s=getComputedStyle(a),c=P(s.backgroundColor);
-    if(PICTURE.test(a.tagName)||s.backgroundImage!=='none'||(c&&c[3]>=.999))return 'hidden';
-    if(c&&c[3]>0)return 'behind';
+    if(c&&c[3]>0&&c[3]<.999&&sheets.includes(a))return 'behind';
+    if(PICTURE.test(a.tagName)||s.backgroundImage!=='none'||(c&&c[3]>0))return 'hidden';
   }
   return '';
 };
@@ -74,11 +79,12 @@ const behind=(e,fg)=>{
 };
 const paint=(s,v)=>/^currentcolor$/i.test(v)?s.color:v;  // a browser may hand back the word instead of the colour it stands for
 const big=e=>{const s=getComputedStyle(e),px=parseFloat(s.fontSize),w=parseInt(s.fontWeight)||400;return px>=24||(px>=18.66&&w>=700)};
-const out={n:0,off:0,native:0,hidden:0,behind:0,drawn:0,unknown:[],bad:[],all:[]},once=new Set();
+const out={n:0,inside:0,off:0,native:0,hidden:0,behind:0,drawn:0,unknown:[],bad:[],all:[]},once=new Set();
 // What cannot be judged: where, why, whether that is a kind this suite knows of, and the id of the piece.
 const cannot=(e,kind,why,by)=>out.unknown.push([where(e),kind+' '+why,!!by&&KNOWN.some(k=>by.matches(k)),e.id||'']);
-const judge=(e,kind,fg,need)=>{
-  if(!fg)return cannot(e,kind,'in a colour written in a way this check does not read');
+const judge=(e,kind,raw,need,fade)=>{
+  let fg=P(raw);if(!fg)return cannot(e,kind,'in a colour written in a way this check does not read: '+raw);
+  if(fade>=0)fg=fg.slice(0,3).concat(fg[3]*fade);
   const gone=lost(e);if(gone){out[gone]++;return}
   if(e.closest(':disabled,[disabled],[aria-disabled=true]')){out.off++;return}
   if(fg[3]===0)return cannot(e,kind,'in no colour at all: what shows is not its colour');
@@ -87,7 +93,7 @@ const judge=(e,kind,fg,need)=>{
   rate(e,kind,g.t,g.b,need);
 };
 const rate=(e,kind,f,b,need)=>{
-  const r=ratio(f,b),row=[where(e),kind,hex(f),hex(b),Math.round(r*100)/100,need,e.id||''];out.n++;
+  const r=ratio(f,b),row=[where(e),kind,hex(f),hex(b),Math.round(r*100)/100,need,e.id||''];out.n++;if(DIALOG&&e.closest(DIALOG))out.inside++;
   if(arguments[1])out.all.push(row);
   if(r<need&&!once.has(row.slice(0,4).join()+need)){once.add(row.slice(0,4).join()+need);out.bad.push(row)}
 };
@@ -105,7 +111,7 @@ const rate=(e,kind,f,b,need)=>{
 CHECK=LIB+r"""
 const texts=new Set(),w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
 for(let n;n=w.nextNode();)if(/\S/.test(n.nodeValue)&&!n.parentElement.closest('script,style,noscript,template,title,option,optgroup,select,textarea'))texts.add(n.parentElement);
-for(const e of texts){if(!shown(e))continue;const s=getComputedStyle(e);judge(e,'text',P(e instanceof SVGElement?paint(s,s.fill):s.color),big(e)?3:4.5)}
+for(const e of texts){if(!shown(e))continue;const s=getComputedStyle(e);judge(e,'text',e instanceof SVGElement?paint(s,s.fill):s.color,big(e)?3:4.5)}
 const none=c=>!c||/^(none|normal|""|'')$/.test(c.trim()),parts=new Map();
 const rules=rs=>{for(const r of rs){
   if(!r.selectorText){if(r.cssRules)rules(r.cssRules);continue}
@@ -115,24 +121,24 @@ const rules=rs=>{for(const r of rs){
     let es=[];try{es=[...document.querySelectorAll(m[1]||'*')].filter(e=>root.contains(e))}catch(x){}
     for(const e of es){
       const had=parts.get(e)||parts.set(e,new Set()).get(e);if(had.has(m[2])||!shown(e))continue;had.add(m[2]);
-      const s=getComputedStyle(e,'::'+m[2]);if(!none(s.content))judge(e,'words of ::'+m[2],P(s.color),big(e)?3:4.5)}
+      const s=getComputedStyle(e,'::'+m[2]);if(!none(s.content))judge(e,'words of ::'+m[2],s.color,big(e)?3:4.5)}
   }}};
 for(const sh of document.styleSheets){let rs=null;try{rs=sh.cssRules}catch(x){}if(rs)rules(rs)}
 for(const e of root.querySelectorAll('svg')){
   if(!shown(e))continue;
-  if(e.matches('.i')){const s=getComputedStyle(e),c=s.stroke!=='none'?s.stroke:s.fill;if(c!=='none')judge(e,'icon',P(paint(s,c)),3);continue}
+  if(e.matches('.i')){const s=getComputedStyle(e),c=s.stroke!=='none'?s.stroke:s.fill;if(c!=='none')judge(e,'icon',paint(s,c),3);continue}
   const b=e.closest('button,a,summary,[role=button]'),shape=e.querySelector('path,line,circle,rect,polygon,polyline,ellipse,use');
   if(!b||!shape||b.textContent.trim()||b.querySelectorAll('svg,img,canvas').length>1){out.drawn++;continue}
-  const s=getComputedStyle(shape),c=s.fill!=='none'?s.fill:s.stroke;if(c!=='none')judge(e,'icon',P(paint(s,c)),3);
+  const s=getComputedStyle(shape),c=s.fill!=='none'?s.fill:s.stroke;if(c!=='none')judge(e,'icon',paint(s,c),3);
 }
 for(const e of root.querySelectorAll('input,select,textarea')){
   if(!shown(e))continue;
   const ty=(e.getAttribute('type')||'text').toLowerCase(),s=getComputedStyle(e);
   if(ty==='hidden'||parseFloat(s.opacity)===0)continue;
   if(/^(checkbox|radio|range|file|color|image)$/.test(ty)){out.native++;continue}
-  if(/^(button|submit|reset)$/.test(ty)){judge(e,'text',P(s.color),big(e)?3:4.5);continue}
-  judge(e,'typed text',P(s.color),big(e)?3:4.5);
-  if(e.getAttribute('placeholder')&&!e.value){const p=getComputedStyle(e,'::placeholder'),c=P(p.color),o=parseFloat(p.opacity);judge(e,'placeholder',c&&c.slice(0,3).concat(c[3]*(o>=0?o:1)),big(e)?3:4.5)}
+  if(/^(button|submit|reset)$/.test(ty)){judge(e,'text',s.color,big(e)?3:4.5);continue}
+  judge(e,'typed text',s.color,big(e)?3:4.5);
+  if(e.getAttribute('placeholder')&&!e.value){const p=getComputedStyle(e,'::placeholder');judge(e,'placeholder',p.color,big(e)?3:4.5,parseFloat(p.opacity))}
   const gone=lost(e);if(gone){out[gone]++;continue}
   if(e.closest(':disabled,[disabled]')){out.off++;continue}
   const inside=behind(e,[0,0,0,0]),outside=e.parentElement?behind(e.parentElement,[0,0,0,0]):inside;
@@ -176,19 +182,20 @@ PROBE="""<style>#ct-probe #pph::placeholder{color:#767676;opacity:1}#ct-probe #f
 <button style="background:#fff;border:0"><svg id="fbare" width="16" height="16" viewBox="0 0 16 16"><path d="M2 2h12v12H2z" fill="#999"/></svg></button>
 <svg id="chart" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="#eee"/></svg>
 <div style="position:relative"><p id="xhid" style="color:#777;margin:0">Aa</p><div style="position:absolute;left:0;top:0;right:0;bottom:0;background:#fff"></div></div>
-<div style="position:relative"><p id="xdim" style="color:#777;margin:0">Aa</p><div style="position:absolute;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.5)"></div></div>
+<div style="position:relative"><p id="xveil" style="color:#777;margin:0">Aa</p><div style="position:absolute;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.5)"></div></div>
+<div style="position:fixed;left:0;top:0;right:0;bottom:0;z-index:-1;background:rgba(0,0,0,.02)"></div><p id="xdim" style="position:relative;z-index:-2;color:#777">Aa</p>
 <div id="kg" style="background:linear-gradient(#fff,#eee)"><p id="uknown">Aa</p></div><p id="uclear" style="color:transparent">Aa</p></div>"""
 # What may be left unjudged because the colour behind it is not one colour: the selector of what lies behind,
 # and why that is accepted. test/contrast.js lists the same three: the first two as decoration beside words
 # that say the same, the third checked there against both ends of its gradient.
 KNOWN=['.badge-ic.on','.flame.lit','.week-dots .on i']
-COUNTED=('n','off','native','hidden','behind','drawn')
+COUNTED=('n','inside','off','native','hidden','behind','drawn')
 tot=dict.fromkeys(COUNTED+('bad','unknown'),0);stops=set();listed={};unknown={};pairs={}
 def theme(t):
     js("document.documentElement.dataset.theme=arguments[0];localStorage.setItem('nf-theme',arguments[0])",t);idle()
-def look(name,t,root=None):
+def look(name,t,root=None,dialog=None):
     # One look at the page as it stands, in the theme it is in: what was judged, and whether all of it passes.
-    r=js(CHECK,root,bool(os.environ.get('CONTRAST_LIST')),KNOWN)
+    r=js(CHECK,root,bool(os.environ.get('CONTRAST_LIST')),KNOWN,dialog)
     for k in COUNTED: tot[k]+=r[k]
     tot['bad']+=len(r['bad']);tot['unknown']+=len(r['unknown'])
     for d,why,known,_ in r['unknown']: unknown.setdefault(why,[0,f'{d} at {name}, {t}'])[0]+=1
@@ -201,16 +208,25 @@ def look(name,t,root=None):
     if len(r['bad'])>len(new): new.append(f"and {len(r['bad'])-len(new)} listed at an earlier stop")
     # What cannot be judged is accepted only when it is of a kind this suite knows of.
     new+=sorted({f'{d}: {why} cannot be judged, and KNOWN does not list it' for d,why,known,_ in r['unknown'] if not known})
+    # What is lost from sight is counted, and the count is held: a sheet left up, or a box left over the
+    # page, would otherwise let every later stop pass with the page counted as lost.
+    if root: pass
+    elif dialog:
+        if not r['inside']: new.append(f'nothing inside {dialog} was judged: the dialog this stop is about is not up, or holds nothing')
+    else:
+        if r['behind']: new.append(f"{r['behind']} pieces lie dimmed behind a sheet over the window, and this stop opens no dialog: one was left up")
+        if r['hidden']*4>r['n']: new.append(f"{r['hidden']} pieces lie hidden under something, against {r['n']} judged: something was left over the page")
     return r,new
-def page(name,h=None,act=None,themes=('dark','light')):
+def page(name,h=None,act=None,themes=('dark','light'),dialog=None):
+    # dialog is the selector of what this stop opens over a dimmed page: a dialog's box, the search, the menu.
     if h is not None: nav(h)
     if act: js(act);idle()
     stops.add(name)  # the tour's stops come by twice, once in each theme
     for t in themes:
-        theme(t);r,new=look(name,t)
+        theme(t);r,new=look(name,t,dialog=dialog)
         # A stop where nothing was judged was not looked at; that is a failure, not a pass.
         check(f'{name}, {t}: text, icons and field edges stand out',r['n']>0 and not new,
-              new or f"{r['n']} judged, {len(r['unknown'])} not judged, {r['hidden']+r['behind']} hidden or dimmed, {r['off']} switched off")
+              new or f"{r['n']} judged{', %d of them in the dialog'%r['inside'] if dialog else ''}, {len(r['unknown'])} not judged, {r['hidden']} hidden, {r['behind']} dimmed, {r['off']} switched off")
     theme(themes[0])
 try:
     op=admin();api(op,'flags',{'flags':{'moderation':True,'catalogEditor':True}},'PUT');api(op,'me',{'props':['nunchaku','poi']},'PUT')
@@ -242,8 +258,10 @@ try:
                  'bare':['icon','#949494','#ffffff',3.03,3],'fbare':['icon','#999999','#ffffff',ratio((0x99,)*3,W),3]},lambda: more)
     bad=sorted(row[6] for row in r['all'] if row[4]<row[5])
     check('each piece that must fail is found and no other',bad==sorted(('f777','f18','f18b','ffade','fic','fed','fph','fsub','fps','fbare')),lambda: (bad,r['bad']))
-    check('what an opaque box covers and what a sheet dims are not judged, and each is counted; so are a switched off button, a checkbox and a drawing that is not an icon',
-          [r[k] for k in ('hidden','behind','off','native','drawn')]==[1,1,1,1,1] and not {'xhid','xdim','xoff','nat','chart'}&set(got),lambda: {k:r[k] for k in COUNTED})
+    check('what a box covers and what the sheet over the whole window dims are not judged, and each is counted; so are a switched off button, a checkbox and a drawing that is not an icon',
+          [r[k] for k in ('hidden','behind','off','native','drawn')]==[2,1,1,1,1] and not {'xhid','xveil','xdim','xoff','nat','chart'}&set(got),lambda: {k:r[k] for k in COUNTED})
+    raw=js(LIB+"const e=document.querySelector('#k21');judge(e,'text','lab(50% 40 59)',4.5);return out.unknown")
+    check('a colour that cannot be read is named in what is said of it',len(raw)==1 and raw[0][1].endswith('does not read: lab(50% 40 59)'),lambda: raw)
     unk={u[3]:(u[2],u[1]) for u in r['unknown']}
     check('text on a gradient, over a canvas or in no colour is left unjudged and said so, and only the gradient this suite was told of counts as known',
           sorted(unk)==['ucanvas','uclear','ugrad','uknown'] and [unk[i][0] for i in ('ucanvas','uclear','ugrad','uknown')]==[False,False,False,True]
@@ -299,13 +317,19 @@ try:
     js("document.activeElement.blur()");nav(f'#/post/{pid}/{cid}');wait_for("return !!document.querySelector('.cmt.focus [data-act=cmt-edit]')",'the comment to be highlighted',20)
     js("document.querySelector('.cmt.focus [data-act=cmt-edit]').click()")
     wait_for("return !!document.querySelector('.cmt.focus textarea')",'the field for editing the highlighted comment');idle()
+    CURSOR="const t=document.querySelector('.cmt.focus textarea');return !!t&&document.activeElement===t"
+    check('the cursor is in the field of the highlighted comment, so its edge is the focus ring',lambda: js(CURSOR))
     page('a highlighted comment being edited, the cursor in its field')
-    page('a highlighted comment being edited, the cursor elsewhere',act="document.activeElement.blur()")
+    check('the cursor was still in that field when it was judged',js(CURSOR))
+    js("document.activeElement.blur()")
+    check('the cursor is out of the field, so its edge is its own border',lambda: js("return !!document.querySelector('.cmt.focus textarea')")and not js(CURSOR))
+    page('a highlighted comment being edited, the cursor elsewhere')
+    check('the cursor was still out of that field when it was judged',not js(CURSOR))
     js("document.querySelector('[data-act=cmt-edit-cancel]')?.click()")
     page('notifications',act="document.querySelector('#bell [data-act=bell]').click()")
     js("document.querySelector('#bell [data-act=bell]').click()")
     page('achievements','#/achievements')
-    page('share dialog',act="document.querySelector('[data-act=share-streak]').click()")
+    page('share dialog',act="document.querySelector('[data-act=share-streak]').click()",dialog='.modal-box')
     js("document.querySelector('[data-act=modal-close]')?.click()")
     nav(f'#/post/{op2}');js("document.querySelector('.post [data-act=bookmark]').click()");idle()
     page('bookmarks','#/bookmarks')
@@ -314,16 +338,16 @@ try:
     page('settings','#/settings')
     page('avatar editor','#/avatar')
     for t in js("return [...document.querySelectorAll('.av-tabs [role=tab]')].map(b=>b.dataset.v)"): page(f'avatar editor, {t}',act=f"document.querySelector('.av-tabs [data-v={t}]').click()")
-    page('search',act="openPalette()")
-    js("document.querySelector('#pal-q').value='spin';document.querySelector('#pal-q').dispatchEvent(new Event('input',{bubbles:true}))");page('search results')
+    page('search',act="openPalette()",dialog='.pal-box')
+    js("document.querySelector('#pal-q').value='spin';document.querySelector('#pal-q').dispatchEvent(new Event('input',{bubbles:true}))");page('search results',dialog='.pal-box')
     js("closePalette()")
     nav(f'#/post/{op2}')
-    page('report dialog',act="document.querySelector('[data-act=report]').click()")
+    page('report dialog',act="document.querySelector('[data-act=report]').click()",dialog='.modal-box')
     js("document.querySelector('#report-form').reason.value='spam';document.querySelector('#report-form').requestSubmit()")
     wait_for("return document.querySelector('#modal').hidden",'the report to be sent');idle()
     # Staff pages.
     page('moderation queue','#/mod')
-    page('moderation, action dialog',act="document.querySelector('[data-act=mod-open]').click()")
+    page('moderation, action dialog',act="document.querySelector('[data-act=mod-open]').click()",dialog='.modal-box')
     js("document.querySelector('[data-act=modal-close]')?.click()")
     page('moderation, history','#/mod/history')
     page('admin dashboard','#/admin')
@@ -338,7 +362,7 @@ try:
     cmd('WebDriver:SetWindowRect',width=700,height=900)
     wait_for("return innerWidth<=820&&getComputedStyle(document.querySelector('.menu-btn')).display!=='none'",'the window to be narrow enough for the menu button')
     page('dashboard, narrow window','#/')
-    page('menu, narrow window',act="document.querySelector('.menu-btn').click()")
+    page('menu, narrow window',act="document.querySelector('.menu-btn').click()",dialog='.side')
     js("document.body.classList.remove('nav-open')")
     # Someone new: the page that asks which props they spin, and the guided tour, which is turned on for
     # them alone (it would cover the pages above). The tour takes its colours from the theme when it opens,

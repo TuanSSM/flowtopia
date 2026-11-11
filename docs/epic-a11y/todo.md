@@ -64,7 +64,7 @@ Commits title of the category's type. An item is checked only when its DoD holds
   and a background of its own is checked as written, hover included; field edges, focus rings and
   the ring around a chosen option reach 3:1. A rule whose colour, background, fade, filter or state
   ring it cannot place fails, and so does a colour in a template that is not a colour for words.
-  541 checks.
+  543 checks.
   `test/browser/contrast.py` is the `integration (contrast)` suite. It first proves its arithmetic
   on pieces with known answers (black on white 21:1, #777 on white 4.48:1, half white over black,
   the size where text counts as large, a background from an ancestor, a faded parent), then walks
@@ -107,9 +107,22 @@ Commits title of the category's type. An item is checked only when its DoD holds
   #70737a, light #8a8a86 to #868682) to hold 3:1 there and in a row under the pointer. Two looks
   that had moved by accident are back: the third level of the map and the heatmap keeps its blue
   in the dark theme, with a dark number on it, and the drawn 2D figure has greys of its own
-  (`--fig-body`, `--fig-arm`) instead of the greys of muted text. Still not seen by the stylesheet
-  check, and said in its header: which rules meet on one element, a state shown by a tint alone,
-  and a state marked by a whole border on a rule of one class.
+  (`--fig-body`, `--fig-arm`) instead of the greys of muted text.
+  After a second review the stylesheet check changed its stance: what it cannot read fails with what
+  to write instead, and what it wrongly refuses has a table. It fails on a colour it cannot turn into
+  numbers wherever it stands (it now reads `hsl()` and `hwb()` too), on a nested rule, on a token set
+  outside the three theme blocks or in a style attribute, and on a property that paints and is not
+  one it places. It reads every spelling of a border and every shadow in a list, backgrounds in the
+  order they are written, a gradient or picture under words as an unknown surface, and each set of
+  blocks that can hold together. It no longer refuses sizes in `@keyframes` or in a style attribute,
+  a utility class that happens to sit on a field, or a divider between rows; `NOT_A_STATE`,
+  `NOT_A_FIELD`, `APART`, `LOCAL_TOKENS` and `OTHER_COLOURS` allow the rest. Its break-it run is 71
+  broken copies that fail and 21 sound ones that pass. The walk holds its counts: nothing may lie
+  dimmed behind a sheet at a stop that opens no dialog, a stop that opens one must judge what is in
+  it, and the two stops at the comment being edited assert where the cursor is.
+  What the stylesheet check still cannot see, and the walk is the judge of: which rules meet on one
+  element, a state shown by a tint alone, a state marked by a whole border on a rule of one class,
+  and a class or colour a script puts on an element.
 - [x] **Forms.** Labels bound to inputs, errors announced, the composer's limits announced. DoD:
   the lint script checks label binding.
   Done: `test/browser/a11y.py` checks it at the same 68 stops, and fails on any. Like Names it is the
