@@ -26,6 +26,16 @@ const Demo = (() => {
   // the way the chest faces, the line of the spine, the feet and the hands; everything
   // else (shoulders, elbows, knees) follows from bone lengths. Missing parts stand at rest.
   const UP = [0, 1, 0], BASE = { U_ARM: 0.31, F_ARM: 0.28, THIGH: 0.47, SHIN: 0.465 };
+  // The chest can turn against the hips: `twist` in a pose is [degrees, 0, 0], three numbers like every
+  // value of a frame, so a clip can carry it, blend it and mirror it (mirroring changes the sign of the
+  // first number, and a mirrored turn to the left is a turn to the right). Positive turns the chest to the
+  // figure's left, as a positive yaw turns the whole figure: the right shoulder comes forward and the left
+  // goes back. The turn is about the line of the spine, on top of any lean. A back turns about 40 degrees
+  // to each side (roughly 5 in the lumbar spine and 35 in the thoracic), so more than TWIST degrees is
+  // not drawn: the rig stops there, and the body checks (sim/check.js) fail a clip that asks for more.
+  // The head takes back HEAD_BACK of the turn, as it does of a lean on the 3D figure, so the figure goes
+  // on looking where it works and not at its own shoulder.
+  const TWIST = 45, HEAD_BACK = 0.6;
   // head is the centre of the head above the pelvis: where the 3D model's head is (it stands 1.79 m).
   const DIM0 = { pelvis: 0.97, chest: 0.46, head: 0.718, shoulder: 0.2, hip: 0.1, stance: 0.14, ankle: 0.04 };
   let U_ARM = BASE.U_ARM, F_ARM = BASE.F_ARM, THIGH = BASE.THIGH, SHIN = BASE.SHIN, REACH = U_ARM + F_ARM, DIM = { ...DIM0 };
@@ -44,7 +54,7 @@ const Demo = (() => {
   // A frame moved to fit the current body. The hands, elbows and props rise or sink with the
   // shoulders (lift), so they keep their place relative to them; the pelvis rises with the legs; the
   // feet stay on the floor; directions do not move. A pure shift keeps the physics as simulated.
-  const DIRKEY = /(^|\.)(d|u|v|x|w|face|spine|tL|tR)$/;
+  const DIRKEY = /(^|\.)(d|u|v|x|w|face|spine|twist|tL|tR)$/;
   const lift = () => (DIM0.pelvis + DIM0.chest) * (BODY.sc - 1);
   function fit(f) {
     if (BODY.sc === 1) return f;
@@ -63,21 +73,31 @@ const Demo = (() => {
   }
   function rig(p) {
     const pelvis = p.pelvis || [0, DIM.pelvis, 0], face = norm(p.face ? [p.face[0], 0, p.face[2]] : [0, 0, 1]), up = norm(p.spine || UP);
-    const side = cross(UP, face), left = norm(cross(up, face)), fwd = cross(left, up);
+    const side = cross(UP, face), left = norm(cross(up, face));
     const chest = add(pelvis, mul(up, DIM.chest)), head = add(pelvis, mul(up, DIM.head));
-    const J = { pelvis, chest, head, face, up, left, nose: add(head, mul(fwd, 0.1)) };
+    // The twist, in degrees as the pose gives it and no more than TWIST. The chest, the shoulders and
+    // the base of the neck turn by all of it about the spine; the head by what it does not take back. The
+    // pelvis, the hips and the legs do not turn. The chest's own left, forward and facing (cleft, cfwd, cface)
+    // and the head's left (hleft) are the trunk's, turned about the spine when there is a twist.
+    const twist = p.twist ? clamp(p.twist[0], -TWIST, TWIST) : 0, tw = twist * Math.PI / 180;
+    const cleft = tw ? rot(left, up, tw) : left, cfwd = cross(cleft, up), hleft = tw ? rot(left, up, tw * (1 - HEAD_BACK)) : left;
+    const cface = tw ? rot(face, up, tw) : face;
+    const J = { pelvis, chest, head, face, up, left, nose: add(head, mul(cross(hleft, up), 0.1)), twist, cleft, cface, hleft };
     for (const [s, k] of [['L', 1], ['R', -1]]) {
-      const sh = add(chest, mul(left, DIM.shoulder * k)), hip = add(pelvis, mul(side, DIM.hip * k));
-      const hand = p['h' + s] || add(pelvis, add(mul(side, 0.26 * BODY.bd * k), add([0, -0.04, 0], mul(face, -0.04)))); // at rest, beside the hip, further out on a broad build
+      const sh = add(chest, mul(cleft, DIM.shoulder * k)), hip = add(pelvis, mul(side, DIM.hip * k));
+      // At rest a hand hangs beside the hip, further out on a broad build. When the chest turns it goes round
+      // the spine with its shoulder, so the hanging arm keeps its shape.
+      const beside = add(pelvis, add(mul(side, 0.26 * BODY.bd * k), add([0, -0.04, 0], mul(face, -0.04))));
+      const hand = p['h' + s] || (tw ? add(pelvis, rot(sub(beside, pelvis), up, tw)) : beside);
       // Where the elbow goes. Low and in front it hangs down and back; overhead it points out
       // to the side; behind the back it points out and back; close across the chest it comes forward.
-      const r = sub(hand, chest), own = dot(r, left) * k, front = dot(r, fwd);
+      const r = sub(hand, chest), own = dot(r, cleft) * k, front = dot(r, cfwd);
       const high = smooth(1.5, 1.7, hand[1] - pelvis[1] + DIM.pelvis), behind = smooth(-0.02, -0.14, front) * (1 - high);
       const across = smooth(0.08, -0.12, own) * smooth(0.52, 0.38, len(sub(hand, sh))) * (1 - high) * (1 - behind);
       let hint = mix([0.4, -0.6, -0.7], [1, 0, -0.3], high);
       hint = mix(mix(hint, [1, -0.1, -0.4], behind), [0.6, -0.7, 0.3], across);
       // A move can say where it wants the elbow; otherwise the rule above decides.
-      const el = bend(sh, hand, U_ARM, F_ARM, p['e' + s] ? sub(p['e' + s], sh) : add(add(mul(left, hint[0] * k), mul(up, hint[1])), mul(fwd, hint[2])));
+      const el = bend(sh, hand, U_ARM, F_ARM, p['e' + s] ? sub(p['e' + s], sh) : add(add(mul(cleft, hint[0] * k), mul(up, hint[1])), mul(cfwd, hint[2])));
       const foot = p['f' + s] || [pelvis[0] + side[0] * DIM.stance * k, DIM.ankle, pelvis[2] + side[2] * DIM.stance * k];
       const toe = norm(p['t' + s] ? [p['t' + s][0], 0, p['t' + s][2]] : face), knee = bend(hip, foot, THIGH, SHIN, add(toe, mul(side, 0.2 * k)));
       Object.assign(J, { ['sh' + s]: sh, ['el' + s]: el, ['h' + s]: hand, ['hip' + s]: hip, ['knee' + s]: knee, ['f' + s]: foot, ['t' + s]: toe });
@@ -92,16 +112,19 @@ const Demo = (() => {
   // An arm that holds a prop stops 10 cm short of the fist: the wrist and the hand are wrapped around it.
   const cap = (a, b, r, name, side) => ({ a, b, r, name, side });
   function caps(J, hold = {}) {
-    const sc = BODY.sc, bd = BODY.bd, up = J.up, fwd = cross(J.left, up), at = (v, h, f = 0) => add(add(v, mul(up, h * sc)), mul(fwd, f));
+    // Forward is the pelvis's for the belly and the hips, the chest's (cf) for the shoulders, the upper back
+    // and the base of the neck, and the head's (hf) for the head: the three differ when the chest is turned.
+    const sc = BODY.sc, bd = BODY.bd, up = J.up, fwd = cross(J.left, up), cl = J.cleft, cf = cross(cl, up), hf = cross(J.hleft, up);
+    const at = (v, h, f = 0, d = fwd) => add(add(v, mul(up, h * sc)), mul(d, f));
     const out = [
-      cap(at(J.head, 0, -0.035), at(J.head, -0.02, 0.04), 0.105, 'head'),
-      cap(at(J.chest, 0.03, -0.01), at(J.head, -0.07, 0), 0.075 * bd, 'neck'),
+      cap(at(J.head, 0, -0.035, hf), at(J.head, -0.02, 0.04, hf), 0.105, 'head'),
+      cap(at(J.chest, 0.03, -0.01, cf), at(J.head, -0.07, 0), 0.075 * bd, 'neck'),
       cap(at(J.chest, 0.15 - 0.46), J.chest, 0.145 * bd, 'torso'), // waist to chest
       // Belly, pelvis and buttocks: two upright capsules side by side, as the hips are wider than they are deep.
       cap(at(add(J.pelvis, mul(J.left, 0.06 * bd)), -0.1, -0.02), at(add(J.pelvis, mul(J.left, 0.06 * bd)), 0.15, -0.02), 0.14 * bd, 'torso'),
       cap(at(add(J.pelvis, mul(J.left, -0.06 * bd)), -0.1, -0.02), at(add(J.pelvis, mul(J.left, -0.06 * bd)), 0.15, -0.02), 0.14 * bd, 'torso'),
-      cap(at(add(J.shL, mul(J.left, -0.06 * bd)), 0, -0.035), at(add(J.shR, mul(J.left, 0.06 * bd)), 0, -0.035), 0.095 * bd, 'torso'), // chest top and trapezius, short of the deltoids
-      cap(at(add(J.shL, mul(J.left, -0.1 * bd)), -0.1, -0.085), at(add(J.shR, mul(J.left, 0.1 * bd)), -0.1, -0.085), 0.07 * bd, 'torso'), // the upper back, flat and broad
+      cap(at(add(J.shL, mul(cl, -0.06 * bd)), 0, -0.035, cf), at(add(J.shR, mul(cl, 0.06 * bd)), 0, -0.035, cf), 0.095 * bd, 'torso'), // chest top and trapezius, short of the deltoids
+      cap(at(add(J.shL, mul(cl, -0.1 * bd)), -0.1, -0.085, cf), at(add(J.shR, mul(cl, 0.1 * bd)), -0.1, -0.085, cf), 0.07 * bd, 'torso'), // the upper back, flat and broad
     ];
     for (const s of ['L', 'R']) {
       const el = J['el' + s], hand = J['h' + s], hip = J['hip' + s], knee = J['knee' + s], foot = J['f' + s], sh = J['sh' + s];
@@ -109,7 +132,7 @@ const Demo = (() => {
       const hipOut = at(add(hip, mul(J.left, 0.07 * bd * (s === 'L' ? 1 : -1))), -0.11); // the hip joint's outer bulge
       out.push(cap(hipOut, hipOut, 0.085 * bd, 'thigh', s), cap(hip, t1, 0.1 * bd, 'thigh', s), cap(t1, t2, 0.075 * bd, 'thigh', s), cap(t2, knee, 0.065 * bd, 'thigh', s),
         cap(knee, knee, 0.085 * bd, 'shin', s), cap(knee, midS, 0.072 * bd, 'shin', s), cap(midS, foot, 0.045 * bd, 'shin', s),
-        cap(add(sh, mul(J.left, (s === 'L' ? -0.03 : 0.03) * bd)), sh, 0.06 * bd, 'upper arm', s), cap(sh, midA, 0.062 * bd, 'upper arm', s), cap(midA, el, 0.055 * bd, 'upper arm', s), // the deltoid, then the arm
+        cap(add(sh, mul(cl, (s === 'L' ? -0.03 : 0.03) * bd)), sh, 0.06 * bd, 'upper arm', s), cap(sh, midA, 0.062 * bd, 'upper arm', s), cap(midA, el, 0.055 * bd, 'upper arm', s), // the deltoid, then the arm
         cap(el, midF, 0.063 * bd, 'forearm', s), cap(midF, hold[s] ? add(hand, mul(norm(sub(el, hand)), 0.1)) : hand, 0.05 * bd, 'forearm', s));
     }
     return out;
@@ -246,14 +269,14 @@ const Demo = (() => {
       if (g) break;
     }
     let x, w, o = H, grip = 'closed';
-    if (g && g.x) { x = g.x; w = sub(fa, mul(x, dot(fa, x))); if (len(w) < 0.25) w = cross(x, cross(fa, J.left)); if (len(w) < 0.1) w = cross(x, UP); w = norm(w); o = g.at || H; }
+    if (g && g.x) { x = g.x; w = sub(fa, mul(x, dot(fa, x))); if (len(w) < 0.25) w = cross(x, cross(fa, J.cleft)); if (len(w) < 0.1) w = cross(x, UP); w = norm(w); o = g.at || H; }
     else {
       // A poi's tether leaves between the fingers, so the fist turns toward it, as far as a wrist bends
       // (about 75 degrees); with the knuckles along the forearm the tether would run through the arm.
       w = g && g.to ? turnToward(fa, g.to, 1.3) : fa;
-      x = g ? cross(w, g.to) : sub(J.face, mul(fa, dot(J.face, fa)));
+      x = g ? cross(w, g.to) : sub(J.cface, mul(fa, dot(J.cface, fa)));
       if (g && len(x) < 0.2) x = cross(fa, g.to);
-      if (len(x) < 0.2) x = cross(fa, mul(J.left, side)); x = norm(x);
+      if (len(x) < 0.2) x = cross(fa, mul(J.cleft, side)); x = norm(x);
       if (!g) { grip = 'open'; o = add(H, mul(w, 0.07 * HAND)); } else o = add(H, mul(w, 0.03));
     }
     return { o, x, w, grip, r: g ? g.r : 0.012 };
@@ -395,9 +418,10 @@ const Demo = (() => {
       seg([add(J.pelvis, mul(J.up, 0.05)), add(J.pelvis, mul(J.up, 0.2))], 0.19, col.body); seg([add(J.pelvis, mul(J.up, 0.24)), add(J.pelvis, mul(J.up, 0.4))], 0.215, col.body);
       seg([J.chest, add(J.head, mul(J.up, -0.09))], 0.075, col.body); // the neck, up to the head
       // Head: a skull with a jaw below and in front, and a nose to show which way it faces.
-      const fw = cross(J.left, J.up);
+      // The head faces where the nose is: the trunk's front, or part of the way to the chest's when the chest is turned.
+      const fw = cross(J.hleft, J.up);
       ball(add(J.head, mul(J.up, 0.012)), 0.098, col.body, 0.01); ball(add(J.head, add(mul(J.up, -0.05), mul(fw, 0.022))), 0.07, col.body, 0.005);
-      ball(J.nose, 0.022, col.body, dot(J.face, [-k * sy, 0, cy]) > 0 ? 0.03 : -0.2);
+      ball(J.nose, 0.022, col.body, dot(J.twist ? fw : J.face, [-k * sy, 0, cy]) > 0 ? 0.03 : -0.2);
     }
     const tips = [];
     props.forEach((p, i) => {
@@ -750,6 +774,6 @@ const Demo = (() => {
 
   return { init, has, figure, html, mount, act, comboStage, comboMount, comboAct, comboSecs, info, clock, combo: cs, gif, draw, colors, state: st, rig, caps, bend, parts, pose, tipAt, pack, unpack, mirror, sPoints, propsOf, stage,
     index: () => index, clip: () => { const v = variant(); return v && cache.get(v.f); },
-    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, FRAMES, avatar, presetOf, preview, previewState: pv, firstClip, calm, still: () => still, setStill, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
+    v: { add, sub, mul, dot, cross, len, norm, mix, rot, clamp, smooth, flip }, dim, TWIST, HEAD_BACK, setBody, fit, lift, body: BODY, HEIGHTS, BUILDS, FRAMES, avatar, presetOf, preview, previewState: pv, firstClip, calm, still: () => still, setStill, STICKERS, SIGNATURE, sticker, headshot, wear, fetchClip, ready3d: () => use3d(), firstVariant: k => index[k]?.v[0]?.f, cached: k => { const f = index[k]?.v[0]?.f; return !!(f && cache.get(f)); } };
 })();
 if (typeof window !== 'undefined') window.Demo = Demo;

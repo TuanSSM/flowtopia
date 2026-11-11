@@ -84,8 +84,8 @@ function overlaps(sc) {
   }
   return { prop, limb, grip };
 }
-// What the body is asked to do: reach, hand speed, leg length, feet on the floor, balance,
-// and how far the wrist would have to turn to keep hold of a rigid prop.
+// What the body is asked to do: reach, hand speed, leg length, feet on the floor, balance, how far
+// the chest turns against the hips, and how far the wrist would have to turn to keep hold of a rigid prop.
 function anatomy(sc, sp) {
   const errs = [], N = sc.fr.length, dt = sc.dur / N, js = sc.fr.map(f => Demo.rig(f)), air = sc.meta && sc.meta.air;
   for (const s of ['L', 'R']) {
@@ -101,6 +101,11 @@ function anatomy(sc, sp) {
   const lean = Math.max(...js.map(J => { const q = E.closest(J.pelvis, J.pelvis, [J.fL[0], J.pelvis[1], J.fL[2]], [J.fR[0], J.pelvis[1], J.fR[2]]); return len(sub(q.c1, q.c2)); }));
   if (lean > 0.14) errs.push(`pelvis ${mm(lean)} away from the line between the feet`);
   if (Math.min(...js.map(J => len(sub(J.fL, J.fR)))) < 0.09) errs.push('feet pass through each other');
+  // The chest against the hips: the rig draws no more than Demo.TWIST degrees, so a clip that asks for
+  // more would not show what it says. A twist is [degrees, 0, 0]; blending and mirroring keep it so.
+  const turned = sc.fr.filter(f => f.twist).map(f => f.twist), odd = turned.find(t => t[1] !== 0 || t[2] !== 0), most = turned.reduce((m, t) => Math.max(m, Math.abs(t[0])), 0);
+  if (odd) errs.push(`the twist is [degrees, 0, 0], and this one is [${odd.join(', ')}]`);
+  else if (most > Demo.TWIST + 1e-9) errs.push(`chest turned ${most} degrees against the hips, and it turns ${Demo.TWIST} at most`); // every digit, so the message is true of 45.004 too
   // Wrist: follow the prop's direction around the forearm. A full turn needs a hand change or finger work.
   let twist = 0;
   sc.props.forEach((p, j) => {

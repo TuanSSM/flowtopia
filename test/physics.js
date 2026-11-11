@@ -1,7 +1,8 @@
 // Checks every demo clip, for every prop, against the physics it claims to model, against
 // the definition of the move it shows, and against what a body can do. A move is listed in
 // sim/specs.js only if it passes here. Before the clips come the known answers the engine rests on:
-// nearest points of two segments, and the chain a tether or cord can be (test/chain.js).
+// nearest points of two segments, the chest turned against the hips (test/twist.js), and the chain a
+// tether or cord can be (test/chain.js).
 //   node test/physics.js            everything        ONLY='poi:W' node test/physics.js   a subset
 const B = require('../sim/bake.js'), E = require('../sim/engine.js'), { Demo } = E, EXPECT = require('./expect.js');
 const { STICK, LINK, GRIP, TETHER } = E, { REACH, THIGH, SHIN } = Demo.dim;
@@ -35,6 +36,13 @@ if (!process.env.ONLY) {
     if (!(c.s >= 0 && c.s <= 1 && c.t >= 0 && c.t <= 1) || len(sub(c.c1, c.c2)) > best + 1e-9) { wrong++; bad++; console.log('BAD closest points on a random pair', i); break; }
   }
   console.log(`contact geometry: ${cases.length} special cases and 2000 random pairs, ${wrong} wrong`);
+}
+
+// ---------- the chest turned against the hips: the rig, the capsules and the body checks (test/twist.js) ----------
+if (!process.env.ONLY) {
+  const r = require('./twist.js').run(line => console.log('twist  ' + line));
+  bad += r.bad;
+  console.log(`twist: ${r.n} known answers, ${r.bad} wrong, ${r.skipped} skipped`);
 }
 
 // ---------- a tether or cord as a chain that touches: known answers (test/chain.js) ----------

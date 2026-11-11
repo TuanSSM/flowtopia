@@ -163,6 +163,12 @@ function place(b, pos, q) {
   if (pos) b.position.copy(b.parent.worldToLocal(cp(pos)));
   b.quaternion.copy(wquat(b.parent, tq()).invert().multiply(q));
 }
+// Turn a bone, and all that hangs from it, by `turn` about a line through the point c. The line of a
+// twist is the rig's, from the pelvis to the base of the neck, which is what its shoulders turn about; the
+// model's spine and neck bones lie up to 5 cm behind that line, so each is carried round it as it turns.
+function swing(n, turn, c) {
+  place(bone[n], wpos(bone[n], tv()).sub(c).applyQuaternion(turn).add(c), tq().copy(turn).multiply(wquat(bone[n], tq())));
+}
 // Point a bone from one joint to the next, turning it the short way from its rest direction.
 // With `flex` and `want` it is then rolled about its own axis so that the direction it bends
 // in rest (flex) faces `want`: the elbow toward the forearm, the knee toward the shin, the
@@ -193,11 +199,30 @@ const SIDES = [['L', 'Left'], ['R', 'Right']].map(([s, S]) => ({ s, sh: 'sh' + s
 // How far each joint of a thumb and of a finger curls, in radians, from the knuckle out, closed and open.
 const CURL = { thumb: [0.35, 0.45, 0.6], thumbOpen: [0.05, 0.05, 0.05], finger: [1.35, 1.6, 1.1], fingerOpen: [0.16, 0.16, 0.1] };
 const UPY = new THREE.Vector3(0, 1, 0), SOLE = new THREE.Vector3(0, -0.035, 0);
+// How a turn of the chest against the hips (J.twist, web/demo.js) is shared out over the model's three
+// spine bones, from the lowest up. Each bone stands for the part of the back nearest its joint.
+const SPINE = [['Spine', 0.15], ['Spine1', 0.3], ['Spine2', 0.55]];
 function poseBody(J, hands) {
   count.poses++;
   const left = pt(J.left), up = pt(J.up), fwd = tv().crossVectors(left, up);
+  // The chest's own left and forward, which are the trunk's unless the chest is turned against the hips.
+  const twist = J.twist * Math.PI / 180, cleft = pt(J.cleft), cfwd = tv().crossVectors(cleft, up);
   for (const n of posedBones) { bone[n].quaternion.copy(rest[n].local); bone[n].position.copy(rest[n].pos); }
   place(bone.Hips, pt(J.pelvis).add(cp(up).multiplyScalar(rest.hipOff)), frameQuat(left, up, fwd, tq()).multiply(rest.Hips.q));
+  // The chest turned against the hips: each spine bone turns its share about the line of the spine, so the
+  // hips stay square, the waist turns a little and the ribcage most. The collarbones ride on the ribcage,
+  // and so does the base of the neck. The head takes back part of the turn (from the chest's facing to
+  // J.hleft) and stays over the spine's line, where the rig has it: the head's joint goes back round the
+  // line by what the head takes back, the head turns back with it, and the neck, held at its base, turns
+  // back half as far and leans to reach the head (8 degrees at a full twist, giving 1.7 mm of its length).
+  if (twist) {
+    const c = pt(J.pelvis), hleft = pt(J.hleft), back = tq().setFromAxisAngle(up, Math.atan2(tv().crossVectors(cleft, hleft).dot(up), cleft.dot(hleft)) / 2);
+    for (const [n, share] of SPINE) swing(n, tq().setFromAxisAngle(up, twist * share), c);
+    const whole = tq().copy(back).multiply(back), neck = wpos(bone.Neck, tv()), carried = wpos(bone.Head, tv()), facing = tq().copy(whole).multiply(wquat(bone.Head, tq()));
+    const head = cp(carried).sub(c).applyQuaternion(whole).add(c), lean = tq().setFromUnitVectors(cp(carried).sub(neck).applyQuaternion(back).normalize(), cp(head).sub(neck).normalize());
+    place(bone.Neck, null, lean.multiply(back).multiply(wquat(bone.Neck, tq())));
+    place(bone.Head, head, facing);
+  }
   // The head stays nearer upright than the trunk, as a person's does when they lean.
   const level = tq().setFromUnitVectors(up, cp(up).multiplyScalar(0.4).add(cp(UPY).multiplyScalar(0.6)).normalize()), half = tq().slerp(level, 0.5);
   place(bone.Neck, null, tq().copy(half).multiply(wquat(bone.Neck, tq())));
@@ -219,7 +244,7 @@ function poseBody(J, hands) {
     // Upper arm: rolled so the elbow is a hinge that bends toward the forearm; when the arm is
     // straight the crease faces forward and a little in, as at rest.
     const upper = cp(el).sub(start).normalize(), fore = cp(wrist).sub(el).normalize();
-    aim(d.Arm, start, el, rest.fwd, across(fore, upper, cp(fwd).add(cp(left).multiplyScalar(s === 'L' ? -0.5 : 0.5))), true);
+    aim(d.Arm, start, el, rest.fwd, across(fore, upper, cp(cfwd).add(cp(cleft).multiplyScalar(s === 'L' ? -0.5 : 0.5))), true);
     // Forearm: turned (pronation or supination) so its palm side follows the hand, within what a forearm can do.
     const q0 = tq().setFromUnitVectors(rest[d.ForeArm].dir, fore), n0 = cp(handRest[s].N).applyQuaternion(q0);
     const want = across(fr.N, fore, n0), have = cp(n0).sub(cp(fore).multiplyScalar(n0.dot(fore))).normalize(); want.normalize();
@@ -711,6 +736,25 @@ function partReport() {
   }
   return out;
 }
+// Where the last staging put the model's joints, in the rig's world, for the rig test: the bones by name,
+// which way the head's own up and left now point, which way the neck's bone points (to the head's joint,
+// unless the head was put somewhere the neck does not reach for), and for each hand the middle of its grip,
+// worked back from the hand bone as it now is (r is the half-thickness of what the hand holds, as in `hands`).
+function joints(hands) {
+  const out = {}, q = new THREE.Quaternion(), v = new THREE.Vector3();
+  model.updateMatrixWorld(true);
+  for (const n of posedBones) out[n] = wpos(bone[n]).toArray();
+  wquat(bone.Head, q).multiply(rest.Head.q.clone().invert()); // how the head has turned from the rest pose, where it is upright and faces forward
+  out.headUp = v.set(0, 1, 0).applyQuaternion(q).toArray(); out.headLeft = v.copy(rest.fwd).cross(UPY).negate().applyQuaternion(q).toArray();
+  out.neckTo = v.copy(rest.Head.pos).normalize().applyQuaternion(wquat(bone.Neck, q)).toArray();
+  for (const [s, S] of [['L', 'Left'], ['R', 'Right']]) {
+    const k = handRest[s].grip / 0.085;
+    wquat(bone[S + 'Hand'], q).multiply(handRest[s].bq.clone().invert()).multiply(handRest[s].q); // the hand's frame now: X, the palm's normal, W
+    const W = new THREE.Vector3(0, 0, 1).applyQuaternion(q), N = new THREE.Vector3(1, 0, 0).applyQuaternion(q).cross(W).multiplyScalar(s === 'L' ? -1 : 1);
+    out['grip' + s] = v.copy(wpos(bone[S + 'Hand'])).add(W.multiplyScalar(0.085 * k)).add(N.multiplyScalar(hands[s].r + 0.01)).toArray();
+  }
+  return out;
+}
 // Every vertex of the skin where the last staging put it, as [x, y, z, bone], for the rig test.
 function skinPoints() {
   const out = [];
@@ -754,4 +798,4 @@ function probe(J, hands, items, opts = {}) {
   return worst;
 }
 
-window.Figure3D = Object.assign(F, { load, render, stage, stats: () => ({ ...count }), setAvatar, setBody, partPoints, partReport, probe, skinPoints, FRAMES: Object.keys(FRAMES), avatar: () => avatar, body: () => body, debug: () => ({ gl2: renderer.capabilities.isWebGL2, maxTex: renderer.capabilities.maxVertexTextures, info: JSON.stringify(renderer.info.render), meshes: (() => { const out = []; model.traverse(o => { if (o.isMesh) out.push([o.name, o.isSkinnedMesh, o.visible, o.material.type, o.material.opacity, o.material.transparent, o.material.color.getHexString(), o.geometry.attributes.position.count, o.parent && o.parent.name, o.scale.x, !!o.skeleton && o.skeleton.bones.length]); }); return out; })(), scale: model.scale.x, hips: wpos(bone.Hips).toArray(), head: wpos(bone.Head).toArray(), lhand: wpos(bone.LeftHand).toArray(), box: new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).toArray() }) });
+window.Figure3D = Object.assign(F, { load, render, stage, stats: () => ({ ...count }), setAvatar, setBody, partPoints, partReport, probe, skinPoints, joints, FRAMES: Object.keys(FRAMES), avatar: () => avatar, body: () => body, debug: () => ({ gl2: renderer.capabilities.isWebGL2, maxTex: renderer.capabilities.maxVertexTextures, info: JSON.stringify(renderer.info.render), meshes: (() => { const out = []; model.traverse(o => { if (o.isMesh) out.push([o.name, o.isSkinnedMesh, o.visible, o.material.type, o.material.opacity, o.material.transparent, o.material.color.getHexString(), o.geometry.attributes.position.count, o.parent && o.parent.name, o.scale.x, !!o.skeleton && o.skeleton.bones.length]); }); return out; })(), scale: model.scale.x, hips: wpos(bone.Hips).toArray(), head: wpos(bone.Head).toArray(), lhand: wpos(bone.LeftHand).toArray(), box: new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).toArray() }) });
