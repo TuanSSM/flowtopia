@@ -108,6 +108,32 @@ By category: fix 2 (AUD, LIC), perf 2 (FPS, LOAD), improvement 6 (TST, SHP, OPS,
 feature 4 (LBL, SIM, XPR, OFF). The split is deliberate: a second cycle that was mostly features
 would build on the faults the first cycle's audit found.
 
+### Where the second cycle stands
+
+On 11 November 2026, after pull requests #44 to #85. An item is counted done only when its
+definition of done holds; "waits" names the one thing that cannot be done from a pull request.
+
+| Code | Done | What is in | What waits, and for whom |
+| --- | --- | --- | --- |
+| AUD | 6 of 7 | every audit fix | the audit run again on stage after a deploy (the owner) |
+| LIC | 0 of 4 | the question written down, swap candidates listed | the answer on the base model's licence (the owner asks) |
+| TST | 5 of 6 | tests wait for what they check; slowest checks in the PR comment | a month of pull requests without a flaky rerun (time) |
+| FPS | 2 of 6 | frame time in the PR comment; an unchanged frame is not drawn again; a frame allocates about 40 KB, not 3 MB | the unchanged frame timed on the Pi (2 ms); the lighter mesh waits for LIC, since the model may be swapped; shader skinning cannot be judged in software WebGL |
+| SHP | 0 of 6 | nothing | the four structure decisions (the owner); everything else in SHP follows from them |
+| LOAD | 1 of 6 | queries indexed and held to their plans; page files under hashed names, compressed | the slowest request read from the Pi's log; the figure on demand, the clip index per prop, the service worker and the first-paint numbers are not started |
+| OPS | 2 of 5 | health, request log; Postgres pinned; image built by the release; restore drill | Dependabot's first pull request, a first release and a deploy of it, the drill's first runs (the owner starts workflows). Loopback by default and the proxy recipe were built and withdrawn (#74) |
+| A11Y | 4 of 5 | names, forms, reduced motion, contrast, each with a check that runs on every pull request | Focus (keyboard), in work; listening with a real screen reader has not been done |
+| CAT | 1 of 6 | the method for confirming a skill | the five research passes: sources have to be opened, which the session that wrote this could not do |
+| LBL | 3 of 4 | the question after a run, progress to the gate, the label check, the fit workflow | 30 marked pairs on an instance and the workflow's first run (the owner) |
+| TRU | 0 of 6 | the design note | the owner's review and thirteen decisions at its top |
+| SIM | 1 of 7 | a tether as a chain that touches the body, with 70 known answers | the chest twist is in work; the weave, wraps, passes and rolling contact follow in that order |
+| XPR | 2 of 5 | shared concepts in the maps and the editor; the hint on a skill | the maps name no concept yet (CAT); one dashboard waits for SHP; mixed combos and suggestions across props are not started |
+| OFF | 0 of 5 | nothing | LOAD's service worker and TRU's write path |
+
+Found and fixed on the way, outside any checklist: the roadmap and branch badges the page awards
+were refused by the server (#71); a bake gave other clip files on another machine, and nothing
+checked (#85).
+
 ### Dependencies
 
 - **AUD PR 1 before everything.** Root certificates ship alone, first, because production is wrong
