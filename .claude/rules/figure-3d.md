@@ -25,6 +25,10 @@ paths:
   `skinPoint` (the measured skin), never on a ball of the head's radius. After changing them, run
   `node test/body3d.js parts`, then `FRAME_BUDGET_MS=80 test/browser/run.sh avatar.py` on the Pi
   (CI uses 33 ms).
+- The figure keeps the last pose it skinned and the last picture it rendered, and hands them out
+  again when a request is the same by value (`node test/skin-once.js`). Anything that changes the
+  figure without passing through the arguments of `render` or `stage` (a new avatar, body or
+  material) must call `forget()`, or a stale picture is shown.
 - `figure/src/figure.js` loads in Node without WebGL (`load(url, bytes)`), which is how
   `test/body3d.js` poses the figure against every clip and measures the props against the skin.
   Keep `probe`, `partReport` and `stage` working there: no `document`, `window` or renderer in the

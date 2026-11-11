@@ -529,8 +529,10 @@ arms and, for the feminine frame, a bust. Body presets (3 heights by 3 builds) a
 the standard body with a note. `node test/presets.js`, `node test/stickers.js`,
 `node test/avatar-colors.js` and `node test/bundle-size.js` cover shapes across presets, sticker poses,
 palette contrast and download size; `node test/body3d.js` poses the 3D figure without a browser and
-checks that no prop is drawn into the body on any clip and that every avatar part shows; `test/browser/avatar.py`
-covers the pages, parts and the frame budget. Details, sources for the preset sizes, and licences: [docs/avatars.md](docs/avatars.md).
+checks that no prop is drawn into the body on any clip and that every avatar part shows;
+`node test/skin-once.js` checks that a frame which is the one already drawn (a page drawn again
+while paused, a still step of a combo) is not posed or skinned a second time; `test/browser/avatar.py`
+covers the pages, parts, the frame budget and that such an unchanged frame renders nothing. Details, sources for the preset sizes, and licences: [docs/avatars.md](docs/avatars.md).
 
 ## Pull requests
 

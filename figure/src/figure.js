@@ -12,6 +12,40 @@ let renderer, scene, camera, model, sun;
 const bone = {}, rest = {}, fingers = { L: [], R: [] }, handRest = {};
 const cyl = [], ball = [], mats = new Map(), skins = [];
 
+/* ---------- nothing done twice ---------- */
+// A frame is often the one before it: a paused demo, a still picture, a page drawn again. So the figure
+// remembers the pose it last skinned and the picture it last rendered, and does neither again when asked
+// for the same. What it was asked is kept flat: every number, name and word the caller handed over, in
+// order. The next request is written over it and compared on the way, so objects the caller makes anew
+// each frame count as the same when they say the same, and anything added to a pose, a prop or a camera
+// later is compared without being listed here. One request is remembered, not a history of them.
+const memo = () => ({ num: new Float64Array(256), word: [], at: [], n: 0, w: 0, len: -1, words: -1, same: false, held: false });
+const posed = memo(), drawn = memo(), count = { poses: 0, skins: 0, renders: 0, reused: 0 };
+function note(k, v) {
+  if (typeof v === 'number') {
+    if (k.n === k.num.length) { const a = new Float64Array(k.n * 2); a.set(k.num); k.num = a; }
+    if (!Object.is(k.num[k.n], v)) { k.num[k.n] = v; k.same = false; }
+    k.n++;
+  } else if (v !== null && typeof v === 'object') {
+    if (Array.isArray(v)) { note(k, v.length); for (let i = 0; i < v.length; i++) note(k, v[i]); }
+    else for (const p in v) { note(k, p); note(k, v[p]); }
+  } else {
+    // A word (a colour, a grip, a name) or nothing at all, with its place among the numbers.
+    if (k.word[k.w] !== v || k.at[k.w] !== k.n) { k.word[k.w] = v; k.at[k.w] = k.n; k.same = false; }
+    k.w++;
+  }
+}
+// Between `begin` and `unchanged` the request is noted. `unchanged` says whether it is the one the memo
+// held and the work for it was done; if not, the caller does the work and then sets `held`.
+const begin = k => { k.n = k.w = 0; k.same = k.held; };
+function unchanged(k) {
+  const same = k.same && k.n === k.len && k.w === k.words;
+  k.len = k.n; k.words = k.w; k.held = same;
+  return same;
+}
+// Whatever changes the body without being part of a request (another build, another avatar) drops both.
+const forget = () => { posed.held = drawn.held = false; };
+
 function find(root, name) { let hit = null; root.traverse(o => { if (!hit && o.isBone && o.name.replace(/^mixamorig:?/, '') === name) hit = o; }); return hit; }
 const wpos = o => o.getWorldPosition(new THREE.Vector3()), wquat = o => o.getWorldQuaternion(new THREE.Quaternion());
 // A rotation taking the frame (x, n, w) of the rest pose to the same frame now.
@@ -30,6 +64,8 @@ async function load(url, bytes) {
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
       renderer.setClearColor(0x000000, 0);
       renderer.localClippingEnabled = true;
+      // A lost WebGL context empties the canvas, and a restored one starts empty: the picture is gone.
+      for (const e of ['webglcontextlost', 'webglcontextrestored']) renderer.domElement.addEventListener(e, () => { drawn.held = false; });
     }
     scene = new THREE.Scene();
     camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 50);
@@ -131,6 +167,7 @@ function across(v, d, fallback) {
 }
 
 function poseBody(J, hands) {
+  count.poses++;
   const left = V(J.left), up = V(J.up), fwd = new THREE.Vector3().crossVectors(left, up), UP = new THREE.Vector3(0, 1, 0);
   for (const n in rest) if (bone[n]) { bone[n].quaternion.copy(rest[n].local); bone[n].position.copy(rest[n].pos); }
   place(bone.Hips, V(J.pelvis).add(up.clone().multiplyScalar(rest.hipOff)), frameQuat(left, up, fwd).multiply(rest.Hips.q));
@@ -195,6 +232,7 @@ function props(items) {
 
 // Move every vertex with the bones it is weighted to.
 function skin() {
+  count.skins++;
   model.updateMatrixWorld(true);
   for (const k of skins) {
     k.sm.skeleton.update();
@@ -217,16 +255,32 @@ function skin() {
   for (const p of parts) { p.g.matrix.multiplyMatrices(bone[p.bone].matrixWorld, p.offset); p.g.matrixWorldNeedsUpdate = true; }
 }
 
-// Pose the body, skin it and place the props: what render and probe share.
+// Pose the body, skin it and place the props: what render and probe share. The body is posed and
+// skinned only when the joints and the hands are not the ones it was last skinned for.
 function stage(J, hands, items) {
-  if (!F.nopose) poseBody(J, hands);
-  skin(); props(items);
+  drawn.held = false; // the scene is being changed, so the picture is of something else until render says otherwise
+  begin(posed); note(posed, F.nopose); note(posed, J); note(posed, hands);
+  if (!unchanged(posed)) { if (!F.nopose) poseBody(J, hands); skin(); posed.held = true; }
+  props(items);
   scene.updateMatrixWorld(true); // the parts' groups, which render would otherwise bring up to date
 }
 // W: size in pixels. J: joints. hands: { L, R } each { o, x, w, grip, r }. items: props as tubes and balls.
 // cam: { right, up, toward (unit vectors), cx, cy (centre, along right and up), half (half the width shown, metres),
 // cut (optional: metres behind the centre beyond which nothing is drawn, for a close-up of a hand) }.
+// Returns a canvas that holds the picture. When the size, the pose, the props with their colours and the
+// camera are all the ones of the last picture (and the body and the avatar have not changed since), nothing
+// is posed, skinned or rendered: the picture is still there.
+let keep = null, kept = false;
 function render(W, J, hands, items, cam) {
+  begin(drawn); note(drawn, W); note(drawn, F.nopose); note(drawn, J); note(drawn, hands); note(drawn, items); note(drawn, cam);
+  if (unchanged(drawn)) {
+    // A browser may read a WebGL canvas back from the graphics card every time it is copied, so the second
+    // time the same picture is asked for it is copied once into a plain canvas and handed out from there.
+    if (!kept) { keep = keep || document.createElement('canvas'); keep.width = keep.height = W; keep.getContext('2d').drawImage(renderer.domElement, 0, 0); kept = true; }
+    count.reused++;
+    return keep;
+  }
+  kept = false;
   if (renderer.domElement.width !== W) renderer.setSize(W, W, false);
   stage(J, hands, items);
   const R = V(cam.right), U = V(cam.up), T = V(cam.toward), c = R.clone().multiplyScalar(cam.cx).add(U.clone().multiplyScalar(cam.cy));
@@ -234,7 +288,8 @@ function render(W, J, hands, items, cam) {
   camera.position.copy(c.clone().add(T.clone().multiplyScalar(20))); camera.up.copy(U); camera.lookAt(c);
   renderer.clippingPlanes = cam.cut ? [new THREE.Plane(T.clone(), cam.cut - c.dot(T))] : [];
   sun.position.copy(c.clone().add(T.clone().multiplyScalar(4)).add(U.clone().multiplyScalar(3)).add(R.clone().multiplyScalar(-2.5))); sun.target.position.copy(c);
-  renderer.render(scene, camera);
+  renderer.render(scene, camera); count.renders++;
+  drawn.held = true;
   return renderer.domElement;
 }
 
@@ -420,7 +475,7 @@ function merge(group) {
 function setAvatar(cfg) {
   if (!F.ready) return false;
   for (const p of parts) { scene.remove(p.g); p.g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
-  parts = []; avatar = cfg || null;
+  parts = []; avatar = cfg || null; forget();
   if (!cfg) { for (const k of skins) k.mesh.material = k.neutral; return true; }
   const skin = hexColor(cfg.skin), topC = hexColor(cfg.topColor), botC = hexColor(cfg.bottomsColor), shoeC = cfg.shoes === 'barefoot' ? skin : hexColor(cfg.shoesColor);
   const sleeve = { tank: 0, tshirt: 1, longsleeve: 2, hoodie: 2 }[cfg.top] ?? 1, longLegs = cfg.bottoms !== 'shorts';
@@ -460,7 +515,7 @@ let body = { sc: 1, bd: 1, frame: 'neutral' };
 function setBody(sc = 1, bd0 = 1, frame = 'neutral') {
   if (!FRAMES[frame]) frame = 'neutral';
   if (!F.ready || (body.sc === sc && body.bd === bd0 && body.frame === frame)) return;
-  body = { sc, bd: bd0, frame };
+  body = { sc, bd: bd0, frame }; forget();
   const fr = FRAMES[frame];
   model.scale.setScalar(rest.scale * sc);
   // The model scales evenly with height; widths follow the build alone, as in the rig, so they are
@@ -670,4 +725,4 @@ function probe(J, hands, items, opts = {}) {
   return worst;
 }
 
-window.Figure3D = Object.assign(F, { load, render, setAvatar, setBody, partPoints, partReport, probe, skinPoints, FRAMES: Object.keys(FRAMES), avatar: () => avatar, body: () => body, debug: () => ({ gl2: renderer.capabilities.isWebGL2, maxTex: renderer.capabilities.maxVertexTextures, info: JSON.stringify(renderer.info.render), meshes: (() => { const out = []; model.traverse(o => { if (o.isMesh) out.push([o.name, o.isSkinnedMesh, o.visible, o.material.type, o.material.opacity, o.material.transparent, o.material.color.getHexString(), o.geometry.attributes.position.count, o.parent && o.parent.name, o.scale.x, !!o.skeleton && o.skeleton.bones.length]); }); return out; })(), scale: model.scale.x, hips: wpos(bone.Hips).toArray(), head: wpos(bone.Head).toArray(), lhand: wpos(bone.LeftHand).toArray(), box: new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).toArray() }) });
+window.Figure3D = Object.assign(F, { load, render, stage, stats: () => ({ ...count }), setAvatar, setBody, partPoints, partReport, probe, skinPoints, FRAMES: Object.keys(FRAMES), avatar: () => avatar, body: () => body, debug: () => ({ gl2: renderer.capabilities.isWebGL2, maxTex: renderer.capabilities.maxVertexTextures, info: JSON.stringify(renderer.info.render), meshes: (() => { const out = []; model.traverse(o => { if (o.isMesh) out.push([o.name, o.isSkinnedMesh, o.visible, o.material.type, o.material.opacity, o.material.transparent, o.material.color.getHexString(), o.geometry.attributes.position.count, o.parent && o.parent.name, o.scale.x, !!o.skeleton && o.skeleton.bones.length]); }); return out; })(), scale: model.scale.x, hips: wpos(bone.Hips).toArray(), head: wpos(bone.Head).toArray(), lhand: wpos(bone.LeftHand).toArray(), box: new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).toArray() }) });

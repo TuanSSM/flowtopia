@@ -147,6 +147,46 @@ try:
     print(f'frame ms: 3D figure {base}, 3D figure with the heaviest avatar {ms}, drawn figure {flat} (median of 60 frames; budget {BUDGET:.0f} for the heaviest avatar)')
     check(f'one demo frame with the heaviest avatar draws within {BUDGET:.0f} ms ({ms} ms; the standard figure takes {base} ms)',ms is not None and ms<=BUDGET,ms)
     check(f'the drawn figure, for a browser without WebGL, draws a frame too and the 3D figure is back afterwards ({flat} ms)',flat is not None and flat<=BUDGET and js("return !!(window.Figure3D&&window.Figure3D.ready)") and js(FRAME,None,False) is not None,flat)
+    # ==== Unchanged frame, begin. A frame that is the one already drawn (a paused demo, a still, a page drawn
+    # again) is not posed, skinned or rendered again: the picture is kept and only copied. Measured in Chromium
+    # with software WebGL when this was written: 0.5 to 0.8 ms for an unchanged frame, 41 to 95 ms for a changed
+    # one. SAME_FRAME_BUDGET_MS (5 by default) leaves room for a slower machine and another browser; the target
+    # on the Pi is 2 ms. Firefox's clock ticks in whole milliseconds, so ten drawings are timed together: the
+    # time is the median of six such runs, divided by ten. One pixel is read after each drawing, so a canvas
+    # that puts its drawing off does it inside the measurement.
+    SAME_BUDGET=float(os.environ.get('SAME_FRAME_BUDGET_MS','5'))
+    SAME="""const D=window.Demo,F=window.Figure3D,c=D.clip();if(!c||!F.stats)return null;const cv=document.createElement('canvas');cv.width=cv.height=720;const x=cv.getContext('2d'),col=D.colors(),who=arguments[0];
+      const one=()=>{D.draw(x,720,c,0.37,'angle',false,col,false,who);x.getImageData(0,0,1,1)};one();const s0=F.stats(),t=[];
+      for(let r=0;r<6;r++){const t0=performance.now();for(let i=0;i<10;i++)one();t.push((performance.now()-t0)/10)}t.sort((a,b)=>a-b);const s1=F.stats();
+      return {ms:Math.round(t[3]*100)/100,poses:s1.poses-s0.poses,skins:s1.skins-s0.skins,renders:s1.renders-s0.renders,reused:s1.reused-s0.reused}"""
+    plain=js(SAME,None) or {};same=js(SAME,HEAVY) or {}
+    print(f"unchanged demo frame, median of 6 runs of 10: standard figure {plain.get('ms')} ms, heaviest avatar {same.get('ms')} ms")
+    idle_work=lambda s: [s.get(k) for k in ('poses','skins','renders','reused')]
+    check('60 drawings of a frame that is already drawn pose, skin and render nothing and reuse the picture 60 times',idle_work(plain)==[0,0,0,60] and idle_work(same)==[0,0,0,60],(plain,same))
+    check(f"an unchanged demo frame draws within {SAME_BUDGET:g} ms ({same.get('ms')} ms with the heaviest avatar, {plain.get('ms')} ms on the standard figure)",same.get('ms') is not None and plain.get('ms') is not None and max(same['ms'],plain['ms'])<=SAME_BUDGET,(plain,same))
+    # The kept picture is the right one: a phase drawn again gives the picture it gave when freshly rendered,
+    # and whatever else decides the picture (view, hand, the standard figure, another avatar on the same body,
+    # prop colour, size) gives another one, in both directions. `fresh` draws another phase first, so its
+    # picture is never a kept one. The other size is twice the first, so the camera's numbers are the same
+    # to the last digit and only the size itself tells the two apart. Last, two poses with empty hands, where
+    # nothing but the joints differs: arms up and standing.
+    PICS="""const D=window.Demo,F=window.Figure3D,c=D.clip();if(!c||!F.stats)return null;const col=D.colors(),who=arguments[0];
+      const pic=(ph,o={})=>{const W=o.W||360,cv=document.createElement('canvas');cv.width=cv.height=W;const x=cv.getContext('2d');
+        D.draw(x,W,o.clip||c,ph,o.view||'angle',!!o.mir,o.col||col,false,'who' in o?o.who:who);
+        const d=x.getImageData(0,0,W,W).data;let h=W;for(let i=0;i<d.length;i++)h=(Math.imul(h,31)+d[i])>>>0;return h};
+      const fresh=o=>{pic(.6);return pic(.2,o)},n=()=>{const s=F.stats();return [s.renders,s.reused]},d=(a,b)=>[b[0]-a[0],b[1]-a[1]];
+      const first=fresh({}),n0=n();pic(.6);const back=pic(.2),n1=n(),kept=pic(.2),n2=n(),out={first,back,kept,work:[d(n0,n1),d(n1,n2)],other:{}};
+      const others={view:{view:'front'},hand:{mir:true},figure:{who:null},avatar:{who:{...who,hat:'cap',topColor:'#2f6f4f'}},colour:{col:{...col,prop:'#ff00ff'}},size:{W:720}};
+      for(const k in others){const ref=fresh(others[k]),home=pic(.2),again=pic(.2,others[k]);out.other[k]=[ref!==first,home===first,again===ref]}
+      const stand=p=>({clip:{fr:[p],props:[],dur:1,still:true}}),up=stand({hL:[.25,1.95,.05],hR:[-.25,1.95,.05]}),down=stand({});
+      const u=fresh(up),dn=pic(.2,down),u2=pic(.2,up);out.other.pose=[u!==dn,fresh(down)===dn,u2===u];
+      return out"""
+    pics=js(PICS,HEAVY) or {}
+    check('a phase drawn again after another one is rendered again and gives the same picture',pics.get('first') and pics.get('back')==pics['first'] and pics['work'][0]==[2,0],pics)
+    check('drawn once more it comes from the kept picture, nothing rendered, and is the same picture',pics.get('first') and pics.get('kept')==pics['first'] and pics['work'][1]==[0,1],pics)
+    stale={k:v for k,v in pics.get('other',{'none':[]}).items() if v!=[True,True,True]}
+    check('another view, hand, figure, avatar, prop colour, size or pose draws another picture, and going back draws the first again',len(pics.get('other',{}))==7 and not stale,stale or pics)
+    # ==== Unchanged frame, end.
     # ---- Parts: every part, in five poses, shows and stays close to the skin (measured against the mesh).
     POSES={'stand':{},'arms up':{'hL':[0.25,1.95,0.05],'hR':[-0.25,1.95,0.05]},'deep bend':{'pelvis':[0,0.78,-0.12],'spine':[0,0.75,0.66],'hL':[0.2,0.75,0.35],'hR':[-0.2,0.75,0.35]},'turn':{'face':[0.8,0,0.6]},'hand behind back':{'hR':[-0.1,1.0,-0.2]}}
     CFGS=[HEAVY,{**HEAVY,'hair':'ponytail','hat':'cap','glasses':'round','eyes':'sleepy','mouth':'open','brows':'arched'},{**HEAVY,'hair':'long','hat':'beanie','glasses':'none','mouth':'smile','brows':'angled','eyes':'narrow'},{**HEAVY,'hair':'bun','hat':'none','mouth':'neutral','brows':'straight','eyes':'round'},{**HEAVY,'hair':'buzz','hat':'none'},{**HEAVY,'hair':'short','hat':'none'}]

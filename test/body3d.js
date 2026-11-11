@@ -85,11 +85,18 @@ function parts(F) {
   return bad;
 }
 
-async function main() {
+// The figure, loaded as the browser loads it but without WebGL: for this test and the others that pose it
+// in Node (test/skin-once.js).
+async function figure() {
   globalThis.window = globalThis;
   await import('../figure/src/figure.js');
   const F = window.Figure3D, glb = fs.readFileSync(path.join(__dirname, '..', 'web', 'assets', 'human.glb'));
   if (!await F.load('', glb.buffer.slice(glb.byteOffset, glb.byteOffset + glb.byteLength))) { console.log('FAIL the model did not load:', F.reason); process.exit(1); }
+  return F;
+}
+
+async function main() {
+  const F = await figure();
   const what = process.argv[2] || 'both';
   let partBad = 0;
   if (what !== 'clips' && what !== 'parts') {
@@ -139,4 +146,5 @@ async function main() {
   over.push(...overGrip);
   process.exit(over.length || partBad ? 1 : 0);
 }
-main().catch(e => { console.log('FAIL', e); process.exit(1); });
+if (require.main === module) main().catch(e => { console.log('FAIL', e); process.exit(1); });
+module.exports = { figure, HEAVY };
