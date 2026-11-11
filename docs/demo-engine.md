@@ -12,11 +12,12 @@ kind of clip means, what is checked, and what was tried and left out.
 | `sim/moves.js` | at build time | Families of moves: body movement, figure-8s, hand-over-hand rotors, unit-circle patterns, solved poi paths, still pictures, and the posture search. |
 | `sim/specs.js` | at build time | The list of skills that have a demo, with their notes. |
 | `sim/compose.js` | at build time | Puts the hands together into one scene: both hands, the body pose and every prop, 100 frames a second. |
-| `sim/check.js` | at build time | Measurements on a scene: overlaps, reach, speed, legs, balance, turn inside the hand. |
+| `sim/check.js` | at build time | Measurements on a scene: overlaps, reach, speed, legs, balance, the chest's turn against the hips, turn inside the hand. |
 | `sim/bake.js` | by hand after a change to `sim/`, by `./deploy.sh --build`, and by CI to check the committed clips | Writes `web/clips/<hash>.json` and `web/clips/index.json`. `--diff` says how the clips differ from the last commit. |
 | `web/demo.js` | in the browser | The player: the jointed figure, the props, labels, views, GIF export. No physics. |
 | `test/physics.js`, `test/expect.js` | `node test/physics.js` | Every clip against its physics, its definition, and the body. |
 | `test/chain.js` | `node test/physics.js`, or on its own | Known answers for the chain: 55 checks, each with its tolerance and where it comes from. |
+| `test/twist.js` | `node test/physics.js`, or on its own | Known answers for the chest turned against the hips: the rig, the capsules, the body checks and the clip format, 26 checks. |
 
 The browser used to run the simulation itself. It now plays clips that were worked out and checked
 ahead of time, so what is tested is exactly what is shown, a demo opens at once, and a simulation
@@ -55,6 +56,27 @@ the model's height, a neck, the shoulders and the upper back, hips and buttocks 
 limbs thicker near the body than at their ends. `node test/body3d.js rig` keeps the skin within 25 mm of
 them, so the body that props collide with is the body that is drawn ([docs/avatars.md](avatars.md)).
 
+The chest can turn against the hips. A pose may hold a `twist`, written `[degrees, 0, 0]`: three
+numbers, like every value of a frame, so a clip stores it, blends it between frames and mirrors it
+with everything else (mirroring changes the sign of the first number, and the mirror image of a turn
+to the left is a turn to the right). Positive is to the figure's left, as a positive yaw is for the
+whole figure: the right shoulder comes forward and the left goes back. The turn is about the line of
+the spine, from the pelvis to the base of the neck, on top of whatever lean the pose has. It stops at
+45 degrees each way, a little over the 40 or so a back turns (roughly 5 degrees in the lumbar spine
+and 35 in the thoracic): the rig draws no more than that, and the body checks fail a clip that asks
+for more.
+
+- **What follows the twist.** The shoulders, the base of the neck, the capsules of the chest top, the
+  upper back and the deltoids, by all of it. The head by 40%: it takes back 60%, as the 3D head does
+  of a lean, so the figure goes on looking where it works and not at its own shoulder. A hand the
+  pose leaves out hangs under its shoulder, so it goes round with the chest.
+- **What does not.** The pelvis, the hips, the knees, the feet and their capsules do not move at
+  all. The capsule of the waist and ribs is round about the spine's line, so it has nothing to turn.
+  A hand the pose gives stays where the move puts it: its elbow is solved again from the turned
+  shoulder, by the same rule as before in the chest's own frame, and the reach and overlap checks
+  judge what comes out. A hand that was in reach can be out of reach once its shoulder has turned
+  away, and the reach check says by how much.
+
 A body movement is a function of the phase of the move: weight from foot to foot, down and up by
 bending the knees, a full turn in quarter-turn steps with one foot always on the floor. Hands and
 props are carried along, and for simulated props the swing is simulated again on the moving body.
@@ -71,6 +93,27 @@ thick handle. For a close-up grip picture, which has no body, a standing body is
 shoulder straight behind the fist, and everything beyond a plane 25 cm behind the hand is cut
 away, so the picture shows the model's hand and forearm with the prop.
 
+A twist is shared over the three spine bones of the model's Mixamo skeleton, from the lowest up:
+`Spine` 15%, `Spine1` 30%, `Spine2` 55%. `Spine` sits in the lumbar region (1.14 m up on the standard
+figure), and the whole lumbar spine gives about 5 of a back's 40 degrees. `Spine1` is where the
+lumbar spine meets the thoracic (1.24 m) and `Spine2` is in the middle of the ribcage (1.33 m): they
+share the thoracic part, more of it higher up, where each vertebra turns more. So the skin of the
+hips does not turn, the waist turns by 15% of the twist, the lower chest by 45% and the upper chest
+by about 90%, and the collarbones and shoulder blades, which hang from `Spine2`, ride on the ribcage
+with all of it. Each bone is carried round the rig's line as it turns, not turned about itself (the
+model's spine and neck bones lie up to 5 cm behind that line), which is what keeps the model's
+shoulder line on the rig's. The neck and the head each take back half of what the head takes back.
+The 15% is the lumbar spine's 5 degrees of 40, rounded up; the split of the rest is a judgement, and
+on this model, whose trunk is three stiff pieces, sheets with 10, 15 and 75% and with 20, 40 and 40%
+looked nearly the same. The
+drawn fallback figure is made from the same joints: its shoulders narrow in the front view and part
+in the side view, and its nose turns with the head.
+
+`node test/twist.js` holds the rig, the capsules, the checks and the clip format to this on every
+body, and `node test/body3d.js rig` holds the model to the rig at 15, 30 and 45 degrees each way:
+the legs to the last digit, the shoulder line within 0.1 degrees, the skin of the standing figure
+within the same 25 mm of the capsules as without a twist. No move uses the twist yet.
+
 ## What is checked on every clip
 
 Physics, as before: stick, cord, tether and staff lengths; slack; loops with no seam; free fall in
@@ -84,6 +127,8 @@ New, on the composed scene with both hands in it:
 - Each hand stays within reach of its shoulder and under 9 m/s.
 - Legs are not stretched past their length, feet stay on the floor and do not pass through each
   other, and the pelvis stays over the line between the feet.
+- The chest is turned no more than 45 degrees against the hips. The reach, overlap and balance
+  checks above are made on the body as the twist leaves it: turned shoulders, turned chest capsules.
 - How far the prop turns inside the hand is measured and reported, not enforced (see below).
 
 Moving the old clips onto this body found faults the old test did not look for: the bounce demo's
@@ -359,8 +404,10 @@ repeating swing, fewer capsules handed to the line) or the allowance has to be l
   the forces come out fine, but with the body standing square no setting kept the poi clear: on
   the far side the tether passes through the other shoulder, or the reaching arm goes through the
   chest (best case 26 mm in, over 1,500 settings for two beats; three beats were always out of
-  reach). A real weave turns the upper body toward the side the poi are on. The figure cannot turn
-  its chest against its hips yet, and that is the next thing to add.
+  reach). A real weave turns the upper body toward the side the poi are on. The figure could not
+  turn its chest against its hips then. It can now (the `twist` of a pose, see "The figure"), with
+  the body checks made on the turned body; no move uses it yet, and the weave with a turning upper
+  body is the next item of the SIM epic.
 - **Turning with a spinning nunchaku.** The plane has to be turned with the body, and the wrist
   model cannot push it sideways, so the striker falls behind and hits the arm. Turning with a poi
   now works, because the poi's hand is solved for instead.
@@ -394,7 +441,8 @@ repeating swing, fewer capsules handed to the line) or the allowance has to be l
 5. **Solved clips fix the head, not the hand.** The hand path comes out near the textbook circle
    but not on it, and nothing limits the force, only the speed.
 6. **Steps are simple.** Turns use quarter-turn steps on the spot. There is no travel, no pivot on
-   one foot, and the upper body does not turn against the hips.
+   one foot. The chest can turn against the hips, but no move asks it to yet, and the families of
+   body movement in `sim/moves.js` do not carry a twist.
 7. **The body is capsules.** They are fitted to the drawn model within 25 mm, but a flat back or a
    bony knee is still a round shape, so a prop may hover a centimetre or two off the skin.
 8. **The posture search is a coarse grid.** It finds a clear posture, not the one a teacher would

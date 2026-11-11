@@ -46,6 +46,23 @@ async function main() {
   show(two, 0.3);
   w = show(two, 0.3); check('a two-prop move asked again is not skinned again', is(w, none), w);
 
+  // The chest turned against the hips (the `twist` of a pose) is part of what is remembered, twice over: it
+  // moves the shoulders, which are joints, and it is itself a number among them (J.twist).
+  const turned = (deg, change = J => J) => work(() => { const f = Demo.pose(clip, 0.2, false), props = Demo.propsOf(clip, false), { J, hands, list } = Demo.stage(clip, deg === null ? f : { ...f, twist: [deg, 0, 0] }, props); F.stage(change(J), hands, list); });
+  show(clip, 0.2);
+  w = turned(0); check('the same pose with a twist of 0 degrees is the pose it had, and is not skinned again', is(w, none), w);
+  w = turned(15); check('the same pose with the chest turned 15 degrees is skinned', is(w, once), w);
+  w = turned(15); check('and not again', is(w, none), w);
+  w = turned(-15); check('turned the other way it is another pose', is(w, once), w);
+  w = turned(15 + 1e-9); check('so is a twist a billionth of a degree further', is(w, once), w);
+  w = turned(null); check('and the pose without its twist again', is(w, once), w);
+  {
+    const f = Demo.pose(clip, 0.2, false), a = Demo.rig(f), b = Demo.rig({ ...f, twist: [15, 0, 0] });
+    check('a twist moves joints (both shoulders and an elbow), so a turned pose can never be taken for the unturned one', ['shL', 'shR', 'elR'].every(k => a[k].some((x, i) => x !== b[k][i])), [a.shR, b.shR]);
+  }
+  turned(15);
+  w = turned(15, J => ({ ...J, twist: 20 })); check('the twist itself is compared too: the same joints said to be turned 20 degrees are skinned again', is(w, once), w);
+
   // The body and the avatar are not part of a pose, so changing them has to drop what was remembered.
   show(clip, 0.2);
   w = work(() => { F.setBody(1.035, 1.1, 'neutral'); const { J, hands, list } = frame(clip, 0.2); F.stage(J, hands, list); });

@@ -89,6 +89,10 @@ async function main() {
     Demo.figure(true);
     measure(`${key}, a whole frame of a playing demo`, i => Demo.draw(canvas, 720, clip, i / FRAMES, 'angle', false, COL, false, null), wholeFrame(key));
     Demo.figure(false); F.render = render;
+    // The same clip with the chest turning from side to side: the spine, the neck and the head are turned
+    // with vectors from the pool as well, so the figure's own bound holds.
+    const turning = Array.from({ length: FRAMES }, (_, i) => Demo.stage(clip, { ...Demo.pose(clip, i / FRAMES, false), twist: [(i % 2 ? 1 : -1) * (5 + 40 * i / FRAMES), 0, 0] }, props));
+    measure(`${key}, the 3D figure posed and skinned with the chest turned`, i => { const s = turning[i]; F.stage(s.J, s.hands, s.list); }, FIGURE_FRAME);
   }
   // The trail's shortcut gives the point the full pose gives, to the last digit: every clip, phases inside
   // and outside one cycle, both hands, the standard body and a taller one (which moves the clip to fit).

@@ -569,7 +569,10 @@ The model is posed as a body moves, not only placed: the upper arm and thigh rol
 and knee are hinges that bend toward the forearm and shin (the knee points where the toes point);
 the forearm pronates or supinates to follow the palm, within about 100 degrees, and only the rest is
 left to the wrist; the collarbone lifts as the hand goes up; the head stays nearer upright than a
-leaning trunk; the fingers close less tightly round a thick handle.
+leaning trunk; the fingers close less tightly round a thick handle. The chest can turn against the
+hips, up to 45 degrees each way, shared over the three spine bones so that the hips stay square, the
+waist turns a little and the ribcage most; the body checks are made on the turned body
+(`node test/twist.js`). No demo uses it yet.
 
 The Combos page plays the open combo on a stage beside its timeline. Each skill plays whole cycles
 of its demo, as many as its repetition count (1 to 9, saved with the combo); skills can be moved

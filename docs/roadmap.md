@@ -126,7 +126,7 @@ definition of done holds; "waits" names the one thing that cannot be done from a
 | CAT | 1 of 6 | the method for confirming a skill | the five research passes: sources have to be opened, which the session that wrote this could not do |
 | LBL | 3 of 4 | the question after a run, progress to the gate, the label check, the fit workflow | 30 marked pairs on an instance and the workflow's first run (the owner) |
 | TRU | 0 of 6 | the design note | the owner's review and thirteen decisions at its top |
-| SIM | 1 of 7 | a tether as a chain that touches the body, with 70 known answers | the chest twist is in work; the weave, wraps, passes and rolling contact follow in that order |
+| SIM | 2 of 7 | a tether as a chain that touches the body, with 70 known answers; a chest that turns against the hips in the rig, the body checks and the 3D figure, with 26 known answers | no move uses either yet; the weave, wraps, passes and rolling contact follow in that order |
 | XPR | 2 of 5 | shared concepts in the maps and the editor; the hint on a skill | the maps name no concept yet (CAT); one dashboard waits for SHP; mixed combos and suggestions across props are not started |
 | OFF | 0 of 5 | nothing | LOAD's service worker and TRU's write path |
 
