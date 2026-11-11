@@ -72,13 +72,16 @@ substitute for listening with a screen reader, which has not been done yet.
 
 Text, icons and the edges of fields stand out from what is behind them in both themes: 4.5:1 for text,
 3:1 for large text, icons, the edge of a field and the ring around a chosen option. `node test/contrast.js`
-reads this from `web/app.css` in lint, hover and focus included, and fails on a colour, a background or a
-fade it has not been told how to place. It reads plain rules and `@media` blocks: a rule inside
-`@supports` or `@layer`, a colour that a narrower `@media` block overrides, `color: inherit` on a
-coloured background and a state marked only by an outline or a side border are not seen by it yet.
-`test/browser/contrast.py` reads it from the computed styles of
-55 stops in each theme, about 20,000 pairs of colours. Neither judges what is drawn over a picture, a
-gradient or the demo canvas; the walk counts those as skipped.
+reads this from `web/app.css` in lint, hover and focus included, and fails on a colour, a background, a
+tint or a fade it has not been told how to place. It reads rules inside `@media`, `@supports` and
+`@layer` where they stand, and a rule that such a block changes is checked outside the block and inside
+it. It places a colour by its own rule, its token or a table, never by matching selectors against a
+page, so three things are not seen by it: which rules meet on one element, a state shown by a tint
+alone (the chosen entry of the menu or of a list), and a state marked by a border written whole on a
+rule of one class, which it takes for the frame of a box. `test/browser/contrast.py` reads the same
+from the computed styles of 58 stops in each theme, about 18,500 pairs of colours on Chromium, and
+fails when something cannot be judged for a reason it was not told of. Neither judges what is drawn
+over a picture, a gradient or the demo canvas; the walk counts those as skipped.
 
 Every field has a label bound to it: a `<label>` around it or pointing at it, or an `aria-label` where a
 visible label would be wrong. A placeholder or a title is not a label. An error under a form is put into

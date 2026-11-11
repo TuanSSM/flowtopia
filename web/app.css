@@ -7,10 +7,12 @@
   --hover: #252a35;
   --line: #2a2f3a;
   --line-2: #3a4150;
-  --edge: #696c74;
+  --edge: #70737a;
   --ink: #f0efec;
   --ink-2: #b6b8bd;
   --ink-3: #9598a1;
+  --fig-body: #868a94;
+  --fig-arm: #b6b8bd;
   --accent: #3277cb;
   --accent-ink: #8fc0f7;
   --accent-soft: rgba(57, 135, 229, .15);
@@ -19,7 +21,7 @@
   --l0: #2a2f3a;
   --l1: #1f3d63;
   --l2: #2a64a8;
-  --l3: #3277cb;
+  --l3: #3987e5;
   --l4: #9ccaf9;
   --good: #3fb37f;
   --warn: #d9a13b;
@@ -32,20 +34,22 @@
   :root:where(:not([data-theme="dark"])) {
     color-scheme: light;
     --bg: #f5f5f2; --side: #fbfbf9; --card: #ffffff; --card-2: #f1f1ed; --hover: #e9e9e4;
-    --line: #e2e2dc; --line-2: #c9c9c1; --edge: #8a8a86; --ink: #161616; --ink-2: #52514e; --ink-3: #646360;
+    --line: #e2e2dc; --line-2: #c9c9c1; --edge: #868682; --ink: #161616; --ink-2: #52514e; --ink-3: #646360;
     --accent: #2976d3; --accent-hover: #256abe; --accent-ink: #1c5ca8; --accent-soft: rgba(42, 120, 214, .11);
     --l0: #e2e2dc; --l1: #bcd6f5; --l2: #79aee9; --l3: #2976d3; --l4: #123f7a;
-    --good: #147650; --warn: #8c5e00; --bad: #bf3231; --shadow: 0 16px 48px rgba(30, 30, 20, .16);
+    --good: #147650; --warn: #8c5e00; --bad: #bf3231; --fig-body: #74736e; --fig-arm: #52514e; --shadow: 0 16px 48px rgba(30, 30, 20, .16);
   }
 }
 :root[data-theme="light"] {
   color-scheme: light;
   --bg: #f5f5f2; --side: #fbfbf9; --card: #ffffff; --card-2: #f1f1ed; --hover: #e9e9e4;
-  --line: #e2e2dc; --line-2: #c9c9c1; --edge: #8a8a86; --ink: #161616; --ink-2: #52514e; --ink-3: #646360;
+  --line: #e2e2dc; --line-2: #c9c9c1; --edge: #868682; --ink: #161616; --ink-2: #52514e; --ink-3: #646360;
   --accent: #2976d3; --accent-hover: #256abe; --accent-ink: #1c5ca8; --accent-soft: rgba(42, 120, 214, .11);
   --l0: #e2e2dc; --l1: #bcd6f5; --l2: #79aee9; --l3: #2976d3; --l4: #123f7a;
-  --good: #147650; --warn: #8c5e00; --bad: #bf3231; --shadow: 0 16px 48px rgba(30, 30, 20, .16);
+  --good: #147650; --warn: #8c5e00; --bad: #bf3231; --fig-body: #74736e; --fig-arm: #52514e; --shadow: 0 16px 48px rgba(30, 30, 20, .16);
 }
+/* --fig-body and --fig-arm are the greys of the drawn 2D figure (web/demo.js). It is a drawing, not words: the greys
+   of muted text moved for contrast, and the figure keeps the two it had, which tell the working arm from the body. */
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; scrollbar-color: var(--line-2) transparent; }
@@ -165,8 +169,9 @@ input[type=text], input[type=date], input[type=number], input[type=search], sele
 }
 textarea { height: auto; min-height: 76px; padding: 8px 10px; resize: vertical; line-height: 1.45; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
-/* A field is found by its edge: --edge is 3:1 against every surface a field sits on. The words that stand in an empty
-   field are words like any other, in every browser. test/contrast.js holds both to it. */
+/* A field is found by its edge: --edge is 3:1 against every surface a field can stand on, which are the four plain
+   ones, a row under the pointer and a tinted row on a card. The words that stand in an empty field are words like
+   any other, in every browser. test/contrast.js holds both to it. */
 ::placeholder { color: var(--ink-3); opacity: 1; }
 .seg { display: inline-flex; padding: 2px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-s); }
 .seg button { padding: 3px 11px; border-radius: 6px; font-size: 12.5px; color: var(--ink-2); font-weight: 520; min-height: 26px; }
@@ -251,10 +256,10 @@ a.chip:hover, button.chip:hover { background: var(--hover); text-decoration: non
 .cell.ready { border-color: var(--accent); }
 .cell.lv1 { background: var(--l1); border-color: transparent; }
 .cell.lv2 { background: var(--l2); border-color: transparent; color: #fff; }
-.cell.lv3 { background: var(--l3); border-color: transparent; color: #fff; }
+.cell.lv3 { background: var(--l3); border-color: transparent; color: #0b1a2c; }
 .cell.lv4 { background: var(--l4); border-color: transparent; color: #0b1a2c; }
-:root[data-theme="light"] .cell.lv4 { color: #fff; }
-@media (prefers-color-scheme: light) { :root:where(:not([data-theme="dark"])) .cell.lv4 { color: #fff; } :root:where(:not([data-theme="dark"])) .cell.lv2 { color: #0b1a2c; } }
+:root[data-theme="light"] .cell.lv4, :root[data-theme="light"] .cell.lv3 { color: #fff; }
+@media (prefers-color-scheme: light) { :root:where(:not([data-theme="dark"])) .cell.lv4, :root:where(:not([data-theme="dark"])) .cell.lv3 { color: #fff; } :root:where(:not([data-theme="dark"])) .cell.lv2 { color: #0b1a2c; } }
 :root[data-theme="light"] .cell.lv2 { color: #0b1a2c; }
 
 /* Detail panel */
@@ -523,7 +528,9 @@ button:disabled { opacity: .6; cursor: default; }
 .qs { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 7px; border-radius: 6px; font-size: 11.5px; font-weight: 650; color: var(--ink-3); border: 1px dashed var(--line-2); font-variant-numeric: tabular-nums; }
 .qs:hover { text-decoration: none; border-color: var(--ink-3); }
 .qs.part { border-style: solid; color: var(--ink); background: var(--l1); border-color: transparent; }
-.qs.ok { border-style: solid; color: #fff; background: var(--l3); border-color: transparent; }
+.qs.ok { border-style: solid; color: #0b1a2c; background: var(--l3); border-color: transparent; }
+:root[data-theme="light"] .qs.ok { color: #fff; }
+@media (prefers-color-scheme: light) { :root:where(:not([data-theme="dark"])) .qs.ok { color: #fff; } }
 .qs svg.i { width: 11px; height: 11px; stroke-width: 2.4; }
 .quest.on { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 .unlock { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 95; }

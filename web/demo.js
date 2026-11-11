@@ -418,7 +418,7 @@ const Demo = (() => {
 
   function colors() {
     const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
-    return { bg: v('--side'), body: v('--ink-3'), arm: v('--ink-2'), ink: v('--ink'), prop: v('--accent'), link: v('--ink-2'), trail: v('--l4'), plane: v('--accent-soft'), floor: v('--line-2'), skin: v('--ink-2') };
+    return { bg: v('--side'), body: v('--fig-body'), arm: v('--fig-arm'), ink: v('--ink'), prop: v('--accent'), link: v('--ink-2'), trail: v('--l4'), plane: v('--accent-soft'), floor: v('--line-2'), skin: v('--ink-2') };
   }
 
   /* ---------- player ---------- */
