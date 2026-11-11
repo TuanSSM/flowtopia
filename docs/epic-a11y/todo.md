@@ -64,20 +64,20 @@ Commits title of the category's type. An item is checked only when its DoD holds
   and a background of its own is checked as written, hover included; field edges, focus rings and
   the ring around a chosen option reach 3:1. A rule whose colour, background, fade, filter or state
   ring it cannot place fails, and so does a colour in a template that is not a colour for words.
-  485 checks.
+  541 checks.
   `test/browser/contrast.py` is the `integration (contrast)` suite. It first proves its arithmetic
   on pieces with known answers (black on white 21:1, #777 on white 4.48:1, half white over black,
   the size where text counts as large, a background from an ancestor, a faded parent), then walks
-  55 stops in each theme, the tour opened once in each, and judges every visible text, `svg.i` icon
-  and field (typed words, placeholder, edge) against what the computed styles put behind it: about
-  20,300 pairs of colours.
+  58 stops in each theme, the tour opened once in each, and judges every visible text, icon and
+  field (typed words, placeholder, edge) against what the computed styles put behind it: about
+  18,500 pairs of colours.
   Before the fixes the stylesheet check failed 135 of 481 and the walk found 476 pairs below their
   contrast on 109 of 110 views, 27 different pairs of colours. The worst: the edge of a field at
   1.19:1 in the light theme and 1.30:1 in the dark one, of 3:1; the tick on a practised day 1.78:1
   of 3:1; white on the red count 3.23:1 and on the primary button 3.64:1 (dark) and 4.42:1 (light);
   the small grey line on a challenge that is done 3.62:1 (light) and 3.80:1 (dark); amber notes
   3.81:1 (light); the tour's Next button 3.90:1; the browser's own grey for placeholders 4.00:1.
-  Now both find none. What moved: `--ink-3`, `--accent` with `--l3` and `--bad` in both themes,
+  Now both find none. What moved: `--ink-3`, `--accent` and `--bad` in both themes, `--l3`,
   `--good` and `--warn` in the light one, each by the smallest step that passes; a new `--edge` for
   fields and the chosen segment; placeholders in `--ink-3`; the words on red and green pills in
   `--bg`; a dark tick on a practised day; the primary button darkens under the pointer; a quest
@@ -86,13 +86,30 @@ Commits title of the category's type. An item is checked only when its DoD holds
   off; the flame and the badge emblem, which stand beside words that say the same; borders that
   only tint a box or only change under the pointer; the outline of a button, which its words mark;
   checkboxes, radio buttons and sliders, which the browser draws. Out of scope and counted, not
-  passed: text and icons over a picture, a gradient or the demo canvas (about 100 in the walk), and
-  the shapes of charts, the heatmap and progress bars (14 rules).
+  passed: text and icons over a picture, a gradient or the demo canvas (about 90 in the walk, of
+  three kinds the suite names; a fourth kind fails it), and the shapes of charts, the heatmap and
+  progress bars (18 rules).
   The walk was written against Chromium; its first run on Firefox was the pull request's CI, where
   it passed (123 passed, 0 failed, 8 skipped). Seen
   and left: the search box in the palette shows no focus ring (Focus); the tour's Next button is
   put right by a rule in `app.css` over the colours the tour is handed, where the tour itself
   should ask for the right one.
+  After a review, the gaps it found were closed. The stylesheet check now reads `@supports` and
+  `@layer`, checks a rule outside and inside each block that changes it, refuses a colour in
+  `@keyframes` and an `@import`, reads `color: inherit` on a background as a background for other
+  words, reads channels written as percentages, wants every tint listed with what lies under it
+  (none lies on `--card-2`, where three colours would fall to 4.1:1 to 4.4:1), and takes a side
+  border, an outline colour or an inner ring on a state for a mark, and a class the templates put
+  on a field for a field. The walk counts what is hidden under something or dimmed behind a dialog
+  instead of judging it, judges the words of `::before` and `::after`, of button inputs and an svg
+  that is all a button shows, asserts the message at the bottom while it is up, and edits a
+  highlighted comment, where a field stands on a tint. `--edge` moved once more (dark #696c74 to
+  #70737a, light #8a8a86 to #868682) to hold 3:1 there and in a row under the pointer. Two looks
+  that had moved by accident are back: the third level of the map and the heatmap keeps its blue
+  in the dark theme, with a dark number on it, and the drawn 2D figure has greys of its own
+  (`--fig-body`, `--fig-arm`) instead of the greys of muted text. Still not seen by the stylesheet
+  check, and said in its header: which rules meet on one element, a state shown by a tint alone,
+  and a state marked by a whole border on a rule of one class.
 - [x] **Forms.** Labels bound to inputs, errors announced, the composer's limits announced. DoD:
   the lint script checks label binding.
   Done: `test/browser/a11y.py` checks it at the same 68 stops, and fails on any. Like Names it is the

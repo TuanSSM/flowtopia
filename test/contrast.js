@@ -8,13 +8,26 @@
 //   colours used there). That covers each rule that sets such a colour and no background.
 // - A rule that sets a colour and a background is one pair, checked as written.
 // - A rule that sets any other colour, or one over a tint, is listed below with what it is drawn on
-//   (ON). A rule that is in none of these fails: a new colour cannot slip by. The same holds for a new
-//   background, a fade, a filter, a ring or border that marks a state, and a colour set in a template.
+//   (ON). A rule that is in none of these fails. The same holds for a new
+//   background, a tint without what is under it, a fade, a filter, a ring or border that marks a state,
+//   the edge of a field and a colour set in a template.
+// - A rule inside @media, @supports or @layer is read where it stands. Where such a block changes
+//   something looked at, the rule is checked outside the block, inside it, and inside all its blocks at
+//   once. Any other block (@keyframes, @font-face) may not set a colour, and @import is refused.
 // - What the standard leaves out is listed with its reason (EXEMPT, DECOR, NOT_UNDER_TEXT). Two kinds are
 //   left out without a list: the border around a box that holds words (a card, a button, a chip), which
 //   its words mark, and a border that only changes under the pointer.
-// Not looked at here: charts, the heatmap and progress bars as shapes (GRAPHIC), and anything drawn on a
-// canvas.
+// What this script cannot see, and test/browser/contrast.py is there for:
+// - Which rules meet on one element. A colour is placed by its own rule, its token or a table, never by
+//   matching selectors against a page: words that inherit a colour which is not a token, onto a background
+//   from another rule, are seen only by the walk.
+// - A state shown by a tint alone (the chosen entry of the menu, of the search and of a list): the tint
+//   is checked as a surface for words, not as a mark that must stand out by itself.
+// - A border written whole (border: 1px solid ...) on a rule of one class is taken for the frame of a box
+//   that holds words. A state is recognised by a rule that changes only the colour of an edge, draws a
+//   ring, or adds a class, an attribute or a pseudo-class to another rule's selector.
+// - A field is an input, a select, a textarea, or a class the templates put on one of those.
+// - Charts, the heatmap and progress bars as shapes (GRAPHIC), and anything drawn on a canvas.
 //   node test/contrast.js
 const fs = require('fs'), path = require('path');
 const web = path.join(__dirname, '..', 'web');
@@ -24,9 +37,17 @@ const css = fs.readFileSync(path.join(web, 'app.css'), 'utf8').replace(/\/\*[\s\
 // layer down: a token, a colour, or =selector for the background that rule sets.
 const TEXT = ['--ink', '--ink-2', '--ink-3', '--accent-ink', '--good', '--warn', '--bad'];
 const PLAIN = ['--bg', '--side', '--card', '--card-2'];
-const ON_ANY = [...PLAIN, '--hover',
-  '--accent-soft on --bg', '--accent-soft on --side', '--accent-soft on --card',   // the tip card, the chosen menu entry, the row that is playing
-  ...PLAIN.map(s => '=.top on ' + s)];                                               // the bar at the top, with the page scrolling under it
+const SOFT = ['--accent-soft on --bg', '--accent-soft on --side', '--accent-soft on --card'];   // the tip card, the chosen menu entry, the row that is playing
+const ON_ANY = [...PLAIN, '--hover', ...SOFT, ...PLAIN.map(s => '=.top on ' + s)];               // and the bar at the top, with the page scrolling under it
+// A background that lets through what is under it, with what that is. Each must be a surface of ON_ANY.
+// No tint lies on --card-2: the boxes of that colour (a chip, a challenge, a link card, a suggestion)
+// hold no row that is tinted, and a prop that is ticked swaps its --card-2 for the tint.
+const TINTED = {
+  '.top': PLAIN,
+  '.nav-profile.on': ['--side'], '.pal-i.on': ['--side'], '.ntf.unread': ['--side'], '.pick-i:hover': ['--side'], '.pick-i.on': ['--side'],
+  '.tipcard': ['--bg'], '.ed-skill.on': ['--bg'], '.prop-pick:has(input:checked)': ['--bg', '--card'],
+  '.wk.now': ['--card'], '.cb-step.playing': ['--card'], '.cmt.focus': ['--card'], '.person.me': ['--card'], '.link-offer': ['--card'],
+};
 // Three tinted boxes hold only the words their templates write in them: a name, and a small line under it.
 const ON_TINT = { '=.badge.on': ['--ink', '--ink-3'], '=.ch.done': ['--ink', '--ink-3'], '=.ms': ['--ink'] };
 // Rules whose colour is not a TEXT token on a plain background of their own: what they are drawn on.
@@ -53,13 +74,15 @@ const EXEMPT = {
   '.week-dots .future i': 'an empty dot for a day to come: nothing is written in it',
   '.seg-r input': 'the radio button itself is not drawn; the label beside it is the control and is checked',
 };
-// Shapes of charts, not text, icons or controls: outside this check.
+// Shapes of charts, not text, icons or controls: outside this check, whether the rule sets a colour or a fade.
 const GRAPHIC = ['.heat rect', '.heat rect.h1', '.heat rect.h2', '.heat rect.h3', '.heat rect.h4', '.heat rect.today', '.graph path', '.graph path.met', '.graph path.hl',
   '.graph.focus path:not(.hl)', '.ring circle', '.ring circle.on', '.ch.done .ring circle.on', '.dc-bar', '.dc-bar.now', '.dc-col:hover .dc-bar', '.dc-hit', '.dc-base'];
-// Edges that mark a control or its state, at 3:1 against what they are drawn on. A field (input, select,
-// textarea) is found by its border, its outline or its fill on every plain surface unless listed here.
-// A focus ring holds wherever a control can stand (RING_ON).
-const RING_ON = [...PLAIN, '--hover', '--accent-soft on --side', '--accent-soft on --card'];
+// Edges that mark a control or its state, at 3:1 against what they are drawn on. A focus ring holds
+// wherever a control can stand (RING_ON). A field is found by its border, its outline or its fill
+// wherever a field can stand (FIELD_ON) unless listed here: on the plain surfaces, in a row under the
+// pointer, and in a comment that is edited while it is highlighted.
+const RING_ON = [...PLAIN, '--hover', ...SOFT];
+const FIELD_ON = [...PLAIN, '--hover', '--accent-soft on --card'];
 const EDGE = {
   '.pal-box input': ['--side'],
   '.seg button.on': ['--bg'], '.seg a.on': ['--bg'], '.seg-r input:checked + span': ['--side', '--card'],   // the chosen one of a few
@@ -76,6 +99,8 @@ const DECOR = {
   '.badge.on': 'a tint around an earned badge; its line says when it was earned', '.quest.on': 'a tint around the current phase; its number is filled',
   '.risk-card': 'a tint around a card', '.av-first': 'a tint around a card', '.sw.on': 'the gap between a swatch and its ring; the ring is checked',
   '.draft-chips .add-trick.on': 'the list that is open under it shows the state',
+  '.notice.warn': 'a stripe beside a notice; its words say what it warns of',
+  '.badge-ic.on': 'a sheen inside the emblem',
 };
 // Backgrounds nothing is written on.
 const NOT_UNDER_TEXT = {
@@ -86,48 +111,68 @@ const NOT_UNDER_TEXT = {
   '.share-prev': 'the checkerboard under a picture', '.tpl canvas': 'under a picture', '.sw': 'a swatch of the colour it offers',
 };
 
-// ---------- reading the stylesheet
+// ---------- reading the stylesheet and the templates
 const top = (s, sep) => { const out = []; let d = 0, a = 0; for (let i = 0; i < s.length; i++) { if (s[i] === '(') d++; else if (s[i] === ')') d--; else if (s[i] === sep && !d) { out.push(s.slice(a, i)); a = i + 1; } } out.push(s.slice(a)); return out.map(x => x.trim()).filter(Boolean); };
+// A selector as its compounds (".seg button.on" is ".seg" and "button.on"), and the simple selectors of one.
+const compounds = sel => { const out = []; let d = 0, a = 0; for (let i = 0; i <= sel.length; i++) { const c = sel[i]; if (c === '(') d++; else if (c === ')') d--; if (i === sel.length || (!d && /[\s>+~]/.test(c))) { if (i > a) out.push(sel.slice(a, i)); a = i + 1; } } return out; };
+const simples = c => c.replace(/::[\w-]+|:(first-child|last-child|first-of-type|last-of-type|empty|root)/g, '').match(/^[a-z][\w-]*|\*|\.[\w-]+|#[\w-]+|\[[^\]]*\]|:[\w-]+(?:\((?:[^()]|\([^()]*\))*\))?/gi) || [];
+// A rule that adds a class, an attribute or a pseudo-class to something: the way a state or a variant is written.
+const varied = sel => compounds(sel).some(c => { const s = simples(c); return s.length > 1 || s.some(x => /^[:[]/.test(x)); });
 const L_SET = ':root[data-theme="light"]', L_AUTO = ':root:where(:not([data-theme="dark"]))';
-let bad = 0, n = 0; const count = { own: 0, token: 0, listed: 0, edge: 0, exempt: 0, graphic: 0 };
+const SIDES = ['top', 'right', 'bottom', 'left'];
+const WHOLE = ['border', 'outline', ...SIDES.map(s => 'border-' + s)], ONLY_COLOUR = ['border-color', ...SIDES.map(s => `border-${s}-color`)];
+// What this script looks at in a rule. A block that changes none of it is not a variant worth a second check.
+const LOOKED = p => /^(color|background|background-color|fill|stroke|box-shadow|opacity|filter|font-size|font-weight|outline-color)$/.test(p) || WHOLE.includes(p) || ONLY_COLOUR.includes(p);
+const COLOURED = /(^|[;{\s])(color|background|background-color|fill|stroke|box-shadow|filter|border[\w-]*|outline[\w-]*)\s*:/;
+let bad = 0, n = 0; const count = { own: 0, token: 0, listed: 0, edge: 0, exempt: 0, variant: 0 };
 const fail = (...x) => { bad++; console.log('FAIL', ...x); };
-const rules = [];   // { sel, d: { property: value }, light: false, 'set' (the switch) or 'auto' (the system asks) }
-(function walk(s, media) {
+const rules = [];   // { sel, d: { property: value }, light: false, 'set' (the switch) or 'auto' (the system asks), at: the blocks it stands in }
+(function walk(s, at) {
   for (let i = 0; i < s.length;) {
     const o = s.indexOf('{', i); if (o < 0) break;
     let d = 1, j = o + 1; for (; d && j < s.length; j++) d += s[j] === '{' ? 1 : s[j] === '}' ? -1 : 0;
-    const head = s.slice(i, o).trim(), body = s.slice(o + 1, j - 1); i = j;
-    if (head.startsWith('@media')) { walk(body, media + ' ' + head); continue; }
-    if (head.startsWith('@')) continue;
+    let head = s.slice(i, o).trim(); const body = s.slice(o + 1, j - 1); i = j;
+    // A line such as "@layer a, b;" or "@import ...;" before the rule is not part of its selector.
+    for (let m; m = /^@[^{;]*;\s*/.exec(head);) { if (/^@import/.test(m[0])) fail(`${m[0].trim()} brings in rules this script does not read`); head = head.slice(m[0].length); }
+    if (/^@(media|supports|layer)\b/.test(head)) { walk(body, at.concat(head.replace(/\s+/g, ' '))); continue; }
+    // An animation may fade something in; no block of another kind may set a colour, because it is not read.
+    if (head.startsWith('@')) { if (COLOURED.test(body)) fail(`${head}: sets a colour, and this script does not read inside such a block`); continue; }
     const d2 = {}; for (const x of top(body, ';')) { const c = x.indexOf(':'); d2[x.slice(0, c).trim().toLowerCase()] = x.slice(c + 1).replace(/!important\s*$/, '').trim(); }
+    const asked = at.some(a => /prefers-color-scheme:\s*light/.test(a)), rest = at.filter(a => !/prefers-color-scheme:\s*light/.test(a)).join(' ');
     for (let sel of top(head, ',')) {
       let light = false;
-      if (/prefers-color-scheme:\s*light/.test(media)) { if (!sel.startsWith(L_AUTO)) { fail(`${sel}: inside the light media query, so it must start with ${L_AUTO}`); continue; } light = 'auto'; sel = sel.slice(L_AUTO.length).trim() || ':root'; }
+      if (asked) { if (!sel.startsWith(L_AUTO)) { fail(`${sel}: inside the light media query, so it must start with ${L_AUTO}`); continue; } light = 'auto'; sel = sel.slice(L_AUTO.length).trim() || ':root'; }
       else if (sel.startsWith(L_SET)) { light = 'set'; sel = sel.slice(L_SET.length).trim() || ':root'; }
-      rules.push({ sel, d: d2, light });
+      if (sel === ':root' && rest && Object.keys(d2).some(p => p.startsWith('--'))) fail(`:root inside ${rest}: a token that changes there makes a third theme, and this script reads two`);
+      rules.push({ sel, d: d2, light, at: rest });
     }
   }
-})(css, '');
+})(css, []);
 // The light theme written twice says the same both times.
-const form = k => rules.filter(r => r.light === k).map(r => r.sel + ' { ' + Object.entries(r.d).map(([p, v]) => p + ': ' + v).sort().join('; ') + ' }').sort();
+const form = k => rules.filter(r => r.light === k).map(r => (r.at ? r.at + ' ' : '') + r.sel + ' { ' + Object.entries(r.d).map(([p, v]) => p + ': ' + v).sort().join('; ') + ' }').sort();
 const [asked, set] = [form('auto'), form('set')]; n++;
 if (!set.length) fail('light theme: no rule under [data-theme="light"]');
 for (const x of asked) if (!set.includes(x)) fail(`light theme: only where the system asks for it: ${x}`);
 for (const x of set) if (!asked.includes(x)) fail(`light theme: only under [data-theme="light"]: ${x}`);
+// The page's own scripts and index.html: the classes they put on a field, and the colours they set in a style attribute.
+const pages = fs.readdirSync(web).filter(f => /\.(js|html)$/.test(f) && !['figure3d.js', 'tour.js'].includes(f)).map(f => [f, fs.readFileSync(path.join(web, f), 'utf8')]);
+const TYPED = '(?![^>]*\\btype="?(?:checkbox|radio|file|hidden|range|color|submit|button|reset|image))', BOX = '(?:contenteditable|role="(?:textbox|searchbox|combobox)")';
+const FIELD_CLASS = [...new Set(pages.flatMap(([, s]) => [...s.matchAll(new RegExp(`<(?:input|select|textarea)\\b${TYPED}[^>]*?\\bclass="([^"]*)"|<[a-z]+\\b[^>]*?\\bclass="([^"]*)"[^>]*?${BOX}|<[a-z]+\\b[^>]*?${BOX}[^>]*?\\bclass="([^"]*)"`, 'g'))]
+  .flatMap(m => (m[1] || m[2] || m[3]).split(/\s+/).filter(c => /^[\w-]+$/.test(c)))))];
 
 // ---------- colours
 const hex = c => '#' + c.slice(0, 3).map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
 const over = (f, b) => { const a = f[3] + b[3] * (1 - f[3]); return a ? [0, 1, 2].map(i => (f[i] * f[3] + b[i] * b[3] * (1 - f[3])) / a).concat(a) : [0, 0, 0, 0]; };
 const lum = c => { const [r, g, b] = c.slice(0, 3).map(v => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
 const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-// A colour as written: hex, rgb(), rgba(), var(--token), color-mix(in srgb, ...), transparent. Anything
-// else is not guessed at: null.
+// A colour as written: hex, rgb(), rgba() (channels as numbers or percentages), var(--token),
+// color-mix(in srgb, ...), transparent. Anything else is not guessed at: null.
 const colour = (v, T) => {
   v = v.trim(); let m;
   if (v === 'transparent') return [0, 0, 0, 0];
   if (m = /^#([0-9a-f]{3,8})$/i.exec(v)) { let h = m[1]; if (h.length < 5) h = [...h].map(c => c + c).join(''); const p = i => parseInt(h.slice(i, i + 2), 16); return [p(0), p(2), p(4), h.length > 6 ? p(6) / 255 : 1]; }
   if (m = /^var\((--[\w-]+)\)$/.exec(v)) return T[m[1]] === undefined ? null : colour(T[m[1]], T);
-  if (m = /^rgba?\(([^()]*)\)$/i.exec(v)) { const p = m[1].split(/[\s,/]+/).filter(Boolean).map(x => x.endsWith('%') ? parseFloat(x) / 100 : parseFloat(x)); return p.length < 3 || p.some(isNaN) ? null : [p[0], p[1], p[2], p[3] === undefined ? 1 : p[3]]; }
+  if (m = /^rgba?\(([^()]*)\)$/i.exec(v)) { const p = m[1].split(/[\s,/]+/).filter(Boolean).map((x, i) => parseFloat(x) * (!x.endsWith('%') ? 1 : i < 3 ? 2.55 : 0.01)); return p.length < 3 || p.length > 4 || p.some(isNaN) ? null : [p[0], p[1], p[2], p[3] === undefined ? 1 : p[3]]; }
   if (m = /^color-mix\(in srgb,(.*)\)$/i.exec(v)) {
     const part = top(m[1], ',').map(x => { const q = /^(.*?)(?:\s+([\d.]+)%)?$/.exec(x); return [colour(q[1], T), q[2] === undefined ? null : +q[2]]; });
     if (part.length !== 2 || !part[0][0] || !part[1][0]) return null;
@@ -143,19 +188,33 @@ const skip = v => /^(inherit|currentcolor|none|transparent|0)$/i.test(v);
 const lineColour = v => { const m = /((?:var|rgba?|color-mix)\(.*\)|#[0-9a-f]{3,8}|transparent)(?:\s+inset)?$/i.exec(v); return m ? m[1] : null; };
 
 for (const theme of ['dark', 'light']) {
-  // The rules of this theme, later ones over earlier ones for the same selector, and its tokens.
-  const R = new Map();
-  for (const r of rules) if (!r.light || (theme === 'light' && r.light === 'set')) R.set(r.sel, { ...(R.get(r.sel) || {}), ...r.d });
-  const T = Object.fromEntries(Object.entries(R.get(':root')).filter(([p]) => p.startsWith('--')));
-  const bgOf = sel => {   // the background a rule sets: none, one colour, or the stops of a gradient
-    const d = R.get(sel) || {}, v = d['background-color'] || d.background;
+  const mine = rules.filter(r => !r.light || (theme === 'light' && r.light === 'set'));
+  // Each selector of this theme: what it sets outside any block, and inside each block it stands in.
+  const sels = new Map(), whole = new Map();
+  for (const r of mine) {
+    const m = sels.get(r.sel) || sels.set(r.sel, new Map()).get(r.sel); m.set(r.at, { ...(m.get(r.at) || {}), ...r.d });
+    whole.set(r.sel, { ...(whole.get(r.sel) || {}), ...r.d });   // everything together, for looking a rule up by its name
+  }
+  const T = Object.fromEntries(Object.entries(whole.get(':root')).filter(([p]) => p.startsWith('--')));
+  // The ways a rule can apply: outside any block; inside each block that changes something looked at; inside all of them at once.
+  const V = [];
+  for (const [sel, m] of sels) {
+    if (sel === ':root') continue;
+    const base = m.get('') || {}, blocks = [...m].filter(([at, d]) => at && Object.keys(d).some(LOOKED));
+    if (m.has('')) V.push([sel, base, '']);
+    for (const [at, d] of blocks) V.push([sel, { ...base, ...d }, ` in ${at}`]);
+    if (blocks.length > 1) V.push([sel, Object.assign({}, base, ...blocks.map(b => b[1])), ' in all its blocks at once']);
+    count.variant += blocks.length + (blocks.length > 1);
+  }
+  const bgOf = d => {   // the background a rule sets: none, one colour, or the stops of a gradient
+    const v = d['background-color'] || d.background;
     if (v === undefined || /^(none|transparent)$/.test(v)) return [];
     if (/gradient\(/.test(v)) return (v.match(/#[0-9a-f]{3,8}\b|rgba?\([^()]*\)|var\(--[\w-]+\)/gi) || []).map(x => colour(x, T));
     return [colour(v, T)];
   };
   // A surface as one or more opaque colours: the layers laid over each other from the bottom up.
   const surface = spec => spec.split(' on ').reverse().reduce((under, layer) => {
-    const tops = layer.startsWith('=') ? bgOf(layer.slice(1)) : [colour(layer.startsWith('--') ? `var(${layer})` : layer, T)];
+    const tops = layer.startsWith('=') ? bgOf(whole.get(layer.slice(1)) || {}) : [colour(layer.startsWith('--') ? `var(${layer})` : layer, T)];
     if (!tops.length || tops.includes(null)) return [null];
     return under.flatMap(u => tops.map(t => u && over(t, u)));
   }, [[0, 0, 0, 0]]);
@@ -173,78 +232,88 @@ for (const theme of ['dark', 'light']) {
   for (const t of TEXT) for (const s of ON_ANY) pair(`text in ${t}`, colour(`var(${t})`, T), s, 4.5);
   for (const [s, ts] of Object.entries(ON_TINT)) for (const t of ts) pair(`text in ${t}`, colour(`var(${t})`, T), s, 4.5);
 
-  const known = new Set([...ON_ANY, ...Object.keys(ON_TINT)].flatMap(s => s.split(' on ')));
-  for (const [sel, d] of R) {
-    if (sel === ':root') continue;
+  for (const [sel, d, where] of V) {
+    const name = sel + where;
     // What is written in this rule's colour: words, an icon, or the words of an svg.
     for (const prop of ['color', 'fill', 'stroke']) {
       const v = d[prop]; if (v === undefined || skip(v)) continue;
       if (EXEMPT[sel]) { count.exempt++; continue; }
-      if (GRAPHIC.includes(sel)) { count.graphic++; continue; }
+      if (GRAPHIC.includes(sel)) continue;
       const fg = colour(v, T), kind = (ON[sel] || {}).kind || (/svg\.i$/.test(sel) ? 'icon' : large(d) ? 'large text' : 'text'), need = kind === 'text' ? 4.5 : 3;
-      if (!fg) { fail(`${theme} ${sel}: ${prop}: ${v} is not a colour this script can read`); continue; }
-      const own = prop === 'color' ? bgOf(sel) : [], token = (/^var\((--[\w-]+)\)$/.exec(v) || [])[1];
-      if (ON[sel]) { count.listed++; for (const s of ON[sel].on) pair(`${sel} (${kind})`, fg, s, need); }
-      else if (own.length && own.every(c => c && c[3] >= 0.999)) { count.own++; own.forEach((c, i) => pair(`${sel} (${kind})`, fg, hex(c), need)); }
-      else if (own.length) fail(`${theme} ${sel}: ${prop}: ${v} over a background that lets through what is under it; list what that is in ON`);
+      if (!fg) { fail(`${theme} ${name}: ${prop}: ${v} is not a colour this script can read`); continue; }
+      const own = prop === 'color' ? bgOf(d) : [], token = (/^var\((--[\w-]+)\)$/.exec(v) || [])[1];
+      if (ON[sel]) { count.listed++; for (const s of ON[sel].on) pair(`${name} (${kind})`, fg, s, need); }
+      else if (own.length && own.every(c => c && c[3] >= 0.999)) { count.own++; for (const c of own) pair(`${name} (${kind})`, fg, hex(c), need); }
+      else if (own.length) fail(`${theme} ${name}: ${prop}: ${v} over a background that lets through what is under it; list what that is in ON`);
       else if (TEXT.includes(token)) count.token++;
-      else fail(`${theme} ${sel}: ${prop}: ${v} is not one of the colours for words and the rule sets no background; list what it is drawn on in ON, or why it is left out in EXEMPT`);
+      else fail(`${theme} ${name}: ${prop}: ${v} is not one of the colours for words and the rule sets no background; list what it is drawn on in ON, or why it is left out in EXEMPT`);
     }
-    // A background set without a colour: words written in a colour from another rule end up on it.
-    if ((d.background || d['background-color']) && d.color === undefined && !EXEMPT[sel]) {
-      const v = d['background-color'] || d.background, t = (/^var\((--[\w-]+)\)$/.exec(v) || [])[1];
-      if (UNDER[sel]) { count.listed++; const u = R.get(UNDER[sel]) || {}; if (!u.color) fail(`${theme} ${sel}: UNDER names ${UNDER[sel]}, which sets no colour`); else pair(`${UNDER[sel]} on ${sel} (text)`, colour(u.color, T), '=' + sel, 4.5); }
-      else if (!/^(none|transparent)$/.test(v) && !known.has(t) && !known.has('=' + sel) && !NOT_UNDER_TEXT[sel] && !Object.values(ON).some(o => o.on.some(s => s.split(' on ').includes('=' + sel))))
-        fail(`${theme} ${sel}: background: ${v} is not a surface words are checked on; add it to ON_ANY, or to UNDER with the rule whose colour lands on it, or to NOT_UNDER_TEXT`);
+    // A background set without a colour of the rule's own (none, or one it inherits): words written in a
+    // colour from another rule end up on it.
+    const bg = d['background-color'] || d.background;
+    if (bg && !/^(none|transparent)$/.test(bg) && (d.color === undefined || /^(inherit|currentcolor)$/i.test(d.color)) && !EXEMPT[sel]) {
+      const c = bgOf(d), as = (/^var\((--[\w-]+)\)$/.exec(bg) || [])[1] || '=' + sel;
+      if (UNDER[sel]) { count.listed++; const u = whole.get(UNDER[sel]) || {}; if (!u.color) fail(`${theme} ${name}: UNDER names ${UNDER[sel]}, which sets no colour`); else for (const x of c) pair(`${UNDER[sel]} on ${name} (text)`, colour(u.color, T), x ? hex(x) : bg, 4.5); }
+      else if (NOT_UNDER_TEXT[sel]) count.exempt++;
+      else if (Object.values(ON).some(o => o.on.some(s => s.split(' on ').includes('=' + sel)))) count.listed++;
+      else if (c.length !== 1 || !c[0]) fail(`${theme} ${name}: background: ${bg} is not a surface words are checked on; add it to UNDER with the rule whose colour lands on it, or to NOT_UNDER_TEXT`);
+      else if (c[0][3] >= 0.999) { if (!ON_ANY.includes(as) && !ON_TINT[as]) fail(`${theme} ${name}: background: ${bg} is not a surface words are checked on; add it to ON_ANY, or to UNDER with the rule whose colour lands on it, or to NOT_UNDER_TEXT`); }
+      else if (!TINTED[sel]) fail(`${theme} ${name}: background: ${bg} lets through what is under it; list what that is in TINTED`);
+      else for (const u of TINTED[sel]) if (!ON_ANY.includes(`${as} on ${u}`)) fail(`${theme} ${name}: words are not checked on "${as} on ${u}"; add that surface to ON_ANY, and see that every colour for words holds on it`);
     }
     // A filter over a button changes its colours: brightness is worked out, anything else is not guessed.
     if (d.filter) {
-      const k = (/^brightness\(([\d.]+)\)$/.exec(d.filter) || [])[1], base = R.get(sel.replace(/:(hover|active|focus-visible|focus)/g, '')) || {};
-      const f = k && base.color && colour(base.color, T), b = k && bgOf(sel.replace(/:(hover|active|focus-visible|focus)/g, ''))[0];
-      if (!f || !b) fail(`${theme} ${sel}: filter: ${d.filter} is not one this script can work out`);
-      else { count.own++; const lit = c => c.slice(0, 3).map(x => Math.min(255, x * k)).concat(c[3]); pair(`${sel} (text under the filter)`, lit(f), hex(lit(b)), 4.5); }
+      const k = (/^brightness\(([\d.]+)\)$/.exec(d.filter) || [])[1], base = whole.get(sel.replace(/:(hover|active|focus-visible|focus)/g, '')) || {};
+      const f = k && base.color && colour(base.color, T), b = k && bgOf(base)[0];
+      if (!f || !b) fail(`${theme} ${name}: filter: ${d.filter} is not one this script can work out`);
+      else { count.own++; const lit = c => c.slice(0, 3).map(x => Math.min(255, x * k)).concat(c[3]); pair(`${name} (text under the filter)`, lit(f), hex(lit(b)), 4.5); }
     }
     // A fade takes contrast from everything inside it.
     if (d.opacity !== undefined && parseFloat(d.opacity) < 1 && EXEMPT[sel]) count.exempt++;
-    else if (d.opacity !== undefined && parseFloat(d.opacity) < 1 && !GRAPHIC.includes(sel)) fail(`${theme} ${sel}: opacity: ${d.opacity} fades the words in it below what their colours were checked at; say in EXEMPT why that is allowed, or do not fade`);
-    // Edges. A field is found by its border, outline or fill; a focus ring and a ring or border that marks a state by itself.
-    const field = /^(input|select|textarea)(?![\w-])/.test(sel.split(/[\s>+~]+/).pop());
-    const lines = ['border', 'border-color', 'border-bottom', 'outline'].map(p => d[p] && lineColour(d[p])).filter(v => v && v !== 'transparent');
-    const ring = (/^0 0 0 \d+px /.test(d['box-shadow'] || '') && lineColour(d['box-shadow'])) || null;
-    if (field && (lines.length || EDGE[sel])) {
-      count.edge++;
-      for (const spec of EDGE[sel] || PLAIN) for (const s of surface(spec)) {
-        n++; const fill = bgOf(sel)[0] ? over(bgOf(sel)[0], s) : s;
-        const best = Math.max(ratio(fill, s), ...lines.map(v => ratio(over(colour(v, T) || fill, fill), s)));
-        if (best < 3) fail(`${theme} ${sel}: the edge of the field (${lines.join(', ') || 'none'}; fill ${hex(fill)}) on ${hex(s)} (${spec}) is ${best.toFixed(2)}:1, needs 3:1`);
+    else if (d.opacity !== undefined && parseFloat(d.opacity) < 1 && !GRAPHIC.includes(sel)) fail(`${theme} ${name}: opacity: ${d.opacity} fades the words in it below what their colours were checked at; say in EXEMPT why that is allowed, or do not fade`);
+    // Edges. A field is found by its border, outline, ring or fill.
+    const subject = compounds(sel).pop(), cls = FIELD_CLASS.find(c => new RegExp(`\\.${c}(?![\\w-])`).test(subject));
+    const field = /^(input|select|textarea)(?![\w-])/.test(subject) || !!cls;
+    const line = ps => ps.map(p => d[p] && !skip(d[p]) && lineColour(d[p])).filter(v => v && v !== 'transparent');
+    const ring = /^(inset\s+)?0 0 0 \d+px /.test(d['box-shadow'] || '') ? line(['box-shadow']) : [];
+    if (field) {
+      const lines = [...line(WHOLE), ...line(ONLY_COLOUR), ...line(['outline-color']), ...ring];
+      if (lines.length || EDGE[sel]) {
+        count.edge++;
+        for (const spec of EDGE[sel] || FIELD_ON) for (const s of surface(spec)) {
+          n++; const own = bgOf(d)[0], fill = own ? over(own, s) : s;
+          const best = Math.max(ratio(fill, s), ...lines.map(v => ratio(over(colour(v, T) || fill, fill), s)));
+          if (best < 3) fail(`${theme} ${name}: the edge of the field${cls ? ` (the templates put the class ${cls} on one)` : ''} (${lines.join(', ') || 'none'}; fill ${hex(fill)}) on ${hex(s)} (${spec}) is ${best.toFixed(2)}:1, needs 3:1`);
+        }
       }
-    } else if (d.outline && !skip(d.outline) && lineColour(d.outline)) {
-      count.edge++; for (const s of RING_ON) pair(`${sel} (ring)`, colour(lineColour(d.outline), T), s, 3);
+      continue;
     }
-    const mark = [d['border-color'], ring, EDGE[sel] && d.border && lineColour(d.border)].filter(v => v && v !== 'transparent');
-    if (!field && EDGE[sel] && !mark.length) fail(`${theme} EDGE lists ${sel}, which sets no border and no ring`);
-    if (!field && mark.length && !/:hover/.test(sel)) {
-      if (EDGE[sel]) { count.edge++; for (const v of mark) for (const s of EDGE[sel]) pair(`${sel} (edge)`, colour(v, T), s, 3); }
+    // A focus ring, wherever a control can stand.
+    for (const v of line(['outline', 'outline-color'])) { count.edge++; for (const s of RING_ON) pair(`${name} (ring)`, colour(v, T), s, 3); }
+    // A mark of a state: a rule that changes only the colour of an edge or draws a ring, or one that adds
+    // a class, an attribute or a pseudo-class to something and draws an edge.
+    const mark = [...line(ONLY_COLOUR), ...ring, ...(varied(sel) || EDGE[sel] ? line(WHOLE.filter(p => p !== 'outline')) : [])];
+    if (EDGE[sel] && !mark.length) fail(`${theme} EDGE lists ${sel}, which sets no border and no ring`);
+    if (mark.length && !/:hover/.test(sel)) {
+      if (EDGE[sel]) { count.edge++; for (const v of mark) for (const s of EDGE[sel]) pair(`${name} (edge)`, colour(v, T), s, 3); }
       else if (DECOR[sel]) count.exempt++;
-      else fail(`${theme} ${sel}: ${mark.join(', ')} marks a state by a border or ring; list what it is drawn on in EDGE, or why it marks nothing in DECOR`);
+      else fail(`${theme} ${name}: ${mark.join(', ')} marks a state by a border or ring; list what it is drawn on in EDGE, or why it marks nothing in DECOR`);
     }
   }
   // A table entry for a rule that is gone would hide the next rule of that name.
-  for (const [name, t] of Object.entries({ ON, UNDER, EXEMPT, EDGE, DECOR, NOT_UNDER_TEXT })) for (const sel of Object.keys(t)) if (!R.has(sel)) fail(`${theme} ${name} lists ${sel}, which the stylesheet no longer has`);
-  for (const s of Object.keys(ON_TINT)) if (!R.has(s.slice(1))) fail(`${theme} ON_TINT lists ${s.slice(1)}, which the stylesheet no longer has`);
-  for (const sel of GRAPHIC) if (!R.has(sel)) fail(`${theme} GRAPHIC lists ${sel}, which the stylesheet no longer has`);
+  for (const [name, t] of Object.entries({ ON, UNDER, EXEMPT, EDGE, DECOR, NOT_UNDER_TEXT, TINTED })) for (const sel of Object.keys(t)) if (!sels.has(sel)) fail(`${theme} ${name} lists ${sel}, which the stylesheet no longer has`);
+  for (const s of Object.keys(ON_TINT)) if (!sels.has(s.slice(1))) fail(`${theme} ON_TINT lists ${s.slice(1)}, which the stylesheet no longer has`);
+  for (const sel of GRAPHIC) if (!sels.has(sel)) fail(`${theme} GRAPHIC lists ${sel}, which the stylesheet no longer has`);
 }
 
 // A colour set in a template instead of the stylesheet: only a colour for words, or a level of the scale as a swatch.
 let inline = 0;
-for (const f of fs.readdirSync(web).filter(f => f.endsWith('.js') && !['figure3d.js', 'tour.js'].includes(f))) {
-  for (const m of fs.readFileSync(path.join(web, f), 'utf8').matchAll(/style="([^"]*)"/g)) for (const x of m[1].split(';')) {
-    const c = x.indexOf(':'), p = x.slice(0, Math.max(c, 0)).trim(), v = x.slice(c + 1).trim();
-    if (!/^(color|background|background-color|fill|stroke|border|border-color|outline|opacity|filter)$/.test(p)) continue;
-    inline++; n++;
-    const t = (/^var\((--[\w-]+)\)$/.exec(v) || [])[1];
-    if (!(p === 'color' && TEXT.includes(t)) && !(p === 'background' && /^var\(--l(\d|\$\{i\})\)$/.test(v))) fail(`web/${f}: style="${p}:${v}" sets a colour this script cannot place; use a colour for words, or a class in app.css`);
-  }
+for (const [f, s] of pages) for (const m of s.matchAll(/style="([^"]*)"/g)) for (const x of m[1].split(';')) {
+  const c = x.indexOf(':'), p = x.slice(0, Math.max(c, 0)).trim(), v = x.slice(c + 1).trim();
+  if (!COLOURED.test(p + ':') && p !== 'opacity') continue;
+  inline++; n++;
+  const t = (/^var\((--[\w-]+)\)$/.exec(v) || [])[1];
+  if (!(p === 'color' && TEXT.includes(t)) && !(p === 'background' && /^var\(--l(\d|\$\{i\})\)$/.test(v))) fail(`web/${f}: style="${p}:${v}" sets a colour this script cannot place; use a colour for words, or a class in app.css`);
 }
-console.log(`contrast: 2 themes, ${TEXT.length} colours for words on ${ON_ANY.length + Object.keys(ON_TINT).length} surfaces, ${count.own / 2} rules on their own background, ${count.token / 2} by their colour for words, ${count.listed / 2} listed, ${count.edge / 2} edges and rings, ${inline} colours in templates; ${count.exempt / 2} exempt, ${count.graphic / 2} chart shapes not looked at; ${n} checks, ${bad} failed`);
+console.log(`contrast: 2 themes, ${TEXT.length} colours for words on ${ON_ANY.length + Object.keys(ON_TINT).length} surfaces, ${count.own / 2} rules on their own background, ${count.token / 2} by their colour for words, ${count.listed / 2} listed, ${count.edge / 2} edges and rings, ${count.variant / 2} rules again inside a block, ${inline} colours in templates; ${count.exempt / 2} exempt, ${GRAPHIC.length} rules for chart shapes not looked at; ${n} checks, ${bad} failed`);
 process.exit(bad ? 1 : 0);
