@@ -73,8 +73,9 @@ function run(say = console.log) {
               must('hand', same(h, f0['h' + s]));
               if (far < D.REACH - 0.002) { note('arm', Math.abs(len(sub(el, sh)) - D.U_ARM)); note('arm', Math.abs(len(sub(h, el)) - D.F_ARM)); }
             } else {
-              // A hand the pose does not give hangs under its shoulder, so it goes round with the chest.
-              if (!pose.spine) note('rest', len(sub(h, about(J0['h' + s]))));
+              // A hand the pose does not give hangs from its shoulder, so it goes round the spine with it, upright or
+              // leaning, and is as far from its shoulder as without the twist.
+              note('rest', len(sub(h, about(J0['h' + s])))); note('rest', Math.abs(far - len(sub(J0['h' + s], J0['sh' + s]))));
               must('restReach', far < D.REACH);
             }
             // The reach check sees the turned shoulder: it fails the pose when the hand is too far from where the shoulder now is, and only then.
@@ -104,7 +105,7 @@ function run(say = console.log) {
   ok(`the head turns by ${Math.round((1 - HEAD_BACK) * 100)}% of the twist and takes back the rest (most ${most.head.toExponential(1)} degrees off, 0.000001 allowed)`, most.head < 1e-6 && HEAD_BACK === 0.6);
   ok('a hand the pose gives stays where the pose puts it', none('hand'));
   ok(`its elbow is solved again from the turned shoulder: both arm bones keep their length while the hand is in reach (most ${mm(most.arm, 9)} off, 0.000001 mm allowed)`, most.arm < 1e-9);
-  ok(`a hand the pose leaves out goes round with the chest when the spine is upright, and is always in reach (most ${mm(most.rest, 9)} off, 0.000001 mm allowed)`, most.rest < 1e-9 && none('restReach'));
+  ok(`a hand the pose leaves out goes round the spine with its shoulder, standing or leaning, and stays as far from it (most ${mm(most.rest, 9)} off, 0.000001 mm allowed)`, most.rest < 1e-9 && none('restReach'));
   ok(`the reach check fails a hand that is too far from the turned shoulder, and no other (${outOfReach} of ${cases * 2} hands went out of reach)`, none('reach') && outOfReach > 0);
   ok(`the capsules of the chest top, the upper back, the deltoids, the neck's base and the head are carried by the same turn (most ${mm(most.caps, 9)} off, 0.000001 mm allowed)`, most.caps < 1e-9);
   ok('the upper arm\'s capsules run from the turned shoulder to the elbow solved from it', none('upperArm'));
@@ -160,7 +161,7 @@ function run(say = console.log) {
   {
     const eq = (a, b) => Object.keys(a).every(k => typeof a[k] === 'number' ? a[k] === b[k] : same(a[k], b[k])), errs = t => C.bodyErrors(oneFrame({ twist: t }), {}).errs;
     ok(`the rig stops at ${TWIST} degrees: a twist of 60 is drawn as ${TWIST}, to either side`, TWIST === 45 && eq(Demo.rig(twisted({}, 60)), Demo.rig(twisted({}, 45))) && eq(Demo.rig(twisted({}, -60)), Demo.rig(twisted({}, -45))) && Demo.rig(twisted({}, 60)).twist === 45);
-    ok('the body checks pass 45 degrees to either side and fail 45.01 and 60, saying so', errs([45, 0, 0]).length === 0 && errs([-45, 0, 0]).length === 0 && errs([45.01, 0, 0]).length === 1 && errs([-60, 0, 0])[0] === 'chest turned 60 degrees against the hips, and it turns 45 at most', JSON.stringify([errs([45.01, 0, 0]), errs([-60, 0, 0])]));
+    ok('the body checks pass 45 degrees to either side and fail 45.004, 45.01 and 60, each named with all its digits', errs([45, 0, 0]).length === 0 && errs([-45, 0, 0]).length === 0 && errs([45.01, 0, 0]).length === 1 && errs([45.004, 0, 0])[0] === 'chest turned 45.004 degrees against the hips, and it turns 45 at most' && errs([-60, 0, 0])[0] === 'chest turned 60 degrees against the hips, and it turns 45 at most', JSON.stringify([errs([45.004, 0, 0]), errs([-60, 0, 0])]));
     ok('and a twist with anything in its other two numbers, which is what moving it like a point would leave', errs([30, 0, 0.2])[0] === 'the twist is [degrees, 0, 0], and this one is [30, 0, 0.2]', JSON.stringify(errs([30, 0, 0.2])));
   }
 

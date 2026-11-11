@@ -53,8 +53,12 @@ and in front, out to the side overhead, out and back behind the body, forward wh
 close across the chest. A move can also say where it wants the elbow. The same joints give the
 capsules used for contact (`caps()`), fitted to the 3D model's skin: a head longer than it is wide at
 the model's height, a neck, the shoulders and the upper back, hips and buttocks outside the trunk, and
-limbs thicker near the body than at their ends. `node test/body3d.js rig` keeps the skin within 25 mm of
-them, so the body that props collide with is the body that is drawn ([docs/avatars.md](avatars.md)).
+limbs thicker near the body than at their ends. `node test/body3d.js rig` keeps the skin of the standing
+figure within 25 mm of them (23 mm now, on the thigh), so the body that props collide with is the body
+that is drawn ([docs/avatars.md](avatars.md)). That is the standing pose only. In other poses the skin is
+further out in places, with no twist involved: 25.4 to 29.4 mm on the thigh in a lean of 10 degrees,
+depending on the body, 44 to 57 mm on a raised upper arm, 41 to 70 mm on the head in a deep bend, where
+the model's head stays nearer upright than the rig's.
 
 The chest can turn against the hips. A pose may hold a `twist`, written `[degrees, 0, 0]`: three
 numbers, like every value of a frame, so a clip stores it, blends it between frames and mirrors it
@@ -69,7 +73,8 @@ for more.
 - **What follows the twist.** The shoulders, the base of the neck, the capsules of the chest top, the
   upper back and the deltoids, by all of it. The head by 40%: it takes back 60%, as the 3D head does
   of a lean, so the figure goes on looking where it works and not at its own shoulder. A hand the
-  pose leaves out hangs under its shoulder, so it goes round with the chest.
+  pose leaves out hangs from its shoulder, so it goes round the spine's line with it, upright or
+  leaning, and the hanging arm keeps its shape.
 - **What does not.** The pelvis, the hips, the knees, the feet and their capsules do not move at
   all. The capsule of the waist and ribs is round about the spine's line, so it has nothing to turn.
   A hand the pose gives stays where the move puts it: its elbow is solved again from the turned
@@ -101,8 +106,11 @@ share the thoracic part, more of it higher up, where each vertebra turns more. S
 hips does not turn, the waist turns by 15% of the twist, the lower chest by 45% and the upper chest
 by about 90%, and the collarbones and shoulder blades, which hang from `Spine2`, ride on the ribcage
 with all of it. Each bone is carried round the rig's line as it turns, not turned about itself (the
-model's spine and neck bones lie up to 5 cm behind that line), which is what keeps the model's
-shoulder line on the rig's. The neck and the head each take back half of what the head takes back.
+model's spine bones lie up to 23 mm behind that line), which is what keeps the model's shoulder line
+on the rig's. The base of the neck rides on the ribcage: its joint is 47 mm behind the line and goes
+round with the whole twist. The head stays over the line, where the rig has it, turned by its 40%:
+its joint goes back round the line, and the neck, held at its base, turns back half as far and leans
+to reach it, 8 degrees at a full twist, giving 1.7 mm of its length.
 The 15% is the lumbar spine's 5 degrees of 40, rounded up; the split of the rest is a judgement, and
 on this model, whose trunk is three stiff pieces, sheets with 10, 15 and 75% and with 20, 40 and 40%
 looked nearly the same. The
@@ -111,8 +119,18 @@ in the side view, and its nose turns with the head.
 
 `node test/twist.js` holds the rig, the capsules, the checks and the clip format to this on every
 body, and `node test/body3d.js rig` holds the model to the rig at 15, 30 and 45 degrees each way:
-the legs to the last digit, the shoulder line within 0.1 degrees, the skin of the standing figure
-within the same 25 mm of the capsules as without a twist. No move uses the twist yet.
+the legs to the last digit, the shoulder line within 0.1 degrees, the neck's joint on the ribcage and
+the head's over the line within 0.01 mm. What a twist costs the fit of the skin is said in two ways.
+Of itself, nothing: standing, the skin is 23 mm outside the capsules at every twist, as without one,
+and in any pose no part is more than 1 mm further out than the larger of 25 mm and what it is on the
+same upper body without the twist (the hands and elbows carried back round the spine). But a move
+gives the hands, not the arms:
+with the hands held still, turning the chest bends the arms into another shape, and the capsules fit
+some shapes of an arm worse than others. In a deep bend on the tall broad body the right upper arm is
+21.7 mm outside its capsules untwisted and 26.7 mm with the chest turned 45 degrees; on the standard
+body 23.3 mm and 25.8 mm at 15 degrees. That same arm, without any twist, is as far out. The test
+lists every such case (8 in 72) and fails if one is anything but an upper arm that is as far out
+untwisted. No move uses the twist yet.
 
 ## What is checked on every clip
 
@@ -443,7 +461,8 @@ repeating swing, fewer capsules handed to the line) or the allowance has to be l
 6. **Steps are simple.** Turns use quarter-turn steps on the spot. There is no travel, no pivot on
    one foot. The chest can turn against the hips, but no move asks it to yet, and the families of
    body movement in `sim/moves.js` do not carry a twist.
-7. **The body is capsules.** They are fitted to the drawn model within 25 mm, but a flat back or a
+7. **The body is capsules.** They are fitted to the drawn model within 25 mm standing (and less well
+   in other poses, see "The figure": up to 57 mm on a raised upper arm), but a flat back or a
    bony knee is still a round shape, so a prop may hover a centimetre or two off the skin.
 8. **The posture search is a coarse grid.** It finds a clear posture, not the one a teacher would
    show.

@@ -77,16 +77,18 @@ const Demo = (() => {
     const chest = add(pelvis, mul(up, DIM.chest)), head = add(pelvis, mul(up, DIM.head));
     // The twist, in degrees as the pose gives it and no more than TWIST. The chest, the shoulders and
     // the base of the neck turn by all of it about the spine; the head by what it does not take back. The
-    // pelvis, the hips and the legs do not turn. Without a twist the chest's own left, forward and facing
-    // (cleft, cfwd, cface) and the head's left (hleft) are the trunk's.
+    // pelvis, the hips and the legs do not turn. The chest's own left, forward and facing (cleft, cfwd, cface)
+    // and the head's left (hleft) are the trunk's, turned about the spine when there is a twist.
     const twist = p.twist ? clamp(p.twist[0], -TWIST, TWIST) : 0, tw = twist * Math.PI / 180;
     const cleft = tw ? rot(left, up, tw) : left, cfwd = cross(cleft, up), hleft = tw ? rot(left, up, tw * (1 - HEAD_BACK)) : left;
-    const cside = tw ? rot(side, UP, tw) : side, cface = tw ? rot(face, UP, tw) : face;
+    const cface = tw ? rot(face, up, tw) : face;
     const J = { pelvis, chest, head, face, up, left, nose: add(head, mul(cross(hleft, up), 0.1)), twist, cleft, cface, hleft };
     for (const [s, k] of [['L', 1], ['R', -1]]) {
       const sh = add(chest, mul(cleft, DIM.shoulder * k)), hip = add(pelvis, mul(side, DIM.hip * k));
-      // At rest a hand hangs beside the hip, further out on a broad build, and stays under its shoulder when the chest turns.
-      const hand = p['h' + s] || add(pelvis, add(mul(cside, 0.26 * BODY.bd * k), add([0, -0.04, 0], mul(cface, -0.04))));
+      // At rest a hand hangs beside the hip, further out on a broad build. When the chest turns it goes round
+      // the spine with its shoulder, so the hanging arm keeps its shape.
+      const beside = add(pelvis, add(mul(side, 0.26 * BODY.bd * k), add([0, -0.04, 0], mul(face, -0.04))));
+      const hand = p['h' + s] || (tw ? add(pelvis, rot(sub(beside, pelvis), up, tw)) : beside);
       // Where the elbow goes. Low and in front it hangs down and back; overhead it points out
       // to the side; behind the back it points out and back; close across the chest it comes forward.
       const r = sub(hand, chest), own = dot(r, cleft) * k, front = dot(r, cfwd);

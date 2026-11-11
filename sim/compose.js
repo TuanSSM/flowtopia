@@ -3,9 +3,8 @@
 // both hands, the body pose and every prop, frame by frame, at a fixed frame rate.
 const E = require('./engine.js'), { Demo } = E, { add, sub, mul, dot, len, norm, flip, clamp } = Demo.v;
 
-// The body's part of a frame, and the keys that are not places (directions, and the chest's twist in
-// degrees): a hand's own plane does not shift those.
-const FPS = 100, BODY = ['pelvis', 'face', 'spine', 'twist', 'fL', 'fR', 'tL', 'tR'], DIRS = new Set(['d', 'face', 'spine', 'twist', 'u', 'v', 'tL', 'tR']);
+// The body's part of a frame comes from the first hand's clip, the chest's twist with it.
+const FPS = 100, BODY = ['pelvis', 'face', 'spine', 'twist', 'fL', 'fR', 'tL', 'tR'], DIRS = new Set(['d', 'face', 'spine', 'u', 'v', 'tL', 'tR']);
 const KEYS = { nunchaku: ['d', 'B', 'T'], poi: ['P', 'o'], staff: ['a', 'b'], buugeng: ['c', 'u', 'v'] };
 const SWAP = { fL: 'fR', fR: 'fL', tL: 'tR', tR: 'tL' };
 const clipOf = sp => { if (sp.clip === undefined) sp.clip = sp.make() || null; return sp.clip; };

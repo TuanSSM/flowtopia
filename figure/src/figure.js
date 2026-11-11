@@ -210,13 +210,18 @@ function poseBody(J, hands) {
   for (const n of posedBones) { bone[n].quaternion.copy(rest[n].local); bone[n].position.copy(rest[n].pos); }
   place(bone.Hips, pt(J.pelvis).add(cp(up).multiplyScalar(rest.hipOff)), frameQuat(left, up, fwd, tq()).multiply(rest.Hips.q));
   // The chest turned against the hips: each spine bone turns its share about the line of the spine, so the
-  // hips stay square, the waist turns a little and the ribcage most. The collarbones ride on the ribcage.
-  // The head takes back part of the turn: the neck half of the way from the chest's facing to the head's
-  // (J.hleft), the head the rest.
+  // hips stay square, the waist turns a little and the ribcage most. The collarbones ride on the ribcage,
+  // and so does the base of the neck. The head takes back part of the turn (from the chest's facing to
+  // J.hleft) and stays over the spine's line, where the rig has it: the head's joint goes back round the
+  // line by what the head takes back, the head turns back with it, and the neck, held at its base, turns
+  // back half as far and leans to reach the head (8 degrees at a full twist, giving 1.7 mm of its length).
   if (twist) {
     const c = pt(J.pelvis), hleft = pt(J.hleft), back = tq().setFromAxisAngle(up, Math.atan2(tv().crossVectors(cleft, hleft).dot(up), cleft.dot(hleft)) / 2);
     for (const [n, share] of SPINE) swing(n, tq().setFromAxisAngle(up, twist * share), c);
-    swing('Neck', back, c); swing('Head', back, c);
+    const whole = tq().copy(back).multiply(back), neck = wpos(bone.Neck, tv()), carried = wpos(bone.Head, tv()), facing = tq().copy(whole).multiply(wquat(bone.Head, tq()));
+    const head = cp(carried).sub(c).applyQuaternion(whole).add(c), lean = tq().setFromUnitVectors(cp(carried).sub(neck).applyQuaternion(back).normalize(), cp(head).sub(neck).normalize());
+    place(bone.Neck, null, lean.multiply(back).multiply(wquat(bone.Neck, tq())));
+    place(bone.Head, head, facing);
   }
   // The head stays nearer upright than the trunk, as a person's does when they lean.
   const level = tq().setFromUnitVectors(up, cp(up).multiplyScalar(0.4).add(cp(UPY).multiplyScalar(0.6)).normalize()), half = tq().slerp(level, 0.5);
@@ -732,14 +737,16 @@ function partReport() {
   return out;
 }
 // Where the last staging put the model's joints, in the rig's world, for the rig test: the bones by name,
-// which way the head's own up and left now point, and for each hand the middle of its grip, worked back
-// from the hand bone as it now is (r is the half-thickness of what the hand holds, as in `hands`).
+// which way the head's own up and left now point, which way the neck's bone points (to the head's joint,
+// unless the head was put somewhere the neck does not reach for), and for each hand the middle of its grip,
+// worked back from the hand bone as it now is (r is the half-thickness of what the hand holds, as in `hands`).
 function joints(hands) {
   const out = {}, q = new THREE.Quaternion(), v = new THREE.Vector3();
   model.updateMatrixWorld(true);
   for (const n of posedBones) out[n] = wpos(bone[n]).toArray();
   wquat(bone.Head, q).multiply(rest.Head.q.clone().invert()); // how the head has turned from the rest pose, where it is upright and faces forward
   out.headUp = v.set(0, 1, 0).applyQuaternion(q).toArray(); out.headLeft = v.copy(rest.fwd).cross(UPY).negate().applyQuaternion(q).toArray();
+  out.neckTo = v.copy(rest.Head.pos).normalize().applyQuaternion(wquat(bone.Neck, q)).toArray();
   for (const [s, S] of [['L', 'Left'], ['R', 'Right']]) {
     const k = handRest[s].grip / 0.085;
     wquat(bone[S + 'Hand'], q).multiply(handRest[s].bq.clone().invert()).multiply(handRest[s].q); // the hand's frame now: X, the palm's normal, W
