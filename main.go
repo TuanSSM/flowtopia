@@ -44,6 +44,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -129,6 +130,7 @@ type app struct {
 	proxies   []*net.IPNet // reverse proxies whose forwarding headers are believed (FLOWA_TRUSTED_PROXIES)
 	fetch     *fetcher     // link previews; nil means no fetching
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
+	mode      instanceMode // how the instance runs (FLOWA_MODE); local unless the operator says otherwise
 	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
 	flagCache map[string]bool
 	flagsAt   time.Time
@@ -146,7 +148,43 @@ var buildVersion = "dev"
 
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: buildVersion, sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard}}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: buildVersion, mode: modeLocal, sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard}}
+}
+
+// instanceMode is how an instance runs (FLOWA_MODE; docs/federation.md, section 4). It is read once
+// at start and never changes while the server runs, because in the modes that federate it decides
+// which addresses other servers are told about.
+type instanceMode string
+
+const (
+	modeLocal     instanceMode = "local"     // a community that lives on this server only, as Flowa has always run
+	modeFederated instanceMode = "federated" // a community whose members follow and are followed across servers
+	modeSingle    instanceMode = "single"    // one person's own instance
+)
+
+// modesBuilt are the modes this version can run. A mode that is planned and not built stops the
+// start, as an unknown word does: an operator who asks for a single-profile instance must not get an
+// open community that only says "single" on its dashboard.
+var modesBuilt = map[instanceMode]bool{modeLocal: true}
+
+// parseMode reads FLOWA_MODE. Unset or blank is local, so a deployment that sets nothing runs as it
+// always has. Capitals and spaces around the word are forgiven; any other word is an error that names
+// the three, and so is a mode this version cannot run yet.
+func parseMode(v string) (instanceMode, error) {
+	m := instanceMode(strings.ToLower(strings.TrimSpace(v)))
+	switch m {
+	case "":
+		return modeLocal, nil
+	case modeLocal, modeFederated, modeSingle:
+		if !modesBuilt[m] {
+			return "", fmt.Errorf("FLOWA_MODE=%s is planned (docs/federation.md) and not built into this version; leave it unset or set it to local", m)
+		}
+		return m, nil
+	}
+	if len(v) > 40 {
+		v = v[:40] // enough to recognise a typing mistake; the log is not the place for a pasted file
+	}
+	return "", fmt.Errorf("FLOWA_MODE must be local, federated or single, not %q", v)
 }
 
 // A post or a comment can name itself with an Idempotency-Key header: a random key the page makes
@@ -3382,6 +3420,10 @@ type fetcher struct {
 	mu   sync.Mutex
 	busy map[string]*sync.Mutex // one fetch at a time per host
 	off  bool                   // FLOWA_PREVIEW_FETCH=off: never fetch
+	// dials counts the connections this fetcher tried to open: allowed, refused, or to a name that
+	// did not resolve. Nothing reads it while the server runs; TestDBLocalModeUnchanged holds it at
+	// zero through a start.
+	dials atomic.Int64
 }
 
 func hostAllowed(host string, list []string) bool {
@@ -3419,6 +3461,7 @@ func publicIP(ip net.IP) bool {
 }
 
 func newFetcher(base string, allowPrivate bool) *fetcher {
+	f := &fetcher{base: strings.TrimRight(base, "/"), busy: map[string]*sync.Mutex{}}
 	dialer := &net.Dialer{Timeout: fetchTimeout, Control: func(network, address string, _ syscall.RawConn) error {
 		host, _, err := net.SplitHostPort(address)
 		if err != nil {
@@ -3429,8 +3472,13 @@ func newFetcher(base string, allowPrivate bool) *fetcher {
 		}
 		return nil
 	}}
-	tr := &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: fetchTimeout, ResponseHeaderTimeout: fetchTimeout, MaxIdleConns: 4, DisableCompression: false}
-	f := &fetcher{base: strings.TrimRight(base, "/"), busy: map[string]*sync.Mutex{}}
+	// Counted before the name is looked up: a fetch to a name that does not resolve asked a name
+	// server, and that is a connection to another machine too.
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		f.dials.Add(1)
+		return dialer.DialContext(ctx, network, address)
+	}
+	tr := &http.Transport{DialContext: dial, TLSHandshakeTimeout: fetchTimeout, ResponseHeaderTimeout: fetchTimeout, MaxIdleConns: 4, DisableCompression: false}
 	f.client = &http.Client{Transport: tr, Timeout: fetchTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return errors.New("too many redirects")
@@ -4085,7 +4133,7 @@ func gateOpens(pairs, recent int, now time.Time) string {
 // handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
 // for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
 func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
-	out := map[string]any{"version": a.version}
+	out := map[string]any{"version": a.version, "mode": string(a.mode)}
 	var users, mods, admins, active7, active30, open int
 	err := a.db.QueryRow(dashTotalsSQL).Scan(&users, &mods, &admins)
 	if err == nil {
@@ -4802,9 +4850,29 @@ func (a *app) handleStatic(s *static) http.HandlerFunc {
 	}
 }
 
+// routeMux is the mux and the patterns registered on it, in order. The standard mux does not give
+// its patterns back, and TestDBLocalModeUnchanged compares them with the list in
+// testdata/routes-local.txt, so that no route appears on an instance that asked for none.
+type routeMux struct {
+	*http.ServeMux
+	patterns []string
+}
+
+func (m *routeMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	m.patterns = append(m.patterns, pattern)
+	m.ServeMux.HandleFunc(pattern, h)
+}
+
 // routes builds the HTTP handler: every API route, the static files, and the write guard.
 func (a *app) routes(st *static) http.Handler {
-	mux := http.NewServeMux()
+	mux := a.table(st)
+	return a.logged(mux.ServeMux, a.secure(a.guard(mux.ServeMux)))
+}
+
+// table registers every route the instance answers in its mode. Routes that only a federating mode
+// has are added here under a.mode and nowhere else, so local mode cannot gain one by accident.
+func (a *app) table(st *static) *routeMux {
+	mux := &routeMux{ServeMux: http.NewServeMux()}
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
 	mux.HandleFunc("GET /api/me", a.handleMe)
 	mux.HandleFunc("PUT /api/me", a.authed("", a.handlePutMe))
@@ -4845,7 +4913,7 @@ func (a *app) routes(st *static) http.Handler {
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /api/previews/{file}", a.authed("", a.handlePreviewImage))
 	mux.HandleFunc("GET /", a.handleStatic(st))
-	return a.logged(mux, a.secure(a.guard(mux)))
+	return mux
 }
 
 /* ---------- request log ----------
@@ -5084,6 +5152,58 @@ func rootsPresent() bool {
 	return err == nil && pool != nil && !pool.Equal(x509.NewCertPool())
 }
 
+// start does what the server does between opening the database and listening: it reads the
+// operator's settings and then seeds what a new instance needs. Every setting is read before the
+// admin account and the skill maps are written, so a setting that cannot be understood stops the
+// server with no row added. (Opening the database has applied the migrations by then; main reads
+// the mode before that, see there.) It opens no connection to another machine, in any mode:
+// TestDBLocalModeUnchanged holds that.
+func (a *app) start(getenv func(string) string) error {
+	// The admin dashboard shows the version compiled in (a release tag, or main.<commit> from
+	// deploy.sh --build). VERSION in the environment replaces it, for a build that has none.
+	if v := strings.TrimSpace(getenv("VERSION")); v != "" {
+		a.version = v
+	}
+	log.Printf("version %s", a.version)
+	var err error
+	if a.mode, err = parseMode(getenv("FLOWA_MODE")); err != nil {
+		return err
+	}
+	log.Printf("mode %s", a.mode)
+	if rootsPresent() {
+		log.Print("TLS roots: present")
+	} else {
+		log.Print("TLS roots: none; link previews cannot be fetched")
+	}
+	if v := getenv("FLOWA_TRUSTED_PROXIES"); strings.TrimSpace(v) != "" {
+		if a.proxies, err = parseProxies(v); err != nil {
+			return err
+		}
+	}
+	log.Printf("visitor addresses: forwarding headers believed from %d trusted proxy ranges", len(a.proxies))
+	if a.homeURL, err = homeLink(getenv("FLOWA_HOME_URL")); err != nil {
+		return err
+	}
+	if a.countsTok, err = countsToken(getenv("FLOWA_COUNTS_TOKEN")); err != nil {
+		return err
+	}
+	for _, h := range strings.Split(getenv("FLOWA_HOSTS"), ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			a.hosts = append(a.hosts, h)
+		}
+	}
+	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
+	a.fetch = newFetcher(getenv("FLOWA_PREVIEW_BASE"), getenv("FLOWA_PREVIEW_BASE") != "")
+	a.fetch.off = getenv("FLOWA_PREVIEW_FETCH") == "off"
+	if _, err := a.seedAdmin(getenv("ADMIN_USER"), getenv("ADMIN_PASSWORD")); err != nil {
+		return err
+	}
+	if err := a.ensureOwner(); err != nil {
+		return err
+	}
+	return a.seedCatalogs()
+}
+
 func main() {
 	listen := flag.String("listen", ":3169", "listen address")
 	dataDir := flag.String("data", "/data", "directory for backups and for the page files kept for the build after this one")
@@ -5113,6 +5233,11 @@ func main() {
 	if err := os.MkdirAll(filepath.Join(*dataDir, "backups"), 0o755); err != nil {
 		log.Fatal(err)
 	}
+	// The mode is read before the database is opened, because opening it applies the migrations: a
+	// newer build that is refused its mode must leave the schema for the build before it.
+	if _, err := parseMode(os.Getenv("FLOWA_MODE")); err != nil {
+		log.Fatal(err)
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is not set")
@@ -5122,46 +5247,7 @@ func main() {
 		log.Fatal(err)
 	}
 	a := newApp(db, *dataDir)
-	// The admin dashboard shows the version compiled in (a release tag, or main.<commit> from
-	// deploy.sh --build). VERSION in the environment replaces it, for a build that has none.
-	if v := strings.TrimSpace(os.Getenv("VERSION")); v != "" {
-		a.version = v
-	}
-	log.Printf("version %s", a.version)
-	if rootsPresent() {
-		log.Print("TLS roots: present")
-	} else {
-		log.Print("TLS roots: none; link previews cannot be fetched")
-	}
-	if v, ok := os.LookupEnv("FLOWA_TRUSTED_PROXIES"); ok && strings.TrimSpace(v) != "" {
-		p, err := parseProxies(v)
-		if err != nil {
-			log.Fatal(err)
-		}
-		a.proxies = p
-	}
-	log.Printf("visitor addresses: forwarding headers believed from %d trusted proxy ranges", len(a.proxies))
-	if a.homeURL, err = homeLink(os.Getenv("FLOWA_HOME_URL")); err != nil {
-		log.Fatal(err)
-	}
-	if a.countsTok, err = countsToken(os.Getenv("FLOWA_COUNTS_TOKEN")); err != nil {
-		log.Fatal(err)
-	}
-	for _, h := range strings.Split(os.Getenv("FLOWA_HOSTS"), ",") {
-		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
-			a.hosts = append(a.hosts, h)
-		}
-	}
-	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
-	a.fetch = newFetcher(os.Getenv("FLOWA_PREVIEW_BASE"), os.Getenv("FLOWA_PREVIEW_BASE") != "")
-	a.fetch.off = os.Getenv("FLOWA_PREVIEW_FETCH") == "off"
-	if _, err := a.seedAdmin(os.Getenv("ADMIN_USER"), os.Getenv("ADMIN_PASSWORD")); err != nil {
-		log.Fatal(err)
-	}
-	if err := a.ensureOwner(); err != nil {
-		log.Fatal(err)
-	}
-	if err := a.seedCatalogs(); err != nil {
+	if err := a.start(os.Getenv); err != nil {
 		log.Fatal(err)
 	}
 
@@ -7152,7 +7238,7 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
 }
 
-func (a *app) socialRoutes(mux *http.ServeMux) {
+func (a *app) socialRoutes(mux *routeMux) {
 	// The community flag turns the timeline off for the API too, not only in the menu, and the game
 	// flag does the same for badges. Pictures stay: the profile and the admin pages show them.
 	social := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {

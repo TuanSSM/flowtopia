@@ -258,6 +258,12 @@ Flowa runs on, like `http://raspi.local:8080/`. Admins then get a "Server home" 
 group of the menu; nobody else is told the address. It is empty by default, which means no link, and
 a value that is not such an address stops the server at start with a message that says so.
 
+`FLOWA_MODE` in `.env` says how the instance runs. Unset, empty or `local` is what Flowa has always
+been: a community that lives on this server only, and nothing about a deployment that sets nothing
+changes. The words `federated` and `single` belong to the plan in
+[docs/federation.md](docs/federation.md) and are not built yet, so each of them stops the server at
+start with a message that says so, as any other word does, before the database is opened. The admin dashboard shows the mode under the version.
+
 Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from
 `X-Forwarded-For` (or `X-Real-IP`), but only when the connection comes from a trusted proxy, and it reads

@@ -1090,3 +1090,60 @@ func staleBrotli(st *static) (out []string) {
 	slices.Sort(out)
 	return out
 }
+
+// FLOWA_MODE: unset is local, capitals and spaces are forgiven, an unknown word names the three, and
+// a mode that is planned and not built stops the start as an unknown word does.
+func TestInstanceMode(t *testing.T) {
+	for _, v := range []string{"", " ", "\t\n", "local", "LOCAL", "Local", "  local\n", "\tLocal "} {
+		if m, err := parseMode(v); err != nil || m != modeLocal {
+			t.Errorf("parseMode(%q) = %q, %v; want local", v, m, err)
+		}
+	}
+	// The modes of the plan are known words: the message says they are not built, and does not
+	// tell the operator the word is wrong. The capital I with a dot of a Turkish keyboard lower-cases
+	// to a plain i, so SINGLE typed there is the word too.
+	for _, v := range []string{"federated", "single", " Single", "FEDERATED\n", "SINGLE", "S\u0130NGLE"} {
+		m, err := parseMode(v)
+		if modesBuilt[instanceMode(strings.ToLower(strings.TrimSpace(v)))] {
+			if err != nil {
+				t.Errorf("parseMode(%q): %v, for a mode that is built", v, err)
+			}
+			continue
+		}
+		if err == nil || m != "" || !strings.Contains(err.Error(), "not built") || strings.Contains(err.Error(), "must be") {
+			t.Errorf("parseMode(%q) = %q, %v; want an error that says the mode is not built yet", v, m, err)
+		}
+	}
+	// Anything else is refused by name. Among them: two words, a word with something inside it, a
+	// number, a look-alike (a Cyrillic a, an i without its dot), a NUL, a zero-width space (which
+	// is not white space), and the quotes and semicolons of a setting copied from a shell.
+	for _, v := range []string{"fed", "locale", "localx", "on", "local,single", "local single", "lo cal", "0", "true", "off", "none", "federate", "loc\u0430l", "s\u0131ngle", "local\x00", "\u200blocal", "'local'", `"local"`, "local;", "LOCAL=1"} {
+		m, err := parseMode(v)
+		if err == nil || m != "" {
+			t.Errorf("parseMode(%q) = %q, nil; want an error", v, m)
+			continue
+		}
+		for _, name := range []string{"local", "federated", "single"} {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("parseMode(%q): %q does not name %s", v, err, name)
+			}
+		}
+	}
+	if m, err := parseMode("local\u00a0"); err != nil || m != modeLocal {
+		t.Errorf("a non-breaking space after the word: %q, %v; want local", m, err)
+	}
+	// A long value is cut in the message, so a file pasted into the setting does not fill the log.
+	long := strings.Repeat("x", 5000)
+	if _, err := parseMode(long); err == nil || len(err.Error()) > 200 {
+		t.Errorf("a 5000 character value: error of %d characters, want one under 200", len(fmt.Sprint(err)))
+	}
+	// Every mode the plan names is one parseMode knows, and local is always built.
+	if !modesBuilt[modeLocal] {
+		t.Error("local is not among the modes built")
+	}
+	for m := range modesBuilt {
+		if m != modeLocal && m != modeFederated && m != modeSingle {
+			t.Errorf("modesBuilt names %q, which parseMode does not know", m)
+		}
+	}
+}
