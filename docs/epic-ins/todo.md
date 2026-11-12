@@ -26,10 +26,13 @@ test named below is new unless the design note says it exists.
   nothing; a check in `test/browser/mod.py`.
 - [x] **Member blocks.** `blocks`, the first migration of this plan: `flowa-schema7.dump` goes into
   `testdata/backups` first (`test/restore.sh --fixture` on the commit before), unless another epic
-  added it. A block and an unblock endpoint with an allowance in `limits`; a
-  blocked member's posts and comments are hidden from the blocker, and the blocked member cannot
-  comment on, like or mention the blocker. Behind the `community` flag. DoD: `TestDBBlocks`;
-  `TestDBQueryPlans` holds the timeline with 5,000 blocks; a check in `test/browser/social.py`.
+  added it. A block and an unblock endpoint, by username, with an allowance in `limits`.
+  A block hides both ways: neither member sees the other's posts, comments or replies, and neither
+  can comment on, reply to or like what the other writes. A mention across a block is stored and
+  shown to others, and the member mentioned is not told. Staff see past a member's block, and
+  reports work as before. Behind the `community` flag. DoD: `TestDBBlocks`; `TestDBOneConnection`
+  (no write endpoint needs a second database connection while it holds one); `TestDBQueryPlans`
+  holds the timeline with 5,000 blocks; a check in `test/browser/social.py`.
 - [ ] **Follows and a Home timeline behind a flag.** `follows` (local accounts only at this step);
   Follow and Unfollow on profiles; Home beside Community; the `follows` flag, off by default; counts
   on the profile, lists shown only to the account itself (F10). DoD: `TestDBFollows`;
