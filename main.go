@@ -27,6 +27,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"math"
 	"mime"
 	"net"
@@ -443,7 +444,7 @@ func (l *limiter) makeRoom(now time.Time) {
 type limits struct {
 	signin, signinIP, account, signup, password *limiter
 	posts, comments, likes, badges, marks       *limiter
-	bookmarks                                   *limiter
+	bookmarks, blocks                           *limiter
 }
 
 func newLimits() limits {
@@ -452,7 +453,7 @@ func newLimits() limits {
 		signup: newLimiter(10, time.Hour), password: newLimiter(5, failWindow),
 		posts: newLimiter(30, time.Hour), comments: newLimiter(120, time.Hour), likes: newLimiter(600, time.Hour),
 		badges: newLimiter(60, time.Hour), marks: newLimiter(120, time.Hour),
-		bookmarks: newLimiter(300, time.Hour),
+		bookmarks: newLimiter(300, time.Hour), blocks: newLimiter(100, time.Hour),
 	}
 }
 
@@ -4267,6 +4268,18 @@ var migrations = []string{schema, schemaSocial,
 	// toward the fit of the suggestion weights. Pairs marked before this have none and are counted
 	// without a week. One new column: going back to an earlier build is safe.
 	`ALTER TABLE transition_counts ADD COLUMN IF NOT EXISTS first_week DATE`,
+	// 8: member blocks. user_id has blocked target_id; nobody blocks themself, and a block goes with
+	// either account. The primary key answers "has this reader blocked that author" in the timeline,
+	// and blocks_target the other way round, "who has blocked me". A new table only: going back to an
+	// earlier build is safe, and that build simply shows everything again.
+	`CREATE TABLE IF NOT EXISTS blocks (
+		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		target_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (user_id, target_id),
+		CONSTRAINT blocks_not_self CHECK (user_id <> target_id)
+	);
+	CREATE INDEX IF NOT EXISTS blocks_target ON blocks (target_id, user_id)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -5758,14 +5771,14 @@ func statNum(raw json.RawMessage, key string) float64 {
 
 // peopleSQL is the people list: the hundred members with the most XP. It reads the users table whole
 // and sorts it, on purpose: the table has one row per member, and for the few hundred a household
-// server holds that is the cheapest plan there is (TestDBQueryPlans keeps count of the rows).
-const peopleSQL = `SELECT ` + userCols + ` FROM users u
+// server holds that is the cheapest plan there is (TestDBQueryPlans keeps count of the rows). $1 is
+// the viewer and $2 whether they may hide posts: a member across a block is not listed (blockFree).
+var peopleSQL = `SELECT ` + userCols + ` FROM users u WHERE ` + blockFree("$1", "u.id", "$2") + `
 	ORDER BY CASE WHEN NOT u.stats_hidden AND jsonb_typeof(u.stats->'xp') = 'number' THEN (u.stats->>'xp')::numeric ELSE 0 END DESC, u.id LIMIT 100`
 
-// handleUserList is the people list: everyone, with the stats they reported, most XP first.
 // handleUserList is the people list: the 100 members with the most XP (hidden stats count as none).
-func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, _ *user) {
-	rows, err := a.db.Query(peopleSQL)
+func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, viewer *user) {
+	rows, err := a.db.Query(peopleSQL, viewer.ID, can(viewer, permPostHide))
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -5800,16 +5813,21 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *
 		a.serverError(w, err)
 		return
 	}
+	// Across a block the profile still opens, so the blocker can unblock from it and the blocked
+	// member can block back, but its posts are not shown (feedSQL) and are not counted either: a count
+	// with no posts under it would say there is a block. blocked tells the blocker that they blocked
+	// this member; the blocked member is not told.
 	var posts, likes int
-	if err := a.db.QueryRow(`SELECT count(*) FROM posts WHERE user_id = $1 AND (hidden_at IS NULL OR $1 = $2 OR $3)`, u.ID, viewer.ID, can(viewer, permPostHide)).Scan(&posts); err != nil {
+	var blocked bool
+	if err := a.db.QueryRow(`SELECT x.blocked,
+		CASE WHEN x.free THEN (SELECT count(*) FROM posts p WHERE p.user_id = $1 AND (p.hidden_at IS NULL OR $1 = $2 OR $3)) ELSE 0 END,
+		CASE WHEN x.free THEN (SELECT count(*) FROM likes l JOIN posts p ON p.id = l.post_id WHERE p.user_id = $1) ELSE 0 END
+		FROM (SELECT EXISTS (SELECT 1 FROM blocks WHERE user_id = $2 AND target_id = $1) AS blocked, `+blockFree("$2", "$1", "$3")+` AS free) x`,
+		u.ID, viewer.ID, can(viewer, permPostHide)).Scan(&blocked, &posts, &likes); err != nil {
 		a.serverError(w, err)
 		return
 	}
-	if err := a.db.QueryRow(`SELECT count(*) FROM likes l JOIN posts p ON p.id = l.post_id WHERE p.user_id = $1`, u.ID).Scan(&likes); err != nil {
-		a.serverError(w, err)
-		return
-	}
-	out := map[string]any{"user": u.public(), "achievements": ach, "posts": posts, "likes": likes}
+	out := map[string]any{"user": u.public(), "achievements": ach, "posts": posts, "likes": likes, "blocked": blocked}
 	// With avatars on, the skills this person has clean, so their avatar can play one on their profile.
 	if a.flagsCached()["avatars"] && !u.StatsHidden {
 		clean, err := a.cleanSkills(u.ID)
@@ -6072,10 +6090,22 @@ func (a *app) notifyAt(userID, actorID int64, kind string, postID, commentID int
 	if commentID != 0 {
 		cmt = commentID
 	}
-	if _, err := a.db.Exec(`INSERT INTO notifications (user_id, actor_id, kind, post_id, comment_id, text) VALUES ($1, $2, $3, $4, $5, $6)`, userID, actor, kind, post, cmt, text); err != nil {
+	q := `INSERT INTO notifications (user_id, actor_id, kind, post_id, comment_id, text) SELECT $1::bigint, $2::bigint, $3::text, $4::bigint, $5::bigint, $6::text`
+	// Between two members with a block between them nothing social is told, whichever blocked whom:
+	// a like, a comment, a reply or a mention across a block makes no notification. What moderators
+	// and the game say is told whatever anyone has blocked.
+	if !quietKinds[kind] {
+		q += ` WHERE ` + blockFree("$1::bigint", "$2::bigint", "false")
+	}
+	if _, err := a.db.Exec(q, userID, actor, kind, post, cmt, text); err != nil {
 		log.Printf("notify: %v", err)
 	}
 }
+
+// quietKinds are the notifications a block does not silence: a moderator's notice and a new badge.
+// The others between two members go when one blocks the other (handleBlock), and none are made
+// while the block holds (notifyAt), so the bell reads its list without asking about blocks.
+var quietKinds = map[string]bool{"moderation": true, "achievement": true}
 
 // notificationsSQL is a member's newest notifications ($1 the member, $2 how many); unreadSQL counts
 // the ones not read yet, which the bell asks for on every page.
@@ -6196,21 +6226,44 @@ type post struct {
 	Links []linkCard `json:"links,omitempty"`
 }
 
+// blockFree is the SQL condition that what author wrote may be shown to viewer; the three arguments are
+// SQL expressions written in this file, never text from a request. A block hides the blocked member's
+// posts and comments from the blocker, and the blocker's from the blocked member, as Mastodon does it:
+// neither is shown the other. staff is "the viewer may hide posts": a moderator or admin whom a member
+// has blocked still sees that member's posts, so a block never stands between a member and moderation.
+// A moderator's own block hides the member they blocked from their timeline like anyone's; reports and
+// the queue read content without asking about blocks.
+//
+// Each side is one look in the primary key of blocks per row, which is what keeps a page of the
+// timeline as cheap with 5,000 blocks as with none (TestDBQueryPlans). OFFSET 0 is what holds the
+// planner to that: without it Postgres may turn NOT EXISTS into a join that reads every block the
+// reader has, or into a hashed subplan that reads the whole table, before the LIMIT stops anything.
+func blockFree(viewer, author, staff string) string {
+	return `NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = ` + viewer + ` AND b.target_id = ` + author + ` OFFSET 0)
+		AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = ` + author + ` AND b.target_id = ` + viewer + ` AND NOT ` + staff + ` OFFSET 0)`
+}
+
 // feedSQL is a page of posts, newest first: the timeline, one member's posts, one post, or the posts
 // with given ids. $1 is the viewer, $2 "older than this post", $3 "by this member", $4 "this post",
 // $5 how many, $6 whether the viewer may see hidden posts, $7 the ids; $2, $3, $4 and $7 are left out
 // with 0 or NULL. The viewer's own like is found through likes_user (migration 6): without it this
-// read every like there is, once per page.
-const feedSQL = `SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
+// read every like there is, once per page. Posts across a block are left out here, before the LIMIT,
+// so a page is full however many recent posts are by someone blocked; the comment count leaves out
+// the comments the viewer is not shown, and the replies under them. Likes are counted from everyone:
+// the count names nobody.
+var feedSQL = `SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
-		(SELECT count(*) FROM comments c WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL), p.hidden_reason
+		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
+			AND ` + blockFree("$1", "c.user_id", "$6") + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", "$6") + `)), p.hidden_reason
 		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) AND ($7::bigint[] IS NULL OR p.id = ANY($7))
-		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) ORDER BY p.id DESC LIMIT $5`
+		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) AND ` + blockFree("$1", "p.user_id", "$6") + ` ORDER BY p.id DESC LIMIT $5`
 
-// feedCommentsSQL is the newest top-level comments of each of those posts ($2 the posts, $3 how many
+// feedCommentsSQL is the newest top-level comments of each of those posts ($3 the posts, $4 how many
 // of each); repliesSQL the newest replies under each of those comments. Both go through queryComments.
-const feedCommentsSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
-	FROM comments c WHERE c.post_id = ANY($2) AND c.parent_id IS NULL) c WHERE c.rn <= $3 ORDER BY c.id`
+// A thread begun by someone across a block is left out whole, its replies with it, because they answer
+// a comment the viewer is not shown.
+var feedCommentsSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
+	FROM comments c WHERE c.post_id = ANY($3) AND c.parent_id IS NULL AND ` + commentBlockFree + `) c WHERE c.rn <= $4 ORDER BY c.id`
 
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
 // liked each one, every comment, and the users involved. With ids, it reads those posts
@@ -6576,10 +6629,12 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 }
 
 // postOwner finds who wrote a post the viewer may see, answering the request itself when it
-// cannot. A hidden post is "gone" to everyone but its author and moderators.
+// cannot. A hidden post is "gone" to everyone but its author and moderators, and a post across a
+// block (blockFree) is gone in the same words, so the answer does not say that there is a block.
 func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, bool) {
 	var owner int64
-	err := a.db.QueryRow(`SELECT user_id FROM posts WHERE id = $1 AND (hidden_at IS NULL OR user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+	err := a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND `+blockFree("$2", "p.user_id", "$3"),
+		id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such post.")
 		return 0, false
@@ -6591,6 +6646,25 @@ func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, b
 	return owner, true
 }
 
+// across answers the request with a 404 and msg, the words used when the thing is not there, and
+// reports true when the member and any of others have a block between them, whichever blocked whom.
+// It guards what reaches another member (a comment, a reply, a like), and it holds for moderators too:
+// seeing a blocker's posts for moderation is not a way to answer them. A post or comment that is
+// not shown is answered the same way, as Mastodon does, so a refusal does not tell of a block.
+func (a *app) across(w http.ResponseWriter, msg string, member int64, others ...int64) bool {
+	var hit bool
+	err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = ANY($2))
+		OR EXISTS (SELECT 1 FROM blocks WHERE target_id = $1 AND user_id = ANY($2))`, member, pq.Array(others)).Scan(&hit)
+	if err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	if hit {
+		fail(w, http.StatusNotFound, msg)
+	}
+	return hit
+}
+
 func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 	w, ok := allowed(w, a.lim.likes, u, "likes")
 	if !ok {
@@ -6598,7 +6672,7 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	owner, ok := a.postOwner(w, id, u)
-	if !ok {
+	if !ok || a.across(w, "No such post.", u.ID, owner) {
 		return
 	}
 	// One statement either way, so two quick clicks cannot race into a duplicate key.
@@ -6758,24 +6832,29 @@ func (a *app) handleBookmarks(w http.ResponseWriter, _ *http.Request, u *user) {
 
 /* ---------- comments and replies ---------- */
 
-const commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
-	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
-	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL`
+// commentBlockFree is blockFree for a comment c in the queries queryComments runs, where $1 is the
+// viewer and $2 whether they may hide posts. Each of those queries says it inside, before its LIMIT.
+var commentBlockFree = blockFree("$1", "c.user_id", "$2")
 
-const repliesSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
-		FROM comments c WHERE c.parent_id = ANY($2)) c WHERE c.rn <= $3`
+var commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
+	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
+	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL AND ` + blockFree("$1", "r.user_id", "$2") + `), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL`
+
+var repliesSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
+		FROM comments c WHERE c.parent_id = ANY($3) AND ` + commentBlockFree + `) c WHERE c.rn <= $4`
 
 // commentsSQL wraps inner, a query over the comments table, into the one queryComments runs.
 func commentsSQL(inner string) string {
 	return `SELECT ` + commentCols + ` FROM (` + inner + `) c ORDER BY c.id`
 }
 
-// queryComments runs inner, a query over the comments table whose first parameter is $2, and
-// returns its rows oldest first, with likes and reply counts as seen by viewer ($1).
+// queryComments runs inner, a query over the comments table c whose first parameter is $3, and
+// returns its rows oldest first, with likes and reply counts as seen by viewer ($1, and $2 whether
+// they may hide posts). A query that lists comments says commentBlockFree in its WHERE.
 // A hidden comment is shown in full to its author and moderators; to everyone else it is left
 // out, or kept as an empty placeholder when it has replies that are still shown.
 func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment, error) {
-	rows, err := a.db.Query(commentsSQL(inner), append([]any{viewer.ID}, args...)...)
+	rows, err := a.db.Query(commentsSQL(inner), append([]any{viewer.ID, can(viewer, permPostHide)}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -6862,7 +6941,7 @@ func (a *app) handleGetComments(w http.ResponseWriter, r *http.Request, u *user)
 	if _, ok := a.postOwner(w, id, u); !ok {
 		return
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments WHERE post_id = $2 AND parent_id IS NULL AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), commentPage+1)
+	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND `+commentBlockFree+` ORDER BY c.id LIMIT $5`, id, queryID(r, "after"), commentPage+1)
 	if err == nil {
 		err = a.attachReplies(u, list)
 	}
@@ -6884,9 +6963,13 @@ type commentRow struct {
 func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (commentRow, bool) {
 	var c commentRow
 	var secs float64
+	// A comment is gone to the viewer when it, the comment it answers or its post is by someone on
+	// the other side of a block (blockFree), as it is when it was hidden.
 	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
-		FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1
-		AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+		FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments rc ON rc.id = c.parent_id WHERE c.id = $1
+		AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)
+		AND `+blockFree("$2", "c.user_id", "$3")+` AND `+blockFree("$2", "p.user_id", "$3")+` AND (rc.id IS NULL OR `+blockFree("$2", "rc.user_id", "$3")+`)`,
+		id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "That comment is gone.")
 		return c, false
@@ -6909,7 +6992,7 @@ func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) 
 	if c.parentID != 0 {
 		id = c.parentID
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments WHERE parent_id = $2 AND id > $3 ORDER BY id LIMIT $4`, id, queryID(r, "after"), replyPage+1)
+	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.parent_id = $3 AND c.id > $4 AND `+commentBlockFree+` ORDER BY c.id LIMIT $5`, id, queryID(r, "after"), replyPage+1)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -6928,12 +7011,12 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 	if c.parentID != 0 {
 		root = c.parentID
 	}
-	roots, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, root)
+	roots, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.id = $3`, root)
 	if err != nil || len(roots) == 0 {
 		a.serverError(w, fmt.Errorf("thread %d: %v", root, err))
 		return
 	}
-	reps, err := a.queryComments(u, `SELECT * FROM comments WHERE parent_id = $2 ORDER BY id LIMIT $3`, root, maxThread)
+	reps, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.parent_id = $3 AND `+commentBlockFree+` ORDER BY c.id LIMIT $4`, root, maxThread)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -6985,7 +7068,7 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	owner, ok := a.postOwner(w, id, u)
-	if !ok {
+	if !ok || a.across(w, "No such post.", u.ID, owner) {
 		return
 	}
 	tx, err := a.db.Begin()
@@ -6997,11 +7080,16 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 	var root, answered int64
 	if in.ParentID != 0 {
 		// Lock the comment being answered, so it cannot be deleted while the reply is written.
-		var postID, parent int64
+		var postID, parent, rootOwner int64
 		var deleted, hidden bool
-		err := tx.QueryRow(`SELECT post_id, user_id, COALESCE(parent_id, 0), deleted, hidden_at IS NOT NULL FROM comments WHERE id = $1 FOR SHARE`, in.ParentID).Scan(&postID, &answered, &parent, &deleted, &hidden)
+		err := tx.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.deleted, c.hidden_at IS NOT NULL, COALESCE(rc.user_id, 0)
+			FROM comments c LEFT JOIN comments rc ON rc.id = c.parent_id WHERE c.id = $1 FOR SHARE OF c`, in.ParentID).Scan(&postID, &answered, &parent, &deleted, &hidden, &rootOwner)
 		if err == nil && hidden && answered != u.ID && !can(u, permPostHide) {
 			err = sql.ErrNoRows
+		}
+		// Nobody answers a comment, or joins a thread, begun by someone on the other side of a block.
+		if err == nil && a.across(w, "That comment is gone.", u.ID, answered, rootOwner) {
+			return
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			fail(w, http.StatusNotFound, "That comment is gone.")
@@ -7068,7 +7156,7 @@ func (a *app) writeComment(w http.ResponseWriter, u *user, id, cid int64) {
 		a.serverError(w, err)
 		return
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2 AND post_id = $3`, cid, id)
+	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.id = $3 AND c.post_id = $4`, cid, id)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -7130,7 +7218,7 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 		}
 	}
 	a.notifyNames(added, u.ID, c.postID, id, c.postOwner)
-	list, err := a.queryComments(u, `SELECT * FROM comments WHERE id = $2`, id)
+	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.id = $3`, id)
 	if err != nil || len(list) == 0 {
 		a.serverError(w, fmt.Errorf("edited comment %d: %v", id, err))
 		return
@@ -7203,7 +7291,7 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	c, ok := a.commentRow(w, id, u)
-	if !ok {
+	if !ok || a.across(w, "That comment is gone.", u.ID, c.userID) {
 		return
 	}
 	if c.deleted {
@@ -7238,6 +7326,123 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
 }
 
+/* ---------- blocks: members a member does not want to see or hear from ---------- */
+
+// blockTarget reads the member a block or an unblock is about, answering the request itself when it
+// is no good: nobody blocks themself (400). Whether the account exists is the caller's question.
+func blockTarget(w http.ResponseWriter, r *http.Request, u *user) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		fail(w, http.StatusNotFound, "No such user.")
+		return 0, false
+	}
+	if id == u.ID {
+		fail(w, http.StatusBadRequest, "You cannot block yourself.")
+		return 0, false
+	}
+	return id, true
+}
+
+// handleBlock blocks a member for the one asking; blocking again changes nothing and is answered
+// the same. An account that does not exist, or was deleted, is a 404. Anyone may be blocked, a
+// moderator or an admin too, and anyone signed in may block, a muted member too: a block is for the
+// blocker's own peace, not something they say to others. It never weakens moderation: reports,
+// the queue and moderators' actions do not look at blocks, and a moderator still sees the posts of a
+// member who blocked them (blockFree). The blocked member is not told.
+func (a *app) handleBlock(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.blocks, u, "blocks")
+	if !ok {
+		return
+	}
+	id, ok := blockTarget(w, r, u)
+	if !ok {
+		return
+	}
+	// One statement, so a quick second click is one row; the account must exist as it is written. The
+	// notifications either has had from the other (likes, comments, replies, mentions) go with it: the
+	// blocker hears no more of the blocked member, old news included, and the other way round.
+	var found bool
+	err := a.db.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2),
+		ins AS (INSERT INTO blocks (user_id, target_id) SELECT $1, id FROM t ON CONFLICT DO NOTHING),
+		gone AS (DELETE FROM notifications WHERE kind <> ALL($3) AND ((user_id = $1 AND actor_id = $2) OR (user_id = $2 AND actor_id = $1)))
+		SELECT EXISTS (SELECT 1 FROM t)`, u.ID, id, pq.Array(slices.Sorted(maps.Keys(quietKinds)))).Scan(&found)
+	var pe *pq.Error
+	if errors.As(err, &pe) && pe.Code == "23503" {
+		found, err = false, nil // the account was deleted while the block was written
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if !found {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"blocked": true})
+}
+
+// handleUnblock takes a block back. There being no such block is not an error, whoever the id is:
+// the answer is the same, and a deleted account's blocks went with it.
+func (a *app) handleUnblock(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.blocks, u, "blocks")
+	if !ok {
+		return
+	}
+	id, ok := blockTarget(w, r, u)
+	if !ok {
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM blocks WHERE user_id = $1 AND target_id = $2`, u.ID, id); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"blocked": false})
+}
+
+// blockListSQL is the accounts a member has blocked, the latest first ($1 the member, $2 how many).
+// The blocks are chosen first and the accounts read after, so a long list reads its own rows of
+// blocks through the primary key and only the accounts it shows.
+const blockListSQL = `SELECT ` + userCols + `, b.created_at FROM (SELECT target_id, created_at FROM blocks WHERE user_id = $1
+	ORDER BY created_at DESC, target_id LIMIT $2) b JOIN users u ON u.id = b.target_id ORDER BY b.created_at DESC, b.target_id`
+
+// maxBlockList is how many blocks the list shows, the latest; any older ones still hold.
+const maxBlockList = 500
+
+// handleBlocks lists the accounts the one asking has blocked, for the list in their profile where
+// they can unblock. Only their own: nobody is shown who blocked them.
+func (a *app) handleBlocks(w http.ResponseWriter, _ *http.Request, u *user) {
+	rows, err := a.db.Query(blockListSQL, u.ID, maxBlockList)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	type blocked struct {
+		User  pubUser   `json:"user"`
+		Since time.Time `json:"since"`
+	}
+	out := []blocked{}
+	for rows.Next() {
+		var since time.Time
+		b, err := scanUser(rows, &since)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out = append(out, blocked{b.public(), since})
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var total int
+	if err := a.db.QueryRow(`SELECT count(*) FROM blocks WHERE user_id = $1`, u.ID).Scan(&total); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"blocks": out, "total": total})
+}
+
 func (a *app) socialRoutes(mux *routeMux) {
 	// The community flag turns the timeline off for the API too, not only in the menu, and the game
 	// flag does the same for badges. Pictures stay: the profile and the admin pages show them.
@@ -7264,6 +7469,9 @@ func (a *app) socialRoutes(mux *routeMux) {
 	mux.HandleFunc("POST /api/achievements", a.flagged("game", a.authed("", a.handleAchievements)))
 	mux.HandleFunc("GET /api/notifications", social(a.handleNotifications))
 	mux.HandleFunc("PUT /api/notifications/read", social(a.handleReadNotifications))
+	mux.HandleFunc("GET /api/blocks", social(a.handleBlocks))
+	mux.HandleFunc("PUT /api/users/{id}/block", social(a.handleBlock))
+	mux.HandleFunc("DELETE /api/users/{id}/block", social(a.handleUnblock))
 }
 
 /* ---------- passwords nobody should pick ---------- */

@@ -8,6 +8,7 @@ DELETE /api/admin/catalog/{prop}/draft
 DELETE /api/admin/users/{id}
 DELETE /api/comments/{id}
 DELETE /api/posts/{id}
+DELETE /api/users/{id}/block
 GET /
 GET /api/admin/audit
 GET /api/admin/catalog/{prop}
@@ -15,6 +16,7 @@ GET /api/admin/catalog/{prop}/diff
 GET /api/admin/catalog/{prop}/revisions/{rev}
 GET /api/admin/dashboard
 GET /api/admin/users
+GET /api/blocks
 GET /api/bookmarks
 GET /api/comments/{id}/replies
 GET /api/comments/{id}/thread
@@ -60,3 +62,4 @@ PUT /api/me
 PUT /api/me/password
 PUT /api/notifications/read
 PUT /api/progress/{prop}
+PUT /api/users/{id}/block

@@ -11,6 +11,7 @@ const ICONS = {
   log: 'M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z',
   link: 'M9.5 14.5l5-5M8 11l-2.5 2.5a4 4 0 0 0 5.6 5.6L13 17M16 13l2.5-2.5a4 4 0 0 0-5.6-5.6L11 7',
   flag: 'M5 21V4h13l-2.5 4.5L18 13H5',
+  block: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM5.6 5.6l12.8 12.8',
   gear: 'M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM19 12l2-1.2-2-3.5-2.2.8a7 7 0 0 0-1.6-.9L14.8 5h-4l-.4 2.2a7 7 0 0 0-1.6.9l-2.2-.8-2 3.5L6.6 12l-2 1.2 2 3.5 2.2-.8c.5.4 1 .7 1.6.9l.4 2.2h4l.4-2.2c.6-.2 1.1-.5 1.6-.9l2.2.8 2-3.5Z',
   search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14ZM20 20l-3.5-3.5',
   menu: 'M4 7h16M4 12h16M4 17h16',
@@ -734,7 +735,7 @@ function render() {
   const gw = $('.graph-wrap'), sx = gw?.scrollLeft, sy = gw?.scrollTop;
   const key = first ? 'welcome' : `${p}/${a}/${ui.prop}/${me ? me.id : 0}`;
   // Feeds, profiles and expanded threads reload when their page is opened.
-  if (key !== lastRouteKey) Object.assign(social, { stale: true, profile: {}, full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0 });
+  if (key !== lastRouteKey) Object.assign(social, { stale: true, profile: {}, blocks: null, full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0 });
   renderBell();
   // Keep form text when a save re-renders the page; only the panel and shell update.
   const active = document.activeElement;

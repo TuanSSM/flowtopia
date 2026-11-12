@@ -193,6 +193,29 @@ try:
     click(f'.post[data-post="{rp}"] [data-act=bookmark]');idle()
     check('removing a bookmark on the page takes the post off it and off the server',js("return !document.querySelector('.post[data-post=\"'+arguments[0]+'\"]')",str(rp)) and bm()['postIds']==[],bm()['postIds'])
     check('a bad bookmark is refused',refused(op,'bookmarks',{'kind':'skill','ref':'drums:F1'}))
+    # Blocks: from a profile, after a question in plain words. The member's post leaves the timeline at once,
+    # the Profile page lists the block, and unblocking brings the post back.
+    bp=api(sam,'posts',{'body':'A post by sam, to block'})['posts'][0]['id']
+    shown=lambda: js("return !!document.querySelector('.post[data-post=\"'+arguments[0]+'\"]')",str(bp))
+    nav('#/practice');nav('#/timeline')
+    check("before the block sam's post is in the timeline",shown)
+    nav('#/u/sam')
+    js("window.__asked='';window.confirm=m=>{window.__asked=m;return true}")
+    click('[data-act=block]');idle()
+    check('Block asks first, then the profile says sam is blocked, shows no posts and offers Unblock, with the focus on it',lambda: 'no longer see their posts' in js("return window.__asked") and js("return !!document.querySelector('#blocked-note')&&!document.querySelector('.post')&&document.activeElement?.dataset.act==='unblock'"),lambda: (js("return window.__asked"),txt('#blocked-note')))
+    check('the block is saved',[b['user']['username'] for b in get(op,'blocks')['blocks']]==['sam'])
+    nav('#/timeline')
+    check("the timeline no longer shows sam's post, nor sam among the people",lambda: not shown() and js("return document.querySelectorAll('.person').length>0&&![...document.querySelectorAll('.person b')].some(b=>b.textContent==='Sam Spins')"))
+    nav('#/profile')
+    check('the Profile page lists sam under Blocked accounts',lambda: js("return [...document.querySelectorAll('#blocks-card .bm-row .tiny')].map(t=>t.textContent)")==['@sam'])
+    nav('#/u/sam');click('[data-act=unblock]');idle()
+    check('Unblock on the profile shows his posts again',lambda: js("return !document.querySelector('#blocked-note')&&document.activeElement?.dataset.act==='block'") and bool(js("return document.querySelector('.post[data-post=\"'+arguments[0]+'\"]')",str(bp))))
+    nav('#/timeline')
+    check("after the unblock sam's post is back in the timeline",shown)
+    api(op,f"users/{get(sam,'me')['user']['id']}/block",{},'PUT');nav('#/profile')
+    click('#blocks-card [data-act=unblock]');idle()
+    check('Unblock in the list takes him off it',lambda: js("return document.querySelectorAll('#blocks-card .bm-row').length")==0 and get(op,'blocks')['blocks']==[])
+    api(sam,f'posts/{bp}',{},'DELETE')
     # Nothing lost and nothing doubled: quick double submits, a lost answer, an empty comment, a post
     # that went away, pictures with see-through parts, the leave warning, and a draft at sign-out.
     bodies=lambda t: [p['body'] for p in get(op,'posts')['posts'] if p['body']==t]
