@@ -115,7 +115,9 @@ session (section 1.3), so nothing a member writes is readable by anyone outside 
 
 **F7. Private keys at rest.** Each federating account has an RSA key pair.
 
-- (a) Stored as plain PEM in Postgres (what Mastodon is understood to do; not checked).
+- (a) Stored as plain PEM in Postgres. (What Mastodon does is not settled: its configuration page
+  says only that since 4.3.0 it encrypts "some database attributes" with Rails' Active Record
+  Encryption, without naming them.)
 - (b) Sealed with AES-256-GCM under a secret from the environment, `FLOWA_KEY_SECRET` (**new**, 64
   hex characters), which is never in the database or the backups.
 - Recommended: (b). `backup.sh` dumps the whole database every day; with (a) every backup file would
@@ -134,7 +136,9 @@ session (section 1.3), so nothing a member writes is readable by anyone outside 
 **F9. Give-up horizon for deliveries.** How long a post keeps being retried to a server that is down.
 
 - Recommended: 48 hours with the schedule in section 8.3, about what the brief says Mastodon does
-  (not checked against its code). Longer costs rows on a Pi; shorter loses posts to a server that is
+  (not in Mastodon's documentation, and its code could not be opened; see Sources). ActivityPub
+  leaves the horizon to the sender (7.5 suggests dropping a follower unreachable for "perhaps six
+  months"). Longer costs rows on a Pi; shorter loses posts to a server that is
   down over a weekend. Assumed until answered: 48 hours.
 
 **F10. Followers and following lists.**
@@ -194,7 +198,8 @@ These change the design and are not obvious from the brief.
    feature that makes member content readable outside the instance; hence F2 and F16.
 2. **The write guard would refuse every inbox delivery.** `guard` answers 415 to a write whose
    `Content-Type` does not start with `application/json`. Deliveries carry
-   `application/activity+json` or `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`.
+   `application/activity+json` or `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`
+   (ActivityPub 7: a POST MUST use the second, and servers SHOULD treat the first as the same).
    The inbox routes need their own content type check, and only they may skip the JSON one.
 3. **The host check would refuse the public name.** `allowedHost` in `secure` accepts addresses,
    single-label and private names and `FLOWA_HOSTS`, and answers 421 to any other name. The host of
@@ -224,8 +229,13 @@ These change the design and are not obvious from the brief.
     new sign-up could take it and inherit another person's identity on every server that knew it.
     Federation keeps a list of retired names (section 9).
 11. **Usernames Flowa allows that other servers may not.** `usernameRE` allows a name that ends in a
-    dot or a dash (`ana.`, `bo-`). Whether Mastodon parses such a handle in a mention is not known
-    here; the actor and WebFinger work regardless, and FRD's fixture tests check the mention form.
+    dot or a dash (`ana.`, `bo-`). The SWICG report "ActivityPub and WebFinger" ("Current
+    implementation rules") says Mastodon allows a dot or a dash only in the middle of a username
+    (`/[a-z0-9_]+([a-z0-9_.-]+[a-z0-9_]+)?/i`), and recommends that new software use only letters,
+    digits and underscores for now. So a Flowa member named `ana.` can federate (the actor and
+    WebFinger work regardless) but cannot be mentioned or found by handle from Mastodon. FRD's
+    WebFinger item warns such a member in Settings when they opt in; the report is a snapshot, so
+    the owner's trial (FWR's last item) records how a current Mastodon behaves.
 12. **No follow relation and no user-level blocks.** One shared timeline; mutes and suspensions are
     moderator actions only (`handleModAction`). Federation needs both a follow and a block.
 13. **The database pool is 8 connections** (`openDB`, `SetMaxOpenConns(8)`). Workers and inbox
@@ -396,16 +406,18 @@ the start-up with a fetcher that fails the test on any dial.
 - `local` or `single` to `federated`: allowed. The first time the server federates (it answers a
   WebFinger request, or delivers anything), it records the origin and the time in `instance_settings`
   (`origin`, `first_federated_at`).
-- **Frozen once federated.** An actor id has been announced to other servers and cannot change.
-  So the public origin and every username that has federated are frozen. If `FLOWA_ORIGIN` later
+- **Frozen once federated.** An actor id has been announced to other servers and cannot change
+  (Mastodon's configuration page says the same of its `LOCAL_DOMAIN`: changing it makes remote
+  servers "confuse your existing accounts with entirely new ones"). So the public origin and every username that has federated are frozen. If `FLOWA_ORIGIN` later
   differs from the recorded origin, the server starts, serves the app as in local mode, logs
   "federation refused: the origin was https://a and is now https://b; actor ids cannot move", shows
   it on the dashboard, and federates nothing. Moving a whole instance to a new name is not supported
   (members move one by one with PRT's Move).
 - `federated` back to `local`: allowed, but the remote copies stay where they are. In local mode
-  after federating, the actor and WebFinger URLs answer **410 Gone** (the one federation answer local
-  mode gives, and only on an instance that recorded `first_federated_at`), so remote servers stop
-  retrying. An admin who wants remote servers to forget the accounts first runs "Leave the
+  after federating, the actor URLs answer **410 Gone** with a Tombstone (ActivityPub 6.4: 410 when a
+  Tombstone is the body) and WebFinger answers 404 (RFC 7033 4.2 asks for 404 when the server has no
+  information); these are the only federation answers local mode gives, and only on an instance that
+  recorded `first_federated_at`, so remote servers stop retrying. An admin who wants remote servers to forget the accounts first runs "Leave the
   fediverse" in federated mode (**new**, FMD), which sends Delete for each actor and waits for the
   queue to drain.
 - Retired usernames stay retired in every mode.
@@ -457,20 +469,44 @@ application/jrd+json`:
 }
 ```
 
+What Mastodon checks in the answer (Mastodon WebFinger page, "Mastodon's requirements for
+WebFinger"): `subject` is present; `links` holds a link with `rel` `self` and `type`
+`application/activity+json` or `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`;
+its `href` resolves to an actor. It then goes back the other way: from the actor's
+`preferredUsername` and the host of the actor's id it builds `acct:ana@flowa.example.org`, asks
+WebFinger again, and expects the same `subject`. So the handle's host must be the host of
+`FLOWA_ORIGIN`, which it is by construction. `aliases` and the profile-page link are optional
+(RFC 7033 4.4; the SWICG report "ActivityPub and WebFinger" lists the profile page among the common
+extra links). Since Mastodon 4.6.0 an actor may also name its handle in a `webfinger` property
+(FEP-2c59); Flowa does not need it, since `preferredUsername` and the host already give the handle.
+
 Edge cases, each a row of `TestWebFinger` (**new**): `acct:` with any case, a leading `@`, the actor
 URL as the resource, the host compared with the origin's host case-insensitively and without a
-trailing dot, an unknown name, a member who has not opted in (both 404, so the answer does not say
-whether an account exists), a retired name (410), the instance actor (`acct:flowa.example.org@flowa.example.org`
-resolves to `/actor`, as Mastodon is understood to do; to be checked), a missing or repeated
-`resource` (400), a resource over 300 bytes (400). `Access-Control-Allow-Origin: *` is set, as the
-RFC recommends for public resources.
+trailing dot, an unknown name, a member who has not opted in, a retired name (all three 404: RFC
+7033 4.2 asks for 404 when the server has no information, and one answer for all three does not say
+whether an account exists or existed), the instance actor (`acct:flowa.example.org@flowa.example.org`
+resolves to `/actor`; this form is not in Mastodon's documentation, see Sources), a missing or
+repeated `resource` (400: RFC 7033 4.2 asks for 400 when it is absent or malformed, and for it
+exactly once), a resource over 300 bytes (400), one or more `rel` parameters (only the matching links
+returned, the rest of the answer unchanged: RFC 7033 4.3 says SHOULD support `rel`, and a server
+that does not MUST ignore it). Every answer, including an error, carries
+`Access-Control-Allow-Origin: *` (RFC 7033 5: servers MUST send the header and SHOULD allow any
+origin). Answering only for members who opted in (F2) is also what RFC 7033 9.2 asks: personal data
+goes out through WebFinger only when the person has authorised it.
 
-**host-meta** (`/.well-known/host-meta`): later, only if a server is found that needs it to find
-WebFinger. Mastodon is understood to go to WebFinger directly over HTTPS.
+**host-meta** (`/.well-known/host-meta`, RFC 6415): later, only if a server is found that needs it
+to find WebFinger. Mastodon's WebFinger page describes the lookup going straight to
+`/.well-known/webfinger` and does not mention host-meta; whether Mastodon falls back to it when
+WebFinger fails is not in its documentation.
 
 ### 5.4 NodeInfo 2.x
 
-`GET /.well-known/nodeinfo` (**new**) links to `/nodeinfo/2.1` (**new**), which answers:
+`GET /.well-known/nodeinfo` (**new**) answers a JRD with one link,
+`{"links": [{"rel": "http://nodeinfo.diaspora.software/ns/schema/2.1", "href": "https://flowa.example.org/nodeinfo/2.1"}]}`,
+as `application/json` (NodeInfo protocol, "Discovery": the relation names the schema version, and
+media types other than `application/json` are left unspecified). `/nodeinfo/2.1` (**new**) answers
+with `Content-Type: application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"`
+(NodeInfo protocol, "Retrieval") and:
 
 ```json
 {
@@ -484,10 +520,24 @@ WebFinger. Mastodon is understood to go to WebFinger directly over HTTPS.
 }
 ```
 
-Counts are of members who opted in to federation, not of every account, so a member who keeps to the
-server is not counted. `openRegistrations` follows the registration mode. The version string follows
-`buildVersion`; an admin can choose to send `"version": ""` (instance setting `nodeinfo_version`,
-**new**), since which build runs helps an attacker, the reason `handleHealthz` keeps it private.
+Checked against the NodeInfo 2.1 schema: `version`, `software`, `protocols`, `services`,
+`openRegistrations`, `usage` and `metadata` are all required, and no other top-level member is
+allowed; `software.name` must match `^[a-z0-9-]+$` and `software.version` is a required string;
+`protocols` needs at least one entry from a fixed list (`activitypub` is one); `services.inbound`
+and `services.outbound` are required arrays and may be empty; `usage.users` is a required object
+whose members (`total`, `activeMonth`, `activeHalfyear`) are each optional; `metadata` is free form.
+The example above is valid.
+
+The counts mean what the schema says they mean: `total` is "the total amount of on this server
+registered users", the active counts are users who "signed in at least once" in the last 30 and 180
+days (Flowa reads `last_seen`), and `localPosts` is every post made by local users. (An earlier draft
+of this note counted only members who opted in; that would publish smaller numbers under the
+schema's names.) A count is not personal data, but if the owner prefers not to publish them, the
+schema allows `"users": {}` and no `localPosts`. `openRegistrations` ("whether this server allows
+open self-registration") is true only when the registration mode is open without approval, and
+always false in single mode. The version string follows `buildVersion`; an admin can choose to send
+`"version": ""` (instance setting `nodeinfo_version`, **new**; the schema requires the member but not
+a value), since which build runs helps an attacker, the reason `handleHealthz` keeps it private.
 
 ### 5.5 The actor document
 
@@ -502,6 +552,7 @@ server is not counted. `openRegistrations` follows the registration mode. The ve
       "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
       "toot": "http://joinmastodon.org/ns#",
       "discoverable": "toot:discoverable",
+      "indexable": "toot:indexable",
       "featured": {"@id": "toot:featured", "@type": "@id"},
       "PropertyValue": "schema:PropertyValue",
       "value": "schema:value",
@@ -523,6 +574,7 @@ server is not counted. `openRegistrations` follows the registration mode. The ve
   "endpoints": {"sharedInbox": "https://flowa.example.org/inbox"},
   "manuallyApprovesFollowers": false,
   "discoverable": false,
+  "indexable": false,
   "published": "2026-11-02T18:00:00Z",
   "icon": {"type": "Image", "mediaType": "image/jpeg", "url": "https://flowa.example.org/users/ana/avatar.jpg?v=3f9a1c"},
   "attachment": [
@@ -537,16 +589,34 @@ server is not counted. `openRegistrations` follows the registration mode. The ve
 }
 ```
 
-Field names that matter for Mastodon and could not be checked against its documentation here:
-`preferredUsername`, `inbox`, `outbox`, `publicKey.id`, `publicKey.owner`, `publicKey.publicKeyPem`,
-`endpoints.sharedInbox`, `manuallyApprovesFollowers`, `discoverable`, `featured`, the
-`PropertyValue` form of profile fields, and the `toot:` namespace IRI. **To verify in FRD's actor
-item** against Mastodon's documentation and a recorded Mastodon actor. `discoverable` is false by
-default (no directory listing); a member can turn it on. No stats, levels or badges (F12).
+Checked against the texts. ActivityPub 4.1: an actor MUST have `id`, `type`, `inbox` and `outbox`
+(both OrderedCollections), SHOULD have `followers` and `following`, and MAY have
+`preferredUsername` and `endpoints.sharedInbox`. Mastodon's ActivityPub page ("Profile federation",
+"Properties used") reads `preferredUsername` (for the WebFinger lookup; "must be unique on the
+domain"), `name`, `summary`, `type` (`Application` or `Service` is shown as a bot), `url`, `icon`,
+`image`, `manuallyApprovesFollowers` (shown as locked), `discoverable`, `indexable`, `publicKey`
+("required for signatures"), `featured`, `attachment` (profile fields), `alsoKnownAs` (required for
+Move), `published`, `memorial` and `suspended`. Its "JSON-LD Contexts and Extensions" section gives
+the IRIs used in the context above: `toot:` is `http://joinmastodon.org/ns#` (`discoverable`,
+`indexable`, `featured`, `suspended`, `blurhash`, `focalPoint`), `manuallyApprovesFollowers`,
+`movedTo`, `sensitive` and `Hashtag` are `as:` terms, and `schema:` is `http://schema.org#`, which
+the page itself calls incorrect (it should be `https://schema.org/`) but which is what Mastodon
+expects, so Flowa writes it that way on purpose. Profile fields are `PropertyValue` objects with
+`name` and an HTML `value` ("Profile metadata"); the key is `publicKey` with `id`, `owner` and
+`publicKeyPem` under the `https://w3id.org/security/v1` context ("Public key"). When FRD's
+fixtures land, the golden file is still compared with a recorded Mastodon actor. `discoverable` is false by default
+(no directory listing); a member can turn it on. `indexable` (whether other servers may put the
+member's posts in full-text search; the page recommends that indexing tools respect it) is false
+and is not a setting yet, to match F2's "nothing shared without an action". No stats, levels or
+badges (F12).
 
 The instance actor `/actor` is `"type": "Application"`, `preferredUsername` the host, with its own
-key, an inbox and no outbox items. It signs fetches that are not on behalf of a member (key fetches,
-fetches under authorized fetch) and receives Flags.
+key, an inbox and an empty outbox (ActivityPub 4.1 requires both properties). It signs fetches that
+are not on behalf of a member (key fetches, fetches under authorized fetch) and receives Flags.
+Mastodon's ActivityPub page ("Secure mode") says Mastodon uses "a dedicated system actor" for the
+same purpose, and sends its own Flags from it ("Reporting profiles and posts"); the SWICG report on
+HTTP signatures ("Instance actor") explains why: it breaks the loop of two servers each fetching the
+other's signing actor with a signed request.
 
 ### 5.6 Content negotiation on the same URL
 
@@ -555,8 +625,14 @@ fetches under authorized fetch) and receives Flags.
 otherwise a small HTML page the server writes from a Go `html/template` (no script, CSP
 `default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none';
 form-action 'none'`, and the other headers `secure` sets) with a link into the app (`/#/u/ana`,
-`/#/post/812`). Every answer carries `Vary: Accept`. JSON answers carry
-`Content-Type: application/activity+json` and `Cache-Control: public, max-age=180`, or `private` with
+`/#/post/812`). ActivityPub 3.2 allows exactly this: a server MUST answer the ActivityStreams
+object to `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`, SHOULD to
+`application/activity+json`, and MAY use the same URL for HTML. Every answer carries `Vary: Accept`,
+and `Vary: Accept, Signature` while authorized fetch is on (the SWICG report on HTTP signatures,
+"Compatibility with HTTP caching": an answer that depends on the request's signature must say so,
+or a cache hands a signed reader's answer to an unsigned one). JSON answers carry
+`Content-Type: application/activity+json` (Activity Streams 2.0 Core 8.1 registers it, and says to
+treat the `ld+json` form as the same) and `Cache-Control: public, max-age=180`, or `private` with
 authorized fetch on. `TestContentNegotiation` (**new**) covers each `Accept` form, `*/*`, a browser's
 header, and a missing one (HTML).
 
@@ -564,13 +640,18 @@ header, and a missing one (HTML).
 
 - RSA 2048, generated for a member when they opt in and for the instance actor when federation first
   starts, in the background, one at a time (key generation takes about a second or more on the Pi;
-  measured in FRD's keys item), so no request waits for it.
+  measured in FRD's keys item), so no request waits for it. RSA because Mastodon verifies nothing
+  else before 4.7.0 (its security page), and 2048 bits because the SWICG report on HTTP signatures
+  asks for "a 2048-bit or larger RSA keypair". The public key is served as an SPKI
+  (`BEGIN PUBLIC KEY`) PEM, the form in Mastodon's examples.
 - Stored in `ap_keys` (**new**): the public key as PEM, the private key sealed with AES-256-GCM under
   `FLOWA_KEY_SECRET` (F7), with the key id and creation time. The secret never goes into the database,
   the log or a backup.
 - Rotation: `/nunchaku -rotate-keys` (**new**, a flag like `-healthcheck`) makes new keys for every
   local actor and sends Update(Person) to followers; remote servers that fail to verify with the old
-  key refetch the actor (section 7.4). Also used after a lost secret.
+  key refetch the actor (section 7.4). This is what the SWICG report calls a "signed" rotation ("Key
+  rotation"), and its verification steps refetch the key once on a failure, as 7.4 does. Also used
+  after a lost secret.
 - `alsoKnownAs` and `movedTo`: PRT (Move).
 
 ## 6. The protocol surface
@@ -590,11 +671,11 @@ app. Both are listed under "Out of scope" in FRD and FWR.
 | `GET /.well-known/nodeinfo`, `GET /nodeinfo/2.1` | section 5.4 |
 | `GET /users/{name}` | actor or HTML (5.5, 5.6) |
 | `GET /actor` | instance actor |
-| `POST /users/{name}/inbox`, `POST /inbox`, `POST /actor/inbox` | inboxes (section 7) |
-| `GET /users/{name}/outbox` | OrderedCollection of the member's Create activities for Public posts, `totalItems`, `first`, pages of 20 newest first by post id (`?page=true&max_id=812`) |
-| `GET /users/{name}/followers`, `/following` | OrderedCollection with `totalItems` only; `first` and pages only for the account itself (F10) |
-| `GET /users/{name}/featured` | an empty OrderedCollection at first (pinned posts do not exist yet); cheap and saves a 404 Mastodon would retry |
-| `GET /users/{name}/posts/{id}`, `/comments/{id}` | the Note, or HTML; 404 for audience This server, 410 with a Tombstone for a deleted one |
+| `POST /users/{name}/inbox`, `POST /inbox`, `POST /actor/inbox` | inboxes (section 7); a GET answers 405, because Flowa has no client-to-server side to show an inbox to (ActivityPub 5.2 makes the inbox an OrderedCollection mainly for its owner's client) |
+| `GET /users/{name}/outbox` | OrderedCollection of the member's Create activities for Public posts, `totalItems`, `first`, pages of 20 newest first by post id (`?page=true&max_id=812`); ActivityPub 5.1 requires an OrderedCollection, 5 requires reverse chronological order and names an increasing integer id as a fair key, and 5.1 says an unauthenticated reader gets the Public posts |
+| `GET /users/{name}/followers`, `/following` | OrderedCollection with `totalItems` only; `first` and pages only for the account itself (F10); ActivityPub 5.3 and 5.4 allow either collection type and filtering by who asks |
+| `GET /users/{name}/featured` | an empty OrderedCollection at first (pinned posts do not exist yet); cheap, and Mastodon reads `featured` as the pinned posts it fetches for a profile (its ActivityPub page, "Featured collection") |
+| `GET /users/{name}/posts/{id}`, `/comments/{id}` | the Note, or HTML; 404 for audience This server, 410 with a Tombstone for a deleted one (ActivityPub 6.4: 410 when a Tombstone is the body, 404 otherwise; 3.2 allows 404 for an object whose existence is private) |
 | `GET /users/{name}/posts/{id}/picture.jpg`, `GET /users/{name}/avatar.jpg` | the stored picture, public only for federating members and Public posts |
 | `GET /api/fed/...` | the page's own endpoints for follows, search by handle, blocks, Home (section 11), behind `authed` and the limits |
 
@@ -602,12 +683,22 @@ app. Both are listed under "Out of scope" in FRD and FWR.
 
 **One decoder for the shapes JSON-LD allows.** Flowa runs no JSON-LD processor, so the same field
 arrives in several shapes and each must be read: one value or a list of them (`to`, `cc`, `type`,
-`attributedTo`, `tag`, `attachment`, `url`, `icon`), and an id as a string or an embedded object
+`attributedTo`, `tag`, `attachment`, `url`, `icon`, and `publicKey`, where the SWICG report on HTTP
+signatures says to pick the entry whose `id` is the signature's key id), and an id as a string or an embedded object
 carrying it (`actor`, `object`, `attributedTo`, `publicKey`, `inReplyTo`). Two small types do this
 for every field (`oneOrMany`, `idOrObject`, **new**), nothing reads these fields any other way, and
 the fixtures hold each shape. `@context` is not interpreted: a property is recognised by its short
 name, and by its full `https://www.w3.org/ns/activitystreams#` form where a server sends that.
 `TestDecodeShapes` (**new**).
+
+**What Flowa reads from a remote actor:** `id`, `type`, `preferredUsername`, `name`, `summary`
+(through `htmlToText`), `url`, `icon`, `inbox`, `endpoints.sharedInbox`, `followers`, `publicKey`,
+`manuallyApprovesFollowers` (a Follow to it shows as requested until Accept), `movedTo` and
+`alsoKnownAs` (PRT), and `suspended`: Mastodon sets it on an account its server suspended and then
+serves "empty data" for it (Mastodon ActivityPub page, "Suspended flag"), so Flowa marks such an
+actor `gone` in `ap_actors` and stores nothing new from it until an Update clears the flag.
+`discoverable` and `indexable` concern directories and full-text search, which Flowa does not have
+(section 10), so Flowa does not read them. Everything else is ignored.
 
 The inbox verifies (section 7), stores the activity in `ap_inbox` and answers 202; a worker handles
 it. "Actor" below is the verified signer's actor.
@@ -617,35 +708,41 @@ it. "Actor" below is the verified signer's actor.
 | Follow (object: a local actor) | the object is a local federating member; the actor is not blocked by the member or the domain | `follows` row `pending`; Accept sent at once unless the member approves followers by hand, then a follow request notification | a repeat Follow while accepted: Accept sent again (the remote may have lost it); Follow of the instance actor: Reject; Follow of a member who opted out since: Reject |
 | Accept (object: our Follow, by id or embedded) | the actor is the target of that Follow | our `follows` row becomes `accepted` | Accept of an unknown or already accepted Follow: ignored; embedded Follow whose actor is not ours: refused |
 | Reject (object: our Follow) | as Accept | row deleted, the member told once | Reject after Accept means "removed you as a follower": row deleted |
-| Undo (object: Follow, Like, Announce, Block) | the inner activity's actor is the signer | the row it made is removed | Undo of something never seen: ignored, 202; the inner object by id only is matched by (actor, type, object) |
-| Create (object: Note) | the Note's `attributedTo` and the activity's actor are the signer, same origin as the Note's id; and either the actor is followed by a local member, or the Note replies to a local post or comment, or mentions a local member | stored as a post (or a comment when `inReplyTo` is a known post or comment) | a Note already stored: ignored; `inReplyTo` unknown and nobody follows: dropped; direct (no Public, no followers collection in `to`/`cc`): dropped (F3); over 2000 characters: cut with a link to the original (section 6.6); Question, Article, Page: kept as text with a link, see 6.7 |
-| Update (object: Note) | same origin and author as the stored Note | body, summary, attachments replaced; `updated` kept | Update of an unknown Note: fetched and stored only if it would have been accepted as a Create; Update older than the stored `updated`: ignored |
+| Undo (object: Follow, Like, Announce, Block, or Accept of our Follow) | the inner activity's actor is the signer (ActivityPub 6.10: both MUST have the same actor) | the row it made is removed; Undo of an Accept of our Follow is read as a Reject | Undo of something never seen: ignored, 202; the inner object by id only is matched by (actor, type, object). Mastodon's ActivityPub page lists Undo of Like and Announce for posts, and of Follow, "Accept Follow" and Block for profiles |
+| Create (object: Note) | the Note's `attributedTo` and the activity's actor are the signer, same origin as the Note's id; and either the actor is followed by a local member, or the Note replies to a local post or comment, or mentions a local member | stored as a post (or a comment when `inReplyTo` is a known post or comment) | a Note already stored: ignored; `inReplyTo` unknown and nobody follows: dropped; direct (no Public, no followers collection in `to`/`cc`): dropped (F3); over 2000 characters: cut with a link to the original (section 6.6); Question, Article, Page and the other types Mastodon converts: kept as text with a link, see 6.6 |
+| Update (object: Note) | same origin and author as the stored Note (ActivityPub 7.3: at minimum, the Update and its object of the same origin) | the whole object replaced, not merged (ActivityPub 7.3); `updated` kept | Update of an unknown Note: fetched and stored only if it would have been accepted as a Create; Update without `updated`, or older than the stored `updated`: ignored (Mastodon edits a post only "when the updated timestamp is present", its ActivityPub page says) |
 | Update (object: Person) | object id is the signer | cached actor replaced, key replaced | a different `publicKey` is a rotation: accepted, because the request was verified with the key it replaces or after a refetch |
 | Delete (object: Note or Tombstone, by id or embedded) | the object's id has the signer's origin, and the stored Note's author is the signer | post or comment removed with its likes and replies as a local delete does | Delete of an unknown id: ignored, 202, and the id remembered for 7 days so a late Create is refused |
-| Delete (object: the actor itself) | the object is the signer | the remote account's posts, comments, likes and follows purged; the row kept as a tombstone so the name shows as "deleted account" | the key cannot be fetched any more (the actor is gone): accepted when the signature verifies against the cached key; refused otherwise |
+| Delete (object: the actor itself) | the object is the signer | the remote account's posts, comments, likes and follows purged; the row kept as a tombstone so the name shows as "deleted account" | the key cannot be fetched any more (the actor is gone): accepted when the signature verifies against the cached key; refused otherwise. This is what Mastodon's security page says receivers do with the Delete it sends when a server shuts down ("validating it against the locally cached actor key"); the SWICG report on HTTP signatures ("Handling Deletes of actors") also never processes one whose key fetch answers 404 |
 | Like (object: a local post or comment) | the object is ours and visible to the public | `likes` or `comment_likes` row for the remote account; notification as for a local like | Like of a hidden or This server post: ignored; Like with content (an emoji reaction, as Misskey sends): counted as a like |
 | Announce (object: a local post) | the object is ours and Public | a notification "shared your post" (**new** kind `share`); no timeline entry | Announce of someone else's post: dropped in the first cut (Flowa has no boosts); the inner object is never trusted inline |
-| Block (object: a local actor) | object is ours | our follows in both directions with that actor removed; the remote account's content hidden from that member | never told to the member (Mastodon does not tell either, as understood) |
-| Flag (object: local actors and posts) | the domain does not have "reject reports" | a report in the queue, reporter the remote instance's account, the note as `note` | objects that are not ours are dropped; more than 20 objects: cut to 20 |
-| Move (object: the actor, target: a new actor) | PRT: the target's `alsoKnownAs` names the actor | local followers re-follow the target | until PRT ships: ignored |
-| Anything else (Add, Remove, Read, View, EmojiReact, ...) | | 202, dropped, counted per type on the dashboard | |
+| Block (object: a local actor) | object is ours | our follows in both directions with that actor removed; the remote account's content hidden from that member | never told to the member. Mastodon sends Block when its user blocks a remote one, though ActivityPub 6.9 says servers SHOULD NOT deliver it, and reads one as "hide the actor's profile and posts from the local user" (Mastodon ActivityPub page, "Remote blocking"); its user guide ("Blocking") lists what the blocked person experiences and no notice among it |
+| Flag (object: local actors and posts) | the domain does not have "reject reports" | a report in the queue, reporter the remote instance's account, the Flag's `content` as the report's note | objects that are not ours are dropped; more than 20 objects: cut to 20. Mastodon sends a Flag from its instance actor, with the reported account and the reported posts in `object`, the comment in `content`, and `to` the reported account (Mastodon ActivityPub page, "Reporting profiles and posts") |
+| Move (object: the actor, target: a new actor) | PRT: the target's `alsoKnownAs` names the actor (Mastodon ActivityPub page, "Account migration") | local followers re-follow the target | until PRT ships: ignored |
+| Anything else (Add, Remove, Read, View, EmojiReact, QuoteRequest, ...) | | 202, dropped, counted per type on the dashboard | Mastodon uses Add and Remove for pinned posts and QuoteRequest for quote posts (its ActivityPub page); Flowa has neither |
+
+Mastodon's ActivityPub page ("Supported activities for statuses" and "for profiles") lists Create,
+Delete, Like, Announce, Update, Undo, Flag and QuoteRequest for posts, and Follow, Accept, Reject,
+Add, Remove, Update, Delete, Undo, Block, Flag and Move for profiles; every one of them has a row
+above.
 
 ### 6.4 Activities out
 
 | Activity | When | Sent to |
 | --- | --- | --- |
-| Create(Note) | a federating member posts with audience Public | followers' inboxes (shared inbox per host), plus mentioned remote actors |
+| Create(Note) | a federating member posts with audience Public | followers' inboxes (shared inbox per host; a follower whose actor names no shared inbox gets its own inbox, as ActivityPub 7.1.3 requires), plus mentioned remote actors |
 | Create(Note) for a comment | a federating member comments on a Public post, local or remote | the commenter's followers, the post's author (and, for a local post, the author's followers), mentioned actors |
-| Update(Note) | a comment is edited inside the 15-minute window | as the Create |
+| Update(Note) | a comment is edited inside the 15-minute window | as the Create; the Note carries `updated`, without which Mastodon does not apply an edit (its ActivityPub page, Update) |
+| Forward of an inbound activity | a remote activity Flowa sees for the first time is addressed to a collection Flowa owns (a local member's followers) and replies to, or is about, an object Flowa owns: typically a remote reply to a local Public post that `cc`s the author's followers | the members of that collection on other servers, with the body as received. ActivityPub 7.1.2 makes this a MUST, to avoid "ghost replies" that only some followers see. Flowa signs the forward with the instance actor and does not add Linked Data signatures, so a receiver that does not take a signer other than the actor fetches the object from its origin by id, as Flowa does itself (7.3); how Mastodon treats such a forward is not in its documentation |
 | Delete(Tombstone) | a federated post or comment is deleted by its author or by a moderator | everyone it was sent to (recorded in `ap_deliveries`) |
 | Update(Person) | profile name, bio, avatar or links change, or keys rotate | followers; at most one in five minutes per member, the newest wins |
 | Delete(Person) | a federating account is deleted | followers and every host it ever delivered to (bounded at 2,000 hosts) |
 | Follow, Undo(Follow) | a member follows or unfollows a remote account | that actor's inbox |
 | Accept, Reject | a follow request is answered (or answered at once for open accounts) | the follower's inbox |
 | Like, Undo(Like) | a member likes or unlikes a remote post | the post author's inbox |
-| Flag | a moderator chooses to forward a report about remote content | the remote instance's shared inbox, signed by the instance actor, with no reporter named |
+| Flag | a moderator chooses to forward a report about remote content | the remote instance's shared inbox, signed by the instance actor, with no reporter named; in Mastodon's shape: `actor` the instance actor, `object` the reported account then the reported posts, `content` the moderator's comment, `to` the reported account |
 | Move | PRT | followers |
-| Block | not sent: the block removes follows with Undo and Reject, which says less about the member (F3 follows Flowa's privacy defaults) | |
+| Block | not sent: the block removes follows with Undo and Reject, which says less about the member (F3 follows Flowa's privacy defaults), and ActivityPub 6.9 says servers SHOULD NOT deliver a Block to its object. Mastodon does send one ("Remote blocking"), so Flowa receives Blocks (6.3) but does not send them | |
 | Announce | never in the first cut (no boosts) | |
 
 ### 6.5 A Flowa post as a Note
@@ -673,7 +770,7 @@ and one trick chip, nunchaku skill `F7` ("Six basic figure-8s" in `web/catalog/n
     "sensitive": false,
     "content": "<p>Finally clean! Thanks <span class=\"h-card\"><a href=\"https://social.example/@bo\" class=\"u-url mention\">@<span>bo</span></a></span> for the drill</p><p>Tricks: Six basic figure-8s (nunchaku) <a href=\"https://flowa.example.org/#/prop/nunchaku\" class=\"mention hashtag\" rel=\"tag\">#<span>nunchaku</span></a></p>",
     "attachment": [
-      {"type": "Image", "mediaType": "image/jpeg", "url": "https://flowa.example.org/users/ana/posts/812/picture.jpg", "name": "", "width": 1280, "height": 960}
+      {"type": "Image", "mediaType": "image/jpeg", "url": "https://flowa.example.org/users/ana/posts/812/picture.jpg", "name": "", "summary": "", "width": 1280, "height": 960}
     ],
     "tag": [
       {"type": "Mention", "href": "https://social.example/users/bo", "name": "@bo@social.example"},
@@ -688,20 +785,41 @@ The rules:
 
 - **content** is made from the plain text: `html.EscapeString` (standard library), paragraphs on blank
   lines as `<p>`, line breaks as `<br>`, URLs as `<a href>` with `rel="nofollow noopener"`, mentions
-  of local and remote members as the `h-card` form above. Only `p`, `br`, `a` and `span` are written,
-  which is a subset of what Mastodon is understood to keep (to verify).
+  of local and remote members as the `h-card` form above. Only `p`, `br`, `a` and `span` are written.
+  Mastodon's ActivityPub page ("HTML sanitization") keeps `p`, `span` (with `class`), `br` and `a`
+  (with `href`, `rel` and `class`) in every version, more tags since 4.2, and classes that start with
+  `h-`, `p-`, `u-`, `dt-` or `e-` or are `mention`, `hashtag`, `ellipsis` or `invisible`; links keep
+  their `href` only for `http`, `https` and a few other schemes. So everything Flowa writes survives.
+  Its Microformats page says `h-card` is "also attached to mentions" and names `u-url`, `mention`
+  and `hashtag`; the exact nesting above (`h-card` span, `u-url mention` link, the name in its own
+  span) is Mastodon's own output as remembered, and a recorded Mastodon post confirms it in FRD.
 - **The plain-text fallback** for chips and combos is always in `content` ("Tricks: ...", "Combo:
   Name: A, B, C"), so any server shows something sensible; another Flowa reads `flowa:tricks` and
   `flowa:combo` back into chips when the skill exists in its catalog, and shows the text otherwise.
   Skill names come from the latest published catalog (`latestCatalog`), so a renamed skill federates
   under its new name.
 - **One Hashtag per prop** in the chips, so a post can be found by `#poi` on servers that index tags.
-  The `href` is the prop's skill map. That Mastodon accepts an `href` with a fragment is not checked.
+  The tag is `{"type": "Hashtag", "name": "#poi", "href": ...}` as in Mastodon's ActivityPub page
+  ("Hashtags"), which also says Mastodon folds a tag's name to lower-case ASCII and drops characters
+  it does not allow; the five prop names (`buugeng`, `doublestaff`, `nunchaku`, `poi`, `staff`) pass
+  unchanged. The `href` is the prop's skill map; the page's example `href` is a plain path, and
+  whether Mastodon uses or keeps an `href` with a fragment is not in its documentation.
+- **Mentions** are `{"type": "Mention", "href": <actor id>, "name": "@bo@social.example"}` and the
+  mentioned actor is also in `to` or `cc`: Mastodon needs the tag to notify and the address to
+  deliver (its ActivityPub page, "Mentions for addressing and notifications"; `tag[].name` is "the
+  plain-text WebFinger address").
 - **summary** is a content note; Flowa has none today, so it is left out. Incoming summaries are
-  shown as a fold label.
-- **attachment** is the post's picture as a public URL with its size; alt text is `name`, empty until
-  the composer gets an alt text field (FWR, posts out: a field, at most 1,500 characters). An empty
-  `name` is allowed but makes the picture inaccessible on other servers; the composer asks for it.
+  shown as a fold label (Mastodon's ActivityPub page: `summary` is the content warning, and
+  `sensitive` hides the media).
+- **attachment** is the post's picture as a public URL with its size; alt text is empty until the
+  composer gets an alt text field (FWR, posts out: a field, at most 1,500 characters). The alt text
+  is written twice, as `name` and as `summary`: Mastodon's ActivityPub page names
+  `attachment[].summary` as "used as media description", while `name` is the Activity Vocabulary's
+  title for an object and is what many servers read. Coming in, `summary` is read first, then
+  `name`. Which of the two a current Mastodon writes is not in its documentation; a recorded
+  Mastodon post with alt text settles it in FRD. An empty alt text is allowed but makes the picture
+  inaccessible on other servers; the composer asks for it. `blurhash` and `focalPoint` (Mastodon
+  extensions) are not sent.
 - **Link cards** go out as plain links in `content`. Remote servers make their own previews.
 - **Milestone posts** do not federate until TRU (F13). **Hidden posts** are not served and a hide
   sends Delete; a restore does not send Create again (a moderator's restore is local).
@@ -737,69 +855,162 @@ contents dropped, 10,000 nested tags, invalid UTF-8) and over the recorded fixtu
 | WebP, AVIF, video, audio | a link "picture (or video) on the original server": the standard library decodes neither WebP nor AVIF, and video is out of scope ("Video hosting" is not planned) |
 | Question (poll) | the question and options as text, "This is a poll; vote on its server" |
 | Custom emoji (`Emoji` tags) | the `:shortcode:` left as text |
-| Article, Page | the `name` as a title, the summary or the first 500 characters, and the link |
+| Article, Page, and Image, Audio, Video or Event as the object itself | the `name` as a title, the summary or the first 500 characters, and the link. Mastodon converts the same six types "as best as possible": `content`, or `name` without it, as the text, the `url` appended, `summary` as the content warning (its ActivityPub page, "Payloads") |
 | Announce of others | dropped (6.3) |
-| Unknown properties | ignored |
+| Unknown properties (`blurhash`, `focalPoint`, `memorial`, quote properties, ...) | ignored |
 
 ### 6.7 Addressing
 
 The public collection is accepted in three forms: `https://www.w3.org/ns/activitystreams#Public`,
-`as:Public` and `Public`, and sent only in the first. That Mastodon sends only the first form and
-accepts the others is not checked here; the three are what the ActivityStreams context makes
-equivalent. Incoming visibility is read as: Public in `to` is public; Public in `cc` only is
-unlisted (shown in Home, like public); the actor's followers collection without Public is
-followers-only (F3); anything else is direct and dropped.
+`as:Public` and `Public`, and sent only in the first. ActivityPub 5.6 names the first as the
+identifier and says implementations that do not run JSON-LD "should be prepared to accept all
+three"; it also says never to deliver to it. Which form Mastodon sends is not in its documentation,
+and does not matter since all three are read. Incoming visibility is read as Mastodon's ActivityPub
+page ("Mentions for addressing and notifications") defines it: Public in `to` is public; Public in
+`cc` only is unlisted (shown in Home, like public); the actor's followers collection in `to` or `cc`
+without Public is followers-only (F3); actors only, whether all mentioned ("direct") or not
+("limited"), is not shown and dropped.
 
 ## 7. Security
 
 ### 7.1 HTTP signatures
 
-- **Sent:** draft-cavage-http-signatures-12 with `algorithm="rsa-sha256"`,
+- **Sent, draft-cavage-http-signatures-12 (the default):** `algorithm="rsa-sha256"`,
   `headers="(request-target) host date digest"` on POST and `"(request-target) host date"` on GET,
-  `Digest: SHA-256=<base64 of the body's SHA-256>`, and `keyId` the actor's key id.
-- **Accepted:** the same, with `hs2019` as the algorithm name too (which the draft defines as "derive
-  from the key"), and RFC 9421 `Signature-Input` and `Signature` with `rsa-v1_5-sha256` and
-  `Content-Digest`, covering at least `@method`, `@target-uri` (or `@authority` and `@path`) and,
-  on POST, `content-digest`. A key that is RSA is verified as RSA with SHA-256 whatever name the
-  algorithm field carries (`hs2019` says only "look at the key"). The exact component set Mastodon sends with RFC 9421 could not be
-  checked; **FRD's signatures item verifies it** against Mastodon's documentation and a recorded
-  request.
-- **Which form is sent to a host:** cavage by default. A host that has sent Flowa a valid RFC 9421
-  signature is marked in `ap_hosts.sig` (**new**) and is sent RFC 9421 from then on; a 401 from such a
-  host makes the next attempt use cavage and clears the mark (a 401 is retried, section 8.3). No
-  double request on every delivery.
+  `Digest: SHA-256=<base64 of the body's SHA-256>`, and `keyId` the actor's key id. The signing
+  string is one `name: value` line per entry of `headers`, in that order, names in lower case,
+  `(request-target)` as the lower-case method, a space and the path with its query, joined by `\n`
+  with no newline at the end (cavage-12 2.3); it is signed with RSASSA-PKCS1-v1_5 and SHA-256.
+  Mastodon's security page asks for exactly this: signed `(request-target)`, `host` and `date`
+  ("Creating HTTP signatures"), and on a POST a `Digest` header that is itself signed ("Signing POST
+  requests and the Digest header"). On the `algorithm` value the texts disagree with practice:
+  cavage-12 2.1.3 says it MUST NOT be a name its registry marks deprecated, and the registry (E.2)
+  marks `rsa-sha256` deprecated; the one active name, `hs2019`, is defined with SHA-512 and
+  recommends RSASSA-PSS for RSA keys, which is not what anyone in the fediverse signs. The SWICG
+  report on HTTP signatures advises sending `hs2019` and reading it as `rsa-sha256`; Mastodon's own
+  example sends no `algorithm` at all. Flowa sends `rsa-sha256` because it names exactly what is
+  signed and is what the draft's test vectors use (Appendix C); whether Mastodon reads the field is
+  not in its documentation, and the owner's trial would show a refusal. `Digest` follows RFC 3230
+  as the draft's examples write it (`SHA-256=`, base64); Mastodon's page writes `sha-256=` in one
+  example and a bare hex value in another, so the page is not relied on for the format, and Flowa
+  reads the algorithm name in any letter case (RFC 3230 4.1.1: "digest algorithm values are
+  case-insensitive"). RFC 9530 has since obsoleted `Digest`, but cavage signatures
+  still need it.
+- **Sent, RFC 9421 (to a host marked for it, POST only):**
+  `Content-Digest: sha-256=:<base64 of the body's SHA-256>:` (RFC 9530 2: a structured-field
+  dictionary whose key is the algorithm and whose value is a byte sequence between colons),
+  `Signature-Input: sig1=("@method" "@target-uri" "content-digest");created=<Unix seconds>;keyid="<key id>"`
+  and `Signature: sig1=:<base64>:`, signed with RSASSA-PKCS1-v1_5 and SHA-256 (RFC 9421 3.3.2), and
+  no `alg` parameter, as in Mastodon's example (RFC 9421 3.2 lets the key decide the algorithm).
+  The signature base is one line per covered component, `"name": value`, then the
+  `"@signature-params"` line, joined by `\n` with none at the end (RFC 9421 2.5); `@target-uri` is
+  the full `https://` URL with its query (2.2.2). This is Mastodon's list exactly (Mastodon security
+  page, "HTTP Message Signatures (RFC9421)"): only a single signature; `created` MUST be present;
+  `@method` and `@target-uri` MUST be signed; a `Content-Digest` header MUST be present and signed;
+  the only algorithm is RSASSA-PKCS1-v1_5 with SHA-256. Mastodon validates such signatures since
+  4.4.0 behind its `http_message_signatures` flag and by default since 4.5.0; 4.7.0, not released
+  when this was read, adds ed25519 validation. Fetches (GET) are always signed with cavage: Mastodon's
+  list requires `Content-Digest` with no exception for a GET, and whether it wants the digest of an
+  empty body there is not stated.
+- **Accepted:** cavage as sent, also with `algorithm="hs2019"` or no `algorithm`: whatever the field
+  says, an RSA key is verified as RSASSA-PKCS1-v1_5 with SHA-256 (cavage-12 2.5: the verifier MUST
+  take the algorithm from the key, not from the field; the SWICG report: "If it's hs2019, assume
+  that means rsa-sha256"). A missing `headers` parameter covers no request line (the draft says it
+  then means `(created)`, Mastodon's page that it assumes `date`), so it is refused. `(created)` and
+  `(expires)` are accepted only with `hs2019`, since cavage-12 2.3 makes them an error with an `rsa`
+  algorithm, and a `created` in the future is refused (2.1.4). RFC 9421: one signature, as Mastodon
+  accepts it; `created` required; covered, `@method` and `@target-uri`, or `@method`, `@authority`,
+  `@path` and (when the request has a query) `@query`, and on POST `content-digest`; an `alg`, when
+  present, must be `rsa-v1_5-sha256` (RFC 9421 3.2, step 6.5: an algorithm stated in two places must
+  agree); an `expires` in the past is refused (3.2.1).
+- **Which form is sent to a host:** cavage by default. A 400 or a 401 to a signed delivery is
+  answered by sending it once more at once, in the other form: what the SWICG report calls
+  "double-knocking", and what Mastodon 4.7.0 (unreleased) does itself, falling back to RFC 9421 for
+  "requests that fail with 400 or 401 with cavage draft signatures" (Mastodon security page, version
+  history). If the other form is accepted, `ap_hosts.sig` (**new**) records it and the host gets that
+  form first from then on; if it is refused too, the row follows section 8.3. A host that sends Flowa
+  a valid RFC 9421 signature is marked the same way. So a host gets two requests for one delivery
+  only on a refusal. Flowa answers a bad signature with 401 (below), so Mastodon's own fallback works
+  when Mastodon is the sender.
 - A request is refused (401, with a short reason in the log, never the header) when: the signature
-  does not cover the request line (`(request-target)`; in RFC 9421 `@method` and `@target-uri`, or
-  `@method`, `@authority` and `@path`), `host`, `date` (or `created`) and, on POST, the digest; the
-  digest does not match the body; the date is more than 12 hours old or 1 hour ahead (the window Mastodon is understood to use;
-  to be checked); the key cannot be fetched; the signature does not verify after one refetch of the
-  key.
+  does not cover the request line (`(request-target)`; in RFC 9421 as above), `host` (cavage; in RFC
+  9421 the authority is part of `@target-uri` or `@authority`), `date` (or `created`) and, on POST,
+  the digest; the digest does not match the body (`Digest` for cavage, `Content-Digest` for RFC
+  9421); the date (or `created`) is more than 12 hours old or more than 1 hour ahead; the key cannot
+  be fetched; the signature does not verify after one refetch of the key (the SWICG report's
+  verification steps refetch once, for a rotated key). The 12 hours are Mastodon's ("Verifying HTTP
+  signatures": "made within the past 12 hours"). Mastodon's page says nothing about a date in the
+  future; the hour ahead is Flowa's own, close to the SWICG report's "an hour plus a few minutes
+  buffer in either direction".
 
-Example of a delivery Flowa sends:
+Example of a delivery Flowa sends with cavage (the digest shown is of the body `{"hello": "world"}`
+used in both texts' examples, so it can be checked by hand):
 
 ```http
 POST /users/bo/inbox HTTP/1.1
 Host: social.example
 Date: Thu, 12 Nov 2026 18:04:06 GMT
-Content-Type: application/activity+json
+Content-Type: application/ld+json; profile="https://www.w3.org/ns/activitystreams"
 Digest: SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
 User-Agent: Flowa/v1.4.0 (+https://flowa.example.org/)
 Signature: keyId="https://flowa.example.org/users/ana#main-key",algorithm="rsa-sha256",headers="(request-target) host date digest",signature="kO3...8w=="
 ```
 
-The verifier uses the host of `FLOWA_ORIGIN` for `host`, `@authority` and `@target-uri`, and the
-path and query as received for `(request-target)` and `@path` (finding 4). `TestSignatureVectors` (**new**) checks signing and verifying against
-the test keys and examples published in draft-cavage-12 and RFC 9421 Appendix B, copied into
-`testdata/federation/vectors/` (**new**) with the section each came from, once the texts can be
-opened.
+and the string it signs:
+
+```text
+(request-target): post /users/bo/inbox
+host: social.example
+date: Thu, 12 Nov 2026 18:04:06 GMT
+digest: SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+```
+
+The same delivery in RFC 9421 form carries `Content-Digest:
+sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:` and signs this base:
+
+```text
+"@method": POST
+"@target-uri": https://social.example/users/bo/inbox
+"content-digest": sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:
+"@signature-params": ("@method" "@target-uri" "content-digest");created=1794506646;keyid="https://flowa.example.org/users/ana#main-key"
+```
+
+The `Content-Type` is the `ld+json` form because ActivityPub 7 says a POST MUST use it (and that
+servers SHOULD treat `application/activity+json` as the same); Mastodon's own example uses it too.
+
+The verifier uses the origin of `FLOWA_ORIGIN` for `host`, `@authority` and `@target-uri`, and the
+path and query as received for `(request-target)`, `@path` and `@query` (finding 4).
+`TestSignatureVectors` (**new**) copies these published vectors into
+`testdata/federation/vectors/` (**new**), each with the section it came from:
+
+- **cavage-12 Appendix C.1 (Default) and C.2 (Basic):** `rsa-sha256`, that is RSASSA-PKCS1-v1_5
+  with SHA-256, on the draft's test key. Signing reproduces the published signature byte for byte
+  (PKCS#1 v1.5 is deterministic) and verifying accepts it; both were checked with Python's
+  `cryptography` package while writing this. Two warnings go with them: the appendix calls its own vectors "old
+  and possibly wrong", and the key it calls 2048-bit is 1024-bit.
+- **cavage-12 C.3 (All Headers) is not copied.** Its signature verifies only against the string it
+  prints, which leaves out the `(created)` and `(expires)` lines its own `headers` list names, and
+  section 2.3 makes those two an error with `rsa-sha256` anyway.
+- **RFC 9421 Section 4.3, the `proxy_sig` signature:** the RFC's only `rsa-v1_5-sha256` example,
+  with `test-key-rsa` from Appendix B.1.1 (2048-bit, a PKCS#1 `RSA PUBLIC KEY` PEM, so it also tests
+  that form of key). Deterministic like the cavage ones, so the test signs and verifies; it too was
+  checked the same way while writing this.
+- **RFC 9421 Section 2.5 and Appendix B.2.1 to B.2.3:** for building the signature base only. Their
+  signatures are RSASSA-PSS with SHA-512 (`test-key-rsa-pss`), which Flowa does not implement, so
+  the test compares the base it builds with the printed one and does not verify those signatures.
+- **Digests:** SHA-256 of `{"hello": "world"}` is `X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=`
+  (cavage-12 3.1 and Appendix C) and SHA-512 is the `sha-512=:WZDPaVn...:` value of RFC 9421 B.2;
+  both match a recomputation.
 
 ### 7.2 Replay
 
-- An activity id is processed once: `ap_inbox.activity_id` is unique; processed rows lose their body
+- An activity id is processed once (ActivityPub 5.2: a server MUST de-duplicate by `id`):
+  `ap_inbox.activity_id` is unique; processed rows lose their body
   at once and are kept 7 days. **The id must have the actor's origin before it is written**, or a
   hostile server could send activities carrying ids another server will use and have the real ones
-  dropped as repeats. An activity with no id (some servers send transient ones) is processed and not
-  deduplicated by id; the signature rule below still stops a replay of the same request.
+  dropped as repeats. An activity with no id (ActivityPub 3.1 and 7 allow it for one "intentionally
+  transient") is processed and not deduplicated by id; the signature rule below still stops a
+  replay of the same request.
 - A signature is accepted once: the SHA-256 of the `Signature` header is kept in memory for the 13
   hours a date can be valid, in a map of at most 100,000 entries (about 6 MB); when full, the oldest
   half is dropped, and a request older than the oldest kept is refused as stale.
@@ -811,15 +1022,28 @@ opened.
   host alone. When the key id is not a fragment of the actor's URL (some servers keep the key at a
   path of its own), the key document is fetched, then the actor it names as `owner`, and the actor's
   `publicKey.id` must be that key id: a key vouches for an actor only when the actor names the key.
+  This is Mastodon's rule (security page, the footnote on `keyId`: for `actor#key`
+  "the owner points back to the same document"; for a key at its own path "the owner points back to
+  some actor, and that actor should point back to the same key"), and the SWICG report's ("How to
+  obtain a signature's public key", which also follows `controller` where `owner` is missing).
+  `publicKeyPem` may hold either a PKCS#1 (`RSA PUBLIC KEY`) or an SPKI (`PUBLIC KEY`) PEM (the SWICG
+  report, same section), so both are parsed.
 - A fetched document's `id` must be the URL it was fetched from, compared after the fragment is
-  removed.
+  removed. (ActivityPub 3 asks a server to check at least "that the object appears as received at
+  its origin"; 3.1 requires ids whose authority belongs to their originating server.)
 - The object's id, when the object is embedded, must have the actor's origin, except: Accept and
   Reject (the object is our Follow, on our origin), Undo (the object is the actor's own activity),
   Like, Announce, Flag and Block (the object is someone else's, by id, never trusted inline), and
   Create of a Note whose id has the actor's origin. An embedded object of another origin is fetched
-  from its own origin by id instead, and that copy is used.
+  from its own origin by id instead, and that copy is used (ActivityPub 3 gives this very case, a
+  Like carrying a forged Note, and says to dereference the id).
 - Linked Data signatures (for activities forwarded by a third server) are not verified: a forwarded
   activity whose signer is not its actor is answered 202 and its object fetched from its origin by id.
+  Mastodon's security page advises against implementing them ("it is not advised to implement
+  support for LD Signatures": Mastodon's `RsaSignature2017` predates the final drafts, which Data
+  Integrity has since replaced); Mastodon uses them for relays and for the Deletes it sends when a
+  server shuts down, and 4.7.0 (unreleased) adds FEP-8b32 Object Integrity Proofs, which Flowa does
+  not read either.
 - **Remote ids never decide local authority.** Who may delete or edit a post is decided by the stored
   author's `users.id` after the signer is mapped to it, never by comparing strings a remote document
   supplied. Only the origin may delete or update its objects.
@@ -831,9 +1055,11 @@ opened.
 - A failed verification triggers one refetch of the key, at most once per actor per 10 minutes; a
   verification that then succeeds is a rotation. A failed fetch is cached negatively for 10 minutes,
   and a 410 marks the actor gone.
-- **A Delete from an actor never seen is answered 202 and dropped, with no fetch.** Mastodon tells
-  every server it knows when an account is deleted; fetching the key of each would end in a 410 and
-  cost a request apiece. The check is one indexed lookup in `ap_actors` before anything else.
+- **A Delete from an actor never seen is answered 202 and dropped, with no fetch.** Mastodon sends
+  Delete "to all known peers" when a server self-destructs (its security page, "Linked Data
+  Signatures"), and is remembered to do the same for each deleted account, which its documentation
+  does not say; fetching the key of each would end in a 410 and cost a request apiece. The check is
+  one indexed lookup in `ap_actors` before anything else.
 - At most 2 key fetches at once; an inbox request that has to wait longer than 5 s for one is answered
   503 with `Retry-After: 60`, and the sender retries.
 - An in-memory cache of parsed public keys (at most 1,000, least recently used out) saves parsing PEM
@@ -847,7 +1073,7 @@ opened.
 | JSON depth | 24 levels, checked by a token walk before decoding, 400 above |
 | Array length | 1,000 elements in `to`, `cc`, `tag`, `attachment`; longer is 400 |
 | A string field | 64 KB; `content` is cut to 64 KB before conversion |
-| Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only |
+| Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only (WebFinger: `application/jrd+json`, the type RFC 7033 4.2 names, or plain `application/json`; NodeInfo: `application/json`) |
 | Fetched pictures | 8 MB in, 4096 px a side checked with `image.DecodeConfig` before decoding, as `shrinkThumb` does; **one picture decoded at a time** (a mutex), because a 4096 by 4096 picture is 64 MB once decoded and the container has 384 MB |
 | Inbox requests per remote host | 300 in 5 minutes in a `limiter` keyed by host, 429 above |
 | Inbox handling at once | 4, 8 more may wait 2 s, then 503 with `Retry-After: 30` |
@@ -857,8 +1083,18 @@ opened.
 
 An admin option (F11) in `instance_settings`. When on, every federation GET except WebFinger,
 NodeInfo, the instance actor and the public key part of an actor needs a valid signature, and the
-signer's domain must not be blocked; answers are `Cache-Control: private`. `TestDBAuthorizedFetch`
-(**new**).
+signer's domain must not be blocked; answers are `Cache-Control: private` with `Vary: Accept,
+Signature` (5.6). `TestDBAuthorizedFetch` (**new**).
+
+This matches Mastodon's secure mode (configuration page, `AUTHORIZED_FETCH`): signatures required
+on the ActivityPub form of public posts and profiles, profiles answering "only barebones technical
+information" without one, off by default because "not all software in the fediverse can support it
+fully" and because no caching is possible. The same page notes that secure mode "does not hide HTML
+representations", which is true of Flowa's small pages too (F16). Mastodon's allowlist
+(`LIMITED_FEDERATION_MODE`) "is based on secure mode": with F8's allowlist and F11 off, Flowa
+sends to and accepts from only the listed servers, but any server can still read the public actors
+and posts with an unsigned GET. That is a consequence of the two recommendations as they stand, not
+a change to them; the owner may want authorized fetch on whenever the allowlist is.
 
 ### 7.7 Blocking a server that floods
 
@@ -880,10 +1116,20 @@ Every outbound request goes through one fetcher (`fetcher.do`, **new**, generali
 - Hosts: the preview allowlist for link cards as today; for federation any host the domain policy
   allows (section 10). Only `https`.
 - Redirects: at most 3, each re-checked against the scheme, the policy and the dial guard; a redirect
-  to another origin is followed only for media, never for an actor or an object (whose id must match
-  where it was fetched from).
+  to another origin is followed only for media and for WebFinger, never for an actor or an object
+  (whose id must match where it was fetched from). WebFinger is the exception because RFC 7033 4.2
+  lets a WebFinger resource redirect (to `https` only), and Mastodon's `WEB_DOMAIN` setting depends on
+  it: the handle's domain answers WebFinger with a 301 to the server's own domain (Mastodon
+  configuration page). A WebFinger lookup is never retried over `http` (RFC 7033 4.2: MUST NOT).
+- Headers: a GET for a document sends
+  `Accept: application/ld+json; profile="https://www.w3.org/ns/activitystreams", application/activity+json`
+  (ActivityPub 3.2 and 7: the client MUST ask with the first); a delivery sends the
+  `Content-Type` of 7.1; a NodeInfo GET asks for `application/json` (NodeInfo protocol,
+  "Retrieval").
 - Time: 5 s for a document or a delivery (the delivery is retried later), 10 s for a picture.
-- Size: as in 7.5. Content types: as in 7.5, others refused before reading the body.
+- Size: as in 7.5. Content types: as in 7.5, others refused before reading the body. Mastodon guards
+  its own fetches the same way, refusing private address ranges unless an operator lists them in
+  `ALLOWED_PRIVATE_ADDRESSES` (configuration page).
 - `TestFederationFetcherRefusals` (**new**) adds: a redirect to a private address, to `http`, to a
   blocked domain, a body over the cap, a slow body, a wrong content type, an id that does not match
   the fetched URL.
@@ -899,7 +1145,10 @@ digest, a cookie or a member's content. Delivery failures name the host, the sta
 ### 8.1 Two queues in Postgres
 
 - **Outbound:** an activity is written once to `ap_outbox`; one row per (activity, inbox) goes to
-  `ap_deliveries`, with followers on the same host collapsed into that host's shared inbox.
+  `ap_deliveries`, with followers on the same host collapsed into that host's shared inbox. The
+  unique (activity, inbox) pair is the de-duplication ActivityPub 7.1 requires of the final
+  recipient list, and the actor itself is never a recipient (same section). Shared inboxes are
+  allowed by 7.1.3, which also requires that an addressee without one still gets the activity.
 - **Inbound:** a verified activity goes to `ap_inbox`, so a slow handler never holds the sender's
   connection.
 
@@ -931,11 +1180,15 @@ RETURNING d.id, d.outbox_id, d.inbox, d.host, d.attempts;
 
 Attempts after the first: 1 min, 5 min, 15 min, 30 min, 1 h, 2 h, 4 h, 8 h, 12 h, 12 h; each with
 random jitter of plus or minus 20%. That is 11 attempts over about 40 hours; a row whose first attempt
-is more than 48 hours old (F9) is given up as `failed`. A 4xx answer other than 401, 408 and 429 gives
-up at once (the remote refused it; retrying will not help); 410 for an inbox removes that follower.
-A 401 is retried like a failure: the receiver may not have reached our key yet, may want the other
-signature form (7.1), or our clock may be wrong. A 429 uses its `Retry-After` when it is between 1
-minute and 12 hours.
+is more than 48 hours old (F9) is given up as `failed`. A 400 or a 401 is first answered by one
+immediate attempt in the other signature form (7.1), which does not count as a retry; this is the
+same pair of codes on which Mastodon 4.7.0 (unreleased) will switch from cavage to RFC 9421 (its
+security page). If that attempt is refused too, a 401 is retried like a failure (the receiver may
+not have reached our key yet, or our clock may be wrong), and a 400 gives up. Any other 4xx except
+408 and 429 gives up at once (the remote refused it; retrying will not help); 410 for an inbox
+removes that follower. A 429 uses its `Retry-After` when it is between 1 minute and 12 hours.
+ActivityPub 7.1 asks only that delivery be asynchronous and retried on network errors; the
+schedule is Flowa's.
 
 **Nothing is signed while the clock cannot be trusted.** A Raspberry Pi has no battery clock and
 starts on the time it was last shut down at, until the network sets it; a signature dated then is
@@ -1203,6 +1456,15 @@ daily `pg_dump` backup, which keeps backups small; losing them costs only a refe
 Mastodon's admin features read as a checklist. Adopt: built as Mastodon has it. Adapt: built in
 Flowa's own shape. Later: wanted, not in these epics. Never: with the reason.
 
+The rows were checked against Mastodon's "Moderation actions" page (docs.joinmastodon.org/admin/moderation/),
+its configuration page (/admin/config/) and its user guide "Dealing with unwanted content"
+(/user/moderating/). What those pages describe is quoted in the rows. Three rows name features those
+pages do not describe: "reject reports" and the public and private comments on a domain block are
+remembered from Mastodon's admin screens, and "Sidekiq dashboard" from its admin menu; they are
+marked so. Mastodon also has features the table leaves out because Flowa has no use for them yet:
+marking an account "sensitive", freezing a local account, appeals of moderation decisions, and
+keyword filters.
+
 | Mastodon feature | Decision | Why, and where it lives in Flowa |
 | --- | --- | --- |
 | Registration open, closed | adopt | the `signups` flag already; becomes the `registration` instance setting with the flag kept as its switch (INS) |
@@ -1210,28 +1472,28 @@ Flowa's own shape. Later: wanted, not in these epics. Never: with the reason.
 | Invites | later | useful for a household; not needed to federate |
 | Server rules shown at sign-up | adopt | instance setting `rules`, shown on sign-up and on the about page; edited in Admin, audited (INS) |
 | Instance description, contact, about page | adopt | instance settings, the NodeInfo `nodeName`, an about page for visitors (INS) |
-| Announcements | adapt | one admin notice shown at the top of the timeline, a notification kind `announcement` (**new**) (FMD) |
-| Federation modes: open, allowlist, off | adopt | instance setting `policy` (F8); off is the `federation` flag or `FLOWA_MODE=local` (FMD) |
-| Domain blocks: limit (silence) | adopt | `domain_policies.policy = 'limit'`: their content is shown only to members who follow the account; not in search (FMD) |
-| Domain blocks: suspend | adopt | `suspend`: nothing in or out, existing content and follows purged (FMD) |
-| Reject media, reject reports | adopt | the two columns (FMD) |
+| Announcements | adapt | one admin notice shown at the top of the timeline, a notification kind `announcement` (**new**) (FMD); Mastodon's are published or scheduled from the admin area and can also be emailed |
+| Federation modes: open, allowlist, off | adopt | instance setting `policy` (F8); off is the `federation` flag or `FLOWA_MODE=local` (FMD). Mastodon's allowlist is `LIMITED_FEDERATION_MODE`, which also turns on secure mode and turns off public pages (configuration page); see 7.6 for what Flowa's allowlist does without authorized fetch |
+| Domain blocks: limit (silence) | adopt | `domain_policies.policy = 'limit'`: their content is shown only to members who follow the account; not in search; a follow from that domain becomes a follow request even to a member who does not approve by hand, as Mastodon's domain Limit "will automatically turn all follows from the limited server into follow requests" (FMD) |
+| Domain blocks: suspend | adopt | `suspend`: nothing in or out, existing content and follows purged (FMD). Mastodon: "No content from the server will be stored locally except for usernames", and follows are removed and not restored |
+| Reject media, reject reports | adopt | the two columns (FMD). Reject media is on Mastodon's moderation page (no avatars, headers, emoji or attachments from that server); reject reports is not on the pages read (see above) |
 | Domain allows | adopt | `policy = 'allow'`, the list in allowlist mode (FMD) |
-| Public and private comment on a block | adopt | the two text columns; the public one on the about page (FMD) |
-| Import and export of blocklists | later | CSV in the same format as Mastodon's when an operator asks |
-| Remote account: limit | adapt | `mute` in `handleModAction` on a remote row means limit (FMD) |
-| Remote account: suspend | adapt | `suspend` on a remote row: their content hidden, their follows removed, nothing delivered to them (FMD) |
+| Public and private comment on a block | adopt | the two text columns; the public one on the about page (FMD); not on the pages read (see above) |
+| Import and export of blocklists | later | CSV in the same format as Mastodon's when an operator asks (Mastodon imports and exports them as `.csv`; the columns are not given on its moderation page) |
+| Remote account: limit | adapt | `mute` in `handleModAction` on a remote row means limit (FMD): as Mastodon's account Limit, hidden from everyone but its followers, and its follows of local members become follow requests |
+| Remote account: suspend | adapt | `suspend` on a remote row: their content hidden, their follows removed, nothing delivered to them (FMD). Mastodon: suspending a remote account makes it unfollow every local account, and the follows are not restored on unsuspend |
 | Remote account: delete data | adopt | a new action `purge_remote` (**new**) (FMD) |
 | Reports about remote content | adopt | the existing reports and queue; remote targets are local rows (FMD) |
-| Forwarding a report (Flag) | adopt | a checkbox on resolve; sent by the instance actor without the reporter's name (FMD) |
+| Forwarding a report (Flag) | adapt | a checkbox on resolve; sent by the instance actor without the reporter's name (FMD). In Mastodon the reporter chooses to forward, in the report dialog (user guide, "Reporting problematic content"); in Flowa a moderator decides, so a member's report never leaves the server without a moderator's look |
 | Receiving reports | adopt | Flag in, as a report from the remote instance (FMD) |
-| Authorized fetch | adopt | instance setting, off by default (F11) (FMD) |
+| Authorized fetch | adopt | instance setting, off by default (F11) (FMD); Mastodon's `AUTHORIZED_FETCH`, also off by default (7.6) |
 | Content retention for remote posts and media | adopt | instance setting `retention_days`, the 200 MB cache (FMD) |
 | Custom emoji | never | pictures from every server for decoration; a Pi's disk and a moderation surface for little |
 | Relays | never | a relay floods a small instance with posts nobody follows |
 | Trends, explore, public federated timeline | never | Flowa is not a discovery service; the Home timeline is what a member chose |
 | Hashtag following | later | once there are hashtags beyond props |
 | User blocks and mutes of accounts | adopt blocks, later mutes | blocks are needed for safety at once (INS for local, FWR for remote); mutes are a convenience |
-| User blocks of domains | adopt | `domain_blocks_member` (FMD) |
+| User blocks of domains | adopt | `domain_blocks_member` (FMD); as in Mastodon ("Hiding an entire server"), the member also loses their followers on that server |
 | Follow requests for locked accounts | adopt | `users.locked`, `manuallyApprovesFollowers` (FWR) |
 | Account migration (Move), alsoKnownAs | adopt | PRT |
 | Account export (posts, follows, blocks) | adopt | PRT; useful in local mode too |
@@ -1241,8 +1503,9 @@ Flowa's own shape. Later: wanted, not in these epics. Never: with the reason.
 | Polls | later | shown as text (6.6) |
 | Admin roles with custom permissions | adapt | the existing three roles; two new permissions in `rolePerms`: `federation.read` (moderators and admins) and `federation.manage` (admins) |
 | Audit log | adapt | every federation admin action through `audit` into `mod_actions` |
-| Sidekiq dashboard | adapt | the federation tile and page on the admin dashboard (section 14.2) |
-| IP blocks, email domain blocks | never | no email; IP blocks belong to the operator's proxy |
+| Sidekiq dashboard | adapt | the federation tile and page on the admin dashboard (section 14.2); not on the pages read (see above) |
+| IP blocks, email domain blocks | never | no email; IP blocks belong to the operator's proxy (Mastodon has both: "IP Rules" and e-mail domain blocks on its moderation page) |
+| Single-user mode | adopt | `FLOWA_MODE=single` (INS). Mastodon's `SINGLE_USER_MODE` redirects the front page to the first profile and turns registrations off (configuration page), as section 4.2 has it |
 
 ## 11. The member's side
 
@@ -1252,12 +1515,21 @@ Flowa's own shape. Later: wanted, not in these epics. Never: with the reason.
   and its posts answer 404 to other servers; it sends nothing. Asking other servers to forget the
   account is a separate button, "Remove me from other servers", which sends Delete(Person); the name
   stays the member's, and turning the switch on again later makes new keys. A server that processed
-  the Delete may refuse the same address for good (believed of Mastodon, not checked), and the page
-  says so before the button sends anything.
+  the Delete may refuse the same address for good (believed of Mastodon; its ActivityPub page says
+  only that a Delete of an account removes it "from the database, as well as all of their
+  statuses", and what happens when the address comes back is in its code, which could not be
+  opened), and the page says so before the button sends anything.
 - **Audience per post:** Public or This server, defaulting to Public for members who opted in.
 - **Following:** a Follow button on profiles (local and remote); "people elsewhere": a search box
   that takes a handle (`@bo@social.example`) or a profile URL only, resolves it by WebFinger, and
-  shows the profile with its public posts from the outbox's first page. No full-text search.
+  shows the profile with its public posts from the outbox's first page. No full-text search. A
+  handle is resolved as Mastodon's WebFinger page describes: `acct:bo@social.example` asked of
+  `social.example` over HTTPS only, the `self` link of an ActivityStreams type followed to the actor,
+  and the actor accepted only if WebFinger for its own `preferredUsername` and host gives the same
+  actor back (the actor may live on another host, such as `ap.social.example`, when that host's
+  WebFinger names the handle as `subject`). The host is compared without regard to case; the name
+  is kept as the remote server answered it, because the SWICG WebFinger report says implementers
+  "SHOULD NOT assume case insensitivity for external usernames", even though Mastodon's are.
 - **Follow requests:** a member can approve followers by hand (`users.locked`); requests come as
   notifications with Approve and Decline.
 - **Home timeline** beside Community (F4). Remote posts show the handle (`@bo@social.example`), the
@@ -1266,10 +1538,11 @@ Flowa's own shape. Later: wanted, not in these epics. Never: with the reason.
   remote likes count with local ones; notifications for follows, follow requests, mentions, replies,
   likes and shares.
 - **Blocks:** a member blocks an account or a domain; blocked content disappears for them, and the
-  blocked account cannot follow, reply or like (refused in the inbox).
+  blocked account cannot follow, reply or like (refused in the inbox). Blocking a domain also removes
+  the member's followers there, as Mastodon's "Hiding an entire server" does.
 - **The handle on the profile:** `@ana@flowa.example.org`, with a copy button, when the member
   federates.
-- **Privacy defaults:** opt-in off, `discoverable` off, followers and following lists hidden,
+- **Privacy defaults:** opt-in off, `discoverable` and `indexable` off, followers and following lists hidden,
   approve-by-hand off, audience Public only after opting in.
 - **A signed-out visitor from another server** who opens `https://flowa.example.org/users/ana/posts/812`
   in a browser sees the post (text, picture, chips as text, the author) in a small page with "Open in
@@ -1302,13 +1575,14 @@ redirects, rows per host, rows in all, key fetches, retries and their horizon al
 
 ## 13. How interoperability is shown without a live Mastodon
 
-This sandbox cannot reach other fediverse servers, and could not open the specifications either
-(see Sources). Interoperability is shown in four ways, in rising order of trust, and the last is the
-owner's:
+This sandbox cannot reach other fediverse servers. The specifications and Mastodon's documentation
+were opened on 12 November 2026 (see Sources), but documentation is not a running server.
+Interoperability is shown in four ways, in rising order of trust, and the last is the owner's:
 
-1. **Specification vectors.** The signature test keys and examples from draft-cavage-12 and RFC 9421
-   Appendix B, in `testdata/federation/vectors/`, checked by `TestSignatureVectors`. Copied from the
-   texts when the item is built where they can be opened.
+1. **Specification vectors.** The signature test keys and examples named in 7.1 (cavage-12 C.1 and
+   C.2, RFC 9421 4.3 with the key of B.1.1, the signature bases of RFC 9421 2.5 and B.2.1 to B.2.3),
+   in `testdata/federation/vectors/`, checked by `TestSignatureVectors`. Copied from the texts by
+   FRD's signatures item; this note only names them.
 2. **Recorded fixtures.** Real actor documents, WebFinger answers, NodeInfo and activities from
    Mastodon, GoToSocial, Pixelfed, Misskey and Akkoma, recorded by `test/federation-record.sh`
    (**new**: fetches with curl, strips nothing but `Date` headers, writes
@@ -1408,9 +1682,11 @@ plan adds are compatible: both say nothing leaves without the member's action.
 ## 15. Risks
 
 - **Interoperability is unproven until the owner's trial.** Field names, the signature component sets
-  and the clock window are stated from memory (see Sources). The fixtures and the two-instance test
-  prove Flowa agrees with itself and with recorded documents, not that Mastodon accepts what Flowa
-  sends. Federated mode is marked experimental until the trial.
+  and the clock window are now taken from the specifications and Mastodon's documentation (see
+  Sources), but documentation can lag the code, and a few details are only in Mastodon's code, which
+  could not be opened (listed in Sources). The fixtures and the two-instance test prove Flowa agrees
+  with itself and with recorded documents, not that Mastodon accepts what Flowa sends. Federated mode
+  is marked experimental until the trial.
 - **Exposure.** Federation makes member content public for the first time. F2's opt-in, F16's small
   pages and F8's allowlist first are the answer; a mistake here is a privacy incident, so
   `TestDBRemoteRowsStayRemote` and `TestDBPublicSurfaces` (**new**: every new public route refuses
@@ -1430,31 +1706,66 @@ plan adds are compatible: both say nothing leaves without the member's action.
 
 ## Sources
 
-The specifications were to be opened for this note. From the session that wrote it, the network
-refused `docs.joinmastodon.org` and `www.rfc-editor.org` (name not resolved), and further hosts were
-not tried, as the sandbox's tool advises after a refusal. So every document below is stated from the
-author's knowledge, **to be checked against the text when the item is built**:
+The first version of this note was written where no specification could be opened, and said so.
+On 12 November 2026 every text below was downloaded and read, and each statement in the note and in
+the five checklists that depends on one was compared with it: the ones the texts confirm now name
+their source and section, the ones they contradict were corrected, and the ones no text settles are
+listed at the end. Mastodon's documentation describes Mastodon as of its "last updated" date, not
+every running version; that date is given where the page shows one.
 
-| Document | State |
-| --- | --- |
-| W3C ActivityPub, https://www.w3.org/TR/activitypub/ | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
-| W3C Activity Streams 2.0 Core, https://www.w3.org/TR/activitystreams-core/ | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
-| W3C Activity Vocabulary, https://www.w3.org/TR/activitystreams-vocabulary/ | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
-| RFC 7033 WebFinger, https://www.rfc-editor.org/rfc/rfc7033 | not reachable from where this was written (refused); stated from the author's knowledge, to be checked against the text when the item is built |
-| RFC 9421 HTTP Message Signatures, https://www.rfc-editor.org/rfc/rfc9421 | not reachable from where this was written (refused); stated from the author's knowledge, to be checked against the text when the item is built |
-| draft-cavage-http-signatures-12, https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12 | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
-| NodeInfo protocol, https://nodeinfo.diaspora.software/protocol.html | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
-| Mastodon ActivityPub, https://docs.joinmastodon.org/spec/activitypub/ | not reachable from where this was written (refused); stated from the author's knowledge, to be checked against the text when the item is built |
-| Mastodon security, https://docs.joinmastodon.org/spec/security/ | not reachable from where this was written (refused); stated from the author's knowledge, to be checked against the text when the item is built |
-| Mastodon WebFinger, https://docs.joinmastodon.org/spec/webfinger/ | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
-| Mastodon configuration, https://docs.joinmastodon.org/admin/config/ | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
-| Mastodon moderation, https://docs.joinmastodon.org/admin/moderation/ | not reachable from where this was written; stated from the author's knowledge, to be checked against the text when the item is built |
+| Document | Address | Read | Checked against it |
+| --- | --- | --- | --- |
+| W3C ActivityPub (Recommendation, 23 January 2018) | https://www.w3.org/TR/activitypub/ | 12 November 2026, sections 3 to 7 and the headings of B | ids and transient activities (3.1), retrieval and `Accept` (3.2), actor properties (4.1), OrderedCollections and order (5), outbox, inbox and de-duplication (5.1, 5.2), followers (5.3), the public collection and its three forms (5.6), Tombstone, 410 and 404 (6.4), Block not delivered (6.9), Undo by the same actor (6.10), content types for POST and GET (7), delivery targets, de-duplication and retries (7.1), forwarding from the inbox (7.1.2), shared inbox (7.1.3), Update as replacement (7.3), Delete (7.4), Follow, Accept and Reject (7.5 to 7.7) |
+| W3C Activity Streams 2.0 Core | https://www.w3.org/TR/activitystreams-core/ | 12 November 2026, the media type and date sections | `application/activity+json` and its equivalence with the `ld+json` profile (8.1), date-time format |
+| W3C Activity Vocabulary | https://www.w3.org/TR/activitystreams-vocabulary/ | 12 November 2026, audience targeting (5.1) and the type list | `to`, `cc`, `bto`, `bcc`; Tombstone, Mention and Image exist as types; `Hashtag` and `sensitive` are not in it (they are the `as:` extensions Mastodon's page lists) |
+| RFC 7033 WebFinger | https://datatracker.ietf.org/doc/html/rfc7033 | 12 November 2026, sections 4, 5 and 9 | HTTPS only (4, 4.2, 9.1), `resource` exactly once, 400 and 404 (4.2), redirects (4.2), `application/jrd+json` (4.2, 10.2), `rel` (4.3), `subject` SHOULD be present (4.4.1), CORS (5), personal data only when authorised (9.2) |
+| RFC 6415 Host Metadata | https://datatracker.ietf.org/doc/html/rfc6415 | 12 November 2026, the document's form only | what host-meta is, for 5.3's "later" |
+| RFC 9421 HTTP Message Signatures | https://datatracker.ietf.org/doc/html/rfc9421 | 12 November 2026, sections 2.2, 2.3, 2.5, 3.1 to 3.3, 4.3 and Appendix B | `@target-uri` and `@authority` (2.2.2, 2.2.3), signature parameters (2.3), the signature base (2.5), verifying and the algorithm rules (3.2, 3.2.1), RSASSA-PKCS1-v1_5 with SHA-256 (3.3.2), multiple signatures and the `rsa-v1_5-sha256` example (4.3), the test keys and cases (B.1, B.2) |
+| RFC 9530 Digest Fields | https://datatracker.ietf.org/doc/html/rfc9530 | 12 November 2026, sections 1, 2, 5 and Appendix E | `Content-Digest` as a dictionary of byte sequences (2), algorithm keys (5), `Digest` obsoleted (1, Appendix E) |
+| RFC 3230 Instance Digests | https://datatracker.ietf.org/doc/html/rfc3230 | 12 November 2026, 4.1.1 only | digest algorithm names are case-insensitive |
+| draft-cavage-http-signatures-12 | https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12 | 12 November 2026, sections 2 and 3.1, Appendix C and E.2 | parameters (2.1), `algorithm` and its registry (2.1.3, E.2), `created` in the future (2.1.4), the default `headers` (2.1.6), the signing string (2.3), verifying (2.5), the test values (Appendix C, re-run while writing this) |
+| SWICG report "ActivityPub and HTTP Signatures" | https://swicg.github.io/activitypub-http-signature/ | 12 November 2026, whole | `hs2019` read as `rsa-sha256`, how to obtain and match a key, the time window in practice, instance actor, Deletes of actors, `Vary: Signature`, double-knocking between versions |
+| SWICG report "ActivityPub and WebFinger" | https://swicg.github.io/activitypub-webfinger/ | 12 November 2026, whole | the round trip from handle to actor and back, the `self` link, Mastodon's username rules, case of remote usernames, redirects |
+| NodeInfo protocol and the 2.1 schema | https://nodeinfo.diaspora.software/protocol.html and https://nodeinfo.diaspora.software/ns/schema/2.1 | 12 November 2026, whole | the well-known JRD and its relation names, schema versions 1.0 to 2.1, retrieval and content type, every required field and its meaning |
+| Mastodon: ActivityPub | https://docs.joinmastodon.org/spec/activitypub/ | 12 November 2026 (page last updated 30 March 2026) | the activities and object types it handles, conversion of other types, the HTML it keeps, the properties it reads on posts and profiles, the `toot:`, `as:` and `schema:` terms, Block, Flag, Move, polls, visibility from addressing, public key, featured, profile fields, the discoverable, indexable, suspended and memorial flags, hashtags, emoji, focal points, blurhash, sensitive, secure mode |
+| Mastodon: Security | https://docs.joinmastodon.org/spec/security/ | 12 November 2026 (page last updated 20 July 2026) | the cavage form it sends and verifies, `Digest` on POST, the 12-hour window, the `keyId` footnote, RFC 9421 as it accepts it and its version history, Linked Data signatures and Object Integrity Proofs |
+| Mastodon: WebFinger | https://docs.joinmastodon.org/spec/webfinger/ | 12 November 2026 (page last updated 30 March 2026) | what it asks and checks, the reverse lookup, FEP-2c59 |
+| Mastodon: Microformats | https://docs.joinmastodon.org/spec/microformats/ | 12 November 2026 (page last updated 14 January 2026) | `h-card` on mentions, `u-url`, `mention`, `hashtag` |
+| Mastodon: Configuring your environment | https://docs.joinmastodon.org/admin/config/ | 12 November 2026 (page last updated 8 October 2026), the federation and encryption settings | `LOCAL_DOMAIN`, `WEB_DOMAIN`, `ALLOWED_PRIVATE_ADDRESSES`, `AUTHORIZED_FETCH`, `LIMITED_FEDERATION_MODE`, `SINGLE_USER_MODE`, Active Record Encryption |
+| Mastodon: Moderation actions | https://docs.joinmastodon.org/admin/moderation/ | 12 November 2026 (page last updated 15 January 2026) | account and domain Limit and Suspend, reject media, blocklists, announcements, IP and e-mail blocks |
+| Mastodon: Dealing with unwanted content | https://docs.joinmastodon.org/user/moderating/ | 12 November 2026 (page last updated 21 November 2025) | blocking, muting, hiding a server, forwarding a report |
+| Mastodon: Moving or leaving accounts | https://docs.joinmastodon.org/user/moving/ | 12 November 2026 (page last updated 27 November 2025) | aliases before Move, export and import as CSV, the post archive |
 
-Details in the body that matter for interoperability and could not be checked, each to be verified by
-the pull request that builds it: the actor fields Mastodon requires (`preferredUsername`, `inbox`,
-`publicKey.publicKeyPem`, `endpoints.sharedInbox`, `manuallyApprovesFollowers`, `discoverable`,
-`featured`) and the `toot:` IRI (5.5); the instance actor's WebFinger form (5.3); the cavage header
-sets and `hs2019` (7.1); the RFC 9421 components Mastodon sends and accepts (7.1); the 12-hour and
-1-hour date window (7.1); the HTML Mastodon keeps and the `h-card` mention form (6.5); the hashtag
-`href` with a fragment (6.5); the three forms of the public collection (6.7); Mastodon's retry horizon
-(F9); plain-text private keys in Mastodon (F7).
+Not opened: Mastodon's source code (github.com cannot be reached from here except for this
+repository), FEP-2c59, FEP-8b32 and FEP-e2ce (codeberg.org is not reachable from here), RFC 7565 (the
+`acct` scheme; the SWICG WebFinger report quotes its grammar), and any other server's documentation.
+
+**Still unverified, and what would settle each:**
+
+- The instance actor's WebFinger form, `acct:flowa.example.org@flowa.example.org` (5.3): not in
+  Mastodon's documentation. Settled by Mastodon's WebFinger controller or by a WebFinger answer
+  recorded from a Mastodon server for its own host.
+- Which property a current Mastodon writes alt text in, `name` or `summary` (6.5): its page names
+  only `summary`. Settled by a recorded Mastodon post with alt text (FRD's fixtures).
+- The exact nesting of a mention's `h-card` (6.5) and whether a hashtag `href` with a fragment is used
+  as is (6.5): the pages give the classes, not the nesting, and a plain path in the example. Settled
+  by a recorded Mastodon post and the owner's trial.
+- Whether Mastodon reads the cavage `algorithm` field, and so whether `rsa-sha256` or `hs2019` makes a
+  difference to it (7.1); how far into the future it lets a `Date` be; whether it wants
+  `Content-Digest` on an RFC 9421 GET: none is on its security page. Settled by Mastodon's
+  `signature_verification.rb` or by the owner's trial.
+- How Mastodon treats an activity forwarded by a server that is not its actor and carries no
+  Linked Data signature (6.4, forwarding): not on its pages. Settled by its inbox code or the owner's
+  trial.
+- Mastodon's delivery retry horizon (F9), how it stores private keys (F7), whether it sends a
+  Delete to every known server for each deleted account (7.4), whether it refuses an address that
+  returns after a Delete (11), and whether it falls back to host-meta (5.3): all in its code only.
+- Mastodon's username rules (finding 11): from the SWICG WebFinger report, which calls itself a
+  snapshot. Settled by the owner's trial with a name ending in a dot.
+- "Reject reports", the public and private comments on a domain block, and the Sidekiq dashboard
+  (section 10): not on the moderation or configuration pages. Settled by Mastodon's admin screens or
+  its code.
+- The column layout of Mastodon's CSV files for blocklists and following lists (section 10, PRT): the
+  pages say only "CSV". Settled by a real export.
+- That Misskey sends emoji reactions as a Like with content (6.3): no Misskey text was opened.
+  Settled by a recorded Misskey activity.

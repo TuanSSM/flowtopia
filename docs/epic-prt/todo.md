@@ -14,12 +14,14 @@ is new.
   keep their own export on the page. DoD: `TestDBExport` (the archive holds exactly the member's rows
   and nothing of anyone else's).
 - [ ] **Move out.** The member sets `alsoKnownAs` on the new account; on Flowa, "I moved" sets
-  `movedTo` and sends Move to followers after checking that the target lists this account. DoD:
+  `movedTo` and sends Move to followers after checking that the target lists this account (Mastodon
+  checks the same before it accepts a Move: its ActivityPub page, "Account migration"). DoD:
   `TestDBMoveOut`; the `federation` suite moves a member between its two instances and the followers
   follow the new account.
 - [ ] **Move in.** A Move from a followed remote account whose target lists it in `alsoKnownAs`
   makes local followers follow the target and unfollow the old account; anything else is ignored.
   DoD: `TestDBMoveIn` with a recorded Mastodon Move fixture.
 - [ ] **Import a following list.** A CSV in the form Mastodon exports (one account address per
-  line), at most 1,000 rows, followed through the queue at the delivery rate. DoD:
+  line; Mastodon's documentation says only "CSV", so the item reads a real export first and
+  corrects this), at most 1,000 rows, followed through the queue at the delivery rate. DoD:
   `TestDBImportFollows` (bad lines reported, duplicates skipped, the limit held).
