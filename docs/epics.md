@@ -7,7 +7,10 @@ with a definition of done on every item, is in `docs/epic-<code>/todo.md`.
 
 The first cycle's five epics are below and have all shipped. The second cycle, planned on
 10 November 2026 from the debts and wishes recorded across `docs/`, follows them under
-[Second cycle](#second-cycle); each of its epics is also a GitHub issue labelled `epic`.
+[Second cycle](#second-cycle); each of its epics is also a GitHub issue labelled `epic`. The third
+cycle, ActivityPub federation and instance modes planned on 12 November 2026, is under
+[Third cycle](#third-cycle); its design note is [federation.md](federation.md), and each of its epics
+is a GitHub issue labelled `epic` too.
 
 ## First cycle (shipped)
 
@@ -634,3 +637,158 @@ session is on the server; a browser test does exactly that with the network bloc
 
 **Risks.** Two devices offline at once produce conflicts; the existing 409 flow resolves a
 different skill and asks about the same one.
+
+---
+
+# Third cycle
+
+Planned on 12 November 2026 from the owner's request for ActivityPub: Flowa as a single-profile
+instance, a federated community, or a local-only community as today. The design note is
+[federation.md](federation.md); its sixteen decisions (F1 to F16) are the owner's, and the epics below
+proceed on its recommendations until they are answered. One rule holds for all five: **federation is
+off by default, and a deployment that sets nothing new behaves exactly as today** (same port, same
+addresses, same sign-up, no new outbound connection, no new public endpoint).
+
+| Code | Epic | Category | Size | Issue | Raised by |
+| --- | --- | --- | --- | --- | --- |
+| INS | [Instance modes and settings](#ins-instance-modes-and-settings) | feature | M | [#88](https://github.com/TuanSSM/flowtopia/issues/88) | federation.md, the owner's request |
+| FRD | [Federation, read side](#frd-federation-read-side) | feature | L | [#89](https://github.com/TuanSSM/flowtopia/issues/89) | federation.md |
+| FWR | [Federation, write side](#fwr-federation-write-side) | feature | L | [#90](https://github.com/TuanSSM/flowtopia/issues/90) | federation.md |
+| FMD | [Federation moderation and administration](#fmd-federation-moderation-and-administration) | feature | M | [#91](https://github.com/TuanSSM/flowtopia/issues/91) | federation.md, Mastodon's admin features as a checklist |
+| PRT | [Portability](#prt-portability) | feature | S | [#92](https://github.com/TuanSSM/flowtopia/issues/92) | federation.md |
+
+---
+
+## INS: Instance modes and settings
+
+**Category:** feature. **Size:** M. **Checklist:** [epic-ins/todo.md](epic-ins/todo.md).
+
+**Problem.** Flowa runs one way: a community of many accounts on one shared timeline, with sign-up
+behind a flag. A person who wants Flowa for themselves alone, or a community that wants rules at
+sign-up, approval of new accounts, follows and blocks, has none of it. Federation needs all of these
+first, and they are useful without it.
+
+**Outcome.** One setting, `FLOWA_MODE`, chooses `local` (today, the default), `federated` or
+`single`. A single-profile instance has one account that owns it, sign-up closed for good and its
+profile as the root page. Any instance can have rules, a description, sign-up by approval, member
+blocks, and follows with a Home timeline behind a flag.
+
+**In scope.** The mode setting and `instance_settings`; member blocks; follows and Home behind the
+`follows` flag (off by default); instance information, rules and the about page; registration by
+approval; single mode with a public profile page. **Out of scope.** Anything that talks to another
+server (FRD, FWR); invites; mutes of accounts.
+
+**Success.** With no new setting, the route table and the start-up are the same as before
+(`TestDBLocalModeUnchanged`); a single-profile instance runs on the Pi with the owner's profile at
+its root.
+
+**Risks.** A new flag that defaults on would change running instances: every flag this epic adds
+defaults off. Single mode on an instance with several accounts is refused at start (F15), with the
+way out in the log.
+
+---
+
+## FRD: Federation, read side
+
+**Category:** feature. **Size:** L. **Checklist:** [epic-frd/todo.md](epic-frd/todo.md).
+
+**Problem.** Other servers cannot find or read a Flowa account: there is no public origin, no
+WebFinger, no actor, no keys, nothing public at all, and the only outbound fetcher is an allowlist of
+nine preview hosts.
+
+**Outcome.** With `FLOWA_ORIGIN` and `FLOWA_KEY_SECRET` set and a federating mode, a member who opted
+in is found as `@ana@flowa.example.org`, their actor and Public posts can be read by other servers
+(and by people in a browser), and Flowa can fetch remote actors and look people up by handle, all
+through one guarded fetcher.
+
+**In scope.** The origin and key secret, sealed RSA keys, the generalised fetcher, HTTP signatures
+(draft-cavage-12 and RFC 9421) with the specifications' vectors, WebFinger, NodeInfo 2.1, actor
+documents and the instance actor, content negotiation and small public pages, outbox and collections,
+the remote actor cache, search by handle, recorded fixtures. **Out of scope.** Client-to-server
+ActivityPub and the Mastodon client API (Flowa's page is its client; the client API is a second large
+interface to secure); host-meta unless a server needs it; anything that writes (FWR).
+
+**Success.** `TestWebFinger`, `TestActorDocument`, `TestSignatureVectors` and `TestFixturesParse`
+pass; `TestFetcherRefusals` passes unchanged; nothing answers in local mode.
+
+**Risks.** Field names and signature details are from memory until the specifications are opened
+(federation.md, Sources); each item verifies its own. Making content public for the first time is a
+privacy risk: only opted-in members and Public posts, held by `TestDBPublicSurfaces`.
+
+---
+
+## FWR: Federation, write side
+
+**Category:** feature. **Size:** L. **Checklist:** [epic-fwr/todo.md](epic-fwr/todo.md).
+
+**Problem.** Read access alone does not federate: nobody can follow a Flowa member, posts do not
+reach anyone, and remote replies and likes have nowhere to go. There is no queue that survives a
+restart and no signed delivery.
+
+**Outcome.** Members follow and are followed across servers; Public posts, comments and likes go out
+signed through a bounded queue in Postgres; posts from followed accounts appear in Home; remote
+replies and likes appear under local posts; deleting an account reaches other servers. Two Flowa
+instances federate with each other in CI, and the owner has tried it against a real Mastodon server.
+
+**In scope.** The inbox with verification, limits and its queue; the delivery queue with backoff,
+circuit breakers and back-pressure; Follow, Accept, Reject, Undo; Create, Update, Delete of Note;
+Like; Announce of local posts as a notification; Delete of Person; remote pictures through a bounded
+cache; the `federation` CI suite; the owner's trial. **Out of scope.** Boosts, polls, custom emoji,
+direct messages, followers-only posts going out (F3), relays.
+
+**Success.** The `federation` suite is green on every pull request that touches the server; the
+owner's trial checklist passes; the budgets in federation.md section 12 hold in their tests.
+
+**Risks.** Interoperability is unproven until the owner's trial; federated mode stays marked
+experimental until then. From the item that stores remote posts on, an older build shown by
+`./deploy.sh --rollback` lists remote rows as local; `/nunchaku -purge-remote` is the step before
+going back, and that pull request says so.
+
+---
+
+## FMD: Federation moderation and administration
+
+**Category:** feature. **Size:** M. **Checklist:** [epic-fmd/todo.md](epic-fmd/todo.md).
+
+**Problem.** An instance that talks to other servers needs what a Mastodon operator expects: domain
+policies, an allowlist, actions on remote accounts, reports across servers, authorized fetch,
+retention, and a view of the queue. Flowa's moderation knows only local members.
+
+**Outcome.** Admins run federation from the Admin pages they already have: policies per domain,
+allowlist or open mode, limit, suspend or purge a remote account, forward and receive reports, turn
+on authorized fetch, set retention, and see the queue's health, with every action in the audit log.
+
+**In scope.** `domain_policies` and the allowlist mode; remote account actions through
+`handleModAction`; Flag in and out; authorized fetch; retention and the picture cache in
+`housekeep`; the dashboard tile, the host page and `/healthz` fields; member blocks of domains; flood
+blocks; "Leave the fediverse"; announcements. **Out of scope.** Blocklist import and export, custom
+emoji, relays, trends (federation.md, section 10, with the reasons).
+
+**Success.** Every adopted feature in the table of federation.md section 10 has a test; reports about
+remote content are resolved within the same 48 hours as local ones.
+
+**Risks.** Moderation of other servers' content is new work for the owner's moderators; the allowlist
+mode first (F8) keeps it small while the instance is experimental.
+
+---
+
+## PRT: Portability
+
+**Category:** feature. **Size:** S. **Checklist:** [epic-prt/todo.md](epic-prt/todo.md).
+
+**Problem.** A member cannot take their account elsewhere or bring followers with them, and cannot
+download what they wrote.
+
+**Outcome.** A member exports their profile, posts, comments, follows and blocks; moves to another
+server with their followers following (Move); and accepts followers who move to them.
+
+**In scope.** Export (useful in local mode too), `alsoKnownAs` and `movedTo`, Move out and in,
+import of a following list. **Out of scope.** Moving practice progress between servers (progress
+documents are not federated; the export of progress already exists on the page); moving a whole
+instance to a new name.
+
+**Success.** A member moves between two Flowa instances in the `federation` suite and keeps their
+followers.
+
+**Risks.** A Move to a hostile account steals followers; the target must list the old account in
+`alsoKnownAs`, checked on the fetched target.

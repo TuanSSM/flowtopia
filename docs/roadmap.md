@@ -4,7 +4,7 @@ Where Flowa is going, in what order, and why. The epics themselves are described
 [epics.md](epics.md); each has a checklist with a definition of done in `docs/epic-<code>/todo.md`.
 How they are built, branch by branch, is in [implementation-plan.md](implementation-plan.md).
 
-Last reviewed: 10 November 2026.
+Last reviewed: 12 November 2026 (third cycle planned).
 
 ## What Flowa is for
 
@@ -31,6 +31,10 @@ These decide trade-offs when the epics pull in different directions.
   reply to that comment) takes one tap. Power lives one step further in, never in the way.
 - **The person owns their practice.** Progress stays in the user's own document. The server
   stores only what other people need to see. Nothing is shared without an action from the user.
+- **Federation sends only what a member published.** With federation on (proposed, third cycle), a
+  member who opted in sends their profile, their Public posts, comments and likes to other servers;
+  practice sessions, levels, notes, progress documents, stats and badges never leave the server
+  unless the member posts about them ([federation.md](federation.md#145-what-federation-sends-out-and-what-never-leaves)).
 - **Safe to open up.** Every feature that lets people reach each other comes with the tools to
   stop abuse of it, before it is turned on for everyone.
 - **Cheap on the Pi.** Heavy work happens at build time or in the browser. A feature that needs a
@@ -160,6 +164,44 @@ checked (#85).
 - **Coaching, groups, events.** Wanted by the community model but every one of them reads one
   person's progress for another, which TRU must make truthful first. They are the first candidates
   for the third cycle.
+
+### Third cycle
+
+Planned on 12 November 2026 from the owner's request: ActivityPub federation, so that Flowa runs as a
+single-profile instance, a federated community, or a local-only community as today. The design is
+[federation.md](federation.md); it asks the owner sixteen decisions (F1 to F16) and proceeds on its
+recommendations until they are answered. **Federation is off by default: a deployment that sets
+nothing new behaves exactly as today**, on port 3169, with no new outbound connection and no new
+public endpoint. None of these epics changes `compose.yml`'s ports or adds a proxy; HTTPS and the
+public name stay with the operator's own reverse proxy.
+
+| Order | Code | Epic | Category | Size | Issue | Why here |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | INS | [Instance modes and settings](epic-ins/todo.md) | feature | M | [#88](https://github.com/TuanSSM/flowtopia/issues/88) | Useful without federation (single-profile and local instances, rules, approval, blocks, follows) and everything later stands on the mode setting. |
+| 2 | FRD | [Federation, read side](epic-frd/todo.md) | feature | L | [#89](https://github.com/TuanSSM/flowtopia/issues/89) | Identity, keys, signatures and the guarded fetcher: nothing is sent yet, so the risk is small and testable alone. |
+| 3 | FWR | [Federation, write side](epic-fwr/todo.md) | feature | L | [#90](https://github.com/TuanSSM/flowtopia/issues/90) | The inbox, the queue and the activities; ends with two instances in CI and the owner's trial on a real server. |
+| 4 | FMD | [Federation moderation and administration](epic-fmd/todo.md) | feature | M | [#91](https://github.com/TuanSSM/flowtopia/issues/91) | Its first item (the allowlist) ships with FWR's inbox; the rest before federated mode leaves "experimental". |
+| 5 | PRT | [Portability](epic-prt/todo.md) | feature | S | [#92](https://github.com/TuanSSM/flowtopia/issues/92) | Export, Move and import, once following works. |
+
+Dependencies on what exists and what is planned:
+
+- **OPS before any instance federates.** Federation needs the instance reachable from outside the
+  LAN over HTTPS through the owner's reverse proxy, which the second cycle's dependency already
+  says. The proxy must pass the path unchanged and serve the app at the root of the public origin.
+- **TRU and federation touch at the profile.** A federated profile is read by other servers, so it
+  sends no level, streak, XP or badge until TRU's switch makes them numbers the server can vouch
+  for, and milestone posts stay on the server until then ([federation.md](federation.md), F12 and
+  F13). After the switch the owner may add level and streak as profile fields. TRU's Q8 rewords the
+  principle about the user's own document; the federation line above is compatible with it.
+- **SHP before the new pages.** Home, follow requests, the about page and the federation admin pages
+  are new pages, and the second cycle says new pages wait for SHP's shape. INS builds to the shape
+  SHP recommends if the owner has not answered by then.
+- **Migrations.** The next migration needs `flowa-schema7.dump` in `testdata/backups`; TRU and INS
+  may both want the next number, so neither design fixes one.
+- **LOAD's query plans and A11Y's checks** apply to every new query and page (`TestDBQueryPlans`,
+  `a11y.py`, `touch.py`, `contrast.py`).
+
+Coaching, groups and events remain candidates after this cycle, still behind TRU.
 
 ## How we will know it works
 
