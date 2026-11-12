@@ -20,7 +20,9 @@
 # the moment a ring is read in the other one; a listener that keeps a file chooser of the system from opening
 # when its button is pressed; one that keeps a click from focusing a button, as Safari does; the answer yes to
 # the browser's own question before a comment is deleted (it is its own dialog, not the page's); a redraw at a
-# known time, which a reply from the server would cause at an unknown one; and a count of the page's watcher.
+# known time, which a reply from the server would cause at an unknown one; a count of the page's watcher; and,
+# after a Tab that took the focus out of the page, the window's focus given back with no caret left in the page,
+# as a person's Tab back from the browser's own bar finds it (h.py: key).
 # Seen, counted and left: beside a wide page a skill's guide lies over the right 420 px of it, so the bell, the
 # search button and what else lies there take the focus under the guide, as they lie under it for a mouse.
 # KEYS_LIST=1 prints every stop of every round, to work through.
@@ -319,6 +321,7 @@ BLANK="for(let y=8;y<innerHeight;y+=12)for(let x=8;x<innerWidth;x+=16){const t=d
 def middle(sel): return js("const r=document.querySelector(arguments[0]).getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]",sel)
 # What the focus is on that deletes or removes something: the rule of app.js, written again.
 WIPES="const e=document.activeElement;return !!e&&/(^|-)(del|rm|remove)(-|$)/.test(e.dataset&&e.dataset.act||'')"
+class Stop(Exception): pass  # a step the rest of the journey needs has failed: its failure is counted, the rest skipped
 try:
     # What the journey needs and a keyboard cannot make: a second member, her post and her comment under it.
     op=admin();api(op,'flags',{'flags':{'moderation':True,'catalogEditor':True}},'PUT');api(op,'me',{'props':['nunchaku']},'PUT')
@@ -347,6 +350,7 @@ try:
     type_text('flowa-test-only');key(ENTER)
     who=lambda: js("return (document.querySelector('.nav-profile .tiny')||{}).textContent")
     check('sign in: a name, a password and Enter sign a person in',lambda: who()=='@admin',who,timeout=30);idle()
+    if who()!='@admin': raise Stop('nobody is signed in, so the journey of a member cannot go on')
     check('sign in: the focus is on the page that opened, not lost',lambda: js("const e=document.activeElement;return document.querySelector('#main').contains(e)"),active,timeout=3)
     page('dashboard')
 
@@ -453,17 +457,19 @@ try:
     cmd('WebDriver:SetWindowRect',width=1440,height=600);wait_for("return innerHeight<700",'the window to be low')
     BOX='#compose-form textarea';REP=f'.post[data-post="{rp}"] [data-act=report]'
     away="const r=document.querySelector(arguments[0]).getBoundingClientRect();return r.bottom<=document.querySelector('.top').getBoundingClientRect().bottom"
+    shows="const r=document.querySelector(arguments[0]).getBoundingClientRect();return r.top>=document.querySelector('.top').getBoundingClientRect().bottom&&r.bottom<=innerHeight"
     if tab_to(BOX,'the box for a post'):
-        type_text('Half')
-        js("document.querySelector(arguments[0]).scrollIntoView({block:'center'})",REP);wait_for(lambda: js(away,BOX),'the box for a post to be out of sight')
+        # Firefox scrolls to what was typed at its next drawing: that is let happen before the page is scrolled away.
+        type_text('Half');frames()
+        js("document.querySelector(arguments[0]).scrollIntoView({block:'center'})",REP);wait_for(lambda: js(away,BOX) and js(shows,REP),'the box for a post to be out of sight, and Report in sight')
         spot=js(BLANK,SEL);y0=js("return scrollY")
         point(*spot);key('/');wait_for("return !document.querySelector('#palette').hidden",'the search to open by its key')
         key(ESC);wait_for("return document.querySelector('#palette').hidden",'the search to close')
         check('pointer: after a click beside the content, the search by its key and Escape leave the focus and the scroll alone',lambda: active() is None and js("return scrollY")==y0,lambda: (spot,active(),y0,js("return scrollY")),timeout=3)
     if tab_to(BOX,'the box for a post'):
-        type_text(' done')
+        type_text(' done');frames()
         js("window.__nofocus=e=>{if(e.target.closest('button'))e.preventDefault()};addEventListener('mousedown',window.__nofocus,true)")
-        js("document.querySelector(arguments[0]).scrollIntoView({block:'center'})",REP);wait_for(lambda: js(away,BOX),'the box for a post to be out of sight')
+        js("document.querySelector(arguments[0]).scrollIntoView({block:'center'})",REP);wait_for(lambda: js(away,BOX) and js(shows,REP),'the box for a post to be out of sight, and Report in sight')
         point(*js(BLANK,SEL));point(*middle(REP));wait_for("return !!document.querySelector('#report-form')",'the report dialog to open by a click')
         y0=js("return scrollY");key(ESC);wait_for("return document.querySelector('#modal').hidden",'the report dialog to close')
         check('pointer: a dialog opened by a click and closed by Escape leaves the focus and the scroll alone',lambda: not on(BOX) and not on(REP) and js("return scrollY")==y0,lambda: (active(),y0,js("return scrollY")),timeout=3)
@@ -639,4 +645,5 @@ try:
     print(f'{tot["noring"]} stops without a ring that can be seen ({len(offenders)} kinds), {tot["unjudged"]} rings over a picture or a gradient not judged')
     print(f'{tot["dialogs"]} dialogs opened, {tot["baddialogs"]} that did not take, keep or hand back the focus; {tot["used"]} controls used, {tot["dropped"]} lost the focus when the page was drawn again')
     if LIST: print('\n'.join(f'  {k} (first at: {v})' for k,v in sorted(offenders.items())))
+except Stop as x: print(f'SKIP the rest of the journey: {x}',flush=True)
 finally: done()

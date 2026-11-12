@@ -22,7 +22,7 @@ Commits title of the category's type. An item is checked only when its DoD holds
   in `h.py`) and never focuses or clicks from the page's own JS. With them it signs in, logs a session
   of 40 minutes with a skill, builds a combo of two skills and publishes it, and replies to a comment,
   and reads each back through the API. On the way it presses Tab round 27 pages, the timeline once
-  more with Shift+Tab, and 7 dialogs (35 rounds, 1,699 stops) until the focus is back where it began
+  more with Shift+Tab, and 7 dialogs (35 rounds, 1,723 stops) until the focus is back where it began
   and holds each round against the page: every control on show is reached (the list `a11y.py` names;
   1,578 controls; a control drawn again since the round passed it counts as reached by a stop on one
   that looks the same, one stop for one control, so of two Load more buttons each needs its own); nothing hidden, inert, outside
@@ -39,7 +39,7 @@ Commits title of the category's type. An item is checked only when its DoD holds
   with its ring, when the page has been drawn again; a Remove and a Delete that are used must leave it
   on a control that deletes nothing. With real clicks (`point` in `h.py`) it checks that nothing of
   this moves the focus or scrolls the page for a person with a mouse, and that a playing combo costs
-  the page's watcher no work then. 309 of 309 checks pass, none skipped (on Chromium, see below).
+  the page's watcher no work then. 309 of 309 checks pass, none skipped, in headless Firefox 159 (see below).
   Before the fixes (this suite run on `main` at 89d8ed9), 101 of 312 checks failed; the count differs
   because each control Tab cannot reach adds a failed check of its own. No page had a link past the menu.
   3 controls could not be reached (Picture, Upload picture and Import JSON: labels around hidden file
@@ -108,11 +108,21 @@ Commits title of the category's type. An item is checked only when its DoD holds
   by one; the arrow keys move between them and do not choose. Link cards are not on the journey (they
   need the stand-in the links suite has); their ring, and those of the skill map editor, the avatar
   editor's tabs and seven pages at 420 px, were looked at once by hand with the same checks, 25 more
-  rounds with none failing. Not run here: Firefox. The suite and the fixes were run on Chromium
-  through a stand-in for Marionette; key presses, focus rings after a redraw and Tab past the last
-  control of a page in real Firefox are first run by the pull request's CI. Firefox also stops Tab at
-  every box that scrolls, which Chromium does only for a box with no control in it; the suite takes
-  such a stop as one and holds it to a ring. Not done: a pass with a real screen reader.
+  rounds with none failing. The suite was written on Chromium through a stand-in for Marionette. Its
+  first runs in real Firefox (the pull request's CI, then headless Firefox 159 here) failed: 21 passed,
+  14 failed, then a crash. All three causes were in the test, not in the page. Tab past the last control
+  of a page takes the focus out of it to the browser's own bar, where Marionette cannot send keys; the
+  keys that followed reached a page without the focus, and Firefox moved its focused element there with
+  no focus event and no ring, so every stop of the landing page showed none, the skip link was cut down
+  to nothing under the menu, and Tab went no further than two links of the menu. `key()` in `h.py` now
+  gives the window its focus back after such a press, as a person's next Tab through the bar does, and
+  drops the caret a text box leaves in the page, from which Firefox would start that Tab instead of
+  from the top. And the suite scrolled the page in the same frame as its last typed key, before Firefox
+  scrolled to what was typed; it now lets the page draw first. A failed sign-in now stops the journey
+  with its failures counted, instead of a crash a few steps on. Firefox also stops Tab at every box
+  that scrolls, which Chromium does only for a box with no control in it; the suite takes such a stop
+  as one and holds it to a ring (1,723 stops in Firefox, 1,699 on Chromium). Not done: a pass with a
+  real screen reader.
 - [x] **Names.** `aria-label` on every icon-only button; the figure canvas carries the caption as
   its text alternative; live regions for toasts. DoD: a script in lint lists controls without a
   name and fails on any.

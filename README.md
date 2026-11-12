@@ -113,10 +113,10 @@ Picture, Upload picture and Import JSON is opened by a button. `test/browser/key
 keyboard-only test. With real key presses and no mouse it signs in, logs a session, builds a combo and
 publishes it, and replies to a comment, and reads each back through the API. On the way it presses Tab
 round 27 pages, the timeline once more with Shift+Tab, and 7 dialogs until the focus is back where it
-began (35 rounds, 1,699 stops) and holds each round against the page: every control on show is reached
+began (35 rounds, 1,723 stops) and holds each round against the page: every control on show is reached
 (1,578), nothing hidden, inert, outside the window or under something else takes the focus, the order is
 reading order, and each stop shows its ring. A few checks send real clicks, to show that for a person
-with a mouse the focus and the scroll stay where they were. 309 of 309 checks pass. It does not press
+with a mouse the focus and the scroll stay where they were. 309 of 309 checks pass in headless Firefox. It does not press
 the questions the browser itself asks (Delete this session?). Not yet done: beside a wide page a skill's
 guide lies over the right 420 px of it, so the bell, the search button and what else lies there take the
 focus under the guide (5 stops at 1440 px), where it cannot be seen; the suite counts them, and the fix

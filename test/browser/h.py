@@ -126,6 +126,15 @@ def key(*ks,hold=()):
     # Presses each key in turn and lets it go, with the keys in hold kept down meanwhile (Shift for Shift+Tab).
     a=[{'type':'keyDown','value':k} for k in hold]+[x for k in ks for x in ({'type':'keyDown','value':k},{'type':'keyUp','value':k})]+[{'type':'keyUp','value':k} for k in reversed(hold)]
     cmd('WebDriver:PerformActions',actions=[{'type':'key','id':'kb','actions':a}])
+    # Tab past the last control of the page takes the focus out of it, to the browser's own bar. Marionette
+    # can only send keys to the page, not to that bar, so later keys would reach a page that no longer has
+    # the focus: Firefox then moves the page's focused element with no focus event and draws no ring. A
+    # person's next Tab goes through the bar and back into the page with the focus, at its first control
+    # (Shift+Tab: its last). That is done here by giving the window its focus back, and by dropping the
+    # caret a text box can leave in the page, from which Firefox would start the next Tab instead of
+    # from the top. The press that left still finds no element of the page focused.
+    if TAB in ks and not js("if(document.hasFocus())return true;getSelection().removeAllRanges();return false"):
+        cmd('WebDriver:SwitchToWindow',handle=cmd('WebDriver:GetWindowHandle')['value'],focus=True)
 def type_text(s): key(*s)  # one key press for each letter
 def point(x,y):
     # A click of the mouse at a place in the window (px from its top left), for a check about a person who uses
