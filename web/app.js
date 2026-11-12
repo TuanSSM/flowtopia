@@ -426,7 +426,8 @@ function pageBranch(k, sel) {
       const cls = [best(pr) >= 2 ? 'met' : '', sel && (sel === pr || sel === s.id) ? 'hl' : ''].join(' ').trim();
       return `<path class="${cls}" d="M${x1} ${y1}C${x1} ${my} ${x2} ${my} ${x2} ${y2}"/>`;
     })).join('');
-    const nodes = list.map(s => {
+    // Row by row, then left to right: the order Tab walks the graph in is the order it is read in.
+    const nodes = [...list].sort((s, t) => L.xy[s.id].y - L.xy[t.id].y || L.xy[s.id].x - L.xy[t.id].x).map(s => {
       const st = status(s.id), { x, y } = L.xy[s.id];
       const ext = s.needs.map(n => n.replace('!', '')).filter(n => SK[n].b !== k);
       return `<a class="node ${st === 'locked' || st === 'ready' ? st : ''} ${sel === s.id ? 'sel' : ''}" style="left:${x}px;top:${y}px" href="${skillHref(s.id)}" aria-label="${s.id} ${esc(s.name)}, ${statusLabel(s.id)}">
@@ -436,7 +437,7 @@ function pageBranch(k, sel) {
     body = `<div class="graph-wrap"><div class="graph ${sel ? 'focus' : ''}" style="width:${L.width}px;height:${L.height}px"><svg width="${L.width}" height="${L.height}" aria-hidden="true">${edges}</svg>${nodes}</div></div>${graphKey()}`;
   }
   return `<div class="page-h"><div class="grow"><h1>${esc(b.name)}</h1><p>${esc(b.blurb)} · ${me ? `${cleanCount(list)} of ${list.length} clean` : `${list.length} skills`}</p></div>
-    <div class="seg" role="group" aria-label="View"><button class="${view === 'graph' ? 'on' : ''}" data-act="view" data-v="graph">Graph</button><button class="${view === 'list' ? 'on' : ''}" data-act="view" data-v="list">List</button></div></div>
+    <div class="seg" role="group" aria-label="View"><button class="${view === 'graph' ? 'on' : ''}" data-act="view" data-v="graph" aria-pressed="${view === 'graph'}">Graph</button><button class="${view === 'list' ? 'on' : ''}" data-act="view" data-v="list" aria-pressed="${view === 'list'}">List</button></div></div>
   <div class="row" style="margin-bottom:16px"><div class="bar grow"><i style="width:${p}%"></i></div><span class="num small muted">${p}%</span></div>${body.replace(/<div class="key">[\s\S]*?<\/div>$/, m => me ? m : '')}`;
 }
 
@@ -620,10 +621,10 @@ function pageSettings() {
   return `<div class="page-h"><div><h1>Settings</h1><p>Theme is saved in this browser.${me ? ' Everything else is saved to your account.' : ''}</p></div></div>
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Preferences</h2></div>
-      <div class="stack"><div class="field">Theme<div class="seg" style="width:max-content">${['auto', 'light', 'dark'].map(t => `<button class="${t === theme ? 'on' : ''}" data-act="theme" data-v="${t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
-      ${me ? `<div class="field">Dominant hand<div class="seg" style="width:max-content">${[['L', 'Left'], ['R', 'Right']].map(([k, n]) => `<button class="${state.settings.dominant === k ? 'on' : ''}" data-act="dominant" data-v="${k}">${n}</button>`).join('')}</div></div>` : ''}</div></div>
+      <div class="stack"><div class="field">Theme<div class="seg" role="group" aria-label="Theme" style="width:max-content">${['auto', 'light', 'dark'].map(t => `<button class="${t === theme ? 'on' : ''}" data-act="theme" data-v="${t}" aria-pressed="${t === theme}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>
+      ${me ? `<div class="field">Dominant hand<div class="seg" role="group" aria-label="Dominant hand" style="width:max-content">${[['L', 'Left'], ['R', 'Right']].map(([k, n]) => `<button class="${state.settings.dominant === k ? 'on' : ''}" data-act="dominant" data-v="${k}" aria-pressed="${state.settings.dominant === k}">${n}</button>`).join('')}</div></div>` : ''}</div></div>
     ${me ? `<div class="card"><div class="card-h"><h2>Data: ${esc(curProp().name)}</h2></div><p class="small muted" style="margin-bottom:12px">Export, import and reset apply to your ${esc(curProp().name.toLowerCase())} progress only. The server also keeps a daily backup for 14 days.</p>
-      <div class="row wrap"><button class="btn" data-act="export">Export JSON</button><label class="btn">Import JSON<input type="file" accept="application/json" data-change="import" hidden></label><button class="btn danger" data-act="reset">Reset</button></div></div>` : ''}
+      <div class="row wrap"><button class="btn" data-act="export">Export JSON</button><button class="btn" data-act="file">Import JSON</button><input type="file" accept="application/json" data-change="import" hidden><button class="btn danger" data-act="reset">Reset</button></div></div>` : ''}
     <div class="card"><div class="card-h"><h2>About the skill maps</h2></div><p class="small muted">Each map takes its technique names from the sources listed on its skills. Prerequisites and tiers are coaching proposals, not rules of the art. Skills marked unconfirmed could not be checked against a source.</p>
       <p class="small muted" style="margin-top:10px">What is planned for Flowa itself is in its repository, the same for every prop.</p>
       <div class="row wrap" style="margin-top:10px"><a href="${DOCS_URL}roadmap.md" target="_blank" rel="noopener noreferrer" class="btn sm">Roadmap ${icon('ext')}</a><a href="${DOCS_URL}epics.md" target="_blank" rel="noopener noreferrer" class="btn sm">Epics ${icon('ext')}</a></div></div>
@@ -737,7 +738,7 @@ function render() {
   renderBell();
   // Keep form text when a save re-renders the page; only the panel and shell update.
   const active = document.activeElement;
-  const typing = active && $('#main').contains(active) && /^(INPUT|TEXTAREA)$/.test(active.tagName) && active.type !== 'checkbox' && key === lastRouteKey;
+  const typing = active && active !== kb.rested && $('#main').contains(active) && /^(INPUT|TEXTAREA)$/.test(active.tagName) && active.type !== 'checkbox' && key === lastRouteKey;
   if (!typing) {
     const form = $('#log-form');
     const keep = form && key === lastRouteKey ? { date: form.date.value, minutes: form.minutes.value, notes: form.notes.value } : null;
@@ -808,12 +809,164 @@ function openPalette() {
   el.innerHTML = `<div class="pal-box" role="dialog" aria-modal="true" aria-label="Search"><input type="search" id="pal-q" placeholder="Search skills and pages" autocomplete="off" aria-label="Search skills and pages"><div class="pal-list" id="pal-list"></div><p class="pal-hint tiny" id="pal-hint">${esc(palScope())}</p></div>`;
   ui.palIdx = 0; drawPal(); $('#pal-q').focus();
 }
-function closePalette() { $('#palette').hidden = true; $('#palette').innerHTML = ''; palPrevFocus?.focus?.(); }
+// The page behind the search is put back in reach first, or the control that opened it could not take the focus.
+// It is not scrolled to: the control was on screen when the search opened, and the page stands where it stood.
+function closePalette() { $('#palette').hidden = true; $('#palette').innerHTML = ''; syncLayers(); palPrevFocus?.focus?.({ preventScroll: true }); }
 function drawPal() {
   const items = palItems($('#pal-q').value);
   ui.palIdx = Math.min(ui.palIdx, Math.max(items.length - 1, 0));
   $('#pal-list').innerHTML = items.map((x, i) => `<a class="pal-i ${i === ui.palIdx ? 'on' : ''}" href="${x.h}" data-act="pal-go"><span class="tag">${x.tag}</span><span class="grow">${esc(x.n)}</span>${x.prop ? `<span class="pal-p">${esc(x.prop)}</span>` : ''}</a>`).join('') || '<div class="empty small">No matches</div>';
   $('.pal-i.on')?.scrollIntoView({ block: 'nearest' });
+}
+
+/* ---------- keyboard: where the focus is ---------- */
+// A page drawn again from state is made of new elements: the one that had the focus is gone, and the next
+// Tab would start from the top. So what has the focus is written down as what it is (where it sits, its kind
+// and its data), and after a redraw the control that answers to the same words gets the focus back.
+// This is for a person at the keys. After a click or a tap nothing is moved: keys is false until a key is
+// pressed again, so a pointer finds the page as it always did, and what was written down for the keys is
+// forgotten, so a key pressed later does not send the focus back to a control used long before. A screen
+// reader that presses for the person sends neither, and is served like the keys.
+const kb = { keys: true, at: null, prev: null, rested: null, tab: 0, open: {}, back: {} };
+const narrow = matchMedia('(max-width: 820px)');
+const seen = e => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden';
+const tabbables = root => [...root.querySelectorAll('a[href], button, input:not([type=hidden]), select, textarea, summary, [tabindex]')].filter(e => !e.disabled && e.tabIndex >= 0 && seen(e) && !e.closest('[inert]'));
+// A control that deletes or removes something. When it is gone with what it took away, the focus does not go
+// to the next one of its kind, where a second Enter would delete the next row.
+const wipes = e => /(^|-)(del|rm|remove)(-|$)/.test(e.dataset?.act || '');
+const kindOf = e => [e.tagName, e.dataset.act || e.dataset.change || e.dataset.pick || e.dataset.ed || '', e.name || '', e.type || ''].join('|');
+function nameOf(e) {
+  const d = { ...e.dataset }, f = e.closest('form');
+  delete d.tip; // a hint may change with the state it describes
+  return [kindOf(e), e.id, e.getAttribute('href') || '', /^(radio|checkbox)$/.test(e.type) ? e.value : '', JSON.stringify(d), f ? f.id || f.dataset.k || '' : '', e.closest('[data-post]')?.dataset.post || ''].join('|');
+}
+// What is written down of a control: the part of the page it is in, its name, its kind and its place among
+// its kind, and the form or post around it.
+function note(e) {
+  const root = e.closest?.('#menu, #main, #panel, #bell, #modal, #palette, .top');
+  if (!root || e === root) return { el: e };
+  const kind = kindOf(e), box = e.closest('form[id], form[data-k], [data-post]');
+  // The selectors here are made only of the page's own values (element ids, data-k, numeric post ids), never of what a member typed.
+  return { el: e, root: root.id ? '#' + root.id : '.top', name: nameOf(e), kind, hash: location.hash,
+    n: [...root.querySelectorAll(e.tagName)].filter(x => kindOf(x) === kind).indexOf(e),
+    box: !box ? '' : box.id ? '#' + box.id : box.dataset.k ? `form[data-k="${box.dataset.k}"]` : `[data-post="${box.dataset.post}"]` };
+}
+// The control a note was taken of, as it stands now. On the same page a control that is gone gives its place
+// to the one of its kind that stands there now (the next row's Like), or to the first control of its form or post.
+// A Delete or Remove that is gone gives it to the nearest control before that place which deletes nothing.
+function findAgain(r) {
+  if (r.el.isConnected && seen(r.el) && !r.el.closest('[inert]')) return r.el;
+  const root = r.root && $(r.root);
+  if (!root) return null;
+  const all = [...root.querySelectorAll(r.el.tagName)].filter(e => !e.disabled && seen(e) && !e.closest('[inert]'));
+  const el = all.find(e => nameOf(e) === r.name);
+  if (el || r.hash !== location.hash) return el || null;
+  const kin = all.filter(e => kindOf(e) === r.kind), box = r.box && $(r.box), at = kin[Math.min(r.n, kin.length - 1)];
+  if (!wipes(r.el)) return at || (box && tabbables(box)[0]) || null;
+  const l = at ? tabbables(root) : box ? tabbables(box) : [];
+  for (let i = at ? l.indexOf(at) - 1 : l.length - 1; i >= 0; i--) if (!wipes(l[i])) return l[i];
+  return null;
+}
+function putBack(r) {
+  let el = findAgain(r);
+  // A change that draws the page again as Tab leaves a field: the focus goes on to where Tab was heading.
+  if (el && kb.tab) { const l = tabbables(document.body), i = l.indexOf(el); el = (i >= 0 && l[i + kb.tab]) || el; }
+  if (el && /^(INPUT|TEXTAREA)$/.test(el.tagName) && !/^(checkbox|radio)$/.test(el.type)) {
+    if (coarse()) return; // on a touch screen a text box with the focus brings the keyboard up again
+    kb.rested = el; // nothing is being typed in it yet, so the page may still be drawn again around it
+  }
+  // A new page, or nothing left to go back to: the start of the content. The content is taller than the
+  // window, and the browser would scroll its top under the bar to show it, so it is told not to scroll.
+  if (el && el.id !== 'main') el.focus(); else $('#main').focus({ preventScroll: true });
+}
+// What lies over the page, each over the ones before it: a skill's guide, the menu of a narrow window, a
+// dialog, the search. The one on top keeps Tab to itself (not the guide beside a wide page, which is no
+// dialog); what it covers is inert, so neither Tab nor a screen reader wanders behind it. When one opens,
+// the focus moves into it; when it closes, the focus goes back to the control that opened it.
+const LAYERS = ['panel', 'side', 'modal', 'palette'];
+const layerOpen = id => id === 'side' ? narrow.matches && document.body.classList.contains('nav-open') : !$('#' + id).hidden;
+// True when the focus is on nothing a person could use: on no element, or on one that is hidden or put out of reach.
+const lost = a => !a || a === document.body || !seen(a) || !!a.closest('[inert]');
+const topLayer = () => [...LAYERS].reverse().find(id => layerOpen(id) && (id !== 'panel' || narrow.matches));
+function syncLayers() {
+  const moves = [];
+  for (const id of LAYERS) {
+    const el = $('#' + id), mark = !layerOpen(id) ? '' : id === 'panel' ? el.dataset.id : '1', was = kb.open[id] || '';
+    if (mark === was) continue;
+    kb.open[id] = mark;
+    if (!mark) {
+      // What had the focus inside it is gone with it, and is not chased.
+      if (kb.at && (kb.at.root === '#' + id || el.contains(kb.at.el))) kb.at = null;
+      const b = kb.back[id]; delete kb.back[id];
+      moves.push(() => { if (b && !tourOn && lost(document.activeElement)) putBack(b); }); continue;
+    }
+    // Where the focus goes back to when it closes: what had the focus when it opened (it may have taken the focus
+    // already, so the one before). Nothing when it was opened with a pointer: then the focus is left alone.
+    if (!was && !tourOn) kb.back[id] = !kb.keys ? null : kb.at && el.contains(kb.at.el) ? kb.prev : kb.at;
+    // A guide takes the focus itself, to be read from its top; a dialog gives it to its first control. A guide
+    // that is open when the page loads takes nothing: the focus starts at the top, as on any page.
+    moves.push(() => { if (tourOn) return; if (id !== 'panel') stepInto(el); else if (kb.at && !el.contains(document.activeElement)) el.focus(); });
+  }
+  const top = topLayer(), small = narrow.matches, drawer = layerOpen('side');
+  const set = (sel, v) => { const el = $(sel); if (el.inert !== v) el.inert = v; };
+  set('.skip', !!top);
+  set('#app', top === 'modal' || top === 'palette');
+  set('.content', top === 'side' || top === 'panel');
+  set('#side', small && !drawer); // the menu of a narrow window is off the screen until it is opened
+  set('#panel', top === 'side');
+  if (kb.keys) for (const m of moves) m();
+}
+// Runs after anything on the page changed: first what opened or closed, then the focus a redraw dropped.
+function afterDraw() {
+  syncLayers();
+  const r = kb.at;
+  if (!lost(document.activeElement) || !r || !lost(r.el)) return;
+  if (kb.keys) putBack(r); else kb.at = null; // a pointer did this: the control is forgotten, not chased
+}
+// A change of words alone (the clock of a playing combo, twice a frame) neither opens nor closes anything nor
+// takes an element away. It is looked at only for a person at the keys whose focus has dropped to the page as
+// a whole; for a pointer, the usual state, it costs nothing.
+const watch = new MutationObserver(rs => {
+  if (rs.some(r => [...r.addedNodes, ...r.removedNodes].some(n => n.nodeType === 1))) { afterDraw(); return; }
+  const a = document.activeElement;
+  if (kb.keys && kb.at && (!a || a === document.body)) afterDraw();
+});
+watch.observe(document.body, { childList: true, subtree: true });
+new MutationObserver(afterDraw).observe(document.body, { attributes: true, attributeFilter: ['class'] }); // the menu of a narrow window opens by a class
+narrow.addEventListener?.('change', syncLayers);
+// A click or a tap forgets what was written down for the keys: the control that had the focus, the one before
+// it, and the box the focus was put back into, which the person may now have clicked to type in.
+document.addEventListener('pointerdown', () => { kb.keys = false; kb.at = kb.prev = kb.rested = null; kb.tab = 0; }, true);
+// tab says which way Tab is heading, from the press until the focus has arrived somewhere. Typing in a box
+// that was clicked, Enter included, is not working the page by keys: only Tab and Escape say so there.
+const typed = e => /^(INPUT|TEXTAREA)$/.test(e.target.tagName) && !/^(checkbox|radio|button|submit|file)$/.test(e.target.type) && !/^(Tab|Escape)$/.test(e.key);
+document.addEventListener('keydown', e => { if (!typed(e)) kb.keys = true; kb.tab = e.key !== 'Tab' ? 0 : e.shiftKey ? -1 : 1; }, true);
+document.addEventListener('keyup', () => { kb.tab = 0; }, true);
+document.addEventListener('focusin', e => {
+  kb.tab = 0;
+  if (e.target !== kb.at?.el) { kb.prev = kb.at; kb.at = note(e.target); }
+  if (e.target !== kb.rested) kb.rested = null;
+  clearBar(e.target);
+});
+document.addEventListener('input', () => { kb.rested = null; });
+// A control Tab or Shift+Tab reached may lie under the bar that stays at the top of the window, where the
+// browser counts it as in view and does not scroll to it: the page is moved until it shows. For the keys
+// only, and only for the page's own content.
+function clearBar(el) {
+  if (!kb.keys || el.id === 'main' || !$('#main').contains(el)) return;
+  const r = el.getBoundingClientRect(), bar = $('.top').getBoundingClientRect();
+  if (r.height && r.top < bar.bottom && r.bottom > bar.top) scrollBy(0, r.top - bar.bottom - 8);
+}
+// For a person at the keys: the focus goes to a control when the one that had it went away with what it did
+// (Reply, when the reply is sent), or into something that opened beside its button (the notifications).
+function backTo(sel) { if (kb.keys) $(sel)?.focus(); }
+function stepInto(el) { if (kb.keys && el && !el.contains(document.activeElement)) (tabbables(el)[0] || el).focus(); }
+// Tab at the last control of the layer on top goes to its first, and Shift+Tab the other way.
+function keepTab(e, layer) {
+  const l = tabbables(layer), a = document.activeElement;
+  if (!l.length) { e.preventDefault(); return; }
+  const out = !layer.contains(a), edge = e.shiftKey ? l[0] : l[l.length - 1];
+  if (out || a === edge || a === layer) { e.preventDefault(); (e.shiftKey ? l[l.length - 1] : l[0]).focus(); }
 }
 
 /* ---------- events ---------- */
@@ -824,6 +977,8 @@ document.addEventListener('click', e => {
   if (!t) return;
   const d = t.dataset, combo = d.id ? state.combos.find(c => c.id === d.id) : null;
   switch (d.act) {
+    case 'skip': e.preventDefault(); $('#main').focus({ preventScroll: true }); break; // the first Tab stop of the page: past the menu, to the content
+    case 'file': t.nextElementSibling.click(); break; // a button stands for the file field behind it, which no key reaches
     case 'nav-open': document.body.classList.add('nav-open'); break;
     case 'nav-close': document.body.classList.remove('nav-open'); break;
     case 'palette': openPalette(); break;
@@ -944,19 +1099,27 @@ document.addEventListener('submit', e => {
 });
 document.addEventListener('input', e => { if (e.target.id === 'pal-q') { ui.palIdx = 0; drawPal(); } });
 document.addEventListener('keydown', e => {
-  const open = !$('#palette').hidden;
+  const open = !$('#palette').hidden, top = topLayer();
+  if (e.key === 'Tab' && top) { keepTab(e, $('#' + top)); return; }
+  // In a row of choices the arrow keys walk from one to the next; Enter or Space chooses, as on any button.
+  if (/^Arrow(Left|Right|Up|Down)$/.test(e.key) && !e.altKey && !e.ctrlKey && !e.metaKey && e.target.matches?.('.seg > :is(button, a), .lv > button, .tpl-row > button')) {
+    const l = [...e.target.parentElement.children].filter(x => !x.disabled), to = l[(l.indexOf(e.target) + (/Left|Up/.test(e.key) ? -1 : 1) + l.length) % l.length];
+    e.preventDefault(); to.focus(); return;
+  }
   if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !open && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))) { e.preventDefault(); open ? closePalette() : openPalette(); return; }
   if (open) {
-    if (e.key === 'Escape') { closePalette(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault(); const n = palItems($('#pal-q').value).length;
       if (n) { ui.palIdx = (ui.palIdx + (e.key === 'ArrowDown' ? 1 : -1) + n) % n; drawPal(); }
     }
-    if (e.key === 'Enter') { const x = $('.pal-i.on'); if (x) { location.hash = x.getAttribute('href'); closePalette(); } }
+    if (e.key === 'Enter') { const x = e.target.closest?.('.pal-i') || $('.pal-i.on'); if (x) { e.preventDefault(); location.hash = x.getAttribute('href'); closePalette(); } }
     return;
   }
   if (e.key === 'Enter' && e.target.matches?.('select[data-pick]')) { e.preventDefault(); addChosen(e.target); return; }
-  if (e.key === 'Escape') {
+  // Escape closes what is on top, one thing at a press: a dialog or a list that took the key has said so.
+  if (e.key === 'Escape' && !e.defaultPrevented) {
+    if (top === 'side') { document.body.classList.remove('nav-open'); return; }
     document.body.classList.remove('nav-open');
     const [p, a, b] = parseRoute();
     if (p === 'branch' && b) location.hash = `#/prop/${CID}/${a}`;

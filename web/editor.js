@@ -153,12 +153,12 @@ adminMaps = () => {
   queueMicrotask(edMark); // once the page that asked for this view has drawn it
   const D = ed.data, view = ED_VIEWS.find(v => v[0] === ed.view) ? ed.view : 'skills';
   const body = { skills: edSkillsView, branches: edBranchesView, phases: edPhasesView, json: edJSONView, review: edReviewView, history: edHistoryView }[view]();
-  return `<div class="row wrap" style="gap:8px;margin-bottom:12px"><div class="seg" role="group" aria-label="Prop">${PROPS.map(p => `<a class="${p.id === prop ? 'on' : ''}" href="#/admin/maps/${p.id}">${esc(p.name)}</a>`).join('')}</div>
+  return `<div class="row wrap" style="gap:8px;margin-bottom:12px"><div class="seg" role="group" aria-label="Prop">${PROPS.map(p => `<a class="${p.id === prop ? 'on' : ''}" href="#/admin/maps/${p.id}" ${p.id === prop ? 'aria-current="page"' : ''}>${esc(p.name)}</a>`).join('')}</div>
       <span class="grow"></span><span id="ed-sum" class="row" role="status" data-now="${esc(edSummary())}" style="gap:6px">${edSummary()}</span></div>
     ${D.shippedUpdate ? `<p class="notice" style="margin-bottom:12px">Flowa was updated with a newer version of this map than the one published here. <button class="btn sm" data-act="ed-shipped">Load it as the draft</button></p>` : ''}
     <div class="card ed-bar"><span class="small grow">Published revision ${D.rev}${D.draft ? ' · a saved draft is open' : ''}</span>
       <button class="btn sm" data-act="ed-save" ${ed.dirty ? '' : 'disabled'}>Save draft</button>${D.draft || ed.dirty ? '<button class="btn sm" data-act="ed-discard">Discard draft</button>' : ''}</div>
-    <div class="seg ed-views" role="group" aria-label="Edit">${ED_VIEWS.map(([k, n]) => `<button class="${k === view ? 'on' : ''}" data-act="ed-view" data-v="${k}">${n}</button>`).join('')}</div>${body}`;
+    <div class="seg ed-views" role="group" aria-label="Edit">${ED_VIEWS.map(([k, n]) => `<button class="${k === view ? 'on' : ''}" data-act="ed-view" data-v="${k}" aria-pressed="${k === view}">${n}</button>`).join('')}</div>${body}`;
 };
 
 /* ---------- editing ---------- */

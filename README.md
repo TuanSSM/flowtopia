@@ -66,8 +66,8 @@ button by its `aria-label`, a field by its label, a demo's canvas by its own lab
 caption shown under it. The short messages that come and go (the note at the bottom, an achievement, a
 hint) are put into live regions that are on the page before the message. `test/browser/a11y.py` walks
 the same stops as `touch.py`, plus a narrow window and a first visit with the tour, and fails on any
-visible control without a name or picture without an alternative (about 4,700 controls and 160
-pictures over 68 stops). It checks that a name exists, not that it is a good one, and it is no
+visible control without a name or picture without an alternative (about 4,400 controls and 140
+pictures over 68 stops; the page behind an open dialog is inert and is not counted). It checks that a name exists, not that it is a good one, and it is no
 substitute for listening with a screen reader, which has not been done yet.
 
 Text, icons and the edges of fields stand out from what is behind them in both themes: 4.5:1 for text,
@@ -92,9 +92,35 @@ a live region that was drawn with the form, and the fields it is about are marke
 it until the next thing typed that could be sent. A text box with a limit (a post has 2000 characters, a
 comment 1000, the bio 300) shows a counter from 100 characters left, and the count is said at 20 left, at
 none and when the text is too long, not at each letter. The note under the menu that says whether
-changes are saved is a live region too. `a11y.py` checks the labels at every stop (212 fields), that
+changes are saved is a live region too. `a11y.py` checks the labels at every stop (210 fields), that
 what a field points at by id is on the page and that no id is used twice, and sends three forms wrong
 to hear the error come and go.
+
+Flowa can be worked with the keys alone. The first Tab stop of every page is a link that skips the menu
+and puts the focus on the content. Tab walks a page in reading order, and the control that has the focus
+shows it: an outline of 2 px that stands out 3:1 from what it is drawn on, in both themes, drawn inside
+the control where a box that scrolls would cut it off. What opens over the page (the search, a report, a
+moderation action, the streak overlay, the menu of a narrow window, a skill's guide on a narrow window)
+takes the focus when it opens, keeps Tab and Shift+Tab inside, closes on Escape and hands the focus back
+to the control that opened it; the page behind it is `inert` meanwhile. The page is drawn again from
+state after most actions, which makes a new element of every control: for a person at the keys the
+control that was used gets the focus back, found by what it is ("keyboard: where the focus is" in
+`web/app.js`); a Delete or Remove that is gone leaves it on the nearest control that deletes nothing.
+After a click or a tap nothing is moved, and what opens then hands no focus back when it closes. A row of choices (theme, hand, graph or list,
+the editor's views, the overlay's format and position) says which one is chosen with `aria-pressed` and
+is walked with the arrow keys, a tab that is open says so with `aria-current`, and the file behind
+Picture, Upload picture and Import JSON is opened by a button. `test/browser/keys.py` is the
+keyboard-only test. With real key presses and no mouse it signs in, logs a session, builds a combo and
+publishes it, and replies to a comment, and reads each back through the API. On the way it presses Tab
+round 27 pages, the timeline once more with Shift+Tab, and 7 dialogs until the focus is back where it
+began (35 rounds, 1,699 stops) and holds each round against the page: every control on show is reached
+(1,578), nothing hidden, inert, outside the window or under something else takes the focus, the order is
+reading order, and each stop shows its ring. A few checks send real clicks, to show that for a person
+with a mouse the focus and the scroll stay where they were. 309 of 309 checks pass. It does not press
+the questions the browser itself asks (Delete this session?). Not yet done: beside a wide page a skill's
+guide lies over the right 420 px of it, so the bell, the search button and what else lies there take the
+focus under the guide (5 stops at 1440 px), where it cannot be seen; the suite counts them, and the fix
+belongs to SHP.
 
 A person who asked their system for less motion (`prefers-reduced-motion`) gets each demo as a still
 with a Play button: on the landing page, in a skill guide, in the combo player and in the avatar editor.
@@ -625,7 +651,7 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
 | `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/contrast.js` (the page's colours in both themes: text at 4.5:1, icons and the edges of fields at 3:1); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node brotli.js` and `node brotli.js --check` (a brotli copy of every page file, each unpacking to its file) with `TestStaticHashed` again on a binary that has them, `node test/physics.js` (every clip), `node sim/bake.js` (the committed clips must be the ones the bake gives), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, a brotli copy of every page file, the same bytes when built twice, the second time over brotli copies stamped as another brotli's and a stray file; then `deploy.sh` pulls and starts one, which sends a script under its hashed name with brotli and leaves its page's files in `data/`, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, a brotli copy of every page file, the same bytes when built twice, the second time over brotli copies stamped as another brotli's and a stray file; then `deploy.sh` pulls and starts one, which sends a script under its hashed name with brotli and leaves its page's files in `data/`, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them, `keys` works them with the keyboard alone (Tab order, focus rings, dialogs, and a journey from signing in to a reply under a comment) |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, then a second run with reduced motion (`FLOWA_MOTION=reduce`) for the pages where something moves, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |

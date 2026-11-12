@@ -357,7 +357,7 @@ function composer() {
     <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}" aria-label="Tag a trick or combo">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
     ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}" aria-label="Tag ${esc(t.skill)}, ${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
     <p class="form-err" id="compose-err" role="alert"></p>
-    <div class="row wrap" style="gap:8px"><label class="btn sm">${icon('image')}Picture<input type="file" accept="image/*" data-change="compose-img" hidden></label>
+    <div class="row wrap" style="gap:8px"><button type="button" class="btn sm" data-act="file">${icon('image')}Picture</button><input type="file" accept="image/*" data-change="compose-img" hidden>
       <span class="grow"></span>${countHTML('compose-count', social.draftBody, 2000)}<button class="btn primary sm" type="submit" ${sendOff('post')}>${icon('send')}Post</button></div></div></div></form>`;
 }
 // The Combos page's Publish button: bring the combo to the composer with a line to edit.
@@ -430,7 +430,7 @@ function bellHTML() {
   if (!me || !me.onboarded || !flags.community) return '';
   const st = loaded && flags.game ? streakInfo() : { atRisk: false }, n = social.unread + (st.atRisk ? 1 : 0);
   const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : n.kind === 'moderation' ? '#/profile' : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : n.kind === 'moderation' ? `<span class="badge-ic sm">${icon('shield')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
-  const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
+  const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications" tabindex="-1"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
     ${st.atRisk ? `<a class="ntf unread" href="#/practice" data-act="ntf-go"><span class="flame lit sm">${icon('flame')}</span><span class="grow"><span class="small"><b>Your ${st.current}-day streak ends tonight.</b> Log today’s practice to keep it.</span></span></a>` : ''}
     ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, replies, mentions and achievements show up here.</div>'}</div>`;
   return `<button class="icon-btn bell ${n ? 'has' : ''}" data-act="bell" aria-label="Notifications${n ? `, ${n} unread` : ''}" aria-expanded="${social.nOpen}">${icon('bell')}${n ? `<span class="bell-n num">${n > 9 ? '9+' : n}</span>` : ''}</button>${panel}`;
@@ -498,7 +498,7 @@ document.addEventListener('click', async e => {
   if (!t) return;
   const d = t.dataset, id = Number(d.id), post = social.posts.find(p => p.id === id);
   switch (d.act) {
-    case 'bell': social.nOpen = !social.nOpen; renderBell(); if (social.nOpen) loadNotifs(); break;
+    case 'bell': social.nOpen = !social.nOpen; renderBell(); if (social.nOpen) { loadNotifs(); stepInto($('.ntf-panel')); } break;
     case 'bookmark': toggleBookmark(d.kind, d.ref); break;
     case 'ntf-go':
       social.nOpen = false;
@@ -553,9 +553,9 @@ document.addEventListener('click', async e => {
       const inp = $('.reply-form input'); if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
       break;
     }
-    case 'reply-cancel': social.replyTo = null; leaveCompose(); render(); break;
+    case 'reply-cancel': { const to = social.replyTo?.parent; social.replyTo = null; leaveCompose(); render(); backTo(`[data-act="cmt-reply"][data-id="${to}"]`); break; }
     case 'cmt-edit': social.editing = id; leaveCompose(); render(); $('.cmt-edit textarea')?.focus(); break;
-    case 'cmt-edit-cancel': social.editing = 0; leaveCompose(); render(); break;
+    case 'cmt-edit-cancel': { const was = social.editing; social.editing = 0; leaveCompose(); render(); backTo(`[data-act="cmt-edit"][data-id="${was}"]`); break; }
     case 'more-comments': moreComments(id); break;
     case 'more-replies': moreReplies(id); break;
     case 'more-posts': loadFeed(social.key, true); break;
@@ -594,11 +594,14 @@ document.addEventListener('input', e => {
   if (e.target.id === 'pick-q') { social.pickQ = e.target.value; social.pickIdx = 0; refreshPicker(); }
 });
 document.addEventListener('keydown', e => {
+  // Escape closes the notifications and hands the focus back to the bell, unless a dialog over them took the key.
+  if (e.key === 'Escape' && !e.defaultPrevented && social.nOpen && $('#palette').hidden) { e.preventDefault(); social.nOpen = false; renderBell(); backTo('#bell [data-act=bell]'); return; }
+  // Escape closes the list of tricks from anywhere in it, and the cursor goes back to the post being written.
+  if (e.key === 'Escape' && !e.defaultPrevented && social.pickOpen && e.target.closest?.('.picker')) { e.preventDefault(); social.pickOpen = false; e.target.blur(); render(); $('#compose-form textarea')?.focus(); return; }
   if (e.target.id !== 'pick-q') return;
   const items = pickItems(social.pickQ);
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { social.pickIdx = (social.pickIdx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; refreshPicker(); } }
   else if (e.key === 'Enter') { e.preventDefault(); if (items[social.pickIdx]) pickAdd(items[social.pickIdx]); }
-  else if (e.key === 'Escape') { e.preventDefault(); social.pickOpen = false; e.target.blur(); render(); $('#compose-form textarea')?.focus(); }
 });
 document.addEventListener('change', async e => {
   if (e.target.dataset.change !== 'compose-img') return;
@@ -662,6 +665,7 @@ document.addEventListener('submit', async e => {
     }
     f.body.value = ''; social.replyTo = null; social.openCmts.add(id);
     leaveCompose(); document.activeElement?.blur?.(); render();
+    if (parentId) backTo(`[data-act="cmt-reply"][data-id="${parentId}"]`); // the box for the reply is gone: back to the Reply that opened it
     document.getElementById('c-' + c.id)?.scrollIntoView({ block: 'nearest' });
   } else if (f.classList.contains('cmt-edit')) {
     e.preventDefault();
@@ -675,6 +679,6 @@ document.addEventListener('submit', async e => {
     setSending(k, false);
     if (!r.ok) { toast(r.error); return; }
     eachComment(id, c => { c.body = r.data.comment.body; c.edited = true; });
-    social.editing = 0; document.activeElement?.blur?.(); render();
+    social.editing = 0; document.activeElement?.blur?.(); render(); backTo(`[data-act="cmt-edit"][data-id="${id}"]`);
   }
 });

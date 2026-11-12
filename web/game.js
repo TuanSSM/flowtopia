@@ -413,8 +413,8 @@ function openShare() {
     <div class="share-body"><div class="share-prev ${share.fmt}"><canvas id="share-cv" role="img" aria-label="Streak overlay preview"></canvas></div>
       <div class="stack" style="gap:10px">
         <div class="tpl-row" role="radiogroup" aria-label="Template">${SHARE_TEMPLATES.map(([k, n, d]) => `<button class="tpl ${share.tpl === k ? 'on' : ''}" data-act="share-tpl" data-v="${k}" role="radio" aria-checked="${share.tpl === k}" data-tip="${esc(d)}"><canvas data-tpl="${k}" width="60" height="${story ? 106 : 60}" aria-hidden="true"></canvas><span>${n}</span></button>`).join('')}</div>
-        <div class="row wrap" style="gap:8px"><div class="seg" role="group" aria-label="Format"><button class="${story ? 'on' : ''}" data-act="share-fmt" data-v="story">Story 9:16</button><button class="${!story ? 'on' : ''}" data-act="share-fmt" data-v="square">Square</button></div>
-          <div class="seg" role="group" aria-label="Position">${SHARE_PLACES.map(([k, n]) => `<button class="${share.place === k ? 'on' : ''}" data-act="share-place" data-v="${k}">${n}</button>`).join('')}</div></div>
+        <div class="row wrap" style="gap:8px"><div class="seg" role="group" aria-label="Format"><button class="${story ? 'on' : ''}" data-act="share-fmt" data-v="story" aria-pressed="${story}">Story 9:16</button><button class="${!story ? 'on' : ''}" data-act="share-fmt" data-v="square" aria-pressed="${!story}">Square</button></div>
+          <div class="seg" role="group" aria-label="Position">${SHARE_PLACES.map(([k, n]) => `<button class="${share.place === k ? 'on' : ''}" data-act="share-place" data-v="${k}" aria-pressed="${share.place === k}">${n}</button>`).join('')}</div></div>
         ${shareAvatarOK() ? `<div class="seg" role="group" aria-label="Avatar">${SHARE_AVATAR.map(([k, n]) => `<button class="${share.avatar === k ? 'on' : ''}" data-act="share-av" data-v="${k}" aria-pressed="${share.avatar === k}">${n}</button>`).join('')}</div>` : ''}
         <button class="btn primary" data-act="share-do" data-v="download">${icon('download')}Download PNG overlay</button>
         ${navigator.canShare ? `<button class="btn" data-act="share-do" data-v="share">${icon('share')}Share to an app…</button>` : ''}
@@ -480,4 +480,6 @@ document.addEventListener('click', e => {
     case 'modal-close': closeModal(); break;
   }
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });
+// Escape closes the dialog and nothing under it: the key is marked as used. The search opened over a dialog is
+// on top of it, and Escape closes the search alone.
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').hidden && $('#palette').hidden) { e.preventDefault(); closeModal(); } });

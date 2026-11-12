@@ -14,12 +14,13 @@ set -euo pipefail
 # Every suite, in the order the summary lists them. Each one is a job in the integration matrix.
 # release and restore are not browser suites: test/release.sh builds the release image and deploys it
 # with deploy.sh; test/restore.sh is the restore drill, a backup taken and put back with backup.sh.
-ALL="db release restore combo demos social mod editor suggest links avatar touch a11y contrast demos-avatars combo-avatars"
-BROWSER="combo demos social mod editor suggest links avatar touch a11y contrast demos-avatars combo-avatars"
+ALL="db release restore combo demos social mod editor suggest links avatar touch a11y contrast keys demos-avatars combo-avatars"
+BROWSER="combo demos social mod editor suggest links avatar touch a11y contrast keys demos-avatars combo-avatars"
 # Suites that play demo clips or draw the figure, for changes to the clips or the 3D figure. The touch suite
 # is one of them: it measures the avatar editor and the landing page's demo on a phone. So is the a11y suite:
 # it reads the names of the player's controls and canvases, and of the stickers the 3D figure draws.
 # The contrast suite is not: it reads the colours of the page, and needs neither a clip nor the figure.
+# Nor is the keys suite: it walks the page with Tab, and a clip or the figure holds nothing Tab stops at.
 FIGURE="combo demos suggest avatar touch a11y demos-avatars combo-avatars"
 
 plan() {
@@ -65,8 +66,9 @@ plan() {
       tour/*|figure/*) lint=true; unit=true ;;
       sim/*|web/clips/*|web/figure3d.js|web/avatar-def.json)
         lint=true; unit=true; shots=true; suites $FIGURE ;;
-      # The player and the avatar editor also write the controls around the figure, in the page's colours.
-      web/avatar.js|web/demo.js) lint=true; unit=true; shots=true; suites $FIGURE contrast ;;
+      # The player and the avatar editor also write the controls around the figure, in the page's colours,
+      # and those controls are stops for Tab.
+      web/avatar.js|web/demo.js) lint=true; unit=true; shots=true; suites $FIGURE contrast keys ;;
       # Any other page file is embedded in the server and can change any page.
       web/*) lint=true; unit=true; shots=true; suites $BROWSER ;;
       test/browser/h.py|test/browser/run.sh) lint=true; shots=true; suites $BROWSER ;;
@@ -91,8 +93,8 @@ self_test() {
     local got; got=$(tr ',' '\n' <<<"$1" | plan | paste -sd' ')
     if [ "$got" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: $2"; echo "  got:  $got"; fails=$((fails + 1)); fi
   }
-  local all='["db","release","restore","combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","contrast","demos-avatars","combo-avatars"]'
-  local browser='["combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","contrast","demos-avatars","combo-avatars"]'
+  local all='["db","release","restore","combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","contrast","keys","demos-avatars","combo-avatars"]'
+  local browser='["combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","contrast","keys","demos-avatars","combo-avatars"]'
   expect "README.md,docs/epics.md,.claude/rules/go-server.md" 'code=false lint=false unit=false screenshots=false suites=[]'
   expect "main.go" "code=true lint=true unit=true screenshots=true suites=$all"
   expect "docs/x.md,go.sum" "code=true lint=true unit=true screenshots=true suites=$all"
@@ -111,13 +113,14 @@ self_test() {
   expect "figure/src/body.js" 'code=true lint=true unit=true screenshots=false suites=[]'
   expect "web/figure3d.js,figure/src/body.js" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","a11y","demos-avatars","combo-avatars"]'
   expect "web/clips/nunchaku/F5.json" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","a11y","demos-avatars","combo-avatars"]'
-  expect "web/demo.js,web/avatar.js" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","a11y","contrast","demos-avatars","combo-avatars"]'
+  expect "web/demo.js,web/avatar.js" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","a11y","contrast","keys","demos-avatars","combo-avatars"]'
   expect "web/social.js" "code=true lint=true unit=true screenshots=true suites=$browser"
   # The screenshots job also takes its pictures with reduced motion and checks the demos, the styles and
   # the guided tour there, so a change to the player, the styles or the tour's bundle must take them.
   expect "web/app.css" "code=true lint=true unit=true screenshots=true suites=$browser"
   expect "test/contrast.js" 'code=true lint=true unit=true screenshots=false suites=[]'
   expect "test/browser/contrast.py" 'code=true lint=true unit=false screenshots=false suites=["contrast"]'
+  expect "test/browser/keys.py" 'code=true lint=true unit=false screenshots=false suites=["keys"]'
   expect "tour/src/tour.jsx,web/tour.js" "code=true lint=true unit=true screenshots=true suites=$browser"
   expect "test/browser/mod.py" 'code=true lint=true unit=false screenshots=false suites=["mod"]'
   expect "test/browser/avatar.py,test/browser/demos.py" 'code=true lint=true unit=false screenshots=false suites=["demos","avatar","demos-avatars"]'
