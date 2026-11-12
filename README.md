@@ -111,7 +111,9 @@ The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the g
 **What comes next** is in [docs/roadmap.md](docs/roadmap.md): replies, moderators and a skill map editor,
 link cards for Instagram, TikTok and YouTube, next-trick suggestions from the geometry of moves, and
 customisable avatars. Each epic is described in [docs/epics.md](docs/epics.md) and tracked in a checklist
-under `docs/epic-<code>/todo.md`.
+under `docs/epic-<code>/todo.md`. A proposed third cycle would let Flowa run as a single-profile,
+federated or local-only instance over ActivityPub, off by default; nothing of it is built yet, and its
+design and plan are in [docs/federation.md](docs/federation.md).
 
 ## Run
 
