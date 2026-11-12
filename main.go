@@ -6104,17 +6104,26 @@ func (a *app) notifyAt(userID, actorID int64, kind string, postID, commentID int
 
 // quietKinds are the notifications a block does not silence: a moderator's notice and a new badge.
 // The others between two members go when one blocks the other (handleBlock), and none are made
-// while the block holds (notifyAt), so the bell reads its list without asking about blocks.
+// while the block holds (notifyAt). Those two can still cross, each under READ COMMITTED, so a
+// notification can be written just after the block took the others away; the bell asks about blocks
+// too (notifShown), and such a one is never shown or counted.
 var quietKinds = map[string]bool{"moderation": true, "achievement": true}
 
+// notifShown is the condition that notification n is shown to its member ($1): one of quietKinds,
+// one from nobody, or one from a member with no block between them, whichever blocked whom. The
+// kinds are the fixed names above, never text from a request.
+var notifShown = `(n.kind IN ('` + strings.Join(slices.Sorted(maps.Keys(quietKinds)), "', '") + `') OR n.actor_id IS NULL OR ` +
+	blockFree("$1", "n.actor_id", "false") + `)`
+
 // notificationsSQL is a member's newest notifications ($1 the member, $2 how many); unreadSQL counts
-// the ones not read yet, which the bell asks for on every page.
-const notificationsSQL = `SELECT n.id, n.kind, COALESCE(n.actor_id, 0), COALESCE(n.post_id, 0), COALESCE(n.comment_id, 0),
+// the ones not read yet, which the bell asks for on every page. Both leave out what notifShown does,
+// before the LIMIT, one look in the primary key of blocks each way per notification.
+var notificationsSQL = `SELECT n.id, n.kind, COALESCE(n.actor_id, 0), COALESCE(n.post_id, 0), COALESCE(n.comment_id, 0),
 		COALESCE(c.parent_id, c.id, 0), n.text, n.read, n.created_at
 		FROM notifications n LEFT JOIN comments c ON c.id = n.comment_id
-		WHERE n.user_id = $1 ORDER BY n.id DESC LIMIT $2`
+		WHERE n.user_id = $1 AND ` + notifShown + ` ORDER BY n.id DESC LIMIT $2`
 
-const unreadSQL = `SELECT count(*) FROM notifications WHERE user_id = $1 AND NOT read`
+var unreadSQL = `SELECT count(*) FROM notifications n WHERE n.user_id = $1 AND NOT n.read AND ` + notifShown
 
 func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *user) {
 	rows, err := a.db.Query(notificationsSQL, u.ID, maxNotifList)
@@ -6633,7 +6642,7 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 // block (blockFree) is gone in the same words, so the answer does not say that there is a block.
 func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, bool) {
 	var owner int64
-	err := a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND `+blockFree("$2", "p.user_id", "$3"),
+	err := a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND `+postShown,
 		id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such post.")
@@ -6646,14 +6655,23 @@ func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, b
 	return owner, true
 }
 
+// queryRower is what *sql.DB and *sql.Tx both answer. A helper that may run while a handler holds a
+// transaction takes one, and the handler passes its tx: asking a.db there would need a second
+// connection while the first is held, and with every connection of the pool held that way each
+// request waits for another for ever (TestDBOneConnection).
+type queryRower interface {
+	QueryRow(string, ...any) *sql.Row
+}
+
 // across answers the request with a 404 and msg, the words used when the thing is not there, and
 // reports true when the member and any of others have a block between them, whichever blocked whom.
 // It guards what reaches another member (a comment, a reply, a like), and it holds for moderators too:
 // seeing a blocker's posts for moderation is not a way to answer them. A post or comment that is
-// not shown is answered the same way, as Mastodon does, so a refusal does not tell of a block.
-func (a *app) across(w http.ResponseWriter, msg string, member int64, others ...int64) bool {
+// not shown is answered the same way, as Mastodon does, so a refusal does not tell of a block. q is
+// a.db, or the transaction the handler holds.
+func (a *app) across(q queryRower, w http.ResponseWriter, msg string, member int64, others ...int64) bool {
 	var hit bool
-	err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = ANY($2))
+	err := q.QueryRow(`SELECT EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = ANY($2))
 		OR EXISTS (SELECT 1 FROM blocks WHERE target_id = $1 AND user_id = ANY($2))`, member, pq.Array(others)).Scan(&hit)
 	if err != nil {
 		a.serverError(w, err)
@@ -6671,19 +6689,25 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	owner, ok := a.postOwner(w, id, u)
-	if !ok || a.across(w, "No such post.", u.ID, owner) {
+	// Taking one's own like back always works: across a block, either way, and on a post a moderator
+	// hid. It is decided by the like alone, so the answer says only what the member knew, that they had
+	// liked the post; the count comes with it only when the post is shown to them (unliked).
+	if done := a.unliked(w, `DELETE FROM likes WHERE post_id = $1 AND user_id = $2`,
+		`SELECT (SELECT count(*) FROM likes WHERE post_id = $1) FROM posts p WHERE p.id = $1 AND `+postShown, id, u); done {
 		return
 	}
-	// One statement either way, so two quick clicks cannot race into a duplicate key.
+	owner, ok := a.postOwner(w, id, u)
+	if !ok || a.across(a.db, w, "No such post.", u.ID, owner) {
+		return
+	}
+	// One statement, so two quick clicks cannot race into a duplicate key; a like that is there
+	// already was made by the other click, and stays.
 	res, err := a.db.Exec(`INSERT INTO likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, id, u.ID)
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	n, _ := res.RowsAffected()
-	liked := n == 1
-	if liked {
+	if n, _ := res.RowsAffected(); n == 1 {
 		// Liking, unliking and liking again tells the author once.
 		var told bool
 		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM notifications WHERE user_id = $1 AND actor_id = $2 AND post_id = $3 AND kind = 'like')`, owner, u.ID, id).Scan(&told); err != nil {
@@ -6693,16 +6717,44 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 		if !told {
 			a.notify(owner, u.ID, "like", id, "")
 		}
-	} else if _, err := a.db.Exec(`DELETE FROM likes WHERE post_id = $1 AND user_id = $2`, id, u.ID); err != nil {
-		a.serverError(w, err)
-		return
 	}
 	var likes int
 	if err := a.db.QueryRow(`SELECT count(*) FROM likes WHERE post_id = $1`, id).Scan(&likes); err != nil {
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
+	writeJSON(w, http.StatusOK, map[string]any{"liked": true, "likes": likes})
+}
+
+// postShown is the condition that post p is shown to the viewer ($2, and $3 whether they may hide
+// posts), as postOwner asks it.
+var postShown = `(p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND ` + blockFree("$2", "p.user_id", "$3")
+
+// unliked is the first half of a like toggle: del removes the member's own like ($1 the post or
+// comment, $2 the member), whatever stands between them and the author. When there was one it answers
+// the request, {"liked": false}, with "likes" read by count ($1, $2, $3 whether they may hide posts)
+// only if that finds the thing shown to them, and reports true. With no like to take back it does
+// nothing and the toggle goes on to like.
+func (a *app) unliked(w http.ResponseWriter, del, count string, id int64, u *user) bool {
+	res, err := a.db.Exec(del, id, u.ID)
+	if err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false
+	}
+	out := map[string]any{"liked": false}
+	var likes int
+	err = a.db.QueryRow(count, id, u.ID, can(u, permPostHide)).Scan(&likes)
+	if err == nil {
+		out["likes"] = likes
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return true
+	}
+	writeJSON(w, http.StatusOK, out)
+	return true
 }
 
 /* ---------- bookmarks: skills, combos and posts to come back to ---------- */
@@ -6960,16 +7012,19 @@ type commentRow struct {
 	body                                string
 }
 
+// commentShown is comment c with its post p, when it is shown to the viewer ($1 the comment, $2 the
+// viewer, $3 whether they may hide posts), as commentRow asks it.
+var commentShown = `comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments rc ON rc.id = c.parent_id WHERE c.id = $1
+		AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)
+		AND ` + blockFree("$2", "c.user_id", "$3") + ` AND ` + blockFree("$2", "p.user_id", "$3") + ` AND (rc.id IS NULL OR ` + blockFree("$2", "rc.user_id", "$3") + `)`
+
 func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (commentRow, bool) {
 	var c commentRow
 	var secs float64
 	// A comment is gone to the viewer when it, the comment it answers or its post is by someone on
 	// the other side of a block (blockFree), as it is when it was hidden.
 	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
-		FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments rc ON rc.id = c.parent_id WHERE c.id = $1
-		AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)
-		AND `+blockFree("$2", "c.user_id", "$3")+` AND `+blockFree("$2", "p.user_id", "$3")+` AND (rc.id IS NULL OR `+blockFree("$2", "rc.user_id", "$3")+`)`,
-		id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+		FROM `+commentShown, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "That comment is gone.")
 		return c, false
@@ -7068,7 +7123,7 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	owner, ok := a.postOwner(w, id, u)
-	if !ok || a.across(w, "No such post.", u.ID, owner) {
+	if !ok || a.across(a.db, w, "No such post.", u.ID, owner) {
 		return
 	}
 	tx, err := a.db.Begin()
@@ -7088,7 +7143,8 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 			err = sql.ErrNoRows
 		}
 		// Nobody answers a comment, or joins a thread, begun by someone on the other side of a block.
-		if err == nil && a.across(w, "That comment is gone.", u.ID, answered, rootOwner) {
+		// It asks the transaction: a.db here would wait for a second connection while this one is held.
+		if err == nil && a.across(tx, w, "That comment is gone.", u.ID, answered, rootOwner) {
 			return
 		}
 		if errors.Is(err, sql.ErrNoRows) {
@@ -7283,15 +7339,20 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "placeholder": how == "kept"})
 }
 
-// handleLikeComment toggles a like on a comment in one statement either way.
+// handleLikeComment toggles a like on a comment, one statement either way.
 func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user) {
 	w, ok := allowed(w, a.lim.likes, u, "likes")
 	if !ok {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	// Taking one's own like back always works, as it does for posts (handleLike).
+	if done := a.unliked(w, `DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2`,
+		`SELECT (SELECT count(*) FROM comment_likes WHERE comment_id = $1) FROM `+commentShown, id, u); done {
+		return
+	}
 	c, ok := a.commentRow(w, id, u)
-	if !ok || a.across(w, "That comment is gone.", u.ID, c.userID) {
+	if !ok || a.across(a.db, w, "That comment is gone.", u.ID, c.userID) {
 		return
 	}
 	if c.deleted {
@@ -7303,9 +7364,7 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 		a.serverError(w, err)
 		return
 	}
-	n, _ := res.RowsAffected()
-	liked := n == 1
-	if liked {
+	if n, _ := res.RowsAffected(); n == 1 {
 		var told bool
 		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM notifications WHERE user_id = $1 AND actor_id = $2 AND comment_id = $3 AND kind = 'comment_like')`, c.userID, u.ID, id).Scan(&told); err != nil {
 			a.serverError(w, err)
@@ -7314,37 +7373,43 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 		if !told {
 			a.notifyAt(c.userID, u.ID, "comment_like", c.postID, id, "")
 		}
-	} else if _, err := a.db.Exec(`DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2`, id, u.ID); err != nil {
-		a.serverError(w, err)
-		return
 	}
 	var likes int
 	if err := a.db.QueryRow(`SELECT count(*) FROM comment_likes WHERE comment_id = $1`, id).Scan(&likes); err != nil {
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "likes": likes})
+	writeJSON(w, http.StatusOK, map[string]any{"liked": true, "likes": likes})
 }
 
 /* ---------- blocks: members a member does not want to see or hear from ---------- */
 
-// blockTarget reads the member a block or an unblock is about, answering the request itself when it
-// is no good: nobody blocks themself (400). Whether the account exists is the caller's question.
-func blockTarget(w http.ResponseWriter, r *http.Request, u *user) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
+// blockTarget finds the member a block or an unblock is about, by username as the profile route
+// does, and answers the request itself when it is no good: nobody blocks themself (400), and a name
+// that is no account is a 404 in the profile route's words. A name and not an id, so that blocking and
+// the list of blocks tell nobody anything the profile of that name does not: by ids, trying each in
+// turn would put a name to every account, those who never posted and are not in the people list too.
+func (a *app) blockTarget(w http.ResponseWriter, r *http.Request, u *user) (int64, bool) {
+	name := strings.ToLower(r.PathValue("username"))
+	if name == u.Username {
+		fail(w, http.StatusBadRequest, "You cannot block yourself.")
+		return 0, false
+	}
+	var id int64
+	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return 0, false
 	}
-	if id == u.ID {
-		fail(w, http.StatusBadRequest, "You cannot block yourself.")
+	if err != nil {
+		a.serverError(w, err)
 		return 0, false
 	}
 	return id, true
 }
 
 // handleBlock blocks a member for the one asking; blocking again changes nothing and is answered
-// the same. An account that does not exist, or was deleted, is a 404. Anyone may be blocked, a
+// the same. A name that is no account, or one deleted meanwhile, is a 404. Anyone may be blocked, a
 // moderator or an admin too, and anyone signed in may block, a muted member too: a block is for the
 // blocker's own peace, not something they say to others. It never weakens moderation: reports,
 // the queue and moderators' actions do not look at blocks, and a moderator still sees the posts of a
@@ -7354,7 +7419,7 @@ func (a *app) handleBlock(w http.ResponseWriter, r *http.Request, u *user) {
 	if !ok {
 		return
 	}
-	id, ok := blockTarget(w, r, u)
+	id, ok := a.blockTarget(w, r, u)
 	if !ok {
 		return
 	}
@@ -7381,14 +7446,16 @@ func (a *app) handleBlock(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]bool{"blocked": true})
 }
 
-// handleUnblock takes a block back. There being no such block is not an error, whoever the id is:
-// the answer is the same, and a deleted account's blocks went with it.
+// handleUnblock takes a block back. There being no such block is not an error: the answer is the
+// same whether there was one or not. A name that is no account is a 404, as for a block: the profile
+// route answers the same for it, so this tells nothing new, and an account that is gone has no block
+// to take back (a deleted account's blocks went with it), so the page can drop it from its list.
 func (a *app) handleUnblock(w http.ResponseWriter, r *http.Request, u *user) {
 	w, ok := allowed(w, a.lim.blocks, u, "blocks")
 	if !ok {
 		return
 	}
-	id, ok := blockTarget(w, r, u)
+	id, ok := a.blockTarget(w, r, u)
 	if !ok {
 		return
 	}
@@ -7470,8 +7537,8 @@ func (a *app) socialRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/notifications", social(a.handleNotifications))
 	mux.HandleFunc("PUT /api/notifications/read", social(a.handleReadNotifications))
 	mux.HandleFunc("GET /api/blocks", social(a.handleBlocks))
-	mux.HandleFunc("PUT /api/users/{id}/block", social(a.handleBlock))
-	mux.HandleFunc("DELETE /api/users/{id}/block", social(a.handleUnblock))
+	mux.HandleFunc("PUT /api/users/{username}/block", social(a.handleBlock))
+	mux.HandleFunc("DELETE /api/users/{username}/block", social(a.handleUnblock))
 }
 
 /* ---------- passwords nobody should pick ---------- */

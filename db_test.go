@@ -1770,7 +1770,7 @@ func TestDBFlagsGateAPI(t *testing.T) {
 		{"DELETE", fmt.Sprintf("/api/comments/%d", c)}, {"PUT", fmt.Sprintf("/api/comments/%d", c)}, {"GET", fmt.Sprintf("/api/comments/%d/replies", c)},
 		{"GET", fmt.Sprintf("/api/comments/%d/thread", c)}, {"POST", fmt.Sprintf("/api/comments/%d/like", c)},
 		{"GET", "/api/notifications"}, {"PUT", "/api/notifications/read"},
-		{"GET", "/api/blocks"}, {"PUT", fmt.Sprintf("/api/users/%d/block", uid+1)}, {"DELETE", fmt.Sprintf("/api/users/%d/block", uid+1)},
+		{"GET", "/api/blocks"}, {"PUT", "/api/users/someone/block"}, {"DELETE", "/api/users/someone/block"},
 	}
 	body := map[string]any{"body": "hello"}
 	gated := func(routes [][2]string, off bool) {
@@ -1843,13 +1843,13 @@ func TestDBBlocks(t *testing.T) {
 	boID, bo := e.user("bo", "user")    // the one ana blocks
 	cyID, cy := e.user("cy", "user")    // someone else
 	modID, mod := e.user("mo", "moderator")
-	block := func(tok string, id int64, want int) {
+	block := func(tok, name string, want int) {
 		t.Helper()
-		e.must(want, tok, "PUT", fmt.Sprintf("/api/users/%d/block", id), nil)
+		e.must(want, tok, "PUT", "/api/users/"+name+"/block", nil)
 	}
-	unblock := func(tok string, id int64, want int) {
+	unblock := func(tok, name string, want int) {
 		t.Helper()
-		e.must(want, tok, "DELETE", fmt.Sprintf("/api/users/%d/block", id), nil)
+		e.must(want, tok, "DELETE", "/api/users/"+name+"/block", nil)
 	}
 	feed := func(tok, path string) []int64 { t.Helper(); return postIDs(e.must(200, tok, "GET", path, nil)) }
 	has := func(ids []int64, id int64) bool { return slices.Contains(ids, id) }
@@ -1871,20 +1871,29 @@ func TestDBBlocks(t *testing.T) {
 	cyRoot := num(e.comment(cy, cyPost, 0, "cy starts another")["id"])
 	anaOnCy := num(e.comment(ana, cyPost, cyRoot, "ana answers cy")["id"])
 	e.must(200, ana, "POST", "/api/bookmarks", map[string]any{"kind": "post", "ref": fmt.Sprint(boPost)})
-	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2`, anaID, boID); n != 2 {
-		t.Fatalf("before the block ana has %d notifications from bo, want a comment and a like", n)
+	// Likes each way, on a post and on a comment, to be taken back across the block.
+	e.must(200, bo, "POST", fmt.Sprintf("/api/comments/%d/like", anaOnCy), nil)
+	e.must(200, ana, "POST", fmt.Sprintf("/api/posts/%d/like", boPost), nil)
+	e.must(200, ana, "POST", fmt.Sprintf("/api/comments/%d/like", boOnAna), nil)
+	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2`, anaID, boID); n != 3 {
+		t.Fatalf("before the block ana has %d notifications from bo, want a comment, a like and a comment like", n)
 	}
 
-	// The endpoints: nobody blocks themself, an account that is not there is a 404, twice is once.
-	block(ana, anaID, 400)
-	unblock(ana, anaID, 400)
-	block(ana, 999999, 404)
-	block(ana, boID, 200)
-	block(ana, boID, 200)
+	// The endpoints, by username as the profile is: nobody blocks themself, a name that is no account is
+	// a 404 both ways, twice is once.
+	boBefore := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id <> $2`, boID, anaID)
+	block(ana, "ana", 400)
+	block(ana, "ANA", 400)
+	unblock(ana, "ana", 400)
+	block(ana, "nobody", 404)
+	unblock(ana, "nobody", 404)
+	block(ana, fmt.Sprint(boID), 404) // an id is not a name
+	block(ana, "bo", 200)
+	block(ana, "BO", 200)
 	if rows(anaID, boID) != 1 {
 		t.Fatalf("blocking twice made %d rows", rows(anaID, boID))
 	}
-	unblock(ana, modID, 200) // no such block: nothing to do, and the same answer
+	unblock(ana, "mo", 200) // no such block: nothing to do, and the same answer
 	list := e.must(200, ana, "GET", "/api/blocks", nil)
 	if bl := list["blocks"].([]any); len(bl) != 1 || bl[0].(map[string]any)["user"].(map[string]any)["username"] != "bo" || num(list["total"]) != 1 {
 		t.Fatalf("ana's list of blocks: %v", list["_raw"])
@@ -1893,12 +1902,19 @@ func TestDBBlocks(t *testing.T) {
 		t.Fatalf("bo is shown who blocked him: %v", bl)
 	}
 
-	// The block took the notifications between them with it, and the blocked member is not told.
+	// The block took the notifications between them with it, and the blocked member is not told: bo
+	// has exactly the notifications he had before (all from cy), none from ana, and ana none from bo.
 	if n := e.count(`SELECT count(*) FROM notifications WHERE (user_id = $1 AND actor_id = $2) OR (user_id = $2 AND actor_id = $1)`, anaID, boID); n != 0 {
 		t.Fatalf("%d notifications between ana and bo are left after the block", n)
 	}
-	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND kind = 'like'`, boID); n != 0 {
-		t.Fatal("bo was told something")
+	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1`, boID); n != boBefore || boBefore == 0 {
+		t.Fatalf("bo has %d notifications after the block, %d not from ana before: the block told him something", n, boBefore)
+	}
+	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2`, boID, anaID); n != 0 {
+		t.Fatalf("bo has %d notifications from ana", n)
+	}
+	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2`, anaID, boID); n != 0 {
+		t.Fatalf("ana has %d notifications from bo", n)
 	}
 
 	// The timeline, a profile's posts, one post, the people list and the bookmarks: bo is gone for
@@ -1998,23 +2014,90 @@ func TestDBBlocks(t *testing.T) {
 			t.Fatalf("%s %s: %d %v, want 404 %q", method, path, code, out["_raw"], msg)
 		}
 	}
+	// Either side takes back a like given before the block, on a post or a comment: it is answered
+	// liked false, with no count of a thing they are not shown, so it tells nothing new. Liking it
+	// again is refused like any other like across the block.
+	likes := func() int {
+		return e.count(`SELECT count(*) FROM likes WHERE (user_id = $1 AND post_id = $2) OR (user_id = $3 AND post_id = $4)`, boID, anaPost, anaID, boPost) +
+			e.count(`SELECT count(*) FROM comment_likes WHERE (user_id = $1 AND comment_id = $2) OR (user_id = $3 AND comment_id = $4)`, boID, anaOnCy, anaID, boOnAna)
+	}
+	if likes() != 4 {
+		t.Fatalf("before the unlikes there are %d of the 4 likes", likes())
+	}
+	for _, x := range []struct {
+		tok, path, gone string
+	}{
+		{bo, fmt.Sprintf("/api/posts/%d/like", anaPost), "No such post."},
+		{bo, fmt.Sprintf("/api/comments/%d/like", anaOnCy), "That comment is gone."},
+		{ana, fmt.Sprintf("/api/posts/%d/like", boPost), "No such post."},
+		{ana, fmt.Sprintf("/api/comments/%d/like", boOnAna), "That comment is gone."},
+	} {
+		if out := e.must(200, x.tok, "POST", x.path, nil); out["liked"] != false || out["likes"] != nil {
+			t.Fatalf("taking back a like across a block, %s: %v", x.path, out["_raw"])
+		}
+		refused(x.tok, "POST", x.path, nil, x.gone)
+	}
+	if likes() != 0 {
+		t.Fatalf("%d likes across the block are left after taking them back", likes())
+	}
+	if out := e.must(200, cy, "GET", fmt.Sprintf("/api/posts/%d", anaPost), nil); num(out["posts"].([]any)[0].(map[string]any)["likes"]) != 0 {
+		t.Fatalf("bo's like still counts for cy: %v", out["_raw"])
+	}
+	// A like taken back where the post is shown answers with the count, as before.
+	e.must(200, cy, "POST", fmt.Sprintf("/api/posts/%d/like", anaPost), nil)
+	if out := e.must(200, cy, "POST", fmt.Sprintf("/api/posts/%d/like", anaPost), nil); out["liked"] != false || out["likes"] != float64(0) {
+		t.Fatalf("cy takes back a like: %v", out["_raw"])
+	}
+
 	before := e.count(`SELECT count(*) FROM comments`)
 	refused(bo, "POST", fmt.Sprintf("/api/posts/%d/comments", anaPost), map[string]any{"body": "hi"}, "No such post.")
 	refused(bo, "POST", fmt.Sprintf("/api/posts/%d/comments", cyPost), map[string]any{"body": "hi", "parentId": anaOnCy}, "That comment is gone.")
-	refused(bo, "POST", fmt.Sprintf("/api/posts/%d/like", anaPost), nil, "No such post.")
-	refused(bo, "POST", fmt.Sprintf("/api/comments/%d/like", anaOnCy), nil, "That comment is gone.")
 	anaRoot := num(e.comment(ana, cyPost, 0, "ana's own thread")["id"])
 	cyInAna := num(e.comment(cy, cyPost, anaRoot, "cy answers ana")["id"])
 	refused(bo, "POST", fmt.Sprintf("/api/posts/%d/comments", cyPost), map[string]any{"body": "me too", "parentId": cyInAna}, "That comment is gone.")
 	if n := e.count(`SELECT count(*) FROM comments`); n != before+2 {
 		t.Fatalf("bo's refused comments were written: %d, want %d", n, before+2)
 	}
-	if n := e.count(`SELECT count(*) FROM likes WHERE user_id = $1 AND post_id = $2`, boID, anaPost); n != 1 {
-		t.Fatalf("bo's like from before the block: %d rows, want the one there was", n)
-	}
 	// And the other way round: ana cannot answer or like what she blocked either.
-	refused(ana, "POST", fmt.Sprintf("/api/posts/%d/like", boPost), nil, "No such post.")
-	refused(ana, "POST", fmt.Sprintf("/api/comments/%d/like", boOnAna), nil, "That comment is gone.")
+	if likes() != 0 {
+		t.Fatal("a refused like was written")
+	}
+	// Replies from both sides at the same moment, on a pool of one connection: each is refused, neither
+	// waits for ever (a check run beside the open transaction on a second connection would), nothing is
+	// written and nobody is told.
+	nBefore := e.count(`SELECT count(*) FROM notifications`)
+	e.a.db.SetMaxOpenConns(1)
+	type answer struct {
+		code int
+		raw  any
+	}
+	at := make(chan answer, 2)
+	for _, x := range []struct {
+		tok    string
+		parent int64
+	}{{bo, anaOnCy}, {ana, boRoot}} {
+		go func() {
+			code, out := e.do(x.tok, "POST", fmt.Sprintf("/api/posts/%d/comments", cyPost), map[string]any{"body": "at the same moment", "parentId": x.parent})
+			at <- answer{code, out["_raw"]}
+		}()
+	}
+	for range 2 {
+		select {
+		case got := <-at:
+			if got.code != 404 {
+				t.Fatalf("a reply across a block at the same moment: %d %v", got.code, got.raw)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a reply across a block did not answer in 10 s on one connection: something asks a.db while the reply's transaction is open")
+		}
+	}
+	e.a.db.SetMaxOpenConns(8)
+	if n := e.count(`SELECT count(*) FROM comments`); n != before+2 {
+		t.Fatalf("a reply at the same moment slipped through: %d comments, want %d", n, before+2)
+	}
+	if n := e.count(`SELECT count(*) FROM notifications`); n != nBefore {
+		t.Fatalf("replies refused at the same moment made %d notifications", n-nBefore)
+	}
 	mention := e.post(bo, "a nod to @ana")
 	e.comment(bo, cyPost, cyRoot, "and @ana again")
 	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2`, anaID, boID); n != 0 {
@@ -2026,6 +2109,37 @@ func TestDBBlocks(t *testing.T) {
 	e.comment(cy, cyPost, cyRoot, "cy mentions @ana")
 	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND kind = 'mention'`, anaID); n != 1 {
 		t.Fatalf("cy's mention of ana: %d notifications, want 1", n)
+	}
+	// A notification can still slip in beside a block (its delete and notifyAt's insert can cross), so the
+	// bell asks about blocks too: one written straight after the block is neither listed nor counted, on
+	// either side, while a moderator's notice from the same account still is.
+	bell := func(tok string) (ids []int64, unread int64) {
+		t.Helper()
+		out := e.must(200, tok, "GET", "/api/notifications", nil)
+		for _, it := range out["items"].([]any) {
+			ids = append(ids, num(it.(map[string]any)["id"]))
+		}
+		return ids, num(out["unread"])
+	}
+	note := func(to, from int64, kind string) int64 {
+		t.Helper()
+		var id int64
+		if err := e.a.db.QueryRow(`INSERT INTO notifications (user_id, actor_id, kind, post_id, text) VALUES ($1, $2, $3, $4, 'x') RETURNING id`, to, from, kind, anaPost).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	anaIDs, anaUnread := bell(ana)
+	boIDs, boUnread := bell(bo)
+	slipped, toBo, notice := note(anaID, boID, "like"), note(boID, anaID, "reply"), note(anaID, boID, "moderation")
+	if ids, unread := bell(ana); has(ids, slipped) || !has(ids, notice) || len(ids) != len(anaIDs)+1 || unread != anaUnread+1 {
+		t.Fatalf("ana's bell after a like slipped past the block: %v unread %d (before %v unread %d; slipped %d, notice %d)", ids, unread, anaIDs, anaUnread, slipped, notice)
+	}
+	if ids, unread := bell(bo); has(ids, toBo) || len(ids) != len(boIDs) || unread != boUnread {
+		t.Fatalf("bo's bell after a reply slipped past the block: %v unread %d (before %v unread %d)", ids, unread, boIDs, boUnread)
+	}
+	if _, err := e.a.db.Exec(`DELETE FROM notifications WHERE id = ANY($1)`, pq.Array([]int64{slipped, toBo, notice})); err != nil {
+		t.Fatal(err)
 	}
 	// Reports still work across a block, both ways.
 	e.must(200, ana, "POST", "/api/reports", map[string]any{"kind": "post", "id": boPost, "reason": "spam"})
@@ -2055,17 +2169,17 @@ func TestDBBlocks(t *testing.T) {
 	}
 
 	// Blocking someone who blocks you: two rows, and taking one back leaves the other in force.
-	block(bo, anaID, 200)
+	block(bo, "ana", 200)
 	if rows(anaID, boID) != 1 || rows(boID, anaID) != 1 {
 		t.Fatal("both blocks are kept")
 	}
-	unblock(ana, boID, 200)
-	unblock(ana, boID, 200)
+	unblock(ana, "bo", 200)
+	unblock(ana, "bo", 200)
 	if ids := feed(ana, "/api/posts?user=bo"); len(ids) != 0 {
 		t.Fatalf("bo's block of ana still hides his posts from her: %v", ids)
 	}
 	refused(ana, "POST", fmt.Sprintf("/api/posts/%d/like", boPost), nil, "No such post.")
-	unblock(bo, anaID, 200)
+	unblock(bo, "ana", 200)
 	if ids := feed(ana, "/api/posts?user=bo"); len(ids) == 0 {
 		t.Fatalf("with no block left ana sees bo's posts again: %v", ids)
 	}
@@ -2082,13 +2196,13 @@ func TestDBBlocks(t *testing.T) {
 	if _, err := e.a.db.Exec(`UPDATE users SET muted_until = now() + interval '1 day', mute_reason = 'test' WHERE id = $1`, anaID); err != nil {
 		t.Fatal(err)
 	}
-	block(ana, boID, 200)
-	unblock(ana, boID, 200)
-	block(ana, boID, 200)
+	block(ana, "bo", 200)
+	unblock(ana, "bo", 200)
+	block(ana, "bo", 200)
 	if _, err := e.a.db.Exec(`UPDATE users SET muted_until = NULL, suspended_until = now() + interval '1 day' WHERE id = $1`, anaID); err != nil {
 		t.Fatal(err)
 	}
-	block(ana, modID, 401)
+	block(ana, "mo", 401)
 	if ids := feed(bo, "/api/posts?user=ana"); len(ids) != 0 {
 		t.Fatalf("a suspended member's block no longer holds: %v", ids)
 	}
@@ -2099,7 +2213,7 @@ func TestDBBlocks(t *testing.T) {
 
 	// A member who blocks a moderator: the moderator still sees the member's posts and moderates
 	// them, and the member is told of it; the moderator cannot comment on or like them.
-	block(ana, modID, 200)
+	block(ana, "mo", 200)
 	if ids := feed(mod, "/api/posts?user=ana"); !has(ids, anaPost) {
 		t.Fatalf("a moderator ana blocked no longer sees her posts: %v", ids)
 	}
@@ -2114,10 +2228,10 @@ func TestDBBlocks(t *testing.T) {
 
 	// A moderator who blocks a member: the member's posts leave the moderator's timeline, but a
 	// report of them reaches the queue and the moderator acts on it.
-	unblock(ana, modID, 200)
+	unblock(ana, "mo", 200)
 	deeID, dee := e.user("dee", "user")
 	deePost := e.post(dee, "dee's post")
-	block(mod, deeID, 200)
+	block(mod, "dee", 200)
 	if ids := feed(mod, "/api/posts"); has(ids, deePost) {
 		t.Fatal("a moderator's own block hides the member from their timeline")
 	}
@@ -2135,21 +2249,123 @@ func TestDBBlocks(t *testing.T) {
 	}
 
 	// A deleted account's blocks go with it, whichever side it was on.
-	block(cy, deeID, 200)
-	block(dee, boID, 200)
+	block(cy, "dee", 200)
+	block(dee, "bo", 200)
 	if _, err := e.a.db.Exec(`DELETE FROM users WHERE id = $1`, deeID); err != nil {
 		t.Fatal(err)
 	}
 	if n := e.count(`SELECT count(*) FROM blocks WHERE user_id = $1 OR target_id = $1`, deeID); n != 0 {
 		t.Fatalf("%d blocks of a deleted account are left", n)
 	}
-	block(cy, deeID, 404)
+	block(cy, "dee", 404)
 	if e.count(`SELECT count(*) FROM blocks WHERE user_id = $1`, modID) != 0 {
 		t.Fatal("the moderator's block of dee went with dee")
 	}
 	// The database refuses a block of oneself whatever the handler does.
 	if _, err := e.a.db.Exec(`INSERT INTO blocks (user_id, target_id) VALUES ($1, $1)`, boID); err == nil {
 		t.Fatal("the database took a block of oneself")
+	}
+
+	// Blocks are by name, so they put a name to nobody: zed never posted and is not among the people
+	// (a hundred members have more XP), and trying ids around his, as block and then the list of
+	// blocks, finds nothing to block and lists nobody.
+	if _, err := e.a.db.Exec(`INSERT INTO users (username, pw_hash, stats) SELECT 'xp' || g, 'x', jsonb_build_object('xp', 1000) FROM generate_series(1, 100) g`); err != nil {
+		t.Fatal(err)
+	}
+	zedID, _ := e.user("zed", "user")
+	if got := people(cy); slices.Contains(got, "zed") || len(got) != 100 {
+		t.Fatalf("zed is in the people list, or it is not full: %d names", len(got))
+	}
+	for id := zedID - 3; id <= zedID+3; id++ {
+		if code, out := e.do(cy, "PUT", fmt.Sprintf("/api/users/%d/block", id), nil); code != 404 {
+			t.Fatalf("blocking by the id %d: %d %v", id, code, out["_raw"])
+		}
+	}
+	if list := e.must(200, cy, "GET", "/api/blocks", nil); strings.Contains(list["_raw"].(string), "zed") || len(list["blocks"].([]any)) != 0 {
+		t.Fatalf("cy's list of blocks after guessing ids: %v", list["_raw"])
+	}
+	if n := e.count(`SELECT count(*) FROM blocks WHERE target_id = $1`, zedID); n != 0 {
+		t.Fatalf("guessing ids blocked zed %d times", n)
+	}
+}
+
+// Every write that opens a transaction, and the social writes beside them, answer on a pool of one
+// connection: a handler that asks a.db while it holds a transaction would wait for a second connection
+// for ever, and with the pool's 8 held that way every request that needs the database would hang.
+// Each request has 10 s; one that does not answer fails the test instead of hanging it.
+func TestDBOneConnection(t *testing.T) {
+	e := newEnv(t)
+	if err := e.a.seedCatalogs(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"moderation", "catalogEditor", "suggest", "community", "game"} {
+		e.setFlag(f, true)
+	}
+	adminID, admin := e.user("boss", "admin")
+	admin2ID, _ := e.user("deputy", "admin")
+	modID, mod := e.user("mo", "moderator")
+	anaID, ana := e.user("ana", "user")
+	_, bo := e.user("bo", "user")
+	goneID, _ := e.user("gone", "user")
+	if _, err := e.a.db.Exec(`UPDATE users SET owner = true WHERE id = $1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	e.a.db.SetMaxOpenConns(1)
+	within := func(want int, tok, method, path string, body any) map[string]any {
+		t.Helper()
+		type answer struct {
+			code int
+			out  map[string]any
+		}
+		at := make(chan answer, 1)
+		go func() { code, out := e.do(tok, method, path, body); at <- answer{code, out} }()
+		select {
+		case got := <-at:
+			if got.code != want {
+				t.Fatalf("%s %s on one connection: got %d, want %d: %v", method, path, got.code, want, got.out["_raw"])
+			}
+			return got.out
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s %s did not answer in 10 s on one connection: it asks a.db while it holds a transaction", method, path)
+			return nil
+		}
+	}
+	id := func(out map[string]any, key string) int64 { return num(out[key].(map[string]any)["id"]) }
+
+	within(200, ana, "PUT", "/api/me", map[string]any{"bio": "one connection"})
+	p := num(within(200, ana, "POST", "/api/posts", map[string]any{"body": "a post"})["posts"].([]any)[0].(map[string]any)["id"])
+	within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil)
+	within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil)
+	c := id(within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "a comment"}), "comment")
+	r := id(within(200, ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "a reply", "parentId": c}), "comment")
+	within(200, ana, "POST", fmt.Sprintf("/api/comments/%d/like", c), nil)
+	within(200, ana, "POST", fmt.Sprintf("/api/comments/%d/like", c), nil)
+	within(200, ana, "PUT", fmt.Sprintf("/api/comments/%d", r), map[string]any{"body": "a reply, edited"})
+	within(200, ana, "PUT", "/api/notifications/read", map[string]any{})
+	within(200, ana, "PUT", "/api/users/bo/block", nil)
+	// Across the block: the reply's check runs inside its transaction, and is refused there.
+	within(404, bo, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "again", "parentId": r})
+	within(200, ana, "GET", "/api/blocks", nil)
+	within(200, ana, "DELETE", "/api/users/bo/block", nil)
+	within(200, bo, "POST", "/api/reports", map[string]any{"kind": "post", "id": p, "reason": "spam"})
+	within(200, mod, "POST", "/api/mod/actions", map[string]any{"action": "hide", "kind": "post", "id": p, "reason": "test"})
+	within(200, mod, "POST", "/api/mod/actions", map[string]any{"action": "restore", "kind": "post", "id": p})
+	within(200, mod, "POST", "/api/mod/resolve", map[string]any{"kind": "post", "id": p, "outcome": "dismissed"})
+	within(200, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/role", modID), map[string]any{"role": "user"})
+	within(200, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/owner", admin2ID), nil)
+	within(200, admin, "DELETE", fmt.Sprintf("/api/admin/users/%d", goneID), nil)
+	pub := within(200, admin, "GET", "/api/admin/catalog/poi", nil)["published"]
+	within(200, admin, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": pub})
+	within(200, admin, "POST", "/api/admin/catalog/poi/publish", map[string]any{"note": "one connection"})
+	within(200, admin, "POST", "/api/admin/catalog/poi/revisions/1/restore", nil)
+	within(200, ana, "PUT", "/api/me", map[string]any{"prefs": map[string]bool{"shareTransitions": true}})
+	within(200, ana, "POST", "/api/suggest/labels", map[string]any{"prop": "nunchaku", "deltas": []map[string]any{{"a": "F5", "b": "F7", "from": "untested", "to": "works"}}})
+	within(200, ana, "DELETE", fmt.Sprintf("/api/comments/%d", r), nil)
+	within(200, bo, "DELETE", fmt.Sprintf("/api/comments/%d", c), nil)
+	within(200, ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
+	e.a.db.SetMaxOpenConns(8)
+	if e.count(`SELECT count(*) FROM users WHERE id = $1`, goneID) != 0 || e.count(`SELECT count(*) FROM posts WHERE user_id = $1`, anaID) != 0 {
+		t.Fatal("the writes on one connection did not all happen")
 	}
 }
 

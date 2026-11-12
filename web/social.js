@@ -96,9 +96,10 @@ async function loadBlocks() {
 // member everywhere at once; the page takes their posts out of what it shows and asks again for the
 // rest (the timeline, the people list, the bell), so nothing waits for a reload.
 async function setBlock(id, name, on) {
-  if (on && !confirm(`Block @${name}?\n\nYou will no longer see their posts and comments, and they will no longer see yours. They cannot comment on your posts, reply to you, like what you write or mention you. They are not told.\n\nYou can unblock them from their profile or from your Profile page.`)) return;
-  const r = await api(`users/${id}/block`, on ? 'PUT' : 'DELETE');
-  if (!r.ok) { toast(r.error); return; }
+  if (on && !confirm(`Block @${name}?\n\nYou will no longer see their posts and comments, and they will no longer see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block.\n\nYou can unblock them from their profile or from your Profile page.`)) return;
+  const r = await api(`users/${encodeURIComponent(name)}/block`, on ? 'PUT' : 'DELETE');
+  // An account that is gone has no block left to take back: the list is read again without it.
+  if (!r.ok) { toast(r.error); if (!on && r.status === 404) { social.blocks = null; render(); } return; }
   if (on) social.posts = social.posts.filter(p => p.userId !== id);
   Object.assign(social, { stale: true, people: null, blocks: null });
   const pr = social.profile[name];
@@ -124,7 +125,7 @@ function blocksCard() {
       + (b.total > b.blocks.length ? `<p class="tiny" style="margin-top:8px">The ${b.blocks.length} latest of ${b.total.toLocaleString()} blocks are shown. The others hold too.</p>` : '')
     : '<p class="small muted">You have not blocked anyone.</p>';
   return `<div class="card span-2" id="blocks-card"><div class="card-h"><h2 class="grow" tabindex="-1">Blocked accounts</h2>${b?.blocks ? `<span class="sub num">${b.total}</span>` : ''}</div>
-    <p class="small muted" style="margin-bottom:10px">You do not see the posts and comments of people you block, and they do not see yours. They cannot comment on, like or mention what you write, and they are not told. Block someone from their profile.</p>${rows}</div>`;
+    <p class="small muted" style="margin-bottom:10px">You do not see the posts and comments of people you block, and they do not see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block. Block someone from their profile.</p>${rows}</div>`;
 }
 async function loadProfile(name) {
   social.profile[name] = { loading: true };
@@ -435,7 +436,7 @@ function pageUser(name) {
   const links = Object.keys(LINK_KINDS).filter(k => (u.links || {})[k]).map(k => `<a class="btn sm social-${k}" href="${esc(linkURL(k, u.links[k]))}" target="_blank" rel="noopener noreferrer">${icon(k)}${esc(LINK_KINDS[k].name)}</a>`).join('');
   const keys = (pr.achievements || []).slice().reverse(), blocked = !mine && pr.blocked;
   const blockBtn = mine ? '' : `<button class="btn sm" data-act="${blocked ? 'unblock' : 'block'}" data-id="${u.id}" data-name="${esc(u.username)}">${icon('block')}${blocked ? 'Unblock' : 'Block'}</button>`;
-  const posts = blocked ? `<div class="empty" id="blocked-note">You blocked @${esc(u.username)}, so their posts are not shown, and they cannot comment on, like or mention what you write. Unblock them to see their posts again.</div>`
+  const posts = blocked ? `<div class="empty" id="blocked-note">You blocked @${esc(u.username)}, so their posts are not shown, and they cannot comment on, reply to or like what you write. If they mention you, you are not told. Unblock them to see their posts again.</div>`
     : feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.');
   return `<div class="card prof-head"><div class="row wrap" style="gap:18px;align-items:flex-start">${avatarHTML(u, 'big')}
       <div class="grow" style="min-width:220px"><h1>${esc(u.displayName || u.username)}</h1><p class="muted">@${esc(u.username)}${u.role !== 'user' ? ' · ' + RANK_NAMES[u.role] : ''} · joined ${esc(new Date(u.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p>
@@ -558,7 +559,7 @@ document.addEventListener('click', async e => {
       const r = await api(`posts/${id}/like`, 'POST');
       delete post.liking;
       // A like that did not go through (the post is gone, the connection dropped) is taken back.
-      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes; } else { Object.assign(post, was); toast(r.error); }
+      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes ?? post.likes; } else { Object.assign(post, was); toast(r.error); }
       render(); break;
     }
     case 'cmt-toggle':
@@ -586,7 +587,7 @@ document.addEventListener('click', async e => {
       eachComment(id, c => { c.liked = !c.liked; c.likes = (c.likes || 0) + (c.liked ? 1 : -1); liked = c.liked; });
       render();
       const r = await api(`comments/${id}/like`, 'POST');
-      if (r.ok) eachComment(id, c => { c.liked = r.data.liked; c.likes = r.data.likes; });
+      if (r.ok) eachComment(id, c => { c.liked = r.data.liked; c.likes = r.data.likes ?? c.likes; });
       else { toast(r.error); eachComment(id, c => { c.liked = !liked; c.likes = (c.likes || 0) + (liked ? -1 : 1); }); }
       render(); break;
     }

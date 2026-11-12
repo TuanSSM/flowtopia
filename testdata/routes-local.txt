@@ -8,7 +8,7 @@ DELETE /api/admin/catalog/{prop}/draft
 DELETE /api/admin/users/{id}
 DELETE /api/comments/{id}
 DELETE /api/posts/{id}
-DELETE /api/users/{id}/block
+DELETE /api/users/{username}/block
 GET /
 GET /api/admin/audit
 GET /api/admin/catalog/{prop}
@@ -62,4 +62,4 @@ PUT /api/me
 PUT /api/me/password
 PUT /api/notifications/read
 PUT /api/progress/{prop}
-PUT /api/users/{id}/block
+PUT /api/users/{username}/block

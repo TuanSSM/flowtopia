@@ -677,7 +677,7 @@ app. Both are listed under "Out of scope" in FRD and FWR.
 | `GET /users/{name}/featured` | an empty OrderedCollection at first (pinned posts do not exist yet); cheap, and Mastodon reads `featured` as the pinned posts it fetches for a profile (its ActivityPub page, "Featured collection") |
 | `GET /users/{name}/posts/{id}`, `/comments/{id}` | the Note, or HTML; 404 for audience This server, 410 with a Tombstone for a deleted one (ActivityPub 6.4: 410 when a Tombstone is the body, 404 otherwise; 3.2 allows 404 for an object whose existence is private) |
 | `GET /users/{name}/posts/{id}/picture.jpg`, `GET /users/{name}/avatar.jpg` | the stored picture, public only for federating members and Public posts |
-| `GET /api/fed/...` | the page's own endpoints for follows, search by handle, Home (section 11), behind `authed` and the limits. Blocks of accounts are not here: they are `PUT /api/users/{id}/block`, `DELETE` of the same and `GET /api/blocks`, which every instance has since INS, behind the `community` flag |
+| `GET /api/fed/...` | the page's own endpoints for follows, search by handle, Home (section 11), behind `authed` and the limits. Blocks of accounts are not here: they are `PUT /api/users/{name}/block`, `DELETE` of the same and `GET /api/blocks`, which every instance has since INS, behind the `community` flag |
 
 ### 6.3 Activities in
 
@@ -1294,8 +1294,9 @@ CREATE INDEX follows_followee ON follows (followee_id, state);
 -- member-level blocks, of accounts and of domains. blocks is migration 8 (INS), local accounts only so
 -- far: user_id blocks target_id, never itself, and blocks_target answers "who blocks me". A block hides
 -- each side's posts and comments from the other (a moderator blocked by a member still sees that
--- member's), refuses comments, replies, likes and mentions across it, and removes the notifications
--- between the two; the reads ask through blockFree in main.go, one primary key look per row.
+-- member's), refuses comments, replies and likes across it (taking back one's own like still works),
+-- tells nobody of a mention across it, and removes the notifications between the two; the reads ask
+-- through blockFree in main.go, one primary key look per row.
 CREATE TABLE blocks (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, target_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (user_id, target_id), CONSTRAINT blocks_not_self CHECK (user_id <> target_id));
 CREATE INDEX blocks_target ON blocks (target_id, user_id);

@@ -45,11 +45,14 @@ named but not described.
   [Link cards](#link-cards).
 - **Blocks:** Block on a member's profile, after a question that says what it does. Neither of you then
   sees the other's posts and comments, in the timeline, on profiles, in threads, in the people list or
-  in bookmarks, and neither can comment on, reply to, like or mention the other: those are answered as
-  if the post or comment were not there, and nobody is told of the block. Notifications between the two
-  go with the block. A moderator or admin whom a member blocked still sees that member's posts and
-  moderates them, and reports work whoever blocked whom. Your Profile page lists the accounts you block,
-  with Unblock; so does the blocked member's profile. Behind the `community` flag.
+  in bookmarks, and neither can comment on, reply to or like what the other writes: those are answered
+  as if the post or comment were not there, and nobody is told of the block. If they mention you, the
+  mention is kept and others see it, but you are not told. Notifications between the two go with the
+  block. Their comments from before the block stay under your posts for everyone else; you no longer
+  see them, and a moderator can remove them if they should go. Either of you can still take back a
+  like given before the block. A moderator or admin whom a member blocked still sees that member's
+  posts and moderates them, and reports work whoever blocked whom. Your Profile page lists the
+  accounts you block, with Unblock; so does the blocked member's profile. Behind the `community` flag.
 - **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions and new
   badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
@@ -455,10 +458,11 @@ All of these need a signed-in user. `GET /api/users` (people, most XP first), `G
 comments, each with its two newest replies), `POST /api/posts/{id}/comments` (with `parentId` for a reply),
 `PUT|DELETE /api/comments/{id}`, `GET /api/comments/{id}/replies?after=` (50 at a time),
 `GET /api/comments/{id}/thread`, `POST /api/comments/{id}/like` (toggle), `POST /api/achievements`, `GET /api/notifications`,
-`PUT /api/notifications/read`, `PUT|DELETE /api/users/{id}/block` (block and unblock; both may be sent
-again, blocking oneself is a 400 and an account that is not there a 404), `GET /api/blocks` (the 500 latest
-blocks of the one asking, and how many there are; `GET /api/users/{name}` says `blocked` when you block
-them). Profile fields (`bio`, `links`, `prefs`, `stats`) go through
+`PUT /api/notifications/read`, `PUT|DELETE /api/users/{name}/block` (block and unblock, by username like
+the profile; both may be sent again, blocking oneself is a 400 and a name that is no account a 404),
+`GET /api/blocks` (the 500 latest blocks of the one asking, and how many there are; `GET /api/users/{name}`
+says `blocked` when you block them). The like toggles always take back one's own like, across a block too;
+the count comes back only when the post or comment is shown to you. Profile fields (`bio`, `links`, `prefs`, `stats`) go through
 `PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted. `PUT /api/me` writes
 only the fields, links and preferences that are in the body. With `rev` (from the user in `GET /api/me`)
 a save made on an older copy of the profile is answered 409 with the current user, and the About form
