@@ -16,7 +16,9 @@ proceeds on its recommendation, and each decision says what the plan assumes mea
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
 A deployment that upgrades and sets no new setting behaves exactly as today: port 3169, the same
 addresses, the same sign-up, no new outbound connection, no new public endpoint answering. Nothing in
-this plan changes `compose.yml`'s ports, adds a reverse proxy or ends TLS in the app. HTTPS and the
+this plan changes `compose.yml`'s ports, adds a reverse proxy or ends TLS in the app. (`compose.yml`
+passes each setting to the app by name, so every new setting adds one `NAME: ${NAME:-}` line under
+`environment`, where empty means the default; nothing else in that file is touched.) HTTPS and the
 public name are the operator's own reverse proxy's job; the app is told its public origin by one
 setting and refuses to federate without it.
 
@@ -204,8 +206,9 @@ These change the design and are not obvious from the brief.
 5. **The fetcher is an allowlist of nine preview hosts.** `fetcher.get` takes only hosts in the list
    it is given, only `https`, only GET, with `fetchTimeout` of 3 s, and its `CheckRedirect` refuses
    any host outside `previewHosts` and `thumbHosts`. Its dial guard (`publicIP` in the `Control`
-   function of `newFetcher`) is exactly what federation needs; the host allowlist and the method are
-   not. Section 7.8.
+   function of `newFetcher`) is the right place for federation's guard, but it was written for nine
+   known hosts: with any host allowed it must also hold the port and two more address ranges. The
+   host allowlist and the method do not fit. Section 7.8.
 6. **No job queue.** Background work is `go a.preview(l)` per link and the hourly `housekeeping`.
    Nothing survives a restart, nothing retries, nothing is bounded by a queue.
 7. **No keys, no signing.** No RSA, no `crypto/rsa` import, nothing per account.
@@ -278,8 +281,10 @@ These change the design and are not obvious from the brief.
 
 - One shared timeline: `feedSQL` reads every post newest first, hidden ones only for their author and
   for those with `post.hide`. `GET /api/posts` takes `user` and `before`.
-- Every community route is `social(...)`, which is `flagged("community", authed("", h))`: a session
-  is required, and the `community` flag turns the API off. A signed-out visitor sees nothing.
+- Almost every community route is `social(...)`, which is `flagged("community", authed("", h))`: a
+  session is required, and the `community` flag turns the API off. Three are not: bookmarks and
+  achievements have flags of their own (`bookmarks`, `game`), and a member's avatar needs a session
+  but no flag. Every one of them needs a session, so a signed-out visitor sees nothing.
 - The people list (`peopleSQL`, `handleUserList`) is the 100 members with the most XP.
 
 ### 1.4 Moderation, roles, audit
@@ -356,7 +361,10 @@ The three largest gaps are the queue (3), signatures (2) and the guarded general
 ### 4.1 The setting
 
 `FLOWA_MODE` (**new**): `local` (the default, and what an unset or empty value means), `federated`
-or `single`. Any other value stops the server at start with a message naming the three. In single mode
+or `single`. Any other value stops the server at start with a message naming the three, and so does a mode
+this version does not build yet: an operator who asks for a single-profile instance must not get an
+open community that only says "single". Capitals and spaces around the word are forgiven. Every
+setting is read before anything is written, so a refused start leaves the database as it was. In single mode
 `FLOWA_FEDERATE` (**new**, `on` or `off`, default `off`) says whether the one profile federates; in
 federated mode it is implied and ignored.
 
@@ -545,7 +553,8 @@ fetches under authorized fetch) and receives Flags.
 `/users/{name}` and `/users/{name}/posts/{id}` answer JSON when `Accept` names
 `application/activity+json` or `application/ld+json` (with or without the profile parameter), and
 otherwise a small HTML page the server writes from a Go `html/template` (no script, CSP
-`default-src 'none'; img-src 'self'; style-src 'self'`) with a link into the app (`/#/u/ana`,
+`default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none';
+form-action 'none'`, and the other headers `secure` sets) with a link into the app (`/#/u/ana`,
 `/#/post/812`). Every answer carries `Vary: Accept`. JSON answers carry
 `Content-Type: application/activity+json` and `Cache-Control: public, max-age=180`, or `private` with
 authorized fetch on. `TestContentNegotiation` (**new**) covers each `Accept` form, `*/*`, a browser's
@@ -590,6 +599,15 @@ app. Both are listed under "Out of scope" in FRD and FWR.
 | `GET /api/fed/...` | the page's own endpoints for follows, search by handle, blocks, Home (section 11), behind `authed` and the limits |
 
 ### 6.3 Activities in
+
+**One decoder for the shapes JSON-LD allows.** Flowa runs no JSON-LD processor, so the same field
+arrives in several shapes and each must be read: one value or a list of them (`to`, `cc`, `type`,
+`attributedTo`, `tag`, `attachment`, `url`, `icon`), and an id as a string or an embedded object
+carrying it (`actor`, `object`, `attributedTo`, `publicKey`, `inReplyTo`). Two small types do this
+for every field (`oneOrMany`, `idOrObject`, **new**), nothing reads these fields any other way, and
+the fixtures hold each shape. `@context` is not interpreted: a property is recognised by its short
+name, and by its full `https://www.w3.org/ns/activitystreams#` form where a server sends that.
+`TestDecodeShapes` (**new**).
 
 The inbox verifies (section 7), stores the activity in `ap_inbox` and answers 202; a worker handles
 it. "Actor" below is the verified signer's actor.
@@ -701,8 +719,11 @@ Remote HTML is **never stored or rendered as HTML.** It is turned into text by a
 (**new**, `htmlToText`): a state machine over the bytes that drops every tag, turns `<br>`, `</p>` and
 `</li>` into line breaks, keeps the `href` of `<a>` as a URL in the text where the link text was not
 already the URL, and decodes entities with `html.UnescapeString`. The page then renders it with
-`richText`, which escapes everything and links URLs and mentions, exactly as for a local post. No HTML
-sanitiser is needed, and none is added: `golang.org/x/net/html` would replace about 80 lines with a
+`richText`, which escapes everything and links URLs and mentions, exactly as for a local post. A mention needs care: Mastodon writes a remote mention as a link whose text is the short `@bo`, which
+`richText` would link to the local member `bo`. So `htmlToText` rewrites each link that a `Mention`
+entry of the object's `tag` names into the full `@bo@social.example`, and who is notified locally is
+decided from the `href`s of those entries alone, never by running `notifyMentions` over the text. No
+HTML sanitiser is needed, and none is added: `golang.org/x/net/html` would replace about 80 lines with a
 module, which is not less code. `TestRemoteHTMLToText` (**new**) runs it over a corpus of hostile
 inputs (unclosed tags, attributes with `>` inside quotes, comments, CDATA, `<script>` and `<style>`
 contents dropped, 10,000 nested tags, invalid UTF-8) and over the recorded fixtures.
@@ -739,15 +760,18 @@ followers-only (F3); anything else is direct and dropped.
 - **Accepted:** the same, with `hs2019` as the algorithm name too (which the draft defines as "derive
   from the key"), and RFC 9421 `Signature-Input` and `Signature` with `rsa-v1_5-sha256` and
   `Content-Digest`, covering at least `@method`, `@target-uri` (or `@authority` and `@path`) and,
-  on POST, `content-digest`. The exact component set Mastodon sends with RFC 9421 could not be
+  on POST, `content-digest`. A key that is RSA is verified as RSA with SHA-256 whatever name the
+  algorithm field carries (`hs2019` says only "look at the key"). The exact component set Mastodon sends with RFC 9421 could not be
   checked; **FRD's signatures item verifies it** against Mastodon's documentation and a recorded
   request.
 - **Which form is sent to a host:** cavage by default. A host that has sent Flowa a valid RFC 9421
   signature is marked in `ap_hosts.sig` (**new**) and is sent RFC 9421 from then on; a 401 from such a
-  host makes the next attempt use cavage and clears the mark. No double request on every delivery.
+  host makes the next attempt use cavage and clears the mark (a 401 is retried, section 8.3). No
+  double request on every delivery.
 - A request is refused (401, with a short reason in the log, never the header) when: the signature
-  does not cover `host`, `date` (or `created`) and, on POST, the digest; the digest does not match the
-  body; the date is more than 12 hours old or 1 hour ahead (the window Mastodon is understood to use;
+  does not cover the request line (`(request-target)`; in RFC 9421 `@method` and `@target-uri`, or
+  `@method`, `@authority` and `@path`), `host`, `date` (or `created`) and, on POST, the digest; the
+  digest does not match the body; the date is more than 12 hours old or 1 hour ahead (the window Mastodon is understood to use;
   to be checked); the key cannot be fetched; the signature does not verify after one refetch of the
   key.
 
@@ -763,8 +787,8 @@ User-Agent: Flowa/v1.4.0 (+https://flowa.example.org/)
 Signature: keyId="https://flowa.example.org/users/ana#main-key",algorithm="rsa-sha256",headers="(request-target) host date digest",signature="kO3...8w=="
 ```
 
-The verifier uses the host of `FLOWA_ORIGIN` for `host`, and the path and query as received for
-`(request-target)` (finding 4). `TestSignatureVectors` (**new**) checks signing and verifying against
+The verifier uses the host of `FLOWA_ORIGIN` for `host`, `@authority` and `@target-uri`, and the
+path and query as received for `(request-target)` and `@path` (finding 4). `TestSignatureVectors` (**new**) checks signing and verifying against
 the test keys and examples published in draft-cavage-12 and RFC 9421 Appendix B, copied into
 `testdata/federation/vectors/` (**new**) with the section each came from, once the texts can be
 opened.
@@ -772,14 +796,23 @@ opened.
 ### 7.2 Replay
 
 - An activity id is processed once: `ap_inbox.activity_id` is unique; processed rows lose their body
-  at once and are kept 7 days.
+  at once and are kept 7 days. **The id must have the actor's origin before it is written**, or a
+  hostile server could send activities carrying ids another server will use and have the real ones
+  dropped as repeats. An activity with no id (some servers send transient ones) is processed and not
+  deduplicated by id; the signature rule below still stops a replay of the same request.
 - A signature is accepted once: the SHA-256 of the `Signature` header is kept in memory for the 13
   hours a date can be valid, in a map of at most 100,000 entries (about 6 MB); when full, the oldest
   half is dropped, and a request older than the oldest kept is refused as stale.
 
 ### 7.3 Origin checks
 
-- The key's `owner` must be the activity's `actor`, and the key id must be on the actor's host.
+- The key's `owner` must be the activity's `actor`, and the key id must have the actor's origin.
+  **Origins are compared whole**: scheme, host and port, after the fragment is removed, never the
+  host alone. When the key id is not a fragment of the actor's URL (some servers keep the key at a
+  path of its own), the key document is fetched, then the actor it names as `owner`, and the actor's
+  `publicKey.id` must be that key id: a key vouches for an actor only when the actor names the key.
+- A fetched document's `id` must be the URL it was fetched from, compared after the fragment is
+  removed.
 - The object's id, when the object is embedded, must have the actor's origin, except: Accept and
   Reject (the object is our Follow, on our origin), Undo (the object is the actor's own activity),
   Like, Announce, Flag and Block (the object is someone else's, by id, never trusted inline), and
@@ -798,6 +831,9 @@ opened.
 - A failed verification triggers one refetch of the key, at most once per actor per 10 minutes; a
   verification that then succeeds is a rotation. A failed fetch is cached negatively for 10 minutes,
   and a 410 marks the actor gone.
+- **A Delete from an actor never seen is answered 202 and dropped, with no fetch.** Mastodon tells
+  every server it knows when an account is deleted; fetching the key of each would end in a 410 and
+  cost a request apiece. The check is one indexed lookup in `ap_actors` before anything else.
 - At most 2 key fetches at once; an inbox request that has to wait longer than 5 s for one is answered
   503 with `Retry-After: 60`, and the sender retries.
 - An in-memory cache of parsed public keys (at most 1,000, least recently used out) saves parsing PEM
@@ -812,7 +848,7 @@ opened.
 | Array length | 1,000 elements in `to`, `cc`, `tag`, `attachment`; longer is 400 |
 | A string field | 64 KB; `content` is cut to 64 KB before conversion |
 | Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only |
-| Fetched pictures | 8 MB in, 4096 px a side checked with `image.DecodeConfig` before decoding, as `shrinkThumb` does |
+| Fetched pictures | 8 MB in, 4096 px a side checked with `image.DecodeConfig` before decoding, as `shrinkThumb` does; **one picture decoded at a time** (a mutex), because a 4096 by 4096 picture is 64 MB once decoded and the container has 384 MB |
 | Inbox requests per remote host | 300 in 5 minutes in a `limiter` keyed by host, 429 above |
 | Inbox handling at once | 4, 8 more may wait 2 s, then 503 with `Retry-After: 30` |
 | Inbound queue | 5,000 unprocessed rows; above it the inbox answers 503 with `Retry-After: 120` |
@@ -834,9 +870,13 @@ host are answered 403 before the body is read.
 
 Every outbound request goes through one fetcher (`fetcher.do`, **new**, generalising `fetcher.get`):
 
-- The dial guard of `newFetcher` stays as it is: a connection to a loopback, private, link-local or
+- The dial guard of `newFetcher` stays: a connection to a loopback, private, link-local or
   reserved address is refused at connect time, after DNS, so a name that resolves to `10.0.0.1` is
-  refused. `TestFetcherRefusals` keeps passing unchanged.
+  refused. `TestFetcherRefusals` keeps passing unchanged. Two things are added, because the guard
+  was written for nine known hosts and now meets any host: **only port 443** is dialled (any port
+  with the test setting of 5.1), and `reservedNets` gains the ranges that carry an IPv4 address
+  inside an IPv6 one, 6to4 (`2002::/16`) and Teredo (`2001::/32`), with cases in
+  `TestPublicIPReserved`.
 - Hosts: the preview allowlist for link cards as today; for federation any host the domain policy
   allows (section 10). Only `https`.
 - Redirects: at most 3, each re-checked against the scheme, the policy and the dial guard; a redirect
@@ -891,9 +931,18 @@ RETURNING d.id, d.outbox_id, d.inbox, d.host, d.attempts;
 
 Attempts after the first: 1 min, 5 min, 15 min, 30 min, 1 h, 2 h, 4 h, 8 h, 12 h, 12 h; each with
 random jitter of plus or minus 20%. That is 11 attempts over about 40 hours; a row whose first attempt
-is more than 48 hours old (F9) is given up as `failed`. A 4xx answer other than 408 and 429 gives up at
-once (the remote refused it; retrying will not help); 410 for an inbox removes that follower. A 429
-uses its `Retry-After` when it is between 1 minute and 12 hours.
+is more than 48 hours old (F9) is given up as `failed`. A 4xx answer other than 401, 408 and 429 gives
+up at once (the remote refused it; retrying will not help); 410 for an inbox removes that follower.
+A 401 is retried like a failure: the receiver may not have reached our key yet, may want the other
+signature form (7.1), or our clock may be wrong. A 429 uses its `Retry-After` when it is between 1
+minute and 12 hours.
+
+**Nothing is signed while the clock cannot be trusted.** A Raspberry Pi has no battery clock and
+starts on the time it was last shut down at, until the network sets it; a signature dated then is
+refused everywhere. Workers do not claim rows while the time is earlier than the build's own date or
+than the newest `updated_at` the database holds, the dashboard says "waiting for the clock", and
+inbound signatures are answered 503 with `Retry-After` in that state instead of 401.
+`TestClockGuard` (**new**).
 
 ### 8.4 Hosts
 
@@ -916,7 +965,10 @@ uses its `Retry-After` when it is between 1 minute and 12 hours.
 
 ### 8.6 Shutdown
 
-On SIGTERM, workers stop claiming; a request in flight has the 5 s `srv.Shutdown` already allows;
+Today `main` returns as soon as `ListenAndServe` does, which is the moment `srv.Shutdown` begins:
+the 5 s it is given are never waited for, and nothing waits for background work at all. The delivery
+item changes that: `main` waits for `Shutdown` to return, the workers have their own context and a
+`sync.WaitGroup`, and on SIGTERM they stop claiming and are given 5 s for the request in flight;
 whatever does not finish keeps its lease and is sent again after it ends. Receivers dedupe by activity
 id, so a second send is harmless. `TestDeliveryShutdown` (**new**).
 
@@ -1296,28 +1348,28 @@ changes no running instance.
 | # | Title | Epic item | Notes |
 | --- | --- | --- | --- |
 | 1 | `docs(server): design and plan for activitypub federation` | INS 1 | this page |
-| 2 | `feat(server): an instance mode setting that changes nothing by default` | INS 2 | `FLOWA_MODE`, `instance_settings`, schema 7 fixture, `TestDBLocalModeUnchanged` |
-| 3 | `feat(server): member blocks` | INS 3 | useful locally, needed for federation |
+| 2 | `feat(server): an instance mode setting that changes nothing by default` | INS 2 | `FLOWA_MODE`, the route list, `TestDBLocalModeUnchanged`; no table yet |
+| 3 | `feat(server): member blocks` | INS 3 | useful locally, needed for federation; the first migration of the plan, so the schema 7 fixture lands here |
 | 4 | `feat(server): follows and a home timeline behind a flag` | INS 4 | `follows`, the `follows` flag off |
-| 5 | `feat(server): instance information, rules and sign-up approval` | INS 5, 6 | may be two pull requests |
+| 5 | `feat(server): instance information, rules and sign-up approval` | INS 5, 6 | `instance_settings` lands here, with its first reader; may be two pull requests |
 | 6 | `feat(server): single-profile mode` | INS 7 | closed sign-up, root page, public profile page |
 | 7 | `feat(server): public origin, key secret and keys` | FRD 1 | refuses without them |
 | 8 | `refactor(server): one guarded fetcher for previews and federation` | FRD 2 | `TestFetcherRefusals` unchanged |
 | 9 | `feat(server): http signatures with the specification vectors` | FRD 3 | sign and verify, both forms |
 | 10 | `feat(server): webfinger and nodeinfo` | FRD 4 | |
-| 11 | `feat(server): actor documents and public pages` | FRD 5 | content negotiation, picture URLs |
+| 11 | `feat(server): actor documents and public pages` | FRD 5 | content negotiation, picture URLs, retired names (a name is public from here on) |
 | 12 | `feat(server): outbox and collections` | FRD 6 | |
-| 13 | `feat(server): remote actors by signed fetch, and search by handle` | FRD 7, 8 | fixtures land here |
-| 14 | `feat(server): the inbox and its queue` | FWR 1 | guard exemption, limits |
+| 13 | `feat(server): remote actors by signed fetch, and search by handle` | FRD 7, 8 | fixtures land here; the first remote rows, so `-purge-remote` and the rollback warning too |
+| 14 | `feat(server): the inbox and its queue` | FWR 1, FMD 1 | guard exemption, limits, domain policies and the allowlist |
 | 15 | `feat(server): a delivery queue in postgres` | FWR 2 | workers, backoff, hosts |
 | 16 | `feat(server): follows across servers` | FWR 3 | |
-| 17 | `feat(server): public posts go out as notes` | FWR 4 | alt text field |
-| 18 | `feat(server): posts from followed accounts in the home timeline` | FWR 5 | picture cache, `htmlToText`, mention fix |
+| 17 | `feat(server): public posts go out as notes` | FWR 4 | alt text field, `@name@host` in `mentionRE` and `richText` |
+| 18 | `feat(server): posts from followed accounts in the home timeline` | FWR 5 | picture cache, `htmlToText` |
 | 19 | `feat(server): replies and likes across servers` | FWR 6 | |
-| 20 | `feat(server): account deletion across servers` | FWR 7 | retired names |
+| 20 | `feat(server): account deletion across servers` | FWR 7 | Delete(Person) both ways |
 | 21 | `ci: two instances federating` | FWR 8 | the `federation` suite |
 | 22 | owner's trial | FWR 9 | no pull request; results in the todo |
-| 23 onward | FMD items, then PRT | | |
+| 23 onward | FMD items 2 to 8, then PRT | | |
 
 ### 14.4 What `./deploy.sh --rollback` can and cannot go back past
 
@@ -1325,9 +1377,9 @@ changes no running instance.
   is; `checkHealth` reports healthy while `Schema >= Migrations`.
 - **Can: every pull request above.** Every migration adds tables, or columns with constant defaults,
   and an older build ignores them.
-- **But, from pull request 18 on, an older build shows remote rows as local.** It does not know
-  `domain` or `ap_id`, so the people list would list remote accounts and the community timeline
-  would show remote posts. Pull request 18 says this in its description and adds
+- **But, from pull request 13 on, an older build shows remote rows as local.** It does not know
+  `domain` or `ap_id`, so the people list would list remote accounts (from 13) and the community
+  timeline would show remote posts (from 18). Pull request 13 says this in its description and adds
   `/nunchaku -purge-remote` (**new**), which deletes every remote account and its content (the
   follows of local members to remote accounts go with them) and is the step to run before going back
   past it. The README's rollback section says the same.

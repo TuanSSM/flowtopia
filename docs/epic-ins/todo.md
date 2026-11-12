@@ -13,14 +13,20 @@ test named below is new unless the design note says it exists.
   data model, administration, budgets, rollout and the sixteen decisions F1 to F16. DoD: reviewed by
   the owner, the decisions answered or the recommendations accepted, linked from the README.
   Built: the note, linked from the README's "What comes next". Open: the owner's review.
-- [ ] **A mode setting that changes nothing by default.** `FLOWA_MODE` (`local` by default,
-  `federated`, `single`; anything else stops the start with a message), the `instance_settings`
-  table (with `flowa-schema7.dump` in `testdata/backups` first, unless another epic added it), the
-  mode on the dashboard. No federation route exists yet. DoD: `TestInstanceMode` for the parsing;
-  `TestDBLocalModeUnchanged` compares the route patterns with a list checked in before this pull
-  request and fails on any outbound dial during start-up; `TestDBMigrations` and the restore drill
-  green.
-- [ ] **Member blocks.** `blocks`; a block and an unblock endpoint with an allowance in `limits`; a
+- [ ] **A mode setting that changes nothing by default.** `FLOWA_MODE`: unset, empty or `local` is
+  today; `federated` and `single` are known words that stop the start with "not built yet" until
+  their items ship; anything else stops it with a message naming the three. Capitals and spaces
+  around the word are forgiven. Every setting is read before anything is written. The mode on the
+  dashboard, and one `FLOWA_MODE: ${FLOWA_MODE:-}` line in `compose.yml`. No table and no federation
+  route yet. DoD: `TestInstanceMode` for the parsing; `TestDBLocalModeUnchanged` compares the routes
+  with `testdata/routes-local.txt` (generated from `main` at 72b1b0c, before the change), fails on
+  any HTTP connection the start, the housekeeping or the first requests open to another machine
+  (through the fetcher or around it; Postgres is not one), holds that every address federation will
+  use answers as an unknown one, that the dashboard says the mode, and that a refused start writes
+  nothing; a check in `test/browser/mod.py`.
+- [ ] **Member blocks.** `blocks`, the first migration of this plan: `flowa-schema7.dump` goes into
+  `testdata/backups` first (`test/restore.sh --fixture` on the commit before), unless another epic
+  added it. A block and an unblock endpoint with an allowance in `limits`; a
   blocked member's posts and comments are hidden from the blocker, and the blocked member cannot
   comment on, like or mention the blocker. Behind the `community` flag. DoD: `TestDBBlocks`;
   `TestDBQueryPlans` holds the timeline with 5,000 blocks; a check in `test/browser/social.py`.
@@ -29,10 +35,13 @@ test named below is new unless the design note says it exists.
   on the profile, lists shown only to the account itself (F10). DoD: `TestDBFollows`;
   `TestDBQueryPlans` holds Home with 500 followed accounts; `TestDBFlagsGateAPI` covers the flag; a
   browser check and a screenshot of Home in `test/browser/pages.py`.
-- [ ] **Instance information and rules.** Description, contact and rules in `instance_settings`,
-  edited in Admin (permission `flags.edit`), audited, shown at sign-up and on an about page that
-  visitors can open. DoD: `TestDBInstanceInfo`; a browser check that sign-up shows the rules; a
-  screenshot of the about page.
+- [ ] **Instance information and rules.** The `instance_settings` table lands here, with its first
+  reader. Description, contact and rules, edited in Admin (permission `flags.edit`), audited, shown
+  at sign-up and on an about page. The about page is in the app for signed-in members in every mode;
+  a signed-out visitor can open it only once an admin has saved a description, so an instance that
+  sets nothing answers nothing new. DoD: `TestDBInstanceInfo` (with nothing saved the visitor's
+  about answers 404 and `TestDBLocalModeUnchanged` still passes); a browser check that sign-up shows
+  the rules; a screenshot of the about page.
 - [ ] **Sign-up by approval.** The `registration` setting: open, approval or closed (the `signups`
   flag stays as the switch between open and closed); an account waiting for approval cannot sign in
   and is listed in Accounts with Approve and Decline, both audited. DoD: `TestDBRegistrationApproval`;
@@ -40,6 +49,8 @@ test named below is new unless the design note says it exists.
 - [ ] **Single-profile mode.** `FLOWA_MODE=single`: refused at start with more than one local
   account (F15); sign-up answers 403 whatever the flag says; the root page shows the owner's profile
   to visitors as a small page the server writes (no script); Community shows the owner's posts.
-  Federation stays off here (FRD and FWR add it). DoD: `TestDBSingleMode`; a new browser suite
+  Federation stays off here (FRD and FWR add it). DoD: `TestDBSingleMode` (two or more local accounts refused; no account and no `ADMIN_USER` refused
+  with a message saying to set one; a sole account that is not the owner made the owner as
+  `ensureOwner` does); a new browser suite
   `single.py` in `ALL` in `test/ci-plan.sh` and its self-test; a screenshot of the visitor's root
   page.
