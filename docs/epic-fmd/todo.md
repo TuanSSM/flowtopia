@@ -13,20 +13,28 @@ Every setting, table, route and test named below is new unless the design note s
 - [ ] **Domain policies and the allowlist.** `domain_policies` (allow, limit, suspend, reject media,
   reject reports, public and private comments); the `policy` setting (allowlist or open); an Admin
   page; the permissions `federation.read` and `federation.manage` in `rolePerms`. Checked in the
-  fetcher, the inbox and the fan-out. DoD: `TestDBDomainPolicies` (each policy in and out; the
-  allowlist refuses an unlisted host both ways), `TestPermissionTable` updated; a screenshot of the
-  page.
+  fetcher, the inbox and the fan-out. A limited domain's follows become follow requests, as
+  Mastodon's domain Limit does (federation.md section 10). The Admin page says that the allowlist
+  alone does not stop an unlisted server reading public actors and posts; authorized fetch does
+  (federation.md 7.6). DoD: `TestDBDomainPolicies` (each policy in and out; the allowlist refuses an
+  unlisted host both ways; a Follow from a limited domain waits for approval),
+  `TestPermissionTable` updated; a screenshot of the page.
 - [ ] **Actions on remote accounts.** `mute` and `suspend` in `handleModAction` act as limit and
-  suspend on a remote account; a new action `purge_remote` deletes its content; the queue and the
+  suspend on a remote account (limit: hidden from all but its followers, its follows become
+  requests; suspend: its follows removed and not restored on unsuspend, as in Mastodon); a new
+  action `purge_remote` deletes its content; the queue and the
   accounts page show remote accounts with their handle. DoD: `TestDBRemoteAccountActions`;
   `TestDBModeration` unchanged for local accounts.
 - [ ] **Reports across servers.** Reporting remote content uses the existing reports; resolving can
-  forward a Flag from the instance actor without the reporter's name (`reports.forwarded_at`); a Flag
-  in becomes a report from the remote instance, unless the domain rejects reports. DoD:
+  forward a Flag from the instance actor without the reporter's name (`reports.forwarded_at`), in
+  Mastodon's shape (the account then the posts in `object`, the comment in `content`); a Flag in
+  becomes a report from the remote instance with its `content` as the note, unless the domain
+  rejects reports. DoD:
   `TestDBFlagInOut`; `TestTwoInstances` covers a forwarded report.
 - [ ] **Authorized fetch.** The `authorized_fetch` setting (off by default, F11): signed GETs
-  required except for WebFinger, NodeInfo and the instance actor; `Cache-Control: private`. DoD:
-  `TestDBAuthorizedFetch`.
+  required except for WebFinger, NodeInfo, the instance actor and the public key part of an actor;
+  `Cache-Control: private` and `Vary: Accept, Signature` (federation.md 7.6). DoD:
+  `TestDBAuthorizedFetch`; `TestContentNegotiation` gains the `Vary` case.
 - [ ] **Retention.** `retention_days` (30 by default) and the `housekeep` steps of federation.md
   9.3: remote posts nobody touched, remote accounts with nothing left, inbox rows, failed
   deliveries, the picture cache cut to 160 MB when it passes 200 MB. DoD: `TestDBHousekeeping` gains
@@ -36,10 +44,11 @@ Every setting, table, route and test named below is new unless the design note s
   a page per host with the last errors and a retry button, and announcements as a notice and a
   notification kind `announcement`. DoD: `TestDBDashboard` extended; a screenshot in
   `test/browser/pages.py`.
-- [ ] **Member blocks of domains, and flood blocks.** `domain_blocks_member` from Settings; a host
-  refused by its allowance 5 times in an hour is blocked for an hour and shown on the dashboard. DoD:
-  `TestDBMemberDomainBlocks`, `TestDBHostFloodBlock`.
+- [ ] **Member blocks of domains, and flood blocks.** `domain_blocks_member` from Settings (the
+  member's followers on that domain are removed, as Mastodon's "Hiding an entire server" does); a
+  host refused by its allowance 5 times in an hour is blocked for an hour and shown on the
+  dashboard. DoD: `TestDBMemberDomainBlocks`, `TestDBHostFloodBlock`.
 - [ ] **Leave the fediverse.** An admin action in federated mode that sends Delete(Person) for every
   local actor, waits for the queue to drain and records it, so a later switch to `local` leaves
-  remote servers nothing to retry; local mode after federating answers 410 for actor and WebFinger
-  URLs. DoD: `TestDBLeaveFediverse`; `TestTwoInstances` sees the accounts gone on the other side.
+  remote servers nothing to retry; local mode after federating answers 410 with a Tombstone for
+  actor URLs and 404 for WebFinger (federation.md 4.3). DoD: `TestDBLeaveFediverse`; `TestTwoInstances` sees the accounts gone on the other side.

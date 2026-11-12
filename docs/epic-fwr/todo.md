@@ -14,10 +14,13 @@ route and test named below is new unless the design note says it exists.
   lets only these through with `application/activity+json` or `application/ld+json`; verification
   against the origin's host; the limits of federation.md 7.5; `ap_inbox`; 202 and a worker; the
   `federation` flag (off by default) as the pause switch; the README's proxy section says the app
-  must sit at the root of the origin with the path unchanged. DoD: `TestInboxRefusals` (unsigned, the
-  request line not signed, bad digest, old date, future date, replayed, an activity id of another
-  origin, too large, too deep, too many array elements, key owner not the actor, a key on another
-  port of the actor's host, blocked host, queue full); `BenchmarkInboxVerify` under budget.
+  must sit at the root of the origin with the path unchanged. A refused signature is answered 401,
+  which is what lets Mastodon 4.7's own fallback to RFC 9421 work (federation.md 7.1). DoD:
+  `TestInboxRefusals` (unsigned, the request line not signed, no `headers` parameter, bad digest,
+  old date, future date, an RFC 9421 signature without `created`, without `content-digest` or with
+  two signatures, an `alg` that is not `rsa-v1_5-sha256`, replayed, an activity id of another origin,
+  too large, too deep, too many array elements, key owner not the actor, a key on another port of
+  the actor's host, blocked host, queue full); `BenchmarkInboxVerify` under budget.
 - [ ] **A delivery queue in Postgres.** `ap_outbox`, `ap_deliveries`, `ap_hosts`; workers
   (`FLOWA_FEDERATION_WORKERS`), one request at a time per host, 10 a second, at most 3 database
   connections; the retry schedule and the 48-hour horizon (F9); the circuit breaker and unavailable
@@ -25,16 +28,20 @@ route and test named below is new unless the design note says it exists.
   own context and wait group: federation.md 8.6); nothing signed while the clock cannot be trusted;
   the `/healthz` fields for a local probe. DoD:
   `TestDBDeliveryQueue` (the schedule with a fake clock, two workers never send one row twice,
-  give-up, a 401 retried with the other signature form, 410 removes the follower), `TestClockGuard`, `TestDBDeliveryBackPressure`, `TestDeliveryShutdown`,
+  give-up, a 400 or a 401 sent again at once in the other signature form and the form that worked
+  recorded for the host, a 400 refused in both forms given up, 410 removes the follower),
+  `TestClockGuard`, `TestDBDeliveryBackPressure`, `TestDeliveryShutdown`,
   `BenchmarkClaimDelivery`, `TestFederationMemory`; the fan-out time for 300 hosts measured on the
   Pi written here.
-- [ ] **Follows across servers.** Follow, Accept, Reject and Undo(Follow) in and out; approval by
-  hand (`users.locked`, `manuallyApprovesFollowers`); follow request notifications with Approve and
-  Decline. DoD: `TestDBFollowsAcross` with the recorded Mastodon Follow and Accept fixtures;
+- [ ] **Follows across servers.** Follow, Accept, Reject and Undo(Follow) in and out, and Undo of an
+  Accept of our Follow read as a Reject (Mastodon lists "Accept Follow" among what it undoes);
+  approval by hand (`users.locked`, `manuallyApprovesFollowers`); follow request notifications with
+  Approve and Decline. DoD: `TestDBFollowsAcross` with the recorded Mastodon Follow and Accept fixtures;
   `TestTwoInstances` covers follow, accept and unfollow.
 - [ ] **Public posts go out as notes.** Create(Note) for Public posts of members who opted in, the
   HTML of federation.md 6.5, mentions, one hashtag per prop, `flowa:tricks` and `flowa:combo` with
-  the text fallback, the picture with alt text (a new field in the composer), Delete(Tombstone) on
+  the text fallback, the picture with alt text (a new field in the composer; written as both `name`
+  and `summary`, federation.md 6.5), sent as `application/ld+json; profile=...`, Delete(Tombstone) on
   delete or hide, Update(Person) at most every five minutes; milestone posts stay local (F13).
   `mentionRE` and `richText` learn `@name@host` here, before the first remote mention is sent, so
   `@anna@social.example` is never read as the local `anna`. DoD: `TestNoteFromPost` (golden),
@@ -50,12 +57,15 @@ route and test named below is new unless the design note says it exists.
   after `./deploy.sh --rollback` shows them as local (`/nunchaku -purge-remote` exists since FRD's
   remote actors item). DoD: `TestRemoteHTMLToText` (a hostile corpus and the fixtures),
   `TestDBRemoteNotes` (a short remote mention never notifies or links the local member of that
-  name), `TestMediaCacheBudget`, `TestDBQueryPlans` with 20,000 remote posts.
+  name; an Update without `updated` or older than the stored one is ignored), `TestMediaCacheBudget`, `TestDBQueryPlans` with 20,000 remote posts.
 - [ ] **Replies and likes across servers.** Remote replies become comments under local posts (deeper
   replies flattened as RPL does for a reply to a reply); local comments on Public posts go out; Like
-  and Undo(Like) both ways; Update(Note) for comment edits inside the 15-minute window;
-  notifications. DoD: `TestDBRemoteReplies`, `TestDBRemoteLikes`; `TestTwoInstances` covers reply,
-  edit, like and unlike.
+  and Undo(Like) both ways; Update(Note) for comment edits inside the 15-minute window, carrying
+  `updated` (Mastodon applies an edit only with it); a remote reply addressed to a local member's
+  followers collection forwarded once to those followers (ActivityPub 7.1.2, federation.md 6.4);
+  notifications. DoD: `TestDBRemoteReplies` (including the forward: sent once, only for the first
+  sight, only to the collection named), `TestDBRemoteLikes`; `TestTwoInstances` covers reply, edit,
+  like and unlike.
 - [ ] **Account deletion across servers.** Delete(Person) out when an account is deleted and from
   "Remove me from other servers"; Delete(Person) in purges the remote account's content and follows;
   a Delete from an actor never seen is answered 202 with no fetch. Retired names exist since FRD's
@@ -77,4 +87,6 @@ route and test named below is new unless the design note says it exists.
   on Mastodon; (7) delete the Flowa post and see it gone on Mastodon; (8) report a Flowa post from
   Mastodon and see it in the queue; (9) unfollow both ways. DoD: each step written here with the
   Mastodon version and pass or fail; each failure becomes a pull request; federated mode loses the
-  "experimental" mark only when all nine pass.
+  "experimental" mark only when all nine pass. Also written here, without gating the mark: whether
+  Mastodon finds and mentions a stage account whose name ends in a dot (federation.md, finding 11),
+  and the details the note's Sources section leaves to this trial.
