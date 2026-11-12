@@ -129,6 +129,7 @@ try:
     js("document.querySelector('.dash-table summary').click()");idle()
     check('the weekly numbers are also a table',js("return document.querySelectorAll('.dash-table tbody tr').length")==12)
     check('the dashboard shows the running version (dev here, where VERSION is not set)',txt('.dash-version').startswith('Flowa version dev'),txt('.dash-version'))
+    check('the dashboard says the instance runs in local mode, which is what no setting means',txt('.dash-mode').startswith('Instance mode local: a community that lives on this server only'),txt('.dash-mode'))
     nav('#/admin/audit')
     acts=js("return [...document.querySelectorAll('tbody tr')].map(r=>r.cells[2].textContent)")
     check('the audit log lists the hide, the resolve, the mute and the role change',any(a.startswith('Hid ') for a in acts) and any(a.startswith('Muted') for a in acts) and any(a.startswith('Resolved') for a in acts) and any(a.startswith('Changed role') for a in acts),acts[:6])

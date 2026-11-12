@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2548,4 +2550,184 @@ func poiBranch(t *testing.T, e *tenv) string {
 	}
 	t.Fatal("the poi map has no skill in use")
 	return ""
+}
+
+// noDial is a transport that opens no connection and fails the test when asked to.
+type noDial struct{ t *testing.T }
+
+func (n noDial) RoundTrip(r *http.Request) (*http.Response, error) {
+	n.t.Errorf("an outbound request to %s", r.URL.Host)
+	return nil, errors.New("no outbound request is expected")
+}
+
+// routesFile reads a list of mux patterns: one a line, with # for comments.
+func routesFile(t *testing.T, name string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, l := range strings.Split(string(raw), "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// A server that is given no setting is a local instance, and it is what it was before instance modes
+// existed: the same routes (testdata/routes-local.txt), no connection opened to another machine by
+// the start, the housekeeping or the first requests, and an ordinary "not found" at every address
+// federation will use. A setting that cannot be run stops the start before anything is written.
+func TestDBLocalModeUnchanged(t *testing.T) {
+	e := newEnv(t)
+	// Anything that goes around the fetcher uses the default transport: make that fail the test.
+	was := http.DefaultTransport
+	http.DefaultTransport = noDial{t}
+	t.Cleanup(func() { http.DefaultTransport = was })
+
+	none := func(string) string { return "" }
+	if err := e.a.start(none); err != nil {
+		t.Fatal(err)
+	}
+	if e.a.mode != modeLocal {
+		t.Fatalf("mode %q with nothing set, want local", e.a.mode)
+	}
+	if e.a.fetch == nil || e.a.fetch.off || e.a.fetch.base != "" {
+		t.Fatalf("the link preview fetcher is not as it was: %+v", e.a.fetch)
+	}
+
+	// The routes, as a set: what is new and what is gone are both failures.
+	st := staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"})
+	got := slices.Clone(e.a.table(st).patterns)
+	want := routesFile(t, "testdata/routes-local.txt")
+	sort.Strings(got)
+	if !sort.StringsAreSorted(want) {
+		t.Error("testdata/routes-local.txt is not sorted")
+	}
+	for _, p := range got {
+		if _, ok := slices.BinarySearch(want, p); !ok {
+			t.Errorf("a route local mode did not have: %q (if every instance should have it, add it to testdata/routes-local.txt)", p)
+		}
+	}
+	for _, p := range want {
+		if _, ok := slices.BinarySearch(got, p); !ok {
+			t.Errorf("a route local mode had is gone: %q", p)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("%d routes, the list has %d", len(got), len(want))
+	}
+
+	// What federation will answer is not there: each address answers as an address nobody has.
+	e.h = e.a.routes(st)
+	ask := func(method, path, accept, ctype string) (int, string) {
+		t.Helper()
+		r := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+		if accept != "" {
+			r.Header.Set("Accept", accept)
+		}
+		if ctype != "" {
+			r.Header.Set("Content-Type", ctype)
+		}
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	const ap = `application/activity+json`
+	const ld = `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`
+	for _, accept := range []string{"", ap, ld, "application/jrd+json"} {
+		code0, body0 := ask("GET", "/nobody-has-this-address", accept, "")
+		if code0 != http.StatusNotFound {
+			t.Fatalf("an unknown address answers %d, want 404", code0)
+		}
+		for _, p := range []string{"/.well-known/webfinger?resource=acct:ana@example.com", "/.well-known/nodeinfo", "/.well-known/host-meta", "/nodeinfo/2.0", "/nodeinfo/2.1", "/actor", "/inbox", "/users/ana", "/users/ana/inbox", "/users/ana/outbox", "/users/ana/followers", "/users/ana/following", "/@ana", "/api/v1/instance", "/api/v2/instance"} {
+			if code, body := ask("GET", p, accept, ""); code != code0 || body != body0 {
+				t.Errorf("GET %s (Accept %q) answers %d %q, an unknown address answers %d %q", p, accept, code, body, code0, body0)
+			}
+		}
+	}
+	for _, ctype := range []string{ap, ld, "application/json"} {
+		code0, body0 := ask("POST", "/nobody-has-this-address", "", ctype)
+		if code0 < 400 {
+			t.Fatalf("a POST to an unknown address answers %d", code0)
+		}
+		for _, p := range []string{"/inbox", "/actor/inbox", "/users/ana/inbox", "/users/ana/outbox"} {
+			if code, body := ask("POST", p, "", ctype); code != code0 || body != body0 {
+				t.Errorf("POST %s (%s) answers %d %q, an unknown address answers %d %q", p, ctype, code, body, code0, body0)
+			}
+		}
+	}
+
+	// The pages, the health answer and an hour's housekeeping, with a member signed in.
+	_, admin := e.user("root", "admin")
+	for _, p := range []string{"/", "/healthz", "/api/me", "/api/admin/dashboard", "/api/posts"} {
+		r := httptest.NewRequest("GET", p, nil)
+		r.AddCookie(&http.Cookie{Name: cookieName, Value: admin})
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s answers %d", p, w.Code)
+		}
+	}
+	if _, err := e.a.housekeep(); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.a.fetch.dials.Load(); n != 0 {
+		t.Errorf("%d connections were tried by a start, an hour's housekeeping and five requests; want none", n)
+	}
+
+	// The dashboard says which mode runs.
+	if code, out := e.do(admin, "GET", "/api/admin/dashboard", nil); code != 200 || out["mode"] != "local" {
+		t.Errorf("dashboard: %d, mode %v; want local", code, out["mode"])
+	}
+
+	// A mode that cannot run, or a word that is none, stops the start before the admin account is
+	// made: the database is as it was.
+	for _, v := range []string{"single", "federated", "public"} {
+		if modesBuilt[instanceMode(v)] {
+			continue
+		}
+		f := newEnv(t)
+		env := map[string]string{"FLOWA_MODE": v, "ADMIN_USER": "owner", "ADMIN_PASSWORD": "flowa-test-only"}
+		if err := f.a.start(func(k string) string { return env[k] }); err == nil || !strings.Contains(err.Error(), "FLOWA_MODE") {
+			t.Errorf("FLOWA_MODE=%s: start gave %v, want an error naming the setting", v, err)
+		}
+		var n int
+		if err := f.a.db.QueryRow(`SELECT count(*) FROM users`).Scan(&n); err != nil || n != 0 {
+			t.Errorf("FLOWA_MODE=%s: %d accounts after a refused start (%v), want none", v, n, err)
+		}
+		if f.a.fetch != nil {
+			t.Errorf("FLOWA_MODE=%s: a fetcher was made by a refused start", v)
+		}
+	}
+
+	// The settings a deployment already has still start, with the mode said in any case.
+	g := newEnv(t)
+	// The settings federation will read are nothing to a local instance: no name is added to the
+	// ones it answers to.
+	env := map[string]string{"FLOWA_MODE": " Local ", "ADMIN_USER": "owner", "ADMIN_PASSWORD": "flowa-test-only", "FLOWA_HOSTS": "flowa.example.org", "FLOWA_PREVIEW_FETCH": "off",
+		"FLOWA_ORIGIN": "https://public.example.net", "FLOWA_KEY_SECRET": "flowa-test-only", "FLOWA_FEDERATE": "on"}
+	g.a.hosts = nil
+	if err := g.a.start(func(k string) string { return env[k] }); err != nil || g.a.mode != modeLocal || !g.a.fetch.off {
+		t.Errorf("a start with the settings of a deployment: %v, mode %q", err, g.a.mode)
+	}
+	if !reflect.DeepEqual(g.a.hosts, []string{"flowa.example.org"}) {
+		t.Errorf("the names answered to are %v, want only the one FLOWA_HOSTS gives", g.a.hosts)
+	}
+	g.h = g.a.routes(staticOf(t, nil))
+	for host, want := range map[string]int{"public.example.net": http.StatusMisdirectedRequest, "flowa.example.org": http.StatusOK} {
+		r := httptest.NewRequest("GET", "/api/me", nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		g.h.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Errorf("a request for %s answers %d in local mode, want %d", host, w.Code, want)
+		}
+	}
+	var owners int
+	if err := g.a.db.QueryRow(`SELECT count(*) FROM users WHERE username = 'owner' AND role = 'admin'`).Scan(&owners); err != nil || owners != 1 {
+		t.Errorf("the admin account of a first start: %d (%v), want 1", owners, err)
+	}
 }

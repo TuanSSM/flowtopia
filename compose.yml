@@ -47,6 +47,9 @@ services:
       # Extra names the app answers to, comma-separated (IP addresses, localhost and private
       # names such as raspi or raspi.local always work).
       FLOWA_HOSTS: ${FLOWA_HOSTS:-}
+      # How the instance runs. Unset or "local": a community on this server only, as always.
+      # Any other word stops the start with a message (docs/federation.md has the plan).
+      FLOWA_MODE: ${FLOWA_MODE:-}
       # A link for admins to the start page of this machine, in the Staff group of the menu.
       # An http or https address, like http://raspi.local:8080/. Unset: no link.
       FLOWA_HOME_URL: ${FLOWA_HOME_URL:-}

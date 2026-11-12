@@ -1,0 +1,62 @@
+# Every route a local instance answers, as the pattern given to the mux, sorted.
+#
+# TestDBLocalModeUnchanged compares this list with the routes of a server started with no setting.
+# A route added for every instance is added here in the same pull request, where a reviewer sees
+# it. A route that belongs to federation is registered only in a mode that federates and never
+# appears here: a deployment that sets nothing new must answer exactly what it answered before.
+DELETE /api/admin/catalog/{prop}/draft
+DELETE /api/admin/users/{id}
+DELETE /api/comments/{id}
+DELETE /api/posts/{id}
+GET /
+GET /api/admin/audit
+GET /api/admin/catalog/{prop}
+GET /api/admin/catalog/{prop}/diff
+GET /api/admin/catalog/{prop}/revisions/{rev}
+GET /api/admin/dashboard
+GET /api/admin/users
+GET /api/bookmarks
+GET /api/comments/{id}/replies
+GET /api/comments/{id}/thread
+GET /api/me
+GET /api/mod/queue
+GET /api/notifications
+GET /api/posts
+GET /api/posts/{id}
+GET /api/posts/{id}/comments
+GET /api/previews/{file}
+GET /api/progress/{prop}
+GET /api/suggest/counts
+GET /api/users
+GET /api/users/{id}/avatar
+GET /api/users/{username}
+GET /catalog/{file}
+GET /healthz
+POST /api/achievements
+POST /api/admin/catalog/{prop}/publish
+POST /api/admin/catalog/{prop}/revisions/{rev}/restore
+POST /api/admin/catalog/{prop}/shipped
+POST /api/bookmarks
+POST /api/comments/{id}/like
+POST /api/me/signout-others
+POST /api/mod/actions
+POST /api/mod/resolve
+POST /api/posts
+POST /api/posts/{id}/comments
+POST /api/posts/{id}/like
+POST /api/reports
+POST /api/signin
+POST /api/signout
+POST /api/signup
+POST /api/suggest/labels
+POST /api/suggest/usage
+PUT /api/admin/catalog/{prop}/draft
+PUT /api/admin/users/{id}/owner
+PUT /api/admin/users/{id}/password
+PUT /api/admin/users/{id}/role
+PUT /api/comments/{id}
+PUT /api/flags
+PUT /api/me
+PUT /api/me/password
+PUT /api/notifications/read
+PUT /api/progress/{prop}

@@ -6,14 +6,14 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** design written, waiting for review (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 0 of 7 items done. Every setting, table, route and
+**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 1 of 7 items done; the design waits for the owner's review. Every setting, table, route and
 test named below is new unless the design note says it exists.
 
 - [ ] **Design.** [federation.md](../federation.md): the modes, identity, protocol, security, queues,
   data model, administration, budgets, rollout and the sixteen decisions F1 to F16. DoD: reviewed by
   the owner, the decisions answered or the recommendations accepted, linked from the README.
   Built: the note, linked from the README's "What comes next". Open: the owner's review.
-- [ ] **A mode setting that changes nothing by default.** `FLOWA_MODE`: unset, empty or `local` is
+- [x] **A mode setting that changes nothing by default.** `FLOWA_MODE`: unset, empty or `local` is
   today; `federated` and `single` are known words that stop the start with "not built yet" until
   their items ship; anything else stops it with a message naming the three. Capitals and spaces
   around the word are forgiven. Every setting is read before anything is written. The mode on the
