@@ -262,8 +262,7 @@ a value that is not such an address stops the server at start with a message tha
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
 changes. The words `federated` and `single` belong to the plan in
 [docs/federation.md](docs/federation.md) and are not built yet, so each of them stops the server at
-start with a message that says so, as any other word does, before anything is written to the
-database. The admin dashboard shows the mode under the version.
+start with a message that says so, as any other word does, before the database is opened. The admin dashboard shows the mode under the version.
 
 Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from

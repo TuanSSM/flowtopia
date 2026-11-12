@@ -2577,9 +2577,12 @@ func routesFile(t *testing.T, name string) []string {
 }
 
 // A server that is given no setting is a local instance, and it is what it was before instance modes
-// existed: the same routes (testdata/routes-local.txt), no connection opened to another machine by
-// the start, the housekeeping or the first requests, and an ordinary "not found" at every address
-// federation will use. A setting that cannot be run stops the start before anything is written.
+// existed: the same routes (testdata/routes-local.txt), no HTTP connection opened to another machine
+// by the start, the housekeeping or the first requests, and an ordinary "not found" at every address
+// federation will use. A setting that cannot be run stops the start before a row is written.
+//
+// What it cannot see: code that dials with net.Dial or a transport of its own. The server has one
+// dialer, the fetcher's, and federation is planned to keep it so (docs/federation.md, 7.8).
 func TestDBLocalModeUnchanged(t *testing.T) {
 	e := newEnv(t)
 	// Anything that goes around the fetcher uses the default transport: make that fail the test.
@@ -2648,6 +2651,8 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 			}
 		}
 	}
+	// Only the JSON row reaches the mux: guard answers 415 to the other two types at any address
+	// today, which is itself what an inbox would have to change, and would show here.
 	for _, ctype := range []string{ap, ld, "application/json"} {
 		code0, body0 := ask("POST", "/nobody-has-this-address", "", ctype)
 		if code0 < 400 {

@@ -3420,8 +3420,9 @@ type fetcher struct {
 	mu   sync.Mutex
 	busy map[string]*sync.Mutex // one fetch at a time per host
 	off  bool                   // FLOWA_PREVIEW_FETCH=off: never fetch
-	// dials counts the connections this fetcher tried to open, allowed or refused. Nothing reads it
-	// while the server runs; TestDBLocalModeUnchanged holds it at zero through a start.
+	// dials counts the connections this fetcher tried to open: allowed, refused, or to a name that
+	// did not resolve. Nothing reads it while the server runs; TestDBLocalModeUnchanged holds it at
+	// zero through a start.
 	dials atomic.Int64
 }
 
@@ -3462,7 +3463,6 @@ func publicIP(ip net.IP) bool {
 func newFetcher(base string, allowPrivate bool) *fetcher {
 	f := &fetcher{base: strings.TrimRight(base, "/"), busy: map[string]*sync.Mutex{}}
 	dialer := &net.Dialer{Timeout: fetchTimeout, Control: func(network, address string, _ syscall.RawConn) error {
-		f.dials.Add(1)
 		host, _, err := net.SplitHostPort(address)
 		if err != nil {
 			return err
@@ -3472,7 +3472,13 @@ func newFetcher(base string, allowPrivate bool) *fetcher {
 		}
 		return nil
 	}}
-	tr := &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: fetchTimeout, ResponseHeaderTimeout: fetchTimeout, MaxIdleConns: 4, DisableCompression: false}
+	// Counted before the name is looked up: a fetch to a name that does not resolve asked a name
+	// server, and that is a connection to another machine too.
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		f.dials.Add(1)
+		return dialer.DialContext(ctx, network, address)
+	}
+	tr := &http.Transport{DialContext: dial, TLSHandshakeTimeout: fetchTimeout, ResponseHeaderTimeout: fetchTimeout, MaxIdleConns: 4, DisableCompression: false}
 	f.client = &http.Client{Transport: tr, Timeout: fetchTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return errors.New("too many redirects")
@@ -5147,9 +5153,11 @@ func rootsPresent() bool {
 }
 
 // start does what the server does between opening the database and listening: it reads the
-// operator's settings and then seeds what a new instance needs. Every setting is read before anything
-// is written, so a setting that cannot be understood stops the server with the database as it was.
-// It opens no connection to another machine, in any mode: TestDBLocalModeUnchanged holds that.
+// operator's settings and then seeds what a new instance needs. Every setting is read before the
+// admin account and the skill maps are written, so a setting that cannot be understood stops the
+// server with no row added. (Opening the database has applied the migrations by then; main reads
+// the mode before that, see there.) It opens no connection to another machine, in any mode:
+// TestDBLocalModeUnchanged holds that.
 func (a *app) start(getenv func(string) string) error {
 	// The admin dashboard shows the version compiled in (a release tag, or main.<commit> from
 	// deploy.sh --build). VERSION in the environment replaces it, for a build that has none.
@@ -5223,6 +5231,11 @@ func main() {
 	}
 
 	if err := os.MkdirAll(filepath.Join(*dataDir, "backups"), 0o755); err != nil {
+		log.Fatal(err)
+	}
+	// The mode is read before the database is opened, because opening it applies the migrations: a
+	// newer build that is refused its mode must leave the schema for the build before it.
+	if _, err := parseMode(os.Getenv("FLOWA_MODE")); err != nil {
 		log.Fatal(err)
 	}
 	dsn := os.Getenv("DATABASE_URL")
