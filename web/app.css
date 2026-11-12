@@ -78,6 +78,14 @@ select { cursor: pointer; }
 h1, h2, h3, .sec-t, .card-h, label, .nav-a, .btn, .chip, .act, .icon-btn, summary, .tour, .unlock, .toast, .tip, .crumb { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+/* The notifications take the focus as a whole when there is nothing in them to stop at: the ring is drawn inside their edge. */
+.ntf-panel:focus-visible { outline-offset: -2px; border-radius: var(--r); }
+/* The link that skips the menu lies at the top of the window, cut down to nothing, and shows when Tab reaches it. */
+.skip { position: fixed; left: 8px; top: 8px; z-index: 100; clip-path: inset(50%); }
+.skip:focus { clip-path: none; }
+/* The content takes the focus when that link is used and when a new page opens, a skill's guide when it opens.
+   They are where Tab goes on from, not controls: no ring. */
+main:focus-visible, .panel:focus-visible { outline: none; }
 .muted { color: var(--ink-2); }
 .small { font-size: 12.5px; }
 .tiny { font-size: 11.5px; color: var(--ink-3); }
@@ -382,7 +390,9 @@ button:disabled { opacity: .6; cursor: default; }
 /* The hint and the message stay on the page when they are empty, so a screen reader hears what is put into them; an empty one takes no room. */
 .tip:empty, .toast:empty { padding: 0; box-shadow: none; }
 .pal-box { max-width: 560px; margin: 0 auto; background: var(--side); border: 1px solid var(--line-2); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; }
-.pal-box input { height: 48px; border: 0; border-bottom: 1px solid var(--edge); border-radius: 0; background: transparent; font-size: 15px; padding: 0 16px; outline: none; }
+.pal-box input { height: 48px; border: 0; border-bottom: 1px solid var(--edge); border-radius: 0; background: transparent; font-size: 15px; padding: 0 16px; }
+/* The search box shows the ring every text box shows. It is drawn inside the edge and follows the corners of the box around it, which cuts off what lies outside. */
+.pal-box input:focus { outline-offset: -2px; border-radius: calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0; }
 .pal-list { max-height: 52vh; overflow-y: auto; padding: 6px; }
 .pal-i { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 8px; text-align: left; color: var(--ink); }
 .pal-i.on { background: var(--accent-soft); }
@@ -769,6 +779,13 @@ tr[hidden] { display: none; }
 .av-panel { display: grid; gap: 14px; }
 .av-tabs { overflow-x: auto; max-width: 100%; }
 .av-tabs button { white-space: nowrap; }
+/* A row or a list that scrolls cuts off a ring drawn outside what it holds, so there the ring is drawn inside.
+   A box that scrolls can take the focus itself, so the arrow keys scroll it (Firefox stops Tab at every one):
+   its ring is drawn inside its own edge too, where the box around it cannot cut it off. */
+.av-tabs button:focus-visible, .pick-i:focus-visible, .ed-skill:focus-visible, .lc-meta:focus-visible { outline-offset: -2px; }
+.ed-list input:focus { outline-offset: -2px; }
+:is(.side, .heat-wrap, .graph-wrap, .map-wrap, .table-wrap, .pal-list, .pick-list, .ed-list, .av-tabs, .modal):focus-visible { outline-offset: -2px; }
+.graph-wrap:focus-visible { border-radius: var(--r); }
 .av-fields { display: grid; gap: 14px; }
 .av-field { display: grid; gap: 6px; }
 .av-sw { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }

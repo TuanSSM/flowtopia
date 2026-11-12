@@ -81,7 +81,7 @@ function pageMod(tab) {
     : list.length ? `<div class="stack">${list.map(it => queueItemHTML(it, mod.tab === 'history')).join('')}</div>`
     : `<div class="empty">${mod.tab === 'queue' ? 'Nothing to review. Reports appear here, grouped by what they are about, oldest first.' : 'No resolved reports yet.'}</div>`;
   return `<div class="page-h"><div class="grow"><h1>Moderation</h1><p>Reports from members. Every action is logged, and the person affected is told.</p></div>
-    <div class="seg" role="group" aria-label="Show"><a class="${mod.tab === 'queue' ? 'on' : ''}" href="#/mod">Queue${mod.count ? ` (${mod.count})` : ''}</a><a class="${mod.tab === 'history' ? 'on' : ''}" href="#/mod/history">History</a></div></div>${body}`;
+    <div class="seg" role="group" aria-label="Show"><a class="${mod.tab === 'queue' ? 'on' : ''}" href="#/mod" ${mod.tab === 'queue' ? 'aria-current="page"' : ''}>Queue${mod.count ? ` (${mod.count})` : ''}</a><a class="${mod.tab === 'history' ? 'on' : ''}" href="#/mod/history" ${mod.tab === 'history' ? 'aria-current="page"' : ''}>History</a></div></div>${body}`;
 }
 // The dialog for hiding content, muting or suspending: a reason, and an end time where needed.
 function openAction(d) {
@@ -110,7 +110,7 @@ function pageAdmin(tab) {
   const tabs = adminTabs();
   if (!tabs.length) return notFound();
   const cur = tabs.find(t => t[0] === tab) ? tab : tabs[0][0];
-  const nav = `<div class="seg admin-tabs" role="group" aria-label="Admin sections">${tabs.map(([k, n]) => `<a class="${k === cur ? 'on' : ''}" href="#/admin/${k}">${n}</a>`).join('')}</div>`;
+  const nav = `<div class="seg admin-tabs" role="group" aria-label="Admin sections">${tabs.map(([k, n]) => `<a class="${k === cur ? 'on' : ''}" href="#/admin/${k}" ${k === cur ? 'aria-current="page"' : ''}>${n}</a>`).join('')}</div>`;
   const body = { dashboard: () => adminDashboard(), accounts: adminAccounts, features: adminFeatures, audit: adminAudit, maps: () => adminMaps() }[cur]();
   return `<div class="page-h"><div class="grow"><h1>Admin</h1><p>Features, accounts and records for everyone on this Flowa.</p></div></div>${nav}${body}`;
 }

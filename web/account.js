@@ -342,7 +342,7 @@ function pageProfile() {
     ${flags.tour ? '<button class="btn" data-act="tour-replay">Replay the tour</button>' : ''}<button class="btn" data-act="signout">Sign out</button></div>
   <div class="grid g2">
     <div class="card"><div class="card-h"><h2>Picture and name</h2></div>
-      <div class="row" style="gap:16px;margin-bottom:14px">${avatarHTML(me, 'big')}<div class="row wrap"><label class="btn sm">Upload picture<input type="file" accept="image/*" data-change="avatar" hidden></label>${flags.avatars ? `<a class="btn sm" href="#/avatar">${hasAvatar(me) ? 'Edit avatar' : 'Make an avatar'}</a>` : ''}${me.avatar ? '<button class="btn sm" data-act="avatar-remove">Remove</button>' : ''}</div></div>
+      <div class="row" style="gap:16px;margin-bottom:14px">${avatarHTML(me, 'big')}<div class="row wrap"><button type="button" class="btn sm" data-act="file">Upload picture</button><input type="file" accept="image/*" data-change="avatar" hidden>${flags.avatars ? `<a class="btn sm" href="#/avatar">${hasAvatar(me) ? 'Edit avatar' : 'Make an avatar'}</a>` : ''}${me.avatar ? '<button class="btn sm" data-act="avatar-remove">Remove</button>' : ''}</div></div>
       <form id="profile-form" class="row wrap" style="align-items:flex-end"><label class="field grow">Display name<input type="text" name="displayName" maxlength="40" required value="${esc(me.displayName)}"></label><button class="btn" type="submit" style="height:36px">Save</button></form></div>
     <form class="card" id="password-form"><div class="card-h"><h2>Password</h2></div><div class="stack" style="gap:10px">
       <label class="field">Current password<input type="password" name="current" autocomplete="current-password" required></label>

@@ -5,11 +5,124 @@ Category: improvement. Size: S. Each item is one pull request or one commit of o
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#36](https://github.com/TuanSSM/flowtopia/issues/36)). 4 of 5 items done.
+**Status:** in progress (issue [#36](https://github.com/TuanSSM/flowtopia/issues/36)). 4 of 5 items done; Focus is built but for the controls under a skill's guide beside a wide page.
 
 - [ ] **Focus.** Every control reachable by Tab in reading order, a visible focus ring in both
   themes, dialogs trap focus and return it. DoD: a keyboard-only browser test signs in, logs a
   session, publishes a combo and replies to a comment.
+  Open: beside a wide page a skill's guide lies over the right 420 px of it, and 5 Tab stops at
+  1440 px (the bell, the search button and what else lies there) take the focus under the guide,
+  where it cannot be seen (WCAG 2.2, 2.4.11 Focus Not Obscured). The suite counts them and does not
+  fail on them. Making them inert would mean working out from their places, at every size and
+  scroll, which controls the guide covers, and the bell and the search button are in the bar at the
+  top, which does not scroll, so no scroll margin brings them out; giving the guide room of its own
+  changes the layout for everyone and belongs to SHP. The box is ticked when that is done.
+  Built: `test/browser/keys.py` is the `integration (keys)` suite. It sends the browser real key presses
+  (Tab, Shift+Tab, Enter, Space, Escape, the arrow keys and typed text; `key`, `type_text` and `tab_to`
+  in `h.py`) and never focuses or clicks from the page's own JS. With them it signs in, logs a session
+  of 40 minutes with a skill, builds a combo of two skills and publishes it, and replies to a comment,
+  and reads each back through the API. On the way it presses Tab round 27 pages, the timeline once
+  more with Shift+Tab, and 7 dialogs (35 rounds, 1,723 stops) until the focus is back where it began
+  and holds each round against the page: every control on show is reached (the list `a11y.py` names;
+  1,578 controls; a control drawn again since the round passed it counts as reached by a stop on one
+  that looks the same, one stop for one control, so of two Load more buttons each needs its own); nothing hidden, inert, outside
+  the window or under something else takes the focus, and no control has a positive `tabindex`; the
+  order is reading order (no stop after one that lies more than a row, 24 px, below it, unless it
+  starts at or beyond that one's right edge, as the next column of a layout does); each stop shows an
+  outline of at least 2 px at 3:1 against what it is drawn on, read from the computed styles in the
+  dark and the light theme, and no box cuts the outline off. Ten things that open over or beside the
+  page are opened by key: the search, a report, a moderation action, the streak overlay, the menu of a
+  narrow window, a skill's guide on a narrow window and beside a wide page, the notifications, the
+  trick picker and the guided tour. Each takes the focus when it opens, closes on Escape and hands
+  the focus back; the six that cover the page keep Tab and Shift+Tab inside and the page behind them
+  is `inert`, and the tour keeps Tab inside too. 24 controls are used and must still have the focus,
+  with its ring, when the page has been drawn again; a Remove and a Delete that are used must leave it
+  on a control that deletes nothing. With real clicks (`point` in `h.py`) it checks that nothing of
+  this moves the focus or scrolls the page for a person with a mouse, and that a playing combo costs
+  the page's watcher no work then. 309 of 309 checks pass, none skipped, in headless Firefox 159 (see below).
+  Before the fixes (this suite run on `main` at 89d8ed9), 101 of 312 checks failed; the count differs
+  because each control Tab cannot reach adds a failed check of its own. No page had a link past the menu.
+  3 controls could not be reached (Picture, Upload picture and Import JSON: labels around hidden file
+  fields). The search box showed no ring, and the 8 rows of the trick picker and the 6 tabs of the
+  avatar editor had theirs cut off by the box that scrolls them. 1 node of the branch graph came out
+  of reading order (the graph listed its nodes by number, not by place). None of the 10 did all a
+  dialog owes: Tab walked on into the page behind every one of the six that cover it (293 stops under
+  a dialog, or in the menu of a narrow window while it was off the screen); the streak overlay, the
+  menu and a skill's guide did not take the focus; a report, a moderation action and a skill's guide
+  lost it when they closed; the notifications did not close on Escape, and the trick picker only from
+  its search box; the tour left the focus on nothing when it ended. All 23 controls that were used
+  there (one fewer than now, as one could not be reached) lost the focus when the page was drawn again, the list of skills in a combo a second time when the
+  suggestions arrived. Enter on a search result that had the focus opened the result the arrow keys
+  had last marked and then the search again. The rows of choices and the tabs said nothing of which
+  one was chosen; Remove on a chosen skill and Delete on a comment left the focus on nothing; Escape
+  on the search over a report closed both. Now none of these.
+  What changed: a link that skips to the content is the first Tab stop. The page is drawn again from
+  state after most actions, so what has the focus is written down as what it is (its part of the
+  page, its kind and its data) and the control that answers to the same words gets the focus back
+  after a redraw; one that is gone gives its place to the next of its kind, a new page to its
+  content, and a Delete or Remove that is gone to the nearest control before it that deletes nothing.
+  This is done for a person at the keys only: a click or a tap forgets what was written down for the
+  keys and nothing is moved, and on a touch screen the focus is not put back into a text box, which
+  would bring the keyboard up.
+  What lies over the page keeps Tab to itself, is closed by Escape one thing at a press, and what it
+  covers is `inert`. The rows of choices (theme, hand, graph or list, the editor's views, the
+  overlay's format and position) carry `aria-pressed` and are walked with the arrow keys; the tabs of
+  Admin, Moderation and the editor's props carry `aria-current`. The file fields are opened by a
+  button. The graph lists its nodes row by row. Rings are drawn inside the control where a box that
+  scrolls would cut them off, and a control Tab reaches under the bar at the top of the window is
+  moved out from under it.
+  For a mouse or a finger two things look different: the search box shows the ring every text box
+  shows, and the pointer is a hand over Picture, Upload picture and Import JSON, as over every other
+  button. The pictures of `pages.py` are the same before and after, but for the figure in mid-move
+  and the clock.
+  A person with a mouse walked 50 steps of the same journey on both trees (sign in, a session, the
+  theme, a reply, the search, a report, the streak overlay, a guide, the menu of a narrow window): of
+  14 pictures of pages left still, all are the same but for the search box's ring and a difference of 1
+  in 255 in one colour channel on the corners of a few rounded boxes, which two runs of `main` show
+  too. The controls keep their size. What opens over the page after a click hands no focus back when
+  it closes, even when it is closed with Escape. `keys.py` checks two such cases with real clicks, each
+  with a box typed in before and scrolled out of sight: a click beside the content, the search by its
+  key and Escape; and a click on Report that does not focus the button, as in Safari and Firefox on
+  macOS, then Escape. In both the focus and the scroll stay where they were. Both pass on `main`.
+  A review before the merge changed three things. Typing in a box that was clicked, Enter included, no
+  longer counts as working the page by keys: a comment sent with Enter after a click had left the
+  focus, with its ring, in the box and scrolled the page 121 px. Escape over a dialog no longer also
+  closes the notifications under it. And a change of words alone, such as the clock of a playing combo
+  each frame, is not looked at unless the focus has dropped to the page as a whole.
+  A second review changed five more, each with a check in `keys.py` that failed before (8 checks).
+  The place to hand the focus back to was the last control that had had it, however long before: after
+  a click elsewhere, Escape on a dialog or the search opened by the pointer sent the focus to a box
+  typed in earlier and scrolled the page to it (1,200 px in the check). Now it is what had the focus
+  when the layer opened by key, or nothing, and a click forgets the rest. The watcher did its work on
+  every change of words whenever the focus was on the page as a whole, the usual state with a mouse:
+  over 5 s of a playing combo after Pause and Play by mouse, 262 and 290 runs, now 1 and 0 (the one is
+  a change of elements). One Escape on the search over a dialog closed both; now the search alone. A
+  Delete or Remove that was used gave the focus to the next row's, where a second Enter deletes on.
+  And a box the focus was put back into, then clicked to type in, was replaced by a redraw from the
+  server and lost the focus; a click now marks it as being typed in.
+  `a11y.py` no longer counts the page behind an open dialog, which is inert: 4,433 controls, 143
+  pictures and 210 fields over the same 68 stops.
+  The questions the browser itself asks (Delete this session?) are its own dialogs and are not
+  pressed; before a comment is deleted the suite answers yes from outside, as `editor.py` does. The search lists up to 40 results and each
+  is a Tab stop. The templates of the streak overlay are radio buttons by role that Tab stops at one
+  by one; the arrow keys move between them and do not choose. Link cards are not on the journey (they
+  need the stand-in the links suite has); their ring, and those of the skill map editor, the avatar
+  editor's tabs and seven pages at 420 px, were looked at once by hand with the same checks, 25 more
+  rounds with none failing. The suite was written on Chromium through a stand-in for Marionette. Its
+  first runs in real Firefox (the pull request's CI, then headless Firefox 159 here) failed: 21 passed,
+  14 failed, then a crash. All three causes were in the test, not in the page. Tab past the last control
+  of a page takes the focus out of it to the browser's own bar, where Marionette cannot send keys; the
+  keys that followed reached a page without the focus, and Firefox moved its focused element there with
+  no focus event and no ring, so every stop of the landing page showed none, the skip link was cut down
+  to nothing under the menu, and Tab went no further than two links of the menu. `key()` in `h.py` now
+  gives the window its focus back after such a press, as a person's next Tab through the bar does, and
+  drops the caret a text box leaves in the page, from which Firefox would start that Tab instead of
+  from the top. And the suite scrolled the page in the same frame as its last typed key, before Firefox
+  scrolled to what was typed; it now lets the page draw first. A failed sign-in now stops the journey
+  with its failures counted, instead of a crash a few steps on. Firefox also stops Tab at every box
+  that scrolls, which Chromium does only for a box with no control in it; the suite takes such a stop
+  as one and holds it to a ring (1,723 stops in Firefox, 1,699 on Chromium). Not done: a pass with a
+  real screen reader.
 - [x] **Names.** `aria-label` on every icon-only button; the figure canvas carries the caption as
   its text alternative; live regions for toasts. DoD: a script in lint lists controls without a
   name and fails on any.

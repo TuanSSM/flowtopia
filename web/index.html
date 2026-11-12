@@ -13,6 +13,8 @@
 <script src="theme.js"></script>
 </head>
 <body>
+<!-- The first Tab stop: past the menu, to the content. It shows only while it has the focus. -->
+<a class="skip btn primary" href="#main" data-act="skip">Skip to the content</a>
 <div id="app" class="shell">
   <div class="scrim" data-act="nav-close" aria-hidden="true"></div>
   <!-- The menu is drawn again on every change, into #menu. The note under it that says whether changes are
@@ -27,7 +29,7 @@
     </header>
     <main id="main" tabindex="-1"></main>
   </div>
-  <aside id="panel" class="panel" aria-label="Skill details" hidden></aside>
+  <aside id="panel" class="panel" aria-label="Skill details" tabindex="-1" hidden></aside>
 </div>
 <div id="palette" class="palette" hidden></div>
 <div id="modal" class="modal" hidden></div>

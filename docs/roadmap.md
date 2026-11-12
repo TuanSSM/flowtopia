@@ -126,7 +126,7 @@ definition of done holds; "waits" names the one thing that cannot be done from a
 | SHP | 0 of 6 | nothing | the four structure decisions (the owner); everything else in SHP follows from them |
 | LOAD | 1 of 6 | queries indexed and held to their plans; page files under hashed names, compressed | the slowest request read from the Pi's log; the figure on demand, the clip index per prop, the service worker and the first-paint numbers are not started |
 | OPS | 2 of 5 | health, request log; Postgres pinned; image built by the release; restore drill | Dependabot's first pull request, a first release and a deploy of it, the drill's first runs (the owner starts workflows). Loopback by default and the proxy recipe were built and withdrawn (#74) |
-| A11Y | 4 of 5 | names, forms, reduced motion, contrast, each with a check that runs on every pull request | Focus (keyboard), in work; listening with a real screen reader has not been done |
+| A11Y | 4 of 5 | names, forms, reduced motion, contrast, each with a check that runs on every pull request; focus built (the keyboard alone, from signing in to a reply, 309 checks in Firefox) | Focus: 5 Tab stops under a skill's guide beside a wide page, which belongs to SHP; listening with a real screen reader has not been done |
 | CAT | 1 of 6 | the method for confirming a skill | the five research passes: sources have to be opened, which the session that wrote this could not do |
 | LBL | 3 of 4 | the question after a run, progress to the gate, the label check, the fit workflow | 30 marked pairs on an instance and the workflow's first run (the owner) |
 | TRU | 0 of 6 | the design note | the owner's review and thirteen decisions at its top |

@@ -949,6 +949,12 @@ func TestStaticHashed(t *testing.T) {
 				}
 				continue
 			}
+			if strings.HasPrefix(plain, "#") { // a place on the page (the link that skips the menu), not a file
+				if ref != plain {
+					t.Fatalf("the link to %s was rewritten as %s; a place on the page keeps its name", plain, ref)
+				}
+				continue
+			}
 			// Every script, the style sheet and the icon: named by hash, and each form of it is the file.
 			if ref != hashedName(plain, hash16(raw(plain))) {
 				t.Fatalf("the page names %s as %s, want its hashed name: write it as a plain relative path in index.html", plain, ref)

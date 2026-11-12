@@ -118,6 +118,62 @@ def moves(sel='#demo-cv',timeout=2):
     # True when the canvas shows another picture within the time: a clip that plays draws a new frame.
     a=js(SNAP,sel);return bool(a) and poll(lambda: (lambda s: bool(s) and s[0]!=a[0])(js(SNAP,sel)),timeout)[1]
 click=lambda sel: js("document.querySelector(arguments[0]).click()",sel)
+# Keys, for a suite that works the page the way a person without a mouse does. The browser is sent the key
+# presses and moves the focus itself: such a suite never focuses or clicks from the page's own JS, and asks
+# the page only where the focus is.
+TAB,ENTER,ESC,SPACE,SHIFT,CTRL,BACKSPACE,LEFT,UP,RIGHT,DOWN='\ue004','\ue007','\ue00c','\ue00d','\ue008','\ue009','\ue003','\ue012','\ue013','\ue014','\ue015'
+def key(*ks,hold=()):
+    # Presses each key in turn and lets it go, with the keys in hold kept down meanwhile (Shift for Shift+Tab).
+    a=[{'type':'keyDown','value':k} for k in hold]+[x for k in ks for x in ({'type':'keyDown','value':k},{'type':'keyUp','value':k})]+[{'type':'keyUp','value':k} for k in reversed(hold)]
+    cmd('WebDriver:PerformActions',actions=[{'type':'key','id':'kb','actions':a}])
+    # Tab past the last control of the page takes the focus out of it, to the browser's own bar. Marionette
+    # can only send keys to the page, not to that bar, so later keys would reach a page that no longer has
+    # the focus: Firefox then moves the page's focused element with no focus event and draws no ring. A
+    # person's next Tab goes through the bar and back into the page with the focus, at its first control
+    # (Shift+Tab: its last). That is done here by giving the window its focus back, and by dropping the
+    # caret a text box can leave in the page, from which Firefox would start the next Tab instead of
+    # from the top. The press that left still finds no element of the page focused.
+    if TAB in ks and not js("if(document.hasFocus())return true;getSelection().removeAllRanges();return false"):
+        cmd('WebDriver:SwitchToWindow',handle=cmd('WebDriver:GetWindowHandle')['value'],focus=True)
+def type_text(s): key(*s)  # one key press for each letter
+def point(x,y):
+    # A click of the mouse at a place in the window (px from its top left), for a check about a person who uses
+    # the pointer: the browser is sent the pointer's move, press and release, as it is sent keys.
+    cmd('WebDriver:PerformActions',actions=[{'type':'pointer','id':'mouse','parameters':{'pointerType':'mouse'},'actions':[{'type':'pointerMove','x':int(x),'y':int(y),'origin':'viewport'},{'type':'pointerDown','button':0},{'type':'pointerUp','button':0}]}])
+# Where the focus is: [a number that stays with the element, what it is], or None when no element of the page
+# has it (the focus is on the page as a whole, or outside it).
+WHO="""const e=document.activeElement;if(!e||e===document.body||e===document.documentElement)return null;
+const k=window.__who||(window.__who={m:new WeakMap(),n:0});if(!k.m.has(e))k.m.set(e,++k.n);
+const c=typeof e.className==='string'?e.className.trim().split(/\\s+/).filter(Boolean).join('.'):'',t=(e.getAttribute('aria-label')||e.textContent||e.getAttribute('name')||'').replace(/\\s+/g,' ').trim().slice(0,30);
+return [k.m.get(e),e.tagName.toLowerCase()+(e.id?'#'+e.id:'')+(c?'.'+c:'')+(e.dataset.act?'[act='+e.dataset.act+']':'')+(t?' "'+t+'"':'')]"""
+def active(): return js(WHO)
+def on(sel):
+    # True when the focus is on an element that matches the selector.
+    return js("const e=document.activeElement;return !!e&&e!==document.body&&e.matches(arguments[0])",sel)
+def tab_to(sel,what=None,limit=300,back=False):
+    # Presses Tab (Shift+Tab with back) until the focus is on an element that matches the selector. True when
+    # it got there. When the focus has gone all the way round, or the limit is reached, the suite fails with
+    # the list of what it passed on the way.
+    look=lambda: js("const e=document.activeElement;return [(function(){"+WHO+"})(),!!e&&e!==document.body&&e.matches(arguments[0])]",sel)
+    seen=[];ids=set();last=None;same=gone=0;a,there=look()
+    for _ in range(limit):
+        if there: return True
+        key(TAB,hold=(SHIFT,) if back else ());a,there=look()
+        if not a:
+            # Past the last control the focus may rest on the page as a whole, or on the browser's own bars, for a few presses.
+            gone+=1;last=None;seen.append('(no element of the page)')
+            if gone>12: break
+            continue
+        if a[0]==last:
+            # A date field keeps the focus while Tab walks its day, month and year; more presses than that is a trap.
+            same+=1
+            if same>8: seen.append(a[1]+' (the focus is stuck here)');break
+            continue
+        if a[0] in ids and not there: seen.append(a[1]+' (again: all the way round)');break
+        ids.add(a[0]);last=a[0];same=0;seen.append(a[1])
+    if there: return True
+    check(f'{"Shift+Tab" if back else "Tab"} reaches {what or sel}',False,f'not reached in {len(seen)} presses; passed: '+' > '.join(seen[:40])+(' ...' if len(seen)>40 else ''))
+    return False
 txt=lambda sel: js("const e=document.querySelector(arguments[0]);return e?e.textContent.trim():null",sel)
 errs=[];times=[];clock=[time.monotonic()]
 def check(n,ok,x='',timeout=10):
