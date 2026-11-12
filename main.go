@@ -80,8 +80,11 @@ const (
 	failWindow = 10 * time.Minute
 )
 
-// Feature flags and their defaults. They are changed at runtime by an admin.
-var flagDefaults = map[string]bool{"details": true, "demos": true, "references": true, "signups": true, "tour": true, "model3d": true, "community": true, "game": true, "moderation": true, "catalogEditor": true, "linkCards": true, "videoEmbeds": true, "suggest": true, "avatars": true, "bookmarks": true}
+// Feature flags and their defaults. They are changed at runtime by an admin. A flag holds its default
+// until an admin saves it (flags keeps a row only for a saved one), so a new flag that is off by
+// default is off on an instance that existed before it as on a new one. follows is the first: what
+// it adds must change nothing on an instance that sets nothing (docs/federation.md, 14.1).
+var flagDefaults = map[string]bool{"details": true, "demos": true, "references": true, "signups": true, "tour": true, "model3d": true, "community": true, "game": true, "moderation": true, "catalogEditor": true, "linkCards": true, "videoEmbeds": true, "suggest": true, "avatars": true, "bookmarks": true, "follows": false}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -444,7 +447,7 @@ func (l *limiter) makeRoom(now time.Time) {
 type limits struct {
 	signin, signinIP, account, signup, password *limiter
 	posts, comments, likes, badges, marks       *limiter
-	bookmarks, blocks                           *limiter
+	bookmarks, blocks, follows                  *limiter
 }
 
 func newLimits() limits {
@@ -453,7 +456,7 @@ func newLimits() limits {
 		signup: newLimiter(10, time.Hour), password: newLimiter(5, failWindow),
 		posts: newLimiter(30, time.Hour), comments: newLimiter(120, time.Hour), likes: newLimiter(600, time.Hour),
 		badges: newLimiter(60, time.Hour), marks: newLimiter(120, time.Hour),
-		bookmarks: newLimiter(300, time.Hour), blocks: newLimiter(100, time.Hour),
+		bookmarks: newLimiter(300, time.Hour), blocks: newLimiter(100, time.Hour), follows: newLimiter(200, time.Hour),
 	}
 }
 
@@ -4280,6 +4283,20 @@ var migrations = []string{schema, schemaSocial,
 		CONSTRAINT blocks_not_self CHECK (user_id <> target_id)
 	);
 	CREATE INDEX IF NOT EXISTS blocks_target ON blocks (target_id, user_id)`,
+	// 9: follows between local accounts. follower_id follows followee_id; nobody follows themself, and
+	// a follow goes with either account. The primary key answers "whom do I follow" for Home and the
+	// counts, and follows_followee "who follows me". The design's state and ap_id columns are for
+	// follows with other servers, which wait for an accepted reply; they come with the migration of
+	// that item (FWR), not before anything reads them. A new table only: going back to an earlier
+	// build is safe, and that build has no Home.
+	`CREATE TABLE IF NOT EXISTS follows (
+		follower_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		followee_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (follower_id, followee_id),
+		CONSTRAINT follows_not_self CHECK (follower_id <> followee_id)
+	);
+	CREATE INDEX IF NOT EXISTS follows_followee ON follows (followee_id, follower_id)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -5828,6 +5845,18 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *
 		return
 	}
 	out := map[string]any{"user": u.public(), "achievements": ach, "posts": posts, "likes": likes, "blocked": blocked}
+	// With follows on, how many follow this member and how many they follow, for everyone, and whether
+	// the viewer follows them. Who they are is shown only to the member (handleFollowers). With the flag
+	// off none of this is asked, so the profile costs what it did.
+	if a.flagsCached()["follows"] {
+		var followers, following int
+		var followed bool
+		if err := a.db.QueryRow(followCountsSQL+`, EXISTS (SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1)`, u.ID, viewer.ID).Scan(&followers, &following, &followed); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out["followers"], out["following"], out["followed"] = followers, following, followed
+	}
 	// With avatars on, the skills this person has clean, so their avatar can play one on their profile.
 	if a.flagsCached()["avatars"] && !u.StatsHidden {
 		clean, err := a.cleanSkills(u.ID)
@@ -6260,12 +6289,36 @@ func blockFree(viewer, author, staff string) string {
 // so a page is full however many recent posts are by someone blocked; the comment count leaves out
 // the comments the viewer is not shown, and the replies under them. Likes are counted from everyone:
 // the count names nobody.
-var feedSQL = `SELECT p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
+var feedSQL = `SELECT ` + postCols("$6") + ` FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) AND ($7::bigint[] IS NULL OR p.id = ANY($7))
+		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) AND ` + blockFree("$1", "p.user_id", "$6") + ` ORDER BY p.id DESC LIMIT $5`
+
+// postCols is what a page of posts reads of each post p, for the viewer $1; staff is the parameter
+// that says whether the viewer may hide posts. feedSQL and homeSQL both read it, so the page draws a
+// post of Home exactly as one of the Community timeline.
+func postCols(staff string) string {
+	return `p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
-			AND ` + blockFree("$1", "c.user_id", "$6") + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", "$6") + `)), p.hidden_reason
-		FROM posts p WHERE ($2 = 0 OR p.id < $2) AND ($3 = 0 OR p.user_id = $3) AND ($4 = 0 OR p.id = $4) AND ($7::bigint[] IS NULL OR p.id = ANY($7))
-		AND (p.hidden_at IS NULL OR p.user_id = $1 OR $6) AND ` + blockFree("$1", "p.user_id", "$6") + ` ORDER BY p.id DESC LIMIT $5`
+			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason`
+}
+
+// homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
+// first. $1 is the viewer, $2 "older than this post" (0 for the first page), $3 how many, $4 whether the
+// viewer may see hidden posts. What is shown is what the Community timeline shows of those accounts:
+// a hidden post only to its author and to staff, nothing across a block (blockFree, asked once per
+// account, with the same staff exception).
+//
+// Postgres cannot merge the newest posts of a list of accounts it learns only while it runs, so each
+// account gives its own newest page through posts_user (user_id, id DESC) and the newest of those are
+// kept. A page reads at most one page of posts per account followed, whatever the size of the posts
+// table and however long ago an account last posted; maxFollows bounds the accounts (TestDBQueryPlans).
+// The counts and the viewer's like are read after the LIMIT, for the posts shown only.
+var homeSQL = `SELECT ` + postCols("$4") + ` FROM (SELECT h.id FROM
+		(SELECT x.id FROM (SELECT $1::bigint AS id UNION ALL SELECT f.followee_id FROM follows f WHERE f.follower_id = $1) x
+			WHERE ` + blockFree("$1", "x.id", "$4") + `) a
+		CROSS JOIN LATERAL (SELECT p.id FROM posts p WHERE p.user_id = a.id AND ($2 = 0 OR p.id < $2)
+			AND (p.hidden_at IS NULL OR p.user_id = $1 OR $4) ORDER BY p.id DESC LIMIT $3) h
+		ORDER BY h.id DESC LIMIT $3) h JOIN posts p ON p.id = h.id ORDER BY p.id DESC`
 
 // feedCommentsSQL is the newest top-level comments of each of those posts ($3 the posts, $4 how many
 // of each); repliesSQL the newest replies under each of those comments. Both go through queryComments.
@@ -6283,8 +6336,13 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) 
 		limit = len(ids) + 1
 	}
 	// Hidden posts are seen only by their author and by those who may hide posts.
-	rows, err := a.db.Query(feedSQL,
-		viewer.ID, before, byUser, only, limit, can(viewer, permPostHide), pq.Array(ids))
+	return a.readPosts(viewer, feedSQL, viewer.ID, before, byUser, only, limit, can(viewer, permPostHide), pq.Array(ids))
+}
+
+// readPosts runs q, feedSQL or homeSQL with its arguments, and gives the page as the page reads it:
+// the posts with their comments and links, the users involved, and whether more follow.
+func (a *app) readPosts(viewer *user, q string, args ...any) (map[string]any, error) {
+	rows, err := a.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -7389,10 +7447,16 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 // that is no account is a 404 in the profile route's words. A name and not an id, so that blocking and
 // the list of blocks tell nobody anything the profile of that name does not: by ids, trying each in
 // turn would put a name to every account, those who never posted and are not in the people list too.
+// Follows find their member the same way, for the same reason (memberNamed).
 func (a *app) blockTarget(w http.ResponseWriter, r *http.Request, u *user) (int64, bool) {
+	return a.memberNamed(w, r, u, "You cannot block yourself.")
+}
+
+// memberNamed is blockTarget with the words for the one asking about themself.
+func (a *app) memberNamed(w http.ResponseWriter, r *http.Request, u *user, self string) (int64, bool) {
 	name := strings.ToLower(r.PathValue("username"))
 	if name == u.Username {
-		fail(w, http.StatusBadRequest, "You cannot block yourself.")
+		fail(w, http.StatusBadRequest, self)
 		return 0, false
 	}
 	var id int64
@@ -7424,12 +7488,15 @@ func (a *app) handleBlock(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	// One statement, so a quick second click is one row; the account must exist as it is written. The
-	// notifications either has had from the other (likes, comments, replies, mentions) go with it: the
-	// blocker hears no more of the blocked member, old news included, and the other way round.
+	// notifications either has had from the other (likes, comments, replies, mentions, follows) go with
+	// it: the blocker hears no more of the blocked member, old news included, and the other way round.
+	// So do the follows between the two, both ways, as Mastodon removes them: neither stays in the
+	// other's Home, lists or counts, and following again is refused while the block holds (handleFollow).
 	var found bool
 	err := a.db.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2),
 		ins AS (INSERT INTO blocks (user_id, target_id) SELECT $1, id FROM t ON CONFLICT DO NOTHING),
-		gone AS (DELETE FROM notifications WHERE kind <> ALL($3) AND ((user_id = $1 AND actor_id = $2) OR (user_id = $2 AND actor_id = $1)))
+		gone AS (DELETE FROM notifications WHERE kind <> ALL($3) AND ((user_id = $1 AND actor_id = $2) OR (user_id = $2 AND actor_id = $1))),
+		unfollowed AS (DELETE FROM follows WHERE (follower_id = $1 AND followee_id = $2) OR (follower_id = $2 AND followee_id = $1))
 		SELECT EXISTS (SELECT 1 FROM t)`, u.ID, id, pq.Array(slices.Sorted(maps.Keys(quietKinds)))).Scan(&found)
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == "23503" {
@@ -7510,6 +7577,159 @@ func (a *app) handleBlocks(w http.ResponseWriter, _ *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"blocks": out, "total": total})
 }
 
+/* ---------- follows: members whose posts a member wants in Home ---------- */
+
+// maxFollows is how many accounts one member may follow. It is what bounds the rows a page of Home
+// reads: one page of posts per account followed at most (homeSQL).
+const maxFollows = 1000
+
+// handleFollow follows a member for the one asking; following again changes nothing and is answered
+// the same. Nobody follows themself (400), and a name that is no account is a 404 in the profile
+// route's words. Across a block, whichever blocked whom, it is the same 404, as a like or a comment
+// across one is answered in the words used when the thing is not there, so the refusal does not say
+// who blocked whom. A muted member may follow: a mute stops what they say, not what they read. The
+// one followed is told once, with a follow notification; unfollowing and following again within a
+// day tells them nothing new, and across a block nothing is told at all (notifyAt).
+func (a *app) handleFollow(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.follows, u, "follows")
+	if !ok {
+		return
+	}
+	id, ok := a.memberNamed(w, r, u, "You cannot follow yourself.")
+	if !ok {
+		return
+	}
+	// One statement: the account must still be there, no block may stand between the two, and the
+	// limit holds, all as the row is written. had is whether the follow was there before.
+	var found, free, made, had bool
+	err := a.db.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2),
+		ok AS (SELECT id FROM t WHERE `+blockFree("$1::bigint", "t.id", "false")+`),
+		ins AS (INSERT INTO follows (follower_id, followee_id) SELECT $1, id FROM ok
+			WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $3 ON CONFLICT DO NOTHING RETURNING 1)
+		SELECT EXISTS (SELECT 1 FROM t), EXISTS (SELECT 1 FROM ok), EXISTS (SELECT 1 FROM ins),
+			EXISTS (SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = $2)`,
+		u.ID, id, maxFollows).Scan(&found, &free, &made, &had)
+	var pe *pq.Error
+	if errors.As(err, &pe) && pe.Code == "23503" {
+		found, err = false, nil // the account was deleted while the follow was written
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if !found || !free {
+		fail(w, http.StatusNotFound, "No such user.")
+		return
+	}
+	if !made && !had {
+		fail(w, http.StatusBadRequest, fmt.Sprintf("You follow %d accounts, the most there can be. Unfollow someone first.", maxFollows))
+		return
+	}
+	if made {
+		var told bool
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM notifications WHERE user_id = $1 AND actor_id = $2 AND kind = 'follow'
+			AND created_at > now() - interval '1 day')`, id, u.ID).Scan(&told); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if !told {
+			a.notifyAt(id, u.ID, "follow", 0, 0, "")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"following": true})
+}
+
+// handleUnfollow takes a follow back. There being no such follow is not an error, and neither is a
+// block: the answer is the same either way. A name that is no account is a 404, as for unblocking.
+func (a *app) handleUnfollow(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.follows, u, "follows")
+	if !ok {
+		return
+	}
+	id, ok := a.memberNamed(w, r, u, "You cannot follow yourself.")
+	if !ok {
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, u.ID, id); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"following": false})
+}
+
+// followingSQL is the accounts a member follows and followersSQL those who follow them, the latest
+// first ($1 the member, $2 how many). Like blockListSQL, the rows of follows are chosen first through
+// the primary key or follows_followee, and only the accounts shown are read.
+const followingSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT followee_id AS id, created_at FROM follows WHERE follower_id = $1
+	ORDER BY created_at DESC, followee_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
+
+const followersSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT follower_id AS id, created_at FROM follows WHERE followee_id = $1
+	ORDER BY created_at DESC, follower_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
+
+// followCountsSQL is how many follow member $1 and how many they follow: one count in an index each.
+const followCountsSQL = `SELECT (SELECT count(*) FROM follows WHERE followee_id = $1), (SELECT count(*) FROM follows WHERE follower_id = $1)`
+
+// maxFollowList is how many accounts each list shows, the latest; the counts say how many there are.
+const maxFollowList = 500
+
+// handleFollowing and handleFollowers list the accounts the one asking follows, and those who follow
+// them. Only their own: whom a member follows and who follows them is shown to nobody else, who see
+// the counts on the profile only (F10 in docs/federation.md).
+func (a *app) handleFollowing(w http.ResponseWriter, _ *http.Request, u *user) {
+	a.followList(w, u, followingSQL, "following")
+}
+
+func (a *app) handleFollowers(w http.ResponseWriter, _ *http.Request, u *user) {
+	a.followList(w, u, followersSQL, "followers")
+}
+
+// followList answers with one of the two lists (q), under key, and its total.
+func (a *app) followList(w http.ResponseWriter, u *user, q, key string) {
+	rows, err := a.db.Query(q, u.ID, maxFollowList)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	type member struct {
+		User  pubUser   `json:"user"`
+		Since time.Time `json:"since"`
+	}
+	out := []member{}
+	for rows.Next() {
+		var since time.Time
+		m, err := scanUser(rows, &since)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out = append(out, member{m.public(), since})
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var followers, following int
+	if err := a.db.QueryRow(followCountsSQL, u.ID).Scan(&followers, &following); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	total := map[string]int{"followers": followers, "following": following}[key]
+	writeJSON(w, http.StatusOK, map[string]any{key: out, "total": total})
+}
+
+// handleHome is a page of Home (homeSQL), in the same shape as the Community timeline, paged the same
+// way with ?before=. It has its own route rather than a parameter on GET /api/posts, so the follows
+// flag closes it as it closes the other follow routes, and the Community timeline's query is not touched.
+func (a *app) handleHome(w http.ResponseWriter, r *http.Request, u *user) {
+	out, err := a.readPosts(u, homeSQL, u.ID, queryID(r, "before"), pageSize+1, can(u, permPostHide))
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (a *app) socialRoutes(mux *routeMux) {
 	// The community flag turns the timeline off for the API too, not only in the menu, and the game
 	// flag does the same for badges. Pictures stay: the profile and the admin pages show them.
@@ -7539,6 +7759,15 @@ func (a *app) socialRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/blocks", social(a.handleBlocks))
 	mux.HandleFunc("PUT /api/users/{username}/block", social(a.handleBlock))
 	mux.HandleFunc("DELETE /api/users/{username}/block", social(a.handleUnblock))
+	// Follows and Home are behind their own flag too, off by default: with it off they are not there.
+	follows := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+		return a.flagged("follows", social(h))
+	}
+	mux.HandleFunc("GET /api/home", follows(a.handleHome))
+	mux.HandleFunc("GET /api/following", follows(a.handleFollowing))
+	mux.HandleFunc("GET /api/followers", follows(a.handleFollowers))
+	mux.HandleFunc("PUT /api/users/{username}/follow", follows(a.handleFollow))
+	mux.HandleFunc("DELETE /api/users/{username}/follow", follows(a.handleUnfollow))
 }
 
 /* ---------- passwords nobody should pick ---------- */

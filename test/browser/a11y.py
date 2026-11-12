@@ -289,6 +289,16 @@ try:
     page('bookmarks','#/bookmarks')
     page('profile','#/profile')
     page('public profile','#/u/rae')
+    # Follows and Home, whose flag is off by default: on for these stops, a profile with Follow and the
+    # counts, then followed, Home, and the lists on one's own profile; then off again.
+    api(op,'flags',{'flags':{'follows':True}},'PUT');load();nav('#/settings')
+    page('public profile, follows on','#/u/rae')
+    js("document.querySelector('[data-act=follow]').click()");wait_for("return !!document.querySelector('[data-act=unfollow]')",'the profile to say it is followed')
+    page('public profile, followed')
+    js("localStorage.setItem('fl-tl','home')")
+    page('home','#/timeline')
+    page('own profile, whom one follows','#/u/admin')
+    api(op,'users/rae/follow',{},'DELETE');api(op,'flags',{'flags':{'follows':False}},'PUT');js("localStorage.removeItem('fl-tl')");load()
     page('settings','#/settings')
     page('avatar editor','#/avatar')
     for t in js("return [...document.querySelectorAll('.av-tabs [role=tab]')].map(b=>b.dataset.v)"): page(f'avatar editor, {t}',act=f"document.querySelector('.av-tabs [data-v={t}]').click()")

@@ -170,6 +170,20 @@ try:
     page('achievements','Achievements','#/achievements')
     page('profile-public','Public profile','#/u/admin')
     page('timeline-phone','Timeline, phone','#/timeline',w=420,ht=900)
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    # Home, with the follows flag on (it is off by default): the posts of a member the admin follows and
+    # the admin's own, with Community beside it. Then the flag goes off again for the pages after.
+    kai=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    api(kai,'signup',{'username':'kai','password':'flowa-test-only','displayName':'Kai Loops'});api(kai,'me',{'props':['poi']},'PUT')
+    api(kai,'posts',{'body':'Three-beat weave at half speed, then at full. The turn finally sits on the beat.','tags':[{'prop':'poi','skill':'F2'}]})
+    api(op,'flags',{'flags':{'follows':True}},'PUT');api(op,'users/kai/follow',{},'PUT')
+    js("localStorage.setItem('fl-tl','home')");load();nav('#/practice')
+    page('home','Home: the people you follow, and your own posts','#/timeline')
+    check('Home is open, with Community beside it, and shows the followed member',js("return document.querySelector('.tl-tabs .on')?.dataset.v")=='home' and 'Kai Loops' in txt('[data-tour=feed]'))
+    page('home-phone','Home, phone','#/timeline',w=420,ht=900)
+    page('profile-follows','Public profile with Follow and the counts','#/u/kai')
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    api(op,'flags',{'flags':{'follows':False}},'PUT');js("localStorage.removeItem('fl-tl')");load()
     # Link cards, with previews from the stand-in for the three sites when the server can reach it.
     if os.environ.get('FLOWA_PREVIEW_BASE'):
         import stub;stub.start()
