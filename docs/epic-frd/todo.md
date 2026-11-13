@@ -8,8 +8,8 @@ Commits title of the category's type. An item is checked only when its DoD holds
 
 **Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): the first item is
 built behind the mode, which is not startable yet, and waits for its Pi measurement; the guarded fetcher is
-done, and nothing calls its federation part yet; the owner's review of the design is still asked for. 1 of 8
-items done. The design note was checked against the specifications and
+done, and nothing calls its federation part yet; HTTP signatures are built, with no caller yet, and wait
+for their Pi measurements; the owner's review of the design is still asked for. 1 of 8 items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -64,6 +64,21 @@ design note says it exists.
   9421 2.5 and B.2.1 to B.2.3 (base only, their signatures are RSA-PSS); `BenchmarkInboxVerify` and
   `BenchmarkSignDelivery` with `-benchmem` under the budgets in federation.md section 12;
   `TestReplayWindow`.
+  Built, with no caller yet (federation.md 7.1 to 7.3 say what and why, section by section): the pure
+  parsers and builders (`parseCavage`, `cavageString`, a strict Structured Fields parser for
+  `Signature-Input`, `Signature` and `Content-Digest`, `rfc9421Base`, `parseDigest`,
+  `parseContentDigest`, `parsePublicKeyPEM`), the policy (`sigVerifier.verify`, a typed `sigReason` for
+  every refusal), the replay memory (`replaySet`), `clockTrusted` and `builtAt`, `verifyRequest` for a
+  request that arrived and `httpSigner` for the fetcher's hook. `TestSignatureVectors` (cavage C.1 and
+  C.2 verified and reproduced, C.3 kept as a documented negative, RFC 9421 4.3 `proxy_sig` verified and
+  reproduced, the bases of 2.5 and B.2.1 to B.2.3 byte for byte, the digests of RFC 9530, RFC 9421 and
+  the draft), `TestReplayWindow`, `TestSignaturePolicy`, `TestSignatureNever`, `TestSignatureWindow`,
+  `TestSignatureThroughFetcher` (both forms, GET with a redirect and POST, over TLS) and their
+  neighbours pass, and the three fuzz targets ran 30 s each with no failure. On the CI-class runner
+  (Xeon 2.3 GHz) `BenchmarkInboxVerify` is about 35 µs, 4.4 to 5.6 KB and 51 to 56 allocations (budget 2
+  ms and 400), `BenchmarkSignDelivery` about 0.8 ms, and the replay memory 56 bytes a signature, 5.6 MB
+  full. Open: the two Pi budgets of section 12, 10 ms to verify and 15 ms to sign
+  (`go test -run xxx -bench 'InboxVerify|SignDelivery' -benchmem .` on the Pi).
 - [ ] **WebFinger and NodeInfo.** `/.well-known/webfinger`, `/.well-known/nodeinfo` and
   `/nodeinfo/2.1`, only in a federating mode and only for members who opted in (the `federates`
   column and its switch in Settings land here). Opting in with a name that ends with a dot or a dash

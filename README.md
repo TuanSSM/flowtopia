@@ -384,7 +384,8 @@ as they were, and sign-up is again what Open sign-ups and Who can join say.
 Nothing federates yet. The first part of federation is built (the plan is in
 [docs/federation.md](docs/federation.md)), but **it is not reachable by an instance yet**: it runs only in a
 mode that federates, and `FLOWA_MODE=federated` still stops the start as "not built". There is no WebFinger,
-no actor, no signature and no request to another server. What is there, for the day that mode is built:
+no actor and no request to another server, and the HTTP signatures below sign and check nothing yet. What is
+there, for the day that mode is built:
 
 - `FLOWA_ORIGIN`: the public address other servers will know the instance by, `https://` and its name, such
   as `https://flowa.example.org`, with a port only when it is not 443. Nothing else: no path, query, user
@@ -421,6 +422,28 @@ it again replaces them. It needs the mode and the
 two settings (with a mode that is not built it stops as the start would), and it is also the way back after
 a lost secret: set a new `FLOWA_KEY_SECRET` first. This version does not tell followers yet: other servers
 pick the new keys up when a signature next fails to verify.
+
+### Federation: HTTP signatures
+
+Servers say who sent a request by signing it. Flowa can sign and check the two forms the fediverse uses
+([docs/federation.md](docs/federation.md), 7.1 to 7.3), but **nothing uses them yet**: no route checks a
+signature (the inbox comes later) and no request is signed (Flowa sends none to another server yet).
+
+- **Sent:** the older form most servers read (draft-cavage-http-signatures-12): `algorithm="rsa-sha256"`,
+  covering the method and path, `host` and `date`, and on a delivery also a `Digest: SHA-256=` of the body.
+  To a server marked for it, a delivery goes in the newer form (RFC 9421) exactly as Mastodon accepts it:
+  one signature over `@method`, `@target-uri` and `Content-Digest: sha-256=:...:`, with `created` and the
+  key id. Fetches always go in the older form. Nothing is signed while the clock is behind the build's own
+  date (a Raspberry Pi starts on its last shutdown's time until the network sets it).
+- **Accepted:** the older form with `rsa-sha256`, `hs2019` or no algorithm, and the newer form with
+  `rsa-v1_5-sha256` or no `alg`, always checked as RSA PKCS#1 v1.5 with SHA-256 whatever the field says.
+  A signature must cover the method, the path and the query, the host, a time (`date` or `created`) and, on a
+  request with a body, a digest that matches the body. It must be made within the last 12 hours and no more
+  than an hour ahead, and each one is accepted once. Keys are RSA from 2048 to 8192 bits, in either PEM
+  form servers publish.
+- The host and the address checked are those of `FLOWA_ORIGIN`, never the `Host` header a proxy passes on,
+  and the path is taken exactly as it arrives. So a reverse proxy in front of Flowa must serve it at the root
+  of that origin and must not rewrite the path.
 
 ### What the server will connect to
 

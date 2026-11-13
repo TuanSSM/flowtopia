@@ -1,0 +1,35 @@
+# RFC 9421, HTTP Message Signatures, Section 4.3 "Multiple Signatures": the reverse proxy's signature
+# proxy_sig, the RFC's one rsa-v1_5-sha256 example (RSASSA-PKCS1-v1_5 with SHA-256), made with
+# test-key-rsa (rfc9421-b1-keys.txt). Read on 12 November 2026 from
+# https://datatracker.ietf.org/doc/html/rfc9421 (the copy downloaded that day).
+# Every figure is printed with RFC 8792 "\" line wrapping; each is unwrapped here as RFC 8792 7.2.2
+# says: a line ending in "\" is joined to the next with that line's leading whitespace removed. The
+# blank line between header and body is added. The request is the one the proxy forwards to the
+# origin server (authority origin.host.internal.example), carrying both the client's sig1 (ECDSA,
+# not checked here) and proxy_sig. proxy_sig covers no @query though the request has one, so Flowa's
+# policy would refuse it; the test checks the base, the signature and reproduces it.
+=== request
+POST /foo?param=Value&Pet=dog HTTP/1.1
+Host: origin.host.internal.example
+Date: Tue, 20 Apr 2021 02:07:56 GMT
+Content-Type: application/json
+Content-Length: 18
+Forwarded: for=192.0.2.123;host=example.com;proto=https
+Content-Digest: sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew==:
+Signature-Input: sig1=("@method" "@authority" "@path" "content-digest" "content-type" "content-length");created=1618884475;keyid="test-key-ecc-p256", proxy_sig=("@method" "@authority" "@path" "content-digest" "content-type" "content-length" "forwarded");created=1618884480;keyid="test-key-rsa";alg="rsa-v1_5-sha256";expires=1618884540
+Signature: sig1=:X5spyd6CFnAG5QnDyHfqoSNICd+BUP4LYMz2Q0JXlb//4Ijpzp+kve2w4NIyqeAuM7jTDX+sNalzA8ESSaHD3A==:, proxy_sig=:S6ZzPXSdAMOPjN/6KXfXWNO/f7V6cHm7BXYUh3YD/fRad4BCaRZxP+JH+8XY1I6+8Cy+CM5g92iHgxtRPz+MjniOaYmdkDcnL9cCpXJleXsOckpURl49GwiyUpZ10KHgOEe11sx3G2gxI8S0jnxQB+Pu68U9vVcasqOWAEObtNKKZd8tSFu7LB5YAv0RAGhB8tmpv7sFnIm9y+7X5kXQfi8NMaZaA8i2ZHwpBdg7a6CMfwnnrtflzvZdXAsD3LH2TwevU+/PBPv0B6NMNk93wUs/vfJvye+YuI87HU38lZHowtznbLVdp770I6VHR6WfgS9ddzirrswsE1w5o0LV/g==:
+
+{"hello": "world"}
+=== label
+proxy_sig
+=== signature base
+"@method": POST
+"@authority": origin.host.internal.example
+"@path": /foo
+"content-digest": sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew==:
+"content-type": application/json
+"content-length": 18
+"forwarded": for=192.0.2.123;host=example.com;proto=https
+"@signature-params": ("@method" "@authority" "@path" "content-digest" "content-type" "content-length" "forwarded");created=1618884480;keyid="test-key-rsa";alg="rsa-v1_5-sha256";expires=1618884540
+=== signature
+S6ZzPXSdAMOPjN/6KXfXWNO/f7V6cHm7BXYUh3YD/fRad4BCaRZxP+JH+8XY1I6+8Cy+CM5g92iHgxtRPz+MjniOaYmdkDcnL9cCpXJleXsOckpURl49GwiyUpZ10KHgOEe11sx3G2gxI8S0jnxQB+Pu68U9vVcasqOWAEObtNKKZd8tSFu7LB5YAv0RAGhB8tmpv7sFnIm9y+7X5kXQfi8NMaZaA8i2ZHwpBdg7a6CMfwnnrtflzvZdXAsD3LH2TwevU+/PBPv0B6NMNk93wUs/vfJvye+YuI87HU38lZHowtznbLVdp770I6VHR6WfgS9ddzirrswsE1w5o0LV/g==

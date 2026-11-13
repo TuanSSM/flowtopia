@@ -1,0 +1,23 @@
+# draft-cavage-http-signatures-12, Appendix C.1 "Default Test", read on 12 November 2026 from
+# https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12. Signed with the key in
+# cavage12-test-key.txt, rsa-sha256 (RSASSA-PKCS1-v1_5 with SHA-256).
+# The request is the one "All examples use", with the blank line between header and body that the
+# draft's display leaves out. The draft wraps the Signature header for display; it is joined here
+# with no space after the commas and none inside the base64 value.
+# C.1 has no headers parameter and says the date alone is then signed "for rsa-sha256", while 2.1.6
+# says a missing headers parameter means (created) and 2.3 makes (created) an error with rsa-sha256:
+# the draft disagrees with itself. The test builds the string C.1 prints from the header list
+# ["date"]; Flowa's verifier refuses this header for not covering the request line either way.
+=== request
+POST /foo?param=value&pet=dog HTTP/1.1
+Host: example.com
+Date: Sun, 05 Jan 2014 21:31:40 GMT
+Content-Type: application/json
+Digest: SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Content-Length: 18
+
+{"hello": "world"}
+=== signing string
+date: Sun, 05 Jan 2014 21:31:40 GMT
+=== signature header
+keyId="Test",algorithm="rsa-sha256",signature="SjWJWbWN7i0wzBvtPl8rbASWz5xQW6mcJmn+ibttBqtifLN7Sazz6m79cNfwwb8DMJ5cou1s7uEGKKCs+FLEEaDV5lp7q25WqS+lavg7T8hc0GppauB6hbgEKTwblDHYGEtbGmtdHgVCk9SuS13F0hZ8FD0k/5OxEPXe5WozsbM="
