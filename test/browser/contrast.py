@@ -228,6 +228,7 @@ def page(name,h=None,act=None,themes=('dark','light'),dialog=None):
         check(f'{name}, {t}: text, icons and field edges stand out',r['n']>0 and not new,
               new or f"{r['n']} judged{', %d of them in the dialog'%r['inside'] if dialog else ''}, {len(r['unknown'])} not judged, {r['hidden']} hidden, {r['behind']} dimmed, {r['off']} switched off")
     theme(themes[0])
+INST={'description':'A place to log practice for the spinners of the Thursday jam in the park.\n\nNew people are welcome: bring a pair or borrow one.','contact':'jam@example.org','rules':[{'text':'Spin away from people','hint':'Leave two arm lengths between you and anyone who is not spinning with you.'},{'text':'Be kind','hint':''}]}
 try:
     op=admin();api(op,'flags',{'flags':{'moderation':True,'catalogEditor':True}},'PUT');api(op,'me',{'props':['nunchaku','poi']},'PUT')
     pid=api(op,'posts',{'body':'Which drill fixed your wrist?'})['posts'][0]['id']
@@ -270,6 +271,7 @@ try:
     # Signed out.
     page('landing','#/')
     page('sign in','#/signin')
+    page('create an account','#/signup')  # with nothing saved: no rules
     page('skill maps, signed out','#/maps')
     signin()
     # The switch on the page sets the theme the way this walk does: by data-theme on the root element.
@@ -363,6 +365,10 @@ try:
     page('admin dashboard','#/admin')
     page('admin accounts','#/admin/accounts')
     page('admin features','#/admin/features')
+    # The instance information, saved, in its editor and on the about page; the sign-up forms below show its rules.
+    api(op,'admin/instance',{**INST,'updatedAt':''},'PUT');load()
+    page('admin instance','#/admin/instance')
+    page('about this Flowa','#/about')
     page('admin audit log','#/admin/audit')
     page('skill map editor, list of maps','#/admin/maps')
     nav('#/admin/maps/poi');wait_for("return document.querySelectorAll('.ed-skill').length>0",'the editor to list the skills',20)
@@ -383,8 +389,8 @@ try:
     for t in ('dark','light'):
         js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
         js("localStorage.setItem('nf-theme',arguments[0])",t);load(BASE+f'?new={t}#/signup')
-        wait_for("return !!document.querySelector('#auth-form')",'the form for a new account',20)
-        page('create an account',themes=(t,))
+        wait_for("return !!document.querySelector('#auth-form .signup-rules')",'the form for a new account, with the rules',20)
+        page('create an account, with the rules',themes=(t,))
         js("const f=document.querySelector('#auth-form');f.elements.username.value=arguments[0];f.elements.password.value=f.elements.again.value='flowa-test-only';f.requestSubmit()",'new'+t)
         wait_for(lambda: js("return (document.querySelector('.nav-profile .tiny')||{}).textContent")=='@new'+t,f'@new{t} to be signed in',30);idle()
         page('choosing props, first visit',themes=(t,))
@@ -394,6 +400,9 @@ try:
         js(f"{TOUR}.find(b=>b.textContent.startsWith('Next')).click()")
         wait_for(f"return {TOUR}.some(b=>b.textContent.startsWith('Back'))",'the second step of the tour');idle()
         page('guided tour, second step',themes=(t,))
+    # Put back: the instance information cleared.
+    api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['updatedAt']},'PUT')
+    check('the instance information is cleared again',json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['description']=='' and 'instance' not in json.loads(op.open(BASE+'api/me',timeout=20).read()))
     print(f"{len(stops)} stops in 2 themes: {tot['n']} pairs of colours judged, {tot['bad']} below their contrast ({len(listed)} different), {tot['unknown']} not judged for what is behind them, "
           f"{tot['hidden']} hidden under something, {tot['behind']} dimmed behind a dialog or the menu, {tot['off']} on controls that are switched off, {tot['native']} controls the browser draws, {tot['drawn']} drawings that are not icons",flush=True)
     # What was not judged for what is behind it is said, once per kind with its count, never passed: it shows as skipped.

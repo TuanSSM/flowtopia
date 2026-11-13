@@ -1,6 +1,6 @@
 'use strict';
 // Moderation and administration: the report dialog, the moderation queue, and the admin area
-// (dashboard, accounts, features, audit log, skill maps). The server decides who may do what
+// (dashboard, accounts, features, instance information, audit log, skill maps). The server decides who may do what
 // (permissions in main.go); this file only shows what the signed-in user's permissions allow.
 
 const canDo = p => perms.includes(p);
@@ -8,6 +8,7 @@ const adminTabs = () => [
   ['dashboard', 'Overview', canDo('dashboard.read')],
   ['accounts', 'Accounts', canDo('dashboard.read')],
   ['features', 'Features', canDo('flags.edit')],
+  ['instance', 'Instance', canDo('flags.edit')],
   ['audit', 'Audit log', canDo('audit.read')],
   ['maps', 'Catalogs', flags.catalogEditor && canDo('catalog.edit')],
 ].filter(t => t[2]);
@@ -111,12 +112,120 @@ function pageAdmin(tab) {
   if (!tabs.length) return notFound();
   const cur = tabs.find(t => t[0] === tab) ? tab : tabs[0][0];
   const nav = `<div class="seg admin-tabs" role="group" aria-label="Admin sections">${tabs.map(([k, n]) => `<a class="${k === cur ? 'on' : ''}" href="#/admin/${k}" ${k === cur ? 'aria-current="page"' : ''}>${n}</a>`).join('')}</div>`;
-  const body = { dashboard: () => adminDashboard(), accounts: adminAccounts, features: adminFeatures, audit: adminAudit, maps: () => adminMaps() }[cur]();
+  const body = { dashboard: () => adminDashboard(), accounts: adminAccounts, features: adminFeatures, instance: adminInstance, audit: adminAudit, maps: () => adminMaps() }[cur]();
   return `<div class="page-h"><div class="grow"><h1>Admin</h1><p>Features, accounts and records for everyone on this Flowa.</p></div></div>${nav}${body}`;
 }
 function adminFeatures() {
   return `<div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every member, straight away</span></div>
     <div class="stack" style="gap:8px">${FLAGS.map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
+}
+// The instance information: a description, a contact and the rules, which people see at sign-up and on the
+// about page (docs/federation.md, section 10). The whole document is saved at once, against the version it
+// was read at, so a save made over another admin's newer one is refused rather than undoing theirs. Each rule
+// has a key of its own on this page (k), so its controls keep naming the same rule when the list is put in
+// another order, and a Remove that went with its rule is never taken for the next row's.
+// doc is the version as saved, draft what is in the form; saving is true while a save is on its way, and
+// theirs holds another admin's version when a save met it (409) and the admin has not yet chosen.
+const ied = { doc: null, draft: null, busy: false, n: 0, saving: false, theirs: null, who: 0 };
+// Unsaved text is kept when the admin goes to another page of the app and comes back, as the skill map
+// editor keeps its draft; with nothing unsaved the tab reads the saved version afresh each time it opens.
+// Leaving or reloading the page with unsaved text asks first, as the rest of the app does.
+window.addEventListener('hashchange', () => { if (!instDirty() && !ied.saving) ied.doc = ied.draft = ied.theirs = null; });
+window.addEventListener('beforeunload', e => { if (instDirty()) e.preventDefault(); });
+const instPlain = d => JSON.stringify([d.description, d.contact, d.rules.map(r => [r.text, r.hint])]);
+const instDirty = () => !!ied.draft && !!ied.doc && instPlain(ied.draft) !== instPlain(ied.doc);
+const INST_CLASH = 'Someone else saved the instance information while you were editing it. Your text is still in the form: load their version, or save yours over it.';
+function setInstance(d) {
+  ied.doc = d;
+  ied.draft = { description: d.description, contact: d.contact, rules: d.rules.map(r => ({ text: r.text, hint: r.hint, k: ++ied.n })) };
+}
+async function loadInstance() {
+  ied.busy = true;
+  const r = await api('admin/instance');
+  ied.busy = false;
+  if (!r.ok) { toast(r.error); return; }
+  setInstance(r.data); render();
+}
+function adminInstance() {
+  if (ied.who !== me.id) { ied.who = me.id; ied.doc = ied.draft = ied.theirs = null; } // another admin signed in on this page
+  if (!ied.doc) { if (!ied.busy) loadInstance(); return '<div class="card"><div class="empty small">Loading…</div></div>'; }
+  const d = ied.draft, L = ied.doc.limits, n = d.rules.length, at = ied.doc.updatedAt;
+  const rule = (r, i) => `<li class="inst-rule">
+      <div class="stack" style="gap:4px"><label class="field">Rule ${i + 1}<input type="text" data-ed="inst-rule" data-f="text" data-k="${r.k}" value="${esc(r.text)}" ${countAttrs('inst-rt-' + r.k, r.text, L.ruleText)}></label>${countHTML('inst-rt-' + r.k, r.text, L.ruleText)}</div>
+      <div class="stack" style="gap:4px"><label class="field">Explanation of rule ${i + 1} (optional)<textarea rows="2" data-ed="inst-rule" data-f="hint" data-k="${r.k}" ${countAttrs('inst-rh-' + r.k, r.hint, L.ruleHint)}>${esc(r.hint)}</textarea></label>${countHTML('inst-rh-' + r.k, r.hint, L.ruleHint)}</div>
+      <div class="row wrap" style="gap:6px"><button type="button" class="btn sm" data-act="inst-up" data-k="${r.k}" aria-label="Move rule ${i + 1} up" ${i ? '' : 'disabled'}>Up</button><button type="button" class="btn sm" data-act="inst-down" data-k="${r.k}" aria-label="Move rule ${i + 1} down" ${i < n - 1 ? '' : 'disabled'}>Down</button><button type="button" class="btn sm danger" data-act="inst-rule-rm" data-k="${r.k}" aria-label="Remove rule ${i + 1}">Remove</button></div></li>`;
+  return `<form class="card" id="inst-form"><div class="card-h"><h2 class="grow">About this Flowa</h2><span class="sub">Shown at sign-up and on the about page</span></div>
+    <div class="stack" style="gap:14px">
+      <p class="small muted">Nothing here shows anywhere until it is saved. Everything is plain text, shown as it is typed. A description also opens the about page to people who are not signed in.</p>
+      <div class="stack" style="gap:4px"><label class="field">Description<textarea name="description" rows="4" ${countAttrs('inst-dc', d.description, L.description)}>${esc(d.description)}</textarea></label>${countHTML('inst-dc', d.description, L.description)}</div>
+      <div class="stack" style="gap:4px"><label class="field">Contact<input type="text" name="contact" value="${esc(d.contact)}" placeholder="An email address, a link that starts with https://, or a short text" autocapitalize="none" spellcheck="false" ${countAttrs('inst-ct', d.contact, L.contact)}></label>${countHTML('inst-ct', d.contact, L.contact)}</div>
+      <fieldset class="inst-fs"><legend>Rules</legend><p class="tiny">Shown in this order above the button that creates an account, and on the about page. At most ${L.rules}.</p>
+        ${n ? `<ol class="inst-rules">${d.rules.map(rule).join('')}</ol>` : '<p class="small muted">No rules yet.</p>'}
+        <div><button type="button" class="btn sm" data-act="inst-add" ${n >= L.rules ? 'disabled' : ''}>${icon('plus')}Add a rule</button></div></fieldset>
+      <p class="form-err" id="inst-err" role="alert">${ied.theirs ? INST_CLASH : ''}</p>
+      ${ied.theirs ? `<div class="row wrap inst-clash" role="group" aria-label="Someone else saved" style="gap:8px"><button type="button" class="btn sm" data-act="inst-theirs">Load their version</button><button type="button" class="btn sm" data-act="inst-mine">Save mine over it</button><span class="tiny">Theirs was saved ${esc(fmtWhen(ied.theirs.updatedAt))}${ied.theirs.updatedBy ? ` by @${esc(ied.theirs.updatedBy)}` : ''}.</span></div>` : ''}
+      <div class="row wrap" style="gap:10px"><button class="btn primary" type="submit" id="inst-save" ${instCanSave() ? '' : 'disabled'}>${ied.saving ? 'Saving…' : 'Save'}</button><span class="tiny">${at ? `Last saved ${esc(fmtWhen(at))}${ied.doc.updatedBy ? ` by @${esc(ied.doc.updatedBy)}` : ''}.` : 'Nothing has been saved yet.'}</span></div>
+    </div></form>`;
+}
+// The control a refusal is about, from the field the server names ("description", "rules.2.text").
+function instField(f, field) {
+  const m = /^rules\.(\d+)\.(text|hint)$/.exec(field || ''), r = m && ied.draft.rules[Number(m[1])];
+  if (r) return f.querySelector(`[data-ed="inst-rule"][data-f="${m[2]}"][data-k="${r.k}"]`);
+  if (field === 'rules') return f.querySelector('[data-act="inst-add"]');
+  return field ? f.elements[field] : null;
+}
+// The page is not drawn again under a text box that has the cursor (render), but a change the editor makes
+// itself (a rule added, a save, another admin's version) must show: the box lets go first, and then gets the
+// focus back, found again by its name or its rule's key, with the cursor where it was. On a touch screen it is
+// left alone, as the keyboard code does, since a box with the focus brings the keyboard up again.
+function instDraw() {
+  const a = document.activeElement, box = a && $('#inst-form')?.contains(a) && /^(INPUT|TEXTAREA)$/.test(a.tagName) ? a : null;
+  const sel = box && (box.dataset.k ? `[data-ed="inst-rule"][data-f="${box.dataset.f}"][data-k="${box.dataset.k}"]` : `[name="${box.name}"]`);
+  const at = box && [box.selectionStart, box.selectionEnd];
+  box?.blur();
+  render();
+  const again = sel && $('#inst-form ' + sel);
+  if (again && !coarse()) { again.focus(); try { again.setSelectionRange(...at); } catch { /* a box that has no cursor */ } }
+}
+// Save is offered when the form differs from the saved version, no save is on its way, and no clash with
+// another admin's save waits for a choice (its own two buttons are the way on then).
+const instCanSave = () => !ied.saving && !ied.theirs && instDirty();
+const instSaveState = () => { const b = $('#inst-save'); if (b) b.disabled = !instCanSave(); };
+// Sends the form against the version it was made on, or, with over, against the version of the admin who
+// saved in between, which writes over theirs on purpose (audited as any save). What is typed while the save is
+// on its way stays in the form: when the draft changed meanwhile, it is kept over the new version, still
+// unsaved, so the next save goes against the right version and loses nothing.
+async function instSave(over) {
+  const dr = ied.draft, base = over ? ied.theirs : ied.doc;
+  if (!dr || !base || ied.saving || (!over && !instCanSave())) return;
+  const sent = instPlain(dr);
+  ied.saving = true; instSaveState();
+  const r = await api('admin/instance', 'PUT', { description: dr.description, contact: dr.contact, rules: dr.rules.map(x => ({ text: x.text, hint: x.hint })), updatedAt: base.updatedAt });
+  ied.saving = false;
+  if (r.status === 409 && r.data?.limits) {
+    // Nothing of theirs is undone unseen, and nothing typed here is thrown away: the admin chooses.
+    ied.theirs = r.data; instDraw(); showErr('inst-err', INST_CLASH);
+    if (document.activeElement === document.body) $('[data-act=inst-theirs]')?.focus();
+    return;
+  }
+  if (!r.ok) { const f = $('#inst-form'), el = f && instField(f, r.data?.field); showErr('inst-err', r.error, el ? [el] : []); el?.focus(); instSaveState(); return; }
+  ied.theirs = null;
+  if (instPlain(ied.draft) === sent) setInstance(r.data); else ied.doc = r.data;
+  // This admin's own menu and about page follow at once, as everyone else's do on their next visit.
+  const d = r.data;
+  inst = d.description || d.contact || d.rules.length ? { about: true } : null; about.data = null;
+  instDraw(); toast(instDirty() ? 'Saved. What you typed since is not saved yet.' : 'Saved. It shows at sign-up and on the about page.');
+}
+// Moves a rule one place and keeps the keyboard on the button that moved it, or on the other one when it
+// reached an end and this one is off.
+function instMove(k, by) {
+  const l = ied.draft.rules, i = l.findIndex(r => r.k === k), j = i + by;
+  if (i < 0 || j < 0 || j >= l.length) return;
+  [l[i], l[j]] = [l[j], l[i]];
+  instDraw();
+  const b = $(`[data-act="${by < 0 ? 'inst-up' : 'inst-down'}"][data-k="${k}"]`);
+  (b && !b.disabled ? b : $(`[data-act="${by < 0 ? 'inst-down' : 'inst-up'}"][data-k="${k}"]`))?.focus();
+  say(`Rule ${i + 1} is now rule ${j + 1}.`);
 }
 // The accounts list is never kept from one visit to the next: it is fetched when the tab opens
 // and again after every action on an account, so a row cannot say Active after a suspension.
@@ -162,7 +271,7 @@ function adminAccounts() {
       <span class="sub tiny">${list.length} of ${ui.users.length}</span></div>
     <div class="table-wrap"><table class="table"><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Last active</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">No accounts match.</td></tr>'}</tbody></table></div></div>`;
 }
-const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft' };
+const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft', instance: 'Changed the instance information' };
 async function loadAudit(more) {
   const f = mod.filter, before = more && mod.audit?.length ? mod.audit[mod.audit.length - 1].id : 0;
   const r = await api(`admin/audit?actor=${encodeURIComponent(f.actor)}&action=${encodeURIComponent(f.action)}&before=${before}`);
@@ -177,6 +286,7 @@ function adminAudit() {
     if (e.action === 'role') return `${esc(d.from)} to ${esc(d.to)}`;
     if (e.action === 'owner') return `from @${esc(d.from)}`;
     if (e.action === 'flags') return Object.entries(d).map(([k, v]) => `${esc(k)} ${v ? 'on' : 'off'}`).join(', ');
+    if (e.action === 'instance') return `${(d.parts || []).map(esc).join(', ')}; ${d.rules} ${d.rules === 1 ? 'rule' : 'rules'}`;
     if (e.action === 'resolve') return `${esc(d.outcome)}, ${d.reports} ${d.reports === 1 ? 'report' : 'reports'}`;
     if (d.until) return `until ${esc(fmtWhen(d.until))}`;
     if (d.key) return esc(d.key);
@@ -252,6 +362,28 @@ document.addEventListener('click', async e => {
       refreshAfterMod(); break;
     }
     case 'audit-more': loadAudit(true); break;
+    case 'inst-add': {
+      const l = ied.draft?.rules;
+      if (!l || l.length >= ied.doc.limits.rules) break;
+      const k = ++ied.n;
+      l.push({ text: '', hint: '', k }); instDraw(); instSaveState();
+      $(`[data-ed="inst-rule"][data-f="text"][data-k="${k}"]`)?.focus();
+      break;
+    }
+    case 'inst-theirs':
+      if (!ied.theirs || ied.saving) break;
+      setInstance(ied.theirs); ied.theirs = null; instDraw(); showErr('inst-err', '');
+      $('#inst-form [name=description]')?.focus(); say('Their version is in the form.');
+      break;
+    case 'inst-mine': instSave(true); break;
+    case 'inst-up': case 'inst-down': instMove(Number(d.k), d.act === 'inst-up' ? -1 : 1); break;
+    case 'inst-rule-rm': {
+      // The focus is put back by the keyboard code, which does not send it to the next row's Remove (wipes).
+      const l = ied.draft?.rules, i = l ? l.findIndex(r => r.k === Number(d.k)) : -1;
+      if (i < 0) break;
+      l.splice(i, 1); instDraw(); instSaveState(); say(`Rule ${i + 1} removed.`);
+      break;
+    }
     case 'user-del':
       if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.`)) {
         const r = await api('admin/users/' + d.id, 'DELETE');
@@ -300,6 +432,12 @@ document.addEventListener('change', async e => {
 // After the accounts table is drawn again, the keyboard stays on the role list it was on.
 const focusRole = id => id && document.querySelector(`select[data-change="user-role"][data-id="${id}"]`)?.focus();
 document.addEventListener('input', e => {
+  const t = e.target;
+  if (ied.draft && t.form?.id === 'inst-form') {
+    if (t.dataset.ed === 'inst-rule') { const r = ied.draft.rules.find(x => x.k === Number(t.dataset.k)); if (r) r[t.dataset.f] = t.value; }
+    else if (t.name === 'description' || t.name === 'contact') ied.draft[t.name] = t.value;
+    instSaveState(); return;
+  }
   if (e.target.id !== 'user-q') return;
   ui.userFilter = { ...(ui.userFilter || { q: '', role: '', status: '' }), q: e.target.value };
   const tb = $('.table tbody'), q = e.target.value.trim().toLowerCase();
@@ -320,6 +458,8 @@ document.addEventListener('submit', async e => {
     const r = await api('mod/actions', 'POST', body);
     if (!r.ok) { showErr('act-err', r.error, errFields(f, r.error, [[/\breason\b/i, ['reason']]])); return; }
     closeModal(); toast('Done. They have been told.'); refreshAfterMod();
+  } else if (f.id === 'inst-form') {
+    e.preventDefault(); instSave(false);
   } else if (f.id === 'audit-form') {
     e.preventDefault();
     mod.filter = { actor: f.actor.value.trim(), action: f.action.value }; mod.audit = null; render();

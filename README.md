@@ -62,6 +62,10 @@ named but not described.
   and neither can follow the other while it holds: Follow then answers "You cannot follow this
   account." to both, whoever blocked whom. The blocked member is not told of the block, but can notice
   it this way, as on Mastodon; the block question says so. One member follows at most 1,000 accounts.
+- **Instance information and rules:** an admin writes a description of this Flowa, a way to reach the
+  admins and the rules in Admin > Instance. The rules show, in order, above the button of the sign-up form,
+  with a sentence that creating an account means agreeing to them, and everything shows on an about page.
+  Nothing shows anywhere until it is saved. See [Instance information](#instance-information).
 - **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions, follows and new
   badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
@@ -528,7 +532,7 @@ returns the signed-in user's permissions so the interface shows only what the se
 | --- | --- |
 | Member | Post, comment, like, report |
 | Moderator | Also: delete and hide others' content, mute and suspend members, work the report queue, revoke badges and hide reported stats, see the dashboard and accounts, draft skill map changes |
-| Admin | Also: change roles, feature flags, reset passwords, delete accounts, read the audit log, publish and restore skill maps |
+| Admin | Also: change roles, feature flags and the instance information, reset passwords, delete accounts, read the audit log, publish and restore skill maps |
 
 Nobody acts on someone of their own role or higher, or on themself, and Flowa always keeps one admin.
 That covers deleting someone's posts and comments: a moderator cannot delete an admin's or another
@@ -580,6 +584,44 @@ Admin API (permission in brackets): `PUT /api/admin/users/{id}/role` (user.role)
 `POST /api/mod/resolve` (report.resolve), `POST /api/mod/actions` (the action's own permission),
 `GET|PUT|DELETE /api/admin/catalog/{prop}[/draft]`, `GET .../diff`, `POST .../publish` (catalog.publish),
 `POST .../shipped`, `GET .../revisions/{rev}`, `POST .../revisions/{rev}/restore` (catalog.publish).
+
+### Instance information
+
+Admin > Instance (permission `flags.edit`) holds what people are told about this Flowa, as Mastodon's
+server rules and about page have it ([docs/federation.md](docs/federation.md), section 10):
+
+- a **description**: plain text of at most 500 characters, with line breaks kept;
+- a **contact**: an email address (letters, digits and `. _ + -` before the `@`; shown as a mail link), a
+  link that starts with `https://` or `http://` (opened in a new tab), or a short text, at most 200
+  characters on one line. Any other kind of link, such as `javascript:`, `data:` or `mailto:`, is refused,
+  and so is a link with a name and password in it or a host in letters other than a to z (a look-alike
+  such as `https://аpple.com` with a Cyrillic а): such a host is written in its `xn--` form. An address
+  with other characters (`a?cc=…@…`) is kept as text, never made a link;
+- **rules**: at most 20, in order, each a sentence of at most 200 characters on one line with an optional
+  explanation of at most 1,000. They can be added, removed and moved up and down by keyboard.
+
+Everything is plain text: trimmed, control characters refused, stored as typed and shown escaped, never read
+as HTML or Markdown. A one-line part refuses a line break, including the line and paragraph separators
+(U+2028, U+2029) that a browser also breaks at; in the description and the explanations those become plain
+line breaks. The editor saves the whole document at once, against the version it read. When another admin
+saved in between, the save is refused (409) and the form keeps what was typed, with two choices: Load their
+version, or Save mine over it (a deliberate overwrite, audited like any save). What is typed while a save is
+on its way stays in the form, unsaved. Unsaved text is kept while the admin visits other pages of the app,
+and leaving or reloading the page asks first. Every save is in the audit log with the parts it changed and
+the number of rules, not the text.
+
+**Nothing shows until something is saved.** On an instance where nobody has saved anything, sign-up looks
+as it always did, no page gains a link, and `GET /api/about` answers exactly as an address nobody has (404).
+Once something is saved, members get "About this Flowa" in the menu and the search; the rules show at
+sign-up. A visitor who is not signed in can open the about page, from the landing and sign-in pages and the
+menu, only while a description is saved; clearing it makes the address unknown again at once.
+
+API: `GET|PUT /api/admin/instance` (flags.edit; `PUT` takes `description`, `contact`, `rules` as
+`[{text, hint}]` and the `updatedAt` it read, up to 256 KB, 60 saves an hour per admin), `GET /api/instance` (any
+signed-in member, every mode), `GET /api/about` (anyone, once a description is saved; 120 reads an hour
+per address, answered from memory). `GET /api/me` says `instance: {about}` once anything is saved, and
+gives a visitor the rules for the sign-up form. The settings live in `instance_settings` (migration 10),
+one row per part, with who saved it and when; deleting that account keeps the row with nobody named.
 
 ## Guided tour
 

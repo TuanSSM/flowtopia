@@ -23,6 +23,7 @@ const ICONS = {
   ext: 'M14 5h5v5M19 5l-8 8M18 14v5H5V6h5',
   trash: 'M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13',
   circle: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z',
+  info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM12 11v6M12 7.5v.5',
   bridge: 'M4 16c4-7 12-7 16 0M4 12v8M20 12v8',
   minus: 'M5 12h14',
   down: 'M6 9l6 6 6-6',
@@ -674,7 +675,7 @@ function renderSide(route) {
     ${me && flags.game ? a('#/achievements', 'trophy', 'Achievements', curId === 'achievements') : ''}
     <div class="nav-h">Props</div>
     ${props}
-    <div class="side-foot">${staff.length ? `<div class="side-staff"><div class="nav-h">Staff</div>${staff.map(([n, h, ic]) => h === '#/mod' ? a(h, ic, `${n}${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : h === '#/admin' ? a(h, ic, n, curId === 'admin') : `<a class="nav-a" href="${esc(h)}" rel="noopener noreferrer">${icon(ic)}${n}</a>`).join('')}</div>` : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}</div>`;
+    <div class="side-foot">${staff.length ? `<div class="side-staff"><div class="nav-h">Staff</div>${staff.map(([n, h, ic]) => h === '#/mod' ? a(h, ic, `${n}${social.queue ? `<span class="nav-pct nav-count">${social.queue}</span>` : ''}`, curId === 'mod') : h === '#/admin' ? a(h, ic, n, curId === 'admin') : `<a class="nav-a" href="${esc(h)}" rel="noopener noreferrer">${icon(ic)}${n}</a>`).join('')}</div>` : ''}${inst?.about ? a('#/about', 'info', 'About this Flowa', curId === 'about') : ''}${a('#/settings', 'gear', 'Settings', curId === 'settings')}</div>`;
 }
 // The pages for the people who run this Flowa, for the menu and the search: the moderation queue, the admin
 // area, and for admins the start page of the machine itself when the server names one (FLOWA_HOME_URL).
@@ -691,13 +692,14 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation', avatar: 'Avatar', bookmarks: 'Bookmarks' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation', avatar: 'Avatar', bookmarks: 'Bookmarks', about: 'About this Flowa' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
   if (p === 'branch') return pageBranch(a, b);
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
+  if (p === 'about') return pageAbout();
   if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements', 'avatar', 'bookmarks'].includes(p) && !me) return pageNeedAccount(title, p);
   if (p === 'avatar') return pageAvatar(a);
   if (p === 'bookmarks') return flags.bookmarks ? pageBookmarks() : pageOff('Bookmarks');
@@ -729,7 +731,7 @@ function render() {
   // Until then only their profile and Settings open, and the menu lists only those.
   const fresh = !!me && !me.onboarded, first = fresh && p !== 'settings' && p !== 'profile';
   renderSide(route);
-  const title = first ? 'Welcome' : !p ? (me ? 'Dashboard' : 'Welcome') : p === 'branch' ? (BR[a]?.name || 'Branch') : p === 'u' && a ? '@' + a : TITLES[p] || 'Not found';
+  const title = first ? 'Welcome' : !p ? (me ? 'Dashboard' : 'Welcome') : p === 'branch' ? (BR[a]?.name || 'Branch') : p === 'u' && a ? '@' + a : p === 'about' && !me && !inst?.about ? 'Not found' : TITLES[p] || 'Not found';
   const scoped = me && !first && (!p || ['branch', 'practice', 'combos', 'plan', 'maps', 'prop'].includes(p));
   $('#crumb').innerHTML = `Flowa / ${scoped ? esc(curProp().name) + ' / ' : ''}<b>${esc(title)}</b>`;
   document.title = `${title} · Flowa`;
@@ -781,9 +783,10 @@ function say(msg) {
 /* ---------- command palette ---------- */
 // A visitor is offered the pages that open without an account; a member theirs, and staff the staff pages
 // with each admin section they may open.
-const pages = () => !me ? [['Welcome', '#/'], ['Skill maps', '#/maps'], ['Sign in', '#/signin'], ...(flags.signups ? [['Create an account', '#/signup']] : []), ['Settings', '#/settings'], ...propPages()]
-  : [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars ? [['Avatar', '#/avatar']] : []), ...(flags.bookmarks ? [['Bookmarks', '#/bookmarks']] : []), ['Settings', '#/settings'],
+const pages = () => !me ? [['Welcome', '#/'], ['Skill maps', '#/maps'], ['Sign in', '#/signin'], ...(flags.signups ? [['Create an account', '#/signup']] : []), ...aboutPages(), ['Settings', '#/settings'], ...propPages()]
+  : [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars ? [['Avatar', '#/avatar']] : []), ...(flags.bookmarks ? [['Bookmarks', '#/bookmarks']] : []), ...aboutPages(), ['Settings', '#/settings'],
     ...staffPages().filter(([, h]) => h[0] === '#'), ...adminTabs().map(([k, n]) => ['Admin: ' + n, '#/admin/' + k]), ...propPages()];
+const aboutPages = () => inst?.about ? [['About this Flowa', '#/about']] : [];
 const propPages = () => [...myProps().filter(p => p.id !== ui.prop).map(p => [p.name + ' map', `#/prop/${p.id}`]), ...BRANCHES.map(b => [`${curProp().name}: ${b.name}`, `#/prop/${CID}/${b.k}`])];
 function palItems(q) {
   q = q.trim().toLowerCase();

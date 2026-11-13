@@ -1153,3 +1153,86 @@ func TestInstanceMode(t *testing.T) {
 		}
 	}
 }
+
+// The parts of the instance information are plain text: what kind a contact is, and how each part is
+// cleaned or refused.
+func TestInstanceText(t *testing.T) {
+	for c, want := range map[string]string{
+		"":                                     "",
+		"admins@example.org":                   "email",
+		"ana.b+flowa@mail.example.co":          "email",
+		"https://forum.example.org/x":          "link",
+		"HTTP://example.org":                   "link",
+		"Ask at the desk":                      "text",
+		"Phone: 0123 456":                      "text",
+		"@admin on this Flowa":                 "text",
+		"<admins@example.org>":                 "text",
+		"javascript: is not a link":            "text", // a word, a colon and a space is a sentence, and is never made a link
+		"matrix:#flowa:example.org":            "!",
+		"javascript:alert(1)":                  "!",
+		"javascript://example.org/%0Aalert(1)": "!", // a host does not make another kind of link an http one
+		"JAVASCRIPT:alert(1)":                  "!",
+		"data:text/html,hi":                    "!",
+		"vbscript:x":                           "!",
+		"mailto:admins@example.org":            "!",
+		"https://a@b.example":                  "!",
+		"https://":                             "!",
+		"https://example.org/a\tb":             "!",
+		// Nothing that means something in a mailto: link passes as an address: kept as text, never a link.
+		"a?cc=victim@evil.example":       "text",
+		"a&b=c@example.org":              "text",
+		"a%3Fcc=victim@evil.example":     "text",
+		"a/b#c@example.org":              "text",
+		"o'neil@example.org":             "text",
+		"a.b+c-d_e@mail.example.co":      "email",
+		"https://\u0430pple.com":         "!",    // a Cyrillic а: a look-alike host is refused
+		"https://xn--pple-43d.com/":      "link", // the same host in its xn-- form shows what it is
+		"https://example.org:8443/flowa": "link",
+		"https://exa_mple.org/":          "!",
+		"//evil.example":                 "text", // no scheme: text, which the page never makes a link
+	} {
+		k, ok := contactKind(c)
+		if !ok {
+			k = "!"
+		}
+		if k != want {
+			t.Errorf("contactKind(%q) = %q, want %q", c, k, want)
+		}
+	}
+	for _, c := range []struct {
+		in, want string
+		multi    bool
+		bad      bool
+	}{
+		{"  Hello  ", "Hello", false, false},
+		{"a\r\nb", "a\nb", true, false},
+		{"a\n\n\n\n\nb", "a\n\nb", true, false},
+		{"a   \nb", "a\nb", true, false},
+		{"tab\there", "tab here", false, false},
+		{"zero\u200bwidth", "zerowidth", false, false},
+		{"<b>bo</b>", "<b>bo</b>", false, false},
+		{"a\nb", "", false, true},
+		{"nul\x00", "", true, true},
+		{"esc\x1b", "", true, true},
+		{"cr\ronly", "", true, true},
+		{"del\x7f", "", true, true},
+		{"\u202eevil", "", true, true},
+		{strings.Repeat("x", 11), "", false, true},
+		{strings.Repeat("é", 10), strings.Repeat("é", 10), false, false},
+		// The line and paragraph separators break a line in a browser: line breaks where lines are kept,
+		// refused in one line. NEL, the vertical tab and the form feed are control characters, refused.
+		{"a\u2028b", "a\nb", true, false},
+		{"a\u2029\u2029\u2029\u2029b", "a\n\nb", true, false},
+		{"a\u2028b", "", false, true},
+		{"a\u2029b", "", false, true},
+		{"a\u0085b", "", true, true},
+		{"a\u0085b", "", false, true},
+		{"a\vb", "", true, true},
+		{"a\fb", "", false, true},
+	} {
+		got, msg := plainText(c.in, "It", c.multi, 10)
+		if (msg != "") != c.bad || (!c.bad && got != c.want) {
+			t.Errorf("plainText(%q, multi %v) = %q, %q", c.in, c.multi, got, msg)
+		}
+	}
+}

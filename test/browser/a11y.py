@@ -182,6 +182,7 @@ def wrong(form,name,sel,words,fields,clear,still=None):
         check(f'{name}: the error stands while what is typed still cannot be sent',words in r['text'] and g['invalid']=='true',lambda: (r,g))
     put(*clear);r=region(sel);got={f: field(f) for f in fields}
     check(f'{name}: the error and the marks are gone at the next thing typed that can be sent',r['there'] and r['text']=='' and all(g['invalid'] is None and sel[1:] not in g['by'] for g in got.values()),lambda: (r,got))
+INST={'description':'A place to log practice for the spinners of the Thursday jam in the park.\n\nNew people are welcome: bring a pair or borrow one.','contact':'jam@example.org','rules':[{'text':'Spin away from people','hint':'Leave two arm lengths between you and anyone who is not spinning with you.'},{'text':'Be kind','hint':''}]}
 try:
     op=admin();api(op,'flags',{'flags':{'moderation':True,'avatars':True,'catalogEditor':True}},'PUT');api(op,'me',{'props':['nunchaku','poi']},'PUT')
     pid=api(op,'posts',{'body':'Which drill fixed your wrist?'})['posts'][0]['id']
@@ -353,6 +354,15 @@ try:
     page('admin accounts','#/admin/accounts')
     page('admin accounts, a role being changed',act="const s=document.querySelector('select[data-change=user-role]');s.value=[...s.options].find(o=>!o.selected).value;s.dispatchEvent(new Event('change',{bubbles:true}))")
     page('admin features','#/admin/features')
+    # The instance information: the editor empty, a rule being added, an empty rule refused by its field, then
+    # saved (with the API) for the editor, the about page, and below the sign-up form of a visitor.
+    page('admin instance, nothing saved','#/admin/instance')
+    page('admin instance, a rule being added',act="document.querySelector('[data-act=inst-add]').click()")
+    R='#inst-form [data-f=text]'
+    wrong(lambda: (put(R,'   '),js("document.querySelector('#inst-form').requestSubmit()")),'admin instance, an empty rule','#inst-err','Rule 1 is empty.',[R],(R,'Spin away from people'))
+    api(op,'admin/instance',{**INST,'updatedAt':json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['updatedAt']},'PUT');load()
+    page('admin instance, saved','#/admin/instance')
+    page('about this Flowa','#/about')
     page('admin audit log','#/admin/audit')
     page('skill map editor, list of maps','#/admin/maps')
     nav('#/admin/maps/poi');wait_for("return document.querySelectorAll('.ed-skill').length>0",'the editor to list the skills',20)
@@ -369,6 +379,12 @@ try:
     # which is turned on for them alone (it would cover the pages above).
     js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
     api(op,'flags',{'flags':{'tour':True}},'PUT')
+    load(BASE+'?rules#/signup');wait_for("return !!document.querySelector('#auth-form .signup-rules')",'the rules on the sign-up form',20)
+    page('create an account, with the rules')
+    page('about this Flowa, signed out','#/about')
+    # Put back: the instance information cleared, so the new member below meets the sign-up form as it was.
+    api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['updatedAt']},'PUT')
+    check('the instance information is cleared again',json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['description']=='' and 'instance' not in json.loads(op.open(BASE+'api/me',timeout=20).read()))
     cmd('WebDriver:SetWindowRect',width=1440,height=1100);load(BASE+'?new#/signup')
     wait_for("return !!document.querySelector('#auth-form')",'the form for a new account',20)
     js("const f=document.querySelector('#auth-form');f.elements.username.value='newbie';f.elements.password.value=f.elements.again.value='flowa-test-only';f.requestSubmit()")

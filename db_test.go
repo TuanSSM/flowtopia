@@ -2771,6 +2771,12 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, mod, "POST", "/api/mod/resolve", map[string]any{"kind": "post", "id": p, "outcome": "dismissed"})
 	within(200, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/role", modID), map[string]any{"role": "user"})
 	within(200, admin, "PUT", fmt.Sprintf("/api/admin/users/%d/owner", admin2ID), nil)
+	inst := within(200, admin, "PUT", "/api/admin/instance", map[string]any{"description": "One connection.", "contact": "", "rules": []map[string]string{{"text": "Be kind", "hint": ""}}, "updatedAt": ""})
+	within(409, admin, "PUT", "/api/admin/instance", map[string]any{"description": "Stale.", "contact": "", "rules": []any{}, "updatedAt": ""})
+	within(200, admin, "PUT", "/api/admin/instance", map[string]any{"description": "One connection, again.", "contact": "", "rules": []any{}, "updatedAt": inst["updatedAt"]})
+	within(200, admin, "GET", "/api/admin/instance", nil)
+	within(200, ana, "GET", "/api/instance", nil)
+	within(200, "", "GET", "/api/about", nil)
 	within(200, admin, "DELETE", fmt.Sprintf("/api/admin/users/%d", goneID), nil)
 	pub := within(200, admin, "GET", "/api/admin/catalog/poi", nil)["published"]
 	within(200, admin, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": pub})
@@ -3708,7 +3714,8 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 		if code0 != http.StatusNotFound {
 			t.Fatalf("an unknown address answers %d, want 404", code0)
 		}
-		for _, p := range []string{"/.well-known/webfinger?resource=acct:ana@example.com", "/.well-known/nodeinfo", "/.well-known/host-meta", "/nodeinfo/2.0", "/nodeinfo/2.1", "/actor", "/inbox", "/users/ana", "/users/ana/inbox", "/users/ana/outbox", "/users/ana/followers", "/users/ana/following", "/@ana", "/api/v1/instance", "/api/v2/instance"} {
+		// /api/about too: the visitor's about page exists only once an admin has saved a description.
+		for _, p := range []string{"/api/about", "/.well-known/webfinger?resource=acct:ana@example.com", "/.well-known/nodeinfo", "/.well-known/host-meta", "/nodeinfo/2.0", "/nodeinfo/2.1", "/actor", "/inbox", "/users/ana", "/users/ana/inbox", "/users/ana/outbox", "/users/ana/followers", "/users/ana/following", "/@ana", "/api/v1/instance", "/api/v2/instance"} {
 			if code, body := ask("GET", p, accept, ""); code != code0 || body != body0 {
 				t.Errorf("GET %s (Accept %q) answers %d %q, an unknown address answers %d %q", p, accept, code, body, code0, body0)
 			}
@@ -3721,7 +3728,7 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 		if code0 < 400 {
 			t.Fatalf("a POST to an unknown address answers %d", code0)
 		}
-		for _, p := range []string{"/inbox", "/actor/inbox", "/users/ana/inbox", "/users/ana/outbox"} {
+		for _, p := range []string{"/api/about", "/inbox", "/actor/inbox", "/users/ana/inbox", "/users/ana/outbox"} {
 			if code, body := ask("POST", p, "", ctype); code != code0 || body != body0 {
 				t.Errorf("POST %s (%s) answers %d %q, an unknown address answers %d %q", p, ctype, code, body, code0, body0)
 			}
@@ -3744,6 +3751,20 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	}
 	if n := e.a.fetch.dials.Load(); n != 0 {
 		t.Errorf("%d connections were tried by a start, an hour's housekeeping and five requests; want none", n)
+	}
+
+	// Nothing about the instance has been saved, so /api/me says nothing new to a visitor or a member,
+	// and the signed-in about page and the editor answer with nothing in them.
+	for _, tok := range []string{"", admin} {
+		if _, out := e.do(tok, "GET", "/api/me", nil); out["instance"] != nil {
+			t.Errorf("/api/me (%q) with nothing saved has instance: %v", tok, out["instance"])
+		}
+	}
+	if code, out := e.do(admin, "GET", "/api/instance", nil); code != 200 || out["description"] != "" {
+		t.Errorf("GET /api/instance with nothing saved: %d %v", code, out["_raw"])
+	}
+	if code, out := e.do(admin, "GET", "/api/admin/instance", nil); code != 200 || out["updatedAt"] != "" {
+		t.Errorf("GET /api/admin/instance with nothing saved: %d %v", code, out["_raw"])
 	}
 
 	// The dashboard says which mode runs.
@@ -3797,5 +3818,287 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	var owners int
 	if err := g.a.db.QueryRow(`SELECT count(*) FROM users WHERE username = 'owner' AND role = 'admin'`).Scan(&owners); err != nil || owners != 1 {
 		t.Errorf("the admin account of a first start: %d (%v), want 1", owners, err)
+	}
+}
+
+// Instance information: nothing saved answers as before; an admin with flags.edit saves the whole
+// document against the version read, every part is plain text within its limits, every save is
+// audited, and the visitor's about page opens only while a description is saved.
+func TestDBInstanceInfo(t *testing.T) {
+	e := newEnv(t)
+	adminID, admin := e.user("boss", "admin")
+	deputyID, deputy := e.user("deputy", "admin")
+	_, mod := e.user("mo", "moderator")
+	_, ana := e.user("ana", "user")
+	raw := func(path, remote string) (int, string, http.Header) {
+		t.Helper()
+		r := httptest.NewRequest("GET", path, nil)
+		if remote != "" {
+			r.RemoteAddr = remote
+		}
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, r)
+		return w.Code, w.Body.String(), w.Result().Header
+	}
+	code0, body0, hdr0 := raw("/nobody-has-this-address", "")
+	unknown := func(what string) {
+		t.Helper()
+		code, body, hdr := raw("/api/about", "")
+		if code != code0 || body != body0 || hdr.Get("Content-Type") != hdr0.Get("Content-Type") || hdr.Get("Content-Security-Policy") != hdr0.Get("Content-Security-Policy") {
+			t.Errorf("%s: the visitor's about answers %d %q (%s), an unknown address %d %q (%s)", what, code, body, hdr.Get("Content-Type"), code0, body0, hdr0.Get("Content-Type"))
+		}
+	}
+	type doc = map[string]any
+	put := func(tok string, d doc) (int, map[string]any) {
+		t.Helper()
+		return e.do(tok, "PUT", "/api/admin/instance", d)
+	}
+	rules := func(texts ...string) []map[string]string {
+		out := []map[string]string{}
+		for _, s := range texts {
+			out = append(out, map[string]string{"text": s, "hint": ""})
+		}
+		return out
+	}
+	full := func(desc, contact string, r []map[string]string, ver string) doc {
+		return doc{"description": desc, "contact": contact, "rules": r, "updatedAt": ver}
+	}
+
+	// Nothing saved: the visitor's about is an unknown address, /api/me says nothing new, a member's
+	// about page is empty, and sign-up works as before.
+	unknown("nothing saved")
+	for _, tok := range []string{"", ana} {
+		if _, out := e.do(tok, "GET", "/api/me", nil); out["instance"] != nil {
+			t.Errorf("with nothing saved /api/me (%q) gained %v", tok, out["instance"])
+		}
+	}
+	if out := e.must(200, ana, "GET", "/api/instance", nil); out["description"] != "" || out["contact"] != "" || len(out["rules"].([]any)) != 0 {
+		t.Errorf("a member's about with nothing saved: %v", out["_raw"])
+	}
+	if out := e.must(200, admin, "GET", "/api/admin/instance", nil); out["updatedAt"] != "" || out["updatedBy"] != nil || num(out["limits"].(map[string]any)["description"]) != 500 {
+		t.Errorf("the editor with nothing saved: %v", out["_raw"])
+	}
+	if code, out := e.do("", "POST", "/api/signup", map[string]string{"username": "newbie", "password": "a fine long password"}); code != 200 || len(out) != 2 || out["user"] == nil {
+		t.Errorf("sign-up with nothing saved: %d %v", code, out["_raw"])
+	}
+	// A flood of reads on an instance that has saved nothing costs no query each: the empty answer is
+	// served from memory. The table is moved out of the way, so a read that asked the database would
+	// fail with 500; the reads above filled the cache moments ago, well inside its ten seconds.
+	if _, err := e.a.db.Exec(`ALTER TABLE instance_settings RENAME TO instance_settings_away`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		if code, body, _ := raw("/api/about", ""); code != code0 || body != body0 {
+			t.Fatalf("read %d of the visitor's about with the table away: %d %q", i+1, code, body)
+		}
+		if code, out := e.do("", "GET", "/api/me", nil); code != 200 || out["instance"] != nil {
+			t.Fatalf("read %d of /api/me with the table away: %d %v", i+1, code, out["_raw"])
+		}
+	}
+	if _, err := e.a.db.Exec(`ALTER TABLE instance_settings_away RENAME TO instance_settings`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only an admin with flags.edit reads the editor or saves.
+	empty := full("A description", "", rules(), "")
+	for _, tok := range []string{ana, mod} {
+		if code, _ := put(tok, empty); code != 403 {
+			t.Errorf("a save by a member or a moderator: %d, want 403", code)
+		}
+		if code, _ := e.do(tok, "GET", "/api/admin/instance", nil); code != 403 {
+			t.Errorf("the editor read by a member or a moderator: %d, want 403", code)
+		}
+	}
+	if code, _ := put("", empty); code != 401 {
+		t.Errorf("a save by a visitor: %d, want 401", code)
+	}
+
+	// The limits: each refused with the field it is about, and nothing written.
+	long := func(n int) string { return strings.Repeat("é", n) }
+	many := make([]string, 21)
+	for i := range many {
+		many[i] = fmt.Sprintf("Rule %d", i+1)
+	}
+	for _, c := range []struct {
+		name  string
+		d     doc
+		field string
+	}{
+		{"501 characters of description", full(long(501), "", rules(), ""), "description"},
+		{"201 characters of contact", full("", long(201), rules(), ""), "contact"},
+		{"21 rules", full("", "", rules(many...), ""), "rules"},
+		{"an empty rule", full("", "", rules("Be kind", "   "), ""), "rules.1.text"},
+		{"201 characters in a rule", full("", "", rules(long(201)), ""), "rules.0.text"},
+		{"1,001 characters of explanation", full("", "", []map[string]string{{"text": "Be kind", "hint": long(1001)}}, ""), "rules.0.hint"},
+		{"a NUL in the description", full("Hello\x00", "", rules(), ""), "description"},
+		{"an escape in a rule", full("", "", rules("Be \x1b[31mkind"), ""), "rules.0.text"},
+		{"a bell in the contact", full("", "ring\x07", rules(), ""), "contact"},
+		{"a line break in a rule", full("", "", rules("Be kind\nalways"), ""), "rules.0.text"},
+		{"a line break in the contact", full("", "a\nb", rules(), ""), "contact"},
+		{"a direction override", full("\u202eadmin", "", rules(), ""), "description"},
+		{"a javascript: contact", full("", "javascript:alert(1)", rules(), ""), "contact"},
+		{"a JavaScript: contact", full("", "JavaScript:alert(document.cookie)", rules(), ""), "contact"},
+		{"a data: contact", full("", "data:text/html,<script>alert(1)</script>", rules(), ""), "contact"},
+		{"a javascript: link with a host", full("", "javascript://example.org/%0Aalert(1)", rules(), ""), "contact"},
+		{"a mailto: contact", full("", "mailto:admins@example.org", rules(), ""), "contact"},
+		{"a link with a name in it", full("", "https://bank.example@evil.example/", rules(), ""), "contact"},
+		{"a link with a space", full("", "https://example.org/a b", rules(), ""), "contact"},
+		{"half a document", doc{"description": "Only this", "updatedAt": ""}, ""},
+	} {
+		code, out := put(admin, c.d)
+		if code != 400 || out["field"] != c.field {
+			t.Errorf("%s: %d, field %v, want 400 and %q: %v", c.name, code, out["field"], c.field, out["_raw"])
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM instance_settings`); n != 0 {
+		t.Fatalf("%d rows after refused saves, want none", n)
+	}
+	unknown("after refused saves")
+
+	// A save: HTML is kept as text and given back as text, line breaks are kept in the description
+	// and the explanations (at most one empty line in a row), and the ends are trimmed.
+	desc := "<b>Welcome</b> & <script>alert(1)</script>\r\n\r\n\r\n\r\nSecond paragraph.  "
+	hint := `No <a href="javascript:alert(1)">links</a>` + "\n\nThat is all."
+	first := doc{"description": desc, "contact": "  <admins@example.org>  ", "updatedAt": "",
+		"rules": []map[string]string{{"text": " <i>Be kind</i> ", "hint": hint}, {"text": "Spin away from people", "hint": ""}}}
+	if code, out := put(admin, first); code != 200 || out["contactKind"] != "text" {
+		t.Fatalf("a contact in angle brackets is kept as text: %d %v", code, out["_raw"])
+	}
+	v0, _ := e.must(200, admin, "GET", "/api/admin/instance", nil)["updatedAt"].(string)
+	first["contact"], first["updatedAt"] = "  admins@example.org  ", v0
+	out := e.must(200, admin, "PUT", "/api/admin/instance", first)
+	wantDesc := "<b>Welcome</b> & <script>alert(1)</script>\n\nSecond paragraph."
+	v1, _ := out["updatedAt"].(string)
+	if out["description"] != wantDesc || out["contact"] != "admins@example.org" || out["contactKind"] != "email" || out["updatedBy"] != "boss" || v1 == "" || v1 == v0 {
+		t.Fatalf("after a save: %v", out["_raw"])
+	}
+	if r := out["rules"].([]any); len(r) != 2 || r[0].(map[string]any)["text"] != "<i>Be kind</i>" || r[0].(map[string]any)["hint"] != hint || r[1].(map[string]any)["text"] != "Spin away from people" {
+		t.Errorf("the rules after a save: %v", out["rules"])
+	}
+	// The audit rows: who, which parts, how many rules; not the text.
+	var actor int64
+	var detail string
+	if err := e.a.db.QueryRow(`SELECT actor_id, detail::text FROM mod_actions WHERE action = 'instance' ORDER BY id LIMIT 1`).Scan(&actor, &detail); err != nil || actor != adminID ||
+		detail != `{"parts": ["description", "contact", "rules"], "rules": 2}` {
+		t.Errorf("the audit row of the first save: %d %s (%v)", actor, detail, err)
+	}
+	if err := e.a.db.QueryRow(`SELECT detail::text FROM mod_actions WHERE action = 'instance' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil || detail != `{"parts": ["contact"], "rules": 2}` {
+		t.Errorf("the audit row of the second save: %s (%v)", detail, err)
+	}
+	// The visitor's about answers at once (the cache was dropped), with the text as typed, as JSON.
+	code, body, hdr := raw("/api/about", "")
+	var got instanceInfo
+	if json.Unmarshal([]byte(body), &got); code != 200 || got.Description != wantDesc || got.Rules[0].Text != "<i>Be kind</i>" || hdr.Get("Content-Type") != "application/json" || strings.Contains(body, "<script>") {
+		t.Errorf("the visitor's about after a save: %d %s %q", code, hdr.Get("Content-Type"), body)
+	}
+	if _, me := e.do("", "GET", "/api/me", nil); me["instance"] == nil || me["instance"].(map[string]any)["about"] != true || len(me["instance"].(map[string]any)["rules"].([]any)) != 2 {
+		t.Errorf("a visitor's /api/me after a save: %v", me["instance"])
+	}
+	if _, me := e.do(ana, "GET", "/api/me", nil); fmt.Sprint(me["instance"]) != "map[about:true]" {
+		t.Errorf("a member's /api/me after a save: %v", me["instance"])
+	}
+	if out := e.must(200, ana, "GET", "/api/instance", nil); out["description"] != wantDesc {
+		t.Errorf("a member's about after a save: %v", out["_raw"])
+	}
+
+	// A save made against an older version is refused with the state as it is, and changes nothing.
+	audits := e.count(`SELECT count(*) FROM mod_actions WHERE action = 'instance'`)
+	code, out = put(deputy, full("Mine instead", "", rules(), v0))
+	if code != 409 || out["updatedAt"] != v1 || out["description"] != wantDesc || out["error"] == nil {
+		t.Errorf("a stale save: %d %v", code, out["_raw"])
+	}
+	if e.count(`SELECT count(*) FROM mod_actions WHERE action = 'instance'`) != audits {
+		t.Error("a stale save was audited")
+	}
+	// A save of one part against the version read: only that part is written and logged.
+	out = e.must(200, deputy, "PUT", "/api/admin/instance", doc{"description": wantDesc, "contact": "https://forum.example.org/flowa", "rules": out["rules"], "updatedAt": v1})
+	v2, _ := out["updatedAt"].(string)
+	if v2 == v1 || out["contactKind"] != "link" || out["updatedBy"] != "deputy" {
+		t.Errorf("after the deputy's save: %v", out["_raw"])
+	}
+	if err := e.a.db.QueryRow(`SELECT detail::text FROM mod_actions WHERE action = 'instance' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil || detail != `{"parts": ["contact"], "rules": 2}` {
+		t.Errorf("the audit row of a one-part save: %s (%v)", detail, err)
+	}
+	if code, _ := put(admin, full(wantDesc, "", rules("Be kind"), v1)); code != 409 {
+		t.Errorf("the first admin's save against the version before the deputy's: %d, want 409", code)
+	}
+
+	// The description cleared: the visitor's about is an unknown address again at once, while the rules
+	// still show at sign-up and members keep their about page.
+	out = e.must(200, admin, "PUT", "/api/admin/instance", full("", "https://forum.example.org/flowa", rules("Be kind", "Spin away from people"), v2))
+	v3, _ := out["updatedAt"].(string)
+	unknown("the description cleared")
+	if _, me := e.do("", "GET", "/api/me", nil); fmt.Sprint(me["instance"]) != "map[about:false rules:[map[hint: text:Be kind] map[hint: text:Spin away from people]]]" {
+		t.Errorf("a visitor's /api/me with rules and no description: %v", me["instance"])
+	}
+	if code, _ := e.do(ana, "GET", "/api/instance", nil); code != 200 {
+		t.Errorf("a member's about with no description: %d", code)
+	}
+
+	// The visitor's limit, by address, once there is something to read.
+	out = e.must(200, admin, "PUT", "/api/admin/instance", full("Back again.", "", rules(), v3))
+	for i := 1; i <= 121; i++ {
+		code, _, _ := raw("/api/about", "203.0.113.7:4000")
+		if want := map[bool]int{true: 200, false: 429}[i <= 120]; code != want {
+			t.Fatalf("read %d of the about page from one address: %d, want %d", i, code, want)
+		}
+	}
+	if code, _, _ := raw("/api/about", "203.0.113.8:4000"); code != 200 {
+		t.Errorf("another address after one ran out: %d", code)
+	}
+
+	// The account that saved is deleted: the rows stay, with nobody named, and nothing breaks.
+	v4, _ := out["updatedAt"].(string)
+	e.must(200, deputy, "PUT", "/api/admin/instance", full("Back again.", "the desk at the gym", rules(), v4))
+	// Admins cannot delete each other, so the deputy is made a member first, as an owner would.
+	if _, err := e.a.db.Exec(`UPDATE users SET role = 'user' WHERE id = $1`, deputyID); err != nil {
+		t.Fatal(err)
+	}
+	e.must(200, admin, "DELETE", fmt.Sprintf("/api/admin/users/%d", deputyID), nil)
+	if n := e.count(`SELECT count(*) FROM instance_settings WHERE updated_by IS NULL`); n != 1 {
+		t.Errorf("%d rows with nobody named after the deleted account, want 1 (the contact)", n)
+	}
+	if out := e.must(200, admin, "GET", "/api/admin/instance", nil); out["updatedBy"] != nil || out["contact"] != "the desk at the gym" || out["contactKind"] != "text" {
+		t.Errorf("the editor after the account that saved last was deleted: %v", out["_raw"])
+	}
+	if code, _, _ := raw("/api/about", "203.0.113.9:4000"); code != 200 {
+		t.Errorf("the visitor's about after the account that saved was deleted: %d", code)
+	}
+
+	// A whole document at its limits, in characters of 3 bytes and of 4 bytes in UTF-8, saves and reads
+	// back the same: the limit on the request's size is in bytes, and must not be met first.
+	for _, ch := range []string{"漢", "🌀"} {
+		of := func(n int) string { return strings.Repeat(ch, n) }
+		rs := make([]map[string]string, maxInstanceRules)
+		for i := range rs {
+			rs[i] = map[string]string{"text": of(maxRuleText), "hint": of(maxRuleHint)}
+		}
+		v, _ := e.must(200, admin, "GET", "/api/admin/instance", nil)["updatedAt"].(string)
+		d := doc{"description": of(maxInstanceDescription), "contact": of(maxInstanceContact), "rules": rs, "updatedAt": v}
+		if b, _ := json.Marshal(d); len(b) <= 64<<10 {
+			t.Errorf("the document in %q is %d bytes, which does not test the size", ch, len(b))
+		}
+		if code, out := put(admin, d); code != 200 {
+			t.Errorf("a whole document at its limits in %q: %d %v", ch, code, out["error"])
+			continue
+		}
+		out := e.must(200, ana, "GET", "/api/instance", nil)
+		got, _ := out["rules"].([]any)
+		same := out["description"] == of(maxInstanceDescription) && out["contact"] == of(maxInstanceContact) && len(got) == maxInstanceRules
+		for _, r := range got {
+			m, _ := r.(map[string]any)
+			same = same && m["text"] == of(maxRuleText) && m["hint"] == of(maxRuleHint)
+		}
+		if !same {
+			t.Errorf("the document in %q does not read back the same", ch)
+		}
+	}
+
+	// Everything cleared: the instance answers as one that never saved anything.
+	v5, _ := e.must(200, admin, "GET", "/api/admin/instance", nil)["updatedAt"].(string)
+	e.must(200, admin, "PUT", "/api/admin/instance", full("", "", rules(), v5))
+	unknown("everything cleared")
+	if _, me := e.do("", "GET", "/api/me", nil); me["instance"] != nil {
+		t.Errorf("a visitor's /api/me with everything cleared: %v", me["instance"])
 	}
 }

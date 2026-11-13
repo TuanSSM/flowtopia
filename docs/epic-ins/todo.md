@@ -6,7 +6,7 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 3 of 7 items done; the design waits for the owner's review. Every setting, table, route and
+**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 4 of 7 items done; the design waits for the owner's review. Every setting, table, route and
 test named below is new unless the design note says it exists.
 
 - [ ] **Design.** [federation.md](../federation.md): the modes, identity, protocol, security, queues,
@@ -45,13 +45,22 @@ test named below is new unless the design note says it exists.
   cases, the flag in `TestDBFlagsGateAPI`, the checks in `social.py` and the pictures in `pages.py`;
   `flowa-schema8.dump`, the backup of the schema before this migration, made from `main` after
   member blocks merged.
-- [ ] **Instance information and rules.** The `instance_settings` table lands here, with its first
+- [x] **Instance information and rules.** The `instance_settings` table lands here, with its first
   reader. Description, contact and rules, edited in Admin (permission `flags.edit`), audited, shown
   at sign-up and on an about page. The about page is in the app for signed-in members in every mode;
   a signed-out visitor can open it only once an admin has saved a description, so an instance that
   sets nothing answers nothing new. DoD: `TestDBInstanceInfo` (with nothing saved the visitor's
   about answers 404 and `TestDBLocalModeUnchanged` still passes); a browser check that sign-up shows
   the rules; a screenshot of the about page.
+  Built: migration 10 (`instance_settings`, three keys: description, contact, rules);
+  `GET|PUT /api/admin/instance` (the whole document against the version read, 409 when stale, audited
+  with the parts that changed), `GET /api/instance` for members and `GET /api/about` for visitors (cached,
+  limited by address, 404 as an unknown address until a description is saved); the limits (500
+  characters of description, a contact of 200 that is an email address, an http or https link or text,
+  20 rules of 200 characters with explanations of 1,000, all plain text); Admin > Instance; the rules on
+  the sign-up form and the about page; `TestDBInstanceInfo`, `TestInstanceText`, the about address and
+  the empty reads in `TestDBLocalModeUnchanged`, the save in `TestDBOneConnection`; checks in `mod.py`,
+  stops in `a11y.py` and `contrast.py`, and the about pictures in `pages.py`.
 - [ ] **Sign-up by approval.** The `registration` setting: open, approval or closed (the `signups`
   flag stays as the switch between open and closed); an account waiting for approval cannot sign in
   and is listed in Accounts with Approve and Decline, both audited. DoD: `TestDBRegistrationApproval`;

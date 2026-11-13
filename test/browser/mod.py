@@ -37,6 +37,16 @@ try:
     api(op,f'admin/users/{me_id(mo)}/role',{'role':'moderator'},'PUT')
     post=api(sam,'posts',{'body':'You all spin like beginners'})['posts'][0]['id']
     start()
+    # The instance information, with nothing saved: a visitor sees nothing new anywhere, and its about page
+    # is not there.
+    ABOUT_LINKS="return document.querySelectorAll('a[href=\"#/about\"]').length"
+    nav('#/');landing=js(ABOUT_LINKS);nav('#/signin');signin_links=js(ABOUT_LINKS)
+    nav('#/signup');wait_for("return !!document.querySelector('#auth-form[data-mode=signup]')",'the form for a new account')
+    form=js("const f=document.querySelector('#auth-form');return [[...f.elements].map(e=>e.name||e.type),!!f.querySelector('.signup-rules'),document.querySelectorAll('a[href=\"#/about\"]').length]")
+    check('with nothing saved, no page a visitor sees links to an about page',landing==0 and signin_links==0 and form[2]==0,(landing,signin_links,form[2]))
+    check('with nothing saved, the sign-up form has its four fields and its button, and no rules',form[:2]==[['username','displayName','password','again','submit'],False],form)
+    nav('#/about')
+    check('with nothing saved, the about page is not found for a visitor, and its address answers as an unknown one',txt('#main .empty').startswith('Page not found') and code_of(opener(),'about')==404,lambda: txt('#main'))
     # A regular user: no moderation or admin entries; reports a post.
     as_user('rae')
     check('a regular user has no Moderation or Admin entry',not any(x.startswith(('Moderation','Admin')) for x in menu()),menu())
@@ -108,10 +118,10 @@ try:
     check('the admin signs in',st[1]=='@admin',st)
     nav('#/admin')
     tabs=js("return [...document.querySelectorAll('.admin-tabs a')].map(a=>a.textContent)")
-    check('an admin sees every admin section',tabs==['Overview','Accounts','Features','Audit log','Catalogs'],(tabs,js("return location.hash+' | '+document.querySelector('#main').innerText.slice(0,160)")))
+    check('an admin sees every admin section',tabs==['Overview','Accounts','Features','Instance','Audit log','Catalogs'],(tabs,js("return location.hash+' | '+document.querySelector('#main').innerText.slice(0,160)")))
     wait_for("return document.querySelectorAll('.dash-chart svg').length===4",'the four weekly charts')
     found=[r[0] for r in pages_for('admin')]
-    check('search offers an admin every section',found==['Admin','Admin: Overview','Admin: Accounts','Admin: Features','Admin: Audit log','Admin: Catalogs'],found)
+    check('search offers an admin every section',found==['Admin','Admin: Overview','Admin: Accounts','Admin: Features','Admin: Instance','Admin: Audit log','Admin: Catalogs'],found)
     # The link to the machine's own start page: none unless the server names one, and then for admins, in the Staff group.
     check('the menu has no link out of Flowa when the server names no start page',staff()==['Staff',['#/mod','#/admin']] and not js("return [...document.querySelectorAll('#side a')].some(a=>/^[a-z]+:/i.test(a.getAttribute('href')))"),staff())
     js("const real=window.fetch;window.__real=real;window.fetch=function(u,o){return real.call(window,u,o).then(r=>String(u)==='api/me'&&(!o||o.method==='GET')?r.json().then(d=>new Response(JSON.stringify(Object.assign(d,{homeUrl:'http://pi.example:8080/?a=1&b=\"2'})),{status:200,headers:{'Content-Type':'application/json'}})):r)}")
@@ -138,6 +148,103 @@ try:
     nav('#/admin/features')
     names=js("return [...document.querySelectorAll('[data-change=flag]')].map(i=>i.dataset.k)")
     check('the Features page lists every switch the server has',sorted(names)==sorted(get(op,'me')['flags'].keys()) and len(names)==16 and 'moderation' in names and 'catalogEditor' in names and 'follows' in names,names)
+    # The instance information: an admin saves a description and two rules in Admin, putting them in order
+    # with the keys; the rules then show at sign-up, the about page opens, and it is all cleared again.
+    nav('#/admin/instance')
+    wait_for("return !!document.querySelector('#inst-form')",'the instance editor')
+    st=js("const f=document.querySelector('#inst-form');return [f.description.value,f.contact.value,f.querySelectorAll('[data-ed=inst-rule]').length,document.querySelector('#inst-save').disabled]")
+    check('the instance editor starts empty and Save waits for a change',st==['','',0,True] and 'Nothing has been saved yet' in txt('#inst-form'),st)
+    check('with nothing saved, an admin has no About entry in the menu','About this Flowa' not in menu(),menu())
+    TYPE="const f=document.querySelector(arguments[0]);f.value=arguments[1];f.dispatchEvent(new Event('input',{bubbles:true}))"
+    RULE=lambda i,f='text': f'#inst-form .inst-rules > li:nth-child({i}) [data-f={f}]'
+    js(TYPE,'#inst-form [name=description]','A place to log practice for the spinners of the Thursday jam.')
+    check('a change makes Save available',lambda: js("return document.querySelector('#inst-save').disabled")==False)
+    for i,t in enumerate(['Spin away from people','Be kind','Remove me']):
+        click('[data-act=inst-add]');wait_for(f"return !!document.querySelector('{RULE(i+1)}')",f'rule {i+1}')
+        check(f'Add a rule puts the cursor in rule {i+1}',on(RULE(i+1)),active)
+        js(TYPE,RULE(i+1),t)
+    js(TYPE,RULE(2,'hint'),'No comments on how anyone looks.')
+    texts=lambda: js("return [...document.querySelectorAll('#inst-form [data-f=text]')].map(i=>i.value)")
+    # Up by the keys, twice, on the third rule: the focus stays on its Up, then goes to its Down at the top.
+    js("document.querySelector(arguments[0]).focus()",'#inst-form .inst-rules > li:nth-child(3) [data-act=inst-up]');key(ENTER)
+    check('Up moves a rule one place and the focus stays on its Up',lambda: texts()==['Spin away from people','Remove me','Be kind'] and on('.inst-rules > li:nth-child(2) [data-act=inst-up]'),lambda: (texts(),active()))
+    key(ENTER)
+    check('at the top its Up is off and the focus is on its Down',lambda: texts()==['Remove me','Spin away from people','Be kind'] and on('.inst-rules > li:nth-child(1) [data-act=inst-down]'),lambda: (texts(),active()))
+    check('the move is said',lambda: 'is now rule 1' in (txt('#say') or ''),lambda: txt('#say'))
+    names=js("return [...document.querySelectorAll('.inst-rules > li:nth-child(1) button')].map(b=>b.getAttribute('aria-label'))")
+    check('each button of a rule says which rule it acts on',names==['Move rule 1 up','Move rule 1 down','Remove rule 1'],names)
+    # Remove by the keys: the next row has a Remove at the same place, which the focus must not land on.
+    js("document.querySelector(arguments[0]).focus()",'.inst-rules > li:nth-child(1) [data-act=inst-rule-rm]');key(ENTER)
+    check('Remove takes the rule away and the focus is not on another Remove',lambda: texts()==['Spin away from people','Be kind'] and js("const e=document.activeElement;return !!e&&e!==document.body&&document.querySelector('#main').contains(e)&&e.dataset.act!=='inst-rule-rm'"),lambda: (texts(),active()))
+    js("document.querySelector('#inst-form').requestSubmit()")
+    saved=lambda: get(op,'admin/instance')
+    check('Save stores the description and the two rules in order, and Save waits again',lambda: [r['text'] for r in saved()['rules']]==['Spin away from people','Be kind'] and saved()['rules'][1]['hint']=='No comments on how anyone looks.' and saved()['description'].startswith('A place to log practice') and js("return document.querySelector('#inst-save').disabled"),lambda: saved())
+    check('the admin now has About this Flowa in the menu, above Settings',lambda: menu()[-2:]==['About this Flowa','Settings'],menu)
+    nav('#/about')
+    check('the about page shows the description and the rules',lambda: 'Thursday jam' in (txt('#main') or '') and js("return [...document.querySelectorAll('#main .rules li b')].map(b=>b.textContent)")==['Spin away from people','Be kind'],lambda: txt('#main'))
+    nav('#/admin/audit')
+    js("const f=document.querySelector('#audit-form');f.action.value='instance';f.requestSubmit()")
+    acts=wait_for(lambda: (lambda a: a if a and a[0][0].startswith('Changed the instance') else None)(js("return [...document.querySelectorAll('tbody tr')].map(r=>[r.cells[2].textContent.trim(),r.cells[3].textContent.trim()])")),'the audit log filtered to the instance information') or []
+    js("const f=document.querySelector('#audit-form');f.action.value='';f.requestSubmit()")
+    check('the save is in the audit log with the parts it changed, and the filter finds it',len(acts)==1 and acts[0]==['Changed the instance information','description, rules; 2 rules'],acts[:2])
+    # A visitor: the rules above the button of the sign-up form, in order, and the about page linked.
+    js("window.__old=1;return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+    load(BASE+'?rules#/signup');wait_for("return !window.__old&&!!document.querySelector('#auth-form[data-mode=signup]')",'the sign-up form, signed out',20)
+    got=js("const s=document.querySelector('#auth-form .signup-rules');if(!s)return null;const b=document.querySelector('#auth-form [type=submit]');return [[...s.querySelectorAll('li b')].map(x=>x.textContent),[...s.querySelectorAll('li p')].map(x=>x.textContent),s.textContent.includes('By creating an account you agree to follow these rules.'),!!(s.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING)]")
+    check('sign-up shows the two rules in order, the explanation, and that creating an account is agreeing, above the button',got==[['Spin away from people','Be kind'],['No comments on how anyone looks.'],True,True],got)
+    nav('#/');landing=js(ABOUT_LINKS);nav('#/signin');signin_links=js(ABOUT_LINKS)
+    # The menu has the link too, so each page has two: the menu's and its own.
+    check('the landing and sign-in pages link to the about page once a description is saved, and so does the menu',landing==2 and signin_links==2 and 'About this Flowa' in menu(),(landing,signin_links,menu()))
+    nav('#/about')
+    check('a visitor can read the about page',lambda: 'Thursday jam' in (txt('#main') or ''),lambda: txt('#main'))
+    # Put back: everything cleared, and the visitor sees nothing new again.
+    api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':saved()['updatedAt']},'PUT')
+    load(BASE+'?cleared#/signup');wait_for("return !!document.querySelector('#auth-form[data-mode=signup]')",'the sign-up form again',20)
+    check('cleared again: no rules at sign-up, no link, and the visitor\'s about answers as an unknown address',not js("return !!document.querySelector('.signup-rules')") and js(ABOUT_LINKS)==0 and code_of(opener(),'about')==404 and 'instance' not in get(opener(),'me'))
+    as_user('admin','flowa-test-only')
+    # Saving by the keys: Enter in the contact box saves, and the cursor is back in that box afterwards.
+    ver=lambda: get(op,'admin/instance')['updatedAt']
+    nav('#/admin/instance');wait_for("return !!document.querySelector('#inst-form [name=contact]')",'the instance editor')
+    js("document.querySelector('#inst-form [name=contact]').focus()");type_text('jam@example.org');key(ENTER)
+    check('Enter in a box saves, and the cursor is back in that box',lambda: get(op,'admin/instance')['contact']=='jam@example.org' and on('#inst-form [name=contact]'),lambda: (get(op,'admin/instance')['contact'],active()))
+    # An address is put into its mail link as a code, so nothing in it can add a header to the message.
+    href=js("return contactHTML('a.b+c-d_e@mail.example.co','email')")
+    check('the mail link of an address is the address written as a code',href=='<a href="mailto:a.b%2Bc-d_e@mail.example.co">a.b+c-d_e@mail.example.co</a>',href)
+    # A save on its way: typing goes on, Save stays off and a second submit sends nothing; what was typed
+    # meanwhile stays in the form, unsaved, over the new version, and the next save is no clash.
+    HOLD="window.__puts=0;window.__hold=new Promise(r=>window.__go=r);const real=window.__real0=window.fetch;window.fetch=function(u,o){if(String(u)==='api/admin/instance'&&o&&o.method==='PUT'){window.__puts++;return window.__hold.then(()=>real.call(window,u,o))}return real.call(window,u,o)}"
+    js(HOLD)
+    js(TYPE,'#inst-form [name=description]','First words.')
+    js("document.querySelector('#inst-form').requestSubmit()")
+    wait_for("return window.__puts===1",'the save to be on its way')
+    js(TYPE,'#inst-form [name=description]','First words. More words.')
+    st=js("const b=document.querySelector('#inst-save');document.querySelector('#inst-form').requestSubmit();return b.disabled")
+    check('while a save is on its way, typing does not turn Save on and a second submit sends nothing',st is True and js("return window.__puts")==1,(st,js("return window.__puts")))
+    js("window.__go()")
+    check('after the save, what was typed meanwhile is in the form, unsaved, and the saved text is the first',lambda: get(op,'admin/instance')['description']=='First words.' and js("return document.querySelector('#inst-form [name=description]').value")=='First words. More words.' and js("return document.querySelector('#inst-save').disabled")==False,lambda: (get(op,'admin/instance')['description'],js("return document.querySelector('#inst-form [name=description]').value")))
+    js("window.fetch=window.__real0");js("document.querySelector('#inst-form').requestSubmit()")
+    check('the next save goes against the new version: saved, with no clash',lambda: get(op,'admin/instance')['description']=='First words. More words.' and (txt('#inst-err') or '')=='',lambda: (get(op,'admin/instance')['description'],txt('#inst-err')))
+    # Unsaved text is kept when the admin goes to another page and back, and leaving the page asks first.
+    js(TYPE,'#inst-form [name=description]','Kept while I look elsewhere.')
+    nav('#/admin/audit');nav('#/admin/instance')
+    check('unsaved text is still in the form after another page',lambda: js("return (document.querySelector('#inst-form [name=description]')||{}).value")=='Kept while I look elsewhere.')
+    check('leaving the page with unsaved text asks first',js("const e=new Event('beforeunload',{cancelable:true});dispatchEvent(e);return e.defaultPrevented"))
+    # Another admin saves meanwhile: the save is refused, the text stays, and the two ways on are offered.
+    api(op,'admin/instance',{'description':'Theirs.','contact':'jam@example.org','rules':[],'updatedAt':ver()},'PUT')
+    js("document.querySelector('#inst-form').requestSubmit()")
+    check('a clash keeps the text in the form and says that someone else saved',lambda: 'Someone else saved' in (txt('#inst-err') or '') and js("return document.querySelector('#inst-form [name=description]').value")=='Kept while I look elsewhere.' and js("return document.querySelector('#inst-save').disabled"),lambda: (txt('#inst-err'),js("return document.querySelector('#inst-form [name=description]').value")))
+    check('the clash offers Load their version and Save mine over it',js("return [...document.querySelectorAll('.inst-clash button')].map(b=>b.textContent)")==['Load their version','Save mine over it'])
+    click('[data-act=inst-mine]')
+    check('Save mine over it saves the text over theirs',lambda: get(op,'admin/instance')['description']=='Kept while I look elsewhere.' and not js("return !!document.querySelector('.inst-clash')"),lambda: get(op,'admin/instance')['description'])
+    js(TYPE,'#inst-form [name=description]','Mine again.')
+    api(op,'admin/instance',{'description':'Theirs again.','contact':'jam@example.org','rules':[],'updatedAt':ver()},'PUT')
+    js("document.querySelector('#inst-form').requestSubmit()")
+    wait_for("return !!document.querySelector('[data-act=inst-theirs]')",'the clash to be offered')
+    click('[data-act=inst-theirs]')
+    check('Load their version puts theirs in the form, and Save waits for a change',lambda: js("return document.querySelector('#inst-form [name=description]').value")=='Theirs again.' and js("return document.querySelector('#inst-save').disabled") and (txt('#inst-err') or '')=='' and get(op,'admin/instance')['description']=='Theirs again.')
+    api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':ver()},'PUT')
+    check('cleared again after the clash checks',lambda: get(op,'admin/instance')['description']=='' and get(op,'admin/instance')['contact']=='')
+    nav('#/admin/audit')
     nav('#/admin/accounts')
     ROLE="const s=document.querySelector('[data-change=user-role][data-id=\"'+arguments[0]+'\"]');s.value=arguments[1];s.dispatchEvent(new Event('change',{bubbles:true}))"
     rid=str(me_id(rae))
