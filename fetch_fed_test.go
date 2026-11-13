@@ -228,6 +228,9 @@ func fakeSign(req *http.Request, body []byte) error {
 }
 
 func TestFederationFetcherRefusals(t *testing.T) {
+	// The bomb is made before any request: packing its 64 MB takes longer than a request's 5 s on a
+	// slow machine under the race detector, and the row is about the reader's cap, not the stub's speed.
+	bomb()
 	f, _ := fedStub(t, fedHandler())
 	o, err := parseOrigin("https://flowa.example")
 	if err != nil {
