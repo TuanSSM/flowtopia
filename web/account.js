@@ -5,6 +5,12 @@ let homeUrl = ''; // for admins, the start page of the machine Flowa runs on, wh
 // What the admins have said about this Flowa, as /api/me gives it: null until something is saved. about says
 // whether this reader may open the about page; a visitor also gets the rules, for the sign-up form.
 let inst = null;
+// oneProfile: the signed-in member is the owner of a Flowa that is one person's own (FLOWA_MODE=single): no
+// People list, no registration choice, and signing out goes to the page visitors see at /. A visitor is not told
+// the mode; the server gives them the signups flag off, which hides every way to make an account by itself.
+// joinable() is the one place that asks whether one can be made.
+let oneProfile = false;
+const joinable = () => !!flags.signups && !oneProfile;
 const docs = {}; // progress per prop for the signed-in user: { rev, state }
 // Per prop, the progress as the server last had it (JSON). When a save meets a newer copy from
 // another device, this is the common starting point the two sets of edits are compared against.
@@ -53,7 +59,7 @@ function inProp(id, fn) {
 async function loadSession() {
   const r = await api('me');
   if (!r.ok) throw new Error(r.status);
-  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || []; homeUrl = r.data.homeUrl || ''; inst = r.data.instance || null;
+  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || []; homeUrl = r.data.homeUrl || ''; inst = r.data.instance || null; oneProfile = r.data.single === true;
   setAchievements(r.data.achievements);
   for (const k in docs) delete docs[k];
   for (const k in synced) delete synced[k];
@@ -304,7 +310,7 @@ function pageWelcome() {
       <p class="tiny" style="margin-top:10px">${SKILLS.length} skills in ${BRANCHES.length} branches. Each column is a branch and each dot is a skill, from the first ones at the top to the hardest at the bottom.</p></div></div>` : '';
   return `<div class="hero"><img src="icon.svg" alt="" width="56" height="56"><h1>Flowa</h1>
     <p>Skill maps, guides and simulated demos for flow arts props, with your own progress saved to your account.</p>
-    <div class="row wrap" style="justify-content:center"><a class="btn primary" href="#/signin">Sign in</a>${flags.signups ? '<a class="btn" href="#/signup">Create an account</a>' : ''}<a class="btn" href="#/maps">Browse skill maps</a></div>${inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</div>
+    <div class="row wrap" style="justify-content:center"><a class="btn primary" href="#/signin">Sign in</a>${joinable() ? '<a class="btn" href="#/signup">Create an account</a>' : ''}<a class="btn" href="#/maps">Browse skill maps</a></div>${inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</div>
   ${show}
   <div class="grid g2"><div class="card"><div class="card-h"><h2>Without an account</h2></div><ul class="steps">
       <li>Browse the skill maps and every branch graph.</li><li>Read each skill's guide and references, and watch its demo.</li><li>${coarse() ? 'Search skills with the Search button at the top.' : 'Search skills with Ctrl K, or the Search button.'}</li></ul></div>
@@ -335,7 +341,7 @@ function pageAuth(mode) {
     ${ask ? `<div class="stack" style="gap:4px"><label class="field">Why do you want to join? (optional, only the admins read it)<textarea name="reason" rows="3" ${countAttrs('join-count', '', JOIN_REASON)}></textarea></label>${countHTML('join-count', '', JOIN_REASON)}</div>` : ''}
     ${up ? signupRules(ask) : ''}<p class="form-err" id="auth-err" role="alert"></p>
     <button class="btn primary" type="submit">${ask ? 'Ask to join' : up ? 'Create account' : 'Sign in'}</button>
-    <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : flags.signups ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p>${!up && inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</form>`;
+    <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : joinable() ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p>${!up && inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</form>`;
 }
 // The rules, in the admins' order, each with its explanation. Everything in them is text an admin typed, so
 // it is escaped and keeps its line breaks.
@@ -385,7 +391,7 @@ const WALLS = { practice: 'Sign in to log your practice.', combos: 'Sign in to b
   post: 'Sign in to read this post.', u: 'Sign in to see this profile.', achievements: 'Sign in to see your achievements.', avatar: 'Sign in to make your avatar.', bookmarks: 'Sign in to keep bookmarks.' };
 function pageNeedAccount(title, page) {
   return `<div class="auth card"><h1>${esc(title)}</h1><p class="muted" style="margin:8px 0 14px">${WALLS[page] || 'Sign in to use this page.'}</p>
-    <div class="row wrap"><a class="btn primary" href="#/signin">Sign in</a>${flags.signups ? '<a class="btn" href="#/signup">Create an account</a>' : ''}</div></div>`;
+    <div class="row wrap"><a class="btn primary" href="#/signin">Sign in</a>${joinable() ? '<a class="btn" href="#/signup">Create an account</a>' : ''}</div></div>`;
 }
 // Shown until a new user has picked their props.
 function pageChooser() {
@@ -522,6 +528,8 @@ document.addEventListener('click', async e => {
     case 'signout':
       if (dirty) { clearTimeout(saveTimer); await save(); }
       await api('signout', 'POST');
+      // On a single-profile instance the address / is the page visitors see: go there, as a visitor now.
+      if (oneProfile) { location.assign('./'); break; }
       ui.users = null; location.hash = '#/';
       try { await load(); } catch { /* render shows the guest view */ }
       render(); toast('Signed out.');

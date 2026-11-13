@@ -783,7 +783,7 @@ function say(msg) {
 /* ---------- command palette ---------- */
 // A visitor is offered the pages that open without an account; a member theirs, and staff the staff pages
 // with each admin section they may open.
-const pages = () => !me ? [['Welcome', '#/'], ['Skill maps', '#/maps'], ['Sign in', '#/signin'], ...(flags.signups ? [['Create an account', '#/signup']] : []), ...aboutPages(), ['Settings', '#/settings'], ...propPages()]
+const pages = () => !me ? [['Welcome', '#/'], ['Skill maps', '#/maps'], ['Sign in', '#/signin'], ...(joinable() ? [['Create an account', '#/signup']] : []), ...aboutPages(), ['Settings', '#/settings'], ...propPages()]
   : [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars ? [['Avatar', '#/avatar']] : []), ...(flags.bookmarks ? [['Bookmarks', '#/bookmarks']] : []), ...aboutPages(), ['Settings', '#/settings'],
     ...staffPages().filter(([, h]) => h[0] === '#'), ...adminTabs().map(([k, n]) => ['Admin: ' + n, '#/admin/' + k]), ...propPages()];
 const aboutPages = () => inst?.about ? [['About this Flowa', '#/about']] : [];

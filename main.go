@@ -20,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html/template"
 	"image"
 	_ "image/gif"
 	"image/jpeg"
@@ -49,6 +50,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/lib/pq"
 	// The image is built FROM scratch and holds only this binary, so it has no root certificates of
@@ -141,11 +143,13 @@ type app struct {
 	instMu    sync.Mutex    // guards instCache and instAt
 	instCache *instanceInfo // what instanceCached last read; nil after a save, so the next read asks the database
 	instAt    time.Time
-	sent      *onceStore  // posts and comments that named themselves, so a repeat is not a second one
-	reqLog    *requestLog // one line per request; see logged
-	healthMu  sync.Mutex  // guards healthAt and healthWas
-	healthAt  time.Time   // when the database was last asked for GET /healthz
-	healthWas health      // what it said then
+	pageMu    sync.Mutex   // guards page; held while the visitor's page is made, so a flood makes it once
+	page      *visitorPage // the visitor's page of a single-profile instance as last made; nil until asked, and after a save
+	sent      *onceStore   // posts and comments that named themselves, so a repeat is not a second one
+	reqLog    *requestLog  // one line per request; see logged
+	healthMu  sync.Mutex   // guards healthAt and healthWas
+	healthAt  time.Time    // when the database was last asked for GET /healthz
+	healthWas health       // what it said then
 }
 
 // buildVersion names the build. A release image has its tag compiled in (build-image.sh, with -X), and
@@ -170,9 +174,11 @@ const (
 )
 
 // modesBuilt are the modes this version can run. A mode that is planned and not built stops the
-// start, as an unknown word does: an operator who asks for a single-profile instance must not get an
-// open community that only says "single" on its dashboard.
-var modesBuilt = map[instanceMode]bool{modeLocal: true}
+// start, as an unknown word does: an operator who asks for a federated instance must not get a local
+// community that only says "federated" on its dashboard. Single-profile mode is built without
+// federation: it is one person's own instance that shows their profile to visitors (startSingle,
+// handleRoot), and it announces nothing to other servers until FRD and FWR add that.
+var modesBuilt = map[instanceMode]bool{modeLocal: true, modeSingle: true}
 
 // parseMode reads FLOWA_MODE. Unset or blank is local, so a deployment that sets nothing runs as it
 // always has. Capitals and spaces around the word are forgiven; any other word is an error that names
@@ -452,6 +458,7 @@ type limits struct {
 	posts, comments, likes, badges, marks       *limiter
 	bookmarks, blocks, follows                  *limiter
 	instance, about                             *limiter // saves of the instance information per admin; reads of the about page per address
+	visitor                                     *limiter // reads of a single-profile instance's visitor page and its picture, per address
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 }
 
@@ -463,7 +470,8 @@ func newLimits() limits {
 		badges: newLimiter(60, time.Hour), marks: newLimiter(120, time.Hour),
 		bookmarks: newLimiter(300, time.Hour), blocks: newLimiter(100, time.Hour), follows: newLimiter(200, time.Hour),
 		instance: newLimiter(60, time.Hour), about: newLimiter(120, time.Hour),
-		joins: newLimiter(400, time.Hour), // twice the most requests that can wait at once (maxWaiting)
+		visitor: newLimiter(300, time.Hour), // a page and its picture count two: 150 views an hour from one address is more than a person makes
+		joins:   newLimiter(400, time.Hour), // twice the most requests that can wait at once (maxWaiting)
 	}
 }
 
@@ -713,13 +721,34 @@ func (a *app) startSession(w http.ResponseWriter, r *http.Request, id int64) err
 	return nil
 }
 
-func (a *app) currentUser(r *http.Request) *user {
+// sessionTokenRE is what a session cookie can hold. startSession makes 43 characters of base64url (32
+// random bytes); the range around that keeps any token of the same alphabet a test or an older build
+// made, and refuses what no session can be: too short, too long, or with other characters.
+var sessionTokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
+
+// sessionLookups counts the sessions looked up in the database since start. Nothing in the server reads
+// it: the tests do, to prove that a cookie that cannot be a session, or a visitor over the allowance,
+// costs no query (as pbkdf2Runs counts the hashes).
+var sessionLookups atomic.Int64
+
+// sessionToken is the request's session cookie when it can be a session token, or "". A cookie that
+// cannot is answered as no cookie at all, with no query: whoever sends one learns nothing either way.
+func sessionToken(r *http.Request) string {
 	c, err := r.Cookie(cookieName)
-	if err != nil || c.Value == "" {
+	if err != nil || !sessionTokenRE.MatchString(c.Value) {
+		return ""
+	}
+	return c.Value
+}
+
+func (a *app) currentUser(r *http.Request) *user {
+	tok := sessionToken(r)
+	if tok == "" {
 		return nil
 	}
+	sessionLookups.Add(1)
 	// A session ends at expires_at, or after sessionIdle without use; use is noted once an hour.
-	th := tokenHash(c.Value)
+	th := tokenHash(tok)
 	var stale bool
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, s.last_seen < now() - interval '1 hour' FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now() AND s.last_seen > now() - $2::interval`, th, sessionIdle), &stale)
@@ -1355,6 +1384,7 @@ func (a *app) handlePutInstance(w http.ResponseWriter, r *http.Request, u *user)
 	a.instMu.Lock()
 	a.instCache = nil
 	a.instMu.Unlock()
+	a.dropVisitorPage()
 	info, version, by, err := readInstance(a.db)
 	if err != nil {
 		a.serverError(w, err)
@@ -1423,16 +1453,31 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// approval tells a visitor, before they type, that an admin approves new accounts here; it is
-	// there only while that is so, and an instance that never chose it answers as before.
-	if !info.empty() || (u == nil && info.Registration == regApproval) {
+	// there only while that is so, and an instance that never chose it answers as before. In single
+	// mode nobody joins, so it is never said there.
+	approval := u == nil && info.Registration == regApproval && a.mode != modeSingle
+	if !info.empty() || approval {
 		in := map[string]any{"about": u != nil || info.Description != ""}
 		if u == nil && len(info.Rules) > 0 {
 			in["rules"] = info.Rules
 		}
-		if u == nil && info.Registration == regApproval {
+		if approval {
 			in["approval"] = true
 		}
 		out["instance"] = in
+	}
+	// In single mode a signed-in user is told so (single), so the page offers no way to make an account
+	// and goes to the visitor's page at / on signing out. A visitor is not told the mode: the signups
+	// flag they are given is what sign-up does here, off, which hides every way to make an account by
+	// itself. Local mode answers as before.
+	if a.mode == modeSingle {
+		if u != nil {
+			out["single"] = true
+		} else {
+			shown := maps.Clone(f)
+			shown["signups"] = false
+			out["flags"] = shown
+		}
 	}
 	// Where the machine's own start page is concerns the people who run it, nobody else.
 	if u != nil && u.Role == "admin" && a.homeURL != "" {
@@ -1474,6 +1519,12 @@ func validPassword(w http.ResponseWriter, pw, username string) bool {
 }
 
 func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
+	// A single-profile instance takes no new account whatever the flag and the setting say. It is the
+	// first thing asked, before the flags are read, the body is read or anything is counted or hashed.
+	if a.mode == modeSingle {
+		fail(w, http.StatusForbidden, singleOnly)
+		return
+	}
 	f, err := a.flags()
 	if err != nil {
 		a.serverError(w, err)
@@ -1891,6 +1942,10 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	}
 	// A request to join that waits: only the right password is told so. Anyone else learns no more than
 	// for a name nobody has, so a stranger cannot find out who asked to join.
+	// In single mode a request left from local mode will never be approved, so it is a name nobody has.
+	if request && a.mode == modeSingle {
+		ok = false
+	}
 	if ok && request {
 		a.lim.account.forget(name)
 		fail(w, http.StatusForbidden, waitingSentence)
@@ -2124,6 +2179,11 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	if err := tx.Commit(); err != nil {
 		a.serverError(w, err)
 		return
+	}
+	// What the visitor's page of a single-profile instance shows changed: it is made again when next
+	// asked. The stats and the other parts the page writes by itself are not on it.
+	if in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil {
+		a.dropVisitorPage()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": cur})
 }
@@ -5607,7 +5667,7 @@ func (f *asset) send(w http.ResponseWriter, r *http.Request, cache string) {
 	h := w.Header()
 	h.Set("Content-Type", f.ctype)
 	h.Set("Cache-Control", cache)
-	h.Set("Vary", "Accept-Encoding")
+	h.Add("Vary", "Accept-Encoding") // added to, not set: in single mode / also varies on the cookie
 	var body []byte
 	enc := ""
 	if r.Header.Get("Range") == "" {
@@ -5667,6 +5727,20 @@ func (m *routeMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.
 	m.ServeMux.HandleFunc(pattern, h)
 }
 
+// notSingle closes a route in single mode with 403 and singleOnly, before the session is read: the
+// routes that list, approve or decline requests to join, and those that delete an account, change its
+// role or hand over ownership, any of which could break the rule of one account, the owner. In local
+// mode it only calls the handler.
+func (a *app) notSingle(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.mode == modeSingle {
+			fail(w, http.StatusForbidden, singleOnly)
+			return
+		}
+		h(w, r)
+	}
+}
+
 // routes builds the HTTP handler: every API route, the static files, and the write guard.
 func (a *app) routes(st *static) http.Handler {
 	mux := a.table(st)
@@ -5693,13 +5767,13 @@ func (a *app) table(st *static) *routeMux {
 	mux.HandleFunc("GET /api/instance", a.authed("", a.handleInstance))
 	mux.HandleFunc("GET /api/about", a.handleAbout)
 	mux.HandleFunc("GET /api/admin/users", a.authed(permDashboard, a.handleUsers))
-	mux.HandleFunc("GET /api/admin/requests", a.authed(permUserManage, a.handleJoinRequests))
-	mux.HandleFunc("POST /api/admin/requests/{id}/approve", a.authed(permUserManage, a.handleApproveRequest))
-	mux.HandleFunc("DELETE /api/admin/requests/{id}", a.authed(permUserManage, a.handleDeclineRequest))
-	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(permUserManage, a.handleDeleteUser))
+	mux.HandleFunc("GET /api/admin/requests", a.notSingle(a.authed(permUserManage, a.handleJoinRequests)))
+	mux.HandleFunc("POST /api/admin/requests/{id}/approve", a.notSingle(a.authed(permUserManage, a.handleApproveRequest)))
+	mux.HandleFunc("DELETE /api/admin/requests/{id}", a.notSingle(a.authed(permUserManage, a.handleDeclineRequest)))
+	mux.HandleFunc("DELETE /api/admin/users/{id}", a.notSingle(a.authed(permUserManage, a.handleDeleteUser)))
 	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(permUserManage, a.handleResetPassword))
-	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.authed(permUserRole, a.handleSetRole))
-	mux.HandleFunc("PUT /api/admin/users/{id}/owner", a.authed(permUserRole, a.handleSetOwner))
+	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.notSingle(a.authed(permUserRole, a.handleSetRole)))
+	mux.HandleFunc("PUT /api/admin/users/{id}/owner", a.notSingle(a.authed(permUserRole, a.handleSetOwner)))
 	mux.HandleFunc("GET /api/admin/audit", a.authed(permAudit, a.handleAudit))
 	mux.HandleFunc("GET /api/admin/dashboard", a.authed(permDashboard, a.handleDashboard))
 	mux.HandleFunc("GET /catalog/{file}", a.handleCatalogFile)
@@ -5723,8 +5797,361 @@ func (a *app) table(st *static) *routeMux {
 	mux.HandleFunc("POST /api/mod/actions", a.flagged("moderation", a.authed("", a.handleModAction)))
 	a.socialRoutes(mux)
 	mux.HandleFunc("GET /api/previews/{file}", a.authed("", a.handlePreviewImage))
+	// Single-profile mode adds the visitor's page at / and the owner's picture it shows, and nothing
+	// else: testdata/routes-single.txt lists the two, and TestDBSingleRoutes holds the table to it.
+	if a.mode == modeSingle {
+		mux.HandleFunc("GET /{$}", a.handleRoot(st))
+		mux.HandleFunc("GET /profile-picture", a.handleOwnerPicture(st))
+	}
 	mux.HandleFunc("GET /", a.handleStatic(st))
 	return mux
+}
+
+/* ---------- single-profile mode ----------
+
+FLOWA_MODE=single is one person's own instance (docs/federation.md, section 4). It holds exactly one
+local account, the owner (F15): the start refuses a database with more, sign-up and requests to join
+are closed whatever the flag and the setting say, and nothing that makes, removes, demotes or hands
+over an account is taken. A signed-out visitor to / is shown the owner's profile as a small page the
+server writes (F16); a signed-in owner gets the app there as on any instance, and the app also stays
+at /index.html, where the page's "Sign in" link leads. Federation stays off: nothing is announced to
+other servers until FRD and FWR build it.
+
+The page is the first thing Flowa shows a stranger about a person, so it holds only what the owner
+put on their profile (name, handle, bio, links, picture) and what an admin saved about the instance.
+No post is on it: a post becomes public only once posts have an audience, a later item (FRD, actor
+documents and public pages). No level, streak, XP, badge or other number is on it either: the server
+cannot vouch for them yet (section 14.6, TRU), and section 14.5 keeps them home. */
+
+// singleOnly is what single mode answers to anything that would make, remove, demote or hand over an
+// account. It says what to do instead.
+const singleOnly = "This Flowa holds one person's profile, so it takes no new accounts and keeps its one account as it is. To change that, run it in local mode (leave FLOWA_MODE unset)."
+
+// checkSingle refuses a start in single mode that could not keep to one account, before anything is
+// written: more than one account (named by count, never deleted), no account and no ADMIN_USER to make
+// one, an ADMIN_USER that would make a second one, and a sole account that is suspended, whose owner
+// could not sign in to their own instance while its page went on showing to strangers. A mute only
+// stops posting and ends by itself, so it is logged and the start goes on. Requests to join left from
+// local mode stay where they are: in single mode nobody can approve one or sign in with it, and
+// housekeeping removes them after joinWaitDays as in every mode, so going back to local mode finds
+// the data as it was.
+func (a *app) checkSingle(adminUser, adminPW string) error {
+	var n int
+	if err := a.db.QueryRow(`SELECT count(*) FROM users`).Scan(&n); err != nil {
+		return err
+	}
+	name := strings.ToLower(strings.TrimSpace(adminUser))
+	seeds := name != "" && adminPW != "" // what seedAdmin needs to make an account
+	logWaiting := func() error {
+		var waiting int
+		if err := a.db.QueryRow(`SELECT count(*) FROM join_requests`).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting > 0 {
+			log.Printf("single mode: %d requests to join wait from local mode; nobody can approve them or sign in with them here, and housekeeping removes them after %d days (or decline them in local mode)", waiting, joinWaitDays)
+		}
+		return nil
+	}
+	switch {
+	case n > 1:
+		return fmt.Errorf("FLOWA_MODE=single: this database has %d local accounts, and a single-profile instance has exactly one. Nothing was changed or deleted. Run it in local mode (leave FLOWA_MODE unset), or remove the other accounts there first (Admin, Accounts), then start in single mode again", n)
+	case n == 0 && !seeds:
+		return errors.New("FLOWA_MODE=single: there is no account yet. Set ADMIN_USER and ADMIN_PASSWORD for the first start; that account becomes the one profile of this instance")
+	case n == 0:
+		return logWaiting()
+	}
+	var who string
+	var suspended, muted sql.NullTime
+	if err := a.db.QueryRow(`SELECT username, suspended_until, muted_until FROM users`).Scan(&who, &suspended, &muted); err != nil {
+		return err
+	}
+	if seeds && name != who {
+		return fmt.Errorf("FLOWA_MODE=single: ADMIN_USER=%s names no account here, and this instance already has its one account, @%s. A second account cannot be made in single mode: set ADMIN_USER to %s, or leave ADMIN_USER and ADMIN_PASSWORD unset", name, who, who)
+	}
+	now := time.Now()
+	if suspended.Valid && suspended.Time.After(now) {
+		return fmt.Errorf("FLOWA_MODE=single: the one account, @%s, is suspended until %s, so its owner could not sign in to their own instance. Run in local mode and lift the suspension there first (README, A single-profile instance), or wait until it ends", who, stamp(suspended.Time))
+	}
+	if muted.Valid && muted.Time.After(now) {
+		log.Printf("single mode: the one account, @%s, is muted until %s; it can sign in and read, and post again once the mute ends", who, stamp(muted.Time))
+	}
+	return logWaiting()
+}
+
+// soleAdmin makes the one account of a single-profile instance an admin, so that ensureOwner, the rule
+// every instance has for choosing its owner, makes it the owner: the person whose instance it is edits
+// its information and its skill maps. It changes a row only when exactly one account exists and it is
+// not an admin yet (a database that ran in local mode with one member and no admin).
+func (a *app) soleAdmin() error {
+	var name string
+	err := a.db.QueryRow(`UPDATE users SET role = 'admin' WHERE role <> 'admin' AND (SELECT count(*) FROM users) = 1 RETURNING username`).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err == nil {
+		log.Printf("single mode: @%s is the one account, so it is made an admin and the owner", name)
+	}
+	return err
+}
+
+// visitorCSP is the policy of the visitor's page (docs/federation.md, 5.6): no script and no frame at
+// all, pictures and the style sheet from this server only, and no form may send anything anywhere.
+const visitorCSP = "default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+// visitorMaxAge is how long a made page is used before it is made again, as a net for a change that
+// did not come through a save on this server (a hand edit in the database). A save drops it at once.
+const visitorMaxAge = 10 * time.Minute
+
+// visitorPage is the visitor's page as made: the HTML and its ETag, and the owner's picture, so that
+// neither costs a database read while it is fresh.
+type visitorPage struct {
+	body    []byte
+	etag    string
+	pic     []byte // the owner's profile picture, or nil when there is none
+	picType string // image/jpeg or image/png
+	picTag  string
+	at      time.Time
+}
+
+// visitorLink is one of the owner's links, built from the handle as the app builds it (web/social.js).
+type visitorLink struct {
+	Name, URL string
+}
+
+// visitorData is everything the template is given. Every field is plain text, and html/template
+// escapes each one for where it stands; none is marked safe.
+type visitorData struct {
+	Name, Username, Initial, Bio, Picture string
+	Links                                 []visitorLink
+	Description, Contact, ContactURL      string
+	Rules                                 []instanceRule
+	CSS, Icon                             string
+}
+
+var visitorTmpl = template.Must(template.New("visitor").Parse(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>{{.Name}} (@{{.Username}})</title>
+{{with .Icon}}<link rel="icon" href="{{.}}" type="image/svg+xml">
+{{end}}{{with .CSS}}<link rel="stylesheet" href="{{.}}">
+{{end}}</head>
+<body class="pub">
+<header class="pub-top"><a class="btn primary" href="index.html#/signin">Sign in</a></header>
+<main class="pub-main">
+<article class="card pub-card" aria-labelledby="pub-name">
+<div class="pub-who">{{if .Picture}}<img class="pub-pic" src="{{.Picture}}" alt="" width="72" height="72">{{else}}<span class="pub-pic pub-initial" aria-hidden="true">{{.Initial}}</span>{{end}}
+<div class="pub-names"><h1 id="pub-name">{{.Name}}</h1><p class="pub-handle">@{{.Username}}</p></div></div>
+{{with .Bio}}<p class="pub-text">{{.}}</p>
+{{end}}{{if .Links}}<ul class="pub-links" aria-label="Links">{{range .Links}}<li><a class="btn sm" href="{{.URL}}" rel="nofollow noopener noreferrer">{{.Name}}</a></li>{{end}}</ul>
+{{end}}</article>
+{{if or .Description .Contact .Rules}}<section class="card pub-card" aria-labelledby="pub-about">
+<h2 id="pub-about">About this Flowa</h2>
+{{with .Description}}<p class="pub-text">{{.}}</p>
+{{end}}{{if .Contact}}<p>Contact: {{if .ContactURL}}<a href="{{.ContactURL}}" rel="nofollow noopener noreferrer">{{.Contact}}</a>{{else}}{{.Contact}}{{end}}</p>
+{{end}}{{if .Rules}}<h3>Rules</h3>
+<ol class="pub-rules">{{range .Rules}}<li><span class="pub-text">{{.Text}}</span>{{with .Hint}}<br><span class="pub-hint pub-text">{{.}}</span>{{end}}</li>{{end}}</ol>
+{{end}}</section>
+{{end}}</main>
+</body>
+</html>
+`))
+
+// visitorLinkURL is where a stored handle points, as linkURL in web/social.js builds it. The handle
+// goes through cleanLink again, so a value stored before a rule was tightened, or by hand, is shown
+// only if it would be taken today.
+func visitorLinkURL(kind, stored string) (string, bool) {
+	h, ok := cleanLink(kind, stored)
+	if !ok || h == "" {
+		return "", false
+	}
+	h = strings.ReplaceAll(url.PathEscape(h), "%2F", "/")
+	switch kind {
+	case "instagram":
+		return "https://www.instagram.com/" + h + "/", true
+	case "tiktok":
+		return "https://www.tiktok.com/@" + h, true
+	case "youtube":
+		if strings.HasPrefix(h, "channel/") || strings.HasPrefix(h, "c/") || strings.HasPrefix(h, "user/") {
+			return "https://www.youtube.com/" + h, true
+		}
+		return "https://www.youtube.com/@" + strings.TrimPrefix(h, "@"), true
+	}
+	return "", false
+}
+
+var visitorLinkNames = map[string]string{"instagram": "Instagram", "tiktok": "TikTok", "youtube": "YouTube"}
+
+// makeVisitorPage reads the owner's profile and the instance information (two reads) and writes the page.
+func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
+	u, err := scanUser(a.db.QueryRow(`SELECT ` + userCols + ` FROM users u ORDER BY u.owner DESC, u.id LIMIT 1`))
+	if err != nil {
+		return nil, err
+	}
+	info, _, _, err := readInstance(a.db)
+	if err != nil {
+		return nil, err
+	}
+	d := visitorData{Name: u.DisplayName, Username: u.Username, Bio: strings.TrimSpace(u.Bio), Description: info.Description, Contact: info.Contact, Rules: info.Rules}
+	if d.Name == "" {
+		d.Name = u.Username
+	}
+	// The circle where a picture would be holds the first letter or digit of the name (cleanName makes
+	// sure there is one), as the app draws a member without a picture.
+	if i := strings.IndexFunc(d.Name, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }); i >= 0 {
+		r, _ := utf8.DecodeRuneInString(d.Name[i:])
+		d.Initial = strings.ToUpper(string(r))
+	}
+	links := map[string]string{}
+	json.Unmarshal(u.Links, &links)
+	for _, k := range linkKinds {
+		if href, ok := visitorLinkURL(k, links[k]); ok {
+			d.Links = append(d.Links, visitorLink{visitorLinkNames[k], href})
+		}
+	}
+	switch info.ContactKind {
+	case "email":
+		d.ContactURL = "mailto:" + info.Contact
+	case "link":
+		d.ContactURL = info.Contact
+	}
+	if st != nil {
+		if f, ok := st.plain["/app.css"]; ok {
+			d.CSS = hashedName("app.css", f.hash)
+		}
+		if f, ok := st.plain["/icon.svg"]; ok {
+			d.Icon = hashedName("icon.svg", f.hash)
+		}
+	}
+	p := &visitorPage{at: time.Now()}
+	// The picture went through cleanImage when it was saved: a JPEG or PNG made again by the server. Its
+	// type is what its bytes decode as, not what the stored prefix says, and anything that decodes as
+	// neither is left out rather than sent. It is decoded once here; the page is kept with it.
+	if _, data, ok := strings.Cut(u.Avatar, ","); ok {
+		if raw, err := base64.StdEncoding.DecodeString(data); err == nil {
+			if _, format, err := image.DecodeConfig(bytes.NewReader(raw)); err == nil && (format == "jpeg" || format == "png") {
+				p.pic, p.picType, p.picTag = raw, "image/"+format, hashOf(raw)
+				d.Picture = "profile-picture?v=" + p.picTag
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := visitorTmpl.Execute(&buf, d); err != nil {
+		return nil, err
+	}
+	p.body, p.etag = buf.Bytes(), `"`+hashOf(buf.Bytes())+`"`
+	return p, nil
+}
+
+// visitorPageNow is the page from memory, made again only after a save or visitorMaxAge. The lock is
+// held while it is made, so a flood of visitors on an empty cache makes it once.
+func (a *app) visitorPageNow(st *static) (*visitorPage, error) {
+	a.pageMu.Lock()
+	defer a.pageMu.Unlock()
+	if a.page != nil && time.Since(a.page.at) < visitorMaxAge {
+		return a.page, nil
+	}
+	p, err := a.makeVisitorPage(st)
+	if err != nil {
+		return nil, err
+	}
+	a.page = p
+	return p, nil
+}
+
+// dropVisitorPage forgets the made page, after a save that may change it: the owner's profile or the
+// instance information. In local mode nothing reads it, and dropping it costs nothing.
+func (a *app) dropVisitorPage() {
+	a.pageMu.Lock()
+	a.page = nil
+	a.pageMu.Unlock()
+}
+
+// visitorLimited counts a read of / or of the picture by address, as the about page is counted, and
+// answers 429 once the address has used its allowance. It is asked first, before a session cookie is
+// looked up, so an address over its allowance costs no query whatever cookie it sends. It returns the
+// address counted, for handleRoot to give the count back to a proven session.
+func (a *app) visitorLimited(w http.ResponseWriter, r *http.Request) (string, bool) {
+	from := limitKey(a.clientIP(r))
+	if a.lim.visitor.add(from) {
+		return from, false
+	}
+	logRefusal(w, "too many reads of the visitor's page", "from "+from)
+	w.Header().Set("Retry-After", "3600")
+	http.Error(w, "Too many requests from this address. Try again in an hour.", http.StatusTooManyRequests)
+	return from, true
+}
+
+// handleRoot answers / in single mode. Every request is counted against the address's allowance first.
+// Then a cookie that can be a session token is looked up as every handler looks one up (a cookie that
+// cannot be one, or is unknown, expired or of a suspended account, counts as none); a valid session gets
+// the app, as on any instance, and its count is given back, so the owner reloading / is never refused
+// while their address has room. A stranger's made-up token therefore costs at most one query per count
+// of the allowance, and none once the address is over it. Anyone else gets the owner's profile as the server writes it. Both answers say
+// Vary: Cookie, so no cache hands one to the other. The page is sent with no-cache and an ETag rather
+// than kept for a while: the owner who has just saved their profile and signs out should see it as
+// saved, and a visitor's browser that asks again is told 304 with no body.
+func (a *app) handleRoot(st *static) http.HandlerFunc {
+	app := a.handleStatic(st)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "Cookie")
+		from, over := a.visitorLimited(w, r)
+		if over {
+			return
+		}
+		if sessionToken(r) != "" && a.currentUser(r) != nil {
+			a.lim.visitor.addWeight(from, -tenths) // the owner is no visitor: the count is given back
+			app(w, r)
+			return
+		}
+		p, err := a.visitorPageNow(st)
+		if err != nil {
+			log.Printf("error: the visitor's page: %v", err)
+			http.Error(w, "Something went wrong on the server.", http.StatusInternalServerError)
+			return
+		}
+		h := w.Header()
+		h.Set("Content-Security-Policy", visitorCSP)
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		h.Set("Cache-Control", "no-cache")
+		h.Set("ETag", p.etag)
+		// ServeContent answers If-None-Match with 304, HEAD with the headers alone, and sets the length.
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(p.body))
+	}
+}
+
+// handleOwnerPicture serves the owner's profile picture for the visitor's page, from the same memory
+// as the page and under the same limit. It exists only in single mode and only for the owner's
+// picture: there is no id in the address to ask for anyone else's. It reads no cookie. The page names
+// it with a hash of its bytes (?v=), so under that address it is kept for a year as immutable; any
+// other address of it, which may outlive a change of picture, is sent with no-cache.
+func (a *app) handleOwnerPicture(st *static) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, over := a.visitorLimited(w, r); over {
+			return
+		}
+		p, err := a.visitorPageNow(st)
+		if err != nil {
+			log.Printf("error: the visitor's page: %v", err)
+			http.Error(w, "Something went wrong on the server.", http.StatusInternalServerError)
+			return
+		}
+		if p.pic == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h := w.Header()
+		h.Set("Content-Type", p.picType)
+		if r.URL.Query().Get("v") == p.picTag {
+			h.Set("Cache-Control", "max-age=31536000, immutable")
+		} else {
+			h.Set("Cache-Control", "no-cache")
+		}
+		h.Set("ETag", `"`+p.picTag+`"`)
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(p.pic))
+	}
 }
 
 /* ---------- request log ----------
@@ -5981,6 +6408,9 @@ func (a *app) start(getenv func(string) string) error {
 		return err
 	}
 	log.Printf("mode %s", a.mode)
+	// FLOWA_FEDERATE (docs/federation.md, 4.1) is not read yet: single-profile mode announces nothing
+	// to other servers in this version. It will be read here, beside the mode, once FRD and FWR build
+	// what it switches on, so that it too is understood before anything is written.
 	if rootsPresent() {
 		log.Print("TLS roots: present")
 	} else {
@@ -6006,8 +6436,20 @@ func (a *app) start(getenv func(string) string) error {
 	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
 	a.fetch = newFetcher(getenv("FLOWA_PREVIEW_BASE"), getenv("FLOWA_PREVIEW_BASE") != "")
 	a.fetch.off = getenv("FLOWA_PREVIEW_FETCH") == "off"
+	// A single-profile instance is checked before the admin account is made, so an ADMIN_USER that
+	// would be a second account is refused with nothing written (checkSingle).
+	if a.mode == modeSingle {
+		if err := a.checkSingle(getenv("ADMIN_USER"), getenv("ADMIN_PASSWORD")); err != nil {
+			return err
+		}
+	}
 	if _, err := a.seedAdmin(getenv("ADMIN_USER"), getenv("ADMIN_PASSWORD")); err != nil {
 		return err
+	}
+	if a.mode == modeSingle {
+		if err := a.soleAdmin(); err != nil {
+			return err
+		}
 	}
 	if err := a.ensureOwner(); err != nil {
 		return err
