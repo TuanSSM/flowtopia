@@ -198,6 +198,19 @@ def admin():
         api(op,'flags',{'flags':{'avatars':True}},'PUT')
         api(op,'me',{'avatarCfg':{'v':1,'body':'tall','build':'broad','skin':'#72422a','hair':'bun','hairColor':'#1c1714','eyes':'round','brows':'straight','mouth':'smile','top':'hoodie','topColor':'#5b3f8c','bottoms':'shorts','bottomsColor':'#1f2a44','shoes':'hightops','shoesColor':'#f2f0e9','hat':'cap','hatColor':'#c4572e','glasses':'none','wristbands':'yes','wristColor':'#d9a441','props':{}}},'PUT')
     return op
+# Sign-up by approval, for the suites that show it. registration saves the setting with the rest of the
+# instance information as it stands; ask_to_join sends a request as a visitor; approval_off is how a suite
+# puts it all back (every waiting request declined, sign-up open) and says whether it is back.
+def get_json(op,path): return json.loads(op.open(BASE+'api/'+path,timeout=20).read())
+def registration(op,reg):
+    cur=get_json(op,'admin/instance')
+    api(op,'admin/instance',{'description':cur['description'],'contact':cur['contact'],'rules':cur['rules'],'registration':reg,'updatedAt':cur['updatedAt']},'PUT')
+def ask_to_join(name,reason=''):
+    api(urllib.request.build_opener(),'signup',{'username':name,'password':'flowa-test-only','reason':reason})
+def approval_off(op):
+    for q in get_json(op,'admin/requests')['requests']: api(op,f"admin/requests/{q['id']}",{},'DELETE')
+    if get_json(op,'admin/instance')['registration']!='open': registration(op,'open')
+    return get_json(op,'admin/instance')['registration']=='open' and get_json(op,'admin/requests')['requests']==[]
 started=False
 def start(w=1440,h=1100):
     global started;started=True

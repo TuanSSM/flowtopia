@@ -6,7 +6,7 @@
 const canDo = p => perms.includes(p);
 const adminTabs = () => [
   ['dashboard', 'Overview', canDo('dashboard.read')],
-  ['accounts', 'Accounts', canDo('dashboard.read')],
+  ['accounts', `Accounts${mod.waiting ? ` (${mod.waiting})` : ''}`, canDo('dashboard.read')],
   ['features', 'Features', canDo('flags.edit')],
   ['instance', 'Instance', canDo('flags.edit')],
   ['audit', 'Audit log', canDo('audit.read')],
@@ -14,7 +14,8 @@ const adminTabs = () => [
 ].filter(t => t[2]);
 const REASONS = [['spam', 'Spam'], ['harassment', 'Harassment'], ['unsafe', 'Unsafe advice'], ['offtopic', 'Not about flow arts'], ['other', 'Other']];
 const DURATIONS = [['1h', '1 hour', 1], ['1d', '1 day', 24], ['3d', '3 days', 72], ['7d', '1 week', 168], ['30d', '30 days', 720]];
-const mod = { queue: null, history: null, audit: null, auditMore: false, filter: { actor: '', action: '' }, tab: 'queue', count: 0 };
+// waiting is how many requests to join wait, from the requests list or the dashboard, for the Accounts tab.
+const mod = { queue: null, history: null, audit: null, auditMore: false, filter: { actor: '', action: '' }, tab: 'queue', count: 0, waiting: 0 };
 
 /* ---------- reporting ---------- */
 const canReport = ownerId => flags.moderation && me && ownerId !== me.id;
@@ -132,12 +133,12 @@ const ied = { doc: null, draft: null, busy: false, n: 0, saving: false, theirs: 
 // Leaving or reloading the page with unsaved text asks first, as the rest of the app does.
 window.addEventListener('hashchange', () => { if (!instDirty() && !ied.saving) ied.doc = ied.draft = ied.theirs = null; });
 window.addEventListener('beforeunload', e => { if (instDirty()) e.preventDefault(); });
-const instPlain = d => JSON.stringify([d.description, d.contact, d.rules.map(r => [r.text, r.hint])]);
+const instPlain = d => JSON.stringify([d.description, d.contact, d.rules.map(r => [r.text, r.hint]), d.registration]);
 const instDirty = () => !!ied.draft && !!ied.doc && instPlain(ied.draft) !== instPlain(ied.doc);
 const INST_CLASH = 'Someone else saved the instance information while you were editing it. Your text is still in the form: load their version, or save yours over it.';
 function setInstance(d) {
   ied.doc = d;
-  ied.draft = { description: d.description, contact: d.contact, rules: d.rules.map(r => ({ text: r.text, hint: r.hint, k: ++ied.n })) };
+  ied.draft = { description: d.description, contact: d.contact, registration: d.registration, rules: d.rules.map(r => ({ text: r.text, hint: r.hint, k: ++ied.n })) };
 }
 async function loadInstance() {
   ied.busy = true;
@@ -162,6 +163,9 @@ function adminInstance() {
       <fieldset class="inst-fs"><legend>Rules</legend><p class="tiny">Shown in this order above the button that creates an account, and on the about page. At most ${L.rules}.</p>
         ${n ? `<ol class="inst-rules">${d.rules.map(rule).join('')}</ol>` : '<p class="small muted">No rules yet.</p>'}
         <div><button type="button" class="btn sm" data-act="inst-add" ${n >= L.rules ? 'disabled' : ''}>${icon('plus')}Add a rule</button></div></fieldset>
+      <fieldset class="inst-fs"><legend>Who can join</legend>
+        <div class="stack" style="gap:6px">${REGISTRATION.map(([k, name, help]) => `<label class="check"><input type="radio" name="registration" value="${k}" ${d.registration === k ? 'checked' : ''}><span><b style="font-weight:560">${name}</b><br><span class="tiny">${help}</span></span></label>`).join('')}</div>
+        <p class="tiny">${flags.signups ? 'Open sign-ups under Features is the switch that closes sign-up altogether.' : 'Open sign-ups is off under Features, so nobody can join now, whichever is chosen here. Requests that already wait can still be approved or declined in Accounts.'}</p></fieldset>
       <p class="form-err" id="inst-err" role="alert">${ied.theirs ? INST_CLASH : ''}</p>
       ${ied.theirs ? `<div class="row wrap inst-clash" role="group" aria-label="Someone else saved" style="gap:8px"><button type="button" class="btn sm" data-act="inst-theirs">Load their version</button><button type="button" class="btn sm" data-act="inst-mine">Save mine over it</button><span class="tiny">Theirs was saved ${esc(fmtWhen(ied.theirs.updatedAt))}${ied.theirs.updatedBy ? ` by @${esc(ied.theirs.updatedBy)}` : ''}.</span></div>` : ''}
       <div class="row wrap" style="gap:10px"><button class="btn primary" type="submit" id="inst-save" ${instCanSave() ? '' : 'disabled'}>${ied.saving ? 'Saving…' : 'Save'}</button><span class="tiny">${at ? `Last saved ${esc(fmtWhen(at))}${ied.doc.updatedBy ? ` by @${esc(ied.doc.updatedBy)}` : ''}.` : 'Nothing has been saved yet.'}</span></div>
@@ -200,7 +204,7 @@ async function instSave(over) {
   if (!dr || !base || ied.saving || (!over && !instCanSave())) return;
   const sent = instPlain(dr);
   ied.saving = true; instSaveState();
-  const r = await api('admin/instance', 'PUT', { description: dr.description, contact: dr.contact, rules: dr.rules.map(x => ({ text: x.text, hint: x.hint })), updatedAt: base.updatedAt });
+  const r = await api('admin/instance', 'PUT', { description: dr.description, contact: dr.contact, rules: dr.rules.map(x => ({ text: x.text, hint: x.hint })), registration: dr.registration, updatedAt: base.updatedAt });
   ied.saving = false;
   if (r.status === 409 && r.data?.limits) {
     // Nothing of theirs is undone unseen, and nothing typed here is thrown away: the admin chooses.
@@ -216,6 +220,11 @@ async function instSave(over) {
   inst = d.description || d.contact || d.rules.length ? { about: true } : null; about.data = null;
   instDraw(); toast(instDirty() ? 'Saved. What you typed since is not saved yet.' : 'Saved. It shows at sign-up and on the about page.');
 }
+// How people join while Open sign-ups is on (registration in main.go). Closed is that flag, not a third choice.
+const REGISTRATION = [
+  ['open', 'Open', 'Anyone who can open this page creates an account and is signed in at once.'],
+  ['approval', 'By approval', 'A new account waits in Accounts until an admin approves it. The person may say why they want to join.'],
+];
 // Moves a rule one place and keeps the keyboard on the button that moved it, or on the other one when it
 // reached an end and this one is off.
 function instMove(k, by) {
@@ -238,11 +247,37 @@ async function loadUsers() {
   if (self) me.owner = !!self.owner;
   render();
 }
-window.addEventListener('hashchange', () => { ui.users = null; ui.rolePick = null; });
+window.addEventListener('hashchange', () => { ui.users = null; ui.rolePick = null; ui.reqs = null; });
+// Requests to join, while sign-up is by approval (or after, while any still wait). Only staff who may approve
+// (user.manage) read them, reasons and all; the list is fetched with the accounts and after every answer.
+async function loadReqs() {
+  ui.reqsBusy = true;
+  const r = await api('admin/requests');
+  ui.reqsBusy = false;
+  if (!r.ok) { toast(r.error); return; }
+  ui.reqs = r.data.requests; ui.reqDays = r.data.days; mod.waiting = ui.reqs.length;
+  render();
+}
+// The section is there only while a request waits. Approve and Decline each take their row away, so both are
+// named as removing it (the -rm in data-act): the keyboard then goes to the control before the row, never to
+// the next row's button, where a second Enter would answer someone else's request. Each says whose request it
+// answers, for a screen reader that reads the button alone.
+function joinRequestsHTML() {
+  if (!canDo('user.manage')) return mod.waiting ? `<p class="notice" style="margin-bottom:12px">${mod.waiting} ${mod.waiting === 1 ? 'request' : 'requests'} to join ${mod.waiting === 1 ? 'waits' : 'wait'} for an admin.</p>` : '';
+  if (!ui.reqs?.length) return '';
+  const n = ui.reqs.length;
+  const rows = ui.reqs.map(q => `<li class="req" data-req="${q.id}"><div class="grow req-who"><b style="font-weight:560">${esc(q.displayName)}</b> <span class="tiny">@${esc(q.username)}, asked ${esc(fmtWhen(q.created))}</span>
+      ${q.reason ? `<p class="small plain-text req-reason">${esc(q.reason)}</p>` : '<p class="tiny">No reason given.</p>'}</div>
+    <span class="row wrap" style="gap:6px"><button class="btn sm primary" data-act="req-approve-rm" data-id="${q.id}" data-name="${esc(q.username)}" aria-label="Approve the request of @${esc(q.username)}">${icon('check')}Approve</button><button class="btn sm danger" data-act="req-decline-rm" data-id="${q.id}" data-name="${esc(q.username)}" aria-label="Decline the request of @${esc(q.username)}">Decline</button></span></li>`).join('');
+  return `<section class="card req-card" aria-labelledby="req-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="req-h">Waiting to join (${n})</h2><span class="sub">Oldest first</span></div>
+    <p class="tiny">Approve makes the account; Decline deletes the request and frees the name. Nobody is told by email: a person learns the answer by signing in. A request nobody answers is let go after ${ui.reqDays} days.</p>
+    <ul class="req-list">${rows}</ul></section>`;
+}
 // The server calls the plain role "user"; on the page a person with it is a member, as everywhere else.
 const RANK_NAMES = { user: 'Member', moderator: 'Moderator', admin: 'Admin' };
 const ROLE_ASK = { user: 'a member', moderator: 'a moderator', admin: 'an admin' };
 function adminAccounts() {
+  if (canDo('user.manage') && !ui.reqs && !ui.reqsBusy) loadReqs();
   if (!ui.users) { loadUsers(); return '<div class="card"><div class="empty small">Loading accounts…</div></div>'; }
   const f = ui.userFilter || { q: '', role: '', status: '' }, q = f.q.trim().toLowerCase();
   const status = u => u.suspendedUntil ? 'suspended' : u.mutedUntil ? 'muted' : 'active';
@@ -264,14 +299,14 @@ function adminAccounts() {
       <td>${role}</td><td>${stChip}</td><td class="small" style="white-space:nowrap">${u.lastActive ? esc(new Date(u.lastActive).toLocaleDateString()) : '<span class="tiny">Never</span>'}</td>
       <td><span class="row wrap" style="gap:6px;justify-content:flex-end">${modBtns}${hand}${mgmt}</span></td></tr>`;
   }).join('');
-  return `<div class="card"><div class="row wrap" style="gap:8px;margin-bottom:12px">
+  return `${joinRequestsHTML()}<div class="card"><div class="row wrap" style="gap:8px;margin-bottom:12px">
       <input type="search" id="user-q" class="grow" placeholder="Search by name" value="${esc(f.q)}" aria-label="Search accounts" style="min-width:160px">
       <select data-change="user-filter" data-k="role" aria-label="Role" style="width:auto"><option value="">Every role</option>${Object.entries(RANK_NAMES).map(([k, n]) => `<option value="${k}" ${f.role === k ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <select data-change="user-filter" data-k="status" aria-label="Status" style="width:auto"><option value="">Any status</option>${['active', 'muted', 'suspended'].map(k => `<option value="${k}" ${f.status === k ? 'selected' : ''}>${k[0].toUpperCase() + k.slice(1)}</option>`).join('')}</select>
       <span class="sub tiny">${list.length} of ${ui.users.length}</span></div>
     <div class="table-wrap"><table class="table"><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Last active</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">No accounts match.</td></tr>'}</tbody></table></div></div>`;
 }
-const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft', instance: 'Changed the instance information' };
+const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft', instance: 'Changed the instance information', approve_user: 'Approved the request to join of', decline_user: 'Declined a request to join' };
 async function loadAudit(more) {
   const f = mod.filter, before = more && mod.audit?.length ? mod.audit[mod.audit.length - 1].id : 0;
   const r = await api(`admin/audit?actor=${encodeURIComponent(f.actor)}&action=${encodeURIComponent(f.action)}&before=${before}`);
@@ -286,7 +321,8 @@ function adminAudit() {
     if (e.action === 'role') return `${esc(d.from)} to ${esc(d.to)}`;
     if (e.action === 'owner') return `from @${esc(d.from)}`;
     if (e.action === 'flags') return Object.entries(d).map(([k, v]) => `${esc(k)} ${v ? 'on' : 'off'}`).join(', ');
-    if (e.action === 'instance') return `${(d.parts || []).map(esc).join(', ')}; ${d.rules} ${d.rules === 1 ? 'rule' : 'rules'}`;
+    if (e.action === 'instance') return `${(d.parts || []).map(esc).join(', ')}; ${d.rules} ${d.rules === 1 ? 'rule' : 'rules'}${d.registration ? `; joining ${d.registration === 'approval' ? 'by approval' : 'open'}` : ''}`;
+    if (e.action === 'decline_user') return `@${esc(d.username)}`;
     if (e.action === 'resolve') return `${esc(d.outcome)}, ${d.reports} ${d.reports === 1 ? 'report' : 'reports'}`;
     if (d.until) return `until ${esc(fmtWhen(d.until))}`;
     if (d.key) return esc(d.key);
@@ -308,7 +344,9 @@ let adminDashboard = () => {
   const t = mod.dash.totals, W = mod.dash.weeks;
   const tile = (label, value, foot) => `<div class="card stat"><div class="lbl">${label}</div><div class="val num">${value.toLocaleString()}</div><div class="foot">${foot}</div></div>`;
   const charts = [['sessions', 'Practice sessions logged'], ['posts', 'Posts'], ['comments', 'Comments and replies'], ['reports', 'Reports']].map(([k, n]) => weekChart(W, k, n)).join('');
-  return `<div class="grid g4" style="margin-bottom:16px">${tile('Members', t.users, `${t.moderators} ${t.moderators === 1 ? 'moderator' : 'moderators'}, ${t.admins} ${t.admins === 1 ? 'admin' : 'admins'}`)}${tile('Active in 7 days', t.active7, 'Signed in or saved progress')}${tile('Active in 30 days', t.active30, `${t.users ? Math.round(100 * t.active30 / t.users) : 0}% of members`)}${tile('Open reports', t.openReports, flags.moderation ? '<a href="#/mod">Open the queue</a>' : 'Moderation is off')}</div>
+  // Requests to join are counted only while sign-up is by approval or one still waits (the server says so).
+  const wait = t.waiting === undefined ? '' : tile('Requests to join', t.waiting, canDo('user.manage') ? '<a href="#/admin/accounts">Open Accounts</a>' : 'An admin approves them');
+  return `<div class="grid ${wait ? 'g5' : 'g4'}" style="margin-bottom:16px">${tile('Members', t.users, `${t.moderators} ${t.moderators === 1 ? 'moderator' : 'moderators'}, ${t.admins} ${t.admins === 1 ? 'admin' : 'admins'}`)}${tile('Active in 7 days', t.active7, 'Signed in or saved progress')}${tile('Active in 30 days', t.active30, `${t.users ? Math.round(100 * t.active30 / t.users) : 0}% of members`)}${tile('Open reports', t.openReports, flags.moderation ? '<a href="#/mod">Open the queue</a>' : 'Moderation is off')}${wait}</div>
   ${flags.suggest && mod.dash.suggest ? (() => { const u = mod.dash.suggest, pct = (a, b) => b ? Math.round(100 * a / b) + '%' : 'none yet'; const gate = u.opens === 'now' ? `of ${u.gate} needed: the suggestion weights can be fitted now` : u.opens ? `of ${u.gate} needed. ${u.recent} new in the last four weeks; at that pace, the week of ${parseDay(u.opens).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}` : `of ${u.gate} needed. None were first marked in the last four weeks, so there is no date yet`;
     return `<div class="grid g3 dash-suggest" style="margin-bottom:16px">${tile('Suggestions added to a combo', u.added, `of ${u.shown} shown in 12 weeks (${pct(u.added, u.shown)})`)}${tile('Added suggestions later marked Works', u.worked, `of ${u.added} added (${pct(u.worked, u.added)})`)}${tile('Pairs of skills with a shared mark', u.pairs, gate)}</div>`; })() : ''}
   <div class="grid g2 dash-charts">${charts}</div>
@@ -321,7 +359,7 @@ const fmtWeek = k => parseDay(k).toLocaleDateString(undefined, { month: 'short',
 async function loadDash() {
   const r = await api('admin/dashboard');
   if (!r.ok) { toast(r.error); return; }
-  mod.dash = r.data; render();
+  mod.dash = r.data; mod.waiting = r.data.totals.waiting || 0; render();
 }
 // One measure over 12 weeks as columns: one hue, a hairline baseline, values on the latest and the
 // highest week only, every week in a tooltip and in the table below.
@@ -384,6 +422,17 @@ document.addEventListener('click', async e => {
       l.splice(i, 1); instDraw(); instSaveState(); say(`Rule ${i + 1} removed.`);
       break;
     }
+    case 'req-approve-rm': case 'req-decline-rm': {
+      const yes = d.act === 'req-approve-rm';
+      if (ui.reqBusy || (!yes && !confirm(`Decline the request of @${d.name}? It is deleted and the name is free again. They are not told.`))) break;
+      ui.reqBusy = true;
+      const r = await api(yes ? `admin/requests/${d.id}/approve` : `admin/requests/${d.id}`, yes ? 'POST' : 'DELETE');
+      ui.reqBusy = false;
+      toast(r.ok ? (yes ? `@${d.name} is a member now and can sign in.` : `The request of @${d.name} was declined.`) : r.error);
+      ui.reqs = null; mod.dash = null;
+      await loadReqs(); if (yes) await loadUsers();
+      break;
+    }
     case 'user-del':
       if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.`)) {
         const r = await api('admin/users/' + d.id, 'DELETE');
@@ -435,7 +484,7 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (ied.draft && t.form?.id === 'inst-form') {
     if (t.dataset.ed === 'inst-rule') { const r = ied.draft.rules.find(x => x.k === Number(t.dataset.k)); if (r) r[t.dataset.f] = t.value; }
-    else if (t.name === 'description' || t.name === 'contact') ied.draft[t.name] = t.value;
+    else if (t.name === 'description' || t.name === 'contact' || t.name === 'registration') ied.draft[t.name] = t.value;
     instSaveState(); return;
   }
   if (e.target.id !== 'user-q') return;
