@@ -312,9 +312,64 @@ a value that is not such an address stops the server at start with a message tha
 
 `FLOWA_MODE` in `.env` says how the instance runs. Unset, empty or `local` is what Flowa has always
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
-changes. The words `federated` and `single` belong to the plan in
-[docs/federation.md](docs/federation.md) and are not built yet, so each of them stops the server at
-start with a message that says so, as any other word does, before the database is opened. The admin dashboard shows the mode under the version.
+changes. `single` is one person's own instance (below). The word `federated` belongs to the plan in
+[docs/federation.md](docs/federation.md) and is not built yet, so it stops the server at start with a
+message that says so, as any other word does, before the database is opened. The admin dashboard shows
+the mode under the version.
+
+### A single-profile instance
+
+`FLOWA_MODE=single` runs Flowa for one person: their practice, their skill maps and their profile, with
+nobody else on it. It holds exactly one account, the owner, and nothing federates yet (no other server is
+told it exists; that comes with the federation items of the plan).
+
+**From nothing.** Set `ADMIN_USER`, `ADMIN_PASSWORD` and `FLOWA_MODE=single` in `.env` and start it. The
+first start makes that account, the admin and the owner. Later starts may keep `ADMIN_USER` and
+`ADMIN_PASSWORD` as they are or leave them out.
+
+**What a visitor sees.** Anyone who can reach the server and is not signed in gets, at `/`, a small page the
+server writes, with no script: the owner's display name, username, bio and links (Instagram, TikTok and
+YouTube, as on their profile, each with `rel="nofollow noopener noreferrer"`), their profile picture if they
+uploaded one (served at `/profile-picture`), and, once an admin has saved them, the instance's description,
+contact and rules, with a Sign in button. **This page is public to anyone who can reach the server**: on a
+home network that is the people on it, behind a public name or tunnel it is the whole internet. It never
+shows a post, a comment, a level, a streak, XP, a badge or any other number, nor how many accounts there
+are, the version or the mode: posts become public only once a post can have an audience (a later item of the
+plan), and numbers only once the server can vouch for them. It is kept in memory and made again when the
+owner saves their profile or an admin saves the instance information (or after ten minutes), so a flood of
+visitors costs no database read each; each address may read it and the picture 300 times an hour. It is sent
+with `Cache-Control: no-cache`, an `ETag` and `Vary: Cookie`, and a policy that allows no script, no frame
+and no form.
+
+**The owner** signs in from that button (the app stays at `/index.html`) and then gets the app at `/` as on
+any instance. Sign-up is closed whatever Open sign-ups and Who can join say: `POST /api/signup` answers 403,
+and the page offers no way to make an account. The timeline holds the owner's posts, seen only by them, and
+the People list is gone. Follows and Home (the `follows` flag) work as before but have nobody to follow until
+federation. Deleting the account, changing its role, handing over ownership and the routes for requests to
+join all answer 403 (Admin > Instance says nobody can join).
+
+**At start** the server refuses, with a message and nothing written, when:
+
+- the database has more than one account ("this database has 3 local accounts"): run in local mode and
+  remove the others in Admin > Accounts first; nothing is ever deleted for you;
+- there is no account and no `ADMIN_USER` and `ADMIN_PASSWORD` ("there is no account yet"): set them for the
+  first start;
+- `ADMIN_USER` names a different account from the one there is ("a second account cannot be made"): set it
+  to that account's name, or leave both settings out;
+- the one account is suspended: its owner could not sign in to their own instance while its page shows to
+  everyone. Wait until the suspension ends, or run in local mode with `ADMIN_USER` naming a helper admin,
+  lift the suspension in Admin > Accounts, make the account an admin and hand it ownership, delete the
+  helper, and start in single mode again. (Only a member or a moderator can be suspended, so this happens
+  to a database where the admins were removed by hand.)
+
+A sole account that is a member or a moderator is made the admin and the owner, with a line in the log. A
+mute is logged and the start goes on (it ends by itself). Requests to join left from local mode are logged
+and left alone: nobody can approve them or sign in with them in single mode, and the housekeeping removes
+them after 30 days as always.
+
+**Moving between modes.** Local to single works once one account is left. Single back to local (unset
+`FLOWA_MODE`) changes nothing in the data: the account, its posts and progress, and any requests to join are
+as they were, and sign-up is again what Open sign-ups and Who can join say.
 
 Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from

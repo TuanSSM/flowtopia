@@ -350,6 +350,8 @@ jobs:
             # Demos and combos again with avatars on.
             demos-avatars) export FLOWA_AVATARS=1; file=demos.py ;;
             combo-avatars) export FLOWA_AVATARS=1; file=combo.py ;;
+            # A single-profile instance: the server starts in that mode, and the suite reads the visitor's page.
+            single) export FLOWA_MODE=single; file=single.py ;;
             *) file="$SUITE.py" ;;
           esac
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh "$file" | tee report/result.txt || code=$?
@@ -413,6 +415,12 @@ jobs:
         env:
           FLOWA_MOTION: reduce
         run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh pages.py "$RUNNER_TEMP/shots"
+      # The page a single-profile instance shows a visitor at / (FLOWA_MODE=single), at desktop and phone
+      # width: the single suite again, writing visitor.png and visitor-phone.png into the same index.json.
+      - name: Take the visitor's page of a single-profile instance
+        env:
+          FLOWA_MODE: single
+        run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh single.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5

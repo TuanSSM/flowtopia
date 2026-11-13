@@ -1,0 +1,8 @@
+# The routes a single-profile instance (FLOWA_MODE=single) answers besides every route of
+# testdata/routes-local.txt, as the patterns given to the mux, sorted.
+#
+# TestDBSingleRoutes compares the routes of a server started in single mode with the two lists
+# together. The visitor's page at / and the owner's picture it shows exist only in single mode, so
+# they are listed here and never in routes-local.txt.
+GET /profile-picture
+GET /{$}

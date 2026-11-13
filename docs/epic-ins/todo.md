@@ -6,7 +6,7 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 5 of 7 items done; the design waits for the owner's review. Every setting, table, route and
+**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 6 of 7 items done; the design waits for the owner's review. Every setting, table, route and
 test named below is new unless the design note says it exists.
 
 - [ ] **Design.** [federation.md](../federation.md): the modes, identity, protocol, security, queues,
@@ -78,7 +78,7 @@ test named below is new unless the design note says it exists.
   removes requests older than 30 days, `seedAdmin` makes the operator's account whatever the setting says. `TestDBRegistrationApproval`, the new routes in
   `TestDBLocalModeUnchanged` and `TestDBOneConnection`; checks in `mod.py`, stops in `a11y.py` and
   `contrast.py`, and the sign-up form and Accounts pictures in `pages.py`; `flowa-schema10.dump`.
-- [ ] **Single-profile mode.** `FLOWA_MODE=single`: refused at start with more than one local
+- [x] **Single-profile mode.** `FLOWA_MODE=single`: refused at start with more than one local
   account (F15); sign-up answers 403 whatever the flag says; the root page shows the owner's profile
   to visitors as a small page the server writes (no script); Community shows the owner's posts.
   Federation stays off here (FRD and FWR add it). DoD: `TestDBSingleMode` (two or more local accounts refused; no account and no `ADMIN_USER` refused
@@ -86,3 +86,17 @@ test named below is new unless the design note says it exists.
   `ensureOwner` does); a new browser suite
   `single.py` in `ALL` in `test/ci-plan.sh` and its self-test; a screenshot of the visitor's root
   page.
+  Built: `single` in `modesBuilt` (`federated` still stops the start; `FLOWA_FEDERATE` is not read yet). At
+  start, before anything is written: more than one account refused by count, no account without
+  `ADMIN_USER` and `ADMIN_PASSWORD` refused, an `ADMIN_USER` that would be a second account refused, a sole
+  suspended account refused; a sole member or moderator made the admin, then the owner by `ensureOwner`; a
+  mute and waiting requests to join logged and left alone. Sign-up answers 403 before anything is read,
+  counted or hashed; the routes for requests to join, deleting an account, changing a role and handing over
+  ownership answer 403; `/api/me` says `single: true`. A signed-out visitor at `/` gets the owner's profile
+  from an `html/template` (no script, the CSP of federation.md 5.6, `no-cache` with an ETag, `Vary: Cookie`),
+  kept in memory until a profile or instance save or ten minutes, 300 reads an hour per address with its
+  picture at `/profile-picture` (`testdata/routes-single.txt`); no post and no number on it. The owner signed
+  in gets the app at `/`, signed out at `/index.html`; the People list is hidden and Admin > Instance says
+  nobody can join. `TestDBSingleMode`, `TestDBSingleRoutes`, the single-mode part of `TestDBOneConnection`,
+  `TestInstanceMode` updated; `test/browser/single.py` (the `single` suite, run with `FLOWA_MODE=single`), and
+  the screenshots job runs it again for `visitor.png` and `visitor-phone.png`.

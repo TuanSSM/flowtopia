@@ -9,11 +9,15 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2807,6 +2811,36 @@ func TestDBOneConnection(t *testing.T) {
 		e.count(`SELECT count(*) FROM users WHERE username = 'asks'`) != 1 || e.count(`SELECT count(*) FROM join_requests`) != 0 {
 		t.Fatal("the writes on one connection did not all happen")
 	}
+
+	// Single-profile mode on one connection: the start that makes the sole member the admin and owner,
+	// the visitor's page made while a save drops it, the owner's app, and the closed routes.
+	s := newEnv(t)
+	_, owner := s.user("solo", "user")
+	s.a.db.SetMaxOpenConns(1)
+	done, st := make(chan error, 1), staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"})
+	go func() { done <- s.singleStart(nil, st) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the single-mode start did not finish in 10 s on one connection")
+	}
+	e = s
+	within(200, "", "GET", "/", nil)
+	within(200, owner, "PUT", "/api/me", map[string]any{"bio": "one connection, one profile"})
+	within(200, "", "GET", "/", nil)
+	within(200, owner, "GET", "/", nil)
+	inst = within(200, owner, "GET", "/api/admin/instance", nil)
+	within(200, owner, "PUT", "/api/admin/instance", map[string]any{"description": "Mine.", "contact": "", "rules": []any{}, "updatedAt": inst["updatedAt"]})
+	within(200, "", "GET", "/", nil)
+	within(403, "", "POST", "/api/signup", map[string]any{"username": "another", "password": "a fine long password"})
+	within(403, owner, "GET", "/api/admin/requests", nil)
+	s.a.db.SetMaxOpenConns(8)
+	if s.count(`SELECT count(*) FROM users WHERE role = 'admin' AND owner`) != 1 {
+		t.Fatal("the sole member was not made the admin and the owner on one connection")
+	}
 }
 
 func TestDBBookmarks(t *testing.T) {
@@ -4739,5 +4773,436 @@ func TestDBRegistrationApproval(t *testing.T) {
 	}
 	if code, out := f.do("", "POST", "/api/signin", map[string]any{"username": "first", "password": "flowa-test-only"}); code != 200 {
 		t.Errorf("the first owner signs in with approval on: %d %v", code, out["_raw"])
+	}
+}
+
+// singleStart runs the start in single mode with the settings given, and builds the routes it answers.
+func (e *tenv) singleStart(env map[string]string, st *static) error {
+	e.t.Helper()
+	all := map[string]string{"FLOWA_MODE": "single"}
+	maps.Copy(all, env)
+	if err := e.a.start(func(k string) string { return all[k] }); err != nil {
+		return err
+	}
+	e.h = e.a.routes(st)
+	return nil
+}
+
+// visit asks for a path with no session from an address of its own (n), or with the cookie given, and
+// returns the status, the body and the headers.
+func (e *tenv) visit(method, path, cookie string, n int, hdr map[string]string) (int, string, http.Header) {
+	e.t.Helper()
+	r := httptest.NewRequest(method, path, nil)
+	r.RemoteAddr = fmt.Sprintf("203.0.%d.%d:5000", 113+n/250, n%250+1)
+	if cookie != "" {
+		r.AddCookie(&http.Cookie{Name: cookieName, Value: cookie})
+	}
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	e.h.ServeHTTP(w, r)
+	return w.Code, w.Body.String(), w.Result().Header
+}
+
+// pngData is a small PNG as a data URL, as the page sends a profile picture.
+func pngData(t *testing.T) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for i := range img.Pix {
+		img.Pix[i] = 200
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// Single-profile mode (FLOWA_MODE=single): the start keeps to one account, the owner, and refuses with
+// a sentence that says what to do before anything is written; sign-up and the routes that make, remove
+// or demote an account are closed; a signed-out visitor to / gets the owner's profile as a small page
+// the server writes, with no script, no post and no number, from memory; a signed-in owner gets the app.
+func TestDBSingleMode(t *testing.T) {
+	const pw = "flowa-test-only"
+	app := staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa app</title>", "app.css": "body{}", "icon.svg": "<svg/>"})
+	rows := func(e *tenv) string {
+		t.Helper()
+		var s string
+		if err := e.a.db.QueryRow(`SELECT COALESCE(string_agg(concat_ws('|', id, username, role, owner, display_name, bio), ',' ORDER BY id), '') FROM users`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	refused := func(name string, env map[string]string, prepare func(*tenv), want ...string) {
+		t.Helper()
+		e := newEnv(t)
+		if prepare != nil {
+			prepare(e)
+		}
+		before, cats := rows(e), e.count(`SELECT count(*) FROM catalog_revisions`)
+		err := e.singleStart(env, app)
+		if err == nil {
+			t.Errorf("%s: the start went ahead, want it refused", name)
+			return
+		}
+		for _, w := range want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: %q does not say %q", name, err, w)
+			}
+		}
+		if after := rows(e); after != before || e.count(`SELECT count(*) FROM catalog_revisions`) != cats {
+			t.Errorf("%s: a refused start wrote: accounts %q, then %q", name, before, after)
+		}
+	}
+	two := func(e *tenv) { e.user("ana", "admin"); e.user("bo", "user") }
+	refused("two accounts", nil, two, "2 local accounts", "local mode", "Nothing was changed or deleted")
+	refused("two accounts, ADMIN_USER one of them", map[string]string{"ADMIN_USER": "ana", "ADMIN_PASSWORD": pw}, two, "2 local accounts")
+	refused("three accounts", nil, func(e *tenv) { two(e); e.user("cy", "moderator") }, "3 local accounts")
+	refused("no account, no ADMIN_USER", nil, nil, "no account yet", "ADMIN_USER", "ADMIN_PASSWORD")
+	refused("no account, ADMIN_USER without a password", map[string]string{"ADMIN_USER": "ana"}, nil, "ADMIN_USER", "ADMIN_PASSWORD")
+	refused("ADMIN_USER would be a second account", map[string]string{"ADMIN_USER": "newbie", "ADMIN_PASSWORD": pw}, func(e *tenv) { e.user("ana", "admin") }, "ADMIN_USER=newbie", "@ana", "second account")
+	refused("the sole account suspended", nil, func(e *tenv) {
+		id, _ := e.user("ana", "admin")
+		e.a.db.Exec(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, id)
+	}, "@ana", "suspended until", "local mode")
+
+	// No account and ADMIN_USER: it is made, the admin and the owner.
+	e := newEnv(t)
+	if err := e.singleStart(map[string]string{"ADMIN_USER": " Owner ", "ADMIN_PASSWORD": pw}, app); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(e); !strings.HasSuffix(got, "|owner|admin|t|Admin|") || e.count(`SELECT count(*) FROM users`) != 1 {
+		t.Errorf("a first start with ADMIN_USER: %q", got)
+	}
+	if e.a.mode != modeSingle {
+		t.Errorf("mode %q, want single", e.a.mode)
+	}
+	// And the next start with the same settings finds it and adds nothing.
+	if err := e.singleStart(map[string]string{"ADMIN_USER": "owner", "ADMIN_PASSWORD": pw}, app); err != nil || e.count(`SELECT count(*) FROM users`) != 1 {
+		t.Errorf("a second start: %v, %d accounts", err, e.count(`SELECT count(*) FROM users`))
+	}
+
+	// A sole account that is a member is made the admin, and then the owner by ensureOwner; one that is an
+	// admin and not the owner is made the owner. A mute is logged and the start goes on.
+	for _, role := range []string{"user", "moderator", "admin"} {
+		f := newEnv(t)
+		logs := logged(t)
+		id, _ := f.user("ana", role)
+		f.a.db.Exec(`UPDATE users SET muted_until = now() + interval '1 day' WHERE id = $1`, id)
+		if err := f.singleStart(nil, app); err != nil {
+			t.Fatalf("a sole %s: %v", role, err)
+		}
+		if got := rows(f); got != fmt.Sprintf("%d|ana|admin|t|ana|", id) {
+			t.Errorf("a sole %s after a single start: %q, want the admin and the owner", role, got)
+		}
+		if !strings.Contains(logs.String(), "@ana, is muted until") {
+			t.Errorf("a sole muted %s: the log does not say so: %s", role, logs.String())
+		}
+	}
+
+	// Moving between modes on one database: local with one account, then single, then local again. The
+	// second move changes nothing in the data; the first changes only what makes the account the owner.
+	m := newEnv(t)
+	anaID, _ := m.user("ana", "admin")
+	m.a.db.Exec(`UPDATE users SET owner = true, bio = 'kept' WHERE id = $1`, anaID)
+	if err := m.a.start(func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	local := rows(m)
+	var reqID int64
+	if err := m.a.db.QueryRow(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('asks', 'asks', $1) RETURNING id`, hashPassword("a fine long password")).Scan(&reqID); err != nil {
+		t.Fatal(err)
+	}
+	logs := logged(t)
+	if err := m.singleStart(nil, app); err != nil {
+		t.Fatalf("local to single with one account: %v", err)
+	}
+	if got := rows(m); got != local {
+		t.Errorf("local to single changed the accounts: %q, was %q", got, local)
+	}
+	if !strings.Contains(logs.String(), "1 requests to join wait") {
+		t.Errorf("a request left from local mode is not logged at a single start: %s", logs.String())
+	}
+	// The request left from local mode: never an account. Its right password is a wrong one here.
+	m.a.lim = newLimits()
+	if code, out := m.do("", "POST", "/api/signin", map[string]string{"username": "asks", "password": "a fine long password"}); code != 401 || strings.Contains(out["_raw"].(string), "waiting") {
+		t.Errorf("signing in with a request in single mode: %d %v, want the answer to a wrong password", code, out["_raw"])
+	}
+	if err := m.a.start(func(string) string { return "" }); err != nil {
+		t.Fatalf("single to local: %v", err)
+	}
+	if got := rows(m); got != local || m.count(`SELECT count(*) FROM join_requests WHERE id = $1`, reqID) != 1 {
+		t.Errorf("single to local changed the data: %q, was %q", got, local)
+	}
+
+	// From here, one instance in single mode with a profile full of markup, numbers, a post and badges.
+	s := newEnv(t)
+	logged(t)
+	ownerID, owner := s.user("ana", "user")
+	if err := s.singleStart(nil, app); err != nil {
+		t.Fatal(err)
+	}
+	s.a.version = "v9.8.7-flowa-test"
+	s.a.lim = newLimits()
+	const name = `<b>"Ana" & 'co'</b>`
+	const bio = `<script>alert(1)</script> "quoted" 'apostrophes' <a href="javascript:alert(2)">x</a> javascript:alert(3)` + "\nsecond line"
+	s.must(200, owner, "PUT", "/api/me", map[string]any{"displayName": name, "bio": bio,
+		"links": map[string]string{"instagram": "https://instagram.com/ana.flow", "youtube": "@ana-spins"},
+		"stats": map[string]any{"xp": 98765, "level": 43, "streak": 4321}})
+	s.post(owner, "SECRET-POST-TEXT, not for visitors")
+	s.a.db.Exec(`INSERT INTO achievements (user_id, key) VALUES ($1, 'zz-badge-key')`, ownerID)
+	inst := s.must(200, owner, "GET", "/api/admin/instance", nil)
+	s.must(200, owner, "PUT", "/api/admin/instance", map[string]any{"description": "INSTANCE-DESC <i>x</i>", "contact": "admin@example.com",
+		"rules": []map[string]string{{"text": "RULE-ONE <b>", "hint": "HINT-ONE"}}, "registration": "approval", "updatedAt": inst["updatedAt"]})
+
+	// Sign-up is closed whatever the flag and the setting say, before any hash or count; the routes
+	// for requests to join and for changing accounts are closed too.
+	s.setFlag("signups", true)
+	runs := pbkdf2Runs.Load()
+	for i := 0; i < 15; i++ {
+		code, out := s.do("", "POST", "/api/signup", map[string]string{"username": fmt.Sprintf("new%d", i), "password": "a fine long password"})
+		if code != 403 || out["error"] != singleOnly {
+			t.Fatalf("sign-up %d in single mode: %d %v", i, code, out["_raw"])
+		}
+	}
+	if pbkdf2Runs.Load() != runs || s.count(`SELECT count(*) FROM users`) != 1 || s.count(`SELECT count(*) FROM join_requests`) != 0 || s.a.lim.signup.over(limitKey("192.0.2.1")) {
+		t.Error("a refused sign-up in single mode hashed, counted or wrote something")
+	}
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/admin/requests"}, {"POST", "/api/admin/requests/1/approve"}, {"DELETE", "/api/admin/requests/1"},
+		{"DELETE", fmt.Sprintf("/api/admin/users/%d", ownerID)}, {"PUT", fmt.Sprintf("/api/admin/users/%d/role", ownerID)}, {"PUT", fmt.Sprintf("/api/admin/users/%d/owner", ownerID)},
+	} {
+		for _, tok := range []string{owner, ""} {
+			if code, out := s.do(tok, c.method, c.path, map[string]string{"role": "user"}); code != 403 || out["error"] != singleOnly {
+				t.Errorf("%s %s (%q) in single mode: %d %v, want 403", c.method, c.path, tok, code, out["_raw"])
+			}
+		}
+	}
+	// /api/me says single to a visitor and to the owner, and never that joining is by approval.
+	for _, tok := range []string{"", owner} {
+		out := s.must(200, tok, "GET", "/api/me", nil)
+		if out["single"] != true {
+			t.Errorf("/api/me (%q) in single mode does not say single: %v", tok, out["_raw"])
+		}
+		if in, _ := out["instance"].(map[string]any); in["approval"] != nil {
+			t.Errorf("/api/me (%q) in single mode says joining is by approval", tok)
+		}
+	}
+
+	// The visitor's page.
+	visits := 0
+	visit := func(method, path, cookie string, hdr map[string]string) (int, string, http.Header) {
+		t.Helper()
+		visits++
+		return s.visit(method, path, cookie, visits, hdr)
+	}
+	code, body, hdr := visit("GET", "/", "", nil)
+	if code != 200 {
+		t.Fatalf("the visitor's page: %d %s", code, body)
+	}
+	for k, want := range map[string]string{"Content-Security-Policy": visitorCSP, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache",
+		"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer", "Cross-Origin-Opener-Policy": "same-origin"} {
+		if hdr.Get(k) != want {
+			t.Errorf("the visitor's page: %s is %q, want %q", k, hdr.Get(k), want)
+		}
+	}
+	if visitorCSP != "default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" {
+		t.Errorf("the visitor's CSP is not the one of docs/federation.md 5.6: %q", visitorCSP)
+	}
+	if !slices.Contains(hdr.Values("Vary"), "Cookie") || hdr.Get("ETag") == "" || hdr.Get("Permissions-Policy") == "" {
+		t.Errorf("the visitor's page: Vary %q, ETag %q", hdr.Values("Vary"), hdr.Get("ETag"))
+	}
+	for _, want := range []string{
+		`<html lang="en">`, `&lt;b&gt;&#34;Ana&#34; &amp; &#39;co&#39;&lt;/b&gt;`, "@ana", `&lt;script&gt;alert(1)&lt;/script&gt;`, "second line",
+		`href="https://www.instagram.com/ana.flow/" rel="nofollow noopener noreferrer"`, `href="https://www.youtube.com/@ana-spins" rel="nofollow noopener noreferrer"`,
+		"INSTANCE-DESC &lt;i&gt;x&lt;/i&gt;", `href="mailto:admin@example.com"`, "RULE-ONE &lt;b&gt;", "HINT-ONE", `href="index.html#/signin">Sign in</a>`,
+		`href="` + hashedName("app.css", app.plain["/app.css"].hash) + `"`, "<h1 ", "<main", "<header",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the visitor's page does not hold %q:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(body, `aria-hidden="true">B</span>`) { // the b of <b>, the first letter typed
+		t.Errorf("the circle without a picture does not hold the first letter of the name:\n%s", body)
+	}
+	if strings.Count(body, "<h1") != 1 {
+		t.Errorf("the visitor's page has %d h1 elements, want 1", strings.Count(body, "<h1"))
+	}
+	low := strings.ToLower(body)
+	for _, not := range []string{"<script", "javascript:alert(2)\"", `href="javascript`, "<a href=\"javascript", "secret-post-text", "98765", "4321", ">43<", "level", "streak", " xp",
+		"badge", "zz-badge-key", "v9.8.7", "single", "local", "federat", "member", "1 account", "approval", "<form", "<input", "sign up", "create an account", "style=", "onerror", "onclick"} {
+		if strings.Contains(low, strings.ToLower(not)) {
+			t.Errorf("the visitor's page holds %q:\n%s", not, body)
+		}
+	}
+	// HEAD is the same headers with no body; the ETag gets 304; a write to / is refused as before.
+	if code, b, h := visit("HEAD", "/", "", nil); code != 200 || b != "" || h.Get("ETag") != hdr.Get("ETag") || h.Get("Content-Security-Policy") != visitorCSP {
+		t.Errorf("HEAD /: %d %q %v", code, b, h)
+	}
+	if code, b, h := visit("GET", "/", "", map[string]string{"If-None-Match": hdr.Get("ETag")}); code != 304 || b != "" || !slices.Contains(h.Values("Vary"), "Cookie") {
+		t.Errorf("GET / with its ETag: %d %q", code, b)
+	}
+	if code, _, _ := visit("POST", "/", "", map[string]string{"Content-Type": "application/json"}); code != http.StatusMethodNotAllowed {
+		t.Errorf("POST / in single mode: %d, want 405", code)
+	}
+
+	// The owner signed in gets the app at /, as on any instance, also told apart by the cookie.
+	code, body, h := visit("GET", "/", owner, nil)
+	if code != 200 || !strings.Contains(body, "Flowa app") || h.Get("Content-Security-Policy") != csp(true) || !slices.Contains(h.Values("Vary"), "Cookie") || !slices.Contains(h.Values("Vary"), "Accept-Encoding") {
+		t.Errorf("the signed-in owner at /: %d %q %v", code, body, h)
+	}
+	// A cookie that is garbage, an expired session, a session past its idle time, or a suspended account
+	// is no session: the page.
+	var expired, idle string
+	{
+		raw := make([]byte, 16)
+		rand.Read(raw)
+		expired = hex.EncodeToString(raw)
+		s.a.db.Exec(`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() - interval '1 minute')`, tokenHash(expired), ownerID)
+		rand.Read(raw)
+		idle = hex.EncodeToString(raw)
+		s.a.db.Exec(`INSERT INTO sessions (token_hash, user_id, expires_at, last_seen) VALUES ($1, $2, now() + interval '1 day', now() - interval '30 days')`, tokenHash(idle), ownerID)
+	}
+	for _, c := range []string{"garbage", "", expired, idle} {
+		if code, b, _ := visit("GET", "/", c, nil); code != 200 || !strings.Contains(b, "pub-name") || strings.Contains(b, "Flowa app") {
+			t.Errorf("GET / with the cookie %q: %d, want the visitor's page", c, code)
+		}
+	}
+	// The app stays at /index.html for a signed-out owner, so Sign in reaches the form.
+	if code, b, _ := visit("GET", "/index.html", "", nil); code != 200 || !strings.Contains(b, "Flowa app") {
+		t.Errorf("GET /index.html signed out: %d %q, want the app", code, b)
+	}
+
+	// The picture: none yet, then the one the owner saves, served from memory with the page.
+	if code, _, _ := visit("GET", "/profile-picture", "", nil); code != 404 {
+		t.Errorf("the owner's picture before there is one: %d, want 404", code)
+	}
+	s.must(200, owner, "PUT", "/api/me", map[string]any{"avatar": pngData(t)})
+	_, body, _ = visit("GET", "/", "", nil)
+	if !strings.Contains(body, `<img class="pub-pic" src="profile-picture?v=`) {
+		t.Errorf("the page after a picture was saved has none:\n%s", body)
+	}
+	code, pic, h := visit("GET", "/profile-picture", "", nil)
+	if code != 200 || h.Get("Content-Type") != "image/png" || !strings.HasPrefix(pic, "\x89PNG") {
+		t.Errorf("the owner's picture: %d %q", code, h.Get("Content-Type"))
+	}
+	if code, _, _ := visit("GET", fmt.Sprintf("/api/users/%d/avatar", ownerID), "", nil); code != 401 {
+		t.Errorf("the members' picture address for a visitor: %d, want 401 as before", code)
+	}
+
+	// The page is dropped when the owner saves their profile and when an admin saves the instance.
+	s.must(200, owner, "PUT", "/api/me", map[string]any{"bio": "A NEW BIO"})
+	if _, b, _ := visit("GET", "/", "", nil); !strings.Contains(b, "A NEW BIO") {
+		t.Error("the page after a profile save still shows the old bio")
+	}
+	inst = s.must(200, owner, "GET", "/api/admin/instance", nil)
+	s.must(200, owner, "PUT", "/api/admin/instance", map[string]any{"description": "A NEW DESCRIPTION", "contact": "", "rules": []any{}, "updatedAt": inst["updatedAt"]})
+	_, b, _ := visit("GET", "/", "", nil)
+	if !strings.Contains(b, "A NEW DESCRIPTION") || strings.Contains(b, "RULE-ONE") {
+		t.Error("the page after an instance save still shows the old information")
+	}
+	// A save of what the page does not show (the stats) keeps it.
+	s.a.pageMu.Lock()
+	kept := s.a.page
+	s.a.pageMu.Unlock()
+	s.must(200, owner, "PUT", "/api/me", map[string]any{"stats": map[string]any{"xp": 5}})
+	s.a.pageMu.Lock()
+	if s.a.page != kept {
+		t.Error("a save of the stats alone dropped the visitor's page")
+	}
+	s.a.pageMu.Unlock()
+
+	// A flood costs no query each: with the tables the page is made from moved away, the page and the
+	// picture still come from memory, to visitors from many addresses.
+	for _, q := range []string{`ALTER TABLE users RENAME TO users_away`, `ALTER TABLE instance_settings RENAME TO instance_settings_away`} {
+		if _, err := s.a.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 60; i++ {
+		if code, b2, _ := visit("GET", "/", "", nil); code != 200 || b2 != b {
+			t.Fatalf("visit %d with the tables away: %d", i+1, code)
+		}
+		if code, _, _ := visit("GET", "/profile-picture", "", nil); code != 200 {
+			t.Fatalf("picture %d with the tables away: %d", i+1, code)
+		}
+	}
+	for _, q := range []string{`ALTER TABLE users_away RENAME TO users`, `ALTER TABLE instance_settings_away RENAME TO instance_settings`} {
+		if _, err := s.a.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The limit by address: 300 reads an hour of the page and its picture, then 429 for that address only.
+	for i := 0; i < 300; i++ {
+		path := "/"
+		if i%2 == 1 {
+			path = "/profile-picture"
+		}
+		if code, _, _ := s.visit("GET", path, "", 9999, nil); code != 200 {
+			t.Fatalf("read %d from one address: %d", i+1, code)
+		}
+	}
+	if code, _, h := s.visit("GET", "/", "", 9999, nil); code != 429 || h.Get("Retry-After") == "" {
+		t.Errorf("read 301 from one address: %d, want 429", code)
+	}
+	if code, _, _ := visit("GET", "/", "", nil); code != 200 {
+		t.Errorf("another address after one ran out: %d", code)
+	}
+	if code, _, _ := s.visit("GET", "/", owner, 9999, nil); code != 200 {
+		t.Errorf("the signed-in owner from an address that ran out of visitor reads: %d, want the app", code)
+	}
+
+	// A local server on the same database answers / exactly as before: the app, with its own CSP and
+	// no Vary on the cookie, for a visitor as for a member, and no picture address.
+	l := &tenv{t: t, a: newApp(s.a.db, t.TempDir())}
+	l.a.hosts = []string{"example.com"}
+	if err := l.a.start(func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	l.h = l.a.routes(app)
+	for _, c := range []string{"", owner} {
+		code, b, h := l.visit("GET", "/", c, 1, nil)
+		if code != 200 || !strings.Contains(b, "Flowa app") || h.Get("Content-Security-Policy") != csp(true) || slices.Contains(h.Values("Vary"), "Cookie") || h.Get("ETag") != `"`+app.plain["/index.html"].hash+`"` {
+			t.Errorf("GET / (%q) in local mode on the same database: %d %q %v", c, code, b, h)
+		}
+	}
+	if code, _, _ := l.visit("GET", "/profile-picture", "", 1, nil); code != 404 {
+		t.Errorf("the picture address in local mode: %d, want 404", code)
+	}
+	if out := l.must(200, "", "GET", "/api/me", nil); out["single"] != nil {
+		t.Errorf("/api/me in local mode says single: %v", out["_raw"])
+	}
+}
+
+// A single-profile instance has the routes of a local one and the two of testdata/routes-single.txt,
+// no more: the visitor's page at / and the owner's picture.
+func TestDBSingleRoutes(t *testing.T) {
+	e := newEnv(t)
+	e.user("ana", "admin")
+	if err := e.singleStart(nil, staticOf(t, nil)); err != nil {
+		t.Fatal(err)
+	}
+	st := staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"})
+	got := slices.Clone(e.a.table(st).patterns)
+	extra := routesFile(t, "testdata/routes-single.txt")
+	want := append(routesFile(t, "testdata/routes-local.txt"), extra...)
+	sort.Strings(got)
+	sort.Strings(want)
+	if !sort.StringsAreSorted(extra) {
+		t.Error("testdata/routes-single.txt is not sorted")
+	}
+	if !slices.Equal(got, want) {
+		for _, p := range got {
+			if _, ok := slices.BinarySearch(want, p); !ok {
+				t.Errorf("a route single mode was not to have: %q (add it to testdata/routes-single.txt if it is meant)", p)
+			}
+		}
+		for _, p := range want {
+			if _, ok := slices.BinarySearch(got, p); !ok {
+				t.Errorf("a route single mode is to have and has not: %q", p)
+			}
+		}
 	}
 }

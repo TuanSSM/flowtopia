@@ -664,7 +664,7 @@ function renderSide(route) {
   const staff = staffPages();
   const profile = me
     ? `<a class="nav-profile ${curId === 'profile' ? 'on' : ''}" href="#/profile" ${curId === 'profile' ? 'aria-current="page"' : ''}>${avatarHTML(me)}<span class="grow"><b>${esc(me.displayName || me.username)}</b><span class="tiny">@${esc(me.username)}</span></span></a>`
-    : `<a class="nav-profile ${curId === 'signin' || curId === 'signup' ? 'on' : ''}" href="#/signin">${avatarHTML(null)}<span class="grow"><b>Sign in</b><span class="tiny">or create an account</span></span></a>`;
+    : `<a class="nav-profile ${curId === 'signin' || curId === 'signup' ? 'on' : ''}" href="#/signin">${avatarHTML(null)}<span class="grow"><b>Sign in</b><span class="tiny">${oneProfile ? 'to your own Flowa' : 'or create an account'}</span></span></a>`;
   $('#menu').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
     ${profile}
     ${a('#/', 'home', me ? 'Dashboard' : 'Welcome', curId === 'dashboard')}
@@ -783,7 +783,7 @@ function say(msg) {
 /* ---------- command palette ---------- */
 // A visitor is offered the pages that open without an account; a member theirs, and staff the staff pages
 // with each admin section they may open.
-const pages = () => !me ? [['Welcome', '#/'], ['Skill maps', '#/maps'], ['Sign in', '#/signin'], ...(flags.signups ? [['Create an account', '#/signup']] : []), ...aboutPages(), ['Settings', '#/settings'], ...propPages()]
+const pages = () => !me ? [['Welcome', '#/'], ['Skill maps', '#/maps'], ['Sign in', '#/signin'], ...(joinable() ? [['Create an account', '#/signup']] : []), ...aboutPages(), ['Settings', '#/settings'], ...propPages()]
   : [['Dashboard', '#/'], ...(flags.community ? [['Timeline', '#/timeline']] : []), ['Skill maps', '#/maps'], ['Practice', '#/practice'], ['Combos', '#/combos'], ['Plan', '#/plan'], ...(flags.game ? [['Achievements', '#/achievements']] : []), ['Profile', '#/profile'], ...(flags.avatars ? [['Avatar', '#/avatar']] : []), ...(flags.bookmarks ? [['Bookmarks', '#/bookmarks']] : []), ...aboutPages(), ['Settings', '#/settings'],
     ...staffPages().filter(([, h]) => h[0] === '#'), ...adminTabs().map(([k, n]) => ['Admin: ' + n, '#/admin/' + k]), ...propPages()];
 const aboutPages = () => inst?.about ? [['About this Flowa', '#/about']] : [];

@@ -391,8 +391,20 @@ federated mode it is implied and ignored.
 | Follows | off unless the `follows` flag is on (local only) | local and remote | the owner follows; others follow the owner |
 | Federation endpoints (WebFinger, NodeInfo, actors, inboxes, outboxes) | none: 404, as for any unknown path | answer | answer only with `FLOWA_FEDERATE=on` |
 | Outbound connections | link previews only, as today | link previews and federation | as federated, or link previews only |
-| Public pages for signed-out visitors | none, but the about page once an admin has saved a description (INS 5) | as local, plus profiles and Public posts of members who opted in | as local, plus the owner's profile and Public posts |
+| Public pages for signed-out visitors | none, but the about page once an admin has saved a description (INS 5) | as local, plus profiles and Public posts of members who opted in | as local, plus the owner's profile at `/` (INS 7); Public posts once posts have an audience (FRD) |
 | Feature flags | as today | `federation` (pause), `follows` | as federated |
+
+**Single mode as built (INS 7).** The owner's profile at `/` is a small page the server writes from a Go
+`html/template` with the CSP of 5.6: display name, username, bio, links, the profile picture (at
+`/profile-picture`, the one public picture address, for the owner alone) and the instance information. It
+shows no post yet: posts become public only once a post has an audience, which FRD's "Actor documents and
+public pages" adds; until then the owner's posts are seen by the owner alone, signed in. It shows no number
+(14.6). The People list is hidden, Follows and Home stay behind their flag with nobody to follow until FWR,
+and `FLOWA_FEDERATE` is not read yet. A signed-in owner gets the app at `/`; signed out, the app stays at
+`/index.html`. Sign-up, the routes for requests to join, and deleting, demoting or handing over the one
+account answer 403. The start refuses more than one account, no account without `ADMIN_USER`, an
+`ADMIN_USER` that would make a second one, and a sole account that is suspended; a sole member is made the
+admin and the owner.
 
 **Local means today.** In local mode the federation routes are not registered on the mux at all, the
 queue workers are not started, and no key is generated. `TestDBLocalModeUnchanged` (**new**) builds

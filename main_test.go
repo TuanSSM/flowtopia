@@ -1105,9 +1105,18 @@ func TestInstanceMode(t *testing.T) {
 			t.Errorf("parseMode(%q) = %q, %v; want local", v, m, err)
 		}
 	}
-	// The modes of the plan are known words: the message says they are not built, and does not
-	// tell the operator the word is wrong. The capital I with a dot of a Turkish keyboard lower-cases
-	// to a plain i, so SINGLE typed there is the word too.
+	// Single-profile mode is built; federated is planned and not built yet.
+	for _, v := range []string{"single", " Single", "SINGLE", "SİNGLE", "\tsingle\n"} {
+		if m, err := parseMode(v); err != nil || m != modeSingle {
+			t.Errorf("parseMode(%q) = %q, %v; want single", v, m, err)
+		}
+	}
+	if !modesBuilt[modeSingle] || modesBuilt[modeFederated] || len(modesBuilt) != 2 {
+		t.Errorf("modesBuilt = %v; want local and single, not federated", modesBuilt)
+	}
+	// The modes of the plan are known words: the message says one that is not built is not, and
+	// does not tell the operator the word is wrong. The capital I with a dot of a Turkish keyboard
+	// lower-cases to a plain i, so SINGLE typed there is the word too.
 	for _, v := range []string{"federated", "single", " Single", "FEDERATED\n", "SINGLE", "S\u0130NGLE"} {
 		m, err := parseMode(v)
 		if modesBuilt[instanceMode(strings.ToLower(strings.TrimSpace(v)))] {

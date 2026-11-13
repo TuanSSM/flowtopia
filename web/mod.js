@@ -163,9 +163,9 @@ function adminInstance() {
       <fieldset class="inst-fs"><legend>Rules</legend><p class="tiny">Shown in this order above the button that creates an account, and on the about page. At most ${L.rules}.</p>
         ${n ? `<ol class="inst-rules">${d.rules.map(rule).join('')}</ol>` : '<p class="small muted">No rules yet.</p>'}
         <div><button type="button" class="btn sm" data-act="inst-add" ${n >= L.rules ? 'disabled' : ''}>${icon('plus')}Add a rule</button></div></fieldset>
-      <fieldset class="inst-fs"><legend>Who can join</legend>
+      <fieldset class="inst-fs"><legend>Who can join</legend>${oneProfile ? '<p class="small muted">Nobody: this Flowa holds one person\'s profile, so it takes no new accounts whatever is chosen here or under Features.</p>' : `
         <div class="stack" style="gap:6px">${REGISTRATION.map(([k, name, help]) => `<label class="check"><input type="radio" name="registration" value="${k}" ${d.registration === k ? 'checked' : ''}><span><b style="font-weight:560">${name}</b><br><span class="tiny">${help}</span></span></label>`).join('')}</div>
-        <p class="tiny">${flags.signups ? 'Open sign-ups under Features is the switch that closes sign-up altogether.' : 'Open sign-ups is off under Features, so nobody can join now, whichever is chosen here. Requests that already wait can still be approved or declined in Accounts.'}</p></fieldset>
+        <p class="tiny">${flags.signups ? 'Open sign-ups under Features is the switch that closes sign-up altogether.' : 'Open sign-ups is off under Features, so nobody can join now, whichever is chosen here. Requests that already wait can still be approved or declined in Accounts.'}</p>`}</fieldset>
       <p class="form-err" id="inst-err" role="alert">${ied.theirs ? INST_CLASH : ''}</p>
       ${ied.theirs ? `<div class="row wrap inst-clash" role="group" aria-label="Someone else saved" style="gap:8px"><button type="button" class="btn sm" data-act="inst-theirs">Load their version</button><button type="button" class="btn sm" data-act="inst-mine">Save mine over it</button><span class="tiny">Theirs was saved ${esc(fmtWhen(ied.theirs.updatedAt))}${ied.theirs.updatedBy ? ` by @${esc(ied.theirs.updatedBy)}` : ''}.</span></div>` : ''}
       <div class="row wrap" style="gap:10px"><button class="btn primary" type="submit" id="inst-save" ${instCanSave() ? '' : 'disabled'}>${ied.saving ? 'Saving…' : 'Save'}</button><span class="tiny">${at ? `Last saved ${esc(fmtWhen(at))}${ied.doc.updatedBy ? ` by @${esc(ied.doc.updatedBy)}` : ''}.` : 'Nothing has been saved yet.'}</span></div>
@@ -278,7 +278,7 @@ function joinRequestsHTML() {
 const RANK_NAMES = { user: 'Member', moderator: 'Moderator', admin: 'Admin' };
 const ROLE_ASK = { user: 'a member', moderator: 'a moderator', admin: 'an admin' };
 function adminAccounts() {
-  if (canDo('user.manage') && !ui.reqs && !ui.reqsBusy) loadReqs();
+  if (canDo('user.manage') && !oneProfile && !ui.reqs && !ui.reqsBusy) loadReqs(); // a single-profile instance takes no requests
   if (!ui.users) { loadUsers(); return '<div class="card"><div class="empty small">Loading accounts…</div></div>'; }
   const f = ui.userFilter || { q: '', role: '', status: '' }, q = f.q.trim().toLowerCase();
   const status = u => u.suspendedUntil ? 'suspended' : u.mutedUntil ? 'muted' : 'active';

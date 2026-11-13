@@ -457,6 +457,7 @@ function publishCombo(c) {
   setTimeout(() => { const t = $('#compose-form textarea'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 50);
 }
 function peopleCard() {
+  if (oneProfile) return ''; // one account: a list of people would only ever hold the owner
   if (!social.people) { loadPeople(); return `<div class="card"><div class="card-h"><h2>People</h2></div><div class="empty small">Loading…</div></div>`; }
   const list = social.people.slice(0, 12);
   return `<div class="card people" data-tour="people"><div class="card-h"><h2 class="grow">People</h2><span class="sub">Most XP first</span></div>
@@ -469,7 +470,7 @@ function pageTimeline(single, focus) {
   if (single && focus && social.focus !== Number(focus)) loadThread(Number(single), Number(focus));
   if (!focus) social.focus = 0;
   const tabs = single || !flags.follows ? '' : `<div class="seg tl-tabs" role="group" aria-label="Timeline">${[['all', 'Community'], ['home', 'Home']].map(([k, n]) => `<button class="${tab === k ? 'on' : ''}" data-act="tl-tab" data-v="${k}" aria-pressed="${tab === k}">${n}</button>`).join('')}</div>`;
-  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? 'Posts from the people you follow, and your own.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
+  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? 'Posts from the people you follow, and your own.' : oneProfile ? 'Your posts. Only you see them, signed in: this Flowa holds your profile alone. Your milestones post themselves; turn that off in your profile.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
   const empty = single ? 'That post is gone.' : tab === 'home' ? 'Your Home is empty. Follow someone from the People list or from their profile, and their posts show here with yours.' : 'Nothing here yet. Share what you worked on today.';
   return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${lead}</p></div>${tabs}</div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, empty)}</div>
