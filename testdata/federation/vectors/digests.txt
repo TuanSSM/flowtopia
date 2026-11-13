@@ -1,0 +1,21 @@
+# Digests of {"hello": "world"}, the body every text's examples use, in both header forms.
+# Read on 12 November 2026 from https://datatracker.ietf.org/doc/html/rfc9530,
+# https://datatracker.ietf.org/doc/html/rfc9421 and
+# https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12 (the copies downloaded that day).
+# Two bodies: RFC 9530's examples are of the object "followed by an LF" (Appendix A, B.1: 19 bytes),
+# the cavage draft's and RFC 9421's of the object alone (Content-Length: 18). Each section names the
+# bytes digested ("with LF" or "without LF") and where the value is printed.
+#
+# Oddities found while copying, not used as vectors: RFC 9530 B.5 and B.6 print the sha-256 of the
+# 19 bytes as "RK/0qy18MlBSVnWgjwz6lZEWjP/lF5HF9bvEF8FabDg==:" with one "=" too many (45 characters,
+# not valid base64 of 32 bytes; B.1 and B.4 print it with one). The sha-256 value d435Qo... that
+# section 2 pairs with the sha-512 YMAam... is not a digest of the same bytes: B.4 shows it is of the
+# Brotli-encoded representation, and it is not the SHA-256 of the 23 bytes B.4 prints either.
+=== RFC 9530 B.1 Content-Digest, with LF
+sha-256=:RK/0qy18MlBSVnWgjwz6lZEWjP/lF5HF9bvEF8FabDg=:
+=== RFC 9530 2 Content-Digest, with LF
+sha-512=:YMAam51Jz/jOATT6/zvHrLVgOYTGFy1d6GJiOHTohq4yP+pgk4vf2aCsyRZOtw8MjkM7iw7yZ/WkppmM44T3qg==:
+=== draft-cavage-12 Appendix C Digest, without LF
+SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+=== RFC 9421 B.2 Content-Digest, without LF
+sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew==:

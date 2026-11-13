@@ -938,16 +938,55 @@ without Public is followers-only (F3); actors only, whether all mentioned ("dire
   list requires `Content-Digest` with no exception for a GET, and whether it wants the digest of an
   empty body there is not stated.
 - **Accepted:** cavage as sent, also with `algorithm="hs2019"` or no `algorithm`: whatever the field
-  says, an RSA key is verified as RSASSA-PKCS1-v1_5 with SHA-256 (cavage-12 2.5: the verifier MUST
-  take the algorithm from the key, not from the field; the SWICG report: "If it's hs2019, assume
-  that means rsa-sha256"). A missing `headers` parameter covers no request line (the draft says it
-  then means `(created)`, Mastodon's page that it assumes `date`), so it is refused. `(created)` and
-  `(expires)` are accepted only with `hs2019`, since cavage-12 2.3 makes them an error with an `rsa`
-  algorithm, and a `created` in the future is refused (2.1.4). RFC 9421: one signature, as Mastodon
-  accepts it; `created` required; covered, `@method` and `@target-uri`, or `@method`, `@authority`,
-  `@path` and (when the request has a query) `@query`, and on POST `content-digest`; an `alg`, when
-  present, must be `rsa-v1_5-sha256` (RFC 9421 3.2, step 6.5: an algorithm stated in two places must
-  agree); an `expires` in the past is refused (3.2.1).
+  says, an RSA key is verified as RSASSA-PKCS1-v1_5 with SHA-256 (cavage-12 2.5: the verifier "MUST
+  derive the digital signature algorithm from the metadata associated with the keyId and MUST NOT use
+  the value of algorithm"; the SWICG report: "If it's hs2019, assume that means rsa-sha256"). Any
+  other value is refused, unknown or naming a kind of key the key is not (2.1.3: when it "differs from
+  the key metadata ... an implementation MUST produce an error"). A missing `headers` parameter covers
+  no request line, so it is refused: the draft says it then means `(created)` (2.1.6), its own
+  Appendix C.1 signs `date` alone, and Mastodon's page says it assumes `date`. `(created)` and
+  `(expires)` are accepted only with `hs2019` or no `algorithm` (2.3, rules 2 and 3: an error when the
+  algorithm "starts with rsa, hmac, or ecdsa"; this note said `hs2019` only). A `created` in the future
+  is refused with no allowance at all (2.1.4: it "MUST NOT be processed"), unlike `Date`, and an
+  `expires` in the past too (2.1.5). Parameter names are read in any letter case (RFC 7235 2.1), a
+  known parameter given twice refuses the header and an unknown one is skipped (cavage-12 2.2); the
+  names in `headers` are lower-cased (2.3, rule 4), and one named twice is refused (the draft is
+  silent; RFC 9421 2.5 step 2.1 makes it an error). RFC 9421: one signature, as Mastodon accepts it
+  ("Only a single signature is supported"; a second label is refused, not chosen among, so Flowa never
+  accepts what Mastodon refuses); `created` required; covered, `@method` and `@target-uri`, or
+  `@method`, `@authority`, `@path` and (when the request has a query) `@query`, and on a request with a
+  body `content-digest`; `@request-target` does not count as the request line (2.2.5: "NOT
+  RECOMMENDED" where a version other than HTTP/1.1 might be in use); an `alg`, when present, must be
+  `rsa-v1_5-sha256` (3.2, step 6.5: an algorithm stated in two places must agree), and without one the
+  key decides (step 6.3); an `expires` in the past is refused (3.2.1). The `@signature-params` line is
+  the `Signature-Input` member serialized again with its components and parameters in the order and of
+  the types received (3.2, step 7; 4.1: "list order and parameter order have to be preserved"), never
+  rebuilt in an order of Flowa's. Refused as well (2.5: "If the derived component name is unknown ...
+  produce an error", "If the component identifier has a parameter that is not understood, produce an
+  error"): a derived component not in 2.2, `@status` (2.2.9: not in a request), a covered
+  `@signature-params` (2.3), a header field name in capitals (2.1: "MUST use lowercased field names")
+  and any parameter on a header field (`sf`, `key`, `bs`, `req`, `tr`: no fediverse server sends one).
+  `Signature-Input`, `Signature` and `Content-Digest` are parsed as strict Structured Fields (RFC 8941
+  1.1), with at most 16 dictionary members, 16 parameters and 32 covered components (3.1.1 and 3.1.2
+  let a field definition constrain these), and a key or parameter given twice is refused where RFC
+  8941 4.2.2 keeps the last (RFC 9421 4.1: labels "MUST be unique").
+- **Both forms on one request.** They share the field name `Signature`: a line that reads as a cavage
+  header is one, and when `Signature-Input` is present the other lines are RFC 9421's dictionary (the
+  SWICG report: `Signature-Input` "was only added in the later versions"). Both must verify, with the
+  same key id: two keys vouching for one request give it no single signer, so that is refused. RFC 9421
+  is then the form recorded for the host. `Authorization: Signature` is not read: Mastodon sends and
+  reads the `Signature` header.
+- **Header values** as both texts canonicalize them (cavage-12 2.3, rule 4; RFC 9421 2.1): each line
+  trimmed, the lines joined by ", " in the order received. Go's HTTP/1.1 reader already replaces
+  obsolete line folding with a space, which RFC 9112 5.2 allows and both texts' examples show; a CR, LF
+  or NUL still in a value is refused. A signed `Date` must be one line, since two joined are not a date
+  (a singleton field: RFC 9110 5.5 and 6.6.1). When both `Date` and `created` are signed, both must be inside the window (RFC 9421
+  B.2.3 leaves it "up to the verifier").
+- **Digests.** `Digest` (RFC 3230 4.3.2; names in any letter case, 4.1.1) and `Content-Digest` (RFC
+  9530 2) may each carry several algorithms. Flowa computes SHA-256 and SHA-512, needs at least one of
+  them, and checks every one that is there, in constant time: checking only one leaves the downgrade RFC
+  9530 6.6 and 6.7 describe. Others (md5, sha, unixsum and the Deprecated ones of RFC 9530 5) are
+  ignored, and a header with only those is refused. The digest is of the body exactly as received.
 - **Which form is sent to a host:** cavage by default. A 400 or a 401 to a signed delivery is
   answered by sending it once more at once, in the other form: what the SWICG report calls
   "double-knocking", and what Mastodon 4.7.0 (unreleased) does itself, falling back to RFC 9421 for
@@ -961,9 +1000,11 @@ without Public is followers-only (F3); actors only, whether all mentioned ("dire
   does not cover the request line (`(request-target)`; in RFC 9421 as above), `host` (cavage; in RFC
   9421 the authority is part of `@target-uri` or `@authority`), `date` (or `created`) and, on POST,
   the digest; the digest does not match the body (`Digest` for cavage, `Content-Digest` for RFC
-  9421); the date (or `created`) is more than 12 hours old or more than 1 hour ahead; the key cannot
-  be fetched; the signature does not verify after one refetch of the key (the SWICG report's
-  verification steps refetch once, for a rotated key). The 12 hours are Mastodon's ("Verifying HTTP
+  9421); the date (or `created`) is more than 12 hours old or more than 1 hour ahead; the signature
+  was accepted before (7.2); the key cannot be fetched; the signature does not verify after one
+  refetch of the key (the SWICG report's verification steps refetch once, for a rotated key). While
+  this server's clock is behind its build (8.3) the verifier says so instead (`sigClock`), and the
+  inbox answers 503. The 12 hours are Mastodon's ("Verifying HTTP
   signatures": "made within the past 12 hours"). Mastodon's page says nothing about a date in the
   future; the hour ahead is Flowa's own, close to the SWICG report's "an hour plus a few minutes
   buffer in either direction".
@@ -1004,28 +1045,58 @@ The `Content-Type` is the `ld+json` form because ActivityPub 7 says a POST MUST 
 servers SHOULD treat `application/activity+json` as the same); Mastodon's own example uses it too.
 
 The verifier uses the origin of `FLOWA_ORIGIN` for `host`, `@authority` and `@target-uri`, and the
-path and query as received for `(request-target)`, `@path` and `@query` (finding 4).
+path and query exactly as received (`r.RequestURI`, never Go's decoded path) for
+`(request-target)`, `@path` and `@query` (finding 4); a request target in a proxy's absolute form is
+refused. The signer sets the `Host` it sends to the authority it signs (the host in lower case, no
+`:443`: RFC 9421 2.2.3) and signs the request line Go writes (`req.URL.RequestURI()`: `/` for an empty
+path, the path's own percent-encoding and capitals, the query as given; RFC 9421 2.2.6 and 2.2.7, and
+cavage-12 2.3, whose lower-casing "only applies to the :method"). It runs again for the URL a redirect
+leads to, as the fetcher's `signer` hook does.
+
+**Built (FRD's third item), with no caller yet** (`main.go`, "federation: HTTP signatures"): the pure
+parsers and builders (`parseCavage`, `cavageString`, `sfDictionary`, `parseSignatureInput`,
+`rfc9421Base`, `parseDigest`, `parseContentDigest`, `parsePublicKeyPEM`), the policy
+(`sigVerifier.verify`, with a typed `sigReason` for every refusal, each a fixed phrase safe to log,
+and the key function's error wrapped for the caller), `verifyRequest` for a request that arrived and
+`httpSigner` for the fetcher. Neither reads the database: the verifier is handed a function from key
+id to public key, the signer the private key and its id. The verifier takes the body bytes the caller
+already read within its cap and reads no body itself. Caps: 8 KB for each of `Signature`,
+`Signature-Input`, `Digest` and `Content-Digest` (8 lines each), 32 covered components, 16 parameters,
+16 KB for a covered value, 64 KB for a signing string or base, 16 KB for a PEM. On the CI-class runner
+(Xeon 2.3 GHz) `BenchmarkInboxVerify` (2 KB body, RSA 2048) is about 35 µs, 4.4 to 5.6 KB and 51 to 56
+allocations, and `BenchmarkSignDelivery` about 0.8 ms; the fuzz targets `FuzzParseSignature`,
+`FuzzParseSignatureInput` and `FuzzVerifyRequest` ran 30 s each with no failure.
+
 `TestSignatureVectors` (**new**) copies these published vectors into
-`testdata/federation/vectors/` (**new**), each with the section it came from:
+`testdata/federation/vectors/` (**new**), each with the section it came from, the date it was read
+and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
 
 - **cavage-12 Appendix C.1 (Default) and C.2 (Basic):** `rsa-sha256`, that is RSASSA-PKCS1-v1_5
   with SHA-256, on the draft's test key. Signing reproduces the published signature byte for byte
-  (PKCS#1 v1.5 is deterministic) and verifying accepts it; both were checked with Python's
-  `cryptography` package while writing this. Two warnings go with them: the appendix calls its own vectors "old
-  and possibly wrong", and the key it calls 2048-bit is 1024-bit.
-- **cavage-12 C.3 (All Headers) is not copied.** Its signature verifies only against the string it
-  prints, which leaves out the `(created)` and `(expires)` lines its own `headers` list names, and
-  section 2.3 makes those two an error with `rsa-sha256` anyway.
+  (PKCS#1 v1.5 is deterministic) and verifying accepts it. Two warnings go with them: the appendix
+  calls its own vectors "old and possibly wrong", and the key it calls 2048-bit is 1024-bit, so the
+  test parses it with a lowered minimum (a parameter of `parsePublicKeyPEM`, not a setting). C.1 has
+  no `headers` and signs `date` alone, which section 2.1.6 contradicts (see Accepted).
+- **cavage-12 C.3 (All Headers) is kept as a documented negative.** Its signature verifies only
+  against the string it prints, which leaves out the `(created)` and `(expires)` lines its own
+  `headers` list names, and section 2.3 makes those two an error with `rsa-sha256` anyway; the test
+  shows all three.
 - **RFC 9421 Section 4.3, the `proxy_sig` signature:** the RFC's only `rsa-v1_5-sha256` example,
   with `test-key-rsa` from Appendix B.1.1 (2048-bit, a PKCS#1 `RSA PUBLIC KEY` PEM, so it also tests
-  that form of key). Deterministic like the cavage ones, so the test signs and verifies; it too was
-  checked the same way while writing this.
-- **RFC 9421 Section 2.5 and Appendix B.2.1 to B.2.3:** for building the signature base only. Their
-  signatures are RSASSA-PSS with SHA-512 (`test-key-rsa-pss`), which Flowa does not implement, so
-  the test compares the base it builds with the printed one and does not verify those signatures.
+  that form of key). The base Flowa builds is the printed one, the signature verifies, and signing
+  reproduces it. Its parameters come in the order `created`, `keyid`, `alg`, `expires`, not Flowa's.
+- **RFC 9421 Section 2.5 and Appendix B.2.1 to B.2.3:** for building the signature base only, which
+  matches the printed base byte for byte. Their signatures are RSASSA-PSS with SHA-512
+  (`test-key-rsa-pss`, an SPKI PEM), which Flowa does not implement; the test checks them with Go's
+  RSA-PSS over the printed base only to show the copy is exact. B.2.2 covers a named query parameter
+  (2.2.8), so `@query-param` is built too.
 - **Digests:** SHA-256 of `{"hello": "world"}` is `X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=`
-  (cavage-12 3.1 and Appendix C) and SHA-512 is the `sha-512=:WZDPaVn...:` value of RFC 9421 B.2;
-  both match a recomputation.
+  (cavage-12 3.1 and Appendix C) and SHA-512 is the `sha-512=:WZDPaVn...:` value of RFC 9421 B.2.
+  RFC 9530's own examples are of the object followed by a line feed (its Appendix A, 19 bytes):
+  `sha-256=:RK/0qy...:` (B.1) and `sha-512=:YMAam5...:` (section 2). All four match a recomputation.
+  Two slips in RFC 9530 were found and are not used: B.5 and B.6 print the sha-256 with one `=` too
+  many, and the `sha-256=:d435Qo...:` that section 2 pairs with `YMAam5...` is the digest of a Brotli
+  encoding (B.4), not of the same bytes.
 
 ### 7.2 Replay
 
@@ -1036,9 +1107,97 @@ path and query as received for `(request-target)`, `@path` and `@query` (finding
   dropped as repeats. An activity with no id (ActivityPub 3.1 and 7 allow it for one "intentionally
   transient") is processed and not deduplicated by id; the signature rule below still stops a
   replay of the same request.
-- A signature is accepted once: the SHA-256 of the `Signature` header is kept in memory for the 13
-  hours a date can be valid, in a map of at most 100,000 entries (about 6 MB); when full, the oldest
-  half is dropped, and a request older than the oldest kept is refused as stale.
+- A signature is accepted once on a request that changes something, that is any method but GET and
+  HEAD: a replayed signed GET within the window reads only what the signer could read with its own
+  signature anyway, and remembering every signed fetch would crowd out the deliveries. The key is the
+  first 128 bits of the SHA-256 of the decoded signature bytes, not of the header, so the same signature
+  written in another base64 (padding left out, other pad bits) is the same entry; only signatures that
+  verified are remembered, so a stranger cannot choose what goes in, and a collision would take about
+  2^64 valid signatures. An entry lives as long as the time window could accept its signature: until
+  12 hours after the time it vouches for, through the last second, which is the second the window starts
+  to refuse it (`TestReplayWindow` shows the two meet). A signature dated an hour ahead is kept 13 hours,
+  one dated 12 hours back hardly at all. The memory keeps its own clock, the latest it was given, so a
+  system clock stepped back by up to an hour cannot bring a forgotten signature back into the window.
+- **What the memory promises, and what replay safety also rests on.** The memory alone promises that a
+  signature is never accepted twice under the same sender group (below) while the window would take it.
+  For RFC 9421 that is enough: `keyid` is in the signature base, so the same signature under another key
+  id does not verify. For the draft form it is not: a cavage signature does not cover its `keyId`, so once
+  it has been evicted from its group (below), the same bytes sent under a key id of another domain that
+  serves a copy of the sender's public key (public keys are public) pass the memory and verify. That
+  delivery is refused by the origin rule of 7.3, applied by the inbox to every delivery: the body, bound by
+  the digest, still names the first sender's actor, and the key id is not on that actor's origin. **The
+  origin rule is therefore part of replay safety for the draft form, not only of authorship**
+  (`TestReplayAcrossDomains` writes both halves down). No grouping closes it inside the memory: keyed by
+  the key's fingerprint, whoever claimed a fingerprint first would own the victim's floor, and one floor
+  for everyone is the blocker the first rule was.
+- **When the memory is full, the sender that filled it pays, never a bystander.** It is bounded and the
+  number of valid signatures in 12 hours is not, so some valid new signature must sometimes be refused;
+  a replay never is. Entries are grouped by the **sender group** of their key id (`senderGroup`): the
+  last two labels of its host in lower case, scheme and port ignored, so `a.b.evil.example:8443` and
+  `evil.example` are both `evil.example`; an IP literal is a group of its own, and a key id on a host
+  of one label is refused before the memory sees it. An entry is dropped only by expiry or by eviction, and an evicted entry is the oldest of its group, whose own
+  **floor** rises to its time: from then on a new signature from that group dated at or before its
+  floor is refused as stale, since it might be the one dropped. A signature with exactly the floor's
+  time is refused too (by time alone it cannot be told from the dropped one); this only happens to an
+  group that was itself evicted from. One group's floor never touches another's, and a floor is
+  forgotten when the window would refuse its time anyway. Who is evicted from:
+  - a group holds at most 10,000 entries, a tenth of the memory (a group at the inbox's allowance,
+    300 requests in 5 minutes, fills that in under 3 hours, so a sender that dates its deliveries when
+    it sends them loses none); at that cap it evicts its own oldest, whatever dates it claims, so a flood
+    from one group costs that group only;
+  - when all 100,000 are taken, the oldest entry of the group holding the most is evicted, or the
+    inserting group's own when it already holds an equal share (the memory divided by the groups in
+    it). The heaviest pays because it is the one over its share: a group at or under an equal share
+    never loses an entry to another's traffic;
+  - at most 2,000 groups are kept: a signature from a new group then is refused with its own reason
+    (`sigFull`), which the inbox answers with 503 and `Retry-After`, since a group is never forgotten
+    while it may still have a floor or an entry.
+
+  **The worst case** is a flood of valid signatures from very many groups, each needing a domain the
+  domain policy lets in, a key that verifies, and its host held to the inbox's allowance. Subdomains and
+  ports share their domain's group, so one wildcard DNS name fills one group's share, not the 2,000
+  groups. An honest group already in the memory keeps at least an equal share of its newest entries,
+  50 at the full 2,000 groups, and loses only a delivery dated no later than the ones evicted, one
+  overtaken by that many of its own later deliveries. An honest group not yet in the memory gets 503 for
+  as long as the flood is kept up, or until the flooding domains are blocked: holding all 2,000 groups
+  takes 2,000 registered names that the domain policy lets in, each serving a fetchable key and sending a
+  signed request at least every 13 hours (an entry dated an hour ahead lasts 13). Either way the sender
+  retries, with a fresh date, and is accepted. A shared overflow group for the groups beyond the cap was
+  considered and not built: a sender could be in the overflow group at one time and in its own group
+  later, and a floor protects only if a signature always maps to the same group. `TestReplayModel` checks the rule against a reference that remembers everything, over
+  thousands of random operations.
+
+  **What grouping by the last two labels costs.** It is a rough stand-in for the registrable domain,
+  and safe: a floor kept per group refuses at least everything a floor per origin would, so no replay
+  gets through. The cost is fairness under pressure only: servers that share their last two labels
+  (every server under `co.uk`, or every customer of a host that gives out subdomains) share one
+  group's share of the memory and one floor, so a flood from one of them can cost its group-mates a
+  delivery dated at or before the group's floor, which the sender retries with a fresh date
+  (`TestReplaySharedFloor` writes the trade down). Grouping by origin instead let one wildcard name
+  have every server not yet seen refused for as long as it kept the flood up (`TestReplaySubdomainFlood`). The list of
+  public suffixes would draw the line better; it is not taken as a dependency.
+
+  Each check is O(log n): a heap of entries by time for each group, and heaps of groups by count and
+  by oldest time, so expired entries are found without a scan. Every call forgets up to 8 expired entries
+  of any group, then the named group's own, at most 64 in all, so a request not yet verified costs at
+  most 64 heap removals; `sweep` is there for the housekeeping pass. Entries share one pool, so
+  memory at the cap is fixed: 52 to 56 bytes an entry measured with 50 and 2,000 groups, 5.2 to 5.6 MB
+  for 100,000, about 7 MB at most with the slack a shrinking group's heap may keep
+  (`TestReplayExpiry`, `BenchmarkReplayAdd`). This replaces a first rule, one floor for the whole
+  memory raised to the latest time among the oldest half dropped by arrival, under which one key
+  sending deliveries dated 59 minutes ahead could make the server refuse everyone else's for an hour,
+  and one sender with a fast clock could do the same by accident.
+- The memory is lost on a restart: a replay within the 12 hours after one then rests on the
+  de-duplication by activity id above, and an activity with no id is not protected across a restart.
+  **A clock stepped back by more than an hour is treated the same way.** A Raspberry Pi has no clock of
+  its own and takes its time from the network after it starts; a clock that jumped ahead and was then
+  corrected would otherwise leave the memory's clock ahead, and every honest signature older than the
+  size of the step would be refused as stale, all of them once the step passes 12 hours, until real
+  time caught up. So when the wall clock reads more than an hour behind the memory's clock, the memory
+  forgets everything, as a restart does, takes the wall clock, and says so once for the caller to log
+  one line (`TestReplayClockStep`). An hour is the tolerance ahead the window already gives: a step back
+  within it leaves the memory's clock at most an hour ahead, which refuses as stale only signatures
+  dated more than 11 hours back, and keeps a forgotten signature from coming back.
 
 ### 7.3 Origin checks
 
@@ -1052,7 +1211,12 @@ path and query as received for `(request-target)`, `@path` and `@query` (finding
   some actor, and that actor should point back to the same key"), and the SWICG report's ("How to
   obtain a signature's public key", which also follows `controller` where `owner` is missing).
   `publicKeyPem` may hold either a PKCS#1 (`RSA PUBLIC KEY`) or an SPKI (`PUBLIC KEY`) PEM (the SWICG
-  report, same section), so both are parsed.
+  report, same section), so both are parsed (`parsePublicKeyPEM`): one block with nothing before or
+  after it and no PEM headers, an RSA key of 2048 bits (the SWICG report: "a 2048-bit or larger RSA
+  keypair") to 8192 bits (a cost limit on verifying). An Ed25519 key is refused with its own reason:
+  Mastodon validates Ed25519 only from 4.7.0, not released when this was read; accepting it would be one
+  more case there and a second algorithm chosen by the key. `sameOrigin` compares a key id and an actor
+  id this way; fetching the key and following `owner` are 7.4's item.
 - A fetched document's `id` must be the URL it was fetched from, compared after the fragment is
   removed. (ActivityPub 3 asks a server to check at least "that the object appears as received at
   its origin"; 3.1 requires ids whose authority belongs to their originating server.)
@@ -1089,6 +1253,12 @@ path and query as received for `(request-target)`, `@path` and `@query` (finding
   503 with `Retry-After: 60`, and the sender retries.
 - An in-memory cache of parsed public keys (at most 1,000, least recently used out) saves parsing PEM
   on each request.
+- **The verifier calls the key lookup for whatever https key id a request names, before any
+  cryptography** (`sigVerifier.verify`; the replay memory and the time window are the only checks
+  before it). So the inbox must give that lookup the fetch cache above, the negative cache and a limit
+  of key fetches per host before it wires a lookup that fetches; otherwise one unsigned request per key
+  id a stranger invents costs a fetch. `parsePublicKeyPEM` refuses keys no RSA key has (an exponent
+  under 3 or even, an even modulus), so none of those is cached as good.
 
 ### 7.5 Limits on what comes in
 
@@ -1101,6 +1271,7 @@ path and query as received for `(request-target)`, `@path` and `@query` (finding
 | Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only, the latter with no `profile` or with the Activity Streams one among its profiles (WebFinger: `application/jrd+json`, the type RFC 7033 4.2 names, or plain `application/json`; NodeInfo: `application/json`, any parameters; both 64 KB, as built in FRD 2). Plain `application/json` is refused for an actor or object: ActivityPub 3.2 names only the two types, and no recording shows a server Flowa needs serving it; a fixture that does reopens this. The type is checked before the body is read, and the cap counts the inflated bytes of a compressed answer |
 | Fetched pictures | 8 MB in, 4096 px a side checked with `image.DecodeConfig` before decoding, as `shrinkThumb` does; **one picture decoded at a time** (a mutex), because a 4096 by 4096 picture is 64 MB once decoded and the container has 384 MB |
 | Inbox requests per remote host | 300 in 5 minutes in a `limiter` keyed by host, 429 above |
+| Replay memory (7.2) | 100,000 signatures, at most 10,000 of one sender group (the last two labels of the key id's host), at most 2,000 groups; a signature from a new group beyond that is answered 503 with `Retry-After` |
 | Inbox handling at once | 4, 8 more may wait 2 s, then 503 with `Retry-After: 30` |
 | Inbound queue | 5,000 unprocessed rows; above it the inbox answers 503 with `Retry-After: 120` |
 
@@ -1267,7 +1438,15 @@ starts on the time it was last shut down at, until the network sets it; a signat
 refused everywhere. Workers do not claim rows while the time is earlier than the build's own date or
 than the newest `updated_at` the database holds, the dashboard says "waiting for the clock", and
 inbound signatures are answered 503 with `Retry-After` in that state instead of 401.
-`TestClockGuard` (**new**).
+`TestClockGuard` (**new**). Built with the signatures: `clockTrusted(now, built)`, which the signer
+checks before every signature (it refuses with `errClockUntrusted`) and the verifier before every
+check (`sigClock`, for the 503). The build's date is `builtAt()`: `buildTime` when the linker sets it
+(`-X main.buildTime=<Unix seconds>`; nothing sets it yet), else the commit time Go records itself when
+it builds in a git checkout (`./deploy.sh --build`), else unknown, which is logged once and skips the
+check. `build-image.sh` builds with `-buildvcs=false`, so a release image does not know its date until
+it passes `-X main.buildTime=$SOURCE_DATE_EPOCH`, the commit's own time, which keeps a commit building
+the same bytes; that one line, with the release suite run to show it, belongs to the item that first
+signs. The newest `updated_at` bound is the delivery queue's.
 
 ### 8.4 Hosts
 
@@ -1670,9 +1849,9 @@ the budget, and the first measured value is written into the pull request that a
 | --- | --- | --- |
 | Extra memory with federation on, at peak | 32 MB of Go heap with 50,000 queued rows, 4 workers sending and the inbox at its concurrency | `TestFederationMemory` (**new**): `runtime.ReadMemStats` after the load, `HeapInuse` growth under the budget |
 | Container memory | `mem_limit: 384m` unchanged | the `federation` CI suite reads `docker stats` after its scenario and fails above 300 MB |
-| Inbox request, key cached | under 2 ms CPU on the runner, under 10 ms on the Pi; at most 400 allocations | `BenchmarkInboxVerify` (**new**, `-benchmem`) |
+| Inbox request, key cached | under 2 ms CPU on the runner, under 10 ms on the Pi; at most 400 allocations | `BenchmarkInboxVerify` (`-benchmem`; about 35 µs and 56 allocations on the runner, the signature check alone) |
 | Inbox request, key not cached | under 5 s wall, bounded by the fetch timeout | `TestInboxRefusals` (**new**) with a slow stub |
-| Signing one delivery | under 15 ms on the Pi | `BenchmarkSignDelivery` (**new**) |
+| Signing one delivery | under 15 ms on the Pi | `BenchmarkSignDelivery` (about 0.8 ms on the runner; the Pi not measured yet) |
 | Claiming a row | under 2 ms with 50,000 queued rows | `BenchmarkClaimDelivery` (**new**, database) |
 | Deliveries out | at most 10 a second, 1 at a time per host, 4 workers | `TestDBDeliveryQueue` (**new**) with a stub that counts concurrent requests |
 | Database connections held by federation | at most 3 of 8 | `TestDBDeliveryQueue` reads `db.Stats().InUse` during a burst |
@@ -1680,7 +1859,7 @@ the budget, and the first measured value is written into the pull request that a
 | Inbound queue | 5,000 rows; 503 above | `TestInboxRefusals` |
 | Remote actors cached | 20,000 rows, about 2 KB each | `TestDBRemoteActorCache` (**new**) |
 | Picture cache | 200 MB on disk | `TestMediaCacheBudget` (**new**) with a 2 MB budget |
-| Replay memory | 100,000 signatures, about 6 MB | `TestReplayWindow` (**new**) |
+| Replay memory | 100,000 signatures, about 6 MB (5.2 to 5.6 MB measured: 52 to 56 bytes each; at most about 7 MB) | `TestReplayExpiry` |
 | What a small instance serves within these | 1,000 remote followers on 300 hosts: a post fans out in about 30 s; 20 verified inbound activities a second | measured once on the Pi in FWR's queue item and written into the todo |
 
 Nothing a remote server controls is unbounded: bodies, depth, arrays, fetch sizes and times,
@@ -1835,7 +2014,9 @@ every running version; that date is given where the page shows one.
 | RFC 6415 Host Metadata | https://datatracker.ietf.org/doc/html/rfc6415 | 12 November 2026, the document's form only | what host-meta is, for 5.3's "later" |
 | RFC 9421 HTTP Message Signatures | https://datatracker.ietf.org/doc/html/rfc9421 | 12 November 2026, sections 2.2, 2.3, 2.5, 3.1 to 3.3, 4.3 and Appendix B | `@target-uri` and `@authority` (2.2.2, 2.2.3), signature parameters (2.3), the signature base (2.5), verifying and the algorithm rules (3.2, 3.2.1), RSASSA-PKCS1-v1_5 with SHA-256 (3.3.2), multiple signatures and the `rsa-v1_5-sha256` example (4.3), the test keys and cases (B.1, B.2) |
 | RFC 9530 Digest Fields | https://datatracker.ietf.org/doc/html/rfc9530 | 12 November 2026, sections 1, 2, 5 and Appendix E | `Content-Digest` as a dictionary of byte sequences (2), algorithm keys (5), `Digest` obsoleted (1, Appendix E) |
-| RFC 3230 Instance Digests | https://datatracker.ietf.org/doc/html/rfc3230 | 12 November 2026, 4.1.1 only | digest algorithm names are case-insensitive |
+| RFC 3230 Instance Digests | https://datatracker.ietf.org/doc/html/rfc3230 | 12 November 2026, 4.1.1; 13 November 2026, 4.3.2 | digest algorithm names are case-insensitive (4.1.1), `Digest` is a list a recipient may partly ignore (4.3.2) |
+| RFC 8941 Structured Field Values for HTTP | https://datatracker.ietf.org/doc/html/rfc8941 | 13 November 2026, sections 1.1, 2, 3.1 to 3.3 and 4 | strict parsing, dictionaries, inner lists, parameters, every bare item, the parsing and serializing algorithms, padding of byte sequences (4.2.7) |
+| RFC 8792 Handling Long Lines in Content of Internet-Drafts and RFCs | https://datatracker.ietf.org/doc/html/rfc8792 | 13 November 2026, section 7 | unwrapping the "\" line wrapping of RFC 9421's figures and RFC 9530's examples |
 | draft-cavage-http-signatures-12 | https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12 | 12 November 2026, sections 2 and 3.1, Appendix C and E.2 | parameters (2.1), `algorithm` and its registry (2.1.3, E.2), `created` in the future (2.1.4), the default `headers` (2.1.6), the signing string (2.3), verifying (2.5), the test values (Appendix C, re-run while writing this) |
 | SWICG report "ActivityPub and HTTP Signatures" | https://swicg.github.io/activitypub-http-signature/ | 12 November 2026, whole | `hs2019` read as `rsa-sha256`, how to obtain and match a key, the time window in practice, instance actor, Deletes of actors, `Vary: Signature`, double-knocking between versions |
 | SWICG report "ActivityPub and WebFinger" | https://swicg.github.io/activitypub-webfinger/ | 12 November 2026, whole | the round trip from handle to actor and back, the `self` link, Mastodon's username rules, case of remote usernames, redirects |

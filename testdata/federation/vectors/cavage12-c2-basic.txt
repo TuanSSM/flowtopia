@@ -1,0 +1,21 @@
+# draft-cavage-http-signatures-12, Appendix C.2 "Basic Test", read on 12 November 2026 from
+# https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12. Signed with the key in
+# cavage12-test-key.txt, rsa-sha256 (RSASSA-PKCS1-v1_5 with SHA-256).
+# C.2 prints only the Authorization header; its parameters are written here as the Signature header
+# that section 4.1 defines with the same auth-params. Joined as in cavage12-c1-default.txt. The
+# blank line before the body is added, as in C.1.
+=== request
+POST /foo?param=value&pet=dog HTTP/1.1
+Host: example.com
+Date: Sun, 05 Jan 2014 21:31:40 GMT
+Content-Type: application/json
+Digest: SHA-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=
+Content-Length: 18
+
+{"hello": "world"}
+=== signing string
+(request-target): post /foo?param=value&pet=dog
+host: example.com
+date: Sun, 05 Jan 2014 21:31:40 GMT
+=== signature header
+keyId="Test",algorithm="rsa-sha256",headers="(request-target) host date",signature="qdx+H7PHHDZgy4y/Ahn9Tny9V3GP6YgBPyUXMmoxWtLbHpUnXS2mg2+SbrQDMCJypxBLSPQR2aAjn7ndmw2iicw3HMbe8VfEdKFYRqzic+efkb3nndiv/x1xSHDJWeSWkx3ButlYSuBskLu6kd9Fswtemr3lgdDEmn04swr2Os0="

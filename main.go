@@ -5,15 +5,19 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"container/heap"
 	"context"
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
@@ -47,6 +51,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -4281,9 +4286,10 @@ var fetchRules = [fetchKinds]fetchRule{
 	fetchDelivery:  {"POST", "", asType, 5 * time.Second, errBodyCap, nil, []int{200, 201, 202, 204}, redirectNone, true, true, false},
 }
 
-// signer adds the headers that sign a request (the next item: Signature, Digest). fetcher.do calls it
-// with the request exactly as it will be sent, Date already set, once for every request, a redirect
-// included, because a signature covers the host and the path. It must not change the method or URL.
+// signer adds the headers that sign a request (httpSigner: Signature, Digest, and Date again from
+// its own reading of the clock). fetcher.do calls it with the request exactly as it will be sent, Date
+// already set, once for every request, a redirect included, because a signature covers the host and
+// the path. It must not change the method or URL.
 type signer func(req *http.Request, body []byte) error
 
 // fetchReq describes one outbound request.
@@ -6381,6 +6387,2223 @@ func rotateWith(db *sql.DB, mode instanceMode, getenv func(string) string, out i
 	}
 	fmt.Fprintf(out, "rotated %d keys. Restart the server so that it reads them. This version does not send Update to followers yet: other servers pick the new keys up when a signature next fails to verify.\n", n)
 	return nil
+}
+
+/* ---------- federation: HTTP signatures ----------
+How a request between servers says who sent it (docs/federation.md 7.1 to 7.3). Two forms are read
+and written: draft-cavage-http-signatures-12 ("cavage" below), which most of the fediverse sends and
+Mastodon has always read, and RFC 9421, HTTP Message Signatures, in the one shape Mastodon accepts
+since 4.5.0 (its security page, "HTTP Message Signatures (RFC9421)"). Three layers, kept apart so
+each can be tested alone:
+
+  - parsing and building, pure functions of text: the cavage Signature header, the Structured Fields
+    (RFC 8941) that RFC 9421 and RFC 9530 use, read by a small strict parser for exactly what they
+    need, the cavage signing string, the RFC 9421 signature base, Digest and Content-Digest;
+  - the policy (sigVerifier.verify): what must be covered, the time window, the digest, replay;
+  - adapters to an *http.Request that arrived (verifyRequest) and to the fetcher's signer hook
+    (httpSigner).
+
+No layer reads the database: the verifier asks a function for the public key of a key id, and that
+function (a later item) fetches the key and checks its owner; the signer is handed the private key.
+Nothing calls any of this yet: the inbox is FWR's, signed fetches are FRD's remote actors item. One
+line is logged, once, by builtAt at the first verifier made, and only when the build does not know
+its own date: it says the clock check is skipped. Nothing else here logs. */
+
+const (
+	sigPast       = 12 * time.Hour // Mastodon's window: "made within the past 12 hours" (security page, Verifying HTTP signatures)
+	sigAhead      = time.Hour      // Flowa's own allowance for a sender whose clock runs ahead (federation.md 7.1)
+	sigSeenMax    = 100_000        // signatures remembered at most; one sender group holds a tenth, 2,000 groups at most (federation.md 7.2)
+	sigFieldMax   = 8 << 10        // bytes of Signature, Signature-Input, Digest or Content-Digest, its lines joined
+	sigLinesMax   = 8              // lines of one of those fields
+	sigCoveredMax = 32             // covered components (headers) of one signature
+	sigParamsMax  = 16             // parameters of one item or inner list; members of one dictionary
+	sigValueMax   = 16 << 10       // bytes of one covered header's value
+	sigBaseMax    = 64 << 10       // bytes of a signing string or a signature base
+	sigKeyMin     = 2048           // bits: the SWICG report asks for "a 2048-bit or larger RSA keypair"
+	sigKeyMax     = 8192           // bits: a cost limit, since verifying grows with the key; larger is refused
+	sigPEMMax     = 16 << 10       // bytes of a public key PEM
+)
+
+// sigForm is which of the two texts a signature follows.
+type sigForm uint8
+
+const (
+	sigCavage  sigForm = iota + 1 // draft-cavage-http-signatures-12
+	sigRFC9421                    // RFC 9421, as Mastodon accepts it
+)
+
+// sigReason is why a signature was refused. Each is a fixed phrase, safe to log: never a header
+// value, a body, a signing string or a key.
+type sigReason uint8
+
+const (
+	sigMissing          sigReason = iota + 1 // no Signature header
+	sigMalformed                             // a signature field, or a value it covers, could not be read
+	sigTooLarge                              // over one of the caps above
+	sigBothDisagree                          // a cavage and an RFC 9421 signature name different keys
+	sigMultiple                              // more than one signature of one form
+	sigAlgorithm                             // an algorithm Flowa does not accept
+	sigKeyID                                 // the key id is not an https URL
+	sigNoRequestLine                         // the method, the path and the query are not all covered
+	sigNoHost                                // cavage: host is not covered
+	sigNoTime                                // neither date nor created is covered (RFC 9421: created is absent)
+	sigNoDigest                              // a request with a body whose digest is not covered
+	sigDigestMissing                         // the digest is covered but the header is absent
+	sigDigestUnknown                         // the digest header names no algorithm Flowa computes
+	sigDigestMismatch                        // the digest is not that of the body as received
+	sigTooOld                                // signed more than 12 hours ago
+	sigFuture                                // signed in the future, beyond what is allowed
+	sigExpired                               // expires is in the past
+	sigHeaderMissing                         // a covered header or component is not in the request
+	sigHeaderTwice                           // Date is covered and sent twice
+	sigComponentTwice                        // a component is named twice in the covered list
+	sigComponentUnknown                      // a derived component or a parameter Flowa does not know
+	sigBadSignature                          // the signature is not base64, or not as long as the key
+	sigKeyUnavailable                        // the key could not be had (the caller's error is wrapped)
+	sigKeyRefused                            // the key is under 2048 or over 8192 bits
+	sigInvalid                               // the signature does not verify
+	sigReplay                                // this signature was accepted before
+	sigStale                                 // older than what the replay memory can still vouch for
+	sigClock                                 // this server's clock is earlier than its build: it cannot judge times
+	sigFull                                  // the replay memory holds as many sender groups as it can: try later (503)
+)
+
+var sigReasons = [...]string{
+	sigMissing:          "no signature",
+	sigMalformed:        "a malformed signature header",
+	sigTooLarge:         "a signature header over its size limit",
+	sigBothDisagree:     "a cavage and an RFC 9421 signature that name different keys",
+	sigMultiple:         "more than one signature",
+	sigAlgorithm:        "an algorithm that is not accepted",
+	sigKeyID:            "a key id that is not an https URL",
+	sigNoRequestLine:    "the request line is not signed",
+	sigNoHost:           "the host is not signed",
+	sigNoTime:           "neither date nor created is signed",
+	sigNoDigest:         "the digest of the body is not signed",
+	sigDigestMissing:    "the signed digest header is absent",
+	sigDigestUnknown:    "a digest of no algorithm that is checked",
+	sigDigestMismatch:   "the digest does not match the body",
+	sigTooOld:           "signed more than 12 hours ago",
+	sigFuture:           "signed in the future",
+	sigExpired:          "the signature has expired",
+	sigHeaderMissing:    "a signed header is missing from the request",
+	sigHeaderTwice:      "a signed Date sent twice",
+	sigComponentTwice:   "a component signed twice",
+	sigComponentUnknown: "a component or parameter that is not known",
+	sigBadSignature:     "a signature that is not base64 of the key's length",
+	sigKeyUnavailable:   "the key could not be had",
+	sigKeyRefused:       "a key of a size that is not accepted",
+	sigInvalid:          "the signature does not verify",
+	sigReplay:           "a signature used before",
+	sigStale:            "a signature older than the replay memory reaches",
+	sigClock:            "this server's clock is not set yet",
+	sigFull:             "the replay memory is full for now",
+}
+
+func (r sigReason) String() string {
+	if int(r) < len(sigReasons) && sigReasons[r] != "" {
+		return sigReasons[r]
+	}
+	return "refused"
+}
+
+// sigError is every refusal the verifier returns. Its text is the reason's fixed phrase.
+type sigError struct {
+	Reason sigReason
+	err    error // the key function's error, for errors.As by the caller; never printed
+}
+
+func (e *sigError) Error() string { return "signature refused: " + e.Reason.String() }
+func (e *sigError) Unwrap() error { return e.err }
+
+func sigFail(r sigReason) error { return &sigError{Reason: r} }
+
+// sigMessage is what a signature covers, taken from a request: the method as sent, the scheme and
+// authority (on receipt, the configured origin's, never the Host the proxy passed on: federation.md,
+// finding 4), the request target in origin form exactly as on the wire (path and query, percent
+// encoding untouched), and the header fields.
+type sigMessage struct {
+	method    string
+	scheme    string
+	authority string // host, and ":port" unless it is the scheme's default, lower case (RFC 9110, 4.2.3)
+	target    string
+	header    http.Header
+}
+
+// urlAuthority is a URL's authority as RFC 9421 2.2.3 defines @authority: the host in lower case,
+// and the port only when it is not the default (RFC 9110, 4.2.3: "the default port is omitted").
+func urlAuthority(u *url.URL) string {
+	h := strings.ToLower(u.Hostname())
+	if strings.Contains(h, ":") {
+		h = "[" + h + "]"
+	}
+	if p := u.Port(); p != "" && p != map[string]string{"https": "443", "http": "80"}[strings.ToLower(u.Scheme)] {
+		h += ":" + p
+	}
+	return h
+}
+
+// httpsURL says whether a key id is an https URL: the only kind of key id Flowa can look up, and
+// what the SWICG report expects ("It should be a URL"). Only the characters RFC 3986 allows in a URL
+// (2.2, 2.3: unreserved, reserved, and "%" followed by two hex digits, 2.1), within maxURL: so never
+// a space, a quote or a backslash, and a key id always fits in a quoted string unchanged.
+func httpsURL(s string) bool {
+	if s == "" || len(s) > maxURL {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '%':
+			if i+2 >= len(s) || !isHex(s[i+1]) || !isHex(s[i+2]) {
+				return false
+			}
+		case c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || isDigit(c) || strings.IndexByte("-._~:/?#[]@!$&'()*+,;=", c) >= 0:
+		default:
+			return false
+		}
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Opaque == ""
+}
+
+// sameOrigin says whether a key id and an actor id share an origin, compared whole: scheme, host and
+// port, the fragment ignored (federation.md 7.3). A key vouches for an actor only on its own origin;
+// the caller also checks that the key document names the actor and the actor names the key.
+func sameOrigin(keyID, actorID string) bool {
+	if !httpsURL(keyID) || !httpsURL(actorID) {
+		return false
+	}
+	a, _ := url.Parse(keyID)
+	b, _ := url.Parse(actorID)
+	return originOf(a) == originOf(b)
+}
+
+func isTchar(c byte) bool {
+	// RFC 9110, 5.6.2: token characters.
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func allDigits(s string, max int) bool {
+	if s == "" || len(s) > max {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isDigit(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// b64Decode reads base64 (RFC 4648, 4) as both texts use it: the standard alphabet, padding optional
+// (RFC 8941, 4.2.7: parsers "SHOULD NOT fail when "=" padding is not present"), and nothing else,
+// not even the line breaks Go's decoder skips (4.2.7: parsers "MUST fail on ... line feeds").
+func b64Decode(s string) ([]byte, bool) {
+	t := strings.TrimRight(s, "=")
+	if len(s)-len(t) > 2 {
+		return nil, false
+	}
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || isDigit(c) || c == '+' || c == '/') {
+			return nil, false
+		}
+	}
+	b, err := base64.RawStdEncoding.DecodeString(t)
+	return b, err == nil
+}
+
+/* Structured Fields (RFC 8941), only what Signature-Input, Signature and Content-Digest need: a
+Dictionary whose members are Items or Inner Lists, with Parameters, of every bare item type. Strict
+as 8941 1.1 asks: anything that does not parse refuses the whole field. */
+
+type sfKind uint8
+
+const (
+	sfInteger sfKind = iota + 1
+	sfDecimal
+	sfString
+	sfToken
+	sfBytes
+	sfBoolean
+)
+
+// sfBare is a bare item (RFC 8941, 3.3). A Decimal is kept in thousandths, its whole precision (3.3.2).
+type sfBare struct {
+	kind sfKind
+	n    int64  // Integer; Decimal in thousandths; Boolean as 0 or 1
+	s    string // String, Token
+	b    []byte // Byte Sequence
+}
+
+type sfParam struct {
+	key string
+	val sfBare
+}
+
+type sfItem struct {
+	val    sfBare
+	params []sfParam
+}
+
+// sfMember is one member of a Dictionary (3.2): an Item, or an Inner List with its own parameters.
+type sfMember struct {
+	key    string
+	inner  bool
+	item   sfItem
+	list   []sfItem
+	params []sfParam // the Inner List's
+}
+
+var errSF = errors.New("not a structured field")
+
+type sfParser struct {
+	s string
+	i int
+}
+
+func (p *sfParser) peek() byte {
+	if p.i < len(p.s) {
+		return p.s[p.i]
+	}
+	return 0
+}
+
+func (p *sfParser) ows() {
+	for p.i < len(p.s) && (p.s[p.i] == ' ' || p.s[p.i] == '\t') {
+		p.i++
+	}
+}
+
+// sfDictionary parses a Dictionary (RFC 8941, 4.2 and 4.2.2) from a field's lines already joined with
+// commas (4.2: parsers "MUST combine all field lines ... into one comma-separated field-value").
+// Stricter than 8941 in what a field definition may add (2): a key given twice is refused rather than
+// the last one kept (RFC 9421, 4.1: "The signature labels MUST be unique across all field values"; a
+// digest algorithm named twice is as ambiguous), and at most sigParamsMax members, sigCoveredMax
+// items in an inner list and sigParamsMax parameters on one (3.1.1, 3.1.2: field specifications "can
+// constrain the ... cardinality").
+func sfDictionary(v string) ([]sfMember, error) {
+	for i := 0; i < len(v); i++ {
+		if v[i] >= 0x80 {
+			return nil, errSF // 4.2: the input is ASCII
+		}
+	}
+	p := &sfParser{s: v}
+	for p.peek() == ' ' {
+		p.i++
+	}
+	var out []sfMember
+	for p.i < len(p.s) {
+		key, err := p.key()
+		if err != nil {
+			return nil, err
+		}
+		m := sfMember{key: key}
+		if p.peek() == '=' {
+			p.i++
+			if p.peek() == '(' {
+				m.inner = true
+				if m.list, m.params, err = p.innerList(); err != nil {
+					return nil, err
+				}
+			} else if m.item, err = p.item(); err != nil {
+				return nil, err
+			}
+		} else {
+			params, err := p.params()
+			if err != nil {
+				return nil, err
+			}
+			m.item = sfItem{val: sfBare{kind: sfBoolean, n: 1}, params: params}
+		}
+		for _, o := range out {
+			if o.key == key {
+				return nil, errSF
+			}
+		}
+		if len(out) == sigParamsMax {
+			return nil, errSF
+		}
+		out = append(out, m)
+		p.ows()
+		if p.i == len(p.s) {
+			return out, nil
+		}
+		if p.s[p.i] != ',' {
+			return nil, errSF
+		}
+		p.i++
+		p.ows()
+		if p.i == len(p.s) {
+			return nil, errSF // a trailing comma
+		}
+	}
+	return out, nil
+}
+
+// innerList is 4.2.1.2.
+func (p *sfParser) innerList() ([]sfItem, []sfParam, error) {
+	p.i++ // "("
+	var list []sfItem
+	for p.i < len(p.s) {
+		for p.peek() == ' ' {
+			p.i++
+		}
+		if p.peek() == ')' {
+			p.i++
+			params, err := p.params()
+			return list, params, err
+		}
+		if len(list) == sigCoveredMax {
+			return nil, nil, errSF
+		}
+		it, err := p.item()
+		if err != nil {
+			return nil, nil, err
+		}
+		list = append(list, it)
+		if c := p.peek(); c != ' ' && c != ')' {
+			return nil, nil, errSF
+		}
+	}
+	return nil, nil, errSF
+}
+
+// item is 4.2.3.
+func (p *sfParser) item() (sfItem, error) {
+	b, err := p.bare()
+	if err != nil {
+		return sfItem{}, err
+	}
+	params, err := p.params()
+	return sfItem{val: b, params: params}, err
+}
+
+// params is 4.2.3.2, refusing a key given twice where 8941 keeps the last: two values of created or
+// keyid would leave the serialized line ambiguous.
+func (p *sfParser) params() ([]sfParam, error) {
+	var out []sfParam
+	for p.peek() == ';' {
+		p.i++
+		for p.peek() == ' ' {
+			p.i++
+		}
+		key, err := p.key()
+		if err != nil {
+			return nil, err
+		}
+		val := sfBare{kind: sfBoolean, n: 1}
+		if p.peek() == '=' {
+			p.i++
+			if val, err = p.bare(); err != nil {
+				return nil, err
+			}
+		}
+		for _, o := range out {
+			if o.key == key {
+				return nil, errSF
+			}
+		}
+		if len(out) == sigParamsMax {
+			return nil, errSF
+		}
+		out = append(out, sfParam{key, val})
+	}
+	return out, nil
+}
+
+// key is 4.2.3.3.
+func (p *sfParser) key() (string, error) {
+	start := p.i
+	if c := p.peek(); !(c >= 'a' && c <= 'z' || c == '*') {
+		return "", errSF
+	}
+	for p.i < len(p.s) {
+		c := p.s[p.i]
+		if !(c >= 'a' && c <= 'z' || isDigit(c) || c == '_' || c == '-' || c == '.' || c == '*') {
+			break
+		}
+		p.i++
+	}
+	return p.s[start:p.i], nil
+}
+
+// bare is 4.2.3.1.
+func (p *sfParser) bare() (sfBare, error) {
+	switch c := p.peek(); {
+	case c == '-' || isDigit(c):
+		return p.number()
+	case c == '"':
+		return p.str()
+	case c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '*':
+		start := p.i // 4.2.6, a Token
+		p.i++
+		for p.i < len(p.s) && (isTchar(p.s[p.i]) || p.s[p.i] == ':' || p.s[p.i] == '/') {
+			p.i++
+		}
+		return sfBare{kind: sfToken, s: p.s[start:p.i]}, nil
+	case c == ':':
+		end := strings.IndexByte(p.s[p.i+1:], ':') // 4.2.7, a Byte Sequence
+		if end < 0 {
+			return sfBare{}, errSF
+		}
+		b, ok := b64Decode(p.s[p.i+1 : p.i+1+end])
+		if !ok {
+			return sfBare{}, errSF
+		}
+		p.i += end + 2
+		return sfBare{kind: sfBytes, b: b}, nil
+	case c == '?':
+		if p.i+1 < len(p.s) && (p.s[p.i+1] == '0' || p.s[p.i+1] == '1') { // 4.2.8, a Boolean
+			v := int64(p.s[p.i+1] - '0')
+			p.i += 2
+			return sfBare{kind: sfBoolean, n: v}, nil
+		}
+	}
+	return sfBare{}, errSF
+}
+
+// number is 4.2.4: an Integer of at most 15 digits, or a Decimal of at most 12 digits, a dot and 1 to
+// 3 more.
+func (p *sfParser) number() (sfBare, error) {
+	neg := p.peek() == '-'
+	if neg {
+		p.i++
+	}
+	start := p.i
+	if !isDigit(p.peek()) {
+		return sfBare{}, errSF
+	}
+	dot := -1
+	for p.i < len(p.s) {
+		c := p.s[p.i]
+		if isDigit(c) {
+			p.i++
+		} else if c == '.' && dot < 0 {
+			if p.i-start > 12 {
+				return sfBare{}, errSF
+			}
+			dot = p.i
+			p.i++
+		} else {
+			break
+		}
+	}
+	num := p.s[start:p.i]
+	sign := int64(1)
+	if neg {
+		sign = -1
+	}
+	if dot < 0 {
+		if len(num) > 15 {
+			return sfBare{}, errSF
+		}
+		n, _ := strconv.ParseInt(num, 10, 64)
+		return sfBare{kind: sfInteger, n: sign * n}, nil
+	}
+	whole, frac := p.s[start:dot], p.s[dot+1:p.i]
+	if len(num) > 16 || frac == "" || len(frac) > 3 {
+		return sfBare{}, errSF
+	}
+	w, _ := strconv.ParseInt(whole, 10, 64)
+	f, _ := strconv.ParseInt((frac + "00")[:3], 10, 64)
+	return sfBare{kind: sfDecimal, n: sign * (w*1000 + f)}, nil
+}
+
+// str is 4.2.5.
+func (p *sfParser) str() (sfBare, error) {
+	p.i++ // the opening quote
+	var b strings.Builder
+	for p.i < len(p.s) {
+		c := p.s[p.i]
+		p.i++
+		switch {
+		case c == '\\':
+			if p.i == len(p.s) || (p.s[p.i] != '"' && p.s[p.i] != '\\') {
+				return sfBare{}, errSF
+			}
+			b.WriteByte(p.s[p.i])
+			p.i++
+		case c == '"':
+			return sfBare{kind: sfString, s: b.String()}, nil
+		case c < 0x20 || c >= 0x7f:
+			return sfBare{}, errSF
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return sfBare{}, errSF
+}
+
+// sfWriteBare serializes a bare item (RFC 8941, 4.1.3 to 4.1.9).
+func sfWriteBare(b *strings.Builder, v sfBare) {
+	switch v.kind {
+	case sfInteger:
+		b.WriteString(strconv.FormatInt(v.n, 10))
+	case sfDecimal:
+		n := v.n
+		if n < 0 {
+			b.WriteByte('-')
+			n = -n
+		}
+		frac := strings.TrimRight(fmt.Sprintf("%03d", n%1000), "0") // 4.1.5: no trailing zeros, at least one digit
+		if frac == "" {
+			frac = "0"
+		}
+		b.WriteString(strconv.FormatInt(n/1000, 10) + "." + frac)
+	case sfString:
+		b.WriteByte('"')
+		for i := 0; i < len(v.s); i++ {
+			if v.s[i] == '"' || v.s[i] == '\\' {
+				b.WriteByte('\\')
+			}
+			b.WriteByte(v.s[i])
+		}
+		b.WriteByte('"')
+	case sfToken:
+		b.WriteString(v.s)
+	case sfBytes:
+		b.WriteString(":" + base64.StdEncoding.EncodeToString(v.b) + ":")
+	case sfBoolean:
+		b.WriteString(map[bool]string{true: "?1", false: "?0"}[v.n == 1])
+	}
+}
+
+// sfWriteParams is 4.1.1.2: a true Boolean is written as the key alone.
+func sfWriteParams(b *strings.Builder, params []sfParam) {
+	for _, p := range params {
+		b.WriteString(";" + p.key)
+		if p.val.kind != sfBoolean || p.val.n != 1 {
+			b.WriteByte('=')
+			sfWriteBare(b, p.val)
+		}
+	}
+}
+
+// sfInnerList serializes an Inner List with its parameters (4.1.1.1), in the order given.
+func sfInnerList(list []sfItem, params []sfParam) string {
+	var b strings.Builder
+	b.WriteByte('(')
+	for i, it := range list {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		sfWriteBare(&b, it.val)
+		sfWriteParams(&b, it.params)
+	}
+	b.WriteByte(')')
+	sfWriteParams(&b, params)
+	return b.String()
+}
+
+/* draft-cavage-http-signatures-12 */
+
+// cavageSig is a parsed cavage Signature header.
+type cavageSig struct {
+	keyID, algorithm, signature string
+	headers                     []string // lower case, in order; ["(created)"] when the parameter is absent (2.1.6)
+	created, expires            string   // as written; "" when absent
+}
+
+// parseCavage reads a Signature header (draft-cavage-12, 4.1: "one or more auth-params" of RFC 7235,
+// 4.1, each `token BWS "=" BWS ( token / quoted-string )`, separated by commas with optional
+// whitespace). Parameter names are matched in any letter case (RFC 7235, 2.1: "matched
+// case-insensitively"); a known parameter given twice refuses the header and an unknown one is
+// skipped (cavage 2.2); keyId and signature are required (2.1.1, 2.1.2); a missing headers parameter
+// means `(created)` (2.1.6), which the policy then refuses for not covering the request line; an
+// empty one is refused (2.1.6, note 2). created must be an integer (2.1.4); expires may have a
+// fraction (2.1.5).
+func parseCavage(v string) (*cavageSig, error) {
+	if len(v) > sigFieldMax {
+		return nil, sigFail(sigTooLarge)
+	}
+	bad := sigFail(sigMalformed)
+	sig := &cavageSig{}
+	var seen [6]bool
+	known := []string{"keyid", "signature", "algorithm", "created", "expires", "headers"}
+	headers := ""
+	i, n := 0, 0
+	for {
+		// Whitespace and empty list elements: RFC 9110 5.6.1.2, a recipient "MUST parse and ignore a
+		// reasonable number of empty list elements".
+		for i < len(v) && (v[i] == ' ' || v[i] == '\t' || v[i] == ',') {
+			i++
+		}
+		if i == len(v) {
+			break
+		}
+		if n++; n > sigParamsMax {
+			return nil, bad
+		}
+		j := i
+		for j < len(v) && isTchar(v[j]) {
+			j++
+		}
+		if j == i {
+			return nil, bad
+		}
+		name := strings.ToLower(v[i:j])
+		for i = j; i < len(v) && (v[i] == ' ' || v[i] == '\t'); i++ {
+		}
+		if i == len(v) || v[i] != '=' {
+			return nil, bad
+		}
+		for i++; i < len(v) && (v[i] == ' ' || v[i] == '\t'); i++ {
+		}
+		var val string
+		if i < len(v) && v[i] == '"' {
+			var ok bool
+			if val, i, ok = quotedString(v, i); !ok {
+				return nil, bad
+			}
+		} else {
+			for j = i; j < len(v) && isTchar(v[j]); j++ {
+			}
+			if j == i {
+				return nil, bad
+			}
+			val, i = v[i:j], j
+		}
+		for i < len(v) && (v[i] == ' ' || v[i] == '\t') {
+			i++
+		}
+		if i < len(v) && v[i] != ',' {
+			return nil, bad
+		}
+		k := slices.Index(known, name)
+		if k < 0 {
+			continue
+		}
+		if seen[k] {
+			return nil, bad
+		}
+		seen[k] = true
+		switch name {
+		case "keyid":
+			sig.keyID = val
+		case "signature":
+			sig.signature = val
+		case "algorithm":
+			sig.algorithm = val
+		case "created":
+			sig.created = val
+		case "expires":
+			sig.expires = val
+		case "headers":
+			headers = val
+		}
+	}
+	if !seen[0] || !seen[1] {
+		return nil, bad
+	}
+	if seen[5] {
+		for _, h := range strings.Fields(headers) {
+			if len(sig.headers) == sigCoveredMax {
+				return nil, bad
+			}
+			sig.headers = append(sig.headers, strings.ToLower(h))
+		}
+		if len(sig.headers) == 0 {
+			return nil, bad
+		}
+	} else {
+		sig.headers = []string{"(created)"}
+	}
+	if seen[3] && !allDigits(sig.created, 15) {
+		return nil, bad
+	}
+	if seen[4] {
+		whole, frac, dot := strings.Cut(sig.expires, ".")
+		if !allDigits(whole, 15) || dot && !allDigits(frac, 9) {
+			return nil, bad
+		}
+	}
+	return sig, nil
+}
+
+// quotedString reads a quoted-string (RFC 9110, 5.6.4) starting at v[i], and returns its value and
+// the index after it. Only printable ASCII, a space or a tab inside.
+func quotedString(v string, i int) (string, int, bool) {
+	var b strings.Builder
+	for i++; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '"':
+			return b.String(), i + 1, true
+		case c == '\\':
+			if i+1 == len(v) || (v[i+1] < 0x20 && v[i+1] != '\t') || v[i+1] >= 0x7f {
+				return "", 0, false
+			}
+			i++
+			b.WriteByte(v[i])
+		case c < 0x20 && c != '\t' || c >= 0x7f:
+			return "", 0, false
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return "", 0, false
+}
+
+// validFieldName says whether a covered header name is a token in lower case (RFC 9110, 5.1; RFC
+// 9421, 2.1: "implementations MUST use lowercased field names").
+func validFieldName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isTchar(s[i]) || s[i] >= 'A' && s[i] <= 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// fieldValue is a header's value as both texts cover it: each line's value with its leading and
+// trailing whitespace removed, the lines joined by ", " in the order received (draft-cavage-12, 2.3,
+// rule 4.1: "concatenated, separated by a ASCII comma and an ASCII space"; RFC 9421, 2.1: "a single
+// comma and a single space"). host is the authority of the message, which on receipt is the
+// configured origin's (federation.md, finding 4). Go's HTTP/1.1 reader has already replaced
+// obsolete line folding with a space, which RFC 9112 5.2 lets a recipient do and which both texts'
+// examples show; a value that still holds a CR, LF or NUL cannot be a received field and is refused.
+// For RFC 9421 (ascii) a value must also be printable ASCII (2.5: "Produce an error if the output
+// string contains any non-ASCII characters").
+func fieldValue(m *sigMessage, name string, ascii bool) (string, error) {
+	if name == "host" {
+		return m.authority, nil
+	}
+	lines := m.header.Values(name)
+	if len(lines) == 0 {
+		return "", sigFail(sigHeaderMissing)
+	}
+	var b strings.Builder
+	for k, l := range lines {
+		l = strings.Trim(l, " \t")
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			if c == '\r' || c == '\n' || c == 0 || ascii && (c < 0x20 && c != '\t' || c >= 0x7f) {
+				return "", sigFail(sigMalformed)
+			}
+		}
+		if k > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(l)
+		if b.Len() > sigValueMax {
+			return "", sigFail(sigTooLarge)
+		}
+	}
+	return b.String(), nil
+}
+
+// rsaFamily says whether a cavage algorithm name starts with rsa, hmac or ecdsa, with which (created)
+// and (expires) "MUST produce an error" (2.3, rules 2 and 3).
+func rsaFamily(alg string) bool {
+	return strings.HasPrefix(alg, "rsa") || strings.HasPrefix(alg, "hmac") || strings.HasPrefix(alg, "ecdsa")
+}
+
+// cavageString builds the signing string (draft-cavage-12, 2.3): for each entry of headers, in its
+// order, the lower-case name, ": " and the value, joined by "\n" with none at the end.
+// (request-target) is the lower-case method, a space and the path with its query as on the wire
+// (rule 1; lower case "only applies to the :method"). A name given twice is refused (the draft is
+// silent; RFC 9421 2.5 step 2.1 makes it an error, and no signer needs it), as is an unknown
+// "(...)" name. A missing header refuses the string (rule 4.4).
+func cavageString(sig *cavageSig, m *sigMessage) (string, error) {
+	var b strings.Builder
+	for k, name := range sig.headers {
+		if slices.Contains(sig.headers[:k], name) {
+			return "", sigFail(sigComponentTwice)
+		}
+		var val string
+		switch name {
+		case "(request-target)":
+			val = strings.ToLower(m.method) + " " + m.target
+		case "(created)", "(expires)":
+			val = sig.created
+			if name == "(expires)" {
+				val = sig.expires // the draft's rule 3 says "created" here: a slip, since the line is (expires)
+			}
+			if rsaFamily(sig.algorithm) || !allDigits(val, 15) {
+				return "", sigFail(sigMalformed)
+			}
+		default:
+			if strings.HasPrefix(name, "(") {
+				return "", sigFail(sigComponentUnknown)
+			}
+			if !validFieldName(name) {
+				return "", sigFail(sigMalformed)
+			}
+			var err error
+			if val, err = fieldValue(m, name, false); err != nil {
+				return "", err
+			}
+		}
+		if k > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(name + ": " + val)
+		if b.Len() > sigBaseMax {
+			return "", sigFail(sigTooLarge)
+		}
+	}
+	return b.String(), nil
+}
+
+/* RFC 9421 */
+
+// sigInput is one parsed member of Signature-Input (RFC 9421, 4.1): the covered components and the
+// signature parameters, both in the order received.
+type sigInput struct {
+	label              string
+	covered            []sfItem
+	params             []sfParam
+	keyID, alg         string
+	hasAlg, hasCreated bool
+	created, expires   int64
+	hasExpires         bool
+}
+
+// parseSignatureInput reads Signature-Input (RFC 9421, 4.1): a Dictionary whose members are Inner
+// Lists of Strings (2.3: "an ordered Inner List of String values") with the parameters of 2.3, each
+// of its type: created and expires Integers, keyid, alg, nonce and tag Strings. Other parameters are
+// kept as received, so they stay in the signature parameters line, and otherwise ignored.
+func parseSignatureInput(v string) ([]sigInput, error) {
+	if len(v) > sigFieldMax {
+		return nil, sigFail(sigTooLarge)
+	}
+	d, err := sfDictionary(v)
+	if err != nil {
+		return nil, sigFail(sigMalformed)
+	}
+	out := make([]sigInput, 0, len(d))
+	for _, m := range d {
+		if !m.inner {
+			return nil, sigFail(sigMalformed)
+		}
+		in := sigInput{label: m.key, covered: m.list, params: m.params}
+		for _, c := range m.list {
+			if c.val.kind != sfString {
+				return nil, sigFail(sigMalformed)
+			}
+		}
+		for _, p := range m.params {
+			want := sfString
+			if p.key == "created" || p.key == "expires" {
+				want = sfInteger
+			}
+			switch p.key {
+			case "created", "expires", "keyid", "alg", "nonce", "tag":
+				if p.val.kind != want {
+					return nil, sigFail(sigMalformed)
+				}
+			}
+			switch p.key {
+			case "created":
+				in.created, in.hasCreated = p.val.n, true
+			case "expires":
+				in.expires, in.hasExpires = p.val.n, true
+			case "keyid":
+				in.keyID = p.val.s
+			case "alg":
+				in.alg, in.hasAlg = p.val.s, true
+			}
+		}
+		out = append(out, in)
+	}
+	return out, nil
+}
+
+// parseSignatureField reads Signature (RFC 9421, 4.2): a Dictionary whose members are Byte Sequences.
+func parseSignatureField(v string) (labels []string, sigs [][]byte, err error) {
+	if len(v) > sigFieldMax {
+		return nil, nil, sigFail(sigTooLarge)
+	}
+	d, err := sfDictionary(v)
+	if err != nil {
+		return nil, nil, sigFail(sigMalformed)
+	}
+	for _, m := range d {
+		if m.inner || m.item.val.kind != sfBytes {
+			return nil, nil, sigFail(sigMalformed)
+		}
+		labels = append(labels, m.key)
+		sigs = append(sigs, m.item.val.b)
+	}
+	return labels, sigs, nil
+}
+
+// sameComponent says whether two component identifiers are the same: the same name and the same
+// parameters in any order (RFC 9421, 2: "the order of parameters is not significant when comparing
+// two component identifiers for equality").
+func sameComponent(a, b sfItem) bool {
+	if a.val.s != b.val.s || len(a.params) != len(b.params) {
+		return false
+	}
+	for _, p := range a.params {
+		if !slices.ContainsFunc(b.params, func(q sfParam) bool { return q.key == p.key && sameBare(p.val, q.val) }) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameBare(a, b sfBare) bool {
+	return a.kind == b.kind && a.n == b.n && a.s == b.s && bytes.Equal(a.b, b.b)
+}
+
+// printable says whether a derived value holds only printable characters and spaces and neither
+// starts nor ends with a space (RFC 9421, 2.2).
+func printable(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] >= 0x7f {
+			return false
+		}
+	}
+	return s == strings.Trim(s, " ")
+}
+
+// derivedValue is the value of a derived component of a request (RFC 9421, 2.2). @target-uri is the
+// scheme, the authority and the request target as on the wire (2.2.2, the target URI of RFC 9110
+// 7.1, rebuilt from origin form); @path is the path before any "?", "/" when empty (2.2.6), percent
+// encoding untouched; @query the query with its "?", or "?" alone when there is none (2.2.7). Only
+// @query-param takes a parameter, name (2.2.8). @status is for responses only (2.2.9: "MUST NOT be
+// used in a request message") and @signature-params is never covered (2.3); those, and any name not
+// in 2.2, are refused (2.5: "If the derived component name is unknown ... produce an error").
+func derivedValue(c sfItem, m *sigMessage) (string, error) {
+	name := c.val.s
+	if name != "@query-param" && len(c.params) > 0 {
+		return "", sigFail(sigComponentUnknown)
+	}
+	path, query, _ := strings.Cut(m.target, "?")
+	var v string
+	switch name {
+	case "@method":
+		v = m.method
+	case "@target-uri":
+		v = m.scheme + "://" + m.authority + m.target
+	case "@authority":
+		v = m.authority
+	case "@scheme":
+		v = m.scheme
+	case "@request-target":
+		v = m.target
+	case "@path":
+		v = path
+		if v == "" {
+			v = "/"
+		}
+	case "@query":
+		v = "?" + query
+	case "@query-param":
+		if len(c.params) != 1 || c.params[0].key != "name" || c.params[0].val.kind != sfString {
+			return "", sigFail(sigComponentUnknown)
+		}
+		found := 0
+		for _, kv := range queryParams(query) {
+			if kv[0] == c.params[0].val.s {
+				v = kv[1]
+				found++
+			}
+		}
+		switch {
+		case found == 0:
+			return "", sigFail(sigHeaderMissing) // 2.2.8: "MUST cause an error"
+		case found > 1:
+			return "", sigFail(sigMalformed) // 2.2.8: a name that occurs more than once "MUST NOT be included"
+		}
+	default:
+		return "", sigFail(sigComponentUnknown)
+	}
+	if !printable(v) {
+		return "", sigFail(sigMalformed)
+	}
+	return v, nil
+}
+
+// queryParams parses a query as application/x-www-form-urlencoded (WHATWG URL, 5.1, as RFC 9421
+// 2.2.8 asks) and returns each name and value encoded again as the RFC's examples show: every byte
+// but ASCII letters, digits and "*-._" percent-encoded, a space as %20 ("with+plus+whitespace"
+// becomes "with%20plus%20whitespace" in 2.2.8, where the WHATWG serializer would write "+").
+func queryParams(q string) [][2]string {
+	var out [][2]string
+	for _, part := range strings.Split(q, "&") {
+		if part == "" {
+			continue
+		}
+		n, v, _ := strings.Cut(part, "=")
+		out = append(out, [2]string{formEncode(formDecode(n)), formEncode(formDecode(v))})
+	}
+	return out
+}
+
+func formDecode(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '+' {
+			c = ' '
+		} else if c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			x, _ := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			c = byte(x)
+			i += 2
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func isHex(c byte) bool { return isDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
+
+func formEncode(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || isDigit(c) || c == '*' || c == '-' || c == '.' || c == '_' {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// rfc9421Base builds the signature base (RFC 9421, 2.5): one line per covered component, in the
+// order received, `"name"`, its parameters, ": " and the value, each ending in "\n", then the
+// `"@signature-params": ` line, with no newline at the end. The parameters line is the Inner List
+// serialized from what was received, components and parameters in the order received and of the
+// types received (3.2, step 7: "the value of the Signature-Input field for this signature serialized
+// according to the rules described in Section 2.3"; 4.1: "list order and parameter order have to be
+// preserved"), never rebuilt in an order of Flowa's. A component named twice (2.5, step 2.1), a
+// parameter on a header Flowa does not understand (2.5, step 2.5: sf, key, bs, req and tr are not
+// used by any server Flowa talks to), and a missing header (2.5: "If the field cannot be found ...
+// produce an error") are refused.
+func rfc9421Base(in *sigInput, m *sigMessage) (string, error) {
+	var b strings.Builder
+	for i, c := range in.covered {
+		for _, d := range in.covered[:i] {
+			if sameComponent(c, d) {
+				return "", sigFail(sigComponentTwice)
+			}
+		}
+		name := c.val.s
+		var val string
+		var err error
+		if strings.HasPrefix(name, "@") {
+			val, err = derivedValue(c, m)
+		} else if len(c.params) > 0 {
+			err = sigFail(sigComponentUnknown)
+		} else if !validFieldName(name) {
+			err = sigFail(sigMalformed)
+		} else {
+			val, err = fieldValue(m, name, true)
+		}
+		if err != nil {
+			return "", err
+		}
+		sfWriteBare(&b, c.val)
+		sfWriteParams(&b, c.params)
+		b.WriteString(": " + val + "\n")
+		if b.Len() > sigBaseMax {
+			return "", sigFail(sigTooLarge)
+		}
+	}
+	b.WriteString(`"@signature-params": ` + sfInnerList(in.covered, in.params))
+	return b.String(), nil
+}
+
+/* Digests */
+
+// digestHeader is the Digest header Flowa sends with a cavage POST: "SHA-256=" and the base64 of the
+// body's SHA-256, as draft-cavage-12 3.1 and Appendix C write it (RFC 3230, 4.3.2).
+func digestHeader(body []byte) string {
+	h := sha256.Sum256(body)
+	return "SHA-256=" + base64.StdEncoding.EncodeToString(h[:])
+}
+
+// contentDigestHeader is the Content-Digest Flowa sends with an RFC 9421 POST: a Dictionary whose key
+// is the algorithm and whose value is a Byte Sequence (RFC 9530, 2).
+func contentDigestHeader(body []byte) string {
+	h := sha256.Sum256(body)
+	return "sha-256=:" + base64.StdEncoding.EncodeToString(h[:]) + ":"
+}
+
+// parseDigest reads Digest (RFC 3230, 4.3.2: `#(instance-digest)`; 4.1.1: "All digest-algorithm
+// values are case-insensitive") and returns the SHA-256 and SHA-512 values it carries. Others are
+// ignored (4.3.2: "A recipient MAY ignore any or all of the instance-digests"); either named twice
+// is refused.
+func parseDigest(v string) (s256, s512 []byte, err error) {
+	if len(v) > sigFieldMax {
+		return nil, nil, sigFail(sigTooLarge)
+	}
+	for _, part := range strings.Split(v, ",") {
+		part = strings.Trim(part, " \t")
+		if part == "" {
+			continue
+		}
+		alg, val, ok := strings.Cut(part, "=")
+		if !ok || alg == "" {
+			return nil, nil, sigFail(sigMalformed)
+		}
+		var dst *[]byte
+		size := 0
+		switch strings.ToLower(alg) {
+		case "sha-256":
+			dst, size = &s256, sha256.Size
+		case "sha-512":
+			dst, size = &s512, sha512.Size
+		default:
+			continue
+		}
+		b, ok := b64Decode(val)
+		if *dst != nil || !ok || len(b) != size {
+			return nil, nil, sigFail(sigMalformed)
+		}
+		*dst = b
+	}
+	return s256, s512, nil
+}
+
+// parseContentDigest reads Content-Digest (RFC 9530, 2) and returns its sha-256 and sha-512 values.
+// Other keys are ignored (2: "A recipient MAY ignore any or all digests"; RFC 8941, 3.2: unknown
+// members are ignored), including the Deprecated ones of RFC 9530 5, which "MUST NOT be used in a
+// potentially adversarial setting".
+func parseContentDigest(v string) (s256, s512 []byte, err error) {
+	if len(v) > sigFieldMax {
+		return nil, nil, sigFail(sigTooLarge)
+	}
+	d, err := sfDictionary(v)
+	if err != nil {
+		return nil, nil, sigFail(sigMalformed)
+	}
+	for _, m := range d {
+		size := map[string]int{"sha-256": sha256.Size, "sha-512": sha512.Size}[m.key]
+		if size == 0 {
+			continue
+		}
+		if m.inner || m.item.val.kind != sfBytes || len(m.item.val.b) != size {
+			return nil, nil, sigFail(sigMalformed)
+		}
+		if m.key == "sha-256" {
+			s256 = m.item.val.b
+		} else {
+			s512 = m.item.val.b
+		}
+	}
+	return s256, s512, nil
+}
+
+// digestMatches checks every digest Flowa computes that the header carries against the body, in
+// constant time: at least one must be there, and all that are there must match. Checking only one
+// when both are sent would leave the downgrade RFC 9530 6.6 and 6.7 warn of ("skipping validation
+// ... of a more-preferred algorithm"); the second costs one hash of a body already in memory.
+func digestMatches(body, s256, s512 []byte) sigReason {
+	if s256 == nil && s512 == nil {
+		return sigDigestUnknown
+	}
+	if s256 != nil {
+		if h := sha256.Sum256(body); subtle.ConstantTimeCompare(h[:], s256) != 1 {
+			return sigDigestMismatch
+		}
+	}
+	if s512 != nil {
+		if h := sha512.Sum512(body); subtle.ConstantTimeCompare(h[:], s512) != 1 {
+			return sigDigestMismatch
+		}
+	}
+	return 0
+}
+
+/* Public keys */
+
+// pubKeyError says why a public key PEM was refused. Its text is fixed, safe to log.
+type pubKeyError struct{ Reason string }
+
+func (e *pubKeyError) Error() string { return "public key refused: " + e.Reason }
+
+// parsePublicKeyPEM reads the publicKeyPem of an actor: one PEM block, either SPKI ("PUBLIC KEY") or
+// PKCS#1 ("RSA PUBLIC KEY"), since the SWICG report says it "may be encoded as PKCS-1, X.509 SPKI,
+// or something else". Refused: anything before or after the block, a second block, headers in it, a
+// key that is not RSA, an RSA key under minBits or over sigKeyMax, and one with an exponent under 3,
+// an even exponent or an even modulus. minBits is sigKeyMin in
+// production; the vector tests pass 1024 for the draft's old test key. An Ed25519 key is refused
+// with its own reason: Mastodon validates Ed25519 only from 4.7.0, not released when this was
+// written; accepting it would be a case here and a second verification algorithm chosen by the key.
+// Caching parsed keys is the caller's (7.4).
+func parsePublicKeyPEM(s string, minBits int) (*rsa.PublicKey, error) {
+	if len(s) > sigPEMMax {
+		return nil, &pubKeyError{"longer than a public key"}
+	}
+	rest := strings.TrimLeft(s, " \t\r\n")
+	if !strings.HasPrefix(rest, "-----BEGIN ") {
+		return nil, &pubKeyError{"not a PEM block"}
+	}
+	block, after := pem.Decode([]byte(rest))
+	switch {
+	case block == nil:
+		return nil, &pubKeyError{"not a PEM block"}
+	case len(block.Headers) > 0:
+		return nil, &pubKeyError{"a PEM block with headers"}
+	case bytes.Contains(after, []byte("-----BEGIN")):
+		return nil, &pubKeyError{"more than one PEM block"}
+	case len(bytes.TrimSpace(after)) > 0:
+		return nil, &pubKeyError{"data after the PEM block"}
+	}
+	var pub any
+	var err error
+	switch block.Type {
+	case "PUBLIC KEY":
+		pub, err = x509.ParsePKIXPublicKey(block.Bytes)
+	case "RSA PUBLIC KEY":
+		pub, err = x509.ParsePKCS1PublicKey(block.Bytes)
+	default:
+		return nil, &pubKeyError{"a PEM block that is not a public key"}
+	}
+	if err != nil {
+		return nil, &pubKeyError{"not a key"}
+	}
+	k, ok := pub.(*rsa.PublicKey)
+	_, ed := pub.(ed25519.PublicKey)
+	switch {
+	case ed:
+		return nil, &pubKeyError{"an Ed25519 key, which is not accepted yet"}
+	case !ok:
+		return nil, &pubKeyError{"not an RSA key"}
+	case k.N.BitLen() < minBits:
+		return nil, &pubKeyError{"an RSA key under the minimum size"}
+	case k.N.BitLen() > sigKeyMax:
+		return nil, &pubKeyError{"an RSA key over 8192 bits"}
+	case k.E < 3 || k.E%2 == 0 || k.N.Bit(0) == 0:
+		// No RSA key has these (an exponent must be odd and over 1, a modulus the product of two odd
+		// primes); verifying refuses them anyway, and refusing here keeps them out of a key cache.
+		return nil, &pubKeyError{"not a key"}
+	}
+	return k, nil
+}
+
+/* The replay memory */
+
+// replayKey is the first 128 bits of the SHA-256 of a signature's decoded bytes: the same signature
+// written in another base64 (padding left out, other pad bits) is the same key. Half the hash halves
+// the memory, and is still far beyond reach: only signatures that verified are remembered, so a
+// stranger cannot fill the memory with chosen values, and making a valid signature collide with
+// another remembered one, or with a future one, would take about 2^64 valid signatures or a 2^128
+// search.
+type replayKey [16]byte
+
+func replayKeyOf(sig []byte) replayKey {
+	h := sha256.Sum256(sig)
+	return replayKey(h[:16])
+}
+
+// senderGroup is the group a key id's signatures share in the replay memory: the last two labels of
+// its host, in lower case, scheme and port ignored, so a.b.evil.example:8443 and evil.example are
+// both evil.example. It returns "" for a host it cannot group (a single label, an empty label). The
+// verifier refuses before this any key id whose host the fetcher would refuse (fedHost: IP addresses,
+// numeric names, private names, one label), since its key could never be fetched; an IP literal given
+// here anyway is a group of its own.
+//
+// It is a rough stand-in for the registrable domain, and safe: a floor kept per group refuses at
+// least everything a floor per origin would, so no replay is let through. Its cost is fairness under
+// pressure only. Servers that share their last two labels (every server under co.uk, or every
+// customer of a host that gives out subdomains) share one group's share of the memory and one floor,
+// so a flood from one of them can cost its group-mates a delivery dated at or before the group's floor,
+// which the sender retries with a fresh date. That is far better than grouping by origin, where one
+// wildcard DNS name could fill the 2,000 groups and have every server not yet seen refused for as
+// long as it kept the flood up. The list of public suffixes would draw the line better; it is not taken as a dependency.
+func senderGroup(keyID string) string {
+	u, err := url.Parse(keyID)
+	if err != nil {
+		return ""
+	}
+	h := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if _, err := netip.ParseAddr(h); err == nil {
+		return h
+	}
+	labels := strings.Split(h, ".")
+	if len(labels) < 2 || slices.Contains(labels, "") {
+		return ""
+	}
+	return labels[len(labels)-2] + "." + labels[len(labels)-1]
+}
+
+// replaySig is one signature for the replay memory: its key and the earliest time it vouches for, in
+// Unix seconds. The same signature always vouches for the same time.
+type replaySig struct {
+	key replayKey
+	at  int64
+}
+
+// replaySet remembers the signatures accepted on requests that change something, so that each is
+// accepted once (federation.md 7.2). Each entry belongs to the sender group of its key id
+// (senderGroup: the last two labels of its host), and every rule below is per group.
+//
+// What it promises, exactly: a signature is never accepted twice under the same sender group while
+// the time window would take it. Across groups it promises nothing more, and for the draft form that
+// matters. A cavage signature does not cover its keyId, so once it has been evicted from its group,
+// the same bytes under a key id of another domain that serves a copy of the sender's public key
+// (public keys are public) pass the memory and verify. That delivery is refused by the origin rule of
+// 7.3, which the inbox applies to every delivery: the body, bound by the digest, still names the
+// first sender's actor, and the key id is not on that actor's origin. So the origin rule is part of
+// replay safety for the draft form, not only of authorship (TestReplayAcrossDomains). An RFC 9421
+// signature covers keyid in its base, so under another key id it does not verify, and the memory
+// alone suffices. No grouping closes this in the memory: keyed by the key's fingerprint, whoever
+// claims a fingerprint first would own its floor; one floor for all is the blocker this replaced.
+//
+// An entry lives as long as the time window could still accept its signature: until 12 hours (past)
+// after the time it vouches for, through the last second, which is exactly when inWindow starts to
+// refuse it as too old. A signature dated an hour ahead is kept 13 hours, one dated 12 hours ago is
+// barely kept at all. The memory keeps its own clock, the latest time it was given, and refuses as
+// stale anything that clock says is past its 12 hours, so a system clock stepped back by up to an
+// hour cannot bring a forgotten signature back into the window. A step back of more than an hour is
+// a corrected clock, and the memory forgets everything as a restart does (advance).
+//
+// The memory is bounded and the number of valid signatures in a window is not, so sometimes a valid
+// new signature has to be refused (a replay under the same group never is). The rule decides who that
+// is: the group that filled the memory, never a bystander.
+//
+//   - An entry is only ever dropped by expiry or by eviction. An evicted entry is its group's
+//     smallest time, and that group's floor rises to it: from then on a new signature from that
+//     group vouching for a time at or before its floor is refused as stale, since it might be the
+//     one dropped. One group's floor never touches another group. A signature from the same group
+//     with exactly the floor's time is refused too: by time alone it cannot be told from the dropped
+//     one. A floor is forgotten when the window would refuse its time anyway.
+//   - One group holds at most perGroup entries (a tenth of the memory). At that cap it evicts its
+//     own oldest, whatever dates it claims: a flood from one group costs only that group.
+//   - When the whole memory is full, the entry evicted is the oldest of the group holding the most
+//     entries, or the inserting group's own when it already holds at least an equal share (the
+//     memory divided by the groups in it). The heaviest pays because it is the one using more than
+//     its share: a group at or below an equal share is never evicted from by another's traffic, so
+//     an attacker gains nothing by spreading a flood unless it brings more groups than there are
+//     honest ones, and every honest group keeps at least an equal share of its newest entries.
+//   - At most maxGroups groups are remembered (one in fifty of the memory). A signature from a new
+//     group when that many are kept is refused as sigFull, which the inbox answers with 503 and
+//     Retry-After: no group is forgotten while it might still have a floor or an entry to keep.
+//
+// The worst case, a flood of valid signatures from very many groups (each needs a domain of its own
+// that the domain policy lets in, since subdomains and ports share their domain's group, a key that
+// verifies and can be fetched, and each host is held to the inbox's allowance): an honest group
+// already in the memory keeps at least an equal share of its newest entries, 50 at the full 2,000
+// groups, and loses only a delivery dated no later than the ones evicted, that is, one overtaken by
+// that many of its own later deliveries. An honest group not yet in the memory gets 503 for as long
+// as the flood is kept up: holding all 2,000 groups takes 2,000 registered names with fetchable keys,
+// each sending a signed request at least every 13 hours (each entry, dated an hour ahead, lasts 13).
+// Either way the sender retries with a fresh date and the delivery goes through once there is room.
+//
+// Safe for concurrent use, under one mutex held for O(log n) work: a min-heap of entries by time per
+// group, and two heaps of groups, by count (for the heaviest) and by their oldest time (for a
+// sweep that never scans). Every call forgets up to replaySweepStep expired entries of any group, so
+// expired ones are cleared at least as fast as new ones arrive, and at most replayCallBudget in all;
+// a new group is turned away as full only after that budget has been spent on what had expired.
+// Entries sit in one pool, grown by doubling up to max and reused, so the memory at the cap is
+// fixed. In memory only: a restart forgets it, and the inbox's de-duplication by activity id (7.2)
+// still holds across one.
+type replaySet struct {
+	mu        sync.Mutex
+	max       int   // signatures remembered at most
+	perGroup  int   // signatures one group holds at most
+	maxGroups int   // groups remembered at most
+	past      int64 // seconds a signature stays acceptable after the time it vouches for
+	back      int64 // seconds the wall clock may read behind the memory's own before it counts as corrected
+	now       int64 // the latest time given, Unix seconds: the memory's clock goes back only by a reset
+	reset     bool  // the memory was emptied by a clock step back, not yet reported by stepped
+	n         int
+	m         map[replayKey]struct{}
+	pool      []replaySig // entries; a free slot holds the next free slot in at
+	free      int32       // the first free slot of pool, or -1
+	groups    map[string]*replayGroup
+	byCount   groupsByCount
+	byAge     groupsByAge
+}
+
+// replaySweepStep is how many expired entries of any group each call forgets, oldest first, and
+// replayCallBudget how many in all one call may forget: those, then the named group's own, then, when
+// a new group finds the groups full, any. A call costs at most that many heap removals, whoever sends
+// it: the check before the key lookup runs on requests not yet verified.
+const (
+	replaySweepStep  = 8
+	replayCallBudget = 64
+)
+
+// advance sets the memory's clock from the wall clock. The memory's clock does not go back: a step
+// back of up to sigAhead is taken as the wall clock's error and ignored, so that a forgotten
+// signature cannot come back into the window. A step back of more than that is taken as a clock
+// that was wrong and has been corrected (a Raspberry Pi takes its time from the network after it
+// starts): keeping the memory's clock would refuse as stale every honest signature older than the
+// size of the step, and all of them once it passes 12 hours, until real time caught up. So the memory
+// forgets everything, as a restart does, and takes the wall clock; stepped reports it once. Every caller
+// passes the wall clock as it read it just before the call, so calls in flight together differ by
+// moments, never by sigAhead.
+func (s *replaySet) advance(now int64) {
+	if now < s.now-s.back {
+		s.forgetAll()
+		s.reset = true
+	}
+	s.now = max(s.now, now)
+}
+
+// forgetAll empties the memory, keeping its slots.
+func (s *replaySet) forgetAll() {
+	s.n, s.free, s.pool, s.now = 0, -1, s.pool[:0], 0
+	clear(s.m)
+	clear(s.groups)
+	s.byCount, s.byAge = s.byCount[:0], s.byAge[:0]
+}
+
+// stepped says, once, that the memory forgot everything because the clock stepped back by more than
+// sigAhead, so the caller can log one line; the memory logs nothing itself.
+func (s *replaySet) stepped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.reset
+	s.reset = false
+	return r
+}
+
+// replayGroup is what the memory keeps for one group.
+type replayGroup struct {
+	s        *replaySet
+	name     string
+	h        []int32 // slots of s.pool, a min-heap by time
+	floor    int64   // with hasFloor: the latest time among this group's evicted entries
+	hasFloor bool
+	cnt, age int // positions in s.byCount and s.byAge
+}
+
+func (o *replayGroup) Len() int           { return len(o.h) }
+func (o *replayGroup) Less(i, j int) bool { return o.s.pool[o.h[i]].at < o.s.pool[o.h[j]].at }
+func (o *replayGroup) Swap(i, j int)      { o.h[i], o.h[j] = o.h[j], o.h[i] }
+func (o *replayGroup) Push(x any)         { o.h = append(o.h, x.(int32)) }
+func (o *replayGroup) Pop() any           { x := o.h[len(o.h)-1]; o.h = o.h[:len(o.h)-1]; return x }
+
+// oldest is the time by which the sweep orders groups: the oldest entry's, or the floor's when no
+// entry is left (a floor is never later than an entry that was kept when it was set).
+func (o *replayGroup) oldest() int64 {
+	if len(o.h) > 0 {
+		return o.s.pool[o.h[0]].at
+	}
+	return o.floor
+}
+
+// groupsByCount is a heap of groups, the one holding the most entries first.
+type groupsByCount []*replayGroup
+
+func (h groupsByCount) Len() int           { return len(h) }
+func (h groupsByCount) Less(i, j int) bool { return len(h[i].h) > len(h[j].h) }
+func (h groupsByCount) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].cnt, h[j].cnt = i, j }
+func (h *groupsByCount) Push(x any)        { o := x.(*replayGroup); o.cnt = len(*h); *h = append(*h, o) }
+func (h *groupsByCount) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
+
+// groupsByAge is a heap of groups, the one whose oldest time is earliest first.
+type groupsByAge []*replayGroup
+
+func (h groupsByAge) Len() int           { return len(h) }
+func (h groupsByAge) Less(i, j int) bool { return h[i].oldest() < h[j].oldest() }
+func (h groupsByAge) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].age, h[j].age = i, j }
+func (h *groupsByAge) Push(x any)        { o := x.(*replayGroup); o.age = len(*h); *h = append(*h, o) }
+func (h *groupsByAge) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
+
+// newReplaySet makes a memory of size signatures, of which one group holds a tenth and which keeps
+// at most one group in fifty (at least two), for signatures acceptable for past after their time.
+func newReplaySet(size int, past time.Duration) *replaySet {
+	return &replaySet{max: size, perGroup: max(size/10, 1), maxGroups: max(size/50, 2), past: int64(past / time.Second), back: int64(sigAhead / time.Second),
+		free: -1, m: map[replayKey]struct{}{}, groups: map[string]*replayGroup{}}
+}
+
+// expired says whether the window can no longer accept a signature vouching for at.
+func (s *replaySet) expired(at int64) bool { return at+s.past < s.now }
+
+// check says whether signatures from an group may be accepted now, without remembering them.
+func (s *replaySet) check(group string, now int64, sigs ...replaySig) sigReason {
+	return s.admit(group, now, sigs, false)
+}
+
+// add remembers the signatures of one request from an group, all or none: if one is already
+// remembered or refused, nothing is added and the reason is returned.
+func (s *replaySet) add(group string, now int64, sigs ...replaySig) sigReason {
+	return s.admit(group, now, sigs, true)
+}
+
+func (s *replaySet) admit(group string, now int64, sigs []replaySig, keep bool) sigReason {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.advance(now)
+	budget := replayCallBudget - s.sweepLocked(replaySweepStep)
+	o := s.groups[group]
+	if o != nil {
+		for ; budget > 0 && len(o.h) > 0 && s.expired(o.oldest()); budget-- {
+			s.popOldest(o)
+		}
+		if !s.settle(o) {
+			o = nil
+		}
+	}
+	for _, g := range sigs {
+		if _, ok := s.m[g.key]; ok {
+			return sigReplay
+		}
+		if s.expired(g.at) || o != nil && o.hasFloor && g.at <= o.floor {
+			return sigStale
+		}
+	}
+	if o == nil && len(s.groups) >= s.maxGroups {
+		if budget > 0 {
+			s.sweepLocked(budget) // what has expired goes first
+		}
+		if len(s.groups) >= s.maxGroups {
+			return sigFull
+		}
+	}
+	if !keep {
+		return 0
+	}
+	if o == nil {
+		o = s.newGroup(group)
+	}
+	for _, g := range sigs {
+		if _, ok := s.m[g.key]; !ok {
+			o = s.insert(o, g)
+		}
+	}
+	return 0
+}
+
+func (s *replaySet) newGroup(name string) *replayGroup {
+	o := &replayGroup{s: s, name: name}
+	s.groups[name] = o
+	heap.Push(&s.byCount, o)
+	heap.Push(&s.byAge, o)
+	return o
+}
+
+// insert remembers one signature of o, making room first: o's own oldest when o is at its cap, and
+// when the memory is full, the oldest of o if it holds at least an equal share, else of the heaviest.
+func (s *replaySet) insert(o *replayGroup, g replaySig) *replayGroup {
+	if len(o.h) >= s.perGroup {
+		s.evict(o)
+	}
+	if s.n >= s.max {
+		v := o
+		if len(o.h)*len(s.groups) < s.n {
+			v = s.byCount[0]
+		}
+		s.evict(v)
+	}
+	if s.groups[o.name] != o { // evicting o's last entry, already expired, would have let it go
+		o = s.newGroup(o.name)
+	}
+	var i int32
+	if s.free >= 0 {
+		i, s.free = s.free, int32(s.pool[s.free].at)
+	} else {
+		if len(s.pool) == cap(s.pool) {
+			p := make([]replaySig, len(s.pool), len(s.pool)+min(max(len(s.pool), 64), s.max-len(s.pool)))
+			copy(p, s.pool)
+			s.pool = p
+		}
+		i = int32(len(s.pool))
+		s.pool = append(s.pool, replaySig{})
+	}
+	s.pool[i] = g
+	o.h = append(o.h, i)
+	heap.Fix(o, len(o.h)-1)
+	s.m[g.key] = struct{}{}
+	s.n++
+	s.settle(o)
+	return o
+}
+
+// evict drops o's oldest entry to make room and raises o's floor to its time, unless the window
+// refuses that time already.
+func (s *replaySet) evict(o *replayGroup) {
+	e := s.popOldest(o)
+	if !s.expired(e.at) && (!o.hasFloor || e.at > o.floor) {
+		o.floor, o.hasFloor = e.at, true
+	}
+	s.settle(o)
+}
+
+// popOldest forgets o's oldest entry and returns it; the caller settles o.
+func (s *replaySet) popOldest(o *replayGroup) replaySig {
+	i := o.h[0]
+	last := len(o.h) - 1
+	o.Swap(0, last)
+	o.h = o.h[:last]
+	if last > 0 {
+		heap.Fix(o, 0)
+	}
+	if c := cap(o.h); c > 64 && len(o.h) < c/4 {
+		o.h = append(make([]int32, 0, c/2), o.h...)
+	}
+	e := s.pool[i]
+	delete(s.m, e.key)
+	s.pool[i] = replaySig{at: int64(s.free)}
+	s.free = i
+	s.n--
+	return e
+}
+
+// settle puts o back in order after a change, forgetting its floor once the window refuses it, and o
+// itself once it has neither entries nor floor; it says whether o is still kept.
+func (s *replaySet) settle(o *replayGroup) bool {
+	if o.hasFloor && s.expired(o.floor) {
+		o.hasFloor = false
+	}
+	if len(o.h) == 0 && !o.hasFloor {
+		delete(s.groups, o.name)
+		heap.Remove(&s.byCount, o.cnt)
+		heap.Remove(&s.byAge, o.age)
+		return false
+	}
+	heap.Fix(&s.byCount, o.cnt)
+	heap.Fix(&s.byAge, o.age)
+	return true
+}
+
+// sweep forgets up to budget expired entries and floors, oldest first, and says how many it forgot:
+// for the housekeeping pass, which the inbox item wires.
+func (s *replaySet) sweep(now int64, budget int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.advance(now)
+	return s.sweepLocked(budget)
+}
+
+func (s *replaySet) sweepLocked(budget int) int {
+	done := 0
+	for ; done < budget && len(s.byAge) > 0; done++ {
+		o := s.byAge[0]
+		if !s.expired(o.oldest()) {
+			break
+		}
+		if len(o.h) > 0 {
+			s.popOldest(o)
+		}
+		s.settle(o)
+	}
+	return done
+}
+
+func (s *replaySet) size() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n
+}
+
+/* The clock */
+
+// buildTime is when this build's commit was made, in Unix seconds, for the clock check before signing
+// (federation.md 8.3). Nothing sets it yet: build-image.sh would add -X main.buildTime= with its
+// SOURCE_DATE_EPOCH, the commit's own time, which keeps a commit building the same bytes. That line,
+// with the release suite to show the bytes still match, belongs to the item that first signs.
+var buildTime = ""
+
+// builtAt is the earliest time this build can be running at: buildTime, or the commit time Go
+// records itself when the build is made in a git checkout (deploy.sh --build, which does not pass
+// -buildvcs=false), or zero when neither is known, which is logged once and skips the check.
+var builtAt = sync.OnceValue(func() time.Time {
+	if n, err := strconv.ParseInt(buildTime, 10, 64); err == nil && n > 0 {
+		return time.Unix(n, 0)
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if t, err := time.Parse(time.RFC3339, s.Value); s.Key == "vcs.time" && err == nil {
+				return t
+			}
+		}
+	}
+	log.Printf("clock: this build does not know when it was made, so signing does not wait for the clock")
+	return time.Time{}
+})
+
+// clockTrusted says whether the clock can be trusted to date signatures: not earlier than the build
+// itself (federation.md 8.3; a Raspberry Pi has no battery clock and starts on its last shutdown's
+// time). A zero build time means unknown, and the check is skipped. The newest updated_at in the
+// database is the other bound the note names; the delivery queue item adds it.
+func clockTrusted(now, built time.Time) bool { return built.IsZero() || !now.Before(built) }
+
+/* The policy: verifying */
+
+// sigVerifier checks signatures of requests that arrived. keyFor returns the public key of a key id,
+// or an error: it does the fetching, the caching and the owner check (7.3, 7.4), and is given only
+// key ids that are https URLs.
+type sigVerifier struct {
+	scheme, authority string // of the configured origin
+	keyFor            func(ctx context.Context, keyID string) (*rsa.PublicKey, error)
+	now               func() time.Time
+	built             time.Time // builtAt(); a test sets its own
+	minBits           int       // sigKeyMin; the vector tests set 1024
+	seen              *replaySet
+}
+
+// sigResult is who signed a request that verified.
+type sigResult struct {
+	Form  sigForm // sigRFC9421 when both forms were present and verified
+	KeyID string
+	At    time.Time // the earliest time the signature vouches for
+}
+
+// newSigVerifier makes the verifier for the instance's origin, such as https://flowa.example.org.
+func newSigVerifier(origin string, keyFor func(context.Context, string) (*rsa.PublicKey, error)) (*sigVerifier, error) {
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("the origin of a signature verifier is https:// and a host")
+	}
+	return &sigVerifier{scheme: "https", authority: urlAuthority(u), keyFor: keyFor, now: time.Now, built: builtAt(), minBits: sigKeyMin, seen: newReplaySet(sigSeenMax, sigPast)}, nil
+}
+
+// sigCheck is one signature ready for the key: its form, key id, signing string or base, decoded
+// signature and the earliest time it vouches for.
+type sigCheck struct {
+	form  sigForm
+	keyID string
+	base  string
+	sig   []byte
+	at    time.Time
+}
+
+// sigHeaders reads the signature fields of a request: a cavage Signature header, or RFC 9421's
+// Signature-Input and Signature, or both. The two forms share the name Signature: a line that reads
+// as a cavage header is one, and when Signature-Input is present the other lines are RFC 9421's
+// Dictionary (the SWICG report, "How to upgrade supported versions": Signature-Input "was only added
+// in the later versions"; RFC 9421, 4: "each field MUST contain the same labels"). More than one
+// cavage header, or more than one RFC 9421 signature, is refused: Mastodon accepts "Only a single
+// signature", and a second label (4.3's proxy signature, say) names something Flowa has no use for,
+// so choosing one by a rule of Flowa's own would accept what Mastodon refuses.
+func sigHeaders(h http.Header) (*cavageSig, *sigInput, []byte, error) {
+	lines, inputs := h.Values("Signature"), h.Values("Signature-Input")
+	if len(lines) == 0 {
+		if len(inputs) > 0 {
+			return nil, nil, nil, sigFail(sigMalformed)
+		}
+		return nil, nil, nil, sigFail(sigMissing)
+	}
+	if len(lines) > sigLinesMax || len(inputs) > sigLinesMax {
+		return nil, nil, nil, sigFail(sigTooLarge)
+	}
+	var cav *cavageSig
+	var dict []string
+	for _, l := range lines {
+		c, err := parseCavage(l)
+		switch {
+		case err == nil && cav != nil:
+			return nil, nil, nil, sigFail(sigMultiple)
+		case err == nil:
+			cav = c
+		case len(inputs) == 0:
+			return nil, nil, nil, err
+		default:
+			dict = append(dict, l)
+		}
+	}
+	if len(inputs) == 0 {
+		return cav, nil, nil, nil
+	}
+	if len(dict) == 0 {
+		return nil, nil, nil, sigFail(sigMalformed)
+	}
+	ins, err := parseSignatureInput(strings.Join(inputs, ", "))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	labels, sigs, err := parseSignatureField(strings.Join(dict, ", "))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(ins) > 1 || len(labels) > 1 {
+		return nil, nil, nil, sigFail(sigMultiple)
+	}
+	if len(ins) == 0 || len(labels) == 0 || ins[0].label != labels[0] {
+		return nil, nil, nil, sigFail(sigMalformed)
+	}
+	return cav, &ins[0], sigs[0], nil
+}
+
+// inWindow checks a time a signature vouches for: no more than 12 hours ago (Mastodon), no more than
+// an hour ahead (Flowa's own: federation.md 7.1).
+func inWindow(t, now time.Time) sigReason {
+	switch {
+	case t.Before(now.Add(-sigPast)):
+		return sigTooOld
+	case t.After(now.Add(sigAhead)):
+		return sigFuture
+	}
+	return 0
+}
+
+// signedDate reads a covered Date: one line (a singleton field, RFC 9110 5.5 and 6.6.1, so two lines joined
+// would not be a date), an HTTP-date in any of the three forms a recipient "MUST accept" (RFC 9110,
+// 5.6.7).
+func signedDate(h http.Header) (time.Time, error) {
+	if len(h.Values("Date")) > 1 {
+		return time.Time{}, sigFail(sigHeaderTwice)
+	}
+	t, err := http.ParseTime(h.Get("Date"))
+	if err != nil {
+		return time.Time{}, sigFail(sigMalformed)
+	}
+	return t, nil
+}
+
+// checkCavage applies the policy to a cavage signature (federation.md 7.1, Accepted). The algorithm
+// field never chooses the algorithm: the verifier "MUST derive the digital signature algorithm from
+// the metadata associated with the keyId and MUST NOT use the value of algorithm" (2.5), and an RSA
+// key is always verified as RSASSA-PKCS1-v1_5 with SHA-256, which is what rsa-sha256 names (E.2) and
+// what the SWICG report says to assume for hs2019. The field is only checked: absent, rsa-sha256 or
+// hs2019, and anything else is refused, whether unknown or naming another kind of key (2.1.3: when
+// it "differs from the key metadata ... an implementation MUST produce an error"). Covered must be
+// the request line ((request-target): Mastodon's "Creating HTTP signatures", the SWICG report: "Most
+// fediverse software will reject GET requests without signed (request-target)"), host, date or
+// (created), and on a request with a body the digest (Mastodon: "The Digest: header must also be
+// included within the headers parameter").
+func (v *sigVerifier) checkCavage(s *cavageSig, m *sigMessage, body []byte, withBody bool, now time.Time) (*sigCheck, error) {
+	switch s.algorithm {
+	case "", "rsa-sha256", "hs2019":
+	default:
+		return nil, sigFail(sigAlgorithm)
+	}
+	if !httpsURL(s.keyID) {
+		return nil, sigFail(sigKeyID)
+	}
+	has := func(n string) bool { return slices.Contains(s.headers, n) }
+	switch {
+	case !has("(request-target)"):
+		return nil, sigFail(sigNoRequestLine)
+	case !has("host"):
+		return nil, sigFail(sigNoHost)
+	case !has("date") && !has("(created)"):
+		return nil, sigFail(sigNoTime)
+	case withBody && !has("digest"):
+		return nil, sigFail(sigNoDigest)
+	case has("digest") && len(m.header.Values("Digest")) == 0:
+		return nil, sigFail(sigDigestMissing)
+	}
+	base, err := cavageString(s, m)
+	if err != nil {
+		return nil, err
+	}
+	var times []time.Time
+	if has("date") {
+		t, err := signedDate(m.header)
+		if err != nil {
+			return nil, err
+		}
+		times = append(times, t)
+	}
+	if s.created != "" {
+		n, _ := strconv.ParseInt(s.created, 10, 64)
+		if n > now.Unix() {
+			return nil, sigFail(sigFuture) // 2.1.4: a created "in the future MUST NOT be processed"
+		}
+		if has("(created)") {
+			times = append(times, time.Unix(n, 0))
+		}
+	}
+	if s.expires != "" {
+		whole, _, _ := strings.Cut(s.expires, ".")
+		if n, _ := strconv.ParseInt(whole, 10, 64); n < now.Unix() {
+			return nil, sigFail(sigExpired) // 2.1.5: an expires "in the past MUST NOT be processed"
+		}
+	}
+	at, err := vouched(times, now)
+	if err != nil {
+		return nil, err
+	}
+	if has("digest") {
+		s256, s512, err := parseDigest(strings.Join(m.header.Values("Digest"), ", "))
+		if err != nil {
+			return nil, err
+		}
+		if r := digestMatches(body, s256, s512); r != 0 {
+			return nil, sigFail(r)
+		}
+	}
+	sig, ok := b64Decode(s.signature)
+	if !ok {
+		return nil, sigFail(sigBadSignature)
+	}
+	return &sigCheck{form: sigCavage, keyID: s.keyID, base: base, sig: sig, at: at}, nil
+}
+
+// vouched checks every time a signature vouches for against the window and returns the earliest.
+// When both Date and created are signed and differ, both must be inside it: the RFC leaves it to the
+// verifier (B.2.3: "it is up to the verifier to determine whether its value has to match"), and
+// Flowa takes the stricter reading rather than choosing one.
+func vouched(times []time.Time, now time.Time) (time.Time, error) {
+	var at time.Time
+	for _, t := range times {
+		if r := inWindow(t, now); r != 0 {
+			return time.Time{}, sigFail(r)
+		}
+		if at.IsZero() || t.Before(at) {
+			at = t
+		}
+	}
+	return at, nil
+}
+
+// check9421 applies the policy to an RFC 9421 signature, Mastodon's list (security page): created
+// present, @method and @target-uri covered, Content-Digest present and covered, and RSASSA-PKCS1-v1_5
+// with SHA-256 the only algorithm. An alg parameter, when given, must say rsa-v1_5-sha256: the key
+// (RSA) decides the algorithm, and one stated in two places must agree (3.2, step 6.5); without one
+// the key decides alone (6.3), as in Mastodon's example. The request line may also be covered as
+// @method, @authority and @path, with @query when the request has a query (the three components
+// that make up @target-uri, 2.2.2 to 2.2.7); @request-target is not counted, being "NOT
+// RECOMMENDED" where HTTP/2 might be in use (2.2.5). The digest is required on a request with a
+// body, so a GET signed without Content-Digest is accepted (Mastodon's page states no exception for
+// a GET, so Flowa never sends one: GETs go out as cavage).
+func (v *sigVerifier) check9421(in *sigInput, sig []byte, m *sigMessage, body []byte, withBody bool, now time.Time) (*sigCheck, error) {
+	if in.hasAlg && in.alg != "rsa-v1_5-sha256" {
+		return nil, sigFail(sigAlgorithm)
+	}
+	if !httpsURL(in.keyID) {
+		return nil, sigFail(sigKeyID)
+	}
+	has := func(n string) bool {
+		return slices.ContainsFunc(in.covered, func(c sfItem) bool { return c.val.s == n && len(c.params) == 0 })
+	}
+	line := has("@method") && (has("@target-uri") || has("@authority") && has("@path") && (!strings.Contains(m.target, "?") || has("@query")))
+	switch {
+	case !line:
+		return nil, sigFail(sigNoRequestLine)
+	case !in.hasCreated:
+		return nil, sigFail(sigNoTime)
+	case withBody && !has("content-digest"):
+		return nil, sigFail(sigNoDigest)
+	case has("content-digest") && len(m.header.Values("Content-Digest")) == 0:
+		return nil, sigFail(sigDigestMissing)
+	}
+	base, err := rfc9421Base(in, m)
+	if err != nil {
+		return nil, err
+	}
+	times := []time.Time{time.Unix(in.created, 0)}
+	if has("date") {
+		t, err := signedDate(m.header)
+		if err != nil {
+			return nil, err
+		}
+		times = append(times, t)
+	}
+	if in.hasExpires && in.expires < now.Unix() {
+		return nil, sigFail(sigExpired) // 3.2.1: "Rejecting signatures past the expiration time"
+	}
+	at, err := vouched(times, now)
+	if err != nil {
+		return nil, err
+	}
+	if has("content-digest") {
+		s256, s512, err := parseContentDigest(strings.Join(m.header.Values("Content-Digest"), ", "))
+		if err != nil {
+			return nil, err
+		}
+		if r := digestMatches(body, s256, s512); r != 0 {
+			return nil, sigFail(r)
+		}
+	}
+	return &sigCheck{form: sigRFC9421, keyID: in.keyID, base: base, sig: sig, at: at}, nil
+}
+
+// verify checks the signature of a request that arrived. body is the request's content exactly as
+// received (after any transfer coding is removed and before any content coding is undone: RFC 9530 2
+// digests "the actual message content"), already read by the caller within its own cap (7.5: 256 KB
+// for the inbox). verify reads no body itself, keeps no copy of it, and reads each byte of it at
+// most twice in memory (two hashes when both digests are sent). It returns who signed, or a
+// *sigError whose reason is safe to log.
+//
+// When a request carries both forms, each must verify, with the same key: a request vouched for by
+// two keys at once has no single signer, so it is refused, and one valid and one invalid signature
+// make it invalid. RFC 9421 is then reported as the form, so the sender's host is marked for it
+// (7.1: "A host that sends Flowa a valid RFC 9421 signature is marked the same way").
+//
+// Replay is checked on every method but GET and HEAD. A replayed signed GET within the window reads
+// only what the signer could read with its own signature anyway, and remembering every signed fetch
+// would fill the memory with them and leave the deliveries, which change things, to the stale rule.
+// The memory is asked before the key is looked up and again after the signature verifies, by the
+// sender group of the key id (senderGroup); sigFull from it is for a 503 with Retry-After, not a 401.
+//
+// The key lookup is called for whatever https key id a request names, before any cryptography: the
+// inbox must give it a fetch cache and a limit per host before it wires a lookup that fetches (7.4).
+func (v *sigVerifier) verify(ctx context.Context, m *sigMessage, body []byte) (*sigResult, error) {
+	now := v.now()
+	if !clockTrusted(now, v.built) {
+		return nil, sigFail(sigClock) // 8.3: the inbox answers 503 for this, not 401
+	}
+	cav, in, sig9421, err := sigHeaders(m.header)
+	if err != nil {
+		return nil, err
+	}
+	if cav != nil && in != nil && cav.keyID != in.keyID {
+		return nil, sigFail(sigBothDisagree)
+	}
+	withBody := len(body) > 0 || m.method != "GET" && m.method != "HEAD"
+	var checks []*sigCheck
+	if cav != nil {
+		c, err := v.checkCavage(cav, m, body, withBody, now)
+		if err != nil {
+			return nil, err
+		}
+		checks = append(checks, c)
+	}
+	if in != nil {
+		c, err := v.check9421(in, sig9421, m, body, withBody, now)
+		if err != nil {
+			return nil, err
+		}
+		checks = append(checks, c)
+	}
+	replay := m.method != "GET" && m.method != "HEAD"
+	keyID := checks[0].keyID
+	u, _ := url.Parse(keyID) // an https URL, checked above
+	group := senderGroup(keyID)
+	if _, why := fedHost(u.Hostname()); why != "" || group == "" {
+		return nil, sigFail(sigKeyID) // a host the fetcher would refuse: its key could never be had
+	}
+	var sigs [2]replaySig
+	if replay {
+		for i, c := range checks {
+			sigs[i] = replaySig{key: replayKeyOf(c.sig), at: c.at.Unix()}
+		}
+		if r := v.seen.check(group, now.Unix(), sigs[:len(checks)]...); r != 0 {
+			return nil, sigFail(r)
+		}
+	}
+	key, err := v.keyFor(ctx, keyID)
+	if err != nil || key == nil {
+		return nil, &sigError{Reason: sigKeyUnavailable, err: err}
+	}
+	if bits := key.N.BitLen(); bits < v.minBits || bits > sigKeyMax {
+		return nil, sigFail(sigKeyRefused)
+	}
+	for _, c := range checks {
+		if len(c.sig) != key.Size() {
+			return nil, sigFail(sigBadSignature)
+		}
+		h := sha256.Sum256([]byte(c.base))
+		if rsa.VerifyPKCS1v15(key, crypto.SHA256, h[:], c.sig) != nil {
+			return nil, sigFail(sigInvalid)
+		}
+	}
+	res := &sigResult{Form: checks[len(checks)-1].form, KeyID: keyID, At: checks[0].at}
+	for _, c := range checks {
+		if c.at.Before(res.At) {
+			res.At = c.at
+		}
+	}
+	if replay {
+		if r := v.seen.add(group, now.Unix(), sigs[:len(checks)]...); r != 0 {
+			return nil, sigFail(r)
+		}
+	}
+	return res, nil
+}
+
+// verifyRequest verifies a request that arrived, with body its content as received within the
+// caller's cap (see verify). The path and query are the request target exactly as received
+// (r.RequestURI, never Go's decoded r.URL.Path), and the authority is the configured origin's,
+// whatever Host the request carried (federation.md, finding 4). Only the origin form of a request
+// target ("/path?query") is taken: the inbox is never asked through a proxy's absolute form.
+func (v *sigVerifier) verifyRequest(ctx context.Context, r *http.Request, body []byte) (*sigResult, error) {
+	if !strings.HasPrefix(r.RequestURI, "/") {
+		return nil, sigFail(sigMalformed)
+	}
+	return v.verify(ctx, &sigMessage{method: r.Method, scheme: v.scheme, authority: v.authority, target: r.RequestURI, header: r.Header}, body)
+}
+
+/* Signing */
+
+// signRefusal says why a request was not signed. Its text is fixed.
+type signRefusal struct{ why string }
+
+func (e *signRefusal) Error() string { return "not signed: " + e.why }
+
+var (
+	errClockUntrusted = &signRefusal{"the clock is earlier than this build, so it is not set yet"}
+	errSignKey        = &signRefusal{"no key, or a key id that is not an https URL"}
+	errSignURL        = &signRefusal{"only an https URL is signed"}
+)
+
+func rsaSign(key *rsa.PrivateKey, s string) ([]byte, error) {
+	h := sha256.Sum256([]byte(s))
+	return rsa.SignPKCS1v15(nil, key, crypto.SHA256, h[:]) // deterministic: RFC 8017 8.2
+}
+
+// httpSigner is the fetcher's signer for one key: keyID is its full https id. It runs on every
+// request the fetcher sends, a redirect included, so each signature names the URL it goes to. form
+// is the form a host is sent (the delivery queue decides, federation.md 7.1); a GET is always signed
+// with cavage, since Mastodon's RFC 9421 list requires a Content-Digest with no exception for a GET.
+// What is sent (7.1):
+//
+//   - cavage: algorithm="rsa-sha256", headers="(request-target) host date" and on a request with a
+//     body also digest, with Digest: SHA-256=<base64>;
+//   - RFC 9421: Content-Digest: sha-256=:<base64>:, and
+//     sig1=("@method" "@target-uri" "content-digest");created=<seconds>;keyid="<key id>", no alg.
+//
+// The Host header sent is set to the URL's authority as signed: the host in lower case, no default
+// port (RFC 9421, 2.2.3; for cavage the host line is the Host header's value, 2.3). The request line
+// signed is the one Go writes, req.URL.RequestURI(): "/" for an empty path, the path's own percent
+// encoding and capitals, the query as given. Date is set from the same reading of the clock as
+// created, replacing the one fetcher.send set, so the two forms never disagree by a second. Nothing
+// is signed while the clock is earlier than the build (8.3): errClockUntrusted.
+func httpSigner(key *rsa.PrivateKey, keyID string, form sigForm, now func() time.Time, built time.Time) signer {
+	return func(req *http.Request, body []byte) error {
+		t := now()
+		if !clockTrusted(t, built) {
+			return errClockUntrusted
+		}
+		if key == nil || !httpsURL(keyID) || strings.ContainsAny(keyID, `"\`) {
+			return errSignKey // the cavage header puts keyID in a quoted string as it is
+		}
+		if req.URL == nil || req.URL.Scheme != "https" || req.URL.Host == "" {
+			return errSignURL
+		}
+		method := req.Method
+		if method == "" {
+			method = "GET"
+		}
+		req.Host = urlAuthority(req.URL)
+		req.Header.Set("Date", t.UTC().Format(http.TimeFormat)) // the instant created is, whatever the fetcher set
+		m := &sigMessage{method: method, scheme: "https", authority: req.Host, target: req.URL.RequestURI(), header: req.Header}
+		withBody := body != nil || method != "GET" && method != "HEAD"
+		if form == sigRFC9421 && withBody {
+			req.Header.Set("Content-Digest", contentDigestHeader(body))
+			var b strings.Builder
+			sfWriteBare(&b, sfBare{kind: sfString, s: keyID})
+			input := `sig1=("@method" "@target-uri" "content-digest");created=` + strconv.FormatInt(t.Unix(), 10) + ";keyid=" + b.String()
+			ins, err := parseSignatureInput(input)
+			if err != nil {
+				return err
+			}
+			base, err := rfc9421Base(&ins[0], m)
+			if err != nil {
+				return err
+			}
+			sig, err := rsaSign(key, base)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Signature-Input", input)
+			req.Header.Set("Signature", "sig1=:"+base64.StdEncoding.EncodeToString(sig)+":")
+			return nil
+		}
+		s := &cavageSig{keyID: keyID, algorithm: "rsa-sha256", headers: []string{"(request-target)", "host", "date"}}
+		if withBody {
+			req.Header.Set("Digest", digestHeader(body))
+			s.headers = append(s.headers, "digest")
+		}
+		str, err := cavageString(s, m)
+		if err != nil {
+			return err
+		}
+		sig, err := rsaSign(key, str)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Signature", `keyId="`+keyID+`",algorithm="rsa-sha256",headers="`+strings.Join(s.headers, " ")+`",signature="`+base64.StdEncoding.EncodeToString(sig)+`"`)
+		return nil
+	}
 }
 
 /* ---------- start-up ---------- */

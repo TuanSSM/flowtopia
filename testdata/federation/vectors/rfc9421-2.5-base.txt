@@ -1,0 +1,28 @@
+# RFC 9421, HTTP Message Signatures, Section 2.5 "Creating the Signature Base", Figure 1, with the
+# signed request of Section 3.2 that carries the same signature under the label sig1. Read on 12
+# November 2026 from https://datatracker.ietf.org/doc/html/rfc9421 (the copy downloaded that day).
+# Unwrapped from RFC 8792 "\" line wrapping (7.2.2), the blank line before the body added. The
+# signature is RSASSA-PSS with SHA-512 (test-key-rsa-pss), which Flowa does not implement: the test
+# compares the base Flowa builds with the printed one byte for byte, and checks the RSA-PSS signature
+# in the test alone, only to show the copy is exact.
+=== request
+POST /foo?param=Value&Pet=dog HTTP/1.1
+Host: example.com
+Date: Tue, 20 Apr 2021 02:07:55 GMT
+Content-Type: application/json
+Content-Digest: sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew==:
+Content-Length: 18
+Signature-Input: sig1=("@method" "@authority" "@path" "content-digest" "content-length" "content-type");created=1618884473;keyid="test-key-rsa-pss"
+Signature: sig1=:HIbjHC5rS0BYaa9v4QfD4193TORw7u9edguPh0AW3dMq9WImrlFrCGUDih47vAxi4L2YRZ3XMJc1uOKk/J0ZmZ+wcta4nKIgBkKq0rM9hs3CQyxXGxHLMCy8uqK488o+9jrptQ+xFPHK7a9sRL1IXNaagCNN3ZxJsYapFj+JXbmaI5rtAdSfSvzPuBCh+ARHBmWuNo1UzVVdHXrl8ePL4cccqlazIJdC4QEjrF+Sn4IxBQzTZsL9y9TP5FsZYzHvDqbInkTNigBcE9cKOYNFCn4D/WM7F6TNuZO9EgtzepLWcjTymlHzK7aXq6Am6sfOrpIC49yXjj3ae6HRalVc/g==:
+
+{"hello": "world"}
+=== label
+sig1
+=== signature base
+"@method": POST
+"@authority": example.com
+"@path": /foo
+"content-digest": sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX+TaPm+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew==:
+"content-length": 18
+"content-type": application/json
+"@signature-params": ("@method" "@authority" "@path" "content-digest" "content-length" "content-type");created=1618884473;keyid="test-key-rsa-pss"
