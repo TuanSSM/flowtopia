@@ -391,7 +391,7 @@ federated mode it is implied and ignored.
 | Follows | off unless the `follows` flag is on (local only) | local and remote | the owner follows; others follow the owner |
 | Federation endpoints (WebFinger, NodeInfo, actors, inboxes, outboxes) | none: 404, as for any unknown path | answer | answer only with `FLOWA_FEDERATE=on` |
 | Outbound connections | link previews only, as today | link previews and federation | as federated, or link previews only |
-| Public pages for signed-out visitors | none | profiles and Public posts of members who opted in | the owner's profile and Public posts |
+| Public pages for signed-out visitors | none, but the about page once an admin has saved a description (INS 5) | as local, plus profiles and Public posts of members who opted in | as local, plus the owner's profile and Public posts |
 | Feature flags | as today | `federation` (pause), `follows` | as federated |
 
 **Local means today.** In local mode the federation routes are not registered on the mux at all, the
@@ -1239,6 +1239,7 @@ a 48-hour outage would not lose anyway.
 -- instance settings that change at runtime, and the recorded identity
 CREATE TABLE instance_settings (
   key TEXT PRIMARY KEY,               -- origin, first_federated_at, policy, authorized_fetch, registration, rules, description, contact, retention_days, nodeinfo_version
+                                      -- (migration 10 made the table; INS 5 writes description, contact and rules, one row each, the rest come with their items)
   value JSONB NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by BIGINT REFERENCES users(id) ON DELETE SET NULL
@@ -1493,7 +1494,7 @@ keyword filters.
 | Registration with approval | adopt | new accounts wait in Accounts for an admin; the sign-up page says so (INS) |
 | Invites | later | useful for a household; not needed to federate |
 | Server rules shown at sign-up | adopt | instance setting `rules`, shown on sign-up and on the about page; edited in Admin, audited (INS) |
-| Instance description, contact, about page | adopt | instance settings, the NodeInfo `nodeName`, an about page for visitors (INS) |
+| Instance description, contact, about page | adopt | instance settings, the NodeInfo `nodeName`, an about page (INS). Built: the about page is in the app for every member in every mode, and opens to a signed-out visitor only while a description is saved, so an instance that saves nothing answers `GET /api/about` as an unknown address; the contact is an email address, an http or https link or a short text, never another kind of link |
 | Announcements | adapt | one admin notice shown at the top of the timeline, a notification kind `announcement` (**new**) (FMD); Mastodon's are published or scheduled from the admin area and can also be emailed |
 | Federation modes: open, allowlist, off | adopt | instance setting `policy` (F8); off is the `federation` flag or `FLOWA_MODE=local` (FMD). Mastodon's allowlist is `LIMITED_FEDERATION_MODE`, which also turns on secure mode and turns off public pages (configuration page); see 7.6 for what Flowa's allowlist does without authorized fetch |
 | Domain blocks: limit (silence) | adopt | `domain_policies.policy = 'limit'`: their content is shown only to members who follow the account; not in search; a follow from that domain becomes a follow request even to a member who does not approve by hand, as Mastodon's domain Limit "will automatically turn all follows from the limited server into follow requests" (FMD) |

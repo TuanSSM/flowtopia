@@ -245,6 +245,19 @@ try:
     gone=json.loads(op.open(BASE+'api/following',timeout=20).read())['following']==[]
     api(op,'flags',{'flags':{'follows':False}},'PUT');js("localStorage.removeItem('fl-tl')");load()
     check('after the Home pictures kai has no post, the admin follows nobody, and the flag is off again',kp!=[] and posts_of('kai')==[] and gone and not get_me(op)['flags']['follows'])
+    # The about page, with a description, a contact and three rules saved, at desktop and phone width; then
+    # the editor. Everything is cleared again before the first-run picture, and checked.
+    inst=lambda: json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())
+    api(op,'admin/instance',{'description':'A place to log practice for the spinners of the Thursday jam in the park.\n\nNew people are welcome: bring a pair of nunchaku or poi, or borrow one at the jam.','contact':'jam@example.org',
+        'rules':[{'text':'Spin away from people','hint':'Leave two arm lengths between you and anyone who is not spinning with you.'},{'text':'Be kind in posts and comments','hint':'Say what helped you, not what is wrong with someone.'},{'text':'Post your own clips only','hint':''}],'updatedAt':inst()['updatedAt']},'PUT')
+    load()
+    page('about','About this Flowa: description, rules and contact','#/about')
+    check('the about page shows the description, the three rules in order and the contact',[r for r in js("return [...document.querySelectorAll('#main .rules li b')].map(b=>b.textContent)")]==['Spin away from people','Be kind in posts and comments','Post your own clips only'] and 'Thursday jam' in txt('#main') and js("return (document.querySelector('#main .about-contact a')||{}).getAttribute?.('href')")=='mailto:jam@example.org',lambda: txt('#main'))
+    page('about-phone','About this Flowa, phone','#/about',w=420,ht=900)
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    page('admin-instance','Admin: the instance information','#/admin/instance')
+    api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':inst()['updatedAt']},'PUT');load()
+    check('after the about pictures the instance information is cleared and the menu has no About entry',inst()['description']=='' and inst()['rules']==[] and inst()['contact']=='' and 'instance' not in get_me(op) and not js("return !!document.querySelector('#side a[href=\"#/about\"]')"))
     # First run: a new member before any prop is chosen. The menu lists only what opens.
     new=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()));api(new,'signup',{'username':'newcomer','password':'flowa-test-only'})
     js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")

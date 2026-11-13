@@ -2,6 +2,9 @@
 // Accounts, props and onboarding. Loaded before app.js, which calls into it.
 let me = null, perms = []; // perms: what the signed-in user may do, from the server
 let homeUrl = ''; // for admins, the start page of the machine Flowa runs on, when the server names one
+// What the admins have said about this Flowa, as /api/me gives it: null until something is saved. about says
+// whether this reader may open the about page; a visitor also gets the rules, for the sign-up form.
+let inst = null;
 const docs = {}; // progress per prop for the signed-in user: { rev, state }
 // Per prop, the progress as the server last had it (JSON). When a save meets a newer copy from
 // another device, this is the common starting point the two sets of edits are compared against.
@@ -50,7 +53,7 @@ function inProp(id, fn) {
 async function loadSession() {
   const r = await api('me');
   if (!r.ok) throw new Error(r.status);
-  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || []; homeUrl = r.data.homeUrl || '';
+  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || []; homeUrl = r.data.homeUrl || ''; inst = r.data.instance || null;
   setAchievements(r.data.achievements);
   for (const k in docs) delete docs[k];
   for (const k in synced) delete synced[k];
@@ -301,7 +304,7 @@ function pageWelcome() {
       <p class="tiny" style="margin-top:10px">${SKILLS.length} skills in ${BRANCHES.length} branches. Each column is a branch and each dot is a skill, from the first ones at the top to the hardest at the bottom.</p></div></div>` : '';
   return `<div class="hero"><img src="icon.svg" alt="" width="56" height="56"><h1>Flowa</h1>
     <p>Skill maps, guides and simulated demos for flow arts props, with your own progress saved to your account.</p>
-    <div class="row wrap" style="justify-content:center"><a class="btn primary" href="#/signin">Sign in</a>${flags.signups ? '<a class="btn" href="#/signup">Create an account</a>' : ''}<a class="btn" href="#/maps">Browse skill maps</a></div></div>
+    <div class="row wrap" style="justify-content:center"><a class="btn primary" href="#/signin">Sign in</a>${flags.signups ? '<a class="btn" href="#/signup">Create an account</a>' : ''}<a class="btn" href="#/maps">Browse skill maps</a></div>${inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</div>
   ${show}
   <div class="grid g2"><div class="card"><div class="card-h"><h2>Without an account</h2></div><ul class="steps">
       <li>Browse the skill maps and every branch graph.</li><li>Read each skill's guide and references, and watch its demo.</li><li>${coarse() ? 'Search skills with the Search button at the top.' : 'Search skills with Ctrl K, or the Search button.'}</li></ul></div>
@@ -317,9 +320,50 @@ function pageAuth(mode) {
     ${up ? '<label class="field">Display name (optional)<input type="text" name="displayName" autocomplete="name" maxlength="40"></label>' : ''}
     <label class="field">Password<input type="password" name="password" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="8" maxlength="200" required></label>
     ${up ? '<label class="field">Repeat password<input type="password" name="again" autocomplete="new-password" maxlength="200" required></label><p class="tiny">At least 8 characters. No email is needed, so nothing can be sent to you if you forget it.</p>' : ''}
-    <p class="form-err" id="auth-err" role="alert"></p>
+    ${up ? signupRules() : ''}<p class="form-err" id="auth-err" role="alert"></p>
     <button class="btn primary" type="submit">${up ? 'Create account' : 'Sign in'}</button>
-    <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : flags.signups ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p></form>`;
+    <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : flags.signups ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p>${!up && inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</form>`;
+}
+// The rules, in the admins' order, each with its explanation. Everything in them is text an admin typed, so
+// it is escaped and keeps its line breaks.
+const rulesHTML = list => `<ol class="rules">${list.map(r => `<li><b class="plain-text">${esc(r.text)}</b>${r.hint ? `<p class="small muted plain-text">${esc(r.hint)}</p>` : ''}</li>`).join('')}</ol>`;
+// Above the button of the sign-up form, once the admins have saved rules; nothing at all before that. Reading
+// them is the step before the account, as on Mastodon; creating it is agreeing, said in words beside the
+// button rather than with a box to tick, which would only add a click that proves no more than the button does.
+function signupRules() {
+  const list = inst?.rules || [];
+  if (!list.length) return '';
+  return `<section class="signup-rules" aria-labelledby="signup-rules-h"><h2 id="signup-rules-h">The rules of this Flowa</h2>${rulesHTML(list)}
+    <p class="tiny">By creating an account you agree to follow these rules.</p></section>`;
+}
+// The about page: what the admins wrote, the rules and how to reach them. A member reads it in every mode,
+// whatever has been saved; a visitor only once there is a description, and before that the page is as unknown
+// as its address on the server. It is read again each time it is opened.
+const about = { data: null, busy: false, failed: '' };
+window.addEventListener('hashchange', () => { about.data = null; about.failed = ''; });
+async function loadAbout() {
+  about.busy = true;
+  const r = await api(me ? 'instance' : 'about');
+  about.busy = false;
+  if (r.ok) about.data = r.data; else about.failed = r.status === 404 ? 'gone' : r.error;
+  render();
+}
+function contactHTML(c, kind) {
+  if (kind === 'email') return `<a href="mailto:${esc(c)}">${esc(c)}</a>`;
+  if (kind === 'link') return `<a href="${esc(c)}" rel="noopener noreferrer" target="_blank">${esc(c)}</a>`;
+  return `<span class="plain-text">${esc(c)}</span>`;
+}
+function pageAbout() {
+  if (!me && !inst?.about) return notFound();
+  if (about.failed === 'gone') return notFound();
+  if (about.failed) return `<div class="empty">${esc(about.failed)}</div>`;
+  if (!about.data) { if (!about.busy) loadAbout(); return '<div class="empty small">Loading…</div>'; }
+  const d = about.data, rules = d.rules || [];
+  if (!d.description && !d.contact && !rules.length) return `<div class="page-h"><div><h1>About this Flowa</h1></div></div><div class="empty">The admins have not written anything about this Flowa yet.</div>`;
+  return `<div class="page-h"><div><h1>About this Flowa</h1></div></div><div class="stack about">
+    ${d.description ? `<div class="card"><p class="plain-text about-desc">${esc(d.description)}</p></div>` : ''}
+    ${rules.length ? `<div class="card"><div class="card-h"><h2>Rules</h2></div>${rulesHTML(rules)}</div>` : ''}
+    ${d.contact ? `<div class="card"><div class="card-h"><h2>Contact</h2></div><p class="small about-contact">${contactHTML(d.contact, d.contactKind)}</p></div>` : ''}</div>`;
 }
 // What a visitor is told on a page that needs an account: one sentence, about that page.
 const WALLS = { practice: 'Sign in to log your practice.', combos: 'Sign in to build combos.', plan: 'Sign in to follow the plan.', profile: 'Sign in to see your profile.', timeline: 'Sign in to use the timeline.',

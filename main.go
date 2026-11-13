@@ -138,6 +138,9 @@ type app struct {
 	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
 	flagCache map[string]bool
 	flagsAt   time.Time
+	instMu    sync.Mutex    // guards instCache and instAt
+	instCache *instanceInfo // what instanceCached last read; nil after a save, so the next read asks the database
+	instAt    time.Time
 	sent      *onceStore  // posts and comments that named themselves, so a repeat is not a second one
 	reqLog    *requestLog // one line per request; see logged
 	healthMu  sync.Mutex  // guards healthAt and healthWas
@@ -448,6 +451,7 @@ type limits struct {
 	signin, signinIP, account, signup, password *limiter
 	posts, comments, likes, badges, marks       *limiter
 	bookmarks, blocks, follows                  *limiter
+	instance, about                             *limiter // saves of the instance information per admin; reads of the about page per address
 }
 
 func newLimits() limits {
@@ -457,6 +461,7 @@ func newLimits() limits {
 		posts: newLimiter(30, time.Hour), comments: newLimiter(120, time.Hour), likes: newLimiter(600, time.Hour),
 		badges: newLimiter(60, time.Hour), marks: newLimiter(120, time.Hour),
 		bookmarks: newLimiter(300, time.Hour), blocks: newLimiter(100, time.Hour), follows: newLimiter(200, time.Hour),
+		instance: newLimiter(60, time.Hour), about: newLimiter(120, time.Hour),
 	}
 }
 
@@ -965,6 +970,365 @@ func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"flags": f})
 }
 
+/* ---------- instance information ----------
+
+What an admin tells people about this Flowa: a description, a way to reach the admins, and the rules,
+as Mastodon has them (docs/federation.md, section 10). They are kept in instance_settings, one row a
+part, and an instance where nobody has saved any of them answers exactly as it did before they
+existed: sign-up shows nothing new, no page gains a link, and the visitor's GET /api/about answers as
+an address nobody has. Everything is plain text: stored as typed, trimmed, and shown escaped by the
+page, never read as HTML or Markdown. */
+
+// The limits of each part, in characters. The page shows the same numbers, from instanceLimits.
+const (
+	maxInstanceDescription = 500  // a paragraph or two
+	maxInstanceContact     = 200  // an address or a sentence
+	maxInstanceRules       = 20   // as many as a person reads before agreeing
+	maxRuleText            = 200  // the rule itself, one sentence
+	maxRuleHint            = 1000 // an optional explanation under it
+)
+
+var instanceLimits = map[string]int{"description": maxInstanceDescription, "contact": maxInstanceContact, "rules": maxInstanceRules, "ruleText": maxRuleText, "ruleHint": maxRuleHint}
+
+// instanceParts are the keys of instance_settings this version reads and writes. Later settings
+// (registration, policy, origin, retention) get their own keys when their items are built.
+var instanceParts = []string{"description", "contact", "rules"}
+
+// instanceRule is one rule: a short sentence, and an optional longer explanation.
+type instanceRule struct {
+	Text string `json:"text"`
+	Hint string `json:"hint"`
+}
+
+// instanceInfo is what an admin has saved. An empty description means none; a contact says what
+// kind it is, so the page knows whether it may be a link.
+type instanceInfo struct {
+	Description string         `json:"description"`
+	Contact     string         `json:"contact"`
+	ContactKind string         `json:"contactKind"` // "email", "link", "text", or "" with no contact
+	Rules       []instanceRule `json:"rules"`
+}
+
+func (i instanceInfo) empty() bool {
+	return i.Description == "" && i.Contact == "" && len(i.Rules) == 0
+}
+
+type querier interface {
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+// readInstance reads the saved parts. version names the state they are in: the latest time any part
+// was saved, or "" when none ever was; a write must name the version it was made against. by is the
+// account that saved last, "" when nothing was saved or that account is gone.
+func readInstance(q querier) (info instanceInfo, version, by string, err error) {
+	info.Rules = []instanceRule{}
+	rows, err := q.Query(`SELECT s.key, s.value, s.updated_at, COALESCE(u.username, '') FROM instance_settings s LEFT JOIN users u ON u.id = s.updated_by
+		WHERE s.key IN ('description', 'contact', 'rules')`)
+	if err != nil {
+		return info, "", "", err
+	}
+	defer rows.Close()
+	var latest time.Time
+	for rows.Next() {
+		var key, name string
+		var raw []byte
+		var at time.Time
+		if err := rows.Scan(&key, &raw, &at, &name); err != nil {
+			return info, "", "", err
+		}
+		switch key {
+		case "description":
+			err = json.Unmarshal(raw, &info.Description)
+		case "contact":
+			err = json.Unmarshal(raw, &info.Contact)
+		case "rules":
+			err = json.Unmarshal(raw, &info.Rules)
+		}
+		if err != nil {
+			return info, "", "", fmt.Errorf("instance setting %s: %w", key, err)
+		}
+		if at.After(latest) {
+			latest, by = at, name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return info, "", "", err
+	}
+	if info.Rules == nil {
+		info.Rules = []instanceRule{}
+	}
+	info.ContactKind, _ = contactKind(info.Contact)
+	if !latest.IsZero() {
+		version = latest.UTC().Format(time.RFC3339Nano)
+	}
+	return info, version, by, nil
+}
+
+// instanceCached is what readInstance says, read at most every ten seconds and at once after a save
+// on this server. A signed-out visitor can open the about page and every page load asks /api/me,
+// so neither may cost a database read each time.
+func (a *app) instanceCached() (instanceInfo, error) {
+	a.instMu.Lock()
+	defer a.instMu.Unlock()
+	if a.instCache != nil && time.Since(a.instAt) < 10*time.Second {
+		return *a.instCache, nil
+	}
+	info, _, _, err := readInstance(a.db)
+	if err != nil {
+		return instanceInfo{}, err
+	}
+	a.instCache, a.instAt = &info, time.Now()
+	return info, nil
+}
+
+// plainText cleans one part as typed: a line break from Windows becomes a plain one, a tab a space,
+// what draws nothing is dropped (visibleText), and the ends are trimmed. Any other control character
+// is refused rather than dropped, because it was not typed by a person. Line breaks are kept only
+// where lines make sense (multi), and then at most one empty line in a row, so a paste cannot push
+// the rest of the page away. It returns the text, or why it cannot be used.
+func plainText(s, what string, multi bool, max int) (string, string) {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	for _, r := range s {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return "", what + " cannot hold control characters."
+		}
+		if r == '\n' && !multi {
+			return "", what + " is one line: it cannot hold a line break."
+		}
+	}
+	v, ok := visibleText(s)
+	if !ok {
+		return "", what + " cannot hold characters that change the direction of the text."
+	}
+	if multi {
+		lines := strings.Split(v, "\n")
+		for i := range lines {
+			lines[i] = strings.TrimRightFunc(lines[i], unicode.IsSpace)
+		}
+		v = blankLines.ReplaceAllString(strings.Join(lines, "\n"), "\n\n")
+	}
+	v = strings.TrimSpace(v)
+	if n := len([]rune(v)); n > max {
+		return "", fmt.Sprintf("%s takes at most %d characters; this has %d.", what, max, n)
+	}
+	return v, ""
+}
+
+var (
+	blankLines = regexp.MustCompile(`\n{3,}`)
+	// emailRE is an address a person can write to: no spaces, one @, and a domain with a dot.
+	emailRE = regexp.MustCompile(`^[^\s@<>()"',;:\\]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
+	// schemeRE is the start of a link of any kind ("javascript:", "data:", "https:"): a word and a
+	// colon with no space after it. "Phone: 0123" is text, because of the space.
+	schemeRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*):\S`)
+)
+
+// contactKind says what a contact is: an email address (the page makes it a mailto link), an http or
+// https link (a link that opens in a new tab), or a short text (shown as it is). A link of any other
+// kind is refused, so a contact can never be javascript: or data:, and neither is a link with a name
+// and password in it, which can make one site look like another. ok is false when it is refused.
+func contactKind(c string) (kind string, ok bool) {
+	switch {
+	case c == "":
+		return "", true
+	case emailRE.MatchString(c):
+		return "email", true
+	}
+	m := schemeRE.FindStringSubmatch(c)
+	if m == nil {
+		return "text", true
+	}
+	if s := strings.ToLower(m[1]); s != "http" && s != "https" {
+		return "", false
+	}
+	u, err := url.Parse(c)
+	if err != nil || u.Host == "" || u.User != nil || strings.ContainsFunc(c, unicode.IsSpace) {
+		return "", false
+	}
+	return "link", true
+}
+
+// instanceInput is a save: every part at once, so two admins cannot each save half, and the version
+// the edit was made against.
+type instanceInput struct {
+	Description *string        `json:"description"`
+	Contact     *string        `json:"contact"`
+	Rules       []instanceRule `json:"rules"`
+	UpdatedAt   *string        `json:"updatedAt"`
+}
+
+// cleanInstance checks a save against the limits. It returns what is to be stored, or the field the
+// problem is in ("description", "contact", "rules", "rules.2.text") and why.
+func cleanInstance(in instanceInput) (instanceInfo, string, string) {
+	var out instanceInfo
+	if in.Description == nil || in.Contact == nil || in.Rules == nil || in.UpdatedAt == nil {
+		return out, "", "Send the description, the contact, the rules and updatedAt together: a save replaces all of them."
+	}
+	var msg string
+	if out.Description, msg = plainText(*in.Description, "The description", true, maxInstanceDescription); msg != "" {
+		return out, "description", msg
+	}
+	if out.Contact, msg = plainText(*in.Contact, "The contact", false, maxInstanceContact); msg != "" {
+		return out, "contact", msg
+	}
+	var ok bool
+	if out.ContactKind, ok = contactKind(out.Contact); !ok {
+		return out, "contact", "The contact is an email address, a link that starts with https:// or http://, or a short text that is not a link of another kind."
+	}
+	if len(in.Rules) > maxInstanceRules {
+		return out, "rules", fmt.Sprintf("Keep to %d rules at most; this has %d.", maxInstanceRules, len(in.Rules))
+	}
+	out.Rules = []instanceRule{}
+	for i, r := range in.Rules {
+		n := strconv.Itoa(i + 1)
+		var c instanceRule
+		if c.Text, msg = plainText(r.Text, "Rule "+n, false, maxRuleText); msg != "" {
+			return out, "rules." + strconv.Itoa(i) + ".text", msg
+		}
+		if c.Text == "" {
+			return out, "rules." + strconv.Itoa(i) + ".text", "Rule " + n + " is empty. Write it, or remove it."
+		}
+		if c.Hint, msg = plainText(r.Hint, "The explanation of rule "+n, true, maxRuleHint); msg != "" {
+			return out, "rules." + strconv.Itoa(i) + ".hint", msg
+		}
+		out.Rules = append(out.Rules, c)
+	}
+	return out, "", ""
+}
+
+// instanceAnswer is what the admin's editor reads: the parts, the version to send back with a save,
+// who saved last, and the limits.
+func instanceAnswer(info instanceInfo, version, by string) map[string]any {
+	var who any
+	if by != "" {
+		who = by
+	}
+	return map[string]any{"description": info.Description, "contact": info.Contact, "contactKind": info.ContactKind, "rules": info.Rules,
+		"updatedAt": version, "updatedBy": who, "limits": instanceLimits}
+}
+
+func (a *app) handleGetInstanceAdmin(w http.ResponseWriter, _ *http.Request, _ *user) {
+	info, version, by, err := readInstance(a.db)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, instanceAnswer(info, version, by))
+}
+
+// handlePutInstance saves the whole document. The parts that changed are written, with the account
+// and the time, in one transaction with their audit row. A lock for the length of the transaction
+// keeps two saves in order, and the version check refuses a save made against a state that has since
+// changed (409, with the state as it is), so one admin cannot quietly undo another's rules.
+func (a *app) handlePutInstance(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.instance, u, "saves of the instance information")
+	if !ok {
+		return
+	}
+	var in instanceInput
+	if !readJSON(w, r, 64<<10, &in) {
+		return
+	}
+	next, field, msg := cleanInstance(in)
+	if msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "field": field})
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(7130652)`); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	cur, version, by, err := readInstance(tx)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if version != *in.UpdatedAt {
+		out := instanceAnswer(cur, version, by)
+		out["error"] = "Another admin saved the instance information while you were editing it. Look at what they saved, then save yours again."
+		writeJSON(w, http.StatusConflict, out)
+		return
+	}
+	values := map[string]any{"description": next.Description, "contact": next.Contact, "rules": next.Rules}
+	before := map[string]any{"description": cur.Description, "contact": cur.Contact, "rules": cur.Rules}
+	var changed []string
+	for _, k := range instanceParts {
+		nb, _ := json.Marshal(values[k])
+		ob, _ := json.Marshal(before[k])
+		if bytes.Equal(nb, ob) {
+			continue
+		}
+		changed = append(changed, k)
+		// clock_timestamp, not now(): the time of the write, after the lock, so a save that waited for
+		// another is always the later version.
+		if _, err := tx.Exec(`INSERT INTO instance_settings (key, value, updated_at, updated_by) VALUES ($1, $2, clock_timestamp(), $3)
+			ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`, k, string(nb), u.ID); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	if len(changed) > 0 {
+		// The log keeps rows short, as it does for flags: which parts changed and how many rules
+		// there are now, not the text, which the settings themselves hold.
+		if err := a.audit(tx, u.ID, "instance", "", 0, 0, "", map[string]any{"parts": changed, "rules": len(next.Rules)}); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.instMu.Lock()
+	a.instCache = nil
+	a.instMu.Unlock()
+	info, version, by, err := readInstance(a.db)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, instanceAnswer(info, version, by))
+}
+
+// handleInstance is the about page for a signed-in member, in every mode, whatever has been saved.
+func (a *app) handleInstance(w http.ResponseWriter, _ *http.Request, _ *user) {
+	info, err := a.instanceCached()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// handleAbout is the about page for anyone, signed in or not. Until an admin has saved a description
+// it answers as an address nobody has (the same 404 as handleStatic), so an instance that sets
+// nothing tells a visitor nothing new. After that it is counted by address, as sign-in is, though
+// the answer comes from memory: the limit is for the bandwidth, the cache for the database.
+func (a *app) handleAbout(w http.ResponseWriter, r *http.Request) {
+	info, err := a.instanceCached()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if info.Description == "" {
+		http.NotFound(w, r)
+		return
+	}
+	from := limitKey(a.clientIP(r))
+	if !a.lim.about.add(from) {
+		logRefusal(w, "too many reads of the about page", "from "+from)
+		fail(w, http.StatusTooManyRequests, "Too many requests from this address. Try again in an hour.")
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
 /* ---------- accounts ---------- */
 
 func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -983,6 +1347,21 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": permsOf(u)}
+	// What an admin has said about this Flowa, only once something is saved, so an instance that has
+	// saved nothing answers as it always has. about says whether this reader may open the about page (a
+	// visitor only once there is a description); a visitor is also given the rules, for the sign-up form.
+	info, err := a.instanceCached()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if !info.empty() {
+		in := map[string]any{"about": u != nil || info.Description != ""}
+		if u == nil && len(info.Rules) > 0 {
+			in["rules"] = info.Rules
+		}
+		out["instance"] = in
+	}
 	// Where the machine's own start page is concerns the people who run it, nobody else.
 	if u != nil && u.Role == "admin" && a.homeURL != "" {
 		out["homeUrl"] = a.homeURL
@@ -4297,6 +4676,17 @@ var migrations = []string{schema, schemaSocial,
 		CONSTRAINT follows_not_self CHECK (follower_id <> followee_id)
 	);
 	CREATE INDEX IF NOT EXISTS follows_followee ON follows (followee_id, follower_id)`,
+	// 10: settings an admin changes at runtime (docs/federation.md, F1 and 9.1), one row a key. This
+	// version writes three keys, description, contact and rules (instanceParts); later items add their
+	// own. updated_by is the account that saved the row, kept null when that account is deleted. A new
+	// table only, and nothing writes a row until an admin saves: going back to an earlier build is safe,
+	// and that build simply shows no rules and no about page.
+	`CREATE TABLE IF NOT EXISTS instance_settings (
+		key TEXT PRIMARY KEY,
+		value JSONB NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_by BIGINT REFERENCES users(id) ON DELETE SET NULL
+	)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -4914,6 +5304,10 @@ func (a *app) table(st *static) *routeMux {
 	mux.HandleFunc("GET /api/progress/{prop}", a.authed("", a.handleGetProgress))
 	mux.HandleFunc("PUT /api/progress/{prop}", a.authed("", a.handlePutProgress))
 	mux.HandleFunc("PUT /api/flags", a.authed(permFlagsEdit, a.handlePutFlags))
+	mux.HandleFunc("GET /api/admin/instance", a.authed(permFlagsEdit, a.handleGetInstanceAdmin))
+	mux.HandleFunc("PUT /api/admin/instance", a.authed(permFlagsEdit, a.handlePutInstance))
+	mux.HandleFunc("GET /api/instance", a.authed("", a.handleInstance))
+	mux.HandleFunc("GET /api/about", a.handleAbout)
 	mux.HandleFunc("GET /api/admin/users", a.authed(permDashboard, a.handleUsers))
 	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(permUserManage, a.handleDeleteUser))
 	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(permUserManage, a.handleResetPassword))
