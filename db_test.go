@@ -3881,6 +3881,23 @@ func TestDBInstanceInfo(t *testing.T) {
 	if code, out := e.do("", "POST", "/api/signup", map[string]string{"username": "newbie", "password": "a fine long password"}); code != 200 || len(out) != 2 || out["user"] == nil {
 		t.Errorf("sign-up with nothing saved: %d %v", code, out["_raw"])
 	}
+	// A flood of reads on an instance that has saved nothing costs no query each: the empty answer is
+	// served from memory. The table is moved out of the way, so a read that asked the database would
+	// fail with 500; the reads above filled the cache moments ago, well inside its ten seconds.
+	if _, err := e.a.db.Exec(`ALTER TABLE instance_settings RENAME TO instance_settings_away`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		if code, body, _ := raw("/api/about", ""); code != code0 || body != body0 {
+			t.Fatalf("read %d of the visitor's about with the table away: %d %q", i+1, code, body)
+		}
+		if code, out := e.do("", "GET", "/api/me", nil); code != 200 || out["instance"] != nil {
+			t.Fatalf("read %d of /api/me with the table away: %d %v", i+1, code, out["_raw"])
+		}
+	}
+	if _, err := e.a.db.Exec(`ALTER TABLE instance_settings_away RENAME TO instance_settings`); err != nil {
+		t.Fatal(err)
+	}
 
 	// Only an admin with flags.edit reads the editor or saves.
 	empty := full("A description", "", rules(), "")
@@ -4046,6 +4063,35 @@ func TestDBInstanceInfo(t *testing.T) {
 	}
 	if code, _, _ := raw("/api/about", "203.0.113.9:4000"); code != 200 {
 		t.Errorf("the visitor's about after the account that saved was deleted: %d", code)
+	}
+
+	// A whole document at its limits, in characters of 3 bytes and of 4 bytes in UTF-8, saves and reads
+	// back the same: the limit on the request's size is in bytes, and must not be met first.
+	for _, ch := range []string{"漢", "🌀"} {
+		of := func(n int) string { return strings.Repeat(ch, n) }
+		rs := make([]map[string]string, maxInstanceRules)
+		for i := range rs {
+			rs[i] = map[string]string{"text": of(maxRuleText), "hint": of(maxRuleHint)}
+		}
+		v, _ := e.must(200, admin, "GET", "/api/admin/instance", nil)["updatedAt"].(string)
+		d := doc{"description": of(maxInstanceDescription), "contact": of(maxInstanceContact), "rules": rs, "updatedAt": v}
+		if b, _ := json.Marshal(d); len(b) <= 64<<10 {
+			t.Errorf("the document in %q is %d bytes, which does not test the size", ch, len(b))
+		}
+		if code, out := put(admin, d); code != 200 {
+			t.Errorf("a whole document at its limits in %q: %d %v", ch, code, out["error"])
+			continue
+		}
+		out := e.must(200, ana, "GET", "/api/instance", nil)
+		got, _ := out["rules"].([]any)
+		same := out["description"] == of(maxInstanceDescription) && out["contact"] == of(maxInstanceContact) && len(got) == maxInstanceRules
+		for _, r := range got {
+			m, _ := r.(map[string]any)
+			same = same && m["text"] == of(maxRuleText) && m["hint"] == of(maxRuleHint)
+		}
+		if !same {
+			t.Errorf("the document in %q does not read back the same", ch)
+		}
 	}
 
 	// Everything cleared: the instance answers as one that never saved anything.

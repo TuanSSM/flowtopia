@@ -202,6 +202,49 @@ try:
     load(BASE+'?cleared#/signup');wait_for("return !!document.querySelector('#auth-form[data-mode=signup]')",'the sign-up form again',20)
     check('cleared again: no rules at sign-up, no link, and the visitor\'s about answers as an unknown address',not js("return !!document.querySelector('.signup-rules')") and js(ABOUT_LINKS)==0 and code_of(opener(),'about')==404 and 'instance' not in get(opener(),'me'))
     as_user('admin','flowa-test-only')
+    # Saving by the keys: Enter in the contact box saves, and the cursor is back in that box afterwards.
+    ver=lambda: get(op,'admin/instance')['updatedAt']
+    nav('#/admin/instance');wait_for("return !!document.querySelector('#inst-form [name=contact]')",'the instance editor')
+    js("document.querySelector('#inst-form [name=contact]').focus()");type_text('jam@example.org');key(ENTER)
+    check('Enter in a box saves, and the cursor is back in that box',lambda: get(op,'admin/instance')['contact']=='jam@example.org' and on('#inst-form [name=contact]'),lambda: (get(op,'admin/instance')['contact'],active()))
+    # An address is put into its mail link as a code, so nothing in it can add a header to the message.
+    href=js("return contactHTML('a.b+c-d_e@mail.example.co','email')")
+    check('the mail link of an address is the address written as a code',href=='<a href="mailto:a.b%2Bc-d_e@mail.example.co">a.b+c-d_e@mail.example.co</a>',href)
+    # A save on its way: typing goes on, Save stays off and a second submit sends nothing; what was typed
+    # meanwhile stays in the form, unsaved, over the new version, and the next save is no clash.
+    HOLD="window.__puts=0;window.__hold=new Promise(r=>window.__go=r);const real=window.__real0=window.fetch;window.fetch=function(u,o){if(String(u)==='api/admin/instance'&&o&&o.method==='PUT'){window.__puts++;return window.__hold.then(()=>real.call(window,u,o))}return real.call(window,u,o)}"
+    js(HOLD)
+    js(TYPE,'#inst-form [name=description]','First words.')
+    js("document.querySelector('#inst-form').requestSubmit()")
+    wait_for("return window.__puts===1",'the save to be on its way')
+    js(TYPE,'#inst-form [name=description]','First words. More words.')
+    st=js("const b=document.querySelector('#inst-save');document.querySelector('#inst-form').requestSubmit();return b.disabled")
+    check('while a save is on its way, typing does not turn Save on and a second submit sends nothing',st is True and js("return window.__puts")==1,(st,js("return window.__puts")))
+    js("window.__go()")
+    check('after the save, what was typed meanwhile is in the form, unsaved, and the saved text is the first',lambda: get(op,'admin/instance')['description']=='First words.' and js("return document.querySelector('#inst-form [name=description]').value")=='First words. More words.' and js("return document.querySelector('#inst-save').disabled")==False,lambda: (get(op,'admin/instance')['description'],js("return document.querySelector('#inst-form [name=description]').value")))
+    js("window.fetch=window.__real0");js("document.querySelector('#inst-form').requestSubmit()")
+    check('the next save goes against the new version: saved, with no clash',lambda: get(op,'admin/instance')['description']=='First words. More words.' and (txt('#inst-err') or '')=='',lambda: (get(op,'admin/instance')['description'],txt('#inst-err')))
+    # Unsaved text is kept when the admin goes to another page and back, and leaving the page asks first.
+    js(TYPE,'#inst-form [name=description]','Kept while I look elsewhere.')
+    nav('#/admin/audit');nav('#/admin/instance')
+    check('unsaved text is still in the form after another page',lambda: js("return (document.querySelector('#inst-form [name=description]')||{}).value")=='Kept while I look elsewhere.')
+    check('leaving the page with unsaved text asks first',js("const e=new Event('beforeunload',{cancelable:true});dispatchEvent(e);return e.defaultPrevented"))
+    # Another admin saves meanwhile: the save is refused, the text stays, and the two ways on are offered.
+    api(op,'admin/instance',{'description':'Theirs.','contact':'jam@example.org','rules':[],'updatedAt':ver()},'PUT')
+    js("document.querySelector('#inst-form').requestSubmit()")
+    check('a clash keeps the text in the form and says that someone else saved',lambda: 'Someone else saved' in (txt('#inst-err') or '') and js("return document.querySelector('#inst-form [name=description]').value")=='Kept while I look elsewhere.' and js("return document.querySelector('#inst-save').disabled"),lambda: (txt('#inst-err'),js("return document.querySelector('#inst-form [name=description]').value")))
+    check('the clash offers Load their version and Save mine over it',js("return [...document.querySelectorAll('.inst-clash button')].map(b=>b.textContent)")==['Load their version','Save mine over it'])
+    click('[data-act=inst-mine]')
+    check('Save mine over it saves the text over theirs',lambda: get(op,'admin/instance')['description']=='Kept while I look elsewhere.' and not js("return !!document.querySelector('.inst-clash')"),lambda: get(op,'admin/instance')['description'])
+    js(TYPE,'#inst-form [name=description]','Mine again.')
+    api(op,'admin/instance',{'description':'Theirs again.','contact':'jam@example.org','rules':[],'updatedAt':ver()},'PUT')
+    js("document.querySelector('#inst-form').requestSubmit()")
+    wait_for("return !!document.querySelector('[data-act=inst-theirs]')",'the clash to be offered')
+    click('[data-act=inst-theirs]')
+    check('Load their version puts theirs in the form, and Save waits for a change',lambda: js("return document.querySelector('#inst-form [name=description]').value")=='Theirs again.' and js("return document.querySelector('#inst-save').disabled") and (txt('#inst-err') or '')=='' and get(op,'admin/instance')['description']=='Theirs again.')
+    api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':ver()},'PUT')
+    check('cleared again after the clash checks',lambda: get(op,'admin/instance')['description']=='' and get(op,'admin/instance')['contact']=='')
+    nav('#/admin/audit')
     nav('#/admin/accounts')
     ROLE="const s=document.querySelector('[data-change=user-role][data-id=\"'+arguments[0]+'\"]');s.value=arguments[1];s.dispatchEvent(new Event('change',{bubbles:true}))"
     rid=str(me_id(rae))

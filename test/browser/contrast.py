@@ -271,6 +271,7 @@ try:
     # Signed out.
     page('landing','#/')
     page('sign in','#/signin')
+    page('create an account','#/signup')  # with nothing saved: no rules
     page('skill maps, signed out','#/maps')
     signin()
     # The switch on the page sets the theme the way this walk does: by data-theme on the root element.

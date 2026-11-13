@@ -1083,16 +1083,22 @@ func (a *app) instanceCached() (instanceInfo, error) {
 
 // plainText cleans one part as typed: a line break from Windows becomes a plain one, a tab a space,
 // what draws nothing is dropped (visibleText), and the ends are trimmed. Any other control character
-// is refused rather than dropped, because it was not typed by a person. Line breaks are kept only
-// where lines make sense (multi), and then at most one empty line in a row, so a paste cannot push
-// the rest of the page away. It returns the text, or why it cannot be used.
+// (NEL, the vertical tab and the form feed among them) is refused rather than dropped, because it was
+// not typed by a person. The line and paragraph separators (U+2028, U+2029) are no control characters,
+// but a browser breaks the line at them: where lines make sense (multi) they are line breaks like any
+// other, and in a one-line part they are refused as a line break is. Line breaks are kept only where
+// lines make sense, and then at most one empty line in a row, so a paste cannot push the rest of the
+// page away. It returns the text, or why it cannot be used.
 func plainText(s, what string, multi bool, max int) (string, string) {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if multi {
+		s = strings.NewReplacer("\u2028", "\n", "\u2029", "\n").Replace(s)
+	}
 	for _, r := range s {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return "", what + " cannot hold control characters."
 		}
-		if r == '\n' && !multi {
+		if (r == '\n' || r == '\u2028' || r == '\u2029') && !multi {
 			return "", what + " is one line: it cannot hold a line break."
 		}
 	}
@@ -1116,17 +1122,26 @@ func plainText(s, what string, multi bool, max int) (string, string) {
 
 var (
 	blankLines = regexp.MustCompile(`\n{3,}`)
-	// emailRE is an address a person can write to: no spaces, one @, and a domain with a dot.
-	emailRE = regexp.MustCompile(`^[^\s@<>()"',;:\\]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
+	// emailRE is an address a person can write to: letters, digits and . _ + - before the @, and a
+	// domain with a dot. Nothing that means something in a mailto: link is let in (? & = # / for
+	// headers such as cc, % for characters written as codes), so the page's link goes to that address
+	// and nowhere else; an address with other characters is kept as text.
+	emailRE = regexp.MustCompile(`^[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
 	// schemeRE is the start of a link of any kind ("javascript:", "data:", "https:"): a word and a
 	// colon with no space after it. "Phone: 0123" is text, because of the space.
 	schemeRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*):\S`)
+	// hostRE is the host of a contact link, with its port: ASCII letters, digits, dots and dashes.
+	hostRE = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]+)?$`)
 )
 
 // contactKind says what a contact is: an email address (the page makes it a mailto link), an http or
 // https link (a link that opens in a new tab), or a short text (shown as it is). A link of any other
 // kind is refused, so a contact can never be javascript: or data:, and neither is a link with a name
-// and password in it, which can make one site look like another. ok is false when it is refused.
+// and password in it, or with a host in other than plain letters, digits, dots and dashes: both can
+// make one site look like another (https://аpple.com with a Cyrillic а). Such a host is written in its
+// xn-- form, which shows what it is; turning it into that form here would need a library for little.
+// Text that only looks like a link, such as //evil.example, is text: the page never makes it a link.
+// ok is false when it is refused.
 func contactKind(c string) (kind string, ok bool) {
 	switch {
 	case c == "":
@@ -1142,7 +1157,7 @@ func contactKind(c string) (kind string, ok bool) {
 		return "", false
 	}
 	u, err := url.Parse(c)
-	if err != nil || u.Host == "" || u.User != nil || strings.ContainsFunc(c, unicode.IsSpace) {
+	if err != nil || u.Host == "" || u.User != nil || strings.ContainsFunc(c, unicode.IsSpace) || !hostRE.MatchString(u.Host) {
 		return "", false
 	}
 	return "link", true
@@ -1173,7 +1188,7 @@ func cleanInstance(in instanceInput) (instanceInfo, string, string) {
 	}
 	var ok bool
 	if out.ContactKind, ok = contactKind(out.Contact); !ok {
-		return out, "contact", "The contact is an email address, a link that starts with https:// or http://, or a short text that is not a link of another kind."
+		return out, "contact", "The contact is an email address, a link that starts with https:// or http:// (a host in letters other than a to z written in its xn-- form), or a short text that is not a link of another kind."
 	}
 	if len(in.Rules) > maxInstanceRules {
 		return out, "rules", fmt.Sprintf("Keep to %d rules at most; this has %d.", maxInstanceRules, len(in.Rules))
@@ -1225,8 +1240,11 @@ func (a *app) handlePutInstance(w http.ResponseWriter, r *http.Request, u *user)
 	if !ok {
 		return
 	}
+	// The limits are in characters, and one character takes up to 4 bytes in JSON as sent: a whole
+	// document at its limits (24,700 characters) is under 100 KB in any script, so 256 KB is room enough
+	// and still a bound.
 	var in instanceInput
-	if !readJSON(w, r, 64<<10, &in) {
+	if !readJSON(w, r, 256<<10, &in) {
 		return
 	}
 	next, field, msg := cleanInstance(in)

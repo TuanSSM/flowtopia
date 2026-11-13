@@ -349,7 +349,9 @@ async function loadAbout() {
   render();
 }
 function contactHTML(c, kind) {
-  if (kind === 'email') return `<a href="mailto:${esc(c)}">${esc(c)}</a>`;
+  // The server lets only letters, digits and . _ + - before the @; the address is still written as a code in the
+  // link, so nothing in it could ever add a header (cc, subject) to the message.
+  if (kind === 'email') return `<a href="mailto:${esc(encodeURIComponent(c).replace(/%40/g, '@'))}">${esc(c)}</a>`;
   if (kind === 'link') return `<a href="${esc(c)}" rel="noopener noreferrer" target="_blank">${esc(c)}</a>`;
   return `<span class="plain-text">${esc(c)}</span>`;
 }

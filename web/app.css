@@ -350,6 +350,7 @@ a.chip:hover, button.chip:hover { background: var(--hover); text-decoration: non
 .signup-rules { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--side); }
 .signup-rules h2 { font-size: 14px; }
 .about { max-width: 720px; }
+.about-contact { overflow-wrap: anywhere; } /* a long link breaks anywhere rather than run off a phone */
 /* The admin's editor: one box per rule, with its buttons under it. */
 .inst-rules { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
 .inst-rule { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-s); }
