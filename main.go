@@ -6,8 +6,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/pbkdf2"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -17,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -137,6 +142,7 @@ type app struct {
 	fetch     *fetcher     // link previews; nil means no fetching
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
 	mode      instanceMode // how the instance runs (FLOWA_MODE); local unless the operator says otherwise
+	fed       *federation  // the origin, the keys and whether federation is refused; nil unless the mode federates
 	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
 	flagCache map[string]bool
 	flagsAt   time.Time
@@ -5006,6 +5012,724 @@ func (a *app) audit(x execer, actor int64, action, kind string, targetID, target
 	return err
 }
 
+/* ---------- federation: the public origin, the key secret and the keys ----------
+
+The foundation of federation (docs/federation.md, F7, 4.3, 5.1 and 5.7) and nothing that talks to
+another server: there is no WebFinger, no actor document, no signature and no request out yet. All of
+it runs only in a mode that federates, and no such mode is built (modesBuilt), so an instance cannot
+reach any of it today: FLOWA_MODE=federated still stops the start with "not built". The tests reach
+it by building federated mode for themselves. */
+
+// federates says whether a mode talks to other servers. Single mode will when FLOWA_FEDERATE=on is
+// read (docs/federation.md, 4.1), which is a later item; until then only federated mode does.
+func (m instanceMode) federates() bool { return m == modeFederated }
+
+// publicOrigin is the address other servers know this instance by (FLOWA_ORIGIN): "https://" and a
+// host, with a port only when it is not 443. Every actor id is made from it, and other servers compare
+// ids as text, so it is kept in one written form: lower case, no trailing slash, no ":443".
+type publicOrigin struct {
+	url  string // https://flowa.example.org, or https://flowa.example.org:8443
+	host string // flowa.example.org: the name allowedHost accepts
+}
+
+func (o publicOrigin) String() string { return o.url }
+
+// originMax is the longest FLOWA_ORIGIN read: "https://", a host of 253 characters, a colon and five
+// digits, and a trailing slash.
+const originMax = len("https://") + 253 + 6 + 1
+
+// parseOrigin reads FLOWA_ORIGIN. What it forgives, each because the result is the same origin:
+// spaces around the value (a line copied from a file), capitals (scheme and host are not case
+// sensitive), one trailing slash (what a browser's address bar shows), and ":443" (the port https
+// means anyway). What it refuses, each with a message: anything but https (other servers reach an
+// actor only over https), a path, a query, a fragment, a user name, a space or a control character
+// inside, an IP address (no certificate names one for other servers to check, and Mastodon expects a
+// domain), localhost and the single-label and private names allowedHost lets through for the home
+// network (no other server can reach them), a host in other than ASCII letters, digits, dots and
+// dashes (a name in another script is written in its xn-- form, as the instance contact is, since
+// turning it into that form would need a library), a host over 253 characters or a label over 63, an
+// empty label, a trailing dot (the same name written two ways would be two origins), and a port that
+// is not 1 to 65535. A value too long to be an origin is cut in the message, as parseMode does.
+func parseOrigin(v string) (publicOrigin, error) {
+	shown := v
+	if len(shown) > 60 {
+		shown = shown[:60] + "..."
+	}
+	bad := func(why string) (publicOrigin, error) {
+		return publicOrigin{}, fmt.Errorf("FLOWA_ORIGIN=%q %s; set it to https:// and the public name of this instance, such as https://flowa.example.org", shown, why)
+	}
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return publicOrigin{}, errors.New("FLOWA_ORIGIN is not set; a mode that federates needs the public address of this instance, such as https://flowa.example.org")
+	}
+	if len(s) > originMax {
+		return bad("is too long to be an origin")
+	}
+	if strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return bad("has a space or a control character in it")
+	}
+	s = strings.ToLower(s)
+	rest, ok := strings.CutPrefix(s, "https://")
+	switch {
+	case ok:
+	case strings.HasPrefix(s, "http://"):
+		return bad("is http: other servers reach an actor only over https")
+	case strings.Contains(s, "://"):
+		return bad("has a scheme other than https")
+	default:
+		return bad("does not start with https://")
+	}
+	rest = strings.TrimSuffix(rest, "/")
+	if i := strings.IndexAny(rest, "/\\?#@"); i >= 0 {
+		return bad(map[byte]string{'/': "has a path", '\\': "has a path", '?': "has a query", '#': "has a fragment", '@': "has a user name"}[rest[i]])
+	}
+	if strings.HasPrefix(rest, "[") {
+		return bad("is an IP address; other servers need a name")
+	}
+	host, port, hasPort := strings.Cut(rest, ":")
+	if hasPort {
+		n, err := strconv.Atoi(port)
+		if port == "" || len(port) > 5 || strings.Trim(port, "0123456789") != "" || err != nil || n < 1 || n > 65535 {
+			return bad("has a port that is not a number from 1 to 65535")
+		}
+		port = strconv.Itoa(n)
+		if n == 443 {
+			port = ""
+		}
+	}
+	if why := originHost(host); why != "" {
+		return bad(why)
+	}
+	o := publicOrigin{url: "https://" + host, host: host}
+	if port != "" {
+		o.url += ":" + port
+	}
+	return o, nil
+}
+
+// originHost says what is wrong with the host of an origin, or "" when nothing is. host is lower case.
+func originHost(host string) string {
+	switch {
+	case host == "":
+		return "has no host"
+	case len(host) > 253:
+		return "has a host longer than 253 characters"
+	case strings.ContainsFunc(host, func(r rune) bool { return r >= utf8.RuneSelf }):
+		return "has a host in other than plain letters, digits, dots and dashes; write a name in another script in its xn-- form"
+	case net.ParseIP(host) != nil:
+		return "is an IP address; other servers need a name"
+	case strings.HasSuffix(host, "."):
+		return "ends with a dot; write the name without it, since the same name written two ways would be two origins"
+	}
+	labels := strings.Split(host, ".")
+	for _, l := range labels {
+		switch {
+		case l == "":
+			return "has an empty label in its host (two dots in a row)"
+		case len(l) > 63:
+			return "has a label longer than 63 characters in its host"
+		case strings.Trim(l, "abcdefghijklmnopqrstuvwxyz0123456789-") != "":
+			return "has a character other than letters, digits, dots and dashes in its host"
+		case l[0] == '-' || l[len(l)-1] == '-':
+			return "has a label that starts or ends with a dash in its host"
+		}
+	}
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+		return "is an IP address; other servers need a name" // 127.1, 10.1.2: shapes ParseIP does not take
+	}
+	if len(labels) == 1 || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return "is a name only this machine or a home network can reach"
+	}
+	for _, p := range privateSuffixes {
+		if strings.HasSuffix(host, p) {
+			return "is a private name (" + p + ") that other servers cannot reach"
+		}
+	}
+	return ""
+}
+
+// keySecret seals the private keys in ap_keys (FLOWA_KEY_SECRET, F7). It holds only the cipher made
+// from the secret, never the secret's text, and it prints as a fixed word in every format and in
+// JSON, so that it cannot reach a log line, an error or the audit log by accident. As a field of
+// another struct it prints as an address (fmt does not call methods on unexported fields). Nothing
+// writes it to the database, a backup or the dashboard.
+type keySecret struct{ aead cipher.AEAD }
+
+// secretShown is what a keySecret prints as.
+const secretShown = "[key secret]"
+
+func (keySecret) String() string               { return secretShown }
+func (keySecret) GoString() string             { return secretShown }
+func (keySecret) Format(f fmt.State, _ rune)   { io.WriteString(f, secretShown) }
+func (keySecret) MarshalJSON() ([]byte, error) { return json.Marshal(secretShown) }
+func (keySecret) MarshalText() ([]byte, error) { return []byte(secretShown), nil }
+func (s keySecret) set() bool                  { return s.aead != nil }
+
+// sealInfo names what the AES key made from FLOWA_KEY_SECRET is for. The secret is never used as a key
+// itself: HKDF-SHA256 makes one from it for this purpose, and a second purpose later names its own
+// info and gets an unrelated key from the same secret.
+const sealInfo = "flowa ap_keys private key sealing v1"
+
+// keySecretHow is the end of every message about FLOWA_KEY_SECRET. No message says anything of the
+// value itself, not even its length.
+const keySecretHow = "make one with openssl rand -hex 32, keep it beside the database password (never in the repository), and use it for nothing else"
+
+// parseKeySecret reads FLOWA_KEY_SECRET: exactly 64 hexadecimal characters (32 bytes), in either case,
+// with spaces around it forgiven. A value with fewer than 8 different bytes, or one that repeats a
+// block of 16 bytes or fewer ("00...", "abab...", "0123456789abcdef" four times), is refused as not
+// random: either happens to random bytes with a chance far below one in 2^100, so refusing them costs
+// nothing, while a value typed by hand often looks like that. Nothing subtler can be checked honestly.
+func parseKeySecret(v string) (keySecret, error) {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET is not set; a mode that federates seals the signing keys with it: " + keySecretHow)
+	}
+	if len(s) != 64 {
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET has the wrong length: it must be 64 hexadecimal characters (32 bytes); " + keySecretHow)
+	}
+	raw, err := hex.DecodeString(s)
+	if err != nil { // hex's own error names the character, so it is not passed on
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET must be hexadecimal: the digits 0 to 9 and the letters a to f; " + keySecretHow)
+	}
+	defer clear(raw)
+	if weakSecret(raw) {
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET is not random: it has too few different bytes or repeats itself; " + keySecretHow)
+	}
+	key, err := hkdf.Key(sha256.New, raw, nil, sealInfo, 32)
+	if err != nil {
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET: cannot make the sealing key")
+	}
+	defer clear(key)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET: cannot make the sealing key")
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET: cannot make the sealing key")
+	}
+	return keySecret{aead: aead}, nil
+}
+
+// weakSecret reports whether secret bytes are plainly not random (see parseKeySecret).
+func weakSecret(b []byte) bool {
+	seen := map[byte]bool{}
+	for _, c := range b {
+		seen[c] = true
+	}
+	if len(seen) < 8 {
+		return true
+	}
+	for p := 1; p <= len(b)/2; p++ {
+		if bytes.Equal(b[p:], b[:len(b)-p]) {
+			return true
+		}
+	}
+	return false
+}
+
+// keyOwner is whose key a row of ap_keys holds: a users id, or instanceActor, which is NULL there.
+type keyOwner int64
+
+// instanceActor owns the instance's own key (docs/federation.md, 5.2: /actor). Ids of users start at 1.
+const instanceActor keyOwner = 0
+
+func (o keyOwner) String() string {
+	if o == instanceActor {
+		return "the instance actor"
+	}
+	return "user " + strconv.FormatInt(int64(o), 10)
+}
+
+// arg is the owner as a query argument: NULL for the instance actor.
+func (o keyOwner) arg() any {
+	if o == instanceActor {
+		return nil
+	}
+	return int64(o)
+}
+
+// sealPrefix names the sealing scheme, so that a later one can be told apart and the old rows still
+// opened: v1 is AES-256-GCM with a random 12-byte nonce, then base64url of the nonce, the ciphertext
+// and the tag.
+const sealPrefix = "v1."
+
+// errOpenKey is every failure to open a sealed key. It never says more, and never carries the bytes.
+var errOpenKey = errors.New("cannot open the key: it was sealed with another FLOWA_KEY_SECRET, for another row, or it was changed")
+
+// keyAAD binds a sealed key to its row: its key id and its owner are authenticated with it, so a blob
+// copied onto another row does not open there.
+func keyAAD(keyID string, o keyOwner) []byte {
+	return []byte("flowa ap_keys\x00" + keyID + "\x00" + o.String())
+}
+
+// seal encrypts a private key (PKCS#8 DER) for the row with keyID and owner o.
+func (s keySecret) seal(plain []byte, keyID string, o keyOwner) (string, error) {
+	if !s.set() {
+		return "", errors.New("cannot seal the key: FLOWA_KEY_SECRET is not set")
+	}
+	n := s.aead.NonceSize()
+	buf := make([]byte, n, n+len(plain)+s.aead.Overhead())
+	rand.Read(buf) // a fresh nonce for every seal; crypto/rand does not fail
+	return sealPrefix + base64.RawURLEncoding.EncodeToString(s.aead.Seal(buf, buf, plain, keyAAD(keyID, o))), nil
+}
+
+// open decrypts what seal made for the same row. Any other input is errOpenKey, never a panic.
+func (s keySecret) open(sealed, keyID string, o keyOwner) ([]byte, error) {
+	body, ok := strings.CutPrefix(sealed, sealPrefix)
+	if !s.set() || !ok {
+		return nil, errOpenKey
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(body)
+	n := s.aead.NonceSize()
+	if err != nil || len(raw) < n+s.aead.Overhead() {
+		return nil, errOpenKey
+	}
+	plain, err := s.aead.Open(nil, raw[:n], raw[n:], keyAAD(keyID, o))
+	if err != nil {
+		return nil, errOpenKey
+	}
+	return plain, nil
+}
+
+// fedSettings are the two settings a mode that federates needs before it starts.
+type fedSettings struct {
+	origin publicOrigin
+	secret keySecret
+}
+
+// parseFederation reads FLOWA_ORIGIN and FLOWA_KEY_SECRET, and only in a mode that federates: a stray
+// value cannot stop a local or single-profile instance, which never uses them (TestDBLocalModeUnchanged
+// starts one with both set to values that would be refused here). main calls it beside parseMode,
+// before the database is opened, for the same reason; start calls it again before anything is written.
+func parseFederation(m instanceMode, getenv func(string) string) (fedSettings, error) {
+	if !m.federates() {
+		return fedSettings{}, nil
+	}
+	o, err := parseOrigin(getenv("FLOWA_ORIGIN"))
+	if err != nil {
+		return fedSettings{}, fmt.Errorf("FLOWA_MODE=%s: %w", m, err)
+	}
+	s, err := parseKeySecret(getenv("FLOWA_KEY_SECRET"))
+	if err != nil {
+		return fedSettings{}, fmt.Errorf("FLOWA_MODE=%s: %w", m, err)
+	}
+	return fedSettings{origin: o, secret: s}, nil
+}
+
+const (
+	keyBits       = 2048              // RSA, what Mastodon verifies and the SWICG report asks for (5.7)
+	keyQueue      = 64                // owners waiting for a key; a request beyond that is dropped and asked again later
+	keyCacheSize  = 256               // parsed private keys kept in memory; any one goes when it is full
+	instanceKeyID = "/actor#main-key" // the instance actor's key id, after the origin
+)
+
+// federation is what a mode that federates holds at run time: the settings, whether federation is
+// refused, the parsed keys, and the worker that makes keys. A nil *federation on the app means the
+// mode does not federate; no goroutine, key or row exists then.
+type federation struct {
+	db     *sql.DB
+	origin publicOrigin
+	secret keySecret
+	gen    func() (*rsa.PrivateKey, error) // makes a key pair; a test counts or holds it
+
+	mu      sync.Mutex
+	refused string // why this instance federates nothing although its mode federates; "" when it may
+	cache   map[keyOwner]cachedKey
+
+	ask    chan keyOwner // owners the worker is asked to make a key for
+	once   sync.Once     // starts the worker on the first request
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+type cachedKey struct {
+	key *rsa.PrivateKey
+	id  string
+}
+
+// generateKey makes a key pair for newFederation. The tests replace it to count or hold the keys made.
+var generateKey = func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, keyBits) }
+
+func newFederation(db *sql.DB, s fedSettings) *federation {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &federation{db: db, origin: s.origin, secret: s.secret, cache: map[keyOwner]cachedKey{}, gen: generateKey,
+		ask: make(chan keyOwner, keyQueue), ctx: ctx, cancel: cancel}
+}
+
+// refuse stops federation for as long as the server runs, says why once in the log, and keeps the
+// first reason. Later items read refusal before they answer or send anything.
+func (f *federation) refuse(why string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refused == "" {
+		f.refused = why
+		log.Print(why)
+	}
+}
+
+func (f *federation) refusal() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.refused
+}
+
+// federating says whether this instance may federate now: its mode federates, and nothing refused it.
+func (a *app) federating() bool { return a.fed != nil && a.fed.refusal() == "" }
+
+// keyIDOf is the key id of an owner, the part after the origin (docs/federation.md, 5.2). ap_keys keeps
+// this part only: the origin is recorded once and frozen (recordOrigin), so writing it into every row
+// would repeat it, and the full id is the origin and this part joined.
+func (f *federation) keyIDOf(ctx context.Context, o keyOwner) (string, error) {
+	if o == instanceActor {
+		return instanceKeyID, nil
+	}
+	var name string
+	if err := f.db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1`, int64(o)).Scan(&name); err != nil {
+		return "", err
+	}
+	return "/users/" + name + "#main-key", nil
+}
+
+// makeKey makes a key pair and returns the public key as an SPKI PEM and the private key sealed for
+// its row. It takes 0.1 to 2 seconds, and holds no database connection while it does.
+func (f *federation) makeKey(keyID string, o keyOwner) (pubPEM, sealed string, err error) {
+	k, err := f.gen()
+	if err != nil {
+		return "", "", err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(k)
+	if err != nil {
+		return "", "", err
+	}
+	defer clear(der)
+	if sealed, err = f.secret.seal(der, keyID, o); err != nil {
+		return "", "", err
+	}
+	spki, err := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	if err != nil {
+		return "", "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: spki})), sealed, nil
+}
+
+// ensureKey makes sure an owner has a key pair and reports whether this call made it. It looks first,
+// makes a key only when there is none, and writes it with ON CONFLICT DO NOTHING: when two goroutines
+// or two servers (the old and the new during a deploy) make one at once, the unique index keeps the
+// first and the other is thrown away, and both then read the same key. Within one server the worker
+// asks one owner at a time, so a key is made twice only across servers, rarely, and harmlessly; not
+// making it then would need a lock held for the whole second it takes. It never replaces a key: a
+// key that cannot be opened is the operator's to replace (-rotate-keys). For the instance actor it
+// also records the origin in the same transaction (recordOrigin): making that key is the first thing
+// this version does as a federating server.
+func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
+	var have bool
+	if err := f.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint)`, o.arg()).Scan(&have); err != nil {
+		return false, err
+	}
+	if have {
+		return false, nil
+	}
+	keyID, err := f.keyIDOf(ctx, o)
+	if err != nil {
+		return false, err
+	}
+	pub, sealed, err := f.makeKey(keyID, o)
+	if err != nil {
+		return false, err
+	}
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	// The key id follows from the owner, so a second maker meets both unique constraints at once; DO
+	// NOTHING with no target covers both, and the check after it tells a lost race from a key id that
+	// another owner holds.
+	res, err := tx.ExecContext(ctx, `INSERT INTO ap_keys (user_id, key_id, public_key, private_sealed) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, o.arg(), keyID, pub, sealed)
+	if err != nil {
+		return false, err
+	}
+	made, _ := res.RowsAffected()
+	if made == 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint)`, o.arg()).Scan(&have); err != nil {
+			return false, err
+		}
+		if !have {
+			return false, fmt.Errorf("the key id %s belongs to another owner", keyID)
+		}
+	}
+	if o == instanceActor {
+		if err := recordOrigin(ctx, tx, f.origin); err != nil {
+			return false, err
+		}
+	}
+	return made == 1, tx.Commit()
+}
+
+// errNoKey says an owner has no key yet.
+var errNoKey = errors.New("no key yet")
+
+// privateKey returns an owner's private key and its key id (the part after the origin), from memory
+// when it was read before. A key that does not open is errOpenKey, with nothing of the key in it.
+func (f *federation) privateKey(ctx context.Context, o keyOwner) (*rsa.PrivateKey, string, error) {
+	f.mu.Lock()
+	c, ok := f.cache[o]
+	f.mu.Unlock()
+	if ok {
+		return c.key, c.id, nil
+	}
+	var keyID, sealed string
+	err := f.db.QueryRowContext(ctx, `SELECT key_id, private_sealed FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint`, o.arg()).Scan(&keyID, &sealed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", errNoKey
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	der, err := f.secret.open(sealed, keyID, o)
+	if err != nil {
+		return nil, "", err
+	}
+	defer clear(der)
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
+	k, isRSA := parsed.(*rsa.PrivateKey)
+	if err != nil || !isRSA {
+		return nil, "", errOpenKey
+	}
+	f.mu.Lock()
+	if len(f.cache) >= keyCacheSize {
+		for x := range f.cache {
+			delete(f.cache, x)
+			break
+		}
+	}
+	f.cache[o] = cachedKey{k, keyID}
+	f.mu.Unlock()
+	return k, keyID, nil
+}
+
+// requestKey asks the worker to make an owner's key, and returns at once: no request waits for a key.
+// It reports false when the queue is full; the owner is asked for again later.
+func (f *federation) requestKey(o keyOwner) bool {
+	f.once.Do(f.startWorker)
+	select {
+	case f.ask <- o:
+		return true
+	default:
+		log.Printf("keys: %d owners wait for a key already; the key of %s is asked for again later", keyQueue, o)
+		return false
+	}
+}
+
+// startWorker starts the one goroutine that makes keys, one at a time, until stop. A key takes up to
+// about two seconds of one core on the Pi, so one at a time keeps the other cores for the requests.
+func (f *federation) startWorker() {
+	f.wg.Add(1)
+	go func() {
+		defer f.wg.Done()
+		for {
+			select {
+			case <-f.ctx.Done():
+				return
+			case o := <-f.ask:
+				began := time.Now()
+				made, err := f.ensureKey(f.ctx, o)
+				var moved originMoved
+				switch {
+				case errors.As(err, &moved):
+					f.refuse(moved.Error())
+				case err != nil && f.ctx.Err() == nil:
+					log.Printf("keys: the key of %s was not made: %v", o, err)
+				case made:
+					log.Printf("keys: made the key of %s in %d ms", o, time.Since(began).Milliseconds())
+				}
+			}
+		}
+	}()
+}
+
+// stop tells the worker to stop and waits for it until ctx ends. A key being made is finished first
+// (key generation cannot be interrupted), and is not written once ctx has ended; the next start asks
+// for it again.
+func (f *federation) stop(ctx context.Context) error {
+	f.cancel()
+	done := make(chan struct{})
+	go func() { f.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// originMoved is a start whose FLOWA_ORIGIN is not the origin this instance first federated under.
+type originMoved struct{ was, now string }
+
+func (e originMoved) Error() string {
+	return fmt.Sprintf("federation refused: the origin was %s and is now %s; actor ids cannot move", e.was, e.now)
+}
+
+// recordedOrigin is the origin recorded at the first federation, or "" when there was none.
+func recordedOrigin(q queryRower) (string, error) {
+	var s string
+	err := q.QueryRow(`SELECT value #>> '{}' FROM instance_settings WHERE key = 'origin'`).Scan(&s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return s, err
+}
+
+// originMatches says whether a recorded origin is o, however either was written.
+func originMatches(recorded string, o publicOrigin) bool {
+	p, err := parseOrigin(recorded)
+	return err == nil && p.url == o.url
+}
+
+// recordOrigin records the origin and the time (instance_settings: origin, first_federated_at) the
+// first time this instance federates, and refuses with originMoved when another origin was recorded
+// before: actor ids announced to other servers cannot move (docs/federation.md, 4.3). Today it runs
+// when the instance actor's key is made; the items that first answer WebFinger or deliver call it too.
+// Two servers recording at once both insert with DO NOTHING; the second waits for the first to commit,
+// then reads its row, so one wins and both agree.
+func recordOrigin(ctx context.Context, tx *sql.Tx, o publicOrigin) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO instance_settings (key, value) VALUES ('origin', to_jsonb($1::text)), ('first_federated_at', to_jsonb(now()))
+		ON CONFLICT (key) DO NOTHING`, o.url); err != nil {
+		return err
+	}
+	was, err := recordedOrigin(tx)
+	if err != nil {
+		return err
+	}
+	if !originMatches(was, o) {
+		return originMoved{was: was, now: o.url}
+	}
+	return nil
+}
+
+// startFederation is the end of start in a mode that federates. A recorded origin that is not
+// FLOWA_ORIGIN, or a key secret that does not open the instance actor's key, does not stop the server:
+// it starts and serves the app as in local mode, says why once in the log, and federates nothing
+// (federation.refused). Otherwise the instance actor's key is asked for when there is none yet.
+func (a *app) startFederation(s fedSettings) error {
+	f := newFederation(a.db, s)
+	a.fed = f
+	was, err := recordedOrigin(a.db)
+	if err != nil {
+		return err
+	}
+	if was != "" && !originMatches(was, s.origin) {
+		f.refuse(originMoved{was: was, now: s.origin.url}.Error())
+		return nil
+	}
+	_, _, err = f.privateKey(context.Background(), instanceActor)
+	switch {
+	case errors.Is(err, errNoKey):
+		log.Printf("federation: origin %s; the instance actor's key is made in the background", s.origin)
+		f.requestKey(instanceActor)
+	case errors.Is(err, errOpenKey):
+		f.refuse("federation refused: FLOWA_KEY_SECRET does not open the keys stored here, so it is not the secret they were sealed with. Set that secret again, or make new keys for every account with /nunchaku -rotate-keys")
+	case err != nil:
+		return err
+	default:
+		log.Printf("federation: origin %s; the instance actor's key opens", s.origin)
+	}
+	return nil
+}
+
+// rotateKeys makes a new key pair for every owner that has one, one at a time, and replaces each old
+// key in one statement, only if it is still the one read (another rotation or a deleted account is
+// skipped). It opens no old key, so it is also what an operator runs after losing the key secret. It
+// returns how many keys it replaced.
+func (f *federation) rotateKeys(ctx context.Context) (int, error) {
+	type old struct {
+		owner      keyOwner
+		keyID, pub string
+	}
+	rows, err := f.db.QueryContext(ctx, `SELECT COALESCE(user_id, 0), key_id, public_key FROM ap_keys ORDER BY user_id NULLS FIRST`)
+	if err != nil {
+		return 0, err
+	}
+	var all []old
+	for rows.Next() {
+		var r old
+		if err := rows.Scan(&r.owner, &r.keyID, &r.pub); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		all = append(all, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range all {
+		pub, sealed, err := f.makeKey(r.keyID, r.owner)
+		if err != nil {
+			return n, err
+		}
+		res, err := f.db.ExecContext(ctx, `UPDATE ap_keys SET public_key = $1, private_sealed = $2, created_at = now() WHERE key_id = $3 AND public_key = $4`, pub, sealed, r.keyID, r.pub)
+		if err != nil {
+			return n, err
+		}
+		if c, _ := res.RowsAffected(); c == 1 {
+			n++
+		}
+		f.mu.Lock()
+		delete(f.cache, r.owner)
+		f.mu.Unlock()
+	}
+	return n, nil
+}
+
+// rotateCommand is /nunchaku -rotate-keys. It reads the mode and the two settings before it opens the
+// database, as the server does, so today, with no mode that federates built, it stops with the same
+// "not built" as a start would.
+func rotateCommand(getenv func(string) string, out io.Writer) error {
+	mode, err := parseMode(getenv("FLOWA_MODE"))
+	if err != nil {
+		return fmt.Errorf("-rotate-keys: %w", err)
+	}
+	if !mode.federates() {
+		return fmt.Errorf("-rotate-keys: FLOWA_MODE=%s does not federate, so there are no keys to rotate", mode)
+	}
+	if _, err := parseFederation(mode, getenv); err != nil {
+		return fmt.Errorf("-rotate-keys: %w", err)
+	}
+	dsn := getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("-rotate-keys: DATABASE_URL is not set")
+	}
+	db, err := openDB(dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return rotateWith(db, mode, getenv, out)
+}
+
+// rotateWith rotates the keys in db for a mode that federates, and says what it did.
+func rotateWith(db *sql.DB, mode instanceMode, getenv func(string) string, out io.Writer) error {
+	if !mode.federates() {
+		return fmt.Errorf("-rotate-keys: FLOWA_MODE=%s does not federate, so there are no keys to rotate", mode)
+	}
+	s, err := parseFederation(mode, getenv)
+	if err != nil {
+		return fmt.Errorf("-rotate-keys: %w", err)
+	}
+	f := newFederation(db, s)
+	defer f.cancel()
+	n, err := f.rotateKeys(context.Background())
+	if err != nil {
+		return fmt.Errorf("-rotate-keys: %d keys replaced, then: %w", n, err)
+	}
+	fmt.Fprintf(out, "rotated %d keys. Restart the server so that it reads them. This version does not send Update to followers yet: other servers pick the new keys up when a signature next fails to verify.\n", n)
+	return nil
+}
+
 /* ---------- start-up ---------- */
 
 func openDB(dsn string) (*sql.DB, error) {
@@ -5116,6 +5840,22 @@ var migrations = []string{schema, schemaSocial,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	);
 	CREATE INDEX IF NOT EXISTS join_requests_created ON join_requests (created_at)`,
+	// 12: the key pairs of local actors (docs/federation.md, 5.7 and 9.1), written only in a mode that
+	// federates. user_id is the owner, NULL for the instance actor; NULLS NOT DISTINCT makes one plain
+	// unique constraint hold one key per owner for that NULL too, where a partial index would need a
+	// second index for it (Postgres 15 or later; compose.yml pins 16). key_id is the part after the origin, such as
+	// /actor#main-key: the origin is recorded once and frozen (instance_settings), so it is not repeated
+	// in every row. public_key is an SPKI PEM; private_sealed is the PKCS#8 key sealed with AES-256-GCM
+	// under FLOWA_KEY_SECRET, as text that names its scheme (v1.), never the key itself, so the daily
+	// backup holds no usable private key. A new table only: going back to an earlier build is safe.
+	`CREATE TABLE IF NOT EXISTS ap_keys (
+		key_id TEXT PRIMARY KEY,
+		user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+		public_key TEXT NOT NULL,
+		private_sealed TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		CONSTRAINT ap_keys_one_per_owner UNIQUE NULLS NOT DISTINCT (user_id)
+	)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -6408,6 +7148,12 @@ func (a *app) start(getenv func(string) string) error {
 		return err
 	}
 	log.Printf("mode %s", a.mode)
+	// The public origin and the key secret, in a mode that federates only (parseFederation). No such mode
+	// is built yet, so on a real instance this reads nothing; the tests build one to reach it.
+	fed, err := parseFederation(a.mode, getenv)
+	if err != nil {
+		return err
+	}
 	// FLOWA_FEDERATE (docs/federation.md, 4.1) is not read yet: single-profile mode announces nothing
 	// to other servers in this version. It will be read here, beside the mode, once FRD and FWR build
 	// what it switches on, so that it too is understood before anything is written.
@@ -6433,6 +7179,12 @@ func (a *app) start(getenv func(string) string) error {
 			a.hosts = append(a.hosts, h)
 		}
 	}
+	// The origin's host is a name this server answers to, in a mode that federates and with an origin
+	// that parsed. It is accepted even when federation is refused (an origin that moved): the operator
+	// points that name at this server, and the app is served there as in local mode.
+	if a.mode.federates() {
+		a.hosts = append(a.hosts, fed.origin.host)
+	}
 	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
 	a.fetch = newFetcher(getenv("FLOWA_PREVIEW_BASE"), getenv("FLOWA_PREVIEW_BASE") != "")
 	a.fetch.off = getenv("FLOWA_PREVIEW_FETCH") == "off"
@@ -6454,13 +7206,20 @@ func (a *app) start(getenv func(string) string) error {
 	if err := a.ensureOwner(); err != nil {
 		return err
 	}
-	return a.seedCatalogs()
+	if err := a.seedCatalogs(); err != nil {
+		return err
+	}
+	if a.mode.federates() {
+		return a.startFederation(fed)
+	}
+	return nil
 }
 
 func main() {
 	listen := flag.String("listen", ":3169", "listen address")
 	dataDir := flag.String("data", "/data", "directory for backups and for the page files kept for the build after this one")
 	probe := flag.Bool("healthcheck", false, "ask the local server's /healthz, print the answer, and exit 0 if it is healthy")
+	rotate := flag.Bool("rotate-keys", false, "make a new key pair for every account that has one (a mode that federates only), print how many, and exit")
 	showVersion := flag.Bool("version", false, "print the version this binary was built as, and exit")
 	flag.Parse()
 
@@ -6482,13 +7241,25 @@ func main() {
 		}
 		return
 	}
+	if *rotate {
+		if err := rotateCommand(os.Getenv, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	if err := os.MkdirAll(filepath.Join(*dataDir, "backups"), 0o755); err != nil {
 		log.Fatal(err)
 	}
 	// The mode is read before the database is opened, because opening it applies the migrations: a
 	// newer build that is refused its mode must leave the schema for the build before it.
-	if _, err := parseMode(os.Getenv("FLOWA_MODE")); err != nil {
+	// So are the public origin and the key secret of a mode that federates. parseMode refuses every
+	// such mode today, so this reads them only once federated mode is built.
+	mode, err := parseMode(os.Getenv("FLOWA_MODE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := parseFederation(mode, os.Getenv); err != nil {
 		log.Fatal(err)
 	}
 	dsn := os.Getenv("DATABASE_URL")
@@ -6515,16 +7286,46 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go a.housekeeping(ctx, time.Hour)
-	go func() {
-		<-ctx.Done()
-		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(c)
-	}()
-	log.Printf("listening on %s", *listen)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
 		log.Fatal(err)
 	}
+	log.Printf("listening on %s", *listen)
+	if err := a.serve(ctx, srv, ln); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// shutdownWait is how long a stop waits, in all, for the requests in flight and the background work.
+// Docker gives a container 10 s after SIGTERM before it kills it.
+const shutdownWait = 5 * time.Second
+
+// serve answers on ln until ctx ends, then stops: it lets the requests in flight finish and the key
+// worker stop, within shutdownWait in all, and returns once both have or the time is up. Before, main
+// returned as soon as srv.Shutdown began (that is when ListenAndServe returns), so the time Shutdown was
+// given was never waited for (docs/federation.md, 8.6). Housekeeping is not waited for: each of its
+// statements is one transaction, and one cut short changes nothing.
+func (a *app) serve(ctx context.Context, srv *http.Server, ln net.Listener) error {
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		<-ctx.Done()
+		c, cancel := context.WithTimeout(context.Background(), shutdownWait)
+		defer cancel()
+		if err := srv.Shutdown(c); err != nil {
+			log.Printf("stopping: requests still running after %s: %v", shutdownWait, err)
+		}
+		if a.fed != nil {
+			if err := a.fed.stop(c); err != nil {
+				log.Printf("stopping: the key worker did not stop in time: %v", err)
+			}
+		}
+	}()
+	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	<-stopped
+	return nil
 }
 
 /* ---------- community ----------

@@ -8,14 +8,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"image"
 	"image/png"
+	"io"
 	"log"
 	"maps"
 	"net/http"
@@ -5375,5 +5379,617 @@ func TestDBSingleRoutes(t *testing.T) {
 				t.Errorf("a route single mode is to have and has not: %q", p)
 			}
 		}
+	}
+}
+
+// federatedBuilt builds federated mode for one test. No instance can run it yet (modesBuilt), so the
+// tests that reach the code behind it build it themselves and put modesBuilt back after.
+func federatedBuilt(t *testing.T) {
+	t.Helper()
+	if modesBuilt[modeFederated] {
+		return
+	}
+	modesBuilt[modeFederated] = true
+	t.Cleanup(func() { delete(modesBuilt, modeFederated) })
+}
+
+// fedEnv is what a federated start is given unless a test says otherwise.
+func fedEnv(more map[string]string) func(string) string {
+	all := map[string]string{"FLOWA_MODE": "federated", "FLOWA_ORIGIN": "https://flowa.example.org", "FLOWA_KEY_SECRET": testSecret,
+		"ADMIN_USER": "root", "ADMIN_PASSWORD": "flowa-test-only", "FLOWA_PREVIEW_FETCH": "off"}
+	maps.Copy(all, more)
+	return func(k string) string { return all[k] }
+}
+
+// fedStart starts the app in federated mode, and stops its key worker before the test's database goes.
+func (e *tenv) fedStart(more map[string]string) error {
+	e.t.Helper()
+	federatedBuilt(e.t)
+	err := e.a.start(fedEnv(more))
+	if f := e.a.fed; f != nil {
+		e.t.Cleanup(func() {
+			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			f.stop(c)
+		})
+	}
+	e.h = e.a.routes(staticOf(e.t, nil))
+	return err
+}
+
+// again is a second server on the same database, as during a deploy or after a restart.
+func (e *tenv) again() *tenv {
+	a := newApp(e.a.db, e.t.TempDir())
+	a.hosts = []string{"example.com"}
+	return &tenv{t: e.t, a: a}
+}
+
+// waitFor polls cond until it holds, or fails after 30 s (a key takes up to two seconds on the Pi).
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for end := time.Now().Add(30 * time.Second); !cond(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("waited 30 s for %s", what)
+		}
+	}
+}
+
+// countKeys replaces generateKey for one test with one that counts the keys made.
+func countKeys(t *testing.T) *atomic.Int32 {
+	var n atomic.Int32
+	was := generateKey
+	generateKey = func() (*rsa.PrivateKey, error) { n.Add(1); return was() }
+	t.Cleanup(func() { generateKey = was })
+	return &n
+}
+
+// A mode that federates reads FLOWA_ORIGIN and FLOWA_KEY_SECRET before anything is written, and stops
+// the start with a message that names the setting and never shows the secret. The origin's host is a
+// name the server answers to then, and the routes are the routes of local mode: nothing new is served.
+func TestDBFederatedStart(t *testing.T) {
+	logs := logged(t)
+	if err := rotateCommand(fedEnv(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "not built") {
+		t.Errorf("-rotate-keys while federated mode is not built: %v, want not built", err)
+	}
+	federatedBuilt(t)
+	for _, c := range []struct {
+		name string
+		env  map[string]string
+		says []string
+	}{
+		{"no origin", map[string]string{"FLOWA_ORIGIN": ""}, []string{"FLOWA_ORIGIN", "not set"}},
+		{"an http origin", map[string]string{"FLOWA_ORIGIN": "http://flowa.example.org"}, []string{"FLOWA_ORIGIN", "https"}},
+		{"an origin on an address", map[string]string{"FLOWA_ORIGIN": "https://192.0.2.7"}, []string{"FLOWA_ORIGIN", "IP address"}},
+		{"no secret", map[string]string{"FLOWA_KEY_SECRET": ""}, []string{"FLOWA_KEY_SECRET", "not set", "openssl rand -hex 32"}},
+		{"a password for a secret", map[string]string{"FLOWA_KEY_SECRET": "flowa-test-only"}, []string{"FLOWA_KEY_SECRET", "wrong length"}},
+		{"a secret that is not hex", map[string]string{"FLOWA_KEY_SECRET": strings.Repeat("secretzz", 8)}, []string{"FLOWA_KEY_SECRET", "hexadecimal"}},
+		{"a secret of zeros", map[string]string{"FLOWA_KEY_SECRET": strings.Repeat("0", 64)}, []string{"FLOWA_KEY_SECRET", "not random"}},
+	} {
+		e := newEnv(t)
+		err := e.fedStart(c.env)
+		if err == nil {
+			t.Errorf("%s: the start went ahead", c.name)
+			continue
+		}
+		for _, w := range append(c.says, "FLOWA_MODE=federated") {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: %q does not say %q", c.name, err, w)
+			}
+		}
+		if v := c.env["FLOWA_KEY_SECRET"]; v != "" && strings.Contains(err.Error(), v[:8]) {
+			t.Errorf("%s: the message shows the secret: %q", c.name, err)
+		}
+		if n := e.count(`SELECT count(*) FROM users`) + e.count(`SELECT count(*) FROM ap_keys`) + e.count(`SELECT count(*) FROM instance_settings`) + e.count(`SELECT count(*) FROM catalog_revisions`); n != 0 || e.a.fed != nil {
+			t.Errorf("%s: a refused start wrote %d rows, or made the federation state", c.name, n)
+		}
+	}
+
+	e := newEnv(t)
+	e.a.hosts = nil
+	if err := e.fedStart(map[string]string{"FLOWA_HOSTS": "flowa.lan", "FLOWA_ORIGIN": "HTTPS://Flowa.Example.ORG:443/"}); err != nil {
+		t.Fatal(err)
+	}
+	if e.a.mode != modeFederated || e.a.fed == nil || e.a.fed.origin.url != "https://flowa.example.org" {
+		t.Fatalf("mode %q, federation %v", e.a.mode, e.a.fed)
+	}
+	if !reflect.DeepEqual(e.a.hosts, []string{"flowa.lan", "flowa.example.org"}) {
+		t.Errorf("the names answered to are %v, want FLOWA_HOSTS and the origin's host", e.a.hosts)
+	}
+	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys`) == 1 })
+	if !e.a.federating() {
+		t.Errorf("a federated start with good settings does not federate: %q", e.a.fed.refusal())
+	}
+	for host, want := range map[string]int{"flowa.example.org": 200, "FLOWA.example.org:443": 200, "flowa.lan": 200, "flowa.example.net": http.StatusMisdirectedRequest} {
+		r := httptest.NewRequest("GET", "/api/me", nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Errorf("a request for %s answers %d, want %d", host, w.Code, want)
+		}
+	}
+	// Nothing new is served: the routes are those of local mode.
+	got := slices.Sorted(slices.Values(e.a.table(staticOf(t, nil)).patterns))
+	if want := routesFile(t, "testdata/routes-local.txt"); !slices.Equal(got, want) {
+		t.Errorf("federated mode serves other routes than local mode:\n%v\n%v", got, want)
+	}
+	// No answer, no audit row and no log line holds the secret, the private key or its sealed form.
+	var pub, sealed string
+	if err := e.a.db.QueryRow(`SELECT public_key, private_sealed FROM ap_keys`).Scan(&pub, &sealed); err != nil {
+		t.Fatal(err)
+	}
+	k, _, err := e.a.fed.privateKey(context.Background(), instanceActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKCS8PrivateKey(k)
+	privPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	leaks := []string{testSecret, strings.ToUpper(testSecret), sealed, sealed[3:40], base64.StdEncoding.EncodeToString(der)[:64], privPEM[30:90], "PRIVATE KEY", k.D.String()[:40]}
+	_, admin := e.user("boss", "admin")
+	var answers strings.Builder
+	for _, p := range []string{"/", "/healthz", "/api/me", "/api/admin/dashboard", "/api/admin/instance", "/api/instance", "/api/admin/audit", "/api/admin/users", "/api/about", "/actor", "/.well-known/webfinger?resource=acct:root@flowa.example.org"} {
+		for _, remote := range []string{"192.0.2.1:1234", "127.0.0.1:1234"} {
+			r := httptest.NewRequest("GET", p, nil)
+			r.RemoteAddr = remote
+			r.Host = "flowa.example.org"
+			r.AddCookie(&http.Cookie{Name: cookieName, Value: admin})
+			w := httptest.NewRecorder()
+			e.h.ServeHTTP(w, r)
+			fmt.Fprintf(&answers, "%s %d %s %v\n", p, w.Code, w.Body.String(), w.Result().Header)
+		}
+	}
+	var audit string
+	if err := e.a.db.QueryRow(`SELECT COALESCE(string_agg(concat_ws('|', action, target_kind, reason, detail::text), ','), '') FROM mod_actions`).Scan(&audit); err != nil {
+		t.Fatal(err)
+	}
+	var settings string
+	if err := e.a.db.QueryRow(`SELECT string_agg(key || '=' || value::text, ',') FROM instance_settings`).Scan(&settings); err != nil {
+		t.Fatal(err)
+	}
+	for where, text := range map[string]string{"an answer": answers.String(), "the audit log": audit, "the log": logs.String(), "instance_settings": settings, "the public key column": pub} {
+		for _, l := range leaks {
+			if strings.Contains(text, l) {
+				t.Errorf("%s holds %.12q...", where, l)
+			}
+		}
+	}
+	if !strings.Contains(answers.String(), `"mode":"federated"`) {
+		t.Errorf("the dashboard does not say the mode:\n%.400s", answers.String())
+	}
+}
+
+// Keys: none in local or single mode; in a mode that federates the instance actor's key is made in the
+// background, once, by one worker, without a database connection held while it is made; two makers at
+// once leave one key that both read; a key that does not open is never replaced by a start; and
+// -rotate-keys replaces every key, one at a time.
+func TestDBKeysGenerated(t *testing.T) {
+	logs := logged(t)
+	made := countKeys(t)
+	ctx := context.Background()
+	settings, err := parseFederation(modeFederated, fedEnv(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Local and single mode, with both settings present: no federation state, no key, no row.
+	l := newEnv(t)
+	if err := l.a.start(fedEnv(map[string]string{"FLOWA_MODE": "local"})); err != nil || l.a.fed != nil || l.a.federating() {
+		t.Fatalf("a local start: %v, federation %v", err, l.a.fed)
+	}
+	s := newEnv(t)
+	if err := s.singleStart(map[string]string{"ADMIN_USER": "root", "ADMIN_PASSWORD": "flowa-test-only", "FLOWA_ORIGIN": "https://flowa.example.org", "FLOWA_KEY_SECRET": testSecret}, staticOf(t, nil)); err != nil || s.a.fed != nil || s.a.federating() {
+		t.Fatalf("a single start: %v, federation %v", err, s.a.fed)
+	}
+	for _, x := range []*tenv{l, s} {
+		if n := x.count(`SELECT count(*) FROM ap_keys`) + x.count(`SELECT count(*) FROM instance_settings`); n != 0 {
+			t.Errorf("%s mode wrote %d rows of keys or settings", x.a.mode, n)
+		}
+	}
+	if made.Load() != 0 {
+		t.Fatalf("%d keys were made in local and single mode", made.Load())
+	}
+
+	// Federated: the instance actor's key, in the background.
+	e := newEnv(t)
+	if err := e.fedStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys`) == 1 })
+	var keyID, pub, sealed string
+	var owner sql.NullInt64
+	if err := e.a.db.QueryRow(`SELECT key_id, user_id, public_key, private_sealed FROM ap_keys`).Scan(&keyID, &owner, &pub, &sealed); err != nil {
+		t.Fatal(err)
+	}
+	if keyID != "/actor#main-key" || owner.Valid || !strings.HasPrefix(sealed, "v1.") || strings.Contains(sealed, "PRIVATE") {
+		t.Errorf("the instance actor's row: %q, owner %v, sealed %.10s", keyID, owner, sealed)
+	}
+	block, rest := pem.Decode([]byte(pub))
+	if block == nil || block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(rest)) != 0 {
+		t.Fatalf("the public key is not one SPKI PEM: %q", pub)
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	rpub, isRSA := parsed.(*rsa.PublicKey)
+	if err != nil || !isRSA || rpub.N.BitLen() != 2048 {
+		t.Fatalf("the public key: %T %v", parsed, err)
+	}
+	k, id, err := e.a.fed.privateKey(ctx, instanceActor)
+	if err != nil || id != "/actor#main-key" || !k.PublicKey.Equal(rpub) {
+		t.Fatalf("the private key does not open or match: %v", err)
+	}
+	if k2, _, _ := e.a.fed.privateKey(ctx, instanceActor); k2 != k {
+		t.Error("the second read of a key is not the one kept in memory")
+	}
+	waitFor(t, "the log line of the key", func() bool { return strings.Contains(logs.String(), "keys: made the key of the instance actor in ") })
+	if made.Load() != 1 {
+		t.Errorf("%d keys made for the instance actor, want 1", made.Load())
+	}
+
+	// A restart finds the key and makes none.
+	r := e.again()
+	if err := r.fedStart(nil); err != nil || !r.a.federating() {
+		t.Fatalf("a restart: %v, %q", err, r.a.fed.refusal())
+	}
+	if made.Load() != 1 || e.count(`SELECT count(*) FROM ap_keys`) != 1 {
+		t.Errorf("a restart made a key: %d made", made.Load())
+	}
+
+	// Two goroutines ask for one member's key at once: one key, made by one of them, read by both.
+	anaID, _ := e.user("ana", "user")
+	f := newFederation(e.a.db, settings)
+	results := make(chan bool, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			ok, err := f.ensureKey(ctx, keyOwner(anaID))
+			if err != nil {
+				t.Error(err)
+			}
+			results <- ok
+		})
+	}
+	wg.Wait()
+	if a, b := <-results, <-results; a == b {
+		t.Errorf("two makers at once: made %v and %v, want exactly one", a, b)
+	}
+	if n := e.count(`SELECT count(*) FROM ap_keys WHERE user_id = $1 AND key_id = '/users/ana#main-key'`, anaID); n != 1 {
+		t.Errorf("ana has %d keys", n)
+	}
+
+	// Two servers, each making a key before either writes it: the unique index keeps one, both read it.
+	boID, _ := e.user("bo", "user")
+	var both sync.WaitGroup
+	both.Add(2)
+	race := func() (*rsa.PrivateKey, error) { k, err := generateKey(); both.Done(); both.Wait(); return k, err }
+	f1, f2 := newFederation(e.a.db, settings), newFederation(e.a.db, settings)
+	f1.gen, f2.gen = race, race
+	var m1, m2 bool
+	var e1, e2 error
+	wg.Go(func() { m1, e1 = f1.ensureKey(ctx, keyOwner(boID)) })
+	wg.Go(func() { m2, e2 = f2.ensureKey(ctx, keyOwner(boID)) })
+	wg.Wait()
+	if e1 != nil || e2 != nil || m1 == m2 {
+		t.Fatalf("two servers: made %v (%v) and %v (%v), want exactly one", m1, e1, m2, e2)
+	}
+	k1, _, err1 := f1.privateKey(ctx, keyOwner(boID))
+	k2, _, err2 := f2.privateKey(ctx, keyOwner(boID))
+	if err1 != nil || err2 != nil || !k1.Equal(k2) {
+		t.Errorf("the two servers read different keys: %v, %v", err1, err2)
+	}
+	// The same for the instance actor, whose owner is NULL: still one key.
+	fresh := newEnv(t)
+	both.Add(2)
+	i1, i2 := newFederation(fresh.a.db, settings), newFederation(fresh.a.db, settings)
+	i1.gen, i2.gen = race, race
+	wg.Go(func() { m1, e1 = i1.ensureKey(ctx, instanceActor) })
+	wg.Go(func() { m2, e2 = i2.ensureKey(ctx, instanceActor) })
+	wg.Wait()
+	if n := fresh.count(`SELECT count(*) FROM ap_keys WHERE user_id IS NULL`); e1 != nil || e2 != nil || m1 == m2 || n != 1 {
+		t.Errorf("two servers making the instance actor's key: made %v (%v) and %v (%v), %d keys; want exactly one", m1, e1, m2, e2, n)
+	}
+
+	// The worker makes keys with no connection held: with one connection in the pool, the database
+	// answers while a key is being made.
+	// Asked for three keys at once, it makes them one at a time.
+	cyID, _ := e.user("cy", "user")
+	cy2, _ := e.user("cy2", "user")
+	cy3, _ := e.user("cy3", "user")
+	e.a.db.SetMaxOpenConns(1)
+	held := make(chan string, 16)
+	var active, most atomic.Int32
+	w := newFederation(e.a.db, settings)
+	w.gen = func() (*rsa.PrivateKey, error) {
+		n := active.Add(1)
+		defer active.Add(-1)
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		}
+		if n := e.a.db.Stats().InUse; n != 0 {
+			held <- fmt.Sprintf("%d connections in use while a key is made", n)
+		}
+		c, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		var one int
+		if err := e.a.db.QueryRowContext(c, `SELECT 1`).Scan(&one); err != nil {
+			held <- "the database did not answer while a key was made: " + err.Error()
+		}
+		return generateKey()
+	}
+	for _, id := range []int64{cyID, cy2, cy3} {
+		if !w.requestKey(keyOwner(id)) {
+			t.Fatal("a request for a key was dropped with the queue nearly empty")
+		}
+	}
+	waitFor(t, "three keys", func() bool {
+		return e.count(`SELECT count(*) FROM ap_keys WHERE user_id IN ($1, $2, $3)`, cyID, cy2, cy3) == 3
+	})
+	if most.Load() != 1 {
+		t.Errorf("%d keys were made at once, want one at a time", most.Load())
+	}
+	c, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := w.stop(c); err != nil {
+		t.Fatal(err)
+	}
+	e.a.db.SetMaxOpenConns(8)
+	close(held)
+	for msg := range held {
+		t.Error(msg)
+	}
+
+	// stop waits for a key being made, until its context ends, and a key made after stop is not written.
+	danID, _ := e.user("dan", "user")
+	entered, release := make(chan struct{}), make(chan struct{})
+	h := newFederation(e.a.db, settings)
+	h.gen = func() (*rsa.PrivateKey, error) { close(entered); <-release; return generateKey() }
+	h.requestKey(keyOwner(danID))
+	<-entered
+	short, cancelShort := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancelShort()
+	if err := h.stop(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("stop with a key being made returned %v before the key was done", err)
+	}
+	close(release)
+	if err := h.stop(c); err != nil {
+		t.Errorf("stop after the key was done: %v", err)
+	}
+	if n := e.count(`SELECT count(*) FROM ap_keys WHERE user_id = $1`, danID); n != 0 {
+		t.Errorf("a key made after stop was written")
+	}
+
+	// A deleted account takes its key with it.
+	if _, err := e.a.db.Exec(`DELETE FROM users WHERE id = $1`, anaID); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM ap_keys WHERE key_id = '/users/ana#main-key'`); n != 0 {
+		t.Error("a deleted account's key is still there")
+	}
+
+	// The wrong secret: the start says so once, federates nothing, makes no key over the one it cannot
+	// open, and a request for the key makes none either.
+	before, rows := made.Load(), e.count(`SELECT count(*) FROM ap_keys`)
+	x := e.again()
+	if err := x.fedStart(map[string]string{"FLOWA_KEY_SECRET": testSecret2}); err != nil {
+		t.Fatal(err)
+	}
+	if x.a.federating() || !strings.Contains(x.a.fed.refusal(), "FLOWA_KEY_SECRET does not open the keys stored here") || !strings.Contains(x.a.fed.refusal(), "-rotate-keys") {
+		t.Errorf("a start with the wrong secret: federating %v, %q", x.a.federating(), x.a.fed.refusal())
+	}
+	if _, _, err := x.a.fed.privateKey(ctx, instanceActor); !errors.Is(err, errOpenKey) || strings.Contains(err.Error(), testSecret2) {
+		t.Errorf("opening with the wrong secret: %v", err)
+	}
+	x.a.fed.requestKey(instanceActor)
+	if err := x.a.fed.stop(c); err != nil {
+		t.Fatal(err)
+	}
+	var after string
+	if err := e.a.db.QueryRow(`SELECT private_sealed FROM ap_keys WHERE user_id IS NULL`).Scan(&after); err != nil || after != sealed {
+		t.Errorf("the instance actor's key was replaced by a start with the wrong secret (%v)", err)
+	}
+	if made.Load() != before || e.count(`SELECT count(*) FROM ap_keys`) != rows {
+		t.Errorf("the wrong secret made %d keys", made.Load()-before)
+	}
+	if strings.Count(logs.String(), "FLOWA_KEY_SECRET does not open") != 1 {
+		t.Errorf("the wrong secret is said %d times in the log, want once", strings.Count(logs.String(), "FLOWA_KEY_SECRET does not open"))
+	}
+
+	// -rotate-keys: only in a mode that federates and with the settings; then every key is new, one at a
+	// time, and the cache drops the old ones. After a lost secret it is the way back.
+	var out strings.Builder
+	if err := rotateWith(e.a.db, modeLocal, fedEnv(nil), &out); err == nil || !strings.Contains(err.Error(), "does not federate") {
+		t.Errorf("rotating in local mode: %v", err)
+	}
+	if err := rotateWith(e.a.db, modeFederated, fedEnv(map[string]string{"FLOWA_KEY_SECRET": ""}), &out); err == nil || !strings.Contains(err.Error(), "FLOWA_KEY_SECRET") {
+		t.Errorf("rotating without the secret: %v", err)
+	}
+	if err := rotateCommand(fedEnv(map[string]string{"DATABASE_URL": ""}), &out); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("-rotate-keys without a database: %v", err)
+	}
+	oldPubs := map[string]string{}
+	pubRows, err := e.a.db.Query(`SELECT key_id, public_key FROM ap_keys`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pubRows.Next() {
+		var id, p string
+		pubRows.Scan(&id, &p)
+		oldPubs[id] = p
+	}
+	pubRows.Close()
+	before = made.Load()
+	if err := rotateWith(e.a.db, modeFederated, fedEnv(map[string]string{"FLOWA_KEY_SECRET": testSecret2}), &out); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("rotated %d keys.", len(oldPubs)); !strings.Contains(out.String(), want) || !strings.Contains(out.String(), "Update") || !strings.Contains(out.String(), "Restart") {
+		t.Errorf("-rotate-keys says %q, want %q and what it does not do yet", out.String(), want)
+	}
+	if got := int(made.Load() - before); got != len(oldPubs) {
+		t.Errorf("rotation made %d keys for %d owners", got, len(oldPubs))
+	}
+	for id, p := range oldPubs {
+		var now string
+		e.a.db.QueryRow(`SELECT public_key FROM ap_keys WHERE key_id = $1`, id).Scan(&now)
+		if now == p || now == "" {
+			t.Errorf("%s: the key is the same after rotating", id)
+		}
+	}
+	// A start with the secret the keys are now sealed with federates again, with a new key.
+	y := e.again()
+	if err := y.fedStart(map[string]string{"FLOWA_KEY_SECRET": testSecret2}); err != nil || !y.a.federating() {
+		t.Errorf("a start after rotating with the new secret: %v, %q", err, y.a.fed.refusal())
+	}
+	if ny, _, err := y.a.fed.privateKey(ctx, instanceActor); err != nil || ny.Equal(k) {
+		t.Errorf("after rotating, the instance actor's key: %v, or the same as before", err)
+	}
+	if _, _, err := newFederation(e.a.db, settings).privateKey(ctx, instanceActor); !errors.Is(err, errOpenKey) {
+		t.Errorf("the old secret still opens a rotated key: %v", err)
+	}
+	// Rotation drops what a federation kept in memory.
+	g := newFederation(e.a.db, fedSettings{origin: settings.origin, secret: mustSecret(t, testSecret2)})
+	g1, _, err := g.privateKey(ctx, instanceActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.rotateKeys(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if g2, _, err := g.privateKey(ctx, instanceActor); err != nil || g2.Equal(g1) {
+		t.Errorf("after rotating, the key kept in memory is still served (%v)", err)
+	}
+
+	// No log line holds a secret or a private key.
+	for _, l := range []string{testSecret, testSecret2, "PRIVATE KEY", sealed[3:40], k.D.String()[:40]} {
+		if strings.Contains(logs.String(), l) {
+			t.Errorf("the log holds %.12q...", l)
+		}
+	}
+}
+
+// The origin is recorded the first time the instance federates and frozen after: the same origin
+// written another way starts as before; another origin starts the app, says why once, and federates
+// nothing. Two first records at once: one wins, both agree.
+func TestDBOriginFrozen(t *testing.T) {
+	logs := logged(t)
+	ctx := context.Background()
+	e := newEnv(t)
+	if err := e.a.start(fedEnv(map[string]string{"FLOWA_MODE": "local"})); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM instance_settings`); n != 0 {
+		t.Fatalf("local mode recorded %d settings", n)
+	}
+	r := e.again()
+	if err := r.fedStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the origin recorded", func() bool {
+		return e.count(`SELECT count(*) FROM instance_settings WHERE key IN ('origin', 'first_federated_at')`) == 2
+	})
+	was, err := recordedOrigin(e.a.db)
+	if err != nil || was != "https://flowa.example.org" {
+		t.Fatalf("recorded %q, %v", was, err)
+	}
+	var first string
+	if err := e.a.db.QueryRow(`SELECT value #>> '{}' FROM instance_settings WHERE key = 'first_federated_at'`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := time.Parse("2006-01-02T15:04:05.999999-07:00", first); err != nil || time.Since(at) > time.Minute {
+		t.Errorf("first_federated_at is %q (%v)", first, err)
+	}
+	// The instance's about page and its editor read instance_settings too: these keys change neither.
+	_, admin := e.user("boss", "admin")
+	r.h = r.a.routes(staticOf(t, nil))
+	if code, out := r.do(admin, "GET", "/api/admin/instance", nil); code != 200 || out["updatedAt"] != "" {
+		t.Errorf("the recorded origin shows in the instance editor: %d %v", code, out["_raw"])
+	}
+
+	for _, same := range []string{"https://flowa.example.org", "HTTPS://FLOWA.EXAMPLE.ORG", "https://flowa.example.org:443/", " https://Flowa.Example.Org/\n"} {
+		s := e.again()
+		if err := s.fedStart(map[string]string{"FLOWA_ORIGIN": same}); err != nil || !s.a.federating() {
+			t.Errorf("FLOWA_ORIGIN=%q after https://flowa.example.org: %v, %q", same, err, s.a.fed.refusal())
+		}
+	}
+	for _, moved := range []string{"https://flowa.example.net", "https://flowa.example.org:8443", "https://www.flowa.example.org"} {
+		m := e.again()
+		if err := m.fedStart(map[string]string{"FLOWA_ORIGIN": moved}); err != nil {
+			t.Fatalf("a moved origin stopped the start: %v", err)
+		}
+		want := "federation refused: the origin was https://flowa.example.org and is now " + moved + "; actor ids cannot move"
+		if m.a.federating() || m.a.fed.refusal() != want {
+			t.Errorf("FLOWA_ORIGIN=%s: federating %v, %q", moved, m.a.federating(), m.a.fed.refusal())
+		}
+		if strings.Count(logs.String(), want) != 1 {
+			t.Errorf("FLOWA_ORIGIN=%s: the log says it %d times, want once", moved, strings.Count(logs.String(), want))
+		}
+		// The app is served as in local mode, under the name the operator now gives it.
+		host := strings.TrimPrefix(strings.Split(moved, ":")[1], "//")
+		req := httptest.NewRequest("GET", "/api/me", nil)
+		req.Host = host
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: admin})
+		w := httptest.NewRecorder()
+		m.h.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Errorf("FLOWA_ORIGIN=%s: the app at %s answers %d", moved, host, w.Code)
+		}
+	}
+	if now, _ := recordedOrigin(e.a.db); now != was {
+		t.Errorf("the recorded origin changed to %q", now)
+	}
+
+	// A server that started before another recorded a different origin finds out when it makes its key:
+	// it refuses then, and writes no key.
+	fresh := newEnv(t)
+	other, _ := parseFederation(modeFederated, fedEnv(map[string]string{"FLOWA_ORIGIN": "https://other.example.net"}))
+	if _, err := fresh.a.db.Exec(`INSERT INTO instance_settings (key, value) VALUES ('origin', '"https://flowa.example.org"')`); err != nil {
+		t.Fatal(err)
+	}
+	f := newFederation(fresh.a.db, other)
+	f.requestKey(instanceActor)
+	waitFor(t, "the refusal of the worker", func() bool { return f.refusal() != "" })
+	c, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	f.stop(c)
+	if !strings.Contains(f.refusal(), "the origin was https://flowa.example.org and is now https://other.example.net") || fresh.count(`SELECT count(*) FROM ap_keys`) != 0 {
+		t.Errorf("the worker under a moved origin: %q, %d keys", f.refusal(), fresh.count(`SELECT count(*) FROM ap_keys`))
+	}
+
+	// Two first records at once, of the same origin and of two origins: one wins, both agree.
+	race := func(origins ...string) []error {
+		t.Helper()
+		x := newEnv(t)
+		var ready, wg sync.WaitGroup
+		ready.Add(len(origins))
+		errs := make([]error, len(origins))
+		for i, o := range origins {
+			po, err := parseOrigin(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wg.Go(func() {
+				tx, err := x.a.db.BeginTx(ctx, nil)
+				if err != nil {
+					errs[i] = err
+					ready.Done()
+					return
+				}
+				defer tx.Rollback()
+				ready.Done()
+				ready.Wait()
+				if errs[i] = recordOrigin(ctx, tx, po); errs[i] == nil {
+					errs[i] = tx.Commit()
+				}
+			})
+		}
+		wg.Wait()
+		if n := x.count(`SELECT count(*) FROM instance_settings WHERE key = 'origin'`); n != 1 {
+			t.Errorf("%d origins recorded", n)
+		}
+		return errs
+	}
+	if errs := race("https://flowa.example.org", "https://FLOWA.example.org:443"); errs[0] != nil || errs[1] != nil {
+		t.Errorf("two records of one origin: %v", errs)
+	}
+	errs := race("https://flowa.example.org", "https://flowa.example.net")
+	var moved originMoved
+	if (errs[0] == nil) == (errs[1] == nil) || !(errors.As(errs[0], &moved) || errors.As(errs[1], &moved)) {
+		t.Errorf("two records of two origins: %v, want one recorded and the other refused", errs)
 	}
 }

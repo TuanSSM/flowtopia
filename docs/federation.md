@@ -440,7 +440,10 @@ the start-up with a fetcher that fails the test on any dial.
 
 `FLOWA_ORIGIN` (**new**): `https://` plus a host and nothing else (no path, no query, no user, no
 port unless needed). Without it, or with `http://`, federation is refused at start with a message.
-Its host is added to the names `allowedHost` accepts. A test-only setting,
+Its host is added to the names `allowedHost` accepts. As built (FRD 1): an IP address, `localhost` and
+single-label or private names are refused, a host in another script must be in its `xn--` form, a trailing
+dot is refused, and capitals, one trailing slash and `:443` are forgiven and written away, so one origin has
+one written form (actor ids are compared as text). A test-only setting,
 `FLOWA_FEDERATION_ALLOW_PRIVATE` (**new**), lets an `http://` origin and private addresses through
 for the two-instance test, as `FLOWA_PREVIEW_BASE` does for the preview stub; the server logs it at
 start, and `test/release.sh` fails if `compose.yml` names it.
@@ -658,7 +661,13 @@ header, and a missing one (HTML).
   (`BEGIN PUBLIC KEY`) PEM, the form in Mastodon's examples.
 - Stored in `ap_keys` (**new**): the public key as PEM, the private key sealed with AES-256-GCM under
   `FLOWA_KEY_SECRET` (F7), with the key id and creation time. The secret never goes into the database,
-  the log or a backup.
+  the log or a backup. As built (FRD 1): the AES key is made from the secret with HKDF-SHA256 and an info
+  string naming its purpose, never the secret itself, so a second purpose later gets an unrelated key;
+  each sealed key carries a fresh 12-byte nonce, names its scheme (`v1.`), and has its key id and owner
+  authenticated with it, so a sealed key copied onto another row does not open; the key id is stored
+  without the origin (`/actor#main-key`), which is recorded once in `instance_settings`. A secret that does
+  not open the stored keys stops federation, not the server, and no key is made over one it cannot open.
+  The secret must be 64 hexadecimal characters with at least 8 different bytes and no repeating block.
 - Rotation: `/nunchaku -rotate-keys` (**new**, a flag like `-healthcheck`) makes new keys for every
   local actor and sends Update(Person) to followers; remote servers that fail to verify with the old
   key refetch the actor (section 7.4). This is what the SWICG report calls a "signed" rotation ("Key
@@ -1230,9 +1239,10 @@ inbound signatures are answered 503 with `Retry-After` in that state instead of 
 
 ### 8.6 Shutdown
 
-Today `main` returns as soon as `ListenAndServe` does, which is the moment `srv.Shutdown` begins:
-the 5 s it is given are never waited for, and nothing waits for background work at all. The delivery
-item changes that: `main` waits for `Shutdown` to return, the workers have their own context and a
+Until FRD 1, `main` returned as soon as `ListenAndServe` did, which is the moment `srv.Shutdown` begins:
+the 5 s it is given were never waited for, and nothing waited for background work at all. FRD 1 made
+`main` wait for `Shutdown` and for its key worker, 5 s in all (`serve`, `TestServeWaits`). The delivery
+item adds its workers to that wait: the workers have their own context and a
 `sync.WaitGroup`, and on SIGTERM they stop claiming and are given 5 s for the request in flight;
 whatever does not finish keeps its lease and is sent again after it ends. Receivers dedupe by activity
 id, so a second send is harmless. `TestDeliveryShutdown` (**new**).
@@ -1294,15 +1304,18 @@ CREATE TABLE ap_actors (
 );
 CREATE INDEX ap_actors_key ON ap_actors (key_id);
 
--- key pairs of local actors; user_id NULL is the instance actor
+-- key pairs of local actors; user_id NULL is the instance actor (migration 12, built in FRD 1)
 CREATE TABLE ap_keys (
-  id BIGSERIAL PRIMARY KEY,
-  user_id BIGINT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-  public_key TEXT NOT NULL,
-  private_sealed BYTEA NOT NULL,       -- AES-256-GCM under FLOWA_KEY_SECRET (F7)
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  key_id TEXT PRIMARY KEY,             -- the part after the origin: /actor#main-key, /users/ana#main-key
+                                       -- (the origin is recorded once and frozen, so rows do not repeat it)
+  user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  public_key TEXT NOT NULL,            -- SPKI PEM (BEGIN PUBLIC KEY)
+  private_sealed TEXT NOT NULL,        -- "v1." + base64url(nonce, ciphertext, tag): the PKCS#8 key under
+                                       -- AES-256-GCM with a key made from FLOWA_KEY_SECRET by HKDF-SHA256,
+                                       -- the key id and owner authenticated with it (F7)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT ap_keys_one_per_owner UNIQUE NULLS NOT DISTINCT (user_id)   -- one key per owner, the NULL too
 );
-CREATE UNIQUE INDEX ap_keys_instance ON ap_keys ((user_id IS NULL)) WHERE user_id IS NULL;
 
 -- follows in both directions, local and remote. follows is migration 9 (INS), local accounts only so
 -- far, without state and ap_id: nothing reads them until follows cross servers, so they come with the
