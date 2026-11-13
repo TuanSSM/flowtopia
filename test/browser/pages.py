@@ -15,6 +15,9 @@ def settle():
     # A picture is taken of a page that has stopped changing: its requests answered, the 3D figure there
     # (or known to be missing), its pictures loaded and two frames drawn.
     idle();figure(20)
+    # The picture is of the whole page, and a picture below the window that loads only when it comes into
+    # sight (a link card's preview) would never load here: it is asked for now, as scrolling to it would.
+    js("document.querySelectorAll('img[loading=lazy]').forEach(i=>{i.loading='eager'})")
     wait_for("return [...document.images].every(i=>i.complete)",'the pictures on the page to load',20)
     idle();frames()
 def page(name,title,h,w=1440,ht=1000,full=True):
