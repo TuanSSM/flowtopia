@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -4867,10 +4868,18 @@ func TestDBSingleMode(t *testing.T) {
 		e.a.db.Exec(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, id)
 	}, "@ana", "suspended until", "local mode")
 
-	// No account and ADMIN_USER: it is made, the admin and the owner.
+	// No account and ADMIN_USER: it is made, the admin and the owner. A request to join left waiting is
+	// logged here too.
 	e := newEnv(t)
+	firstLogs := logged(t)
+	if _, err := e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('early', 'early', 'x')`); err != nil {
+		t.Fatal(err)
+	}
 	if err := e.singleStart(map[string]string{"ADMIN_USER": " Owner ", "ADMIN_PASSWORD": pw}, app); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(firstLogs.String(), "1 requests to join wait") {
+		t.Errorf("a first start with a request waiting does not log it: %s", firstLogs.String())
 	}
 	if got := rows(e); !strings.HasSuffix(got, "|owner|admin|t|Admin|") || e.count(`SELECT count(*) FROM users`) != 1 {
 		t.Errorf("a first start with ADMIN_USER: %q", got)
@@ -4979,11 +4988,12 @@ func TestDBSingleMode(t *testing.T) {
 			}
 		}
 	}
-	// /api/me says single to a visitor and to the owner, and never that joining is by approval.
+	// /api/me says single to the owner, never to a visitor (who is told that sign-up is off instead), and
+	// never that joining is by approval.
 	for _, tok := range []string{"", owner} {
 		out := s.must(200, tok, "GET", "/api/me", nil)
-		if out["single"] != true {
-			t.Errorf("/api/me (%q) in single mode does not say single: %v", tok, out["_raw"])
+		if (out["single"] == true) != (tok != "") || (tok == "" && out["flags"].(map[string]any)["signups"] != false) {
+			t.Errorf("/api/me (%q) in single mode: single %v, signups %v", tok, out["single"], out["flags"].(map[string]any)["signups"])
 		}
 		if in, _ := out["instance"].(map[string]any); in["approval"] != nil {
 			t.Errorf("/api/me (%q) in single mode says joining is by approval", tok)
@@ -5087,6 +5097,47 @@ func TestDBSingleMode(t *testing.T) {
 	if code != 200 || h.Get("Content-Type") != "image/png" || !strings.HasPrefix(pic, "\x89PNG") {
 		t.Errorf("the owner's picture: %d %q", code, h.Get("Content-Type"))
 	}
+	// Under the address the page gives it (with the hash of its bytes) the picture is kept for good; under
+	// any other it is asked for again.
+	addr := regexp.MustCompile(`src="(profile-picture\?v=[0-9a-f]+)"`).FindStringSubmatch(body)
+	if addr == nil {
+		t.Fatalf("no picture address on the page:\n%s", body)
+	}
+	for path, want := range map[string]string{"/" + addr[1]: "max-age=31536000, immutable", "/profile-picture": "no-cache", "/profile-picture?v=0123456789abcdef": "no-cache"} {
+		if code, _, h := visit("GET", path, "", nil); code != 200 || h.Get("Cache-Control") != want {
+			t.Errorf("GET %s: %d, Cache-Control %q, want %q", path, code, h.Get("Cache-Control"), want)
+		}
+	}
+	// The type is what the bytes decode as: a PNG stored under a JPEG prefix is sent as image/png, and
+	// bytes that are no picture under an image prefix are not sent, nor named on the page.
+	lie := func(v string) {
+		t.Helper()
+		if _, err := s.a.db.Exec(`UPDATE users SET avatar = $1 WHERE id = $2`, v, ownerID); err != nil {
+			t.Fatal(err)
+		}
+		s.a.dropVisitorPage()
+	}
+	lie(strings.Replace(pngData(t), "data:image/png", "data:image/jpeg", 1))
+	if code, pic, h := visit("GET", "/profile-picture", "", nil); code != 200 || h.Get("Content-Type") != "image/png" || !strings.HasPrefix(pic, "\x89PNG") {
+		t.Errorf("a PNG stored as a JPEG: %d %q, want image/png", code, h.Get("Content-Type"))
+	}
+	lie("data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("<svg onload=alert(1)>")))
+	if code, _, _ := visit("GET", "/profile-picture", "", nil); code != 404 {
+		t.Errorf("bytes that are no picture under an image prefix: %d, want 404", code)
+	}
+	if _, b, _ := visit("GET", "/", "", nil); strings.Contains(b, "profile-picture") || !strings.Contains(b, "pub-initial") {
+		t.Error("the page names a picture that is no picture")
+	}
+	s.must(200, owner, "PUT", "/api/me", map[string]any{"avatar": pngData(t)})
+	// A bio that is only white space makes no empty paragraph.
+	if _, err := s.a.db.Exec(`UPDATE users SET bio = $1 WHERE id = $2`, " \n\t  \n", ownerID); err != nil {
+		t.Fatal(err)
+	}
+	s.a.dropVisitorPage()
+	// (The bio's paragraph is the one right after the names; the instance's description has one too.)
+	if _, b, _ := visit("GET", "/", "", nil); strings.Contains(b, "</div></div>\n<p class=\"pub-text\">") || !strings.Contains(b, "pub-name") {
+		t.Errorf("a white-space bio makes a paragraph:\n%s", b)
+	}
 	if code, _, _ := visit("GET", fmt.Sprintf("/api/users/%d/avatar", ownerID), "", nil); code != 401 {
 		t.Errorf("the members' picture address for a visitor: %d, want 401 as before", code)
 	}
@@ -5150,8 +5201,13 @@ func TestDBSingleMode(t *testing.T) {
 	if code, _, _ := visit("GET", "/", "", nil); code != 200 {
 		t.Errorf("another address after one ran out: %d", code)
 	}
-	if code, _, _ := s.visit("GET", "/", owner, 9999, nil); code != 200 {
-		t.Errorf("the signed-in owner from an address that ran out of visitor reads: %d, want the app", code)
+	// An address over its allowance is refused before any cookie is looked up, the owner's too: telling the
+	// owner apart would cost the query the allowance is there to spare. The app's own address still opens.
+	if code, _, _ := s.visit("GET", "/", owner, 9999, nil); code != 429 {
+		t.Errorf("the signed-in owner from an address that ran out of visitor reads: %d, want 429", code)
+	}
+	if code, b, _ := s.visit("GET", "/index.html", owner, 9999, nil); code != 200 || !strings.Contains(b, "Flowa app") {
+		t.Errorf("the app at /index.html from an address that ran out of visitor reads: %d", code)
 	}
 
 	// A local server on the same database answers / exactly as before: the app, with its own CSP and
@@ -5171,8 +5227,123 @@ func TestDBSingleMode(t *testing.T) {
 	if code, _, _ := l.visit("GET", "/profile-picture", "", 1, nil); code != 404 {
 		t.Errorf("the picture address in local mode: %d, want 404", code)
 	}
-	if out := l.must(200, "", "GET", "/api/me", nil); out["single"] != nil {
-		t.Errorf("/api/me in local mode says single: %v", out["_raw"])
+	// A visitor's /api/me differs between the two modes only in what says how to join: the signups flag,
+	// and the approval a local instance with sign-up by approval tells a visitor. The mode is not told.
+	lo, so := l.must(200, "", "GET", "/api/me", nil), s.must(200, "", "GET", "/api/me", nil)
+	if lo["single"] != nil || lo["flags"].(map[string]any)["signups"] != true || lo["instance"].(map[string]any)["approval"] != true {
+		t.Errorf("/api/me in local mode: %v", lo["_raw"])
+	}
+	delete(lo, "_raw")
+	delete(so, "_raw")
+	delete(lo["instance"].(map[string]any), "approval")
+	so["flags"].(map[string]any)["signups"] = true
+	if !reflect.DeepEqual(lo, so) {
+		t.Errorf("a visitor's /api/me differs between local and single mode beyond the signups flag:\n%v\n%v", lo, so)
+	}
+}
+
+// randomToken is a well-formed session token that names no session, as startSession makes them.
+func randomToken() string {
+	raw := make([]byte, 32)
+	rand.Read(raw)
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// A cookie on / costs a stranger nothing they can multiply: one that cannot be a session token is
+// answered as no cookie, with no query; a well-formed one is counted against the address before it is
+// looked up, so an address over its allowance gets 429 with no query. The database's one connection is
+// held while it matters, so a request that asked it would hang and fail the test.
+func TestDBSingleVisitorCookies(t *testing.T) {
+	s := newEnv(t)
+	_, owner := s.user("ana", "admin")
+	if err := s.singleStart(nil, staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa app</title>"})); err != nil {
+		t.Fatal(err)
+	}
+	s.a.lim = newLimits()
+	if code, _, _ := s.visit("GET", "/", "", 1, nil); code != 200 {
+		t.Fatalf("the visitor's page: %d", code)
+	}
+	// hold takes the database's only connection until release is called.
+	hold := func(t *testing.T) (release func()) {
+		t.Helper()
+		s.a.db.SetMaxOpenConns(1)
+		tx, err := s.a.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return func() { tx.Rollback(); s.a.db.SetMaxOpenConns(8) }
+	}
+	// quick answers a request that must not need the database, or fails the test when it waits for it.
+	quick := func(t *testing.T, release func(), method, path, cookie string, n int) (int, string) {
+		t.Helper()
+		type answer struct {
+			code int
+			body string
+		}
+		at := make(chan answer, 1)
+		go func() { c, b, _ := s.visit(method, path, cookie, n, nil); at <- answer{c, b} }()
+		select {
+		case a := <-at:
+			return a.code, a.body
+		case <-time.After(3 * time.Second):
+			release()
+			t.Fatalf("%s %s with the cookie %q waited for the database", method, path, cookie)
+			return 0, ""
+		}
+	}
+
+	// Cookies that cannot be a session token, of several shapes: the page, no query.
+	t.Run("cookies that cannot be a session", func(t *testing.T) {
+		release := hold(t)
+		before := sessionLookups.Load()
+		for i, c := range []string{"x", "garbage", "short-token", strings.Repeat("A", 65), "abc$def!ghi%jklmnop", "Zm9vYmFyYmF6cXV4==", "a.b.c.d.e.f.g.h.i.j", "<script>alert(1)</script>"} {
+			for _, m := range []string{"GET", "HEAD"} {
+				if code, b := quick(t, release, m, "/", c, 100+i); code != 200 || (m == "GET" && !strings.Contains(b, "pub-name")) {
+					t.Errorf("%s / with the cookie %q: %d, want the visitor's page", m, c, code)
+				}
+			}
+		}
+		if code, _ := quick(t, release, "GET", "/profile-picture", randomToken(), 200); code != 404 {
+			t.Errorf("the picture with a cookie while the database is held: %d, want 404 from memory", code)
+		}
+		release()
+		if n := sessionLookups.Load() - before; n != 0 {
+			t.Errorf("%d sessions were looked up for cookies that cannot be one, want none", n)
+		}
+	})
+
+	// Well-formed tokens that name no session, 320 from one address: at most the allowance (300) is
+	// looked up, and the rest are refused with 429 without a query, the database held for them.
+	t.Run("made-up tokens past the allowance", func(t *testing.T) {
+		before := sessionLookups.Load()
+		for i := 0; i < 300; i++ {
+			if code, _, _ := s.visit("GET", "/", randomToken(), 7777, nil); code != 200 {
+				t.Fatalf("made-up token %d: %d", i+1, code)
+			}
+		}
+		release := hold(t)
+		for i := 0; i < 20; i++ {
+			for _, m := range []string{"GET", "HEAD"} {
+				if code, _ := quick(t, release, m, "/", randomToken(), 7777); code != 429 {
+					t.Errorf("%s / with made-up token %d past the allowance: %d, want 429", m, 301+i, code)
+				}
+			}
+		}
+		if code, _ := quick(t, release, "GET", "/profile-picture", randomToken(), 7777); code != 429 {
+			t.Errorf("the picture past the allowance: %d, want 429", code)
+		}
+		release()
+		if n := sessionLookups.Load() - before; n > 300 {
+			t.Errorf("%d sessions were looked up for 320 made-up tokens from one address, want at most 300", n)
+		}
+	})
+
+	// The owner reloading / 400 times in an hour from one address is never refused: a proven session
+	// gives its count back.
+	for i := 0; i < 400; i++ {
+		if code, b, _ := s.visit("GET", "/", owner, 8888, nil); code != 200 || !strings.Contains(b, "Flowa app") {
+			t.Fatalf("the owner's reload %d: %d", i+1, code)
+		}
 	}
 }
 

@@ -664,7 +664,7 @@ function renderSide(route) {
   const staff = staffPages();
   const profile = me
     ? `<a class="nav-profile ${curId === 'profile' ? 'on' : ''}" href="#/profile" ${curId === 'profile' ? 'aria-current="page"' : ''}>${avatarHTML(me)}<span class="grow"><b>${esc(me.displayName || me.username)}</b><span class="tiny">@${esc(me.username)}</span></span></a>`
-    : `<a class="nav-profile ${curId === 'signin' || curId === 'signup' ? 'on' : ''}" href="#/signin">${avatarHTML(null)}<span class="grow"><b>Sign in</b><span class="tiny">${oneProfile ? 'to your own Flowa' : 'or create an account'}</span></span></a>`;
+    : `<a class="nav-profile ${curId === 'signin' || curId === 'signup' ? 'on' : ''}" href="#/signin">${avatarHTML(null)}<span class="grow"><b>Sign in</b><span class="tiny">or create an account</span></span></a>`;
   $('#menu').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
     ${profile}
     ${a('#/', 'home', me ? 'Dashboard' : 'Welcome', curId === 'dashboard')}

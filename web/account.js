@@ -5,8 +5,10 @@ let homeUrl = ''; // for admins, the start page of the machine Flowa runs on, wh
 // What the admins have said about this Flowa, as /api/me gives it: null until something is saved. about says
 // whether this reader may open the about page; a visitor also gets the rules, for the sign-up form.
 let inst = null;
-// oneProfile: this Flowa is one person's own (FLOWA_MODE=single), so nobody can make an account, whatever the
-// signups flag says, and signing out goes to the page visitors see at /. joinable() is the one place that asks.
+// oneProfile: the signed-in member is the owner of a Flowa that is one person's own (FLOWA_MODE=single): no
+// People list, no registration choice, and signing out goes to the page visitors see at /. A visitor is not told
+// the mode; the server gives them the signups flag off, which hides every way to make an account by itself.
+// joinable() is the one place that asks whether one can be made.
 let oneProfile = false;
 const joinable = () => !!flags.signups && !oneProfile;
 const docs = {}; // progress per prop for the signed-in user: { rev, state }
@@ -324,7 +326,6 @@ window.addEventListener('hashchange', () => { if (location.hash !== '#/signup') 
 const JOIN_REASON = 500; // characters, as maxJoinReason in main.go
 function pageAuth(mode) {
   const up = mode === 'signup', ask = up && !!inst?.approval;
-  if (up && oneProfile) return `<div class="auth card"><h1>No new accounts</h1><p class="muted" style="margin-top:8px">This Flowa holds one person's profile, so it takes no new accounts. If it is yours, <a href="#/signin">sign in</a>.</p></div>`;
   if (up && !flags.signups) return `<div class="auth card"><h1>Sign-ups are off</h1><p class="muted" style="margin-top:8px">Ask the admin for an account, then <a href="#/signin">sign in</a>.</p></div>`;
   if (up && joinSent) return `<div class="auth card" id="join-sent"><h1 tabindex="-1">Your request is waiting</h1>
     <p>An admin of this Flowa will look at the request for <b>@${esc(joinSent)}</b>. Flowa keeps no email address, so nobody can tell you when they have.</p>
@@ -340,7 +341,7 @@ function pageAuth(mode) {
     ${ask ? `<div class="stack" style="gap:4px"><label class="field">Why do you want to join? (optional, only the admins read it)<textarea name="reason" rows="3" ${countAttrs('join-count', '', JOIN_REASON)}></textarea></label>${countHTML('join-count', '', JOIN_REASON)}</div>` : ''}
     ${up ? signupRules(ask) : ''}<p class="form-err" id="auth-err" role="alert"></p>
     <button class="btn primary" type="submit">${ask ? 'Ask to join' : up ? 'Create account' : 'Sign in'}</button>
-    <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : joinable() ? 'New here? <a href="#/signup">Create an account</a>' : oneProfile ? 'This Flowa holds one person\'s profile and takes no new accounts.' : 'New sign-ups are turned off.'}</p>${!up && inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</form>`;
+    <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : joinable() ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p>${!up && inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</form>`;
 }
 // The rules, in the admins' order, each with its explanation. Everything in them is text an admin typed, so
 // it is escaped and keeps its line breaks.

@@ -721,13 +721,34 @@ func (a *app) startSession(w http.ResponseWriter, r *http.Request, id int64) err
 	return nil
 }
 
-func (a *app) currentUser(r *http.Request) *user {
+// sessionTokenRE is what a session cookie can hold. startSession makes 43 characters of base64url (32
+// random bytes); the range around that keeps any token of the same alphabet a test or an older build
+// made, and refuses what no session can be: too short, too long, or with other characters.
+var sessionTokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
+
+// sessionLookups counts the sessions looked up in the database since start. Nothing in the server reads
+// it: the tests do, to prove that a cookie that cannot be a session, or a visitor over the allowance,
+// costs no query (as pbkdf2Runs counts the hashes).
+var sessionLookups atomic.Int64
+
+// sessionToken is the request's session cookie when it can be a session token, or "". A cookie that
+// cannot is answered as no cookie at all, with no query: whoever sends one learns nothing either way.
+func sessionToken(r *http.Request) string {
 	c, err := r.Cookie(cookieName)
-	if err != nil || c.Value == "" {
+	if err != nil || !sessionTokenRE.MatchString(c.Value) {
+		return ""
+	}
+	return c.Value
+}
+
+func (a *app) currentUser(r *http.Request) *user {
+	tok := sessionToken(r)
+	if tok == "" {
 		return nil
 	}
+	sessionLookups.Add(1)
 	// A session ends at expires_at, or after sessionIdle without use; use is noted once an hour.
-	th := tokenHash(c.Value)
+	th := tokenHash(tok)
 	var stale bool
 	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, s.last_seen < now() - interval '1 hour' FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now() AND s.last_seen > now() - $2::interval`, th, sessionIdle), &stale)
@@ -1445,10 +1466,18 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 		}
 		out["instance"] = in
 	}
-	// single tells the page it runs on a single-profile instance, so it offers no way to make an
-	// account and goes to the visitor's page at / on signing out. Local mode answers as before.
+	// In single mode a signed-in user is told so (single), so the page offers no way to make an account
+	// and goes to the visitor's page at / on signing out. A visitor is not told the mode: the signups
+	// flag they are given is what sign-up does here, off, which hides every way to make an account by
+	// itself. Local mode answers as before.
 	if a.mode == modeSingle {
-		out["single"] = true
+		if u != nil {
+			out["single"] = true
+		} else {
+			shown := maps.Clone(f)
+			shown["signups"] = false
+			out["flags"] = shown
+		}
 	}
 	// Where the machine's own start page is concerns the people who run it, nobody else.
 	if u != nil && u.Role == "admin" && a.homeURL != "" {
@@ -5813,13 +5842,23 @@ func (a *app) checkSingle(adminUser, adminPW string) error {
 	}
 	name := strings.ToLower(strings.TrimSpace(adminUser))
 	seeds := name != "" && adminPW != "" // what seedAdmin needs to make an account
+	logWaiting := func() error {
+		var waiting int
+		if err := a.db.QueryRow(`SELECT count(*) FROM join_requests`).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting > 0 {
+			log.Printf("single mode: %d requests to join wait from local mode; nobody can approve them or sign in with them here, and housekeeping removes them after %d days (or decline them in local mode)", waiting, joinWaitDays)
+		}
+		return nil
+	}
 	switch {
 	case n > 1:
 		return fmt.Errorf("FLOWA_MODE=single: this database has %d local accounts, and a single-profile instance has exactly one. Nothing was changed or deleted. Run it in local mode (leave FLOWA_MODE unset), or remove the other accounts there first (Admin, Accounts), then start in single mode again", n)
 	case n == 0 && !seeds:
 		return errors.New("FLOWA_MODE=single: there is no account yet. Set ADMIN_USER and ADMIN_PASSWORD for the first start; that account becomes the one profile of this instance")
 	case n == 0:
-		return nil
+		return logWaiting()
 	}
 	var who string
 	var suspended, muted sql.NullTime
@@ -5836,14 +5875,7 @@ func (a *app) checkSingle(adminUser, adminPW string) error {
 	if muted.Valid && muted.Time.After(now) {
 		log.Printf("single mode: the one account, @%s, is muted until %s; it can sign in and read, and post again once the mute ends", who, stamp(muted.Time))
 	}
-	var waiting int
-	if err := a.db.QueryRow(`SELECT count(*) FROM join_requests`).Scan(&waiting); err != nil {
-		return err
-	}
-	if waiting > 0 {
-		log.Printf("single mode: %d requests to join wait from local mode; nobody can approve them or sign in with them here, and housekeeping removes them after %d days (or decline them in local mode)", waiting, joinWaitDays)
-	}
-	return nil
+	return logWaiting()
 }
 
 // soleAdmin makes the one account of a single-profile instance an admin, so that ensureOwner, the rule
@@ -5962,7 +5994,7 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := visitorData{Name: u.DisplayName, Username: u.Username, Bio: u.Bio, Description: info.Description, Contact: info.Contact, Rules: info.Rules}
+	d := visitorData{Name: u.DisplayName, Username: u.Username, Bio: strings.TrimSpace(u.Bio), Description: info.Description, Contact: info.Contact, Rules: info.Rules}
 	if d.Name == "" {
 		d.Name = u.Username
 	}
@@ -5994,13 +6026,15 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 		}
 	}
 	p := &visitorPage{at: time.Now()}
-	// The picture went through cleanImage when it was saved: a JPEG or PNG made again by the server.
-	// Anything else in the column is left out rather than sent.
-	if head, data, ok := strings.Cut(u.Avatar, ","); ok {
-		typ := strings.TrimSuffix(strings.TrimPrefix(head, "data:"), ";base64")
-		if raw, err := base64.StdEncoding.DecodeString(data); err == nil && (typ == "image/jpeg" || typ == "image/png") {
-			p.pic, p.picType, p.picTag = raw, typ, hashOf(raw)
-			d.Picture = "profile-picture?v=" + p.picTag
+	// The picture went through cleanImage when it was saved: a JPEG or PNG made again by the server. Its
+	// type is what its bytes decode as, not what the stored prefix says, and anything that decodes as
+	// neither is left out rather than sent. It is decoded once here; the page is kept with it.
+	if _, data, ok := strings.Cut(u.Avatar, ","); ok {
+		if raw, err := base64.StdEncoding.DecodeString(data); err == nil {
+			if _, format, err := image.DecodeConfig(bytes.NewReader(raw)); err == nil && (format == "jpeg" || format == "png") {
+				p.pic, p.picType, p.picTag = raw, "image/"+format, hashOf(raw)
+				d.Picture = "profile-picture?v=" + p.picTag
+			}
 		}
 	}
 	var buf bytes.Buffer
@@ -6035,23 +6069,27 @@ func (a *app) dropVisitorPage() {
 	a.pageMu.Unlock()
 }
 
-// visitorLimited counts a visitor's read by address, as the about page is counted, and answers 429
-// once the address has used its allowance. The page comes from memory: the limit is for the
-// bandwidth, the cache for the database.
-func (a *app) visitorLimited(w http.ResponseWriter, r *http.Request) bool {
+// visitorLimited counts a read of / or of the picture by address, as the about page is counted, and
+// answers 429 once the address has used its allowance. It is asked first, before a session cookie is
+// looked up, so an address over its allowance costs no query whatever cookie it sends. It returns the
+// address counted, for handleRoot to give the count back to a proven session.
+func (a *app) visitorLimited(w http.ResponseWriter, r *http.Request) (string, bool) {
 	from := limitKey(a.clientIP(r))
 	if a.lim.visitor.add(from) {
-		return false
+		return from, false
 	}
 	logRefusal(w, "too many reads of the visitor's page", "from "+from)
 	w.Header().Set("Retry-After", "3600")
 	http.Error(w, "Too many requests from this address. Try again in an hour.", http.StatusTooManyRequests)
-	return true
+	return from, true
 }
 
-// handleRoot answers / in single mode. A request with a valid session (checked as every handler checks
-// one, so a cookie that is garbage, expired or of a suspended account counts as none) gets the app, as
-// on any instance. Anyone else gets the owner's profile as the server writes it. Both answers say
+// handleRoot answers / in single mode. Every request is counted against the address's allowance first.
+// Then a cookie that can be a session token is looked up as every handler looks one up (a cookie that
+// cannot be one, or is unknown, expired or of a suspended account, counts as none); a valid session gets
+// the app, as on any instance, and its count is given back, so the owner reloading / is never refused
+// while their address has room. A stranger's made-up token therefore costs at most one query per count
+// of the allowance, and none once the address is over it. Anyone else gets the owner's profile as the server writes it. Both answers say
 // Vary: Cookie, so no cache hands one to the other. The page is sent with no-cache and an ETag rather
 // than kept for a while: the owner who has just saved their profile and signs out should see it as
 // saved, and a visitor's browser that asks again is told 304 with no body.
@@ -6059,11 +6097,13 @@ func (a *app) handleRoot(st *static) http.HandlerFunc {
 	app := a.handleStatic(st)
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Vary", "Cookie")
-		if a.currentUser(r) != nil {
-			app(w, r)
+		from, over := a.visitorLimited(w, r)
+		if over {
 			return
 		}
-		if a.visitorLimited(w, r) {
+		if sessionToken(r) != "" && a.currentUser(r) != nil {
+			a.lim.visitor.addWeight(from, -tenths) // the owner is no visitor: the count is given back
+			app(w, r)
 			return
 		}
 		p, err := a.visitorPageNow(st)
@@ -6084,10 +6124,12 @@ func (a *app) handleRoot(st *static) http.HandlerFunc {
 
 // handleOwnerPicture serves the owner's profile picture for the visitor's page, from the same memory
 // as the page and under the same limit. It exists only in single mode and only for the owner's
-// picture: there is no id in the address to ask for anyone else's.
+// picture: there is no id in the address to ask for anyone else's. It reads no cookie. The page names
+// it with a hash of its bytes (?v=), so under that address it is kept for a year as immutable; any
+// other address of it, which may outlive a change of picture, is sent with no-cache.
 func (a *app) handleOwnerPicture(st *static) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if a.visitorLimited(w, r) {
+		if _, over := a.visitorLimited(w, r); over {
 			return
 		}
 		p, err := a.visitorPageNow(st)
@@ -6102,7 +6144,11 @@ func (a *app) handleOwnerPicture(st *static) http.HandlerFunc {
 		}
 		h := w.Header()
 		h.Set("Content-Type", p.picType)
-		h.Set("Cache-Control", "no-cache")
+		if r.URL.Query().Get("v") == p.picTag {
+			h.Set("Cache-Control", "max-age=31536000, immutable")
+		} else {
+			h.Set("Cache-Control", "no-cache")
+		}
 		h.Set("ETag", `"`+p.picTag+`"`)
 		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(p.pic))
 	}

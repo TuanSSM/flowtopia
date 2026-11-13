@@ -92,7 +92,9 @@ test named below is new unless the design note says it exists.
   suspended account refused; a sole member or moderator made the admin, then the owner by `ensureOwner`; a
   mute and waiting requests to join logged and left alone. Sign-up answers 403 before anything is read,
   counted or hashed; the routes for requests to join, deleting an account, changing a role and handing over
-  ownership answer 403; `/api/me` says `single: true`. A signed-out visitor at `/` gets the owner's profile
+  ownership answer 403; `/api/me` says `single: true` to the signed-in owner and gives a visitor the
+  `signups` flag off, without the mode. The visitor's allowance is counted before a session cookie is looked
+  up, and a cookie that cannot be a session token is never looked up, on any route (`currentUser`). A signed-out visitor at `/` gets the owner's profile
   from an `html/template` (no script, the CSP of federation.md 5.6, `no-cache` with an ETag, `Vary: Cookie`),
   kept in memory until a profile or instance save or ten minutes, 300 reads an hour per address with its
   picture at `/profile-picture` (`testdata/routes-single.txt`); no post and no number on it. The owner signed

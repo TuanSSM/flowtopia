@@ -90,7 +90,9 @@ try:
     wait_for("return !!document.querySelector('#auth-form')",'the sign-in form',30)
     check('Sign in opens the app\'s sign-in form, with no link to create an account',lambda: js("return [!!document.querySelector('#auth-form[data-mode=signin]'),document.querySelectorAll('a[href=\"#/signup\"]').length]")==[True,0],lambda: js("return document.querySelector('main').innerText"))
     nav('#/signup')
-    check('the sign-up address says this Flowa takes no new accounts, with no form',lambda: js("return [!!document.querySelector('#auth-form'),document.querySelector('main').innerText.includes('takes no new accounts')]")==[False,True],lambda: js("return document.querySelector('main').innerText"))
+    check('the sign-up address says sign-ups are off, with no form',lambda: js("return [!!document.querySelector('#auth-form'),document.querySelector('main').innerText.includes('Sign-ups are off')]")==[False,True],lambda: js("return document.querySelector('main').innerText"))
+    seen=json.loads(urllib.request.build_opener().open(BASE+'api/me',timeout=20).read())
+    check('a visitor\'s /api/me does not say the mode, and gives the signups flag off','single' not in seen and seen['flags']['signups'] is False,lambda: (seen.get('single'),seen['flags'].get('signups')))
     signin('admin')
     load(BASE)
     check('the owner signed in gets the app at /, not the visitor\'s page',lambda: js("return [!!document.querySelector('#main .page-h, #main h1'),!!document.querySelector('#pub-name'),(document.querySelector('.nav-profile .tiny')||{}).textContent]")==[True,False,'@admin'],

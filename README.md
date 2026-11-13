@@ -336,10 +336,18 @@ home network that is the people on it, behind a public name or tunnel it is the 
 shows a post, a comment, a level, a streak, XP, a badge or any other number, nor how many accounts there
 are, the version or the mode: posts become public only once a post can have an audience (a later item of the
 plan), and numbers only once the server can vouch for them. It is kept in memory and made again when the
-owner saves their profile or an admin saves the instance information (or after ten minutes), so a flood of
-visitors costs no database read each; each address may read it and the picture 300 times an hour. It is sent
-with `Cache-Control: no-cache`, an `ETag` and `Vary: Cookie`, and a policy that allows no script, no frame
-and no form.
+owner saves their profile or an admin saves the instance information (or after ten minutes). Each address
+has an allowance of 300 reads an hour of `/` and the picture together, counted before anything else; past it
+the answer is 429 with no database read. A visitor with no cookie, or with one that cannot be a session token,
+costs no database read at all. A cookie that can be one is looked up once per read the allowance counts, so a
+stranger with made-up tokens costs at most 300 lookups an hour per address; a read that proves to be the
+owner's session gets its count back, so the owner reloading `/` is never refused while their address has
+room (an address that strangers have used up gets 429 at `/` for everyone on it, the owner too, until the
+hour passes; the app at `/index.html` still opens). The page is sent with `Cache-Control: no-cache`, an
+`ETag` and `Vary: Cookie`, and a policy that allows no script, no frame and no form. The picture is sent
+under the address the page gives it, which holds a hash of its bytes, as kept for a year (`immutable`), and
+only when its bytes decode as a JPEG or PNG. A visitor's `/api/me` does not say the mode; it gives the
+`signups` flag as off, which is what sign-up does here.
 
 **The owner** signs in from that button (the app stays at `/index.html`) and then gets the app at `/` as on
 any instance. Sign-up is closed whatever Open sign-ups and Who can join say: `POST /api/signup` answers 403,
