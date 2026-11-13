@@ -78,7 +78,7 @@ plan() {
       test/browser/h.py|test/browser/run.sh) lint=true; shots=true; suites $BROWSER ;;
       test/browser/pages.py|test/browser/shots.py) lint=true; shots=true ;;
       test/browser/single.py) lint=true; shots=true; suites single ;;
-      test/browser/federated.py) lint=true; suites federated ;;
+      test/browser/federated.py) lint=true; shots=true; suites federated ;;
       test/browser/stub.py) lint=true; shots=true; suites links ;;
       test/browser/combo.py) lint=true; suites combo combo-avatars ;;
       test/browser/demos.py) lint=true; suites demos demos-avatars ;;
@@ -130,7 +130,8 @@ self_test() {
   # The single suite also takes the visitor's pictures for the screenshots job, which runs it a second time.
   expect "test/browser/single.py" 'code=true lint=true unit=false screenshots=true suites=["single"]'
   expect "testdata/routes-single.txt" "code=true lint=true unit=true screenshots=true suites=$all"
-  expect "test/browser/federated.py" 'code=true lint=true unit=false screenshots=false suites=["federated"]'
+  # The federated suite also takes the pictures of the switch for the screenshots job, which runs it a second time.
+  expect "test/browser/federated.py" 'code=true lint=true unit=false screenshots=true suites=["federated"]'
   expect "testdata/routes-federated.txt" "code=true lint=true unit=true screenshots=true suites=$all"
   expect "tour/src/tour.jsx,web/tour.js" "code=true lint=true unit=true screenshots=true suites=$browser"
   expect "test/browser/mod.py" 'code=true lint=true unit=false screenshots=false suites=["mod"]'

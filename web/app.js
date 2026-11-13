@@ -635,13 +635,17 @@ function pageSettings() {
   </div>`;
 }
 // Sharing beyond this server, shown only where the server federates (fed). The switch is the member's opt-in;
-// on a Flowa that is one person's own the setting FLOWA_FEDERATE is that choice, so there is no switch.
+// on a Flowa that is one person's own the setting FLOWA_FEDERATE is that choice, so there is no switch. What
+// the switch does in this version, and its label, are the server's words (fed.label, fed.built), so the card
+// says no more than is built. While federation is refused nobody can be found: the card says so, with the
+// reason for staff (fed.refused), and has no switch.
 function fedCard() {
-  const on = fed.optedIn;
-  return `<div class="card"><div class="card-h"><h2>Beyond this server</h2></div><div class="stack">
-    ${fed.implied ? `<p class="small">Your profile is shared beyond this server: this Flowa is yours alone, and it is set up to federate.</p>`
-    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>Share my profile and public posts beyond this server</span></label>`}
-    <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. For now that is all this Flowa answers: it says who you are when asked, and sends nothing. Your profile and your public posts will follow in a later version. Practice, progress, notes, stats and badges never leave this server.</p>
+  const on = fed.optedIn, head = '<div class="card fed-card"><div class="card-h"><h2>Beyond this server</h2></div><div class="stack">';
+  if (fed.unavailable) return `${head}<p class="small">${esc(fed.unavailable)}</p>${fed.refused ? `<p class="notice warn">${esc(fed.refused)}</p>` : ''}</div></div>`;
+  return `${head}
+    ${fed.implied ? '<p class="small">This Flowa is yours alone, and it is set up to let other servers find you.</p>'
+    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>${esc(fed.label)}</span></label>`}
+    <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. ${esc(fed.built)}</p>
     ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}</div></div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
@@ -1087,7 +1091,7 @@ document.addEventListener('change', async e => {
     case 'setting': state.settings[d.k] = t.value.trim(); t.blur(); commit(); break;
     case 'federates': {
       const want = t.checked, r = await api('me', 'PUT', { federates: want });
-      if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'Your profile is shared beyond this server.' : 'Your profile is no longer shared beyond this server.'); }
+      if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'Other servers can now find you by your handle.' : 'Other servers can no longer find you by your handle.'); }
       else toast(r.error);
       render(); document.querySelector('[data-change="federates"]')?.focus();
       break;

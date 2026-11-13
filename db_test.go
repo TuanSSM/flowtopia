@@ -5597,7 +5597,7 @@ func TestDBFederatedStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	var settings string
-	if err := e.a.db.QueryRow(`SELECT string_agg(key || '=' || value::text, ',') FROM instance_settings`).Scan(&settings); err != nil {
+	if err := e.a.db.QueryRow(`SELECT COALESCE(string_agg(key || '=' || value::text, ','), '') FROM instance_settings`).Scan(&settings); err != nil {
 		t.Fatal(err)
 	}
 	for where, text := range map[string]string{"an answer": answers.String(), "the audit log": audit, "the log": logs.String(), "instance_settings": settings, "the public key column": pub} {
@@ -6013,9 +6013,13 @@ func TestDBServeStopsWorker(t *testing.T) {
 	}
 }
 
-// The origin is recorded the first time the instance federates and frozen after: the same origin
-// written another way starts as before; another origin starts the app, says why once, and federates
-// nothing. Two first records at once: one wins, both agree.
+// The origin is frozen when it is first announced, and not before (docs/federation.md 4.3): starting in
+// a mode that federates and making the keys records nothing, so a FLOWA_ORIGIN changed before any actor id
+// went out is simply taken; NodeInfo, which names the origin but no actor id, announces nothing, and nor
+// does the instance actor's WebFinger answer (a scanner or the operator's own check); the first WebFinger
+// answer that names a member records the origin and the time once, however many arrive at once.
+// From then on the same origin written another way starts as before, and another origin starts the app,
+// says why once, and federates nothing. Two first records at once: one wins, both agree.
 func TestDBOriginFrozen(t *testing.T) {
 	logs := logged(t)
 	ctx := context.Background()
@@ -6026,13 +6030,70 @@ func TestDBOriginFrozen(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM instance_settings`); n != 0 {
 		t.Fatalf("local mode recorded %d settings", n)
 	}
+	recorded := func() int {
+		return e.count(`SELECT count(*) FROM instance_settings WHERE key IN ('origin', 'first_federated_at')`)
+	}
+	actorWF := "/.well-known/webfinger?resource=" + url.QueryEscape("acct:flowa.example.org@flowa.example.org")
+	memberWF := "/.well-known/webfinger?resource=" + url.QueryEscape("acct:ana@flowa.example.org")
+	anaID, ana := e.user("ana", "user")
+	if _, err := e.a.db.Exec(`UPDATE users SET federates = true WHERE id = $1`, anaID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first start makes the instance actor's key and records nothing.
 	r := e.again()
 	if err := r.fedStart(nil); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the origin recorded", func() bool {
-		return e.count(`SELECT count(*) FROM instance_settings WHERE key IN ('origin', 'first_federated_at')`) == 2
-	})
+	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys`) == 1 })
+	if n := recorded(); n != 0 {
+		t.Fatalf("making the key recorded %d rows of the origin", n)
+	}
+	if !strings.Contains(logs.String(), "federation: the origin https://flowa.example.org is not announced yet") {
+		t.Error("the start does not say the origin is not announced yet")
+	}
+
+	// Before it is announced, another FLOWA_ORIGIN is taken: it federates, its key opens (a key holds no
+	// origin), and NodeInfo's discovery document, which names the origin, announces nothing.
+	n := e.again()
+	if err := n.fedStart(map[string]string{"FLOWA_ORIGIN": "https://flowa.example.net"}); err != nil || !n.a.federating() {
+		t.Fatalf("another origin before any announcement: %v, %q", err, n.a.fed.refusal())
+	}
+	if w := ask(n.h, "GET", "/.well-known/nodeinfo", "", nil); w.Code != 200 || !strings.Contains(w.Body.String(), "https://flowa.example.net/nodeinfo/2.1") {
+		t.Errorf("NodeInfo under the new origin: %d %s", w.Code, w.Body)
+	}
+	if w := ask(n.h, "GET", "/nodeinfo/2.1", "", nil); w.Code != 200 {
+		t.Errorf("/nodeinfo/2.1: %d", w.Code)
+	}
+	if w := ask(n.h, "GET", "/.well-known/webfinger?resource=acct:nobody@flowa.example.net", "", nil); w.Code != 404 {
+		t.Errorf("an unknown name: %d", w.Code)
+	}
+	if w := ask(n.h, "GET", "/.well-known/webfinger?resource=acct:flowa.example.net@flowa.example.net", "", nil); w.Code != 200 {
+		t.Errorf("the instance actor: %d", w.Code)
+	}
+	if c := recorded(); c != 0 {
+		t.Fatalf("NodeInfo, a 404 or the instance actor's answer recorded the origin (%d rows)", c)
+	}
+	_, admin := e.user("boss", "admin")
+	if _, out := n.do(admin, "GET", "/api/admin/dashboard", nil); out["federation"].(map[string]any)["announced"] != "" {
+		t.Errorf("the dashboard before any announcement: %v", out["federation"])
+	}
+
+	// Back to the first origin, and the first answers that name an actor, eight at once: each is answered,
+	// and the origin is recorded once.
+	g := e.again()
+	if err := g.fedStart(nil); err != nil || !g.a.federating() {
+		t.Fatalf("the first origin again: %v", err)
+	}
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	for i := range codes {
+		wg.Go(func() { codes[i] = ask(g.h, "GET", memberWF, fmt.Sprintf("198.51.100.%d:1000", i+1), nil).Code })
+	}
+	wg.Wait()
+	if slices.ContainsFunc(codes, func(c int) bool { return c != 200 }) || recorded() != 2 {
+		t.Fatalf("eight first answers at once: %v, %d rows", codes, recorded())
+	}
 	was, err := recordedOrigin(e.a.db)
 	if err != nil || was != "https://flowa.example.org" {
 		t.Fatalf("recorded %q, %v", was, err)
@@ -6044,10 +6105,11 @@ func TestDBOriginFrozen(t *testing.T) {
 	if at, err := time.Parse("2006-01-02T15:04:05.999999-07:00", first); err != nil || time.Since(at) > time.Minute {
 		t.Errorf("first_federated_at is %q (%v)", first, err)
 	}
+	if _, out := g.do(admin, "GET", "/api/admin/dashboard", nil); out["federation"].(map[string]any)["announced"] != first {
+		t.Errorf("the dashboard after the announcement: %v, want announced %s", out["federation"], first)
+	}
 	// The instance's about page and its editor read instance_settings too: these keys change neither.
-	_, admin := e.user("boss", "admin")
-	r.h = r.a.routes(staticOf(t, nil))
-	if code, out := r.do(admin, "GET", "/api/admin/instance", nil); code != 200 || out["updatedAt"] != "" {
+	if code, out := g.do(admin, "GET", "/api/admin/instance", nil); code != 200 || out["updatedAt"] != "" {
 		t.Errorf("the recorded origin shows in the instance editor: %d %v", code, out["_raw"])
 	}
 
@@ -6072,6 +6134,20 @@ func TestDBOriginFrozen(t *testing.T) {
 		if strings.Count(logs.String(), want) != 1 {
 			t.Errorf("FLOWA_ORIGIN=%s: the log says it %d times, want once", moved, strings.Count(logs.String(), want))
 		}
+		// Nothing is announced under it: discovery answers 404, and Settings says it is unavailable, with the
+		// reason for staff only.
+		for _, p := range []string{actorWF, memberWF} {
+			if w := ask(m.h, "GET", p, "", nil); w.Code != 404 {
+				t.Errorf("FLOWA_ORIGIN=%s: WebFinger answers %d", moved, w.Code)
+			}
+		}
+		_, mo := m.do(ana, "GET", "/api/me", nil)
+		_, so := m.do(admin, "GET", "/api/me", nil)
+		mf, _ := mo["federation"].(map[string]any)
+		sf, _ := so["federation"].(map[string]any)
+		if mf["unavailable"] != fedUnavailable || mf["refused"] != nil || sf["unavailable"] != fedUnavailable || sf["refused"] != want {
+			t.Errorf("FLOWA_ORIGIN=%s: Settings says to a member %v, to an admin %v", moved, mf, sf)
+		}
 		// The app is served as in local mode, under the name the operator now gives it.
 		host := strings.TrimPrefix(strings.Split(moved, ":")[1], "//")
 		req := httptest.NewRequest("GET", "/api/me", nil)
@@ -6087,21 +6163,23 @@ func TestDBOriginFrozen(t *testing.T) {
 		t.Errorf("the recorded origin changed to %q", now)
 	}
 
-	// A server that started before another recorded a different origin finds out when it makes its key:
-	// it refuses then, and writes no key.
+	// A server whose origin was recorded differently after it started (only by another process on the
+	// same database, which a deploy does not do; the old and the new container would have to overlap with
+	// two origins) finds out at its first answer: it refuses then, answers 404, and the record stays.
 	fresh := newEnv(t)
-	other, _ := parseFederation(modeFederated, fedEnv(map[string]string{"FLOWA_ORIGIN": "https://other.example.net"}))
+	fid, _ := fresh.user("ana", "user")
+	fresh.a.db.Exec(`UPDATE users SET federates = true WHERE id = $1`, fid)
+	if err := fresh.fedStart(map[string]string{"FLOWA_ORIGIN": "https://other.example.net"}); err != nil || !fresh.a.federating() {
+		t.Fatal(err)
+	}
 	if _, err := fresh.a.db.Exec(`INSERT INTO instance_settings (key, value) VALUES ('origin', '"https://flowa.example.org"')`); err != nil {
 		t.Fatal(err)
 	}
-	f := newFederation(fresh.a.db, other)
-	f.requestKey(instanceActor)
-	waitFor(t, "the refusal of the worker", func() bool { return f.refusal() != "" })
-	c, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	f.stop(c)
-	if !strings.Contains(f.refusal(), "the origin was https://flowa.example.org and is now https://other.example.net") || fresh.count(`SELECT count(*) FROM ap_keys`) != 0 {
-		t.Errorf("the worker under a moved origin: %q, %d keys", f.refusal(), fresh.count(`SELECT count(*) FROM ap_keys`))
+	if w := ask(fresh.h, "GET", "/.well-known/webfinger?resource=acct:ana@other.example.net", "", nil); w.Code != 404 {
+		t.Errorf("the first answer under a recorded other origin: %d", w.Code)
+	}
+	if !strings.Contains(fresh.a.fed.refusal(), "the origin was https://flowa.example.org and is now https://other.example.net") || fresh.count(`SELECT count(*) FROM instance_settings WHERE key = 'first_federated_at'`) != 0 {
+		t.Errorf("under a recorded other origin: %q", fresh.a.fed.refusal())
 	}
 
 	// Two first records at once, of the same origin and of two origins: one wins, both agree.

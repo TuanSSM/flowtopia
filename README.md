@@ -409,11 +409,17 @@ before the database is opened. In local mode, and in single mode without `FLOWA_
 ignored, so a value left in `.env` stops nothing.
 
 At the first start in such a mode the server makes the instance's own key in the background (RSA 2048, one
-key at a time, so no request waits for one; the log says how long it took) and records the origin and the
-time in the database. **The origin is frozen from then on**: ids announced to other servers cannot move. A
-later start with another `FLOWA_ORIGIN` still starts and serves the app as in local mode, but federates
-nothing, and says so once in the log ("federation refused: the origin was https://a and is now https://b;
-actor ids cannot move"). Set the old origin back to federate again. A key secret that does not open the
+key at a time, so no request waits for one; the log says how long it took). A key holds no origin, so making
+it freezes nothing: **the origin is frozen the first time it is announced**, which is the first answer that
+gives a member's actor id to another server (in this version a WebFinger answer that finds a member; the
+instance's own actor, which anyone can ask for, and NodeInfo, which names the origin but no member, freeze
+nothing). The server then records the origin
+and the time in the database, and the admin dashboard says when. Until then the log says at each start that
+the origin is not announced yet, and a corrected `FLOWA_ORIGIN` is simply taken at the next start. From
+then on ids announced to other servers cannot move: a later start with another `FLOWA_ORIGIN` still starts
+and serves the app as in local mode, but federates nothing, and says so once in the log ("federation
+refused: the origin was https://a and is now https://b; actor ids cannot move"). Set the old origin back to
+federate again. A key secret that does not open the
 instance's own key (checked at every start) does the same. While federation is refused, for either reason,
 no key is made for any account: none replaces a key that cannot be opened, and none is sealed under a second
 secret.
@@ -442,12 +448,12 @@ mode that federates (in local mode they are unknown addresses, as before):
   member all get the same 404. It also takes the handle without `acct:`, with a leading `@`, in other cases,
   and the actor's id as the resource; `acct:flowa.example.org@flowa.example.org` names the instance's own
   actor (`/actor`, not served yet either). A missing, repeated or malformed resource is 400.
-- `GET /.well-known/nodeinfo` and `GET /nodeinfo/2.1` (NodeInfo 2.1): the software (`flowa` and the version
-  the dashboard shows), whether sign-up is open (the signups flag on and Who can join not by approval; never
-  in single mode), and the counts the schema names: every account, those that signed in during the last 30
-  and 180 days, and every post. The counts are read at most every five minutes. **These numbers and the
-  version are public** in a mode that federates; `/healthz` keeps the version to local probes, but NodeInfo
-  names it, as other fediverse servers do.
+- `GET /.well-known/nodeinfo` and `GET /nodeinfo/2.1` (NodeInfo 2.1): the software (`flowa`; its version
+  is sent as an empty string, which the schema allows, so the build is not named, as `/healthz` keeps it to
+  local probes; publishing it becomes an admin's choice with a later instance setting), whether sign-up is
+  open (the signups flag on and Who can join not by approval; never in single mode), and the counts the
+  schema names: every account, those that signed in during the last 30 and 180 days, and every post. The
+  counts are read at most every five minutes. **These numbers are public** in a mode that federates.
 
 Every answer, errors included, carries `Access-Control-Allow-Origin: *`; a found member's answer may be kept
 for five minutes (so turning the switch off reaches other servers within minutes) and a 404 for one. Any
@@ -456,18 +462,22 @@ allowance members use, so a remote server's lookups are bounded and never lock a
 behind a reverse proxy, list it in `FLOWA_TRUSTED_PROXIES` (the default trusts Docker's own networks), or
 every server shares the proxy's allowance.
 
-**The member's switch.** In a mode that federates, Settings has "Beyond this server" with "Share my profile
-and public posts beyond this server", off for everyone until they turn it on (members who were there before
-too). On, WebFinger finds them, and the server makes their signing key in the background; off, WebFinger
-answers 404 again (another server may keep the earlier answer for up to five minutes). A name that ends with
+**The member's switch.** In a mode that federates, Settings has "Beyond this server" with "Let other servers
+find me by my handle", off for everyone until they turn it on (members who were there before too), and the
+server's own sentence on what that does in this version (the handle can be found, nothing is sent). On,
+WebFinger finds them, and the server makes their signing key in the background (a key that could not be made
+then, because many were waiting, is made after the next start); off, WebFinger answers 404 again (another
+server may keep the earlier answer for up to five minutes). While federation is refused the card says
+sharing is unavailable, with the reason for staff, and has no switch. A name that ends with
 a dot or a dash, which Flowa allows, is warned that Mastodon allows those only inside a name, so people on
 Mastodon may not be able to mention them. On a single-profile instance there is no switch:
-`FLOWA_FEDERATE=on` is the owner's choice, and Settings says so. In local mode nothing of this shows, and the
-API refuses the switch.
+`FLOWA_FEDERATE=on` is the owner's choice, and Settings says so (the API refuses the field there, with that
+reason). In local mode, and in single mode without `FLOWA_FEDERATE=on`, nothing of this shows, and the API
+ignores the field as it ignores any field it does not know, so such an instance answers exactly as before.
 
-The first answer that names a member records the origin, if the instance's own key has not recorded it
-already (it does at the first start, a second or so after it). While federation is refused (a moved origin or
-a key secret that does not open the keys, above) the three answer 404 to everything.
+The first answer that names a member records and freezes the origin (above). While
+federation is refused (a moved origin or a key secret that does not open the keys, above) the three answer
+404 to everything.
 
 ### Federation: HTTP signatures
 

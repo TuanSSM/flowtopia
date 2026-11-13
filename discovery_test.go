@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -139,7 +140,14 @@ func TestWebFinger(t *testing.T) {
 		{"https://flowa.example.org/users/ana?", o, none},
 		{"https://flowa.example.org/users/ana#main-key", o, none},
 		{"https://ana@flowa.example.org/users/ana", o, none},
-		{"https://flowa.example.org/users/%61na", o, none},
+		{"https://flowa.example.org/users/%61na", o, ana},  // an unreserved character, encoded (RFC 3986 6.2.2.2)
+		{"https://flowa.example.org/users%2Fana", o, none}, // an encoded slash is not a slash
+		{"https://flowa.example.org/users/an%2561", o, none},
+		{"acct:%61na@flowa.example.org", o, ana}, // RFC 7565 section 4: compared after normalization
+		{"acct:ana@flowa%2Eexample.org", o, ana},
+		{"acct:ana%40flowa.example.org@flowa.example.org", o, none}, // an encoded @ is part of a name nobody has
+		{"acct:ana%zz@flowa.example.org", o, bad},
+		{"acct:ana%4@flowa.example.org", o, bad},
 		{"https://flowa.example.org/users/ana/outbox", o, none},
 		{"https://flowa.example.org/@ana", o, none},
 		{"https://other.example.org/users/ana", o, none},
@@ -337,7 +345,7 @@ func TestNodeInfo(t *testing.T) {
 	if hd := w.Result().Header; w.Code != 200 || hd.Get("Content-Type") != `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"` || hd.Get("Access-Control-Allow-Origin") != "*" || hd.Get("Cache-Control") != discoveryKeep {
 		t.Fatalf("the document: %d %v", w.Code, hd)
 	}
-	want := `{"version":"2.1","software":{"name":"flowa","version":"v1.4.0","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo"]}}`
+	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo"]}}`
 	if w.Body.String() != want {
 		t.Errorf("the document:\n%s\nwant\n%s", w.Body, want)
 	}
@@ -358,97 +366,157 @@ func TestNodeInfo(t *testing.T) {
 			t.Errorf("signups %v, %s, %s: %s", c.signups, c.reg, c.mode, w.Body)
 		}
 	}
-	// Every version this build can be named with is a string the schema takes.
+	// The build is not named, whatever it is: the version is private by default, as in /healthz.
 	for _, v := range []string{"dev", "main.841edbe", "v1.4.0"} {
 		a.version = v
-		checkNodeInfoSchema(t, ask(h, "GET", "/nodeinfo/2.1", "", nil).Body.Bytes())
+		if b := ask(h, "GET", "/nodeinfo/2.1", "", nil).Body.String(); strings.Contains(b, v) || !strings.Contains(b, `"version":""`) {
+			t.Errorf("the build %s is named: %s", v, b)
+		}
 	}
 }
 
-// checkNodeInfoSchema checks a document against what the NodeInfo 2.1 schema requires (as
-// docs/federation.md 5.4 records it): exactly the seven members, version "2.1", software.name matching
-// ^[a-z0-9-]+$ and a version string, at least one protocol from the schema's list, the two service
-// arrays with entries from theirs, a boolean openRegistrations, usage.users an object of whole numbers
-// that are not negative, and metadata an object.
+// nodeInfoSchemaFile is the NodeInfo 2.1 schema as published at
+// http://nodeinfo.diaspora.software/ns/schema/2.1 (its "id"), fetched on 13 November 2026 and kept unedited.
+const nodeInfoSchemaFile = "testdata/federation/nodeinfo-2.1.schema.json"
+
+// checkNodeInfoSchema checks a document against the NodeInfo 2.1 schema file itself, member by member,
+// with checkSchema.
 func checkNodeInfoSchema(t *testing.T, body []byte) {
 	t.Helper()
-	var doc map[string]json.RawMessage
+	raw, err := os.ReadFile(nodeInfoSchemaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	var doc any
 	if err := json.Unmarshal(body, &doc); err != nil {
 		t.Fatalf("not JSON: %v", err)
 	}
-	keys := slices.Sorted(func(yield func(string) bool) {
-		for k := range doc {
-			if !yield(k) {
-				return
+	for _, p := range checkSchema(schema, doc, "") {
+		t.Errorf("against the schema: %s", p)
+	}
+}
+
+// checkSchema validates v against a JSON Schema (draft 4) node and returns what does not hold. It reads
+// the keywords the NodeInfo 2.1 schema uses: type, enum, pattern, required, properties,
+// additionalProperties (false, true or absent), items, minItems, minimum and minProperties. Any other
+// keyword in the node is reported, so the check cannot pass a rule it does not understand.
+func checkSchema(s map[string]any, v any, at string) []string {
+	var bad []string
+	say := func(f string, a ...any) { bad = append(bad, at+": "+fmt.Sprintf(f, a...)) }
+	known := map[string]bool{"$schema": true, "id": true, "description": true, "type": true, "enum": true, "pattern": true, "required": true,
+		"properties": true, "additionalProperties": true, "items": true, "minItems": true, "minimum": true, "minProperties": true}
+	for k := range s {
+		if !known[k] {
+			say("the schema uses %q, which this check does not read", k)
+		}
+	}
+	if typ, ok := s["type"].(string); ok {
+		okType := false
+		switch x := v.(type) {
+		case map[string]any:
+			okType = typ == "object"
+		case []any:
+			okType = typ == "array"
+		case string:
+			okType = typ == "string"
+		case bool:
+			okType = typ == "boolean"
+		case float64:
+			okType = typ == "number" || typ == "integer" && x == float64(int64(x))
+		}
+		if !okType {
+			say("%v is not of type %s", v, typ)
+			return bad
+		}
+	}
+	if enum, ok := s["enum"].([]any); ok && !slices.Contains(enum, v) {
+		say("%v is not one of %v", v, enum)
+	}
+	if p, ok := s["pattern"].(string); ok {
+		if str, _ := v.(string); !regexp.MustCompile(p).MatchString(str) {
+			say("%q does not match %s", str, p)
+		}
+	}
+	if m, ok := s["minimum"].(float64); ok {
+		if n, _ := v.(float64); n < m {
+			say("%v is below %v", n, m)
+		}
+	}
+	if obj, ok := v.(map[string]any); ok {
+		req, _ := s["required"].([]any)
+		for _, r := range req {
+			if _, there := obj[r.(string)]; !there {
+				say("%s is required and missing", r)
 			}
 		}
-	})
-	if !slices.Equal(keys, []string{"metadata", "openRegistrations", "protocols", "services", "software", "usage", "version"}) {
-		t.Errorf("members %v", keys)
+		props, _ := s["properties"].(map[string]any)
+		for k, x := range obj {
+			if sub, ok := props[k].(map[string]any); ok {
+				bad = append(bad, checkSchema(sub, x, at+"."+k)...)
+			} else if s["additionalProperties"] == false {
+				say("%s is not allowed (additionalProperties is false)", k)
+			}
+		}
+		if m, ok := s["minProperties"].(float64); ok && float64(len(obj)) < m {
+			say("fewer than %v members", m)
+		}
 	}
-	var d struct {
-		Version  string
-		Software struct {
-			Name       string
-			Version    *string
-			Repository string
+	if arr, ok := v.([]any); ok {
+		if m, ok := s["minItems"].(float64); ok && float64(len(arr)) < m {
+			say("fewer than %v items", m)
 		}
-		Protocols []string
-		Services  struct {
-			Inbound  *[]string
-			Outbound *[]string
+		if items, ok := s["items"].(map[string]any); ok {
+			for i, x := range arr {
+				bad = append(bad, checkSchema(items, x, fmt.Sprintf("%s[%d]", at, i))...)
+			}
 		}
-		OpenRegistrations *bool
-		Usage             struct {
-			Users      *map[string]int
-			LocalPosts *int
-		}
-		Metadata *map[string]any
 	}
-	if err := json.Unmarshal(body, &d); err != nil {
+	return bad
+}
+
+// The schema check catches what it should: each document here breaks one rule of the schema file.
+func TestNodeInfoSchemaCheck(t *testing.T) {
+	raw, err := os.ReadFile(nodeInfoSchemaFile)
+	if err != nil {
 		t.Fatal(err)
 	}
-	protocols := []string{"activitypub", "buddycloud", "dfrn", "diaspora", "libertree", "ostatus", "pumpio", "tent", "xmpp", "zot"}
-	inbound := []string{"atom1.0", "gnusocial", "imap", "pnut", "pop3", "pumpio", "rss2.0", "twitter"}
-	outbound := []string{"atom1.0", "blogger", "buddycloud", "diaspora", "dreamwidth", "drupal", "facebook", "friendica", "gnusocial", "google", "insanejournal", "libertree", "linkedin", "livejournal", "mediagoblin", "myspace", "pinterest", "pnut", "posterous", "pumpio", "redmatrix", "rss2.0", "smtp", "tent", "tumblr", "twitter", "wordpress", "xmpp"}
-	switch {
-	case d.Version != "2.1":
-		t.Errorf("version %q", d.Version)
-	case !regexp.MustCompile(`^[a-z0-9-]+$`).MatchString(d.Software.Name) || d.Software.Version == nil:
-		t.Errorf("software %+v", d.Software)
-	case len(d.Protocols) == 0:
-		t.Error("no protocol")
-	case d.Services.Inbound == nil || d.Services.Outbound == nil:
-		t.Error("services without their arrays")
-	case d.OpenRegistrations == nil:
-		t.Error("no openRegistrations")
-	case d.Usage.Users == nil || d.Metadata == nil:
-		t.Error("no usage.users or no metadata")
+	var schema map[string]any
+	json.Unmarshal(raw, &schema)
+	good := `{"version":"2.1","software":{"name":"flowa","version":""},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":false,"usage":{"users":{}},"metadata":{}}`
+	var g any
+	json.Unmarshal([]byte(good), &g)
+	if p := checkSchema(schema, g, ""); len(p) != 0 {
+		t.Errorf("the least document the schema allows: %v", p)
 	}
-	for _, p := range d.Protocols {
-		if !slices.Contains(protocols, p) {
-			t.Errorf("protocol %q is not in the schema's list", p)
+	for _, bad := range []string{
+		strings.Replace(good, `"2.1"`, `"2.0"`, 1),
+		strings.Replace(good, `"flowa"`, `"Flowa"`, 1),
+		strings.Replace(good, `"version":""`, `"version":null`, 1),
+		strings.Replace(good, `,"version":""`, ``, 1),
+		strings.Replace(good, `["activitypub"]`, `[]`, 1),
+		strings.Replace(good, `["activitypub"]`, `["webfinger"]`, 1),
+		strings.Replace(good, `"inbound":[]`, `"inbound":null`, 1),
+		strings.Replace(good, `"outbound":[]`, `"outbound":["mastodon"]`, 1),
+		strings.Replace(good, `false`, `"false"`, 1),
+		strings.Replace(good, `"users":{}`, `"users":{"total":-1}`, 1),
+		strings.Replace(good, `"users":{}`, `"users":{"total":1.5}`, 1),
+		strings.Replace(good, `"users":{}`, `"users":{"opted":1}`, 1),
+		strings.Replace(good, `"usage":{"users":{}}`, `"usage":{}`, 1),
+		strings.Replace(good, `"metadata":{}`, `"metadata":[]`, 1),
+		strings.Replace(good, `,"metadata":{}`, ``, 1),
+		strings.Replace(good, `"metadata":{}`, `"metadata":{},"extra":1`, 1),
+	} {
+		var d any
+		if err := json.Unmarshal([]byte(bad), &d); err != nil {
+			t.Fatalf("%s: %v", bad, err)
 		}
-	}
-	for _, s := range *d.Services.Inbound {
-		if !slices.Contains(inbound, s) {
-			t.Errorf("inbound service %q", s)
+		if len(checkSchema(schema, d, "")) == 0 {
+			t.Errorf("passed the check: %s", bad)
 		}
-	}
-	for _, s := range *d.Services.Outbound {
-		if !slices.Contains(outbound, s) {
-			t.Errorf("outbound service %q", s)
-		}
-	}
-	if d.Usage.Users != nil {
-		for k, n := range *d.Usage.Users {
-			if !slices.Contains([]string{"total", "activeMonth", "activeHalfyear"}, k) || n < 0 {
-				t.Errorf("usage.users.%s = %d", k, n)
-			}
-		}
-	}
-	if d.Usage.LocalPosts != nil && *d.Usage.LocalPosts < 0 {
-		t.Errorf("localPosts %d", *d.Usage.LocalPosts)
 	}
 }
 
@@ -550,7 +618,11 @@ func TestDBWebFinger(t *testing.T) {
 	if err := e.fedStart(nil); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the origin recorded", func() bool { return e.count(`SELECT count(*) FROM instance_settings WHERE key = 'origin'`) == 1 })
+	// Making the instance actor's key records nothing; the first answer that names an actor does.
+	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys WHERE user_id IS NULL`) == 1 })
+	if e.count(`SELECT count(*) FROM instance_settings`) != 0 {
+		t.Fatal("the origin was recorded before anything was announced")
+	}
 
 	want := `{"subject":"acct:ana@flowa.example.org","aliases":["https://flowa.example.org/users/ana"],"links":[{"rel":"self","type":"application/activity+json","href":"https://flowa.example.org/users/ana"}]}`
 	for _, r := range []string{"acct:ana@flowa.example.org", "ACCT:Ana@Flowa.Example.ORG.", "@ana@flowa.example.org", "ana@flowa.example.org", "https://flowa.example.org/users/ana", "https://flowa.example.org:443/users/ana"} {
@@ -558,6 +630,9 @@ func TestDBWebFinger(t *testing.T) {
 		if w.Code != 200 || w.Body.String() != want || w.Result().Header.Get("Content-Type") != jrdType || w.Result().Header.Get("Access-Control-Allow-Origin") != "*" {
 			t.Errorf("%s: %d %s %v", r, w.Code, w.Body, w.Result().Header)
 		}
+	}
+	if e.count(`SELECT count(*) FROM instance_settings WHERE key IN ('origin', 'first_federated_at')`) != 2 {
+		t.Error("the first answer did not record the origin")
 	}
 	nf := ask(e.h, "GET", wf("acct:nobody@flowa.example.org"), "", nil)
 	if nf.Code != 404 {
@@ -658,6 +733,12 @@ func TestDBWebFinger(t *testing.T) {
 	if w := ask(s.h, "GET", wf("acct:ana@ana.example.org"), "", nil); w.Code != 200 || !strings.Contains(w.Body.String(), `"href":"https://ana.example.org/users/ana"`) {
 		t.Errorf("the owner of a single-profile instance: %d %s", w.Code, w.Body)
 	}
+	// The implied opt-in is the owner's only: an account put into the database behind the start's back is
+	// not found.
+	s.user("intruder", "user")
+	if w := ask(s.h, "GET", wf("acct:intruder@ana.example.org"), "", nil); w.Code != 404 {
+		t.Errorf("another account on a single-profile instance: %d", w.Code)
+	}
 	// The owner's key is asked for at start, after the instance actor's (5.7).
 	waitFor(t, "the owner's key", func() bool { return s.count(`SELECT count(*) FROM ap_keys WHERE user_id IS NOT NULL`) == 1 })
 }
@@ -706,7 +787,7 @@ func TestDBNodeInfo(t *testing.T) {
 		return d
 	}
 	d := read()
-	if want := (nodeUsage{Users: nodeUsers{Total: 8, ActiveMonth: 2, ActiveHalfyear: 4}, LocalPosts: 6}); d.Usage != want || !d.OpenRegistrations || d.Software.Version != e.a.version {
+	if want := (nodeUsage{Users: nodeUsers{Total: 8, ActiveMonth: 2, ActiveHalfyear: 4}, LocalPosts: 6}); d.Usage != want || !d.OpenRegistrations || d.Software.Version != "" {
 		t.Errorf("usage %+v, want %+v; open %v", d.Usage, want, d.OpenRegistrations)
 	}
 	// Kept: a new account is counted once the counts are read again.
@@ -735,9 +816,13 @@ func TestDBNodeInfo(t *testing.T) {
 	if read().OpenRegistrations {
 		t.Error("open while sign-up is by approval")
 	}
-	// The dashboard says what this version of federation does.
-	if _, out := e.do(admin, "GET", "/api/admin/dashboard", nil); out["federation"] == nil || out["federation"].(map[string]any)["built"] != discoveryOnly || out["federation"].(map[string]any)["origin"] != "https://flowa.example.org" {
+	// The dashboard says what this version of federation does, and that nothing is announced yet: NodeInfo
+	// names the origin but no actor id, so it records nothing.
+	if _, out := e.do(admin, "GET", "/api/admin/dashboard", nil); out["federation"] == nil || out["federation"].(map[string]any)["built"] != discoveryBuilt || out["federation"].(map[string]any)["origin"] != "https://flowa.example.org" || out["federation"].(map[string]any)["announced"] != "" {
 		t.Errorf("the dashboard: %v", out["federation"])
+	}
+	if n := e.count(`SELECT count(*) FROM instance_settings WHERE key IN ('origin', 'first_federated_at')`); n != 0 {
+		t.Errorf("NodeInfo recorded the origin (%d rows)", n)
 	}
 
 	s := newEnv(t)
@@ -764,14 +849,37 @@ func TestDBFederateOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, ltok := l.user("ana", "user")
-	if _, out := l.do(ltok, "GET", "/api/me", nil); out["federation"] != nil {
-		t.Errorf("local mode tells of federation: %v", out["federation"])
+	// /api/me answers as before: the same members, and no "federation" key at all, not even a null one.
+	for _, tok := range []string{ltok, ""} {
+		_, out := l.do(tok, "GET", "/api/me", nil)
+		keys := slices.Sorted(maps.Keys(out))
+		if want := []string{"_raw", "achievements", "flags", "perms", "props", "user"}; !slices.Equal(keys, want) {
+			t.Errorf("local /api/me (%q) has the keys %v, want %v", tok, keys, want)
+		}
 	}
-	if code, out := l.do(ltok, "PUT", "/api/me", map[string]any{"federates": true}); code != 400 || !strings.Contains(out["error"].(string), "does not share anything beyond itself") {
-		t.Errorf("local mode takes the switch: %d %v", code, out["_raw"])
+	// The field is ignored, as any field the handler does not know: the answer is that of the same save
+	// without it, and nothing is stored.
+	_, plain := l.do(ltok, "PUT", "/api/me", map[string]any{"bio": "spinning"})
+	code, out := l.do(ltok, "PUT", "/api/me", map[string]any{"bio": "spinning", "federates": true})
+	if code != 200 || out["_raw"] != plain["_raw"] {
+		t.Errorf("local mode and the switch: %d %v, want %v", code, out["_raw"], plain["_raw"])
 	}
 	if l.count(`SELECT count(*) FROM users WHERE federates`) != 0 {
 		t.Error("local mode wrote the switch")
+	}
+	// So in single mode without FLOWA_FEDERATE.
+	sl := newEnv(t)
+	if err := sl.fedSingleStart(map[string]string{"FLOWA_FEDERATE": ""}); err != nil {
+		t.Fatal(err)
+	}
+	var slID int64
+	sl.a.db.QueryRow(`SELECT id FROM users`).Scan(&slID)
+	stok := sl.session(slID)
+	if code, out := sl.do(stok, "PUT", "/api/me", map[string]any{"federates": true}); code != 200 || out["federation"] != nil || sl.count(`SELECT count(*) FROM users WHERE federates`) != 0 {
+		t.Errorf("single mode without FLOWA_FEDERATE and the switch: %d %v", code, out["_raw"])
+	}
+	if _, out := sl.do(stok, "GET", "/api/me", nil); out["federation"] != nil || strings.Contains(out["_raw"].(string), `"federation"`) {
+		t.Errorf("single mode without FLOWA_FEDERATE tells of federation: %v", out["_raw"])
 	}
 
 	e := newEnv(t)
@@ -793,7 +901,7 @@ func TestDBFederateOptIn(t *testing.T) {
 	if _, out := e.do("", "GET", "/api/me", nil); out["federation"] != nil {
 		t.Error("a visitor is told of federation")
 	}
-	code, out := e.do(bo, "PUT", "/api/me", map[string]any{"federates": true})
+	code, out = e.do(bo, "PUT", "/api/me", map[string]any{"federates": true})
 	if f, _ := out["federation"].(map[string]any); code != 200 || f["optedIn"] != true {
 		t.Errorf("bo opts in: %d %v", code, out["_raw"])
 	}
@@ -840,6 +948,23 @@ func TestDBFederateOptIn(t *testing.T) {
 	if code, out := s.do(owner, "PUT", "/api/me", map[string]any{"federates": false}); code != 400 || !strings.Contains(out["error"].(string), "FLOWA_FEDERATE") {
 		t.Errorf("the owner's switch: %d %v", code, out["_raw"])
 	}
+
+	// A member who opted in and has no key (the queue was full, or federation was refused when they opted
+	// in) gets one after the next start.
+	k := newEnv(t)
+	kid, _ := k.user("late", "user")
+	if err := k.fedStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the instance actor's key", func() bool { return k.count(`SELECT count(*) FROM ap_keys`) == 1 })
+	if _, err := k.a.db.Exec(`UPDATE users SET federates = true WHERE id = $1`, kid); err != nil {
+		t.Fatal(err)
+	}
+	r := k.again()
+	if err := r.fedStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the key of a member who opted in without one", func() bool { return k.count(`SELECT count(*) FROM ap_keys WHERE user_id = $1`, kid) == 1 })
 }
 
 // testDB opens a database of its own for a benchmark, as newEnv does for a test.
@@ -901,4 +1026,71 @@ func BenchmarkWebFinger(b *testing.B) {
 		a.db, a.fed.db = db, db
 		run(b, a, wf("acct:ana@flowa.example.org"))
 	})
+}
+
+// What a deployment that federates nothing sees is what it saw before discovery existed, headers
+// included: in local mode and in single mode without FLOWA_FEDERATE, the three discovery addresses answer
+// every method as an address nobody has (no 405 of the discovery gate, no CORS header), and in every mode
+// no answer outside those three addresses carries a CORS header: not a signed-in API answer, not a page,
+// not an error.
+func TestDBDefaultsUnchanged(t *testing.T) {
+	page := map[string]string{"index.html": "<!doctype html><title>Flowa</title>"}
+	l := newEnv(t)
+	if err := l.a.start(func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	l.h = l.a.routes(staticOf(t, page))
+	s := newEnv(t)
+	if err := s.fedSingleStart(map[string]string{"FLOWA_FEDERATE": "off"}); err != nil {
+		t.Fatal(err)
+	}
+	s.h = s.a.routes(staticOf(t, page))
+	f := newEnv(t)
+	if err := f.fedStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	f.h = f.a.routes(staticOf(t, page))
+	type answer struct {
+		code                     int
+		body, cors, allow, ctype string
+	}
+	of := func(w *httptest.ResponseRecorder) answer {
+		h := w.Result().Header
+		return answer{w.Code, w.Body.String(), h.Get("Access-Control-Allow-Origin"), h.Get("Allow"), h.Get("Content-Type")}
+	}
+	for name, e := range map[string]*tenv{"local": l, "single without FLOWA_FEDERATE": s} {
+		for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"} {
+			for _, hdr := range []map[string]string{nil, {"Content-Type": "application/json"}} {
+				want := of(ask(e.h, m, "/nobody-has-this-address", "", hdr))
+				for _, p := range []string{"/.well-known/webfinger?resource=acct:ana@flowa.example.org", "/.well-known/nodeinfo", "/nodeinfo/2.1"} {
+					if got := of(ask(e.h, m, p, "", hdr)); got != want {
+						t.Errorf("%s: %s %s %v answers %+v, an unknown address %+v", name, m, p, hdr, got, want)
+					}
+				}
+			}
+		}
+	}
+	_, ltok := l.user("ana", "user")
+	_, stok := s.user("bob", "user")
+	_, ftok := f.user("cyd", "user")
+	for name, c := range map[string]struct {
+		e   *tenv
+		tok string
+	}{"local": {l, ltok}, "single": {s, stok}, "federated": {f, ftok}} {
+		for _, r := range []struct{ method, path, ctype string }{
+			{"GET", "/api/me", ""}, {"GET", "/", ""}, {"GET", "/index.html", ""}, {"GET", "/api/nothing-here", ""},
+			{"POST", "/api/posts", "text/plain"}, {"GET", "/api/admin/dashboard", ""}, {"GET", "/healthz", ""},
+		} {
+			req := httptest.NewRequest(r.method, r.path, strings.NewReader("x"))
+			if r.ctype != "" {
+				req.Header.Set("Content-Type", r.ctype)
+			}
+			req.AddCookie(&http.Cookie{Name: cookieName, Value: c.tok})
+			w := httptest.NewRecorder()
+			c.e.h.ServeHTTP(w, req)
+			if v := w.Result().Header.Get("Access-Control-Allow-Origin"); v != "" {
+				t.Errorf("%s: %s %s (%d) carries Access-Control-Allow-Origin: %s", name, r.method, r.path, w.Code, v)
+			}
+		}
+	}
 }

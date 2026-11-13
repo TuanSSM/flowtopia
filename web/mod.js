@@ -339,11 +339,12 @@ function adminAudit() {
 }
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).
-const MODES = { local: 'a community that lives on this server only, which is what FLOWA_MODE means when it is not set', federated: 'a community whose members can share their profiles with other servers' };
-// In a mode that federates the server says the origin and what this version of federation does, or why
-// federation is refused (a moved origin, a key secret that does not open the keys).
+const MODES = { local: 'a community that lives on this server only, which is what FLOWA_MODE means when it is not set', federated: 'a community on this server whose members can let other servers find them' };
+// In a mode that federates the server says the origin, whether it was announced (and so frozen) yet, and
+// what this version of federation does (built, the sentence the start log writes), or why federation is
+// refused (a moved origin, a key secret that does not open the keys).
 const fedLine = f => !f ? '' : f.refused ? ` Federation is refused: ${f.refused.replace(/^federation refused: /, '')}.`
-  : ` Federating as ${f.origin}. This version answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents, no inbox, nothing is delivered.`;
+  : ` Federating as ${f.origin}, ${f.announced ? `first announced ${fmtWhen(f.announced)}, so this origin cannot change` : 'not announced yet, so the origin can still change until an answer first names a member'}. ${f.built ? f.built[0].toUpperCase() + f.built.slice(1) : ''}.`;
 let adminDashboard = () => {
   if (!mod.dash) { loadDash(); return '<div class="card"><div class="empty small">Loading…</div></div>'; }
   const t = mod.dash.totals, W = mod.dash.weeks;

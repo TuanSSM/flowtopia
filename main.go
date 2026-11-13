@@ -2161,15 +2161,13 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		set("stats", string(in.Stats))
 	}
-	if in.Federates != nil {
-		switch {
-		case a.fed == nil:
-			fail(w, http.StatusBadRequest, "This Flowa does not share anything beyond itself, so there is nothing to turn on.")
-			return
-		case a.mode == modeSingle:
-			fail(w, http.StatusBadRequest, "On a Flowa that is one person's own, the setting FLOWA_FEDERATE decides whether the profile is shared beyond it.")
-			return
-		}
+	// Outside a mode that federates the field is ignored, as every field this handler does not know is, so
+	// an instance that sets nothing new answers as it always has. In single mode with FLOWA_FEDERATE=on it
+	// is refused with the reason: that mode is new, so nothing relied on the field there, and the owner who
+	// sends it should learn that the setting, not the field, decides.
+	if in.Federates != nil && a.fed != nil && a.mode == modeSingle {
+		fail(w, http.StatusBadRequest, "On a Flowa that is one person's own, the setting FLOWA_FEDERATE decides whether other servers can find the profile.")
+		return
 	}
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -5608,7 +5606,13 @@ func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 	// In a mode that federates, the origin and what this version of federation does, or why it is
 	// refused: the dashboard says it in its mode line, as the start log does.
 	if a.fed != nil {
-		out["federation"] = map[string]string{"origin": a.fed.origin.url, "refused": a.fed.refusal(), "built": discoveryOnly}
+		// announced is when the origin was first announced and frozen (ensureOrigin), or "" before that.
+		var announced string
+		if err := a.db.QueryRow(`SELECT COALESCE((SELECT value #>> '{}' FROM instance_settings WHERE key = 'first_federated_at'), '')`).Scan(&announced); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out["federation"] = map[string]string{"origin": a.fed.origin.url, "refused": a.fed.refusal(), "built": discoveryBuilt, "announced": announced}
 	}
 	var users, mods, admins, active7, active30, open int
 	err := a.db.QueryRow(dashTotalsSQL).Scan(&users, &mods, &admins)
@@ -5708,7 +5712,20 @@ document, no inbox and nothing is delivered yet. */
 
 // discoveryOnly is what the start logs once in a mode that federates, and what the README, the design
 // note and the admin dashboard say too: what this version of federation does, and what it does not.
-const discoveryOnly = "federation: this version answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents, no inbox, nothing is delivered"
+const discoveryOnly = "federation: " + discoveryBuilt
+
+// discoveryBuilt is the same sentence for the admin dashboard, which shows it as the server sends it
+// (built), so the page and the log cannot drift apart.
+const discoveryBuilt = "this version answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents, no inbox, nothing is delivered"
+
+// fedMemberBuilt is what a member is told in Settings about what sharing does in this version, as the
+// server sends it (fedView), and fedSwitch the switch's label: other servers can find the handle, and
+// nothing more yet.
+const (
+	fedSwitch      = "Let other servers find me by my handle"
+	fedMemberBuilt = "In this version that is all they learn: that you are here, by your handle. Nothing you post is sent to them, and your profile is not shown to them yet. Practice, progress, notes, stats and badges never leave this server."
+	fedUnavailable = "Sharing beyond this server is not available at the moment. Other servers cannot find anyone here."
+)
 
 // modeFederates says whether a mode talks to other servers (docs/federation.md, 4.1). Federated mode
 // does, always: FLOWA_FEDERATE is implied there and ignored. Single mode does when FLOWA_FEDERATE is on;
@@ -6151,9 +6168,10 @@ func (f *federation) makeKey(keyID string, o keyOwner) (pubPEM, sealed string, e
 // first and the other is thrown away, and both then read the same key. Within one server the worker
 // asks one owner at a time, so a key is made twice only across servers, rarely, and harmlessly; not
 // making it then would need a lock held for the whole second it takes. It never replaces a key: a
-// key that cannot be opened is the operator's to replace (-rotate-keys). For the instance actor it
-// also records the origin in the same transaction (recordOrigin): making that key is the first thing
-// this version does as a federating server.
+// key that cannot be opened is the operator's to replace (-rotate-keys). It records nothing about the
+// origin: a key holds no origin (the key id is the part after it, and the sealing is bound to the key id
+// and the owner), so making one announces nothing, and the origin is frozen only when an actor id is
+// first given out (ensureOrigin).
 func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 	// While federation is refused no key is made for anyone: under a secret that does not open the
 	// stored keys a new one would be sealed under a second secret, and under a moved origin it would
@@ -6200,25 +6218,21 @@ func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 			return false, fmt.Errorf("the key id %s belongs to another owner", keyID)
 		}
 	}
-	if o == instanceActor {
-		if err := recordOrigin(ctx, tx, f.origin); err != nil {
-			return false, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	if o == instanceActor {
-		f.recorded.Store(true)
-	}
-	return made == 1, nil
+	return made == 1, tx.Commit()
 }
 
-// ensureOrigin records the origin before the first answer that gives an id out (WebFinger), when the
-// instance actor's key has not recorded it yet: in the second or so after the first start in a mode that
-// federates, while that key is made, and on an instance whose record was removed by hand. Once it is
-// recorded this is one atomic load. A different origin recorded meanwhile (by another server on the
-// same database) refuses federation, as at start.
+// ensureOrigin freezes the origin: it records it and the time (recordOrigin), in one transaction, before
+// the first answer that names a member's actor id to another server, which is when the origin is
+// announced (docs/federation.md 4.3). In this version that answer is a WebFinger 200 for a member; the
+// instance actor's answer does not freeze it (handleWebFinger). The actor document, the first request the
+// instance actor signs (FRD 7) and the first delivery will call it too when they come. Until then nothing is frozen and a new FLOWA_ORIGIN is taken
+// at the next start. Once it is recorded this is one atomic load. Two first answers at once in this
+// process take turns on recordMu, and the second finds it recorded. A first answer while the row is being
+// written by another transaction waits for that one to commit (INSERT ... ON CONFLICT DO NOTHING), then
+// reads its row. One process runs per database, so the origin cannot be recorded by another one after
+// this one started; if it were (the old and the new container of a deploy overlapping with two different
+// origins), recordOrigin finds the other origin and federation is refused here, as at start, before any id
+// goes out under the wrong origin.
 func (f *federation) ensureOrigin(ctx context.Context) error {
 	if f.recorded.Load() {
 		return nil
@@ -6294,7 +6308,9 @@ var errRefused = errors.New("federation is refused, so no key is made")
 
 // requestKey asks the worker to make an owner's key, and returns at once: no request waits for a key.
 // It reports false while federation is refused (no key is made then, for any owner), and when the
-// queue is full; the owner is asked for again later.
+// queue is full; such an owner is asked for again at the next start (startFederation asks for every
+// member who opted in and has no key). A refusal lasts until the server stops, so a start is also where
+// the keys a refusal held back are asked for.
 func (f *federation) requestKey(o keyOwner) bool {
 	if f.refusal() != "" {
 		return false
@@ -6304,7 +6320,7 @@ func (f *federation) requestKey(o keyOwner) bool {
 	case f.ask <- o:
 		return true
 	default:
-		log.Printf("keys: %d owners wait for a key already; the key of %s is asked for again later", keyQueue, o)
+		log.Printf("keys: %d owners wait for a key already; the key of %s is asked for again at the next start", keyQueue, o)
 		return false
 	}
 }
@@ -6322,10 +6338,7 @@ func (f *federation) startWorker() {
 			case o := <-f.ask:
 				began := time.Now()
 				made, err := f.ensureKey(f.ctx, o)
-				var moved originMoved
 				switch {
-				case errors.As(err, &moved):
-					f.refuse(moved.Error())
 				case errors.Is(err, errRefused): // said once already, by refuse
 				case err != nil && f.ctx.Err() == nil:
 					log.Printf("keys: the key of %s was not made: %v", o, err)
@@ -6379,11 +6392,10 @@ func originMatches(recorded string, o publicOrigin) bool {
 }
 
 // recordOrigin records the origin and the time (instance_settings: origin, first_federated_at) the
-// first time this instance federates, and refuses with originMoved when another origin was recorded
-// before: actor ids announced to other servers cannot move (docs/federation.md, 4.3). Today it runs
-// when the instance actor's key is made; the items that first answer WebFinger or deliver call it too.
-// Two servers recording at once both insert with DO NOTHING; the second waits for the first to commit,
-// then reads its row, so one wins and both agree.
+// first time this instance announces an actor id, and refuses with originMoved when another origin was
+// recorded before: actor ids announced to other servers cannot move (docs/federation.md, 4.3). It runs in
+// ensureOrigin only. Two transactions recording at once both insert with DO NOTHING; the second waits for
+// the first to commit, then reads its row, so one wins and both agree.
 func recordOrigin(ctx context.Context, tx *sql.Tx, o publicOrigin) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO instance_settings (key, value) VALUES ('origin', to_jsonb($1::text)), ('first_federated_at', to_jsonb(now()))
 		ON CONFLICT (key) DO NOTHING`, o.url); err != nil {
@@ -6415,6 +6427,9 @@ func (a *app) startFederation(s fedSettings) error {
 		return nil
 	}
 	f.recorded.Store(was != "")
+	if was == "" {
+		log.Printf("federation: the origin %s is not announced yet; it is frozen the first time a member's actor id is given out (a WebFinger answer that finds a member), and until then a different FLOWA_ORIGIN is taken at a start", s.origin)
+	}
 	_, _, err = f.privateKey(context.Background(), instanceActor)
 	switch {
 	case errors.Is(err, errNoKey):
@@ -6436,8 +6451,31 @@ func (a *app) startFederation(s fedSettings) error {
 		}
 		f.requestKey(keyOwner(id))
 	}
+	// Members who opted in and have no key yet (their request was dropped from a full queue, or federation
+	// was refused when they opted in): asked for again, as many as the queue holds; the rest at the next
+	// start. The worker still makes one at a time.
+	if f.refusal() == "" {
+		rows, err := a.db.Query(missingKeysSQL, keyQueue-2)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			f.requestKey(keyOwner(id))
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
+
+// missingKeysSQL lists members who opted in and have no key, oldest first, at most $1.
+const missingKeysSQL = `SELECT u.id FROM users u WHERE u.federates AND NOT EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) ORDER BY u.id LIMIT $1`
 
 // rotateKeys makes a new key pair for every owner that has one, one at a time, and replaces each old
 // key in one statement, only if it is still the one read: a key another rotation changed meanwhile,
@@ -6610,14 +6648,18 @@ var uriSchemeRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 //     the answer's subject is the name as stored (RFC 7033 4.4.1 lets the subject differ from the
 //     resource when it is the canonical form).
 //   - the host compared with the origin's host in any case and with one trailing dot taken off (a DNS
-//     name means the same with it). An acct host has no port in RFC 7565's grammar, so a host with one
-//     names no account here.
+//     name means the same with it). An acct host has no port: RFC 7565 section 7 writes the scheme as
+//     "acct" ":" userpart "@" host with RFC 3986's host rule (a name or an address, never the port that
+//     authority adds), so a host with one names no account here. The name and the host are compared
+//     after percent-encoding normalization (RFC 7565 section 4), so acct:%61na@host is ana.
 //   - the actor's own URL, https://host/users/name or https://host/actor, as an actor id is written:
-//     the path exactly, no query, fragment, user or percent-encoding, the name as stored. Its port may be
-//     written when it is the origin's (":443" for an origin without one, RFC 3986 6.2.3).
-//   - acct:host@host, the instance actor (the form other servers use for an instance's own actor). A
-//     member whose username is the origin's host cannot be found by handle, which usernameRE allows;
-//     the retired names of FRD 5 can reserve it.
+//     the path exactly, no query, fragment or user, the name as stored. Its port may be written when it
+//     is the origin's (":443" for an origin without one, RFC 3986 6.2.3), and an unreserved character may
+//     be percent-encoded (6.2.2.2), as in an acct handle (RFC 7565 section 4).
+//   - acct:host@host, the instance actor (the form other servers use for an instance's own actor). It is
+//     decided before any member is looked up, so it always wins: usernameRE allows dots, and a member
+//     whose username is the origin's host (possible when the host has 3 to 24 characters) cannot be
+//     found by handle, only by the URL form; the retired names of FRD 5 can reserve that name.
 //
 // What is refused as malformed: an empty value, one over resourceMax bytes, a space, a control or a
 // non-ASCII byte (a URI is ASCII: RFC 3986 2), a handle with no @ or more than one after the leading one,
@@ -6648,6 +6690,16 @@ func parseResource(v string, o publicOrigin) (wfTarget, bool, error) {
 	if !found || name == "" || host == "" || strings.Contains(host, "@") {
 		return wfTarget{}, false, errResource
 	}
+	// RFC 7565 section 4: acct URIs are compared after percent-encoding normalization (RFC 3986 6.2.2.2),
+	// so %61na is ana. A % that does not start an escape is malformed. A name that decodes to anything a
+	// Flowa name cannot hold (an encoded @ among them) is nobody's.
+	var err error
+	if name, err = url.PathUnescape(name); err != nil {
+		return wfTarget{}, false, errResource
+	}
+	if host, err = url.PathUnescape(host); err != nil {
+		return wfTarget{}, false, errResource
+	}
 	if !sameHost(host, o.host) {
 		return wfTarget{}, false, nil
 	}
@@ -6673,7 +6725,7 @@ func parseActorURL(v string, o publicOrigin) (wfTarget, bool, error) {
 	if err != nil || u.Host == "" {
 		return wfTarget{}, false, errResource
 	}
-	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || !sameHost(u.Hostname(), o.host) {
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.RawPath != "" && !unreservedEscapes(u.RawPath)) || !sameHost(u.Hostname(), o.host) {
 		return wfTarget{}, false, nil
 	}
 	want := "443"
@@ -6692,11 +6744,32 @@ func parseActorURL(v string, o publicOrigin) (wfTarget, bool, error) {
 	return wfTarget{}, false, nil
 }
 
+// unreservedEscapes says whether every percent-escape in a path stands for an unreserved character
+// (RFC 3986 2.3), the only ones percent-encoding normalization decodes (6.2.2.2): /users/%61na is
+// /users/ana, but /users%2Fana is not /users/ana, since an encoded slash is not a slash.
+func unreservedEscapes(p string) bool {
+	for i := 0; i < len(p); i++ {
+		if p[i] != '%' {
+			continue
+		}
+		if i+2 >= len(p) {
+			return false
+		}
+		v, err := strconv.ParseUint(p[i+1:i+3], 16, 8)
+		if c := byte(v); err != nil || !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' || c == '~') {
+			return false
+		}
+		i += 2
+	}
+	return true
+}
+
 // webFingerSQL finds a member WebFinger may answer for: one lookup on the unique username index. $2 is
-// true on a single-profile instance, whose owner's opt-in is FLOWA_FEDERATE=on itself. A suspended
+// true on a single-profile instance, whose owner's opt-in is FLOWA_FEDERATE=on itself: the owner only,
+// not whoever else a database might hold. A suspended
 // member is not found, as one who does not exist, has not opted in or (later) has a retired name: every
 // one of them costs this same query and gets the same answer.
-const webFingerSQL = `SELECT username FROM users WHERE username = $1 AND (federates OR $2) AND (suspended_until IS NULL OR suspended_until <= now())`
+const webFingerSQL = `SELECT username FROM users WHERE username = $1 AND (federates OR ($2 AND owner)) AND (suspended_until IS NULL OR suspended_until <= now())`
 
 // discoveryAllowed counts a request against the address's discovery allowance, and answers 429 when it
 // is used up. It is asked first, before the query string is read or the database asked.
@@ -6807,17 +6880,20 @@ func (a *app) handleWebFinger(w http.ResponseWriter, r *http.Request) {
 		}
 		subject, id = "acct:"+name+"@"+f.origin.host, f.origin.url+"/users/"+name
 	}
-	// This answer gives an id out, which is what federating means (4.3): the origin is recorded first,
-	// once, if the instance actor's key has not recorded it already.
-	if err := f.ensureOrigin(r.Context()); err != nil {
-		var moved originMoved
-		if errors.As(err, &moved) {
-			discoveryFail(w, http.StatusNotFound, notHere)
+	// A member's id going out is what announces the origin (4.3): it is recorded first, once. The instance
+	// actor's answer records nothing, so a scanner, or the operator's own check of acct:host@host, cannot
+	// freeze a mistyped origin; the first request the instance actor signs (FRD 7) will call ensureOrigin.
+	if !t.actor {
+		if err := f.ensureOrigin(r.Context()); err != nil {
+			var moved originMoved
+			if errors.As(err, &moved) {
+				discoveryFail(w, http.StatusNotFound, notHere)
+				return
+			}
+			log.Printf("error: webfinger: recording the origin: %v", err)
+			discoveryFail(w, http.StatusInternalServerError, "Something went wrong on the server.")
 			return
 		}
-		log.Printf("error: webfinger: recording the origin: %v", err)
-		discoveryFail(w, http.StatusInternalServerError, "Something went wrong on the server.")
-		return
 	}
 	links := []jrdLink{{Rel: "self", Type: activityType, Href: id}}
 	if rels, asked := q["rel"]; asked && !slices.Contains(rels, "self") {
@@ -6853,8 +6929,8 @@ type nodeInfo struct {
 }
 
 type nodeSoftware struct {
-	Name       string `json:"name"` // ^[a-z0-9-]+$
-	Version    string `json:"version"`
+	Name       string `json:"name"`    // ^[a-z0-9-]+$
+	Version    string `json:"version"` // required, any string; "" says nothing about the build
 	Repository string `json:"repository"`
 }
 
@@ -6920,6 +6996,9 @@ func (a *app) openRegistrations() (bool, error) {
 // handleNodeInfo answers GET /nodeinfo/2.1 with the document and the content type the NodeInfo protocol
 // names ("Retrieval"). protocols holds activitypub because the schema needs one entry from its list and
 // that is the protocol this server is being built for; metadata says how much of it is built.
+// software.version is the empty string: the schema requires the member and asks only that it be a string,
+// and which build runs helps an attacker, which is why /healthz keeps it to local probes. Publishing it
+// becomes an admin's choice with the instance setting nodeinfo_version (docs/federation.md 5.4), later.
 func (a *app) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if !a.discoveryAllowed(w, r) {
@@ -6935,7 +7014,7 @@ func (a *app) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 		if open, err = a.openRegistrations(); err == nil {
 			discoveryWrite(w, nodeInfoType, nodeInfo{
 				Version:           "2.1",
-				Software:          nodeSoftware{Name: "flowa", Version: a.version, Repository: flowaRepo},
+				Software:          nodeSoftware{Name: "flowa", Version: "", Repository: flowaRepo},
 				Protocols:         []string{"activitypub"},
 				Services:          nodeServices{Inbound: []string{}, Outbound: []string{}},
 				OpenRegistrations: open,
@@ -6955,15 +7034,23 @@ func (a *app) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 const handleWarning = "Your name ends with a dot or a dash. Mastodon allows those only inside a name, so people on Mastodon may not be able to mention you or find you by your handle. Names cannot be changed here."
 
 // fedView is what /api/me and PUT /api/me tell a signed-in member about sharing beyond this server, in
-// a mode that federates; nil otherwise, so the page shows no switch. In single mode the owner's opt-in
-// is FLOWA_FEDERATE=on (implied), and there is no switch either.
+// a mode that federates; the callers leave it out otherwise, so the page shows nothing of it. In single
+// mode the owner's opt-in is FLOWA_FEDERATE=on (implied), and there is no switch. The words the card
+// shows about what is built come from here (label, built), so they change with the server. While
+// federation is refused the member is told it is unavailable (unavailable), and staff why (refused).
 func (a *app) fedView(u *user, optedIn bool) map[string]any {
 	if a.fed == nil || u == nil {
 		return nil
 	}
-	v := map[string]any{"handle": "@" + u.Username + "@" + a.fed.origin.host, "optedIn": optedIn || a.mode == modeSingle}
+	v := map[string]any{"handle": "@" + u.Username + "@" + a.fed.origin.host, "optedIn": optedIn || a.mode == modeSingle, "label": fedSwitch, "built": fedMemberBuilt}
 	if a.mode == modeSingle {
 		v["implied"] = true
+	}
+	if why := a.fed.refusal(); why != "" {
+		v["unavailable"] = fedUnavailable
+		if can(u, permDashboard) {
+			v["refused"] = why
+		}
 	}
 	if strings.HasSuffix(u.Username, ".") || strings.HasSuffix(u.Username, "-") {
 		v["warning"] = handleWarning

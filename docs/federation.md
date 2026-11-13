@@ -380,8 +380,8 @@ setting is read before anything is written, so a refused start leaves the databa
 `FLOWA_FEDERATE` (**new**, `on` or `off`, default `off`) says whether the one profile federates; in
 federated mode it is implied and ignored.
 
-As built (FRD 4): all three modes start. `FLOWA_FEDERATE` is read beside the mode, before the database is
-opened: in single mode unset, empty or `off` (any case, spaces around forgiven) is off, `on` is on, and any
+As built (FRD 4): all three modes start. `FLOWA_FEDERATE` (default `off`) is read beside the mode, before
+the database is opened: in single mode unset, empty or `off` (any case, spaces around forgiven) is off, `on` is on, and any
 other value stops the start with a message naming the setting; in local and federated mode it is ignored
 whatever it says. "The mode federates" means federated mode, or single mode with `FLOWA_FEDERATE=on`, and
 only then are `FLOWA_ORIGIN` and `FLOWA_KEY_SECRET` read (a message from them names the mode and, in single
@@ -434,14 +434,24 @@ the start-up with a fetcher that fails the test on any dial.
   `FLOWA_FEDERATE=on`.
 - `local` or `single` to `federated`: allowed. The first time the server federates (it answers a
   WebFinger request, or delivers anything), it records the origin and the time in `instance_settings`
-  (`origin`, `first_federated_at`). As built (FRD 1 and 4): the origin is recorded when the instance actor's
-  key is made, at the first start in a mode that federates, a second or so after it, which is earlier than
-  the first announcement and never later; and a WebFinger answer that names an id records it first when it is
-  not recorded yet (the first second, or a record removed by hand), so no id goes out before the origin is
-  frozen. Recording at the first start means a typing mistake in `FLOWA_ORIGIN` that was started once
-  freezes the wrong origin even if no other server ever asked; the way out is the operator's (remove the
-  `origin` and `first_federated_at` rows by hand, only if nothing was announced), and the owner may prefer
-  recording at the first answer only (see FRD 4 in the todo).
+  (`origin`, `first_federated_at`). As built (FRD 4, which moved it from FRD 1's first key): the two rows are
+  written in one transaction (`recordOrigin`, from `ensureOrigin`) just before the first answer that names
+  a member's actor id to another server: in this version a WebFinger 200 for a member. The instance actor's
+  WebFinger answer does not freeze it: anyone can ask for `acct:host@host` (a scanner, the operator's own
+  check), and that must not lock a mistyped origin in. The actor document, the first request the instance
+  actor signs (FRD 7, a signed fetch names `/actor#main-key` to another server) and the first delivery will
+  call the same function when they come. Making keys records nothing:
+  a key holds no origin (`ap_keys` keeps the part of the key id after the origin, and the sealing is bound to
+  the key id and the owner), so a key made under one origin serves under another. NodeInfo is no
+  announcement: its discovery document names the origin in an `href`, but no actor id, and nothing another
+  server stores as an identity changes when the origin does. Until the first announcement a start with a
+  different `FLOWA_ORIGIN` simply takes it, and every start says in one log line that the origin is not
+  announced yet; the dashboard says "not announced yet" until then and the date after. Races: two first
+  answers at once in one process take turns on a mutex, and the second finds the origin recorded; a first
+  answer while another transaction writes the rows waits for its commit (`INSERT ... ON CONFLICT DO
+  NOTHING`) and reads its row. One process runs per database, so an origin recorded by another process after
+  this one started is not a case Flowa sets up; if two did overlap with two origins, the second to record
+  finds the other origin and refuses federation, before any id goes out under it.
 - **Frozen once federated.** An actor id has been announced to other servers and cannot change
   (Mastodon's configuration page says the same of its `LOCAL_DOMAIN`: changing it makes remote
   servers "confuse your existing accounts with entirely new ones"). So the public origin and every username that has federated are frozen. If `FLOWA_ORIGIN` later
@@ -470,7 +480,8 @@ port unless needed). Without it, or with `http://`, federation is refused at sta
 Its host is added to the names `allowedHost` accepts. As built (FRD 1): an IP address, `localhost` and
 single-label or private names are refused, a host in another script must be in its `xn--` form, a trailing
 dot is refused, and capitals, one trailing slash and `:443` are forgiven and written away, so one origin has
-one written form (actor ids are compared as text). A test-only setting,
+one written form (actor ids are compared as text). It can change freely until it is first announced, and
+is frozen from then on (4.3, as built in FRD 4). A test-only setting,
 `FLOWA_FEDERATION_ALLOW_PRIVATE` (**new**), lets an `http://` origin and private addresses through
 for the two-instance test, as `FLOWA_PREVIEW_BASE` does for the preview stub; the server logs it at
 start, and `test/release.sh` fails if `compose.yml` names it.
@@ -552,15 +563,21 @@ neither says, and one correction:
   writes handles for people, with one leading `@` forgiven in every form; the name in any case (Flowa's names
   are lower case, so `Ana` can only mean `ana`; the subject is the name as stored, which RFC 7033 4.4.1
   allows); the host compared with the origin's host without case and with one trailing dot taken off. An
-  `acct:` host with a port (`acct:ana@flowa.example.org:443`) names nobody (404): RFC 7565's grammar has a
-  host and no port. The actor URL form is compared as an id is written: `https`, the path exactly
+  `acct:` host with a port (`acct:ana@flowa.example.org:443`) names nobody (404): RFC 7565 section 7 gives
+  the syntax as `acctURI = "acct" ":" userpart "@" host`, with RFC 3986's `host` rule, which has no port (the
+  port belongs to `authority`). RFC 7565 section 4 asks that two acct URIs be compared after case and
+  percent-encoding normalization (RFC 3986 6.2.2.1 and 6.2.2.2), so `acct:%61na@...` is `ana`, and the URL
+  form also takes an unreserved character percent-encoded (`/users/%61na`), but not an encoded slash. The actor URL form is compared as an id is written: `https`, the path exactly
   `/users/{name}` or `/actor`, no query, fragment, user or percent-encoding, the name as stored; its port may
   be written when it is the origin's (`:443` for an origin without one: RFC 3986 6.2.3 makes the default port
   the same URI). Any other scheme (`mailto:`, `http:`) is a well formed URI this server has no information
   about: 404. A handle with no `@`, more than one after the leading one, or an empty name or host: 400.
-- **The instance actor** is `acct:host@host`. A member whose username is the origin's host (`usernameRE`
-  allows `flowa.example.org`) cannot be found by handle; the instance actor wins. FRD 5's retired names can
-  reserve that name.
+- **The instance actor** is `acct:host@host`. `usernameRE` allows dots, so a member whose username is the
+  origin's host can exist when the host has 3 to 24 characters (`flowa.example.org` can be a username). The
+  instance actor is decided before any member is looked up, so it always wins, and that member can be
+  found only by the URL form of their id. FRD 5's retired names can reserve that name.
+- **The owner only, in single mode.** The implied opt-in of single mode is the owner's (`owner` in the
+  lookup), not every account's, though `checkSingle` keeps one account there anyway.
 - **One answer for nobody.** An unknown name, a member who has not opted in, a suspended member and a deleted
   one (and later a retired name) all run the same one statement on the unique username index
   (`webFingerSQL`) and get the same 404, body and headers; a name `usernameRE` refuses cannot exist and costs
@@ -601,7 +618,11 @@ with `Content-Type: application/json; profile="http://nodeinfo.diaspora.software
 }
 ```
 
-Checked against the NodeInfo 2.1 schema: `version`, `software`, `protocols`, `services`,
+Checked against the NodeInfo 2.1 schema (and, for FRD 4, against the schema file itself, kept as
+`testdata/federation/nodeinfo-2.1.schema.json`, which `TestNodeInfo` validates the answer with: it agrees
+with this paragraph, and adds that `software`, `services`, `usage` and `usage.users` allow no other members
+either, that `software` may also have `repository` and `homepage` and `usage` may have `localComments`, and
+that every count has a minimum of 0): `version`, `software`, `protocols`, `services`,
 `openRegistrations`, `usage` and `metadata` are all required, and no other top-level member is
 allowed; `software.name` must match `^[a-z0-9-]+$` and `software.version` is a required string;
 `protocols` needs at least one entry from a fixed list (`activitypub` is one); `services.inbound`
@@ -616,22 +637,23 @@ of this note counted only members who opted in; that would publish smaller numbe
 schema's names.) A count is not personal data, but if the owner prefers not to publish them, the
 schema allows `"users": {}` and no `localPosts`. `openRegistrations` ("whether this server allows
 open self-registration") is true only when the registration mode is open without approval, and
-always false in single mode. The version string follows `buildVersion`; an admin can choose to send
-`"version": ""` (instance setting `nodeinfo_version`, **new**; the schema requires the member but not
+always false in single mode. The version string is `""` by default (as built in FRD 4); an admin will be
+able to choose to send the build's version instead, or to keep `"version": ""` (instance setting `nodeinfo_version`, **new**; the schema requires the member but not
 a value), since which build runs helps an attacker, the reason `handleHealthz` keeps it private.
 
 As built (FRD 4): the two documents as above, from typed structs, the discovery one as `application/json`
 and the 2.1 one with the profile content type, both with the CORS header, the cache and limits of 5.3 and
-405 for other methods. `software.version` is the version the dashboard shows (`buildVersion`, or `VERSION`
-when set: a release tag, `main.<commit>` or `dev`, each a plain string, which is all the schema asks of it
-as this note records it; the schema file itself was not among the texts checked for FRD 4). `protocols` is
+405 for other methods. `software.version` is `""`: the schema file requires the member and gives it only
+`"type": "string"` (no pattern, no minimum length), so the empty string is valid and says nothing about the
+build. That makes the version private by default, as in `/healthz`; publishing it becomes an admin's choice
+with `nodeinfo_version`, below. `protocols` is
 `["activitypub"]` because the schema needs one entry from its list, though only discovery is built; so that
 nobody takes that for the whole protocol, `metadata` says `{"mode": "...", "federationBuilt": ["webfinger",
 "nodeinfo"]}` instead of the example's `nodeName` (Flowa keeps no instance name). The counts are one query of
 four counts, kept for five minutes; `openRegistrations` is read from the flag and registration caches the
 pages use. **The instance setting `nodeinfo_version` is not built**: it needs the admin's instance editor to
-learn a new field, which is its own change; until it lands, NodeInfo names the build, and the README says
-so.
+learn a new field, which is its own change; until it lands, NodeInfo sends the empty string, so the default
+is the private one and the setting will only add the choice to publish the version.
 
 ### 5.5 The actor document
 
@@ -744,7 +766,8 @@ header, and a missing one (HTML).
   string naming its purpose, never the secret itself, so a second purpose later gets an unrelated key;
   each sealed key carries a fresh 12-byte nonce, names its scheme (`v1.`), and has its key id and owner
   authenticated with it, so a sealed key copied onto another row does not open; the key id is stored
-  without the origin (`/actor#main-key`), which is recorded once in `instance_settings`. A secret that does
+  without the origin (`/actor#main-key`), which is recorded once in `instance_settings` when it is first
+  announced (4.3; making a key records nothing). A secret that does
   not open the instance actor's key (checked at every start) stops federation, not the server, as a moved
   origin does (4.3); while federation is refused, for either reason, no key is made for any owner, so none
   replaces a key that cannot be opened and none is sealed under a second secret. The secret must be 64
@@ -1976,11 +1999,18 @@ keyword filters.
 ## 11. The member's side
 
 - **As built (FRD 4):** `users.federates` (migration 13, off for everyone) and the switch in Settings, in a
-  card "Beyond this server" shown only in a mode that federates, with the member's handle and a sentence
-  saying that this version only answers who they are and sends nothing, and that practice, progress, notes,
-  stats and badges never leave. `PUT /api/me` takes `federates` only in a mode that federates and not in
-  single mode (400 with a sentence otherwise); `/api/me` says `federation` (handle, `optedIn`, `implied` in
-  single mode, `warning`) only in a mode that federates. The opt-in is not part of the user object other
+  card "Beyond this server" shown only in a mode that federates. Its switch is labelled for what is built, "Let
+  other servers find me by my handle", and the card shows the member's handle and the server's sentence on what
+  this version does (only the handle can be found, nothing is sent, practice, progress, notes, stats and badges
+  never leave); the label and the sentence come from the server (`fedView`), so the page cannot say more than
+  is built. While federation is refused the card says sharing is unavailable, gives staff the reason, and has
+  no switch. `PUT /api/me` takes `federates` only in a mode that federates; outside one it ignores the field as
+  any unknown field (so a deployment that sets nothing new answers as before), and in single mode with
+  `FLOWA_FEDERATE=on` it refuses it with 400 and the reason (that mode is new, nothing relied on the field
+  there, and the owner should learn the setting decides). `/api/me` says `federation` (handle, `optedIn`,
+  `label`, `built`, `implied` in single mode, `warning`, `unavailable`, and `refused` for staff) only in a mode
+  that federates, and has no such key otherwise. Every start asks for the keys of members who opted in and
+  have none (a request dropped from a full queue of 64, or held back by a refusal), as many as the queue holds. The opt-in is not part of the user object other
   answers carry. Opting in asks for the member's key (5.7); opting out keeps it. A name that ends with a
   dot or a dash gets the warning of finding 11 beside the switch once it is on.
 - **Opting in** (F2): a switch in Settings, "Share my profile and public posts beyond this server",
@@ -2092,8 +2122,9 @@ changes no running instance.
   queue is a warning, not a reason for `deploy.sh` to roll back.
 - The admin dashboard gains a federation tile (queued, oldest undelivered, delivered and failed in 24
   hours, hosts open or unavailable) and a page per host with a retry button and the last errors.
-- As built (FRD 4): the dashboard's mode line says, in a mode that federates, the origin and that this
-  version answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents,
+- As built (FRD 4): the dashboard's mode line says, in a mode that federates, the origin, whether it is
+  "not announced yet" (so it can still change) or since when it is frozen (4.3), and that this version
+  answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents,
   no inbox, nothing is delivered; or why federation is refused. `/healthz` is unchanged until the queues exist.
 
 ### 14.3 Order of pull requests
