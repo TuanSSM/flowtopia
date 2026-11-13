@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"container/heap"
 	"context"
 	"crypto"
 	"crypto/aes"
@@ -4285,9 +4286,10 @@ var fetchRules = [fetchKinds]fetchRule{
 	fetchDelivery:  {"POST", "", asType, 5 * time.Second, errBodyCap, nil, []int{200, 201, 202, 204}, redirectNone, true, true, false},
 }
 
-// signer adds the headers that sign a request (the next item: Signature, Digest). fetcher.do calls it
-// with the request exactly as it will be sent, Date already set, once for every request, a redirect
-// included, because a signature covers the host and the path. It must not change the method or URL.
+// signer adds the headers that sign a request (httpSigner: Signature, Digest, and Date again from
+// its own reading of the clock). fetcher.do calls it with the request exactly as it will be sent, Date
+// already set, once for every request, a redirect included, because a signature covers the host and
+// the path. It must not change the method or URL.
 type signer func(req *http.Request, body []byte) error
 
 // fetchReq describes one outbound request.
@@ -6403,22 +6405,23 @@ each can be tested alone:
 
 No layer reads the database: the verifier asks a function for the public key of a key id, and that
 function (a later item) fetches the key and checks its owner; the signer is handed the private key.
-Nothing calls any of this yet: the inbox is FWR's, signed fetches are FRD's remote actors item. */
+Nothing calls any of this yet: the inbox is FWR's, signed fetches are FRD's remote actors item. One
+line is logged, once, by builtAt at the first verifier made, and only when the build does not know
+its own date: it says the clock check is skipped. Nothing else here logs. */
 
 const (
-	sigPast       = 12 * time.Hour     // Mastodon's window: "made within the past 12 hours" (security page, Verifying HTTP signatures)
-	sigAhead      = time.Hour          // Flowa's own allowance for a sender whose clock runs ahead (federation.md 7.1)
-	sigKeep       = sigPast + sigAhead // the longest a signature stays valid after it arrives, so how long it is remembered
-	sigSeenMax    = 100_000            // signatures remembered at most (federation.md 7.2)
-	sigFieldMax   = 8 << 10            // bytes of Signature, Signature-Input, Digest or Content-Digest, its lines joined
-	sigLinesMax   = 8                  // lines of one of those fields
-	sigCoveredMax = 32                 // covered components (headers) of one signature
-	sigParamsMax  = 16                 // parameters of one item or inner list; members of one dictionary
-	sigValueMax   = 16 << 10           // bytes of one covered header's value
-	sigBaseMax    = 64 << 10           // bytes of a signing string or a signature base
-	sigKeyMin     = 2048               // bits: the SWICG report asks for "a 2048-bit or larger RSA keypair"
-	sigKeyMax     = 8192               // bits: a cost limit, since verifying grows with the key; larger is refused
-	sigPEMMax     = 16 << 10           // bytes of a public key PEM
+	sigPast       = 12 * time.Hour // Mastodon's window: "made within the past 12 hours" (security page, Verifying HTTP signatures)
+	sigAhead      = time.Hour      // Flowa's own allowance for a sender whose clock runs ahead (federation.md 7.1)
+	sigSeenMax    = 100_000        // signatures remembered at most; one origin holds a tenth, 2,000 origins at most (federation.md 7.2)
+	sigFieldMax   = 8 << 10        // bytes of Signature, Signature-Input, Digest or Content-Digest, its lines joined
+	sigLinesMax   = 8              // lines of one of those fields
+	sigCoveredMax = 32             // covered components (headers) of one signature
+	sigParamsMax  = 16             // parameters of one item or inner list; members of one dictionary
+	sigValueMax   = 16 << 10       // bytes of one covered header's value
+	sigBaseMax    = 64 << 10       // bytes of a signing string or a signature base
+	sigKeyMin     = 2048           // bits: the SWICG report asks for "a 2048-bit or larger RSA keypair"
+	sigKeyMax     = 8192           // bits: a cost limit, since verifying grows with the key; larger is refused
+	sigPEMMax     = 16 << 10       // bytes of a public key PEM
 )
 
 // sigForm is which of the two texts a signature follows.
@@ -6462,6 +6465,7 @@ const (
 	sigReplay                                // this signature was accepted before
 	sigStale                                 // older than what the replay memory can still vouch for
 	sigClock                                 // this server's clock is earlier than its build: it cannot judge times
+	sigFull                                  // the replay memory holds as many origins as it can: try later (503)
 )
 
 var sigReasons = [...]string{
@@ -6493,6 +6497,7 @@ var sigReasons = [...]string{
 	sigReplay:           "a signature used before",
 	sigStale:            "a signature older than the replay memory reaches",
 	sigClock:            "this server's clock is not set yet",
+	sigFull:             "the replay memory is full for now",
 }
 
 func (r sigReason) String() string {
@@ -6539,13 +6544,22 @@ func urlAuthority(u *url.URL) string {
 }
 
 // httpsURL says whether a key id is an https URL: the only kind of key id Flowa can look up, and
-// what the SWICG report expects ("It should be a URL"). Printable ASCII only, within maxURL.
+// what the SWICG report expects ("It should be a URL"). Only the characters RFC 3986 allows in a URL
+// (2.2, 2.3: unreserved, reserved, and "%" followed by two hex digits, 2.1), within maxURL: so never
+// a space, a quote or a backslash, and a key id always fits in a quoted string unchanged.
 func httpsURL(s string) bool {
 	if s == "" || len(s) > maxURL {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
-		if s[i] <= ' ' || s[i] >= 0x7f {
+		c := s[i]
+		switch {
+		case c == '%':
+			if i+2 >= len(s) || !isHex(s[i+1]) || !isHex(s[i+2]) {
+				return false
+			}
+		case c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || isDigit(c) || strings.IndexByte("-._~:/?#[]@!$&'()*+,;=", c) >= 0:
+		default:
 			return false
 		}
 	}
@@ -7612,7 +7626,8 @@ func (e *pubKeyError) Error() string { return "public key refused: " + e.Reason 
 // parsePublicKeyPEM reads the publicKeyPem of an actor: one PEM block, either SPKI ("PUBLIC KEY") or
 // PKCS#1 ("RSA PUBLIC KEY"), since the SWICG report says it "may be encoded as PKCS-1, X.509 SPKI,
 // or something else". Refused: anything before or after the block, a second block, headers in it, a
-// key that is not RSA, and an RSA key under minBits or over sigKeyMax. minBits is sigKeyMin in
+// key that is not RSA, an RSA key under minBits or over sigKeyMax, and one with an exponent under 3,
+// an even exponent or an even modulus. minBits is sigKeyMin in
 // production; the vector tests pass 1024 for the draft's old test key. An Ed25519 key is refused
 // with its own reason: Mastodon validates Ed25519 only from 4.7.0, not released when this was
 // written; accepting it would be a case here and a second verification algorithm chosen by the key.
@@ -7660,6 +7675,10 @@ func parsePublicKeyPEM(s string, minBits int) (*rsa.PublicKey, error) {
 		return nil, &pubKeyError{"an RSA key under the minimum size"}
 	case k.N.BitLen() > sigKeyMax:
 		return nil, &pubKeyError{"an RSA key over 8192 bits"}
+	case k.E < 3 || k.E%2 == 0 || k.N.Bit(0) == 0:
+		// No RSA key has these (an exponent must be odd and over 1, a modulus the product of two odd
+		// primes); verifying refuses them anyway, and refusing here keeps them out of a key cache.
+		return nil, &pubKeyError{"not a key"}
 	}
 	return k, nil
 }
@@ -7679,94 +7698,302 @@ func replayKeyOf(sig []byte) replayKey {
 	return replayKey(h[:16])
 }
 
+// replaySig is one signature for the replay memory: its key and the earliest time it vouches for, in
+// Unix seconds. The same signature always vouches for the same time.
+type replaySig struct {
+	key replayKey
+	at  int64
+}
+
 // replaySet remembers the signatures accepted on requests that change something, so that each is
-// accepted once (federation.md 7.2), keyed by replayKey. An entry
-// is kept sigKeep after it arrives: a signature is valid until 12 hours after the time it vouches
-// for, which is at most an hour after it arrived, so once an entry goes the time window refuses the
-// signature anyway; it goes the second after those 13 hours, so the last second still counts. At most max entries; when full, the oldest half by arrival is dropped, and from
-// then on a signature vouching for a time no later than the latest time among those dropped is
-// refused as stale, since it might be one of them. Safe for concurrent use; each check is O(1), and a
-// drop of half costs O(max) once per max/2 additions. In memory only: a restart forgets it, and the
-// inbox's de-duplication by activity id (7.2) still holds across one.
+// accepted once (federation.md 7.2). Each entry is grouped by the origin of its key id (scheme, host
+// and port, as originOf writes it).
+//
+// An entry lives as long as the time window could still accept its signature: until 12 hours (past)
+// after the time it vouches for, through the last second, which is exactly when inWindow starts to
+// refuse it as too old. A signature dated an hour ahead is kept 13 hours, one dated 12 hours ago is
+// barely kept at all. The memory keeps its own clock, the latest time it was given, and refuses as
+// stale anything that clock says is past its 12 hours, so a system clock stepped back cannot bring a
+// forgotten signature back into the window.
+//
+// The memory is bounded and the number of valid signatures in a window is not, so sometimes a valid
+// new signature has to be refused (a replay never is). The rule decides who that is: the origin that
+// filled the memory, never a bystander.
+//
+//   - An entry is only ever dropped by expiry or by eviction. An evicted entry is its origin's
+//     smallest time, and that origin's floor rises to it: from then on a new signature from that
+//     origin vouching for a time at or before its floor is refused as stale, since it might be the
+//     one dropped. One origin's floor never touches another origin. A signature from the same origin
+//     with exactly the floor's time is refused too: by time alone it cannot be told from the dropped
+//     one. A floor is forgotten when the window would refuse its time anyway.
+//   - One origin holds at most perOrigin entries (a tenth of the memory). At that cap it evicts its
+//     own oldest, whatever dates it claims: a flood from one origin costs only that origin.
+//   - When the whole memory is full, the entry evicted is the oldest of the origin holding the most
+//     entries, or the inserting origin's own when it already holds at least an equal share (the
+//     memory divided by the origins in it). The heaviest pays because it is the one using more than
+//     its share: an origin at or below an equal share is never evicted from by another's traffic, so
+//     an attacker gains nothing by spreading a flood unless it brings more origins than there are
+//     honest ones, and every honest origin keeps at least an equal share of its newest entries.
+//   - At most maxOrigins origins are remembered (one in fifty of the memory). A signature from a new
+//     origin when that many are kept is refused as sigFull, which the inbox answers with 503 and
+//     Retry-After: no origin is forgotten while it might still have a floor or an entry to keep.
+//
+// The worst case, a flood of valid signatures from very many origins (each needs a domain the domain
+// policy lets in and a key that verifies, and each host is held to the inbox's allowance): an honest
+// origin already in the memory keeps at least an equal share of its newest entries, 50 at the full
+// 2,000 origins, and loses only a delivery that arrives dated no later than the ones evicted, that
+// is, one overtaken by that many of its own later deliveries; an honest origin not yet in the memory
+// gets 503 until the flood's entries expire, up to 13 hours. Either way the sender retries with a
+// fresh date and the delivery goes through once there is room. Replay is never accepted.
+//
+// Safe for concurrent use, under one mutex held for O(log n) work: a min-heap of entries by time per
+// origin, and two heaps of origins, by count (for the heaviest) and by their oldest time (for a
+// sweep that never scans). Every call also forgets up to replaySweepStep expired entries, so expired
+// ones are cleared at least as fast as new ones arrive, and a new origin is turned away as full only
+// once nothing expired is left to forget. Entries sit in one pool, grown by doubling up
+// to max and reused, so the memory at the cap is fixed. In memory only: a restart forgets it, and
+// the inbox's de-duplication by activity id (7.2) still holds across one.
 type replaySet struct {
-	mu       sync.Mutex
-	max      int
-	keep     int64 // seconds
-	m        map[replayKey]struct{}
-	q        []replayEntry // a ring, grown by doubling up to max
-	head, n  int
-	floor    int64 // see hasFloor
-	hasFloor bool  // a signature vouching for a time at or before floor may have been dropped
+	mu         sync.Mutex
+	max        int   // signatures remembered at most
+	perOrigin  int   // signatures one origin holds at most
+	maxOrigins int   // origins remembered at most
+	past       int64 // seconds a signature stays acceptable after the time it vouches for
+	now        int64 // the latest time given, Unix seconds: the memory's clock never goes back
+	n          int
+	m          map[replayKey]struct{}
+	pool       []replaySig // entries; a free slot holds the next free slot in at
+	free       int32       // the first free slot of pool, or -1
+	origins    map[string]*replayOrigin
+	byCount    originsByCount
+	byAge      originsByAge
 }
 
-type replayEntry struct {
-	key     replayKey
-	arrived int64 // Unix seconds
-	at      int64 // the earliest time the signature vouches for, Unix seconds
+// replaySweepStep is how many expired entries each call forgets at most, besides the inserting
+// origin's own.
+const replaySweepStep = 8
+
+// replayOrigin is what the memory keeps for one origin.
+type replayOrigin struct {
+	s        *replaySet
+	name     string
+	h        []int32 // slots of s.pool, a min-heap by time
+	floor    int64   // with hasFloor: the latest time among this origin's evicted entries
+	hasFloor bool
+	cnt, age int // positions in s.byCount and s.byAge
 }
 
-func newReplaySet(max int, keep time.Duration) *replaySet {
-	return &replaySet{max: max, keep: int64(keep / time.Second), m: map[replayKey]struct{}{}}
+func (o *replayOrigin) Len() int           { return len(o.h) }
+func (o *replayOrigin) Less(i, j int) bool { return o.s.pool[o.h[i]].at < o.s.pool[o.h[j]].at }
+func (o *replayOrigin) Swap(i, j int)      { o.h[i], o.h[j] = o.h[j], o.h[i] }
+func (o *replayOrigin) Push(x any)         { o.h = append(o.h, x.(int32)) }
+func (o *replayOrigin) Pop() any           { x := o.h[len(o.h)-1]; o.h = o.h[:len(o.h)-1]; return x }
+
+// oldest is the time by which the sweep orders origins: the oldest entry's, or the floor's when no
+// entry is left (a floor is never later than an entry that was kept when it was set).
+func (o *replayOrigin) oldest() int64 {
+	if len(o.h) > 0 {
+		return o.s.pool[o.h[0]].at
+	}
+	return o.floor
 }
 
-func (s *replaySet) pop() replayEntry {
-	e := s.q[s.head]
-	s.q[s.head] = replayEntry{}
+// originsByCount is a heap of origins, the one holding the most entries first.
+type originsByCount []*replayOrigin
+
+func (h originsByCount) Len() int           { return len(h) }
+func (h originsByCount) Less(i, j int) bool { return len(h[i].h) > len(h[j].h) }
+func (h originsByCount) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].cnt, h[j].cnt = i, j }
+func (h *originsByCount) Push(x any)        { o := x.(*replayOrigin); o.cnt = len(*h); *h = append(*h, o) }
+func (h *originsByCount) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
+
+// originsByAge is a heap of origins, the one whose oldest time is earliest first.
+type originsByAge []*replayOrigin
+
+func (h originsByAge) Len() int           { return len(h) }
+func (h originsByAge) Less(i, j int) bool { return h[i].oldest() < h[j].oldest() }
+func (h originsByAge) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].age, h[j].age = i, j }
+func (h *originsByAge) Push(x any)        { o := x.(*replayOrigin); o.age = len(*h); *h = append(*h, o) }
+func (h *originsByAge) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
+
+// newReplaySet makes a memory of size signatures, of which one origin holds a tenth and which keeps
+// at most one origin in fifty (at least two), for signatures acceptable for past after their time.
+func newReplaySet(size int, past time.Duration) *replaySet {
+	return &replaySet{max: size, perOrigin: max(size/10, 1), maxOrigins: max(size/50, 2), past: int64(past / time.Second),
+		free: -1, m: map[replayKey]struct{}{}, origins: map[string]*replayOrigin{}}
+}
+
+// expired says whether the window can no longer accept a signature vouching for at.
+func (s *replaySet) expired(at int64) bool { return at+s.past < s.now }
+
+// check says whether signatures from an origin may be accepted now, without remembering them.
+func (s *replaySet) check(origin string, now int64, sigs ...replaySig) sigReason {
+	return s.admit(origin, now, sigs, false)
+}
+
+// add remembers the signatures of one request from an origin, all or none: if one is already
+// remembered or refused, nothing is added and the reason is returned.
+func (s *replaySet) add(origin string, now int64, sigs ...replaySig) sigReason {
+	return s.admit(origin, now, sigs, true)
+}
+
+func (s *replaySet) admit(origin string, now int64, sigs []replaySig, keep bool) sigReason {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = max(s.now, now)
+	s.sweepLocked(replaySweepStep)
+	o := s.origins[origin]
+	if o != nil {
+		for len(o.h) > 0 && s.expired(o.oldest()) {
+			s.popOldest(o)
+		}
+		if !s.settle(o) {
+			o = nil
+		}
+	}
+	for _, g := range sigs {
+		if _, ok := s.m[g.key]; ok {
+			return sigReplay
+		}
+		if s.expired(g.at) || o != nil && o.hasFloor && g.at <= o.floor {
+			return sigStale
+		}
+	}
+	if o == nil && len(s.origins) >= s.maxOrigins {
+		for len(s.origins) >= s.maxOrigins && s.sweepLocked(replaySweepStep) > 0 { // what has expired goes first
+		}
+		if len(s.origins) >= s.maxOrigins {
+			return sigFull
+		}
+	}
+	if !keep {
+		return 0
+	}
+	if o == nil {
+		o = s.newOrigin(origin)
+	}
+	for _, g := range sigs {
+		if _, ok := s.m[g.key]; !ok {
+			o = s.insert(o, g)
+		}
+	}
+	return 0
+}
+
+func (s *replaySet) newOrigin(name string) *replayOrigin {
+	o := &replayOrigin{s: s, name: name}
+	s.origins[name] = o
+	heap.Push(&s.byCount, o)
+	heap.Push(&s.byAge, o)
+	return o
+}
+
+// insert remembers one signature of o, making room first: o's own oldest when o is at its cap, and
+// when the memory is full, the oldest of o if it holds at least an equal share, else of the heaviest.
+func (s *replaySet) insert(o *replayOrigin, g replaySig) *replayOrigin {
+	if len(o.h) >= s.perOrigin {
+		s.evict(o)
+	}
+	if s.n >= s.max {
+		v := o
+		if len(o.h)*len(s.origins) < s.n {
+			v = s.byCount[0]
+		}
+		s.evict(v)
+	}
+	if s.origins[o.name] != o { // evicting o's last entry, already expired, would have let it go
+		o = s.newOrigin(o.name)
+	}
+	var i int32
+	if s.free >= 0 {
+		i, s.free = s.free, int32(s.pool[s.free].at)
+	} else {
+		if len(s.pool) == cap(s.pool) {
+			p := make([]replaySig, len(s.pool), len(s.pool)+min(max(len(s.pool), 64), s.max-len(s.pool)))
+			copy(p, s.pool)
+			s.pool = p
+		}
+		i = int32(len(s.pool))
+		s.pool = append(s.pool, replaySig{})
+	}
+	s.pool[i] = g
+	o.h = append(o.h, i)
+	heap.Fix(o, len(o.h)-1)
+	s.m[g.key] = struct{}{}
+	s.n++
+	s.settle(o)
+	return o
+}
+
+// evict drops o's oldest entry to make room and raises o's floor to its time, unless the window
+// refuses that time already.
+func (s *replaySet) evict(o *replayOrigin) {
+	e := s.popOldest(o)
+	if !s.expired(e.at) && (!o.hasFloor || e.at > o.floor) {
+		o.floor, o.hasFloor = e.at, true
+	}
+	s.settle(o)
+}
+
+// popOldest forgets o's oldest entry and returns it; the caller settles o.
+func (s *replaySet) popOldest(o *replayOrigin) replaySig {
+	i := o.h[0]
+	last := len(o.h) - 1
+	o.Swap(0, last)
+	o.h = o.h[:last]
+	if last > 0 {
+		heap.Fix(o, 0)
+	}
+	if c := cap(o.h); c > 64 && len(o.h) < c/4 {
+		o.h = append(make([]int32, 0, c/2), o.h...)
+	}
+	e := s.pool[i]
 	delete(s.m, e.key)
-	s.head = (s.head + 1) % len(s.q)
+	s.pool[i] = replaySig{at: int64(s.free)}
+	s.free = i
 	s.n--
 	return e
 }
 
-func (s *replaySet) expire(now int64) {
-	for s.n > 0 && s.q[s.head].arrived+s.keep < now {
-		s.pop()
+// settle puts o back in order after a change, forgetting its floor once the window refuses it, and o
+// itself once it has neither entries nor floor; it says whether o is still kept.
+func (s *replaySet) settle(o *replayOrigin) bool {
+	if o.hasFloor && s.expired(o.floor) {
+		o.hasFloor = false
 	}
+	if len(o.h) == 0 && !o.hasFloor {
+		delete(s.origins, o.name)
+		heap.Remove(&s.byCount, o.cnt)
+		heap.Remove(&s.byAge, o.age)
+		return false
+	}
+	heap.Fix(&s.byCount, o.cnt)
+	heap.Fix(&s.byAge, o.age)
+	return true
 }
 
-// check says whether a signature may be accepted now, without remembering it.
-func (s *replaySet) check(key replayKey, at, now int64) sigReason {
+// sweep forgets up to budget expired entries and floors, oldest first, and says how many it forgot:
+// for the housekeeping pass, which the inbox item wires.
+func (s *replaySet) sweep(now int64, budget int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.checkLocked(key, at, now)
+	s.now = max(s.now, now)
+	return s.sweepLocked(budget)
 }
 
-func (s *replaySet) checkLocked(key replayKey, at, now int64) sigReason {
-	s.expire(now)
-	if s.hasFloor && at <= s.floor {
-		return sigStale
-	}
-	if _, ok := s.m[key]; ok {
-		return sigReplay
-	}
-	return 0
-}
-
-// add remembers a signature, unless it is already remembered or stale; then it says why.
-func (s *replaySet) add(key replayKey, at, now int64) sigReason {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if r := s.checkLocked(key, at, now); r != 0 {
-		return r
-	}
-	if s.n >= s.max {
-		for range max(s.max/2, 1) {
-			if e := s.pop(); !s.hasFloor || e.at > s.floor {
-				s.floor, s.hasFloor = e.at, true
-			}
+func (s *replaySet) sweepLocked(budget int) int {
+	done := 0
+	for ; done < budget && len(s.byAge) > 0; done++ {
+		o := s.byAge[0]
+		if !s.expired(o.oldest()) {
+			break
 		}
-	}
-	if s.n == len(s.q) {
-		q := make([]replayEntry, min(max(2*len(s.q), 64), s.max))
-		for i := range s.n {
-			q[i] = s.q[(s.head+i)%len(s.q)]
+		if len(o.h) > 0 {
+			s.popOldest(o)
 		}
-		s.q, s.head = q, 0
+		s.settle(o)
 	}
-	s.q[(s.head+s.n)%len(s.q)] = replayEntry{key: key, arrived: now, at: at}
-	s.n++
-	s.m[key] = struct{}{}
-	return 0
+	return done
 }
 
 func (s *replaySet) size() int {
@@ -7834,7 +8061,7 @@ func newSigVerifier(origin string, keyFor func(context.Context, string) (*rsa.Pu
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("the origin of a signature verifier is https:// and a host")
 	}
-	return &sigVerifier{scheme: "https", authority: urlAuthority(u), keyFor: keyFor, now: time.Now, built: builtAt(), minBits: sigKeyMin, seen: newReplaySet(sigSeenMax, sigKeep)}, nil
+	return &sigVerifier{scheme: "https", authority: urlAuthority(u), keyFor: keyFor, now: time.Now, built: builtAt(), minBits: sigKeyMin, seen: newReplaySet(sigSeenMax, sigPast)}, nil
 }
 
 // sigCheck is one signature ready for the key: its form, key id, signing string or base, decoded
@@ -8104,6 +8331,11 @@ func (v *sigVerifier) check9421(in *sigInput, sig []byte, m *sigMessage, body []
 // Replay is checked on every method but GET and HEAD. A replayed signed GET within the window reads
 // only what the signer could read with its own signature anyway, and remembering every signed fetch
 // would fill the memory with them and leave the deliveries, which change things, to the stale rule.
+// The memory is asked before the key is looked up and again after the signature verifies, by the
+// origin of the key id; sigFull from it is for a 503 with Retry-After, not a 401.
+//
+// The key lookup is called for whatever https key id a request names, before any cryptography: the
+// inbox must give it a fetch cache and a limit per host before it wires a lookup that fetches (7.4).
 func (v *sigVerifier) verify(ctx context.Context, m *sigMessage, body []byte) (*sigResult, error) {
 	now := v.now()
 	if !clockTrusted(now, v.built) {
@@ -8133,16 +8365,19 @@ func (v *sigVerifier) verify(ctx context.Context, m *sigMessage, body []byte) (*
 		checks = append(checks, c)
 	}
 	replay := m.method != "GET" && m.method != "HEAD"
-	keys := make([]replayKey, len(checks))
-	for i, c := range checks {
-		keys[i] = replayKeyOf(c.sig)
-		if replay {
-			if r := v.seen.check(keys[i], c.at.Unix(), now.Unix()); r != 0 {
-				return nil, sigFail(r)
-			}
+	keyID := checks[0].keyID
+	var sigs [2]replaySig
+	var origin string
+	if replay {
+		u, _ := url.Parse(keyID) // an https URL: checked above
+		origin = originOf(u)
+		for i, c := range checks {
+			sigs[i] = replaySig{key: replayKeyOf(c.sig), at: c.at.Unix()}
+		}
+		if r := v.seen.check(origin, now.Unix(), sigs[:len(checks)]...); r != 0 {
+			return nil, sigFail(r)
 		}
 	}
-	keyID := checks[0].keyID
 	key, err := v.keyFor(ctx, keyID)
 	if err != nil || key == nil {
 		return nil, &sigError{Reason: sigKeyUnavailable, err: err}
@@ -8160,14 +8395,14 @@ func (v *sigVerifier) verify(ctx context.Context, m *sigMessage, body []byte) (*
 		}
 	}
 	res := &sigResult{Form: checks[len(checks)-1].form, KeyID: keyID, At: checks[0].at}
-	for i, c := range checks {
+	for _, c := range checks {
 		if c.at.Before(res.At) {
 			res.At = c.at
 		}
-		if replay {
-			if r := v.seen.add(keys[i], c.at.Unix(), now.Unix()); r != 0 {
-				return nil, sigFail(r)
-			}
+	}
+	if replay {
+		if r := v.seen.add(origin, now.Unix(), sigs[:len(checks)]...); r != 0 {
+			return nil, sigFail(r)
 		}
 	}
 	return res, nil
@@ -8217,16 +8452,17 @@ func rsaSign(key *rsa.PrivateKey, s string) ([]byte, error) {
 // The Host header sent is set to the URL's authority as signed: the host in lower case, no default
 // port (RFC 9421, 2.2.3; for cavage the host line is the Host header's value, 2.3). The request line
 // signed is the one Go writes, req.URL.RequestURI(): "/" for an empty path, the path's own percent
-// encoding and capitals, the query as given. Nothing is signed while the clock is earlier than the
-// build (8.3): errClockUntrusted.
+// encoding and capitals, the query as given. Date is set from the same reading of the clock as
+// created, replacing the one fetcher.send set, so the two forms never disagree by a second. Nothing
+// is signed while the clock is earlier than the build (8.3): errClockUntrusted.
 func httpSigner(key *rsa.PrivateKey, keyID string, form sigForm, now func() time.Time, built time.Time) signer {
 	return func(req *http.Request, body []byte) error {
 		t := now()
 		if !clockTrusted(t, built) {
 			return errClockUntrusted
 		}
-		if key == nil || !httpsURL(keyID) {
-			return errSignKey
+		if key == nil || !httpsURL(keyID) || strings.ContainsAny(keyID, `"\`) {
+			return errSignKey // the cavage header puts keyID in a quoted string as it is
 		}
 		if req.URL == nil || req.URL.Scheme != "https" || req.URL.Host == "" {
 			return errSignURL
@@ -8236,9 +8472,7 @@ func httpSigner(key *rsa.PrivateKey, keyID string, form sigForm, now func() time
 			method = "GET"
 		}
 		req.Host = urlAuthority(req.URL)
-		if req.Header.Get("Date") == "" {
-			req.Header.Set("Date", t.UTC().Format(http.TimeFormat))
-		}
+		req.Header.Set("Date", t.UTC().Format(http.TimeFormat)) // the instant created is, whatever the fetcher set
 		m := &sigMessage{method: method, scheme: "https", authority: req.Host, target: req.URL.RequestURI(), header: req.Header}
 		withBody := body != nil || method != "GET" && method != "HEAD"
 		if form == sigRFC9421 && withBody {

@@ -21,6 +21,12 @@ route and test named below is new unless the design note says it exists.
   two signatures, an `alg` that is not `rsa-v1_5-sha256`, replayed, an activity id of another origin,
   too large, too deep, too many array elements, key owner not the actor, a key on another port of
   the actor's host, blocked host, queue full); `BenchmarkInboxVerify` under budget.
+  Two things the signatures item left for this one (federation.md 7.2 and 7.4): the verifier calls the
+  key lookup for whatever https key id a request names before any cryptography, so the lookup gets a
+  fetch cache, a negative cache and a limit of key fetches per host before it is wired to fetch; and a
+  restart empties the replay memory, so a replay within 12 hours of a restart rests on de-duplication
+  by activity id alone. A `sigFull` refusal from the verifier is answered 503 with `Retry-After`, not
+  401, and the housekeeping pass calls the replay memory's `sweep`.
 - [ ] **A delivery queue in Postgres.** `ap_outbox`, `ap_deliveries`, `ap_hosts`; workers
   (`FLOWA_FEDERATION_WORKERS`), one request at a time per host, 10 a second, at most 3 database
   connections; the retry schedule and the 48-hour horizon (F9); the circuit breaker and unavailable

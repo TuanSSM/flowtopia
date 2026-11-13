@@ -68,16 +68,24 @@ design note says it exists.
   parsers and builders (`parseCavage`, `cavageString`, a strict Structured Fields parser for
   `Signature-Input`, `Signature` and `Content-Digest`, `rfc9421Base`, `parseDigest`,
   `parseContentDigest`, `parsePublicKeyPEM`), the policy (`sigVerifier.verify`, a typed `sigReason` for
-  every refusal), the replay memory (`replaySet`), `clockTrusted` and `builtAt`, `verifyRequest` for a
+  every refusal), the replay memory (`replaySet`: entries kept until the window would refuse them,
+  grouped by the origin of the key id, each origin with its own floor and a cap of a tenth, the
+  heaviest origin evicted from when full, 2,000 origins at most, so a flood costs only its sender),
+  `clockTrusted` and `builtAt`, `verifyRequest` for a
   request that arrived and `httpSigner` for the fetcher's hook. `TestSignatureVectors` (cavage C.1 and
   C.2 verified and reproduced, C.3 kept as a documented negative, RFC 9421 4.3 `proxy_sig` verified and
   reproduced, the bases of 2.5 and B.2.1 to B.2.3 byte for byte, the digests of RFC 9530, RFC 9421 and
-  the draft), `TestReplayWindow`, `TestSignaturePolicy`, `TestSignatureNever`, `TestSignatureWindow`,
+  the draft), `TestReplayWindow`, `TestReplayFlood` and `TestReplayFloodThroughVerifier` (the review's
+  reproduction: one key's flood dated 59 minutes ahead no longer refuses anyone else),
+  `TestReplayManyOrigins`, `TestReplayModel` (random operations against a reference that remembers
+  everything), `TestReplayExpiry`, `TestReplayConcurrent`, `TestSignaturePolicy`, `TestSignatureNever`, `TestSignatureWindow`,
   `TestSignatureThroughFetcher` (both forms, GET with a redirect and POST, over TLS) and their
-  neighbours pass, and the three fuzz targets ran 30 s each with no failure. On the CI-class runner
-  (Xeon 2.3 GHz) `BenchmarkInboxVerify` is about 35 µs, 4.4 to 5.6 KB and 51 to 56 allocations (budget 2
-  ms and 400), `BenchmarkSignDelivery` about 0.8 ms, and the replay memory 56 bytes a signature, 5.6 MB
-  full. Open: the two Pi budgets of section 12, 10 ms to verify and 15 ms to sign
+  neighbours pass, and the three fuzz targets ran 30 s each, and 20 s each again after the replay
+  memory was rebuilt, with no failure. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkInboxVerify` is
+  about 35 µs, 4.4 to 5.6 KB and 51 to 56 allocations (budget 2 ms and 400), measured again on a 2.1 GHz
+  Xeon at about 46 µs, 4.7 to 5.9 KB and 55 to 60 allocations; `BenchmarkSignDelivery` about 0.8 ms
+  (1.0 ms on the 2.1 GHz one); `BenchmarkReplayAdd` at the cap 0.4 to 0.6 µs and no allocation; the
+  replay memory 52 to 56 bytes a signature, 5.2 to 5.6 MB full, at most about 7 MB. Open: the two Pi budgets of section 12, 10 ms to verify and 15 ms to sign
   (`go test -run xxx -bench 'InboxVerify|SignDelivery' -benchmem .` on the Pi).
 - [ ] **WebFinger and NodeInfo.** `/.well-known/webfinger`, `/.well-known/nodeinfo` and
   `/nodeinfo/2.1`, only in a federating mode and only for members who opted in (the `federates`

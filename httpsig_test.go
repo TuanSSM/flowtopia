@@ -17,10 +17,13 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
+	mrand "math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -530,6 +533,57 @@ func TestSignatureSigner(t *testing.T) {
 	if err := httpSigner(k.key, "Test", sigCavage, time.Now, time.Time{})(k.request(t, "GET", "https://social.example/x", nil), nil); !errors.Is(err, errSignKey) {
 		t.Errorf("a key id that is not a URL: %v", err)
 	}
+	// A key id that would close the quoted string and add a second keyId is refused in both forms,
+	// and so is any character RFC 3986 does not allow in a URL.
+	for _, id := range []string{
+		`https://flowa.example/actor",keyId="https://victim.example/actor#main-key`,
+		`https://flowa.example/actor\#main-key`, "https://flowa.example/a b", "https://flowa.example/a|b",
+		"https://flowa.example/a%2", "https://flowa.example/a%zz", "https://flowa.example/{a}", "https://flowa.example/a^b",
+	} {
+		for _, form := range []sigForm{sigCavage, sigRFC9421} {
+			req := k.request(t, "POST", "https://social.example/inbox", body)
+			if err := httpSigner(k.key, id, form, func() time.Time { return k.now }, time.Time{})(req, body); !errors.Is(err, errSignKey) || req.Header.Get("Signature") != "" {
+				t.Errorf("form %d, key id %q: %v, Signature %q", form, id, err, req.Header.Get("Signature"))
+			}
+		}
+		if httpsURL(id) {
+			t.Errorf("httpsURL(%q) accepted it", id)
+		}
+	}
+	for _, id := range []string{"https://flowa.example/users/ana#main-key", "https://flowa.example:8443/a-b_c.d~e/%41?x=1&y=(2)*!$';,=@:[]"} {
+		if !httpsURL(id) {
+			t.Errorf("httpsURL(%q) refused it", id)
+		}
+	}
+	// The serialiser escapes what a Structured Field string needs escaped, and reads back the same.
+	var b strings.Builder
+	sfWriteBare(&b, sfBare{kind: sfString, s: `a"b\c`})
+	if b.String() != `"a\"b\\c"` {
+		t.Errorf("serialised %s", b.String())
+	}
+	if ins, err := parseSignatureInput(`sig1=();keyid=` + b.String()); err != nil || ins[0].keyID != `a"b\c` {
+		t.Errorf("read back: %+v %v", ins, err)
+	}
+
+	// Date and created come from one reading of the clock, whatever Date the request carried.
+	for _, form := range []sigForm{sigCavage, sigRFC9421} {
+		req := k.request(t, "POST", "https://social.example/inbox", body)
+		req.Header.Set("Date", "Mon, 02 Jan 2006 15:04:05 GMT") // as fetcher.send would set it, from its own read
+		at := t0.Add(1500 * time.Millisecond)
+		if err := httpSigner(k.key, key, form, func() time.Time { return at }, time.Time{})(req, body); err != nil {
+			t.Fatal(err)
+		}
+		date, err := http.ParseTime(req.Header.Get("Date"))
+		if err != nil || date.Unix() != at.Unix() {
+			t.Errorf("form %d: Date %q, want the signer's instant %v", form, req.Header.Get("Date"), at)
+		}
+		if form == sigRFC9421 {
+			ins, err := parseSignatureInput(req.Header.Get("Signature-Input"))
+			if err != nil || !ins[0].hasCreated || ins[0].created != date.Unix() {
+				t.Errorf("created %d and Date %v differ (%v)", ins[0].created, date, err)
+			}
+		}
+	}
 }
 
 // What (request-target), host and @target-uri are for the URLs a signer meets, each from the texts.
@@ -926,7 +980,7 @@ func TestSignatureWindow(t *testing.T) {
 			k.now = t0
 			r := received(k.sign(t, form, "POST", tOrigin+"/inbox", inboxBody), inboxBody)
 			k.now = t0.Add(c.age)
-			k.v.seen = newReplaySet(sigSeenMax, sigKeep)
+			k.v.seen = newReplaySet(sigSeenMax, sigPast)
 			if _, err := k.verify(r, inboxBody); reasonOf(err) != c.want {
 				t.Errorf("form %d signed %v before: %v, want %v", form, c.age, err, c.want)
 			}
@@ -938,7 +992,7 @@ func TestSignatureWindow(t *testing.T) {
 		t.Errorf("a clock behind the build: %v", err)
 	}
 	k.v.built = time.Time{}
-	k.v.seen = newReplaySet(sigSeenMax, sigKeep)
+	k.v.seen = newReplaySet(sigSeenMax, sigPast)
 	res, err := k.verify(received(k.sign(t, sigRFC9421, "POST", tOrigin+"/inbox", inboxBody), inboxBody), inboxBody)
 	if err != nil || res.Form != sigRFC9421 || !res.At.Equal(t0) {
 		t.Errorf("RFC 9421: %+v %v", res, err)
@@ -1059,32 +1113,94 @@ func (r readCounter) Read([]byte) (int, error) { r.n.Add(1); return 0, io.EOF }
 
 /* ---------- the replay memory ---------- */
 
+// rk is the i-th distinct signature key of a test.
+func rk(i int) replayKey {
+	var k replayKey
+	binary.BigEndian.PutUint64(k[:8], uint64(i))
+	k[15] = 0x5a
+	return k
+}
+
+// rorigin is the i-th origin of a test, written as originOf writes one.
+func rorigin(i int) string { return "https://o" + strconv.Itoa(i) + ".example:443" }
+
+func sig1(k replayKey, at int64) replaySig { return replaySig{key: k, at: at} }
+
+// rs is what the memory said, for a failure message.
+func rs(r sigReason) string { return outcome(sigReasonError(r)) }
+
+// replayInvariants checks the counts against the caps and the heaps against their order.
+func replayInvariants(t *testing.T, s *replaySet, where string) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sum := 0
+	for name, o := range s.origins {
+		sum += len(o.h)
+		if o.name != name || s.byCount[o.cnt] != o || s.byAge[o.age] != o {
+			t.Fatalf("%s: origin %s is out of its heaps", where, name)
+		}
+		if len(o.h) > s.perOrigin || len(o.h) > len(s.byCount[0].h) {
+			t.Fatalf("%s: origin %s holds %d, cap %d, heaviest %d", where, name, len(o.h), s.perOrigin, len(s.byCount[0].h))
+		}
+		if len(o.h) == 0 && !o.hasFloor {
+			t.Fatalf("%s: origin %s is kept with nothing in it", where, name)
+		}
+		for i := 1; i < len(o.h); i++ {
+			if o.Less(i, (i-1)/2) {
+				t.Fatalf("%s: origin %s's heap is out of order", where, name)
+			}
+		}
+	}
+	if sum != s.n || len(s.m) != s.n || s.n > s.max || len(s.origins) > s.maxOrigins || len(s.byCount) != len(s.origins) ||
+		len(s.byAge) != len(s.origins) || len(s.pool) > s.max || cap(s.pool) > s.max {
+		t.Fatalf("%s: %d entries (%d in origins, %d in the map, %d slots), %d origins; caps %d and %d", where, s.n, sum, len(s.m), len(s.pool), len(s.origins), s.max, s.maxOrigins)
+	}
+}
+
+// The memory forgets a signature exactly when the time window stops accepting it.
 func TestReplayWindow(t *testing.T) {
-	key := func(i int) replayKey { return replayKeyOf([]byte(strconv.Itoa(i))) }
+	const o = "https://remote.example:443"
 	at := t0.Unix()
 
-	// A second use is refused; the memory lasts 13 hours from arrival, through the last second.
-	s := newReplaySet(sigSeenMax, sigKeep)
-	if s.add(key(1), at+3600, at) != 0 {
+	// A second use is refused. A signature dated an hour ahead is kept 12 hours past its own time,
+	// 13 hours after it arrived, through the last second.
+	s := newReplaySet(sigSeenMax, sigPast)
+	if s.add(o, at, sig1(rk(1), at+3600)) != 0 {
 		t.Fatal("a first use was refused")
 	}
-	if r := s.add(key(1), at+3600, at+1); r != sigReplay {
-		t.Errorf("a second use: %v", r)
+	if r := s.add(o, at+1, sig1(rk(1), at+3600)); r != sigReplay {
+		t.Errorf("a second use: %v", rs(r))
 	}
-	if r := s.check(key(1), at+3600, at+13*3600); r != sigReplay {
-		t.Errorf("13 hours after: %v, want still remembered", r)
+	if r := s.check(o, at+13*3600, sig1(rk(1), at+3600)); r != sigReplay {
+		t.Errorf("13 hours after: %v, want still remembered", rs(r))
 	}
-	if r := s.check(key(1), at+3600, at+13*3600+1); r != 0 || s.size() != 0 {
-		t.Errorf("13 hours and a second after: %v with %d kept, want forgotten", r, s.size())
+	if r := s.check(o, at+13*3600+1, sig1(rk(1), at+3600)); r != sigStale || s.size() != 0 || len(s.origins) != 0 {
+		t.Errorf("13 hours and a second after: %v with %d kept in %d origins, want forgotten and refused by the memory's clock", rs(r), s.size(), len(s.origins))
 	}
-	// The two windows interlock: by the time an entry is forgotten, even a signature dated the full
-	// hour ahead of its arrival is past the 12 hours the time window allows.
+	// The two interlock: the second the entry goes, the window refuses the signature too.
 	if r := inWindow(time.Unix(at+3600, 0), time.Unix(at+13*3600+1, 0)); r != sigTooOld {
-		t.Errorf("the forgotten signature against the window: %v", r)
+		t.Errorf("the forgotten signature against the window: %v", rs(r))
 	}
 	if r := inWindow(time.Unix(at+3600, 0), time.Unix(at+13*3600, 0)); r != 0 {
-		t.Errorf("the last second it is remembered, it is still in the window: %v", r)
+		t.Errorf("the last second it is remembered, it is still in the window: %v", rs(r))
 	}
+	// One dated 12 hours back is kept only for the one second the window still accepts it.
+	s = newReplaySet(sigSeenMax, sigPast)
+	if r := s.add(o, at, sig1(rk(2), at-12*3600)); r != 0 {
+		t.Fatalf("a signature 12 hours old: %v", rs(r))
+	}
+	if r := s.check(o, at, sig1(rk(2), at-12*3600)); r != sigReplay {
+		t.Errorf("replayed the same second: %v", rs(r))
+	}
+	if r := s.check(o, at+1, sig1(rk(2), at-12*3600)); r != sigStale || s.size() != 0 || inWindow(time.Unix(at-12*3600, 0), time.Unix(at+1, 0)) != sigTooOld {
+		t.Errorf("a second later: %v with %d kept", rs(r), s.size())
+	}
+	// A clock stepped back does not bring a forgotten signature back: the memory keeps its own clock.
+	if r := s.check(o, at-3600, sig1(rk(2), at-12*3600)); r != sigStale {
+		t.Errorf("after the clock went back an hour: %v", rs(r))
+	}
+
 	// Through the verifier: a signature an hour ahead, replayed at 13 hours, then a second later.
 	k := newSigKit(t)
 	k.now = t0.Add(time.Hour)
@@ -1101,63 +1217,431 @@ func TestReplayWindow(t *testing.T) {
 	if _, err := k.verify(r, b); reasonOf(err) != sigTooOld {
 		t.Errorf("replayed at 13 hours and a second: %v", err)
 	}
+}
 
-	// When full, the oldest half by arrival goes, and anything vouching for a time at or before the
-	// latest time among those dropped is stale. Arrival order is not time order: the third dropped
-	// signature vouches for the latest time, later than the oldest one kept, so "older than the
-	// oldest kept" would let it be replayed.
-	s = newReplaySet(10, sigKeep)
-	ats := []int64{100, 200, 900, 300, 400, 150, 500, 600, 700, 800}
-	for i, a := range ats {
-		if r := s.add(key(i), at+a, at+int64(i)); r != 0 {
-			t.Fatalf("entry %d: %v", i, r)
+const tFloodKeyID = "https://flood.example/actor#main-key"
+
+// floodKit is a sigKit whose verifier also knows a key on another origin, the flooder's.
+func floodKit(t *testing.T, size int) *sigKit {
+	a, b := sigTestKeys()
+	k := newSigKit(t)
+	k.v.keyFor = func(_ context.Context, id string) (*rsa.PublicKey, error) {
+		switch id {
+		case tKeyID:
+			return &a.PublicKey, nil
+		case tFloodKeyID:
+			return &b.PublicKey, nil
+		}
+		return nil, errors.New("no such key")
+	}
+	k.v.seen = newReplaySet(size, sigPast)
+	return k
+}
+
+// signedPost is the n-th delivery to the inbox, signed by Flowa's signer with key and keyID, dated
+// at, as it arrives.
+func signedPost(t *testing.T, key *rsa.PrivateKey, keyID string, form sigForm, at time.Time, n int) (*http.Request, []byte) {
+	t.Helper()
+	body := []byte(`{"type":"Create","n":` + strconv.Itoa(n) + `}`)
+	req, err := http.NewRequest("POST", tOrigin+"/inbox", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Date", at.UTC().Format(http.TimeFormat))
+	if err := httpSigner(key, keyID, form, func() time.Time { return at }, time.Time{})(req, body); err != nil {
+		t.Fatal(err)
+	}
+	return received(req, body), body
+}
+
+// The review's reproduction through the verifier: one key fills a small memory with deliveries dated
+// 59 minutes ahead; honest deliveries from another origin dated now, 30 and 58 minutes ahead are
+// still accepted in both forms.
+func TestReplayFloodThroughVerifier(t *testing.T) {
+	a, b := sigTestKeys()
+	k := floodKit(t, 10)
+	k.now = t0
+	for i := range 11 {
+		r, body := signedPost(t, b, tFloodKeyID, sigCavage, t0.Add(59*time.Minute), i)
+		if _, err := k.verify(r, body); err != nil && reasonOf(err) != sigStale {
+			t.Fatalf("flood delivery %d: %v", i, err) // stale: the flooder already pays for its own
 		}
 	}
-	if r := s.add(key(10), at+1000, at+10); r != 0 || s.size() != 6 {
-		t.Fatalf("the add that fills it: %v, %d kept", r, s.size())
-	}
-	if r := s.check(key(2), at+900, at+11); r != sigStale {
-		t.Errorf("a dropped signature replayed: %v", r)
-	}
-	if r := s.check(key(99), at+899, at+11); r != sigStale {
-		t.Errorf("a new signature older than the latest dropped: %v", r)
-	}
-	if r := s.check(key(99), at+901, at+11); r != 0 {
-		t.Errorf("a new signature later than every dropped one: %v", r)
-	}
-	if r := s.check(key(5), at+150, at+11); r != sigStale {
-		t.Errorf("a kept signature older than the floor: %v", r)
-	}
-
-	// No growth past the cap under 200,000 distinct signatures, and the memory each entry takes.
-	s = newReplaySet(sigSeenMax, sigKeep)
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	for i := range sigSeenMax {
-		s.add(key(i), at+int64(i), at)
-	}
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-	perEntry := float64(after.HeapAlloc-before.HeapAlloc) / sigSeenMax
-	t.Logf("replay memory: %.0f bytes an entry, %.1f MB for %d", perEntry, perEntry*sigSeenMax/1e6, sigSeenMax)
-	if perEntry > 80 {
-		t.Errorf("%.0f bytes an entry; federation.md 7.2 and section 12 allow 6 MB for 100,000", perEntry)
-	}
-	for i := sigSeenMax; i < 2*sigSeenMax; i++ {
-		s.add(key(i), at+int64(i), at)
-		if s.size() > sigSeenMax || len(s.q) > sigSeenMax || len(s.m) > sigSeenMax {
-			t.Fatalf("grew to %d entries, %d in the ring, %d in the map", s.size(), len(s.q), len(s.m))
+	n := 100
+	for _, d := range []time.Duration{0, 30 * time.Minute, 58 * time.Minute} {
+		for _, form := range []sigForm{sigCavage, sigRFC9421} {
+			n++
+			r, body := signedPost(t, a, tKeyID, form, t0.Add(d), n)
+			if _, err := k.verify(r, body); err != nil {
+				t.Errorf("an honest delivery dated t0+%v in form %d, after the flood: %v", d, form, err)
+			}
 		}
 	}
+	// The flooder pays: its own new deliveries dated at its floor are refused, later ones accepted.
+	for _, form := range []sigForm{sigCavage, sigRFC9421} {
+		n++
+		r, body := signedPost(t, b, tFloodKeyID, form, t0.Add(59*time.Minute), n)
+		if _, err := k.verify(r, body); reasonOf(err) != sigStale {
+			t.Errorf("the flooder at its own floor, form %d: %v", form, err)
+		}
+		n++
+		r, body = signedPost(t, b, tFloodKeyID, form, t0.Add(59*time.Minute+time.Duration(form)*time.Second), n)
+		if _, err := k.verify(r, body); err != nil {
+			t.Errorf("the flooder after its own floor, form %d: %v", form, err)
+		}
+	}
+}
 
-	// Safe for concurrent use: of 32 goroutines adding one signature, exactly one wins.
-	s = newReplaySet(sigSeenMax, sigKeep)
+// The same flood at the memory's real size and at a small one, then the flooder against itself.
+func TestReplayFlood(t *testing.T) {
+	const flood, honest = "https://flood.example:443", "https://remote.example:443"
+	at := t0.Unix()
+	for _, size := range []int{10, sigSeenMax} {
+		s := newReplaySet(size, sigPast)
+		n := 0
+		next := func() replayKey { n++; return rk(n) }
+		for i := range size + 1 { // dated alike, so once the flooder is at its cap it is refused as stale
+			if r := s.add(flood, at, sig1(next(), at+59*60)); r != 0 && r != sigStale {
+				t.Fatalf("size %d: flood signature %d: %v", size, i, rs(r))
+			}
+		}
+		for _, d := range []int64{0, 30 * 60, 58 * 60} {
+			if r := s.add(honest, at, sig1(next(), at+d)); r != 0 {
+				t.Errorf("size %d: an honest signature dated now+%ds after the flood: %v", size, d, rs(r))
+			}
+			if r := s.add(honest, at, sig1(next(), at+d), sig1(next(), at+d)); r != 0 {
+				t.Errorf("size %d: an honest request signed in both forms dated now+%ds: %v", size, d, rs(r))
+			}
+		}
+		if r := s.add(flood, at, sig1(next(), at+59*60)); r != sigStale {
+			t.Errorf("size %d: the flooder at its own floor: %v", size, rs(r))
+		}
+		if r := s.add(flood, at, sig1(next(), at+30*60)); r != sigStale {
+			t.Errorf("size %d: the flooder below its own floor: %v", size, rs(r))
+		}
+		if r := s.add(flood, at, sig1(next(), at+59*60+1)); r != 0 {
+			t.Errorf("size %d: the flooder after its own floor: %v", size, rs(r))
+		}
+		replayInvariants(t, s, "after the flood")
+		if c := len(s.origins[flood].h); c != s.perOrigin {
+			t.Errorf("size %d: the flooder holds %d, its cap is %d", size, c, s.perOrigin)
+		}
+	}
+}
+
+// A flood from as many origins as the memory keeps. Memory 100, 10 an origin, 20 origins: an honest
+// origin holding 5 (an equal share) and a busy one holding 10, then 18 flooding origins of 10
+// signatures each dated 59 minutes ahead, a second apart. The quiet origin loses nothing; the busy one is trimmed to
+// an equal share, its 5 oldest evicted, so its deliveries dated at or before its 5th oldest are
+// refused (it would retry with a fresh date) and later ones accepted; a new origin is refused as full
+// until the flood expires. No accepted signature is ever accepted again.
+func TestReplayManyOrigins(t *testing.T) {
+	at := t0.Unix()
+	s := newReplaySet(100, sigPast)
+	s.maxOrigins = 20
+	const quiet, busy, late = "https://quiet.example:443", "https://busy.example:443", "https://late.example:443"
+	type acc struct {
+		origin string
+		g      replaySig
+	}
+	var accepted []acc
+	n := 0
+	add := func(o string, g replaySig) sigReason {
+		r := s.add(o, at, g)
+		if r == 0 {
+			accepted = append(accepted, acc{o, g})
+		}
+		return r
+	}
+	for i := range 5 {
+		if r := add(quiet, sig1(rk(n), at-600+int64(i))); r != 0 {
+			t.Fatal(r)
+		}
+		n++
+	}
+	for i := range 10 {
+		if r := add(busy, sig1(rk(n), at-1200+int64(i)*10)); r != 0 {
+			t.Fatal(r)
+		}
+		n++
+	}
+	for a := range 18 {
+		for j := range 10 {
+			if r := add(rorigin(a), sig1(rk(n), at+3540+int64(j))); r != 0 {
+				t.Fatalf("flooding origin %d: %v", a, rs(r))
+			}
+			n++
+			replayInvariants(t, s, "during the flood")
+		}
+	}
+	for _, x := range accepted {
+		if r := s.check(x.origin, at, x.g); r == 0 {
+			t.Fatalf("an accepted signature of %s dated %+ds would be accepted again", x.origin, x.g.at-at)
+		}
+	}
+	if c := len(s.origins[quiet].h); c != 5 || s.origins[quiet].hasFloor {
+		t.Errorf("the quiet origin holds %d (floor %v), want all 5 and no floor", c, s.origins[quiet].hasFloor)
+	}
+	for i := range 5 {
+		if r := s.check(quiet, at, sig1(rk(i), at-600+int64(i))); r != sigReplay {
+			t.Errorf("the quiet origin's signature %d: %v, want still remembered", i, rs(r))
+		}
+	}
+	if c := len(s.origins[busy].h); c != 5 {
+		t.Errorf("the busy origin holds %d, want an equal share, 5", c)
+	}
+	for i := range 10 {
+		want := sigStale // evicted: refused by its floor
+		if i >= 5 {
+			want = sigReplay // kept
+		}
+		if r := s.check(busy, at, sig1(rk(5+i), at-1200+int64(i)*10)); r != want {
+			t.Errorf("the busy origin's signature %d: %v, want %v", i, rs(r), want)
+		}
+	}
+	if r := s.check(busy, at, sig1(rk(9000), at-1160)); r != sigStale {
+		t.Errorf("a new busy signature dated at its floor: %v", rs(r))
+	}
+	if r := s.check(busy, at, sig1(rk(9000), at-1159)); r != 0 {
+		t.Errorf("a new busy signature dated after its floor: %v", rs(r))
+	}
+	if r := s.check(quiet, at, sig1(rk(9001), at-3000)); r != 0 {
+		t.Errorf("a new quiet signature dated before everything it holds: %v", rs(r))
+	}
+	if r := s.add(late, at, sig1(rk(9002), at)); r != sigFull {
+		t.Errorf("a new origin while 20 are kept: %v", rs(r))
+	}
+	// Once the flood's signatures are past the window, the memory is empty and the new origin is in.
+	if r := s.add(late, at+3549+12*3600+1, sig1(rk(9003), at+3549+12*3600+1)); r != 0 {
+		t.Errorf("the new origin after the flood expired: %v", rs(r))
+	}
+	s.sweep(at+3549+12*3600+1, 1000)
+	if s.size() != 1 || len(s.origins) != 1 {
+		t.Errorf("after the flood expired: %d entries in %d origins", s.size(), len(s.origins))
+	}
+}
+
+// A model-based property test: random signatures from a few dozen origins, repeats, times inside and
+// outside the window and a clock that moves, against a reference that remembers every signature it
+// was told was accepted. The memory must never accept one again while the window would; it may
+// refuse a new one only by its own origin's floor (set by that origin's own evicted signatures) or
+// because the origins are full; another origin may only lose an entry by being the heaviest; and the
+// caps always hold.
+func TestReplayModel(t *testing.T) {
+	for _, seed := range []uint64{1, 2, 3, 4, 5} {
+		t.Run(fmt.Sprint("seed", seed), func(t *testing.T) { replayModel(t, seed, 20000) })
+	}
+}
+
+func replayModel(t *testing.T, seed uint64, ops int) {
+	rnd := mrand.New(mrand.NewPCG(seed, 0x5eed))
+	s := newReplaySet(200, sigPast)
+	s.maxOrigins = 24
+	const origins = 30
+	type rec struct {
+		origin string
+		at     int64
+	}
+	model := map[replayKey]rec{} // every signature the memory accepted
+	var tried []replaySig        // every signature offered, for repeats
+	triedOrigin := map[replayKey]string{}
+	now := t0.Unix()
+	fail := func(f string, a ...any) { t.Helper(); t.Fatalf("seed %d: "+f, append([]any{seed}, a...)...) }
+	live := func(o *replayOrigin) int {
+		c := 0
+		for _, i := range o.h {
+			if s.pool[i].at+s.past >= now {
+				c++
+			}
+		}
+		return c
+	}
+	nextKey := 0
+	counts := map[string]int{}
+	for op := range ops {
+		switch x := rnd.IntN(100); {
+		case x < 10:
+			if rnd.IntN(20) == 0 {
+				now += rnd.Int64N(3 * 3600)
+			} else {
+				now += rnd.Int64N(60)
+			}
+			continue
+		case x < 35 && len(tried) > 0:
+			g := tried[rnd.IntN(len(tried))]
+			o := triedOrigin[g.key]
+			if inWindow(time.Unix(g.at, 0), time.Unix(now, 0)) != 0 {
+				continue // the verifier refuses it before asking the memory
+			}
+			r := s.add(o, now, g)
+			if m, ok := model[g.key]; ok {
+				if r == 0 {
+					fail("op %d: a signature of %s dated %d, accepted before, was accepted again at %d", op, m.origin, m.at, now)
+				}
+				continue
+			}
+			if r == 0 {
+				model[g.key] = rec{o, g.at}
+			}
+			continue
+		}
+		o := rorigin(rnd.IntN(origins))
+		g := sig1(rk(nextKey), now+rnd.Int64N(15*3600)-13*3600)
+		nextKey++
+		tried = append(tried, g)
+		triedOrigin[g.key] = o
+		if inWindow(time.Unix(g.at, 0), time.Unix(now, 0)) != 0 {
+			continue
+		}
+		before := map[string][2]int{} // live and total entries of each origin
+		for name, p := range s.origins {
+			before[name] = [2]int{live(p), len(p.h)}
+		}
+		heaviestLive := 0
+		for _, c := range before {
+			heaviestLive = max(heaviestLive, c[0])
+		}
+		r := s.add(o, now, g)
+		counts[map[bool]string{true: "accepted", false: r.String()}[r == 0]]++
+		switch r {
+		case 0:
+			model[g.key] = rec{o, g.at}
+		case sigStale:
+			p := s.origins[o]
+			if p == nil || !p.hasFloor || g.at > p.floor {
+				fail("op %d: a new signature of %s dated %d refused as stale with no floor of its own over it", op, o, g.at)
+			}
+			own := false // the floor is the time of one of this origin's own accepted, now forgotten, signatures
+			for k, m := range model {
+				if _, kept := s.m[k]; m.origin == o && m.at == p.floor && !kept {
+					own = true
+					break
+				}
+			}
+			if !own {
+				fail("op %d: the floor of %s, %d, is no evicted signature of its own", op, o, p.floor)
+			}
+		case sigFull:
+			if s.origins[o] != nil || len(s.origins) != s.maxOrigins {
+				fail("op %d: full for %s with %d origins kept, it among them: %v", op, o, len(s.origins), s.origins[o] != nil)
+			}
+		default:
+			fail("op %d: a new signature refused: %v", op, rs(r))
+		}
+		for name, c := range before {
+			p := s.origins[name]
+			after := 0
+			if p != nil {
+				after = live(p)
+			}
+			if lost := c[0] - after; name != o && lost > 0 {
+				counts["another origin evicted from"]++
+				if lost > 1 || r != 0 || c[1] < heaviestLive {
+					fail("op %d: %s lost %d live entries to %s's signature (%v), holding %d of which %d live, the heaviest live %d", op, name, lost, o, rs(r), c[1], c[0], heaviestLive)
+				}
+			}
+		}
+		replayInvariants(t, s, fmt.Sprintf("seed %d op %d", seed, op))
+		if op%200 == 0 {
+			for k, m := range model {
+				if m.at+s.past >= now {
+					if r := s.check(m.origin, now, sig1(k, m.at)); r == 0 {
+						fail("op %d: an accepted signature of %s dated %d would be accepted again at %d", op, m.origin, m.at, now)
+					}
+				}
+			}
+		}
+	}
+	t.Logf("seed %d: %d accepted in all; new signatures: %v", seed, len(model), counts)
+	if len(model) < ops/4 || counts["another origin evicted from"] == 0 || counts[sigStale.String()] == 0 || counts[sigFull.String()] == 0 {
+		t.Errorf("seed %d: %d accepted in %d operations, %v: the test exercises too little", seed, len(model), ops, counts)
+	}
+}
+
+// Floors and origins are forgotten exactly when they can no longer matter, and memory stays at the cap.
+func TestReplayExpiry(t *testing.T) {
+	at := t0.Unix()
+	const o, p = "https://o.example:443", "https://p.example:443"
+
+	// A memory of one: p's signature evicts o's only one, leaving o a floor and no entry.
+	s := newReplaySet(1, sigPast)
+	if s.add(o, at, sig1(rk(1), at)) != 0 || s.add(p, at, sig1(rk(2), at+5)) != 0 {
+		t.Fatal("the first two were refused")
+	}
+	if q := s.origins[o]; q == nil || len(q.h) != 0 || !q.hasFloor || q.floor != at {
+		t.Fatalf("o after eviction: %+v", q)
+	}
+	if r := s.check(o, at+12*3600, sig1(rk(3), at)); r != sigStale {
+		t.Errorf("a new signature of o at its floor, the last second the window takes it: %v", rs(r))
+	}
+	if n := s.sweep(at+12*3600, 100); n != 0 || s.origins[o] == nil {
+		t.Errorf("a sweep at the floor's last second forgot %d", n)
+	}
+	if n := s.sweep(at+12*3600+1, 100); n != 1 || s.origins[o] != nil || len(s.origins) != 1 {
+		t.Errorf("a sweep a second later forgot %d, o kept: %v", n, s.origins[o] != nil)
+	}
+	if n := s.sweep(at+12*3600+5, 100); n != 0 || s.size() != 1 {
+		t.Errorf("p's entry, dated 5 s later, went early: %d", n)
+	}
+	if n := s.sweep(at+12*3600+6, 100); n != 1 || s.size() != 0 || len(s.origins) != 0 || len(s.byAge) != 0 || len(s.byCount) != 0 {
+		t.Errorf("all gone: forgot %d, %d entries, %d origins", n, s.size(), len(s.origins))
+	}
+
+	// A floor with entries above it is forgotten on its own second, the entries kept.
+	s = newReplaySet(10, sigPast) // 1 an origin
+	if s.add(o, at, sig1(rk(1), at)) != 0 || s.add(o, at, sig1(rk(2), at+100)) != 0 {
+		t.Fatal("refused")
+	}
+	if q := s.origins[o]; !q.hasFloor || q.floor != at || len(q.h) != 1 {
+		t.Fatalf("o at its own cap: %+v", q)
+	}
+	s.sweep(at+12*3600+1, 100)
+	if r := s.check(o, at+12*3600+1, sig1(rk(3), at+50)); r != 0 || s.origins[o].hasFloor || s.size() != 1 {
+		t.Errorf("after the floor's second: %v, floor kept %v, %d entries", rs(r), s.origins[o].hasFloor, s.size())
+	}
+
+	// 200,000 distinct signatures from 50 origins never take the memory past its cap, and what one
+	// entry costs at the cap.
+	for _, origins := range []int{1, 50, 2000} {
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		s = newReplaySet(sigSeenMax, sigPast)
+		for i := range sigSeenMax {
+			s.add(rorigin(i%origins), at, sig1(rk(i), at+int64(i/origins)%3600))
+		}
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		per := float64(after.HeapAlloc-before.HeapAlloc) / float64(s.size())
+		t.Logf("replay memory, %d origins: %d entries, %.0f bytes an entry, %.1f MB in all", origins, s.size(), per, per*float64(s.size())/1e6)
+		if limit := map[bool]float64{true: 64, false: 100}[s.size() == sigSeenMax]; per > limit {
+			t.Errorf("%d origins: %.0f bytes an entry, over %.0f; federation.md 7.2 and section 12 count about 6 MB for 100,000", origins, per, limit)
+		}
+		runtime.KeepAlive(s)
+	}
+	s = newReplaySet(sigSeenMax, sigPast)
+	for i := range 2 * sigSeenMax {
+		s.add(rorigin(i%50), at, sig1(rk(i), at+int64(i/50)%3600))
+		if s.n > sigSeenMax || len(s.m) > sigSeenMax || len(s.pool) > sigSeenMax {
+			t.Fatalf("grew to %d entries, %d in the map, %d slots", s.n, len(s.m), len(s.pool))
+		}
+	}
+	replayInvariants(t, s, "after 200,000 from 50 origins")
+	if s.size() != sigSeenMax {
+		t.Errorf("%d entries kept after 200,000 from 50 origins, want the memory full, %d", s.size(), sigSeenMax)
+	}
+}
+
+// Safe for concurrent use: of 32 goroutines adding one signature exactly one wins, and many
+// goroutines over many origins leave the memory in order.
+func TestReplayConcurrent(t *testing.T) {
+	at := t0.Unix()
+	s := newReplaySet(sigSeenMax, sigPast)
 	var wins atomic.Int32
 	var wg sync.WaitGroup
 	for range 32 {
 		wg.Go(func() {
-			if s.add(key(7), at, at) == 0 {
+			if s.add("https://remote.example:443", at, sig1(rk(7), at)) == 0 {
 				wins.Add(1)
 			}
 		})
@@ -1165,6 +1649,31 @@ func TestReplayWindow(t *testing.T) {
 	wg.Wait()
 	if wins.Load() != 1 {
 		t.Errorf("%d goroutines added the same signature", wins.Load())
+	}
+
+	s = newReplaySet(1000, sigPast) // 100 an origin, 20 origins
+	var clock atomic.Int64
+	clock.Store(at)
+	var accepted atomic.Int32
+	for g := range 16 {
+		wg.Go(func() {
+			for i := range 2000 {
+				now := clock.Add(int64(i % 2))
+				o := rorigin((g*7 + i) % 40)
+				g1 := sig1(rk(g*100000+i), now-int64(i%7200))
+				if s.add(o, now, g1) == 0 {
+					accepted.Add(1)
+					if i%10 == 0 && s.add(o, now, g1) == 0 { // a repeat: never accepted twice
+						t.Errorf("goroutine %d: a repeat was accepted", g)
+					}
+				}
+			}
+		})
+	}
+	wg.Wait()
+	replayInvariants(t, s, "after the goroutines")
+	if accepted.Load() == 0 {
+		t.Error("nothing was accepted")
 	}
 }
 
@@ -1236,6 +1745,27 @@ func TestSignaturePublicKeyPEM(t *testing.T) {
 	}
 	if _, err := parsePublicKeyPEM(ck["public key"], 1024); err != nil {
 		t.Errorf("the cavage key with the floor lowered: %v", err)
+	}
+
+	// Numbers no RSA key has are refused before any cache could keep them; usual exponents are taken.
+	withNE := func(n *big.Int, e int) string {
+		return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(&rsa.PublicKey{N: n, E: e})}))
+	}
+	even := new(big.Int).Add(a.N, big.NewInt(1))
+	for name, s := range map[string]string{
+		"exponent 1": withNE(a.N, 1), "exponent 2": withNE(a.N, 2), "exponent 65536": withNE(a.N, 65536),
+		"an even modulus": withNE(even, 65537),
+	} {
+		_, err := parsePublicKeyPEM(s, sigKeyMin)
+		var pe *pubKeyError
+		if !errors.As(err, &pe) || pe.Reason != "not a key" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, e := range []int{3, 65537, 1<<31 - 1} {
+		if k, err := parsePublicKeyPEM(withNE(a.N, e), sigKeyMin); err != nil || k.E != e {
+			t.Errorf("exponent %d: %v", e, err)
+		}
 	}
 }
 
@@ -1509,7 +2039,7 @@ func FuzzVerifyRequest(f *testing.F) {
 				r.Header.Set(name, v)
 			}
 		}
-		k.v.seen = newReplaySet(sigSeenMax, sigKeep)
+		k.v.seen = newReplaySet(sigSeenMax, sigPast)
 		res, err := k.verify(r, []byte(body))
 		if err != nil && reasonOf(err) == 0 {
 			t.Fatalf("an untyped error: %v", err)
@@ -1538,11 +2068,7 @@ func BenchmarkInboxVerify(b *testing.B) {
 				if _, err := k.v.verifyRequest(ctx, r, body); err != nil {
 					b.Fatal(err)
 				}
-				s := k.v.seen
-				s.mu.Lock()
-				clear(s.m)
-				s.n, s.head = 0, 0
-				s.mu.Unlock()
+				k.v.seen.reset()
 			}
 		})
 	}
@@ -1568,15 +2094,43 @@ func BenchmarkSignDelivery(b *testing.B) {
 	}
 }
 
-// BenchmarkReplayAdd: one addition to a full replay memory, the drop of half included.
+// reset empties a replay memory, keeping its slots, for a benchmark that verifies one request again.
+func (s *replaySet) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.n, s.free, s.pool = 0, -1, s.pool[:0]
+	clear(s.m)
+	clear(s.origins)
+	s.byCount, s.byAge = s.byCount[:0], s.byAge[:0]
+}
+
+// BenchmarkReplayAdd: one addition to a full replay memory from 1, 50 and 5,000 origins in turn, an
+// eviction included (for 5,000 the origins cap is raised to 5,000; it is 2,000). Signatures arrive
+// 100 a second, each dated when it arrives, as a delivery queue dates them.
 func BenchmarkReplayAdd(b *testing.B) {
-	s := newReplaySet(sigSeenMax, sigKeep)
-	at := t0.Unix()
-	i := 0
-	b.ReportAllocs()
-	for b.Loop() {
-		s.add(replayKeyOf([]byte(strconv.Itoa(i))), at+int64(i), at)
-		i++
+	for _, origins := range []int{1, 50, 5000} {
+		b.Run(strconv.Itoa(origins), func(b *testing.B) {
+			s := newReplaySet(sigSeenMax, sigPast)
+			s.maxOrigins = max(s.maxOrigins, origins)
+			names := make([]string, origins)
+			for i := range names {
+				names[i] = rorigin(i)
+			}
+			at := t0.Unix()
+			i := 0
+			for ; i < sigSeenMax; i++ {
+				now := at + int64(i/100)
+				s.add(names[i%origins], now, sig1(rk(i), now))
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				now := at + int64(i/100)
+				if r := s.add(names[i%origins], now, sig1(rk(i), now)); r != 0 {
+					b.Fatal(r)
+				}
+				i++
+			}
+		})
 	}
 }
 
