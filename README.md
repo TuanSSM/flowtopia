@@ -46,14 +46,23 @@ named but not described.
 - **Blocks:** Block on a member's profile, after a question that says what it does. Neither of you then
   sees the other's posts and comments, in the timeline, on profiles, in threads, in the people list or
   in bookmarks, and neither can comment on, reply to or like what the other writes: those are answered
-  as if the post or comment were not there, and nobody is told of the block. If they mention you, the
+  as if the post or comment were not there, and nobody is told of the block, though the other member
+  may notice it. If they mention you, the
   mention is kept and others see it, but you are not told. Notifications between the two go with the
   block. Their comments from before the block stay under your posts for everyone else; you no longer
   see them, and a moderator can remove them if they should go. Either of you can still take back a
   like given before the block. A moderator or admin whom a member blocked still sees that member's
   posts and moderates them, and reports work whoever blocked whom. Your Profile page lists the
   accounts you block, with Unblock; so does the blocked member's profile. Behind the `community` flag.
-- **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions and new
+- **Follows and Home** (the `follows` flag, off until an admin turns it on): Follow beside Block on a
+  member's profile, and Home beside Community on the timeline, with the posts of the people you follow
+  and your own, newest first, hidden posts and blocks treated as in Community. Every profile shows how
+  many follow it and how many it follows; who they are is listed only on your own profile, to you. The
+  member you follow is told once a day at most. A block removes the follows between the two, both ways,
+  and neither can follow the other while it holds: Follow then answers "You cannot follow this
+  account." to both, whoever blocked whom. The blocked member is not told of the block, but can notice
+  it this way, as on Mastodon; the block question says so. One member follows at most 1,000 accounts.
+- **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions, follows and new
   badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
 - **Gamification:** XP and levels, a practice streak across props, weekly challenges, achievements, and
@@ -356,8 +365,8 @@ in the container's environment, when set, is shown instead.
 - The schema changes through numbered migrations (`migrations` in `main.go`, recorded in
   `schema_migrations`), each applied once at start. The queries behind the timeline, the people list,
   the notifications, the bookmarks and the admin dashboard are read with `EXPLAIN ANALYZE` by
-  `TestDBQueryPlans` on 500 members and 10,000 posts, and the timeline again with 5,000 blocks for the
-  reader: none may read a table that grows with use from end to end, and each has a bound on the rows it
+  `TestDBQueryPlans` on 500 members and 10,000 posts, the timeline again with 5,000 blocks for the
+  reader, and Home for a reader who follows 500 accounts among 30,000 more posts: none may read a table that grows with use from end to end, and each has a bound on the rows it
   reads. An hourly job removes expired or unused
   sessions, notifications read more than 180 days ago, and link previews no post uses.
 
@@ -405,16 +414,18 @@ is [docs/hardening-plan.md](docs/hardening-plan.md).
 ## Feature flags
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
-on the Admin page. No restart is needed. Every flag is on by default; an admin turns off what gets in the
-way, and a flag an admin has set keeps that setting. A flag that is off turns off the feature's API as
+on the Admin page. No restart is needed. Every flag but `follows` is on by default; an admin turns off what
+gets in the way, and a flag an admin has set keeps that setting. `follows` is off by default, on an instance
+that ran before it as on a new one, so that adding it changes nothing until an admin turns it on. A flag that is off turns off the feature's API as
 well as its pages: with `community` off the timeline, comments, likes, people and notifications answer
 404, and with `game` off so do badges. `signups` opens or closes sign-up, `tour` runs the
 guided tour, `community` is the timeline, public profiles, people list and notifications, `game` is XP,
 levels, streak sharing, challenges, achievements and XP on the Plan's phases, `moderation` is reports, the queue, hiding,
 mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and
 YouTube links into cards, `videoEmbeds` plays YouTube in place (it adds youtube-nocookie.com frames to
-the page security policy), `suggest` is next-trick suggestions, and `avatars` is avatars, body presets
-and stickers.
+the page security policy), `suggest` is next-trick suggestions, `avatars` is avatars, body presets
+and stickers, and `follows` is follows and the Home timeline (it needs `community` too; with it off
+their routes answer 404 and a profile carries no counts).
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |
@@ -461,7 +472,13 @@ comments, each with its two newest replies), `POST /api/posts/{id}/comments` (wi
 `PUT /api/notifications/read`, `PUT|DELETE /api/users/{name}/block` (block and unblock, by username like
 the profile; both may be sent again, blocking oneself is a 400 and a name that is no account a 404),
 `GET /api/blocks` (the 500 latest blocks of the one asking, and how many there are; `GET /api/users/{name}`
-says `blocked` when you block them). The like toggles always take back one's own like, across a block too;
+says `blocked` when you block them). With the `follows` flag on: `PUT|DELETE /api/users/{name}/follow`
+(follow and unfollow, by username, both may be sent again and answer whether this one changed anything
+and the member's follower count; following oneself is a 400, a name that is no account a 404, a member
+across a block, either way, a 403), `GET /api/home?before=` (Home, in the shape of
+`GET /api/posts`), `GET /api/following` and `GET /api/followers` (the 500 latest of the one asking, and
+how many; nobody else's lists can be read), and `GET /api/users/{name}` adds `followers`, `following`
+and `followed`. The like toggles always take back one's own like, across a block too;
 the count comes back only when the post or comment is shown to you. Profile fields (`bio`, `links`, `prefs`, `stats`) go through
 `PUT /api/me`; links are stored as handles, whether a handle or a URL was pasted. `PUT /api/me` writes
 only the fields, links and preferences that are in the body. With `rev` (from the user in `GET /api/me`)

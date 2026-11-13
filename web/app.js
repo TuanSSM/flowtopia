@@ -74,6 +74,7 @@ const FLAGS = [
   ['tour', 'Guided tour', 'A step-by-step tour for new users, on first sign-in and the first visit to each section. When off, a short note is shown instead.'],
   ['signups', 'Open sign-ups', 'Let anyone who can open this page create an account. Turn it off once everyone has one.'],
   ['community', 'Community', 'The timeline with posts, likes and comments, public profiles, the people list and the notification bell.'],
+  ['follows', 'Follows and Home', 'Members follow each other from profiles, and the timeline gets Home beside Community: the posts of the people a member follows, and their own. A profile shows how many follow it and how many it follows; who they are is shown only to the member. Needs Community.'],
   ['bookmarks', 'Bookmarks', 'Members keep skills, combos and posts to come back to, on a Bookmarks page.'],
   ['linkCards', 'Link cards', 'Instagram, TikTok and YouTube links in posts become cards with a preview the server fetches, so visitors never contact those sites until they open a link.'],
   ['videoEmbeds', 'Play YouTube in place', 'A play button on YouTube cards that loads the video from youtube-nocookie.com inside Flowa. Adds that one site to the page security policy while on.'],

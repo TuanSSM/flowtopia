@@ -4,7 +4,7 @@
 
 // sending: the forms whose answer is still on its way; keys: the Idempotency-Key each unsent form
 // last used, so trying the very same thing again cannot make it twice.
-const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, sending: new Set(), keys: {} });
+const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {} });
 // owner: the account all of this belongs to (0 for a visitor); gen goes up each time it is thrown
 // away, so an answer that was asked for by the previous account is not shown to the next.
 const social = Object.assign(socialBlank(), { owner: 0, gen: 0 });
@@ -60,12 +60,12 @@ async function shrinkImage(file, max = 1280, q = 0.82) {
 }
 
 /* ---------- feed ---------- */
-const feedPath = key => key.startsWith('post:') ? `posts/${key.slice(5)}` : key.startsWith('user:') ? `posts?user=${encodeURIComponent(key.slice(5))}` : key === 'bookmarks' ? 'bookmarks' : 'posts';
+const feedPath = key => key.startsWith('post:') ? `posts/${key.slice(5)}` : key.startsWith('user:') ? `posts?user=${encodeURIComponent(key.slice(5))}` : key === 'bookmarks' ? 'bookmarks' : key === 'home' ? 'home' : 'posts';
 async function loadFeed(key, append) {
   if (social.loading) return;
   social.loading = true; social.key = key; social.stale = false;
   if (!append) social.posts = [];
-  const before = append && social.posts.length ? `${key === 'all' ? '?' : '&'}before=${social.posts[social.posts.length - 1].id}` : '';
+  const before = append && social.posts.length ? `${key === 'all' || key === 'home' ? '?' : '&'}before=${social.posts[social.posts.length - 1].id}` : '';
   const gen = social.gen, r = await api(feedPath(key) + before);
   if (social.gen !== gen || social.key !== key) return; // another feed was opened meanwhile, or another account
   social.loading = false;
@@ -96,25 +96,31 @@ async function loadBlocks() {
 // member everywhere at once; the page takes their posts out of what it shows and asks again for the
 // rest (the timeline, the people list, the bell), so nothing waits for a reload.
 async function setBlock(id, name, on) {
-  if (on && !confirm(`Block @${name}?\n\nYou will no longer see their posts and comments, and they will no longer see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block.\n\nYou can unblock them from their profile or from your Profile page.`)) return;
+  if (on && !confirm(`Block @${name}?\n\nYou will no longer see their posts and comments, and they will no longer see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. ${blockTold()}\n\nYou can unblock them from their profile or from your Profile page.`)) return;
   const r = await api(`users/${encodeURIComponent(name)}/block`, on ? 'PUT' : 'DELETE');
   // An account that is gone has no block left to take back: the list is read again without it.
   if (!r.ok) { toast(r.error); if (!on && r.status === 404) { social.blocks = null; render(); } return; }
   if (on) social.posts = social.posts.filter(p => p.userId !== id);
-  Object.assign(social, { stale: true, people: null, blocks: null });
+  Object.assign(social, { stale: true, people: null, blocks: null, follows: null });
   const pr = social.profile[name];
-  if (pr?.user && on) Object.assign(pr, { blocked: true, posts: 0, likes: 0 });
-  else if (pr?.user) {
+  if (pr?.user && on) {
+    Object.assign(pr, { blocked: true, posts: 0, likes: 0 });
+    // A block takes the follows between the two with it: with follows on, the profile's counts are read again.
+    if (flags.follows) { const q = await api('users/' + encodeURIComponent(name)); if (q.ok) social.profile[name] = kept(q.data); }
+  } else if (pr?.user) {
     // On the profile itself, its counts and posts are read before the page is drawn again, so the
     // Block button that replaces Unblock is there to take the focus and stays.
     const q = await api('users/' + encodeURIComponent(name));
-    if (q.ok) social.profile[name] = q.data; else delete social.profile[name];
+    if (q.ok) social.profile[name] = kept(q.data); else delete social.profile[name];
     if (q.ok && location.hash === '#/u/' + name) { social.loading = false; await loadFeed('user:' + name); }
   }
   render(); loadNotifs(); toast(on ? `Blocked @${name}.` : `Unblocked @${name}.`);
   // The button that was pressed is gone; keyboard focus goes to the one that takes its place.
   ($(`[data-act=${on ? 'unblock' : 'block'}][data-id="${id}"]`) || $('#blocks-card h2'))?.focus();
 }
+// What the blocked member is told of a block, and what they may notice: nothing is sent to them, but
+// with follows on they stop following and cannot follow again, which they can see.
+const blockTold = () => flags.follows ? 'They are not told of the block, but they may notice it: you stop following each other, and neither of you can follow the other while it lasts.' : 'They are not told of the block.';
 function blocksCard() {
   if (!flags.community) return '';
   const b = social.blocks;
@@ -125,12 +131,52 @@ function blocksCard() {
       + (b.total > b.blocks.length ? `<p class="tiny" style="margin-top:8px">The ${b.blocks.length} latest of ${b.total.toLocaleString()} blocks are shown. The others hold too.</p>` : '')
     : '<p class="small muted">You have not blocked anyone.</p>';
   return `<div class="card span-2" id="blocks-card"><div class="card-h"><h2 class="grow" tabindex="-1">Blocked accounts</h2>${b?.blocks ? `<span class="sub num">${b.total}</span>` : ''}</div>
-    <p class="small muted" style="margin-bottom:10px">You do not see the posts and comments of people you block, and they do not see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block. Block someone from their profile.</p>${rows}</div>`;
+    <p class="small muted" style="margin-bottom:10px">You do not see the posts and comments of people you block, and they do not see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. ${blockTold()} Block someone from their profile.</p>${rows}</div>`;
 }
+// Follows, from a profile: the button, the counts under the name and Home change at once, without a
+// reload, and the focus goes to the button that takes the place of the one pressed.
+async function setFollow(id, name, on) {
+  const r = await api(`users/${encodeURIComponent(name)}/follow`, on ? 'PUT' : 'DELETE');
+  if (!r.ok) { toast(r.error); return; }
+  // The server says whether this changed anything and how many follow them now, so a page that was out
+  // of date (the same follow made in another tab) shows the true count and counts nothing twice.
+  const pr = social.profile[name], mine = social.profile[me.username];
+  if (pr?.user) Object.assign(pr, { followed: r.data.following, followers: r.data.followers });
+  if (r.data.changed && mine?.user && typeof mine.following === 'number') mine.following = Math.max(0, mine.following + (on ? 1 : -1));
+  social.follows = null;
+  if (social.key === 'home') social.stale = true;
+  render(); toast(on ? `You follow @${name}. Their posts show in Home.` : `You no longer follow @${name}.`);
+  $(`[data-act=${on ? 'unfollow' : 'follow'}][data-id="${id}"]`)?.focus();
+}
+async function loadFollows() {
+  social.follows = { loading: true };
+  const gen = social.gen, [a, b] = await Promise.all([api('following'), api('followers')]);
+  if (social.gen !== gen) return;
+  social.follows = a.ok && b.ok ? { following: a.data, followers: b.data } : { error: (a.ok ? b : a).error };
+  render();
+}
+// Whom a member follows and who follows them: shown on their own profile, to them alone (the server
+// answers these lists for the one asking only). Others see the counts.
+function followsCard() {
+  const f = social.follows;
+  if (!f) loadFollows();
+  const list = (d, key, none) => !d ? '<div class="empty small">Loading…</div>' : d[key].length
+    ? d[key].map(({ user: u }) => `<a class="bm-row" href="#/u/${esc(u.username)}">${avatarHTML(u, 'sm')}<span class="grow"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a>`).join('')
+      + (d.total > d[key].length ? `<p class="tiny" style="margin-top:8px">The ${d[key].length} latest of ${d.total.toLocaleString()} are shown.</p>` : '')
+    : `<p class="small muted">${none}</p>`;
+  const body = f?.error ? `<p class="small muted">${esc(f.error)}</p>`
+    : `<h3 class="small">Following</h3>${list(f?.following, 'following', 'You do not follow anyone yet. Follow someone from their profile.')}
+      <h3 class="small" style="margin-top:12px">Followers</h3>${list(f?.followers, 'followers', 'Nobody follows you yet.')}`;
+  return `<div class="card" id="follows-card"><div class="card-h"><h2 class="grow">Following and followers</h2></div>
+    <p class="tiny" style="margin-bottom:10px">Only you see these lists. Others see how many.</p>${body}</div>`;
+}
+// A profile as the page keeps it, with whether follows were on when it was read: one read with the
+// flag in another state is read again, so turning follows on or off shows or hides its parts at once.
+const kept = d => ({ ...d, withFollows: !!flags.follows });
 async function loadProfile(name) {
   social.profile[name] = { loading: true };
   const r = await api('users/' + encodeURIComponent(name));
-  social.profile[name] = r.ok ? r.data : { error: r.error };
+  social.profile[name] = r.ok ? kept(r.data) : { error: r.error };
   render();
 }
 
@@ -416,12 +462,17 @@ function peopleCard() {
   return `<div class="card people" data-tour="people"><div class="card-h"><h2 class="grow">People</h2><span class="sub">Most XP first</span></div>
     ${list.map((u, i) => { const s = u.stats || {}; return `<a class="person ${u.id === me.id ? 'me' : ''}" href="#/u/${esc(u.username)}"><span class="rank num">${i + 1}</span>${avatarHTML(u)}<span class="grow" style="display:grid"><b>${esc(u.displayName || u.username)}</b><span class="tiny">Level ${s.level || 1}${s.streak ? ` · ${s.streak}-day streak` : ''}</span></span><span class="tiny num">${(s.xp || 0).toLocaleString()} XP</span></a>`; }).join('')}</div>`;
 }
+// Which timeline the page shows, Community or Home (with the follows flag on); remembered on this browser.
+const tlTab = () => flags.follows && localStorage.getItem('fl-tl') === 'home' ? 'home' : 'all';
 function pageTimeline(single, focus) {
-  const key = single ? 'post:' + single : 'all', st = streakInfo();
+  const tab = tlTab(), key = single ? 'post:' + single : tab, st = streakInfo();
   if (single && focus && social.focus !== Number(focus)) loadThread(Number(single), Number(focus));
   if (!focus) social.focus = 0;
-  return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${single ? '<a href="#/timeline">Back to the timeline</a>' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.'}</p></div></div>
-  <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, single ? 'That post is gone.' : 'Nothing here yet. Share what you worked on today.')}</div>
+  const tabs = single || !flags.follows ? '' : `<div class="seg tl-tabs" role="group" aria-label="Timeline">${[['all', 'Community'], ['home', 'Home']].map(([k, n]) => `<button class="${tab === k ? 'on' : ''}" data-act="tl-tab" data-v="${k}" aria-pressed="${tab === k}">${n}</button>`).join('')}</div>`;
+  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? 'Posts from the people you follow, and your own.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
+  const empty = single ? 'That post is gone.' : tab === 'home' ? 'Your Home is empty. Follow someone from the People list or from their profile, and their posts show here with yours.' : 'Nothing here yet. Share what you worked on today.';
+  return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${lead}</p></div>${tabs}</div>
+  <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, empty)}</div>
     <div class="stack tl-side">${!flags.game ? '' : st.atRisk ? `<div class="card risk-card"><span class="flame lit sm">${icon('flame')}</span><span class="grow small"><b>${st.current}-day streak at risk.</b> Log today’s practice to keep it.</span><a class="btn sm" href="#/practice">Log</a></div>` : levelCard(true)}${peopleCard()}</div></div>`;
 }
 
@@ -429,23 +480,27 @@ function pageTimeline(single, focus) {
 function pageUser(name) {
   name = (name || '').toLowerCase();
   const pr = social.profile[name];
-  if (!pr) { loadProfile(name); return '<div class="empty small">Loading…</div>'; }
+  if (!pr || (pr.user && pr.withFollows !== !!flags.follows)) { loadProfile(name); return '<div class="empty small">Loading…</div>'; }
   if (pr.loading) return '<div class="empty small">Loading…</div>';
   if (pr.error) return `<div class="empty">${esc(pr.error)} <a href="#/timeline">Back to the timeline</a>.</div>`;
   const u = pr.user, s = u.stats || {}, L = Math.max(1, Math.floor(Number(s.level) || 1)), title = levelTitle(L), mine = u.username === me.username;
   const links = Object.keys(LINK_KINDS).filter(k => (u.links || {})[k]).map(k => `<a class="btn sm social-${k}" href="${esc(linkURL(k, u.links[k]))}" target="_blank" rel="noopener noreferrer">${icon(k)}${esc(LINK_KINDS[k].name)}</a>`).join('');
   const keys = (pr.achievements || []).slice().reverse(), blocked = !mine && pr.blocked;
   const blockBtn = mine ? '' : `<button class="btn sm" data-act="${blocked ? 'unblock' : 'block'}" data-id="${u.id}" data-name="${esc(u.username)}">${icon('block')}${blocked ? 'Unblock' : 'Block'}</button>`;
+  // With follows on: Follow or Unfollow beside Block (none across a block the viewer made), and the counts for everyone.
+  const follows = flags.follows && typeof pr.followers === 'number';
+  const followBtn = !follows || mine || blocked ? '' : `<button class="btn sm ${pr.followed ? '' : 'primary'}" data-act="${pr.followed ? 'unfollow' : 'follow'}" data-id="${u.id}" data-name="${esc(u.username)}">${icon(pr.followed ? 'check' : 'plus')}${pr.followed ? 'Unfollow' : 'Follow'}</button>`;
+  const counts = follows ? `<p class="small prof-follows"><b class="num">${pr.followers.toLocaleString()}</b> ${pr.followers === 1 ? 'follower' : 'followers'} · <b class="num">${pr.following.toLocaleString()}</b> following</p>` : '';
   const posts = blocked ? `<div class="empty" id="blocked-note">You blocked @${esc(u.username)}, so their posts are not shown, and they cannot comment on, reply to or like what you write. If they mention you, you are not told. Unblock them to see their posts again.</div>`
     : feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.');
   return `<div class="card prof-head"><div class="row wrap" style="gap:18px;align-items:flex-start">${avatarHTML(u, 'big')}
       <div class="grow" style="min-width:220px"><h1>${esc(u.displayName || u.username)}</h1><p class="muted">@${esc(u.username)}${u.role !== 'user' ? ' · ' + RANK_NAMES[u.role] : ''} · joined ${esc(new Date(u.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p>
         ${u.bio ? `<p class="prof-bio">${richText(u.bio)}</p>` : mine ? '<p class="tiny" style="margin-top:6px">Add a bio and your social links in your profile settings.</p>' : ''}
-        <div class="row wrap" style="gap:6px;margin-top:12px">${(u.props || []).map(id => `<span class="chip">${esc(propById(id)?.name || id)}</span>`).join('')}${links}</div></div>
-      ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}${canReport(u.id) ? `<button class="btn sm" data-act="report" data-kind="user" data-id="${u.id}" data-what="@${esc(u.username)}">${icon('flag')}Report</button>` : ''}${blockBtn}</div>
+        ${counts}<div class="row wrap" style="gap:6px;margin-top:12px">${(u.props || []).map(id => `<span class="chip">${esc(propById(id)?.name || id)}</span>`).join('')}${links}</div></div>
+      ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}${canReport(u.id) ? `<button class="btn sm" data-act="report" data-kind="user" data-id="${u.id}" data-what="@${esc(u.username)}">${icon('flag')}Report</button>` : ''}${followBtn}${blockBtn}</div>
     ${flags.game ? `<div class="grid g4 prof-stats">${[['Level', `${L}<small> ${title}</small>`], ['XP', (s.xp || 0).toLocaleString()], ['Streak', `${s.streak || 0}<small> ${s.streak === 1 ? 'day' : 'days'} · best ${s.best || 0}</small>`], ['Clean skills', s.clean || 0]].map(([n, v]) => `<div class="stat"><div class="lbl">${n}</div><div class="val num">${v}</div></div>`).join('')}</div>` : ''}</div>
   <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2>${blocked ? '<span class="sub">Blocked</span>' : `<span class="sub num">${pr.posts} ${pr.posts === 1 ? 'post' : 'posts'} · ${pr.likes} ${pr.likes === 1 ? 'like' : 'likes'} received</span>`}</div>${posts}</div>
-    <div class="stack">${avatarOnProfile(u, pr.clean)}
+    <div class="stack">${mine && follows ? followsCard() : ''}${avatarOnProfile(u, pr.clean)}
     ${!flags.game ? '' : `<div class="card"><div class="card-h"><h2 class="grow">Badges</h2><span class="sub num">${keys.length}</span></div>${keys.length ? `<div class="badge-grid one">${keys.map(a => { const b = badgeByKey(a.key); return `<div class="badge on" data-tip="${esc(b?.desc || '')}"><span class="badge-ic on">${icon(b?.icon || 'medal')}</span><span class="grow"><b>${esc(b?.name || a.key)}</b><span class="tiny">${esc(new Date(a.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</span></span></div>`; }).join('')}</div>` : '<div class="empty small">No badges yet.</div>'}</div>`}</div></div>`;
 }
 
@@ -467,6 +522,7 @@ function notifText(n) {
     case 'mention': return `<b>${who}</b> mentioned you${n.commentId ? ' in a comment' : ''}`;
     case 'reply': return `<b>${who}</b> replied to your comment`;
     case 'comment_like': return `<b>${who}</b> liked your comment`;
+    case 'follow': return `<b>${who}</b> followed you`;
     case 'achievement': { const b = badgeByKey(n.text); return `Achievement unlocked: <b>${esc(b?.name || n.text)}</b>`; }
     default: return esc(localTimes(n.text)); // a mute or suspension carries its end time
   }
@@ -474,7 +530,7 @@ function notifText(n) {
 function bellHTML() {
   if (!me || !me.onboarded || !flags.community) return '';
   const st = loaded && flags.game ? streakInfo() : { atRisk: false }, n = social.unread + (st.atRisk ? 1 : 0);
-  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : n.kind === 'moderation' ? '#/profile' : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : n.kind === 'moderation' ? `<span class="badge-ic sm">${icon('shield')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
+  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : n.kind === 'follow' ? '#/u/' + esc(social.nUsers[n.actorId]?.username || '') : n.kind === 'moderation' ? '#/profile' : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : n.kind === 'moderation' ? `<span class="badge-ic sm">${icon('shield')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
   const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications" tabindex="-1"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
     ${st.atRisk ? `<a class="ntf unread" href="#/practice" data-act="ntf-go"><span class="flame lit sm">${icon('flame')}</span><span class="grow"><span class="small"><b>Your ${st.current}-day streak ends tonight.</b> Log today’s practice to keep it.</span></span></a>` : ''}
     ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, replies, mentions and achievements show up here.</div>'}</div>`;
@@ -547,6 +603,14 @@ document.addEventListener('click', async e => {
     case 'bookmark': toggleBookmark(d.kind, d.ref); break;
     case 'block': setBlock(id, d.name, true); break;
     case 'unblock': setBlock(id, d.name, false); break;
+    case 'follow': setFollow(id, d.name, true); break;
+    case 'unfollow': setFollow(id, d.name, false); break;
+    case 'tl-tab': {
+      // The page is drawn again when the posts arrive, so the button pressed takes the focus after that.
+      localStorage.setItem('fl-tl', d.v); social.loading = false;
+      const got = loadFeed(d.v); render(); await got;
+      $(`[data-act=tl-tab][data-v=${d.v}]`)?.focus(); break;
+    }
     case 'ntf-go':
       social.nOpen = false;
       if (d.id) { const n = social.notifs.find(x => x.id === id); if (n && !n.read) { n.read = true; social.unread = Math.max(0, social.unread - 1); api('notifications/read', 'PUT', { ids: [id] }); } }
@@ -685,7 +749,7 @@ document.addEventListener('submit', async e => {
     if (f.isConnected) { f.body.value = ''; recount(f.body); }
     Object.assign(social.users, r.data.users);
     const made = r.data.posts[0];
-    if (social.key !== 'all') social.stale = true; else if (!social.posts.some(p => p.id === made.id)) social.posts.unshift(made);
+    if (social.key !== 'all' && social.key !== 'home') social.stale = true; else if (!social.posts.some(p => p.id === made.id)) social.posts.unshift(made);
     render(); grant(['first-post']); toast('Posted.');
   } else if (f.classList.contains('cmt-form')) {
     e.preventDefault();

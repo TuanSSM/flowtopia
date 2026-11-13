@@ -1772,6 +1772,9 @@ func TestDBFlagsGateAPI(t *testing.T) {
 		{"GET", "/api/notifications"}, {"PUT", "/api/notifications/read"},
 		{"GET", "/api/blocks"}, {"PUT", "/api/users/someone/block"}, {"DELETE", "/api/users/someone/block"},
 	}
+	// Follows and Home need the follows flag, off by default, and the community flag as well.
+	follows := [][2]string{{"GET", "/api/home"}, {"GET", "/api/following"}, {"GET", "/api/followers"},
+		{"PUT", "/api/users/someone/follow"}, {"DELETE", "/api/users/someone/follow"}}
 	body := map[string]any{"body": "hello"}
 	gated := func(routes [][2]string, off bool) {
 		t.Helper()
@@ -1784,7 +1787,12 @@ func TestDBFlagsGateAPI(t *testing.T) {
 		}
 	}
 	badge := map[string]any{"keys": []string{"sessions-1"}, "prop": "nunchaku"}
+	gated(follows, true)
+	e.setFlag("follows", true)
+	gated(follows, false)
 	e.setFlag("community", false)
+	gated(follows, true)
+	e.setFlag("follows", false)
 	gated(community, true)
 	if e.count(`SELECT count(*) FROM posts`) != 1 || e.count(`SELECT count(*) FROM comments`) != 1 {
 		t.Fatal("nothing is written or deleted while community is off")
@@ -1804,6 +1812,7 @@ func TestDBFlagsGateAPI(t *testing.T) {
 	e.setFlag("game", false)
 	gated([][2]string{{"POST", "/api/achievements"}}, true)
 	gated(community[:3], false)
+	gated(follows, true)
 	e.setFlag("game", true)
 	badge["keys"] = []string{"sessions-10"}
 	if got := e.must(200, una, "POST", "/api/achievements", badge); num(got["postId"]) == 0 {
@@ -2289,6 +2298,407 @@ func TestDBBlocks(t *testing.T) {
 	}
 }
 
+// Follows and Home (migration 9): the follows flag is off on an instance that sets nothing, new or
+// older; with it on, the endpoints, what Home shows, what a block, a deleted account, a mute and
+// hidden stats do to follows, the follow notification, the counts for everyone and the lists for the
+// member alone.
+func TestDBFollows(t *testing.T) {
+	e := newEnv(t)
+	anaID, ana := e.user("ana", "user")
+	boID, bo := e.user("bo", "user")
+	cyID, cy := e.user("cy", "user")
+	modID, mod := e.user("mo", "moderator")
+	follow := func(tok, name string, want int) map[string]any {
+		t.Helper()
+		return e.must(want, tok, "PUT", "/api/users/"+name+"/follow", nil)
+	}
+	unfollow := func(tok, name string, want int) {
+		t.Helper()
+		e.must(want, tok, "DELETE", "/api/users/"+name+"/follow", nil)
+	}
+	rows := func(a, b int64) int {
+		return e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2`, a, b)
+	}
+	home := func(tok, q string) map[string]any { t.Helper(); return e.must(200, tok, "GET", "/api/home"+q, nil) }
+	has := func(ids []int64, id int64) bool { return slices.Contains(ids, id) }
+	told := func(to, from int64) int {
+		return e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2 AND kind = 'follow'`, to, from)
+	}
+
+	// Off by default: on a new instance, and on one where an admin saved every other flag before
+	// follows existed, the routes are not there and the profile carries nothing of follows.
+	off := func(why string) {
+		t.Helper()
+		f, err := e.a.flags()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f["follows"] {
+			t.Fatalf("%s: the follows flag is on", why)
+		}
+		for _, r := range [][2]string{{"GET", "/api/home"}, {"GET", "/api/following"}, {"GET", "/api/followers"}, {"PUT", "/api/users/bo/follow"}, {"DELETE", "/api/users/bo/follow"}} {
+			if code, out := e.do(ana, r[0], r[1], nil); code != 404 || !strings.Contains(out["_raw"].(string), "404 page not found") {
+				t.Fatalf("%s: %s %s answers %d %v", why, r[0], r[1], code, out["_raw"])
+			}
+		}
+		prof := e.must(200, ana, "GET", "/api/users/bo", nil)
+		for _, k := range []string{"followers", "following", "followed"} {
+			if _, ok := prof[k]; ok {
+				t.Fatalf("%s: the profile says %s: %v", why, k, prof["_raw"])
+			}
+		}
+	}
+	off("a new instance")
+	saved := map[string]bool{}
+	for k, v := range flagDefaults {
+		if k != "follows" {
+			saved[k] = v
+		}
+	}
+	e.setFlag("community", true)
+	if err := e.a.setFlags(saved); err != nil {
+		t.Fatal(err)
+	}
+	off("an instance whose flags were all saved before follows existed")
+	if e.count(`SELECT count(*) FROM follows`) != 0 {
+		t.Fatal("a follow was written while the flag is off")
+	}
+	e.setFlag("follows", true)
+
+	// The endpoints, by username as blocks are: nobody follows themself, a name that is no account is
+	// a 404 both ways, an id is not a name, twice is once, and unfollowing what is not followed is fine.
+	follow(ana, "ana", 400)
+	follow(ana, "ANA", 400)
+	unfollow(ana, "ana", 400)
+	follow(ana, "nobody", 404)
+	unfollow(ana, "nobody", 404)
+	follow(ana, fmt.Sprint(boID), 404)
+	if got := follow(ana, "bo", 200); got["following"] != true {
+		t.Fatalf("follow answers %v", got["_raw"])
+	}
+	follow(ana, "BO", 200)
+	if rows(anaID, boID) != 1 {
+		t.Fatalf("following twice made %d rows", rows(anaID, boID))
+	}
+	unfollow(ana, "cy", 200)
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $1)`, boID); err == nil {
+		t.Fatal("the database took a follow of oneself")
+	}
+
+	// The notification: told once, in the bell, with who; unfollowing and following again within a
+	// day tells nothing new, a day later it does.
+	if told(boID, anaID) != 1 {
+		t.Fatalf("bo was told %d times of ana's follow, want once", told(boID, anaID))
+	}
+	n := e.must(200, bo, "GET", "/api/notifications", nil)
+	if it := n["items"].([]any)[0].(map[string]any); it["kind"] != "follow" || num(it["actorId"]) != anaID || num(n["unread"]) != 1 {
+		t.Fatalf("bo's bell: %v", n["_raw"])
+	}
+	unfollow(ana, "bo", 200)
+	if rows(anaID, boID) != 0 {
+		t.Fatal("unfollow left the row")
+	}
+	follow(ana, "bo", 200)
+	if told(boID, anaID) != 1 {
+		t.Fatalf("unfollow and follow again within a day told bo %d times", told(boID, anaID))
+	}
+	if _, err := e.a.db.Exec(`UPDATE notifications SET created_at = now() - interval '25 hours' WHERE kind = 'follow'`); err != nil {
+		t.Fatal(err)
+	}
+	unfollow(ana, "bo", 200)
+	follow(ana, "bo", 200)
+	if told(boID, anaID) != 2 {
+		t.Fatalf("a follow again a day later told bo %d times in all, want 2", told(boID, anaID))
+	}
+
+	// Home: the posts of whom ana follows and her own, newest first, in the timeline's shape; cy's is
+	// not there, and Community still has all three.
+	boPost := e.post(bo, "bo's post")
+	cyPost := e.post(cy, "cy's post")
+	anaPost := e.post(ana, "ana's post")
+	h := home(ana, "")
+	if ids := postIDs(h); !slices.Equal(ids, []int64{anaPost, boPost}) {
+		t.Fatalf("ana's Home: %v, want her post %d and bo's %d", ids, anaPost, boPost)
+	}
+	if _, ok := h["users"].(map[string]any)[fmt.Sprint(boID)]; !ok || h["more"] != false {
+		t.Fatalf("Home is not in the timeline's shape: %v", h["_raw"])
+	}
+	if ids := postIDs(e.must(200, ana, "GET", "/api/posts", nil)); !has(ids, cyPost) || !has(ids, boPost) || !has(ids, anaPost) {
+		t.Fatalf("the Community timeline changed: %v", ids)
+	}
+	if ids := postIDs(home(cy, "")); !slices.Equal(ids, []int64{cyPost}) {
+		t.Fatalf("cy follows nobody, so Home is cy's own post: %v", ids)
+	}
+
+	// A hidden post leaves Home as it leaves Community, for all but its author and staff.
+	if _, err := e.a.db.Exec(`UPDATE posts SET hidden_at = now(), hidden_reason = 'test' WHERE id = $1`, boPost); err != nil {
+		t.Fatal(err)
+	}
+	follow(mod, "bo", 200)
+	if has(postIDs(home(ana, "")), boPost) || !has(postIDs(home(bo, "")), boPost) || !has(postIDs(home(mod, "")), boPost) {
+		t.Fatal("a hidden post in Home: shown to ana, or not to bo or the moderator")
+	}
+	if _, err := e.a.db.Exec(`UPDATE posts SET hidden_at = NULL, hidden_reason = '' WHERE id = $1`, boPost); err != nil {
+		t.Fatal(err)
+	}
+
+	// Paging: before= gives the next page, with nothing twice and nothing lost.
+	var many []int64
+	for i := 0; i < pageSize+5; i++ {
+		many = append(many, e.post(bo, fmt.Sprintf("bo again %d", i)))
+	}
+	first := home(ana, "")
+	page1 := postIDs(first)
+	if len(page1) != pageSize || first["more"] != true || page1[0] != many[len(many)-1] {
+		t.Fatalf("Home's first page: %d posts, more %v", len(page1), first["more"])
+	}
+	page2 := postIDs(home(ana, fmt.Sprintf("?before=%d", page1[len(page1)-1])))
+	all := append(slices.Clone(page1), page2...)
+	want := append(slices.Clone(many), boPost, anaPost)
+	slices.Sort(want)
+	slices.Reverse(want)
+	if !slices.Equal(all, want) {
+		t.Fatalf("Home's two pages: %v, want %v", all, want)
+	}
+
+	// Counts for everyone, exact; whether the viewer follows; hidden stats and a mute change nothing.
+	follow(cy, "bo", 200)
+	follow(bo, "ana", 200)
+	if _, err := e.a.db.Exec(`UPDATE users SET stats_hidden = true WHERE id = $1`, boID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.db.Exec(`UPDATE users SET muted_until = now() + interval '1 day' WHERE id = $1`, cyID); err != nil {
+		t.Fatal(err)
+	}
+	follow(cy, "ana", 200) // a muted member may follow
+	for _, v := range []struct {
+		tok, name                      string
+		followers, following, followed int64
+	}{{ana, "bo", 3, 1, 1}, {cy, "bo", 3, 1, 1}, {mod, "ana", 2, 1, 0}, {bo, "bo", 3, 1, 0}, {ana, "cy", 0, 2, 0}} {
+		prof := e.must(200, v.tok, "GET", "/api/users/"+v.name, nil)
+		followed := map[bool]int64{true: 1}[prof["followed"] == true]
+		if num(prof["followers"]) != v.followers || num(prof["following"]) != v.following || followed != v.followed {
+			t.Fatalf("%s's profile: %v followers, %v following, followed %v; want %d, %d, %d", v.name, prof["followers"], prof["following"], prof["followed"], v.followers, v.following, v.followed)
+		}
+	}
+
+	// The lists, to the member alone: bo sees who follows him and whom he follows. Nobody sees another's,
+	// and the profile names nobody.
+	names := func(out map[string]any, key string) []string {
+		got := []string{}
+		for _, m := range out[key].([]any) {
+			got = append(got, m.(map[string]any)["user"].(map[string]any)["username"].(string))
+		}
+		sort.Strings(got)
+		return got
+	}
+	if got := e.must(200, bo, "GET", "/api/followers", nil); !slices.Equal(names(got, "followers"), []string{"ana", "cy", "mo"}) || num(got["total"]) != 3 {
+		t.Fatalf("bo's followers: %v", got["_raw"])
+	}
+	if got := e.must(200, bo, "GET", "/api/following", nil); !slices.Equal(names(got, "following"), []string{"ana"}) || num(got["total"]) != 1 {
+		t.Fatalf("whom bo follows: %v", got["_raw"])
+	}
+	for _, path := range []string{"/api/users/bo/followers", "/api/users/bo/following", "/api/followers?user=bo"} {
+		code, out := e.do(cy, "GET", path, nil)
+		if raw := out["_raw"].(string); code == 200 && (strings.Contains(raw, `"mo"`) || strings.Contains(raw, `"username":"ana"`)) {
+			t.Fatalf("%s shows cy whom bo's lists hold: %s", path, raw)
+		}
+	}
+	if raw := e.must(200, cy, "GET", "/api/users/bo", nil)["_raw"].(string); strings.Contains(raw, `"ana"`) || strings.Contains(raw, `"mo"`) {
+		t.Fatalf("bo's profile names his followers to cy: %s", raw)
+	}
+
+	// A block removes the follows between the two, both ways, and their follow notifications; neither
+	// can follow the other while it holds, refused with one sentence that does not say who blocked whom
+	// (acrossBlock); others keep theirs.
+	if rows(anaID, boID) != 1 || rows(boID, anaID) != 1 {
+		t.Fatal("ana and bo do not follow each other before the block")
+	}
+	e.must(200, ana, "PUT", "/api/users/bo/block", nil)
+	if rows(anaID, boID) != 0 || rows(boID, anaID) != 0 {
+		t.Fatalf("after the block: %d follows from ana to bo, %d back", rows(anaID, boID), rows(boID, anaID))
+	}
+	if told(boID, anaID)+told(anaID, boID) != 0 {
+		t.Fatal("follow notifications between ana and bo outlast the block")
+	}
+	if rows(cyID, boID) != 1 || rows(modID, boID) != 1 {
+		t.Fatal("the block took someone else's follow")
+	}
+	acrossBlock := func() {
+		t.Helper()
+		for _, v := range [][2]string{{ana, "bo"}, {bo, "ana"}} {
+			if out := follow(v[0], v[1], 403); out["error"] != "You cannot follow this account." {
+				t.Fatalf("a follow across a block is refused in other words: %v", out["_raw"])
+			}
+		}
+	}
+	acrossBlock()
+	unfollow(bo, "ana", 200)
+	if rows(anaID, boID)+rows(boID, anaID) != 0 || told(boID, anaID)+told(anaID, boID) != 0 {
+		t.Fatal("a refused follow wrote a row or told someone")
+	}
+	// A follow that slipped past the block (each statement under READ COMMITTED) still shows nothing in
+	// Home; a moderator whom bo blocked still sees bo's posts there, as in Community.
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)`, anaID, boID); err != nil {
+		t.Fatal(err)
+	}
+	if has(postIDs(home(ana, "")), many[0]) || len(postIDs(home(ana, ""))) != 1 {
+		t.Fatalf("Home shows ana bo's posts across her block: %v", postIDs(home(ana, "")))
+	}
+	e.must(200, bo, "PUT", "/api/users/mo/block", nil)
+	if rows(modID, boID) != 0 {
+		t.Fatal("bo's block of the moderator left the moderator's follow")
+	}
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)`, modID, boID); err != nil {
+		t.Fatal(err)
+	}
+	if !has(postIDs(home(mod, "")), many[len(many)-1]) {
+		t.Fatal("the moderator bo blocked does not see bo's posts in Home")
+	}
+	// The other way round, for a member who is not staff: bo blocks ana while ana's follow of bo is in
+	// the table, as a follow written at the same moment as a block can be. Ana's Home shows none of bo's
+	// posts, the refusal is the same sentence, and neither the counts nor the lists show the pair.
+	e.must(200, ana, "DELETE", "/api/users/bo/block", nil)
+	e.must(200, bo, "PUT", "/api/users/ana/block", nil)
+	if rows(anaID, boID) != 0 {
+		t.Fatal("bo's block left ana's follow of him")
+	}
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)`, anaID, boID); err != nil {
+		t.Fatal(err)
+	}
+	if ids := postIDs(home(ana, "")); has(ids, boPost) || has(ids, many[0]) || has(ids, many[len(many)-1]) || len(ids) != 1 {
+		t.Fatalf("Home shows ana bo's posts though bo blocked her: %v", ids)
+	}
+	acrossBlock()
+	for _, v := range []struct {
+		name                 string
+		followers, following int64
+	}{{"bo", 1, 0}, {"ana", 1, 0}} {
+		prof := e.must(200, cy, "GET", "/api/users/"+v.name, nil)
+		if num(prof["followers"]) != v.followers || num(prof["following"]) != v.following {
+			t.Fatalf("across bo's block, %s's counts as cy sees them: %v followers, %v following; want %d, %d", v.name, prof["followers"], prof["following"], v.followers, v.following)
+		}
+	}
+	if got := e.must(200, ana, "GET", "/api/users/bo", nil); got["followed"] != false {
+		t.Fatalf("bo's profile tells ana she follows him across his block: %v", got["_raw"])
+	}
+	if got := e.must(200, bo, "GET", "/api/followers", nil); slices.Contains(names(got, "followers"), "ana") || num(got["total"]) != 1 {
+		t.Fatalf("bo's followers across his block of ana: %v", got["_raw"])
+	}
+	if got := e.must(200, ana, "GET", "/api/following", nil); len(names(got, "following")) != 0 || num(got["total"]) != 0 {
+		t.Fatalf("whom ana follows across bo's block: %v", got["_raw"])
+	}
+	e.must(200, bo, "DELETE", "/api/users/ana/block", nil)
+	follow(bo, "ana", 200)
+	if told(anaID, boID) != 1 {
+		t.Fatal("after the unblock a follow tells again")
+	}
+
+	// A deleted account's follows go with it, both ways.
+	follow(ana, "cy", 200)
+	if _, err := e.a.db.Exec(`DELETE FROM users WHERE id = $1`, cyID); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 OR followee_id = $1`, cyID); n != 0 {
+		t.Fatalf("%d follows of a deleted account are left", n)
+	}
+	follow(ana, "cy", 404)
+
+	// At most maxFollows: one more is refused with the reason, and following one already followed is not.
+	if _, err := e.a.db.Exec(`INSERT INTO users (username, pw_hash) SELECT 'f' || g, 'x' FROM generate_series(1, $1::int) g`, maxFollows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) SELECT $1, id FROM users WHERE username LIKE 'f%' AND id <> $1 ON CONFLICT DO NOTHING`, modID); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, modID) < maxFollows {
+		t.Fatal("the moderator does not follow the most there can be")
+	}
+	if out := follow(mod, "ana", 400); !strings.Contains(out["error"].(string), "Unfollow someone first") {
+		t.Fatalf("one follow too many: %v", out["_raw"])
+	}
+	follow(mod, "f1", 200)
+}
+
+// Follows sent at the same moment: two identical follows are one row, one notification and two
+// plain answers, never the limit's refusal; and the limit holds when many follows race for its
+// last place, so a member never follows more than maxFollows accounts.
+func TestDBFollowsAtOnce(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("follows", true)
+	anaID, ana := e.user("ana", "user")
+	if _, err := e.a.db.Exec(`INSERT INTO users (username, pw_hash) SELECT 't' || lpad(g::text, 2, '0'), 'x' FROM generate_series(1, 20) g`); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		code int
+		raw  string
+	}
+	at := func(paths []string) []answer {
+		t.Helper()
+		out := make([]answer, len(paths))
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i, p := range paths {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				code, got := e.do(ana, "PUT", p, nil)
+				out[i] = answer{code, got["_raw"].(string)}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		return out
+	}
+	var twice []string
+	for g := 1; g <= 20; g++ {
+		p := fmt.Sprintf("/api/users/t%02d/follow", g)
+		twice = append(twice, p, p)
+	}
+	for _, a := range at(twice) {
+		if a.code != 200 {
+			t.Errorf("a follow sent twice at once: %d %s", a.code, a.raw)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, anaID); n != 20 {
+		t.Fatalf("20 follows sent twice each made %d rows", n)
+	}
+	if n := e.count(`SELECT count(*) FROM notifications WHERE actor_id = $1 AND kind = 'follow'`, anaID); n != 20 {
+		t.Fatalf("20 follows sent twice each told %d times in all, want 20", n)
+	}
+
+	// The last place: ana follows maxFollows - 1 accounts, and 20 follows of others arrive together.
+	if _, err := e.a.db.Exec(`INSERT INTO users (username, pw_hash) SELECT 'f' || g, 'x' FROM generate_series(1, $1::int) g`, maxFollows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) SELECT $1, id FROM users WHERE username LIKE 'f%' ORDER BY id LIMIT $2`, anaID, maxFollows-1-20); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, anaID); n != maxFollows-1 {
+		t.Fatalf("ana follows %d before the race, want %d", n, maxFollows-1)
+	}
+	var last []string
+	for _, name := range []string{"f990", "f991", "f992", "f993", "f994", "f995", "f996", "f997", "f998", "f999", "f1000",
+		"f989", "f988", "f987", "f986", "f985", "f984", "f983", "f982", "f981"} {
+		last = append(last, "/api/users/"+name+"/follow")
+	}
+	ok := 0
+	for _, a := range at(last) {
+		switch {
+		case a.code == 200:
+			ok++
+		case a.code == 400 && strings.Contains(a.raw, "Unfollow someone first"):
+		default:
+			t.Errorf("a follow racing for the last place: %d %s", a.code, a.raw)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, anaID); n != maxFollows || ok != 1 {
+		t.Fatalf("after the race ana follows %d accounts with %d follows taken, want %d and 1", n, ok, maxFollows)
+	}
+}
+
 // Every write that opens a transaction, and the social writes beside them, answer on a pool of one
 // connection: a handler that asks a.db while it holds a transaction would wait for a second connection
 // for ever, and with the pool's 8 held that way every request that needs the database would hang.
@@ -2298,7 +2708,7 @@ func TestDBOneConnection(t *testing.T) {
 	if err := e.a.seedCatalogs(); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"moderation", "catalogEditor", "suggest", "community", "game"} {
+	for _, f := range []string{"moderation", "catalogEditor", "suggest", "community", "game", "follows"} {
 		e.setFlag(f, true)
 	}
 	adminID, admin := e.user("boss", "admin")
@@ -2342,7 +2752,15 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, ana, "POST", fmt.Sprintf("/api/comments/%d/like", c), nil)
 	within(200, ana, "PUT", fmt.Sprintf("/api/comments/%d", r), map[string]any{"body": "a reply, edited"})
 	within(200, ana, "PUT", "/api/notifications/read", map[string]any{})
+	within(200, ana, "PUT", "/api/users/bo/follow", nil)
+	within(200, bo, "PUT", "/api/users/ana/follow", nil)
+	within(200, ana, "DELETE", "/api/users/bo/follow", nil)
+	within(200, ana, "PUT", "/api/users/bo/follow", nil)
+	within(200, ana, "GET", "/api/home", nil)
+	within(200, ana, "GET", "/api/followers", nil)
 	within(200, ana, "PUT", "/api/users/bo/block", nil)
+	// The block took the follows both ways in its own statement; following across it is refused.
+	within(403, bo, "PUT", "/api/users/ana/follow", nil)
 	// Across the block: the reply's check runs inside its transaction, and is refused there.
 	within(404, bo, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "again", "parentId": r})
 	within(200, ana, "GET", "/api/blocks", nil)
@@ -2965,7 +3383,7 @@ func TestDBQueryPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The tables that grow with every post, like and comment: reading one whole is what an index is for.
-	grows := map[string]bool{"posts": true, "comments": true, "likes": true, "comment_likes": true, "notifications": true, "bookmarks": true, "blocks": true}
+	grows := map[string]bool{"posts": true, "comments": true, "likes": true, "comment_likes": true, "notifications": true, "bookmarks": true, "blocks": true, "follows": true}
 	var none []int64
 	type planCase struct {
 		name  string
@@ -3067,6 +3485,49 @@ func TestDBQueryPlans(t *testing.T) {
 		// The list sorts the reader's own blocks to show the latest 500: each of them is read, in the
 		// index and then in the table, and only the 500 accounts shown are looked up.
 		{"the list of 5,000 blocks, its first 500", blockListSQL, []any{viewer, maxBlockList}, 13000, ""},
+	})
+	// Follows (migration 9): 1,000 more members wrote 30,000 more posts, the reader follows 500 of them,
+	// and 30,000 other follows are between other members. A page of Home reads at most one page of posts
+	// per account followed, through posts_user, and no table whole; the lists and the counts read the
+	// rows of the member they are about, through the primary key or follows_followee.
+	for _, q := range []string{
+		`INSERT INTO users (username, pw_hash) SELECT 'fw' || g, 'x' FROM generate_series(1, 1000) g`,
+		`INSERT INTO posts (user_id, body, created_at, hidden_at) SELECT u.id, 'followed ' || g, now() - (30000 - g) * interval '20 seconds', CASE WHEN g % 89 = 0 THEN now() END
+			FROM generate_series(1, 30000) g JOIN users u ON u.username = 'fw' || (1 + (g * 7919) % 1000)`,
+		`INSERT INTO follows (follower_id, followee_id) SELECT 5, id FROM users WHERE username LIKE 'fw%' AND substr(username, 3)::int % 2 = 0`,
+		`INSERT INTO follows (follower_id, followee_id) SELECT 500 + g, id FROM generate_series(1, 5000) g CROSS JOIN generate_series(1, 6) k JOIN users ON username = 'fw' || (1 + (g * 13 + k * 337) % 1000) ON CONFLICT DO NOTHING`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, viewer); n != 500 {
+		t.Fatalf("the reader follows %d accounts, want 500", n)
+	}
+	var followed, older int64
+	if err := db.QueryRow(`SELECT min(followee_id) FROM follows WHERE follower_id = $1`, viewer).Scan(&followed); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT min(id) FROM (SELECT id FROM posts p WHERE p.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1) ORDER BY id DESC LIMIT 200) p`, viewer).Scan(&older); err != nil {
+		t.Fatal(err)
+	}
+	// A page of Home reads at most a page of 21 posts per account (501 of them, the reader's own too),
+	// through posts_user, whatever the size of posts; each of those rows passes four steps of the plan
+	// (the index, its LIMIT, the join over the accounts and the merge), which with the 500 rows of
+	// follows and the 21 posts shown is the bound below. It does not grow with the posts table, only
+	// with the accounts followed, which maxFollows caps. The list of whom a member follows reads users
+	// whole where 500 lookups would cost more, as the planner sees it: a row per member, like people.
+	homeMost := float64((500+1)*(pageSize+1)*4 + 8000)
+	plans([]planCase{
+		{"Home, 500 accounts followed, first page", homeSQL, []any{viewer, 0, pageSize + 1, false}, homeMost, ""},
+		{"Home, 500 accounts followed, an older page", homeSQL, []any{viewer, older, pageSize + 1, false}, homeMost, ""},
+		{"Home, 500 accounts followed, as a moderator", homeSQL, []any{viewer, 0, pageSize + 1, true}, homeMost, ""},
+		{"Home of a member who follows nobody", homeSQL, []any{followed, 0, pageSize + 1, false}, 300, ""},
+		{"the 500 accounts a member follows", followingSQL, []any{viewer, maxFollowList}, 13000, "users"},
+		{"the followers of a member", followersSQL, []any{followed, maxFollowList}, 600, ""},
+		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
+		{"the counts of a member who follows 500", followCountsSQL, []any{viewer}, 1500, ""},
 	})
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {

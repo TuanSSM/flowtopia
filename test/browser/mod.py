@@ -137,7 +137,7 @@ try:
     check('the audit log filters by action',js("return document.querySelectorAll('tbody tr').length")==1)
     nav('#/admin/features')
     names=js("return [...document.querySelectorAll('[data-change=flag]')].map(i=>i.dataset.k)")
-    check('the Features page lists every switch the server has',sorted(names)==sorted(get(op,'me')['flags'].keys()) and len(names)==15 and 'moderation' in names and 'catalogEditor' in names,names)
+    check('the Features page lists every switch the server has',sorted(names)==sorted(get(op,'me')['flags'].keys()) and len(names)==16 and 'moderation' in names and 'catalogEditor' in names and 'follows' in names,names)
     nav('#/admin/accounts')
     ROLE="const s=document.querySelector('[data-change=user-role][data-id=\"'+arguments[0]+'\"]');s.value=arguments[1];s.dispatchEvent(new Event('change',{bubbles:true}))"
     rid=str(me_id(rae))

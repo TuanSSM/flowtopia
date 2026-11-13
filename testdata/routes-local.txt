@@ -9,6 +9,7 @@ DELETE /api/admin/users/{id}
 DELETE /api/comments/{id}
 DELETE /api/posts/{id}
 DELETE /api/users/{username}/block
+DELETE /api/users/{username}/follow
 GET /
 GET /api/admin/audit
 GET /api/admin/catalog/{prop}
@@ -20,6 +21,9 @@ GET /api/blocks
 GET /api/bookmarks
 GET /api/comments/{id}/replies
 GET /api/comments/{id}/thread
+GET /api/followers
+GET /api/following
+GET /api/home
 GET /api/me
 GET /api/mod/queue
 GET /api/notifications
@@ -63,3 +67,4 @@ PUT /api/me/password
 PUT /api/notifications/read
 PUT /api/progress/{prop}
 PUT /api/users/{username}/block
+PUT /api/users/{username}/follow

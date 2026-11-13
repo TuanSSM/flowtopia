@@ -6,7 +6,7 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 2 of 7 items done; the design waits for the owner's review. Every setting, table, route and
+**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 3 of 7 items done; the design waits for the owner's review. Every setting, table, route and
 test named below is new unless the design note says it exists.
 
 - [ ] **Design.** [federation.md](../federation.md): the modes, identity, protocol, security, queues,
@@ -33,11 +33,18 @@ test named below is new unless the design note says it exists.
   reports work as before. Behind the `community` flag. DoD: `TestDBBlocks`; `TestDBOneConnection`
   (no write endpoint needs a second database connection while it holds one); `TestDBQueryPlans`
   holds the timeline with 5,000 blocks; a check in `test/browser/social.py`.
-- [ ] **Follows and a Home timeline behind a flag.** `follows` (local accounts only at this step);
+- [x] **Follows and a Home timeline behind a flag.** `follows` (local accounts only at this step);
   Follow and Unfollow on profiles; Home beside Community; the `follows` flag, off by default; counts
   on the profile, lists shown only to the account itself (F10). DoD: `TestDBFollows`;
   `TestDBQueryPlans` holds Home with 500 followed accounts; `TestDBFlagsGateAPI` covers the flag; a
-  browser check and a screenshot of Home in `test/browser/pages.py`.
+  browser check and a screenshot of Home in `test/browser/pages.py`. Built: migration 9 (no `state`
+  or `ap_id` until FWR 3 reads them), `PUT|DELETE /api/users/{name}/follow`, `GET /api/home`,
+  `GET /api/following` and `/api/followers` for the account itself; a block removes the follows both
+  ways and a follow across one is refused with the same 403 sentence either way; at most 1,000
+  follows per member, which bounds a page of Home; `TestDBFollows`, `TestDBFollowsAtOnce`, the plan
+  cases, the flag in `TestDBFlagsGateAPI`, the checks in `social.py` and the pictures in `pages.py`;
+  `flowa-schema8.dump`, the backup of the schema before this migration, made from `main` after
+  member blocks merged.
 - [ ] **Instance information and rules.** The `instance_settings` table lands here, with its first
   reader. Description, contact and rules, edited in Admin (permission `flags.edit`), audited, shown
   at sign-up and on an about page. The about page is in the app for signed-in members in every mode;

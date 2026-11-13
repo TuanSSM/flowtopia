@@ -7,6 +7,10 @@ def get(op,path): return json.loads(op.open(BASE+'api/'+path,timeout=20).read())
 def user2():
     op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     api(op,'signup',{'username':'sam','password':'flowa-test-only','displayName':'Sam Spins'});api(op,'me',{'props':['poi']},'PUT');return op
+def http_code(op,path):
+    # The status of a GET, whatever it is.
+    try: return op.open(BASE+'api/'+path,timeout=20).status
+    except urllib.error.HTTPError as e: return e.code
 def refused(*a):
     # True when the server answers a 4xx (the helper raises on it).
     try: api(*a);return False
@@ -216,6 +220,65 @@ try:
     click('#blocks-card [data-act=unblock]');idle()
     check('Unblock in the list takes him off it',lambda: js("return document.querySelectorAll('#blocks-card .bm-row').length")==0 and get(op,'blocks')['blocks']==[])
     api(sam,f'posts/{bp}',{},'DELETE')
+    # Follows and Home, behind their flag, which is off until an admin turns it on: then a profile has
+    # Follow, the timeline has Home beside Community, and Home holds the posts of whom one follows and
+    # one's own, not a third member's. Unfollowing takes them out; the flag off hides it all again.
+    tia=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    api(tia,'signup',{'username':'tia','password':'flowa-test-only'});api(tia,'me',{'props':['poi']},'PUT')
+    sp2=api(sam,'posts',{'body':'Sam, for whoever follows him'})['posts'][0]['id']
+    tp=api(tia,'posts',{'body':'Tia, whom nobody follows'})['posts'][0]['id']
+    ap=api(op,'posts',{'body':'Mine, in my own Home'})['posts'][0]['id']
+    on=lambda pid: js("return !!document.querySelector('.post[data-post=\"'+arguments[0]+'\"]')",str(pid))
+    nav('#/u/sam')
+    check('with the follows flag off a profile has no Follow button and no counts',js("return !!document.querySelector('[data-act=block]')&&!document.querySelector('[data-act=follow],[data-act=unfollow],.prof-follows')"))
+    nav('#/timeline')
+    check('with the follows flag off the timeline has no Home',js("return !document.querySelector('.tl-tabs')") and on(tp),lambda: js("return document.querySelector('.page-h').textContent"))
+    nav('#/admin/features')
+    check('Admin lists Follows and Home with what it does, off',js("const i=document.querySelector('input[data-change=flag][data-k=follows]');return !!i&&!i.checked&&i.closest('label').textContent.includes('Home beside Community')"))
+    click('input[data-change=flag][data-k=follows]')
+    wait_for(lambda: get(op,'me')['flags']['follows'],'the follows flag to be saved on')
+    nav('#/timeline')
+    check('with the flag on the timeline offers Community and Home, Community open',lambda: js("return [...document.querySelectorAll('.tl-tabs button')].map(b=>[b.textContent,b.getAttribute('aria-pressed')])")==[['Community','true'],['Home','false']])
+    click('[data-act=tl-tab][data-v=home]');idle()
+    check("before following anyone Home holds one's own posts only, and the focus stays on Home",lambda: on(ap) and not on(sp2) and not on(tp) and js("return document.activeElement?.dataset.v")=='home' and 'people you follow' in txt('.page-h p'),lambda: (txt('.page-h p'),js("return document.activeElement?.outerHTML")))
+    nav('#/u/sam')
+    check('a profile shows Follow beside Block, and the counts',lambda: js("return !!document.querySelector('[data-act=follow]+[data-act=block]')") and txt('.prof-follows')=='0 followers · 0 following',lambda: txt('.prof-follows'))
+    click('[data-act=follow]');idle()
+    check('Follow turns into Unfollow, with the focus on it, and the count goes up without a reload',lambda: js("return document.activeElement?.dataset.act")=='unfollow' and txt('.prof-follows')=='1 follower · 0 following',lambda: (js("return document.activeElement?.outerHTML"),txt('.prof-follows')))
+    check('the follow is saved, and sam is told',[f['user']['username'] for f in get(op,'following')['following']]==['sam'] and 'follow' in [i['kind'] for i in get(sam,'notifications')['items']])
+    nav('#/timeline')
+    check("Home stays open and shows sam's post, and not tia's",lambda: js("return document.querySelector('.tl-tabs .on')?.dataset.v")=='home' and on(sp2) and not on(tp))
+    click('[data-act=tl-tab][data-v=all]');idle()
+    check("Community still shows everyone's posts",lambda: on(sp2) and on(tp))
+    click('[data-act=tl-tab][data-v=home]');idle()
+    nav('#/u/admin')
+    check('my own profile lists whom I follow, for me alone',lambda: js("return [...document.querySelectorAll('#follows-card .bm-row .tiny')].map(t=>t.textContent)")==['@sam'] and txt('.prof-follows')=='0 followers · 1 following',lambda: (txt('#follows-card'),txt('.prof-follows')))
+    nav('#/u/sam');click('[data-act=unfollow]');idle()
+    check('Unfollow turns back into Follow, with the focus on it',lambda: js("return document.activeElement?.dataset.act")=='follow' and txt('.prof-follows')=='0 followers · 0 following')
+    nav('#/timeline')
+    check("after the unfollow Home no longer shows sam's post",lambda: js("return document.querySelector('.tl-tabs .on')?.dataset.v")=='home' and on(ap) and not on(sp2) and not on(tp))
+    # Across a block the follow is refused with one sentence whoever blocked whom, and the button stays.
+    api(sam,'users/admin/block',{},'PUT')
+    nav('#/u/sam');click('[data-act=follow]');idle()
+    check('a follow across a block says it cannot be done, and the button and the count stay as they were',lambda: js("const t=document.querySelector('#toast');return !t.hidden&&t.textContent")=='You cannot follow this account.' and js("return !!document.querySelector('[data-act=follow]')") and txt('.prof-follows')=='0 followers · 0 following',lambda: (txt('#toast'),txt('.prof-follows')))
+    api(sam,'users/admin/block',{},'DELETE')
+    # A member who follows nobody and has not posted finds Home empty, with what to do about it.
+    uma=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    api(uma,'signup',{'username':'uma','password':'flowa-test-only'});api(uma,'me',{'props':['poi']},'PUT')
+    nav('#/profile');click('[data-act=signout]');wait_for("return document.querySelector('#toast').textContent==='Signed out.'",'the sign-out to finish');idle()
+    signin('uma');nav('#/timeline')
+    if js("return document.querySelector('.tl-tabs .on')?.dataset.v")!='home': click('[data-act=tl-tab][data-v=home]');idle()
+    check('an empty Home says how to fill it',lambda: 'Follow someone from the People list or from their profile' in (txt('[data-tour=feed] .empty') or ''),lambda: txt('[data-tour=feed]')[:160])
+    nav('#/profile');click('[data-act=signout]');wait_for("return document.querySelector('#toast').textContent==='Signed out.'",'the sign-out to finish');idle()
+    signin('admin')
+    nav('#/admin/features');click('input[data-change=flag][data-k=follows]')
+    wait_for(lambda: not get(op,'me')['flags']['follows'],'the follows flag to be saved off')
+    nav('#/timeline')
+    check('with the flag off again there is no Home, and the timeline is Community',lambda: js("return !document.querySelector('.tl-tabs')") and on(sp2) and on(tp))
+    nav('#/u/sam')
+    check('and a profile has no Follow button and no counts',js("return !!document.querySelector('[data-act=block]')&&!document.querySelector('[data-act=follow],[data-act=unfollow],.prof-follows')"))
+    check('and Home is not there for the API either',http_code(op,'home')==404)
+    for pid,who in [(sp2,sam),(tp,tia),(ap,op)]: api(who,f'posts/{pid}',{},'DELETE')
     # Nothing lost and nothing doubled: quick double submits, a lost answer, an empty comment, a post
     # that went away, pictures with see-through parts, the leave warning, and a draft at sign-out.
     bodies=lambda t: [p['body'] for p in get(op,'posts')['posts'] if p['body']==t]

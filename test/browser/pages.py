@@ -15,6 +15,9 @@ def settle():
     # A picture is taken of a page that has stopped changing: its requests answered, the 3D figure there
     # (or known to be missing), its pictures loaded and two frames drawn.
     idle();figure(20)
+    # The picture is of the whole page, and a picture below the window that loads only when it comes into
+    # sight (a link card's preview) would never load here: it is asked for now, as scrolling to it would.
+    js("document.querySelectorAll('img[loading=lazy]').forEach(i=>{i.loading='eager'})")
     wait_for("return [...document.images].every(i=>i.complete)",'the pictures on the page to load',20)
     idle();frames()
 def page(name,title,h,w=1440,ht=1000,full=True):
@@ -22,6 +25,7 @@ def page(name,title,h,w=1440,ht=1000,full=True):
     img=Image.open(io.BytesIO(base64.b64decode(cmd('WebDriver:TakeScreenshot',full=full)['value']))).convert('RGB')
     if img.height>2600: img=img.crop((0,0,img.width,2600))
     img.save(f'{out}/{name}.png',optimize=True);made.append({'file':name+'.png','title':title});check(f'{name} ({img.width}x{img.height})',True)
+def get_me(op): return json.loads(op.open(BASE+'api/me',timeout=20).read())
 def add(sid):
     js("const s=document.querySelector('[data-pick=combo-add]');s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));s.parentElement.querySelector('[data-act=add-chosen]').click()",sid);idle()
 # Everything on the page, and what is drawn before and after each element, that still has an animation, a
@@ -219,6 +223,28 @@ try:
     cols=3;rows=(len(tiles)+cols-1)//cols;sheet=Image.new('RGB',(cols*SZ,max(1,rows)*SZ),(30,30,30))
     for i,t in enumerate(tiles): sheet.paste(t,((i%cols)*SZ,(i//cols)*SZ))
     sheet.save(f'{out}/demos.png',optimize=True);made.append({'file':'demos.png','title':f'Demos ({len(tiles)} of them, {fig})'});check(f'demo sheet ({len(tiles)} tiles, {fig})',len(tiles)>0,len(tiles))
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    # Home, with the follows flag on (it is off by default): the posts of a member the admin follows and
+    # the admin's own, with Community beside it. Then the flag goes off again for the pages after.
+    kai=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    api(kai,'signup',{'username':'kai','password':'flowa-test-only','displayName':'Kai Loops'});api(kai,'me',{'props':['poi']},'PUT')
+    api(kai,'posts',{'body':'Three-beat weave at half speed, then at full. The turn finally sits on the beat.','tags':[{'prop':'poi','skill':'F2'}]})
+    api(op,'flags',{'flags':{'follows':True}},'PUT');api(op,'users/kai/follow',{},'PUT')
+    js("localStorage.setItem('fl-tl','home')");load();nav('#/practice')
+    page('home','Home: the people you follow, and your own posts','#/timeline')
+    check('Home is open, with Community beside it, and shows the followed member',js("return document.querySelector('.tl-tabs .on')?.dataset.v")=='home' and 'Kai Loops' in txt('[data-tour=feed]'))
+    page('home-phone','Home, phone','#/timeline',w=420,ht=900)
+    page('profile-follows','Public profile with Follow and the counts','#/u/kai')
+    cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    # Taken last but one, so the pictures before are as they were: then kai's post and the follow go,
+    # with the flag and the remembered tab, before the first-run picture.
+    posts_of=lambda name: json.loads(op.open(BASE+'api/posts?user='+name,timeout=20).read())['posts']
+    kp=[p['id'] for p in posts_of('kai')]
+    for pid in kp: api(kai,f'posts/{pid}',{},'DELETE')
+    api(op,'users/kai/follow',{},'DELETE')
+    gone=json.loads(op.open(BASE+'api/following',timeout=20).read())['following']==[]
+    api(op,'flags',{'flags':{'follows':False}},'PUT');js("localStorage.removeItem('fl-tl')");load()
+    check('after the Home pictures kai has no post, the admin follows nobody, and the flag is off again',kp!=[] and posts_of('kai')==[] and gone and not get_me(op)['flags']['follows'])
     # First run: a new member before any prop is chosen. The menu lists only what opens.
     new=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()));api(new,'signup',{'username':'newcomer','password':'flowa-test-only'})
     js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
