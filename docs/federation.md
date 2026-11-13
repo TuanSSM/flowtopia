@@ -706,15 +706,61 @@ app. Both are listed under "Out of scope" in FRD and FWR.
 
 ### 6.3 Activities in
 
-**One decoder for the shapes JSON-LD allows.** Flowa runs no JSON-LD processor, so the same field
-arrives in several shapes and each must be read: one value or a list of them (`to`, `cc`, `type`,
-`attributedTo`, `tag`, `attachment`, `url`, `icon`, and `publicKey`, where the SWICG report on HTTP
-signatures says to pick the entry whose `id` is the signature's key id), and an id as a string or an embedded object
-carrying it (`actor`, `object`, `attributedTo`, `publicKey`, `inReplyTo`). Two small types do this
-for every field (`oneOrMany`, `idOrObject`, **new**), nothing reads these fields any other way, and
-the fixtures hold each shape. `@context` is not interpreted: a property is recognised by its short
-name, and by its full `https://www.w3.org/ns/activitystreams#` form where a server sends that.
-`TestDecodeShapes` (**new**).
+**One decoder for the shapes JSON-LD allows** (built, with no caller yet: the section "federation:
+the shapes activities arrive in" of `main.go`). Flowa runs no JSON-LD processor, so the same property
+arrives in several shapes, and this is the one place they are read. Every document first passes one scan
+(`apScan`), linear in its length and without recursion: well-formed JSON, valid UTF-8 (AS2 Core 2 requires
+it) with no escaped half of a surrogate pair, the limits of 7.5, and no member name twice in one object,
+however it is spelled (an escaped letter does not make another name). Left to itself, `encoding/json` keeps the last of
+two equal names, turns invalid UTF-8 into U+FFFD and matches struct fields without regard to case, so two
+parsers could read two documents from one body; after the scan the decoder reads members by their exact
+names, never through structs. Then:
+
+- **One value or many** (`oneOrMany`, **new**): `type`, `to`, `cc`, `bto`, `bcc`, `audience`,
+  `attributedTo`, `object`, `tag`, `attachment`, `url`, `icon`, `publicKey`, `alsoKnownAs`, `items`.
+  `null`, an empty list and absence are the same (AS2 Core 2); a `null` inside a list is skipped; a list
+  inside a list is refused, since "JSON-LD forbids arrays of arrays" (AS2 Core 5), but only in a property
+  Flowa reads: elsewhere it is passed over, as consumers "MUST NOT stop processing" for an extension
+  (Mastodon's `focalPoint` is a list).
+- **An id or the object** (`idOrObject`, **new**): a string, or an embedded object carrying `id` (a Link's
+  `href`), in any of the properties above and in `actor`, `target`, `inReplyTo`, `first`, `next`,
+  `endpoints` and `movedTo`. Where Flowa acts on one value of a property the vocabulary lets hold several
+  (`actor`, `target`, `inReplyTo`, `movedTo`, `endpoints`), a list of one is read and a longer one refused.
+  `@id` and `@type` in an object Flowa reads are refused: the normative context aliases them to `id` and
+  `type`, AS2 Core 2.1 requires the compacted form, which writes the aliases, and no text shows a server
+  sending the keywords. Inside a property Flowa does not read they are left alone.
+- **Names:** a property is recognised by its short name, its compact name and its full IRI: `as:` and
+  `https://www.w3.org/ns/activitystreams#` for the Activity Streams terms (`inbox` is `ldp:inbox` in the
+  normative context, read on 13 November 2026), `sec:` and `https://w3id.org/security#` for `publicKey`,
+  `publicKeyPem`, `owner` and `controller`, `toot:` and `http://joinmastodon.org/ns#` for `suspended`. Two
+  spellings of one property in one object are refused as a duplicate; so are `items` and `orderedItems`
+  together, which the context maps to one property. `@context` is never interpreted, in any shape.
+- **Types:** `type` is one name or a list. The object's kind is the one Activity Vocabulary type among
+  them (and `Hashtag`), written short, `as:Note` or in full; other names are extensions and ignored; two
+  vocabulary types in one list are refused. "Is a Note" is kind `Note`; an actor is one of the five Actor
+  Types of the Activity Vocabulary (3.2): Application, Group, Organization, Person, Service.
+- **Ids** are absolute https URLs the fetcher would ask (`apIDOK` runs the fetcher's own check: port 443,
+  no user name, a public DNS name), at most 2,048 bytes, compared as written (AS2 Core 2.2). A document
+  with one that is not, in an id, an address or anything Flowa would fetch or deliver to, is refused.
+  `url`, a Hashtag's `href`, `icon` and an attachment's `url` that are not are left out instead, so a
+  broken avatar link does not cost the profile.
+- **Readers**, for exactly what this note uses: an actor (below), an activity's envelope (`id`, required
+  because the inbox removes duplicates by it, `type`, one `actor`, `object` by id or embedded, `target`,
+  the five addressing properties with the public collection's three forms read as one, `published`,
+  `updated`), a post as 6.5 and 6.6 read it (`attributedTo`, `inReplyTo`, `name`, `summary`, `content`
+  and `contentMap`, `sensitive`, `tag` with Mention and Hashtag, `attachment` with both `name` and
+  `summary`, the latter first as 6.5 says, `url`, `published`, `updated`), a Tombstone, and a collection
+  or page (`totalItems`, `first`, `next`, `items` or `orderedItems`). Dates follow AS2 Core 2.3; a
+  `publicKey` entry is chosen by its id, fragment included, and its `publicKeyPem` goes to
+  `parsePublicKeyPEM` exactly as the JSON string holds it. 7.3's origin checks need nothing new:
+  `sameOrigin` compares an activity's actor with its key id or its object's id, and a post is by its
+  actor when `attributedTo` holds that actor alone.
+
+Every refusal is a fixed phrase and the path of the property it is about (`object.tag.href`), both safe to
+log. The documents in `testdata/federation/shapes` are examples copied from ActivityPub, Activity Streams
+2.0 Core and Mastodon's ActivityPub page, and the two of this note; none is recorded (their README says
+from where). `TestDecodeShapes`, `TestDecodeFixtures`, `TestDecodeActor`, `TestDecodeNote`,
+`TestDecodeActivity`, `TestDecodeCollection`, `TestDecodeRefusals` and two fuzz targets hold them.
 
 **What Flowa reads from a remote actor:** `id`, `type`, `preferredUsername`, `name`, `summary`
 (through `htmlToText`), `url`, `icon`, `inbox`, `endpoints.sharedInbox`, `followers`, `publicKey`,
@@ -1265,9 +1311,11 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
 | Limit | Value |
 | --- | --- |
 | Inbox body | 256 KB (`http.MaxBytesReader`), 413 above |
-| JSON depth | 24 levels, checked by a token walk before decoding, 400 above |
-| Array length | 1,000 elements in `to`, `cc`, `tag`, `attachment`; longer is 400 |
-| A string field | 64 KB; `content` is cut to 64 KB before conversion |
+| JSON depth | 24 levels of objects and lists, checked by the decoder's scan before anything is decoded (6.3), 400 above |
+| Array length | 1,000 entries in every list and 1,000 members in every object, whatever property holds it (a remote server chooses them all); longer is 400 |
+| Recipients | 1,000 in `to`, `cc`, `bto`, `bcc` and `audience` together; more is 400 |
+| Member names | each once in an object, in any spelling (an escaped letter, a compact or a full IRI name for the same property); a second is 400 |
+| A string field | 64 KB for text (`name`, `summary`, `preferredUsername`, ...); 2,048 bytes for an id or URL (`maxURL`); 255 for a media type or a language tag; `content` and each `contentMap` entry are cut to 64 KB, on a character boundary, before conversion |
 | Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only, the latter with no `profile` or with the Activity Streams one among its profiles (WebFinger: `application/jrd+json`, the type RFC 7033 4.2 names, or plain `application/json`; NodeInfo: `application/json`, any parameters; both 64 KB, as built in FRD 2). Plain `application/json` is refused for an actor or object: ActivityPub 3.2 names only the two types, and no recording shows a server Flowa needs serving it; a fixture that does reopens this. The type is checked before the body is read, and the cap counts the inflated bytes of a compressed answer |
 | Fetched pictures | 8 MB in, 4096 px a side checked with `image.DecodeConfig` before decoding, as `shrinkThumb` does; **one picture decoded at a time** (a mutex), because a 4096 by 4096 picture is 64 MB once decoded and the container has 384 MB |
 | Inbox requests per remote host | 300 in 5 minutes in a `limiter` keyed by host, 429 above |

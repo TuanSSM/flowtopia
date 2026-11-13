@@ -1,0 +1,40 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    {
+      "votersCount": "http://joinmastodon.org/ns#votersCount"
+    }
+  ],
+  "id": "https://mastodon.example/users/alice/statuses/1009947848598745",
+  "type": "Question",
+  "content": "What should I eat for breakfast today?",
+  "published": "2023-03-05T07:40:13Z",
+  "endTime": "2023-03-06T07:40:13Z",
+  "votersCount": 7,
+  "anyOf": [
+    {
+      "type": "Note",
+      "name": "apple",
+      "replies": {
+        "type": "Collection",
+        "totalItems": 3
+      }
+    },
+    {
+      "type": "Note",
+      "name": "orange",
+      "replies": {
+        "type": "Collection",
+        "totalItems": 7
+      }
+    },
+    {
+      "type": "Note",
+      "name": "banana",
+      "replies": {
+        "type": "Collection",
+        "totalItems": 6
+      }
+    }
+  ]
+}

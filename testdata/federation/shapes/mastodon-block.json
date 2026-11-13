@@ -1,0 +1,8 @@
+{
+  "@context": "https://www.w3.org/ns/activitystreams",
+  "id": "https://mastodon.example/bd06bb61-01e0-447a-9dc8-95915db9aec8",
+  "type": "Block",
+  "actor": "https://mastodon.example/users/alice",
+  "object": "https://example.com/~mallory",
+  "to": "https://example.com/~mallory"
+}

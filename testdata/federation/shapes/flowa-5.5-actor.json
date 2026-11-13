@@ -1,0 +1,43 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://w3id.org/security/v1",
+    {
+      "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+      "toot": "http://joinmastodon.org/ns#",
+      "discoverable": "toot:discoverable",
+      "indexable": "toot:indexable",
+      "featured": {"@id": "toot:featured", "@type": "@id"},
+      "PropertyValue": "schema:PropertyValue",
+      "value": "schema:value",
+      "schema": "http://schema.org#",
+      "flowa": "https://github.com/TuanSSM/flowtopia/ns#"
+    }
+  ],
+  "id": "https://flowa.example.org/users/ana",
+  "type": "Person",
+  "preferredUsername": "ana",
+  "name": "Ana",
+  "summary": "<p>Poi and staff, mostly in the park.</p>",
+  "url": "https://flowa.example.org/users/ana",
+  "inbox": "https://flowa.example.org/users/ana/inbox",
+  "outbox": "https://flowa.example.org/users/ana/outbox",
+  "followers": "https://flowa.example.org/users/ana/followers",
+  "following": "https://flowa.example.org/users/ana/following",
+  "featured": "https://flowa.example.org/users/ana/featured",
+  "endpoints": {"sharedInbox": "https://flowa.example.org/inbox"},
+  "manuallyApprovesFollowers": false,
+  "discoverable": false,
+  "indexable": false,
+  "published": "2026-11-02T18:00:00Z",
+  "icon": {"type": "Image", "mediaType": "image/jpeg", "url": "https://flowa.example.org/users/ana/avatar.jpg?v=3f9a1c"},
+  "attachment": [
+    {"type": "PropertyValue", "name": "Props", "value": "Poi, Staff"},
+    {"type": "PropertyValue", "name": "Instagram", "value": "<a href=\"https://www.instagram.com/ana.flow\" rel=\"me nofollow noopener\" target=\"_blank\">ana.flow</a>"}
+  ],
+  "publicKey": {
+    "id": "https://flowa.example.org/users/ana#main-key",
+    "owner": "https://flowa.example.org/users/ana",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqh...\n-----END PUBLIC KEY-----\n"
+  }
+}

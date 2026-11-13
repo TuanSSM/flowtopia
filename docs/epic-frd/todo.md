@@ -121,6 +121,25 @@ design note says it exists.
   settled and the note corrected. DoD: `TestDBRemoteActorCache`, `TestFixturesParse`, `TestDecodeShapes`,
   `TestDBPurgeRemote`,
   `TestDBRemoteRowsStayRemote`; `TestDBQueryPlans` holds with 2,000 remote accounts.
+  Built so far, with no caller yet: the decoder (federation.md 6.3 says what it reads and every rule
+  chosen where the texts leave a choice; 7.5 the limits it holds). `apScan` checks a whole document in
+  one pass before anything is decoded (well-formed JSON, UTF-8 without lone surrogates, 24 levels, 1,000
+  entries in any list or object, no member name twice in any spelling); `oneOrMany` and `idOrObject`
+  read every property that may be a list or a link; `decodeActor` (with `key`, chosen by id, fragment
+  included), `decodeActivity`, `decodeNote`, `decodeTombstone` and `decodeCollection` read exactly what
+  the note uses, and the same for an object embedded in another. Every refusal is a typed reason with the
+  property's path. The 28 documents in `testdata/federation/shapes` are examples copied from ActivityPub,
+  Activity Streams 2.0 Core, Mastodon's ActivityPub page and this note, none recorded, so the recorded
+  fixtures, `TestFixturesParse` and the questions only a recording settles (alt text property, mention
+  nesting) are still open. `TestDecodeShapes`, `TestDecodeFixtures`, `TestDecodeActor`, `TestDecodeNote`,
+  `TestDecodeActivity`, `TestDecodeCollection`, `TestDecodeRefusals` and `TestDecodeAdversarial` pass with
+  `-race -count=3`; `FuzzDecodeDocument` and `FuzzDecodeScan` ran 30 s each (the second found that the
+  readers did not allow whitespace before the document, now fixed and kept as a corpus entry). On a 2.1 GHz
+  Xeon `BenchmarkDecodeNote` (the Create of 6.5 with its Note) is about 45 µs, 15 KB and 194 allocations,
+  `BenchmarkDecodeActor` (the actor of 5.5) about 30 µs, 11 KB and 143 allocations; the costly inputs of
+  `BenchmarkDecodeAdversarial` take 13 to 18 times as long at 1 MB as at 64 KB, the slowest (1,000
+  distinct escaped names in every object) about 40 ms and 23 MB for 1 MB, and a list, a nesting or a
+  repeated name over the limit is refused in under 0.05 ms at either size.
 - [ ] **People elsewhere: search by handle.** A box that takes `@name@host` or a profile URL,
   resolves it by WebFinger (HTTPS only, the `self` link, the reverse lookup from the actor's
   `preferredUsername` and host: federation.md section 11), and shows the remote profile and the
