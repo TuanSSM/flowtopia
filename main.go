@@ -7833,7 +7833,9 @@ const (
 // that was wrong and has been corrected (a Raspberry Pi takes its time from the network after it
 // starts): keeping the memory's clock would refuse as stale every honest signature older than the
 // size of the step, and all of them once it passes 12 hours, until real time caught up. So the memory
-// forgets everything, as a restart does, and takes the wall clock; stepped reports it once.
+// forgets everything, as a restart does, and takes the wall clock; stepped reports it once. Every caller
+// passes the wall clock as it read it just before the call, so calls in flight together differ by
+// moments, never by sigAhead.
 func (s *replaySet) advance(now int64) {
 	if now < s.now-s.back {
 		s.forgetAll()

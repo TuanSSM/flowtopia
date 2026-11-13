@@ -1956,6 +1956,10 @@ func TestReplayConcurrent(t *testing.T) {
 		t.Errorf("%d goroutines added the same signature", wins.Load())
 	}
 
+	// The clock the goroutines share moves 1,600 s in all (16 goroutines, a second every twentieth
+	// signature), so however far one of them falls behind the others, the time it brings is never
+	// more than sigAhead behind the memory's clock: that would be a corrected clock, which makes the
+	// memory forget everything (TestReplayClockStep), and a repeat after it is accepted by design.
 	s = newReplaySet(1000, sigPast) // 100 an origin, 20 origins
 	var clock atomic.Int64
 	clock.Store(at)
@@ -1963,7 +1967,10 @@ func TestReplayConcurrent(t *testing.T) {
 	for g := range 16 {
 		wg.Go(func() {
 			for i := range 2000 {
-				now := clock.Add(int64(i % 2))
+				now := clock.Load()
+				if i%20 == 0 {
+					now = clock.Add(1)
+				}
 				o := rgroup((g*7 + i) % 40)
 				g1 := sig1(rk(g*100000+i), now-int64(i%7200))
 				if s.add(o, now, g1) == 0 {
@@ -1976,6 +1983,9 @@ func TestReplayConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
+	if s.stepped() {
+		t.Error("the memory took the test's clock for a corrected one and forgot everything")
+	}
 	replayInvariants(t, s, "after the goroutines")
 	if accepted.Load() == 0 {
 		t.Error("nothing was accepted")
