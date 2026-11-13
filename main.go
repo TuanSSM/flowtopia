@@ -15,6 +15,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"embed"
@@ -4185,9 +4186,11 @@ func parseLink(raw string) (postLink, bool) {
 	return postLink{}, false
 }
 
-// The fetcher asks the three sites about a link from the server, never from a visitor's browser.
-// It only talks to the hosts below, follows redirects only between them, refuses private addresses,
-// gives up after 3 s and reads at most 256 KB of an answer (2 MB of a thumbnail).
+// The fetcher is the server's one way out to other machines (docs/federation.md, 7.8). Link cards
+// ask the three video sites about a link from the server, never from a visitor's browser: only the
+// hosts below, redirects only between them, 3 s, at most 256 KB of an answer (2 MB of a thumbnail).
+// Federation, once it exists, asks any host its domain policy allows, under the stricter rules of
+// fetchRules. Every request, of either kind, goes through fetcher.do and its one dialer.
 var (
 	previewHosts = []string{"youtube.com", "www.youtube.com", "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com", "instagram.com", "www.instagram.com"}
 	thumbHosts   = []string{"ytimg.com", "tiktokcdn.com", "tiktokcdn-us.com", "cdninstagram.com", "fbcdn.net"}
@@ -4200,19 +4203,179 @@ const (
 	maxThumbOut  = 60 << 10
 	thumbSide    = 640
 	refreshAfter = 7 * 24 * time.Hour
+
+	// The transport's own limits are backstops: the deadline of each kind (fetchRules) is shorter
+	// and covers the whole request. 10 s is the longest kind, a picture.
+	dialTimeout   = 10 * time.Second
+	maxRedirects  = 3                // redirects followed, for every kind that follows any
+	maxURL        = 2048             // bytes in a federation URL; longer ones are refused unasked
+	errBodyCap    = 4 << 10          // bytes read of an answer that is not used (an error, a redirect, a delivery's reply)
+	maxRetryAfter = 12 * time.Hour   // the longest Retry-After believed, as the delivery queue does (8.3)
+	maxHeaderIn   = 64 << 10         // bytes of response headers; Go's default is 1 MB
+	perHost       = 1                // requests at once to one host, as link cards have always done and 8.4 budgets
+	idleTimeout   = 30 * time.Second // an idle pooled connection is closed after this
 )
+
+// fetchKind names what a request is for. Each kind has one row in fetchRules, and fetcher.do takes
+// nothing else, so a later caller cannot pick a method, a header or a cap of its own.
+type fetchKind uint8
+
+const (
+	fetchPreview   fetchKind = iota // a link card: a page or oEmbed answer, or its thumbnail
+	fetchDocument                   // an ActivityPub actor, object or collection
+	fetchWebFinger                  // a WebFinger lookup (RFC 7033)
+	fetchNodeInfo                   // a NodeInfo discovery document or the document it names
+	fetchPicture                    // a remote picture: an avatar, a header, an attachment
+	fetchDelivery                   // an activity POSTed to an inbox
+	fetchKinds
+)
+
+// redirectRule says which redirects a kind follows. Every redirect followed is checked again like the
+// first URL (scheme, host, port), its address by the dialer, and at most maxRedirects are followed.
+type redirectRule uint8
+
+const (
+	redirectNone       redirectRule = iota // a 3xx is a failure: a delivery is never resent elsewhere
+	redirectSameOrigin                     // only to the same scheme, host and port: a document's id must be where it came from
+	redirectAnyOrigin                      // to another origin too: pictures, and WebFinger as RFC 7033 4.2 allows
+	redirectPreview                        // link cards, as always: to any preview or thumbnail host
+)
+
+const (
+	asType   = `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`
+	asAccept = asType + `, application/activity+json`
+)
+
+// fetchRule is everything a kind may do.
+type fetchRule struct {
+	method   string
+	accept   string        // the Accept header; "" sends none
+	ctype    string        // the Content-Type of a POST's body
+	timeout  time.Duration // the whole request: DNS, connect, TLS, headers, every redirect and the body
+	limit    int64         // bytes of the answer after inflation; a larger answer is refused, never cut
+	types    []string      // media types a successful answer may have, checked before its body is read; nil takes any
+	ok       []int         // statuses that are a success
+	redirect redirectRule
+	fed      bool // the federation host rules, port 443 only, the refused list; false: the caller's allowlist
+	signed   bool // a Date header is set and the signer runs on every request sent, redirects included
+	keep     bool // the body is read and returned; false: it is drained up to errBodyCap and dropped
+}
+
+// fetchRules is the one table of what leaves the server. Documents accept only the two types
+// ActivityPub 3.2 names (not plain application/json, which some servers have sent: no recording
+// shows Flowa needs it, and a JSON API on a hostile host is not an actor); WebFinger also takes
+// application/json, NodeInfo only that (federation.md 7.5). Link cards keep their caller's
+// allowlist and cap (fetcher.get), their 3 s and their redirect rule, and check no type, as before.
+// Sizes: 1 MB a document, 64 KB a WebFinger or NodeInfo answer (a few KB in practice), 8 MB a
+// picture, and 4 KB read and dropped of a delivery's reply.
+var fetchRules = [fetchKinds]fetchRule{
+	// method, accept, ctype, timeout, limit, types, ok, redirect, fed, signed, keep
+	fetchPreview:   {"GET", "", "", fetchTimeout, 0, nil, []int{200}, redirectPreview, false, false, true},
+	fetchDocument:  {"GET", asAccept, "", 5 * time.Second, 1 << 20, []string{"application/activity+json", "application/ld+json"}, []int{200}, redirectSameOrigin, true, true, true},
+	fetchWebFinger: {"GET", "application/jrd+json, application/json", "", 5 * time.Second, 64 << 10, []string{"application/jrd+json", "application/json"}, []int{200}, redirectAnyOrigin, true, false, true},
+	fetchNodeInfo:  {"GET", "application/json", "", 5 * time.Second, 64 << 10, []string{"application/json"}, []int{200}, redirectSameOrigin, true, false, true},
+	fetchPicture:   {"GET", "image/jpeg, image/png, image/gif", "", 10 * time.Second, 8 << 20, []string{"image/jpeg", "image/png", "image/gif"}, []int{200}, redirectAnyOrigin, true, false, true},
+	fetchDelivery:  {"POST", "", asType, 5 * time.Second, errBodyCap, nil, []int{200, 201, 202, 204}, redirectNone, true, true, false},
+}
+
+// signer adds the headers that sign a request (the next item: Signature, Digest). fetcher.do calls it
+// with the request exactly as it will be sent, Date already set, once for every request, a redirect
+// included, because a signature covers the host and the path. It must not change the method or URL.
+type signer func(req *http.Request, body []byte) error
+
+// fetchReq describes one outbound request.
+type fetchReq struct {
+	kind fetchKind
+	url  string
+	body []byte // a delivery's activity; nil for a GET
+	// refused are the hosts the domain policy refuses, each with its subdomains. Until FMD keeps
+	// domain policies the caller passes them; the tests fill them.
+	refused []string
+	self    bool   // the instance's own origin may be asked (nothing does yet); refused otherwise
+	sign    signer // required for a delivery, optional for a document (signed fetch)
+	// Link cards only, as fetcher.get has always been given them: the hosts allowed and the cap.
+	allow []string
+	limit int64
+}
+
+// fetchResult is a successful answer.
+type fetchResult struct {
+	Status     int
+	URL        *url.URL // where the answer came from after redirects: the id check (sameID) compares with it
+	Type       string   // the answer's media type, lower case, without parameters
+	Body       []byte
+	RetryAfter time.Duration // from Retry-After, bounded to 12 hours; 0 when absent
+}
+
+// fetchFail is what went wrong, for callers that decide by it: the key refetch rule, the delivery
+// queue's retries and the host circuit breaker.
+type fetchFail uint8
+
+const (
+	failRefused  fetchFail = iota + 1 // refused by a rule: the URL, the host, the port, or the address at connect time
+	failConnect                       // could not connect: the name did not resolve, the connection or TLS failed
+	failTimeout                       // the kind's deadline passed, or the caller's
+	failCanceled                      // the caller gave up
+	failTooLarge                      // the answer is over the kind's cap
+	failType                          // the answer's media type is not one the kind takes
+	failGone                          // 410: the object or actor was deleted
+	failNotFound                      // 404
+	failStatus                        // another status; Status and RetryAfter say which and when to ask again
+	failRedirect                      // a redirect the kind does not follow, or too many
+)
+
+// fetchError is every error fetcher.do returns. Reason is short and safe to log: it never holds a
+// body, a header value or a URL's query.
+type fetchError struct {
+	Fail       fetchFail
+	Host       string
+	Reason     string
+	Status     int
+	RetryAfter time.Duration
+	err        error // the cause, for errors.Is (a context error); not printed
+}
+
+func (e *fetchError) Error() string { return e.Host + ": " + e.Reason }
+func (e *fetchError) Unwrap() error { return e.err }
+
+// addrRefused is the dialer's refusal, told apart from a failed connection.
+type addrRefused struct{ what string }
+
+func (e *addrRefused) Error() string { return "refusing to connect to " + e.what }
+
+// dialOverride lets a test reach its local stub without weakening the guard for anything else. It is
+// a field set by the test, never a setting: resolve stands in for DNS, every address it gives is still
+// checked by dialGuard, and only the exact stub address passes whatever its port and address.
+type dialOverride struct {
+	resolve func(host string) []string // host to "ip:port" addresses, in the order a resolver would give them
+	stub    string                     // the stub's listening address
+}
 
 type fetcher struct {
 	client *http.Client
-	// base, set only by tests (FLOWA_PREVIEW_BASE), sends every request to one stub server instead.
-	base string
-	mu   sync.Mutex
-	busy map[string]*sync.Mutex // one fetch at a time per host
-	off  bool                   // FLOWA_PREVIEW_FETCH=off: never fetch
+	tr     *http.Transport
+	// base, set only by tests (FLOWA_PREVIEW_BASE), sends every link card request to one stub server
+	// instead. Federation kinds are refused while it is set: the stub weakens the address guard.
+	base         string
+	allowPrivate bool
+	mu           sync.Mutex
+	busy         map[string]*hostSlot // requests in flight per host; an entry goes when nobody uses it
+	off          bool                 // FLOWA_PREVIEW_FETCH=off: never fetch a link card
+	origin       publicOrigin         // this instance, in a mode that federates: never asked unless a request says so
+	version      string               // in the User-Agent
+	over         *dialOverride        // tests only
 	// dials counts the connections this fetcher tried to open: allowed, refused, or to a name that
 	// did not resolve. Nothing reads it while the server runs; TestDBLocalModeUnchanged holds it at
 	// zero through a start.
 	dials atomic.Int64
+}
+
+// hostSlot holds the requests in flight to one host: at most perHost at once, the others waiting for
+// as long as their caller allows. A fixed mutex per host, as link cards had, would keep one entry for
+// every host ever asked, and federation asks any host.
+type hostSlot struct {
+	ch    chan struct{}
+	users int
 }
 
 func hostAllowed(host string, list []string) bool {
@@ -4227,10 +4390,18 @@ func hostAllowed(host string, list []string) bool {
 
 // reservedNets are ranges that are not the public internet, beyond what net.IP's methods cover:
 // shared address space (carrier-grade NAT and VPNs), IETF protocol assignments, benchmarking,
-// "this network", the reserved class E block, and NAT64, which can lead back to a private IPv4.
+// documentation, "this network", the reserved class E block, the deprecated 6to4 relay and site-local
+// ranges, discard-only, and the IPv6 ranges that carry an IPv4 address inside (IPv4-compatible,
+// IPv4-translated, NAT64, 6to4 and Teredo), each of which can lead back to a private IPv4.
+// IPv4-mapped addresses (::ffff:a.b.c.d) need no row: net.IP checks them as the IPv4 they carry.
 var reservedNets = func() []*net.IPNet {
 	out := []*net.IPNet{}
-	for _, c := range []string{"100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "0.0.0.0/8", "240.0.0.0/4", "64:ff9b::/96", "64:ff9b:1::/48"} {
+	for _, c := range []string{
+		"100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "0.0.0.0/8", "240.0.0.0/4", "64:ff9b::/96", "64:ff9b:1::/48",
+		"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "192.88.99.0/24", // documentation, 6to4 relay
+		"::/96", "::ffff:0:0:0/96", "2002::/16", "2001::/32", // IPv4-compatible, IPv4-translated, 6to4, Teredo
+		"2001:db8::/32", "3fff::/20", "2001:2::/48", "100::/64", "fec0::/10", // documentation, benchmarking, discard, site-local
+	} {
 		_, n, _ := net.ParseCIDR(c)
 		out = append(out, n)
 	}
@@ -4249,89 +4420,450 @@ func publicIP(ip net.IP) bool {
 	return true
 }
 
-func newFetcher(base string, allowPrivate bool) *fetcher {
-	f := &fetcher{base: strings.TrimRight(base, "/"), busy: map[string]*sync.Mutex{}}
-	dialer := &net.Dialer{Timeout: fetchTimeout, Control: func(network, address string, _ syscall.RawConn) error {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			return err
-		}
-		if ip := net.ParseIP(host); ip == nil || (!allowPrivate && !publicIP(ip)) {
-			return fmt.Errorf("refusing to connect to %s", host)
-		}
+// dialGuard is the dialer's Control function: it runs on the address actually being connected, after
+// DNS, once for every address tried (each address of an answer with several, each redirect, each new
+// connection), and before the connection is made. A name cannot answer a public address to a check and
+// a private one to the dial, because there is no earlier check: this is the only one. A pooled
+// connection was dialled through it too, and is reused only for the same scheme, host and port.
+// Only port 443 is dialled; the link card stub (allowPrivate) and a test's stub are the exceptions.
+func dialGuard(address string, allowPrivate bool, over *dialOverride) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	if over != nil && address == over.stub {
 		return nil
+	}
+	if ip := net.ParseIP(host); ip == nil || (!allowPrivate && !publicIP(ip)) {
+		return &addrRefused{host}
+	}
+	if !allowPrivate && port != "443" {
+		return &addrRefused{"port " + port}
+	}
+	return nil
+}
+
+func newFetcher(base string, allowPrivate bool) *fetcher {
+	f := &fetcher{base: strings.TrimRight(base, "/"), allowPrivate: allowPrivate, busy: map[string]*hostSlot{}, version: buildVersion}
+	dialer := &net.Dialer{Timeout: dialTimeout, Control: func(network, address string, _ syscall.RawConn) error {
+		return dialGuard(address, allowPrivate, f.over)
 	}}
 	// Counted before the name is looked up: a fetch to a name that does not resolve asked a name
 	// server, and that is a connection to another machine too.
 	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
 		f.dials.Add(1)
+		if f.over != nil {
+			return f.over.dial(ctx, dialer, network, address)
+		}
 		return dialer.DialContext(ctx, network, address)
 	}
-	tr := &http.Transport{DialContext: dial, TLSHandshakeTimeout: fetchTimeout, ResponseHeaderTimeout: fetchTimeout, MaxIdleConns: 4, DisableCompression: false}
-	f.client = &http.Client{Transport: tr, Timeout: fetchTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 3 {
-			return errors.New("too many redirects")
-		}
-		host := req.URL.Hostname()
-		if f.base != "" {
-			// Tests: a redirect must stay on the stub, and name an allowed host as its first segment.
-			if !strings.HasPrefix(req.URL.String(), f.base+"/") {
-				return fmt.Errorf("redirect off the stub refused")
-			}
-			host, _, _ = strings.Cut(strings.TrimPrefix(req.URL.Path, "/"), "/")
-		}
-		if !hostAllowed(host, append(append([]string{}, previewHosts...), thumbHosts...)) {
-			return fmt.Errorf("redirect to %s refused", host)
-		}
-		return nil
-	}}
+	// Proxy stays nil: a proxy from HTTPS_PROXY would make the connection for us, to an address the
+	// guard never sees. No cookie jar, and TLS verified as Go does by default, at least TLS 1.2.
+	f.tr = &http.Transport{
+		Proxy:                  nil,
+		DialContext:            dial,
+		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:    dialTimeout,
+		ResponseHeaderTimeout:  dialTimeout,
+		MaxResponseHeaderBytes: maxHeaderIn,
+		MaxIdleConns:           8,
+		MaxIdleConnsPerHost:    1,
+		IdleConnTimeout:        idleTimeout,
+	}
+	// Redirects are followed by do, which checks each one by the kind's rule.
+	f.client = &http.Client{Transport: f.tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return f
 }
 
-// get fetches an allowed URL and returns at most limit bytes of the body.
-func (f *fetcher) get(ctx context.Context, target string, hosts []string, limit int64) ([]byte, *url.URL, error) {
-	u, err := url.Parse(target)
-	if err != nil || u.Scheme != "https" || !hostAllowed(u.Hostname(), hosts) {
-		return nil, nil, fmt.Errorf("not an allowed URL: %s", target)
+// dial connects to the addresses resolve gives for the host, in turn, each through the guard, as
+// net.Dialer does with the addresses of a DNS answer.
+func (o *dialOverride) dial(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
 	}
-	reqURL := target
-	if f.base != "" {
-		// Tests: the stub serves /<host><path>?<query>.
-		reqURL = f.base + "/" + u.Hostname() + u.EscapedPath()
-		if u.RawQuery != "" {
-			reqURL += "?" + u.RawQuery
+	addrs := o.resolve(host)
+	if len(addrs) == 0 {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	var errs []error
+	for _, a := range addrs {
+		c, err := d.DialContext(ctx, network, a)
+		if err == nil {
+			return c, nil
+		}
+		errs = append(errs, err)
+	}
+	return nil, errors.Join(errs...)
+}
+
+// fedHost says why a host may not be asked for a federation kind, or "" when it may, and gives the
+// host in the form compared with the refused list: lower case, without a trailing dot. Refused before
+// any connection: an IP address in any form url.Parse or a resolver accepts (dotted, bracketed, and
+// the decimal, octal and hex forms of inet_aton such as 2130706433 or 0x7f.1, which all end in a
+// numeric label), a name with no dot, localhost, the private names allowedHost lets through for the
+// home network, and anything but ASCII letters, digits, dots and dashes (Go turns a name in another
+// script into its xn-- form on the way out, which the refused list would not have seen).
+func fedHost(host string) (string, string) {
+	h := strings.TrimSuffix(strings.ToLower(host), ".")
+	switch {
+	case h == "":
+		return h, "no host"
+	case len(h) > 253:
+		return h, "a host name over 253 characters"
+	case net.ParseIP(h) != nil || strings.Contains(h, ":"):
+		return h, "an IP address"
+	case strings.Trim(h, "abcdefghijklmnopqrstuvwxyz0123456789.-") != "":
+		return h, "not a plain DNS name"
+	case h == "localhost" || strings.HasSuffix(h, ".localhost"):
+		return h, "localhost"
+	case !strings.Contains(h, "."):
+		return h, "a name with no dot"
+	case strings.Contains(h, ".."), strings.HasPrefix(h, "."):
+		return h, "an empty label"
+	}
+	for _, s := range privateSuffixes {
+		if strings.HasSuffix(h, s) {
+			return h, "a private name"
 		}
 	}
+	last := h[strings.LastIndexByte(h, '.')+1:]
+	if strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "" {
+		return h, "an IP address in numeric form"
+	}
+	return h, ""
+}
+
+// check says why a URL may not be asked for a kind, or "" when it may. It runs on the first URL and
+// on every redirect.
+func (f *fetcher) check(rule *fetchRule, r *fetchReq, u *url.URL) string {
+	if !rule.fed {
+		if u.Scheme != "https" || !hostAllowed(u.Hostname(), r.allow) {
+			return "not an allowed URL"
+		}
+		return ""
+	}
+	if u.Scheme != "https" {
+		return "not https"
+	}
+	if u.User != nil {
+		return "a user name in the URL"
+	}
+	if p := u.Port(); p != "" && p != "443" {
+		return "a port other than 443"
+	}
+	host, why := fedHost(u.Hostname())
+	if why != "" {
+		return why
+	}
+	refused := make([]string, 0, len(r.refused))
+	for _, h := range r.refused {
+		refused = append(refused, strings.TrimSuffix(strings.ToLower(h), "."))
+	}
+	if hostAllowed(host, refused) {
+		return "a refused host"
+	}
+	if f.origin.host != "" && host == f.origin.host && !r.self {
+		return "this instance's own origin"
+	}
+	return ""
+}
+
+// originOf is a URL's origin, compared whole: scheme, host and port, the default port written out.
+func originOf(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"https": "443", "http": "80"}[scheme]
+	}
+	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+}
+
+// sameID says whether a fetched document's id is the URL it was fetched from (federation.md 7.3):
+// the fragment removed, the origins compared whole (host case and a written default port do not
+// matter), the path and query compared as written (a trailing slash does).
+func sameID(id string, fetched *url.URL) bool {
+	u, err := url.Parse(id)
+	if err != nil || fetched == nil || !u.IsAbs() || u.Opaque != "" || u.User != nil || u.Host == "" {
+		return false
+	}
+	return originOf(u) == originOf(fetched) && u.EscapedPath() == fetched.EscapedPath() && u.RawQuery == fetched.RawQuery
+}
+
+// retryAfter reads Retry-After, in seconds or as a date, bounded to 0 and 12 hours.
+func retryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	var d time.Duration
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		d = time.Duration(min(max(n, 0), int64(maxRetryAfter/time.Second))) * time.Second
+	} else if t, err := http.ParseTime(v); err == nil {
+		d = t.Sub(now)
+	}
+	return min(max(d, 0), maxRetryAfter)
+}
+
+// acquire waits for a place among the requests to host, for as long as ctx allows.
+func (f *fetcher) acquire(ctx context.Context, host string) (func(), error) {
 	f.mu.Lock()
-	lock := f.busy[u.Hostname()]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		f.busy[u.Hostname()] = lock
+	s := f.busy[host]
+	if s == nil {
+		s = &hostSlot{ch: make(chan struct{}, perHost)}
+		f.busy[host] = s
 	}
+	s.users++
 	f.mu.Unlock()
-	lock.Lock()
-	defer lock.Unlock()
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-	if err != nil {
-		return nil, nil, err
+	leave := func() {
+		f.mu.Lock()
+		if s.users--; s.users == 0 {
+			delete(f.busy, host)
+		}
+		f.mu.Unlock()
 	}
-	req.Header.Set("User-Agent", "Flowa link preview (+self-hosted)")
-	resp, err := f.client.Do(req)
-	if err != nil {
-		return nil, nil, err
+	select {
+	case s.ch <- struct{}{}:
+		return func() { <-s.ch; leave() }, nil
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
 	}
+}
+
+// do sends one request as its kind allows and returns the answer, or a *fetchError. What it
+// guarantees, for every kind: the URL and every redirect checked before anything is dialled, every
+// address checked by the dialer, one deadline over the whole request, the answer's status and type
+// checked before its body is read, and the body read up to the cap and refused above it (after
+// inflation: Go's transport inflates gzip itself). It logs nothing.
+func (f *fetcher) do(ctx context.Context, r fetchReq) (*fetchResult, error) {
+	if r.kind >= fetchKinds {
+		return nil, &fetchError{Fail: failRefused, Reason: "an unknown kind of request"}
+	}
+	rule := &fetchRules[r.kind]
+	refuse := func(host, why string) (*fetchResult, error) {
+		return nil, &fetchError{Fail: failRefused, Host: host, Reason: why}
+	}
+	if rule.fed && len(r.url) > maxURL {
+		return refuse("", "a URL over 2048 bytes")
+	}
+	u, err := url.Parse(r.url)
+	if err != nil {
+		return refuse("", "not a URL")
+	}
+	host := strings.ToLower(u.Hostname())
+	if why := f.check(rule, &r, u); why != "" {
+		return refuse(host, why)
+	}
+	switch {
+	case rule.fed && (f.base != "" || f.allowPrivate):
+		return refuse(host, "the link card stub is set, which lets private addresses through")
+	case rule.fed && r.allow != nil:
+		return refuse(host, "an allowlist is for link cards")
+	case rule.method == "GET" && r.body != nil:
+		return refuse(host, "a body on a GET")
+	case r.kind == fetchDelivery && r.sign == nil:
+		return refuse(host, "a delivery is never sent unsigned")
+	}
+	limit := rule.limit
+	if !rule.fed {
+		limit = r.limit
+	}
+	// The address on the wire: the URL itself, or for link cards in a test, the stub's /<host><path>.
+	wire := u
+	if !rule.fed && f.base != "" {
+		s := f.base + "/" + u.Hostname() + u.EscapedPath()
+		if u.RawQuery != "" {
+			s += "?" + u.RawQuery
+		}
+		if wire, err = url.Parse(s); err != nil {
+			return refuse(host, "not a URL")
+		}
+	}
+
+	release, err := f.acquire(ctx, host)
+	if err != nil {
+		return nil, f.failure(ctx, ctx, host, err)
+	}
+	defer release()
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, rule.timeout)
+	defer cancel()
+
+	for hops := 0; ; hops++ {
+		resp, err := f.send(ctx, rule, &r, wire)
+		if err != nil {
+			return nil, f.failure(ctx, parent, host, err)
+		}
+		if !isRedirect(resp.StatusCode) || resp.Header.Get("Location") == "" {
+			return f.answer(ctx, parent, rule, limit, host, wire, resp)
+		}
+		loc := resp.Header.Get("Location")
+		io.CopyN(io.Discard, resp.Body, errBodyCap)
+		resp.Body.Close()
+		if rule.redirect == redirectNone {
+			// Following would send the signed body again to an address its signature did not name;
+			// the delivery queue tries again later instead.
+			return nil, &fetchError{Fail: failRedirect, Host: host, Status: resp.StatusCode, Reason: fmt.Sprintf("answered %d; a delivery is not redirected", resp.StatusCode)}
+		}
+		if hops >= maxRedirects {
+			return nil, &fetchError{Fail: failRedirect, Host: host, Reason: "too many redirects"}
+		}
+		next, err := wire.Parse(loc)
+		if err != nil {
+			return refuse(host, "a redirect to something that is not a URL")
+		}
+		if rule.redirect == redirectPreview {
+			// Link cards, unchanged: in a test the redirect stays on the stub and names an allowed host
+			// as its first segment.
+			to := next.Hostname()
+			if f.base != "" {
+				if !strings.HasPrefix(next.String(), f.base+"/") {
+					return refuse(host, "redirect off the stub refused")
+				}
+				to, _, _ = strings.Cut(strings.TrimPrefix(next.Path, "/"), "/")
+			}
+			if !hostAllowed(to, append(append([]string{}, previewHosts...), thumbHosts...)) {
+				return refuse(host, fmt.Sprintf("redirect to %s refused", to))
+			}
+			wire = next
+			continue
+		}
+		if why := f.check(rule, &r, next); why != "" {
+			return refuse(host, "redirect to "+why)
+		}
+		if rule.redirect == redirectSameOrigin && originOf(next) != originOf(wire) {
+			return nil, &fetchError{Fail: failRedirect, Host: host, Reason: "a redirect to another origin"}
+		}
+		wire = next
+	}
+}
+
+func isRedirect(code int) bool {
+	switch code {
+	case 301, 302, 303, 307, 308:
+		return true
+	}
+	return false
+}
+
+// send makes one request, with only the headers the kind sends: built afresh for every redirect, so
+// no Authorization, Cookie or signature header is carried from one request to the next, and no
+// Referer is ever sent. Accept-Encoding is left to the transport, which then inflates gzip itself.
+func (f *fetcher) send(ctx context.Context, rule *fetchRule, r *fetchReq, wire *url.URL) (*http.Response, error) {
+	var body io.Reader
+	if r.body != nil {
+		body = bytes.NewReader(r.body)
+	}
+	req, err := http.NewRequestWithContext(ctx, rule.method, wire.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	if rule.fed {
+		ua := "Flowa/" + f.version
+		if f.origin.url != "" {
+			ua += " (+" + f.origin.url + "/)"
+		}
+		req.Header.Set("User-Agent", ua)
+	} else {
+		req.Header.Set("User-Agent", "Flowa link preview (+self-hosted)")
+	}
+	if rule.accept != "" {
+		req.Header.Set("Accept", rule.accept)
+	}
+	if rule.ctype != "" {
+		req.Header.Set("Content-Type", rule.ctype)
+	}
+	if rule.signed {
+		req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
+		if r.sign != nil {
+			before := req.Method + " " + req.URL.String()
+			if err := r.sign(req, r.body); err != nil {
+				return nil, &fetchError{Fail: failRefused, Host: wire.Hostname(), Reason: "could not sign the request", err: err}
+			}
+			if req.Method+" "+req.URL.String() != before {
+				return nil, &fetchError{Fail: failRefused, Host: wire.Hostname(), Reason: "the signer changed the request line"}
+			}
+		}
+	}
+	return f.client.Do(req)
+}
+
+// answer checks a final answer and reads its body within the cap.
+func (f *fetcher) answer(ctx, parent context.Context, rule *fetchRule, limit int64, host string, wire *url.URL, resp *http.Response) (*fetchResult, error) {
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, nil, fmt.Errorf("%s answered %d", u.Hostname(), resp.StatusCode)
+	ra := retryAfter(resp.Header.Get("Retry-After"), time.Now())
+	if !slices.Contains(rule.ok, resp.StatusCode) {
+		io.CopyN(io.Discard, resp.Body, errBodyCap)
+		e := &fetchError{Fail: failStatus, Host: host, Status: resp.StatusCode, RetryAfter: ra, Reason: fmt.Sprintf("%s answered %d", host, resp.StatusCode)}
+		switch resp.StatusCode {
+		case http.StatusNotFound:
+			e.Fail = failNotFound
+		case http.StatusGone:
+			e.Fail = failGone
+		}
+		return nil, e
+	}
+	mt, params, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	// ld+json is an Activity Streams document only without a profile or with that one among its profiles.
+	otherProfile := mt == "application/ld+json" && params["profile"] != "" && !slices.Contains(strings.Fields(params["profile"]), "https://www.w3.org/ns/activitystreams")
+	if rule.types != nil && (!slices.Contains(rule.types, mt) || otherProfile) {
+		return nil, &fetchError{Fail: failType, Host: host, Status: resp.StatusCode, Reason: "an answer of a type this request does not take"}
+	}
+	res := &fetchResult{Status: resp.StatusCode, URL: wire, Type: mt, RetryAfter: ra}
+	if !rule.keep {
+		io.CopyN(io.Discard, resp.Body, errBodyCap)
+		return res, nil
+	}
+	tooLarge := &fetchError{Fail: failTooLarge, Host: host, Status: resp.StatusCode, Reason: fmt.Sprintf("answer from %s is too large", host)}
+	if resp.ContentLength > limit {
+		return nil, tooLarge
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, nil, err
+		return nil, f.failure(ctx, parent, host, err)
 	}
 	if int64(len(body)) > limit {
-		return nil, nil, fmt.Errorf("answer from %s is too large", u.Hostname())
+		return nil, tooLarge
 	}
-	return body, resp.Request.URL, nil
+	res.Body = body
+	return res, nil
+}
+
+// failure turns an error from the transport into a *fetchError. The reason is one of a few fixed
+// phrases: Go's errors carry the URL, which may have a query, and sometimes text the remote sent.
+func (f *fetcher) failure(ctx, parent context.Context, host string, err error) error {
+	var fe *fetchError
+	if errors.As(err, &fe) {
+		return fe
+	}
+	var ar *addrRefused
+	var ne net.Error
+	var dns *net.DNSError
+	var cert *tls.CertificateVerificationError
+	var rec tls.RecordHeaderError
+	switch {
+	case errors.As(err, &ar):
+		return &fetchError{Fail: failRefused, Host: host, Reason: ar.Error(), err: err}
+	case errors.Is(parent.Err(), context.Canceled):
+		return &fetchError{Fail: failCanceled, Host: host, Reason: "canceled", err: parent.Err()}
+	case ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
+		return &fetchError{Fail: failTimeout, Host: host, Reason: "timed out", err: context.DeadlineExceeded}
+	case errors.As(err, &dns):
+		return &fetchError{Fail: failConnect, Host: host, Reason: "could not connect: the name did not resolve", err: err}
+	case errors.As(err, &cert), errors.As(err, &rec):
+		return &fetchError{Fail: failConnect, Host: host, Reason: "could not connect: TLS failed", err: err}
+	}
+	return &fetchError{Fail: failConnect, Host: host, Reason: "could not connect", err: err}
+}
+
+// get fetches a link card URL from an allowed host and returns at most limit bytes of the body.
+func (f *fetcher) get(ctx context.Context, target string, hosts []string, limit int64) ([]byte, *url.URL, error) {
+	res, err := f.do(ctx, fetchReq{kind: fetchPreview, url: target, allow: hosts, limit: limit})
+	if err != nil {
+		return nil, nil, err
+	}
+	return res.Body, res.URL, nil
 }
 
 var (
@@ -7223,6 +7755,12 @@ func (a *app) start(getenv func(string) string) error {
 	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
 	a.fetch = newFetcher(getenv("FLOWA_PREVIEW_BASE"), getenv("FLOWA_PREVIEW_BASE") != "")
 	a.fetch.off = getenv("FLOWA_PREVIEW_FETCH") == "off"
+	// Federation requests name this build and instance in their User-Agent, and never ask the
+	// instance itself. Nothing sends one yet.
+	a.fetch.version = a.version
+	if a.mode.federates() {
+		a.fetch.origin = fed.origin
+	}
 	// A single-profile instance is checked before the admin account is made, so an ADMIN_USER that
 	// would be a second account is refused with nothing written (checkSingle).
 	if a.mode == modeSingle {

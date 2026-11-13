@@ -422,6 +422,30 @@ two settings (with a mode that is not built it stops as the start would), and it
 a lost secret: set a new `FLOWA_KEY_SECRET` first. This version does not tell followers yet: other servers
 pick the new keys up when a signature next fails to verify.
 
+### What the server will connect to
+
+The link card fetcher has grown into the one way out for federation too (`fetcher.do` in `main.go`), but
+**nothing uses the federation part yet**: link cards are still the only requests the server sends. Once
+federation is built, every request to another server goes through it, and these are the rules:
+
+- Only `https`, only port 443, on the first address and on every redirect. A WebFinger lookup is never
+  retried over `http`.
+- Never an IP address written as the host (in any form, including `2130706433` or `0x7f.1`), `localhost`, a
+  name with no dot, a private name (`.local`, `.lan`, `.internal` and the like), a name with a user name in
+  front, a URL over 2,048 bytes, a refused domain or any name under it, or this instance's own name.
+- Every connection is checked again when it is made, after the name is looked up: loopback, private,
+  link-local (including the cloud metadata address `169.254.169.254`), carrier-grade NAT, documentation,
+  multicast and reserved addresses are refused, and so are the IPv6 forms that carry an IPv4 address inside
+  (mapped, compatible, NAT64, 6to4, Teredo). No proxy from `HTTPS_PROXY` is used, since it would make the
+  connection where the check cannot see it.
+- At most 3 redirects. An actor, an object or a NodeInfo document is followed only on its own origin (its id
+  must be where it was fetched from); a picture and a WebFinger lookup may move to another server; a
+  delivery is never redirected.
+- Time and size per request, the body included: 5 s and 1 MB for a document, 5 s for a delivery, 10 s and
+  8 MB for a picture. The answer's type is checked before its body is read, and an answer over its size is
+  refused, never cut, also when it arrives compressed.
+- One request at a time to one server; at least TLS 1.2, with the certificate checked.
+
 Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from
 `X-Forwarded-For` (or `X-Real-IP`), but only when the connection comes from a trusted proxy, and it reads
@@ -486,7 +510,8 @@ in the container's environment, when set, is shown instead.
 
 The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
-outbound requests the server makes are link previews to Instagram, TikTok and YouTube. Every response
+outbound requests the server makes are link previews to Instagram, TikTok and YouTube (what federation will
+add, and the rules it must keep, are under "What the server will connect to" above). Every response
 forbids framing by other sites and MIME sniffing and sends no referrer.
 
 Limits: at most two password hashes run at once; failed sign-ins are counted per address and username
@@ -619,7 +644,7 @@ canonical form without tracking parameters. Anything else is refused.
 
 Previews are fetched in the background after a post is made, so posting never waits for another site. The
 fetcher only talks to those sites and their image hosts, follows redirects only between them, refuses private
-and loopback addresses, gives up after 3 s, and reads at most 256 KB of an answer and 2 MB of a picture. Short
+and loopback addresses and any port but 443, gives up after 3 s, and reads at most 256 KB of an answer and 2 MB of a picture. Short
 links are followed to their video. A preview is fetched once per link and refreshed at most weekly; a failure
 leaves a plain card with the site's name and the link. Instagram answers without a login only sometimes, so
 its cards may have no title or picture. Thumbnails are scaled to 640 px and re-encoded as JPEG by the server,

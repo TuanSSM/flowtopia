@@ -7,8 +7,9 @@ Commits title of the category's type. An item is checked only when its DoD holds
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
 **Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): the first item is
-built behind the mode, which is not startable yet, and waits for its Pi measurement; the owner's review of the
-design is still asked for. 0 of 8 items done. The design note was checked against the specifications and
+built behind the mode, which is not startable yet, and waits for its Pi measurement; the guarded fetcher is
+done, and nothing calls its federation part yet; the owner's review of the design is still asked for. 1 of 8
+items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -30,7 +31,7 @@ design note says it exists.
   about 44 ms a key, `BenchmarkSealKey` 3.6 µs and `BenchmarkOpenKey` (open and parse) 0.12 ms.
   Open: the key generation time on the Pi (`go test -run xxx -bench GenerateKey -benchmem .` on the Pi, or
   the line "keys: made the key of the instance actor in N ms" in its log).
-- [ ] **One guarded fetcher.** `fetcher.do` generalises `fetcher.get`: GET and POST, any host the
+- [x] **One guarded fetcher.** `fetcher.do` generalises `fetcher.get`: GET and POST, any host the
   policy allows for federation, the preview allowlist for link cards as before, redirects re-checked
   (to another origin only for media and WebFinger), caps on time, size and content type, the
   `Accept` header ActivityPub requires on a GET; only port 443, and the 6to4 and Teredo ranges
@@ -39,6 +40,16 @@ design note says it exists.
   `TestFetcherLookups` pass unchanged; `TestPublicIPReserved` gains the two ranges;
   `TestFederationFetcherRefusals` covers a redirect to a private address, to http, to a refused
   host, another port, a large body, a slow body, a wrong type, a mismatched id.
+  Built: `fetchRules`, one row per kind (link card, document, WebFinger, NodeInfo, picture, delivery) with
+  its method, headers, deadline, size, answer types, statuses and redirect rule; `fetcher.get` a thin caller
+  for link cards; a typed `signer` hook run on every request sent; `fetchError` with the failure kinds later
+  items decide by; `sameID` for the id check of federation.md 7.3; per-host slots that wait on the caller's
+  context and are dropped when idle; `reservedNets` with 6to4, Teredo and the ranges federation.md 7.8 lists.
+  `TestFederationFetcherRefusals` and its neighbours, `TestDialGuard`, `TestSameID` and
+  `TestPublicIPReserved` pass; `TestFetcherLookups` and `TestFetcherRefusals` are unedited (the latter
+  needs IPv6 on the machine for its `[::1]` line, which CI has). `BenchmarkFetchDocument` on the CI-class
+  runner: about 70 to 85 µs, 9.1 KB and 107 allocations a fetch over a kept-alive TLS connection, the
+  local stub's own work included; section 12 names no budget for it.
 - [ ] **HTTP signatures.** Signing and verifying draft-cavage-12 (`rsa-sha256` sent; `hs2019` and no
   `algorithm` accepted, all verified as RSASSA-PKCS1-v1_5 with SHA-256; `Digest: SHA-256=` on POST)
   and RFC 9421 as Mastodon accepts it (one signature, `created` present, `@method`, `@target-uri`

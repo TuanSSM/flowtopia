@@ -92,12 +92,18 @@ func TestAllowedHost(t *testing.T) {
 }
 
 func TestPublicIPReserved(t *testing.T) {
-	for _, s := range []string{"100.64.1.2", "100.127.255.1", "192.0.0.8", "198.18.0.1", "0.1.2.3", "240.0.0.1", "64:ff9b::7f00:1", "10.0.0.1", "127.0.0.1", "169.254.169.254", "::1", "fd00::1"} {
+	for _, s := range []string{"100.64.1.2", "100.127.255.1", "192.0.0.8", "198.18.0.1", "0.1.2.3", "240.0.0.1", "64:ff9b::7f00:1", "10.0.0.1", "127.0.0.1", "169.254.169.254", "::1", "fd00::1",
+		// 6to4 and Teredo carry an IPv4 address inside an IPv6 one (docs/federation.md, 7.8).
+		"2002:c0a8:101::1", "2002:808:808::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001::1",
+		// The other ranges a careful guard refuses: mapped, compatible and translated IPv4, NAT64's
+		// local prefix, documentation and benchmarking, multicast, site-local, discard-only.
+		"::ffff:127.0.0.1", "::ffff:10.1.2.3", "::127.0.0.1", "::ffff:0:a00:1", "64:ff9b:1::a00:1", "192.0.2.1", "198.51.100.7",
+		"203.0.113.9", "192.88.99.1", "2001:db8::1", "3fff::1", "2001:2::1", "224.0.0.1", "ff0e::1", "fec0::1", "100::1", "::", "0.0.0.0", "255.255.255.255", "fe80::1"} {
 		if publicIP(net.ParseIP(s)) {
 			t.Errorf("%s is not public", s)
 		}
 	}
-	for _, s := range []string{"142.250.180.14", "157.240.1.35", "2a03:2880:f12f:83:face:b00c::25de"} {
+	for _, s := range []string{"142.250.180.14", "157.240.1.35", "2a03:2880:f12f:83:face:b00c::25de", "::ffff:142.250.180.14", "2001:4860:4860::8888", "2003::1"} {
 		if !publicIP(net.ParseIP(s)) {
 			t.Errorf("%s is public", s)
 		}

@@ -1098,7 +1098,7 @@ path and query as received for `(request-target)`, `@path` and `@query` (finding
 | JSON depth | 24 levels, checked by a token walk before decoding, 400 above |
 | Array length | 1,000 elements in `to`, `cc`, `tag`, `attachment`; longer is 400 |
 | A string field | 64 KB; `content` is cut to 64 KB before conversion |
-| Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only (WebFinger: `application/jrd+json`, the type RFC 7033 4.2 names, or plain `application/json`; NodeInfo: `application/json`) |
+| Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only, the latter with no `profile` or with the Activity Streams one among its profiles (WebFinger: `application/jrd+json`, the type RFC 7033 4.2 names, or plain `application/json`; NodeInfo: `application/json`, any parameters; both 64 KB, as built in FRD 2). Plain `application/json` is refused for an actor or object: ActivityPub 3.2 names only the two types, and no recording shows a server Flowa needs serving it; a fixture that does reopens this. The type is checked before the body is read, and the cap counts the inflated bytes of a compressed answer |
 | Fetched pictures | 8 MB in, 4096 px a side checked with `image.DecodeConfig` before decoding, as `shrinkThumb` does; **one picture decoded at a time** (a mutex), because a 4096 by 4096 picture is 64 MB once decoded and the container has 384 MB |
 | Inbox requests per remote host | 300 in 5 minutes in a `limiter` keyed by host, 429 above |
 | Inbox handling at once | 4, 8 more may wait 2 s, then 503 with `Retry-After: 30` |
@@ -1137,7 +1137,25 @@ Every outbound request goes through one fetcher (`fetcher.do`, **new**, generali
   was written for nine known hosts and now meets any host: **only port 443** is dialled (any port
   with the test setting of 5.1), and `reservedNets` gains the ranges that carry an IPv4 address
   inside an IPv6 one, 6to4 (`2002::/16`) and Teredo (`2001::/32`), with cases in
-  `TestPublicIPReserved`.
+  `TestPublicIPReserved`. As built (FRD 2), the list was checked against what a careful guard refuses:
+  already refused were loopback, RFC 1918, link-local (with `169.254.169.254`), `fc00::/7`, `fe80::/10`,
+  `::1`, `::`, multicast, `0.0.0.0/8`, `100.64.0.0/10`, `192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`,
+  NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`) and IPv4-mapped addresses (`::ffff:a.b.c.d`, checked as the IPv4
+  they carry); added with 6to4 and Teredo were IPv4-compatible (`::/96`) and IPv4-translated
+  (`::ffff:0:0:0/96`) addresses, the documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`,
+  `203.0.113.0/24`, `2001:db8::/32`, `3fff::/20`), IPv6 benchmarking (`2001:2::/48`), the old 6to4 relay
+  (`192.88.99.0/24`), discard-only (`100::/64`) and site-local (`fec0::/10`). The guard runs in the dialer's
+  `Control` function on the address being connected, for each address of a DNS answer and each redirect,
+  so a name cannot answer one address to a check and another to the dial: there is no earlier check.
+  The test reaches its local stub through a field the test sets (`dialOverride`), which lets only that one
+  address through; no setting does.
+- Hosts before any connection, for federation: no IP address written as the host (with the inet_aton forms
+  such as `2130706433` and `0x7f.1`), no name without a dot, no `localhost`, no private suffix, nothing but
+  ASCII letters, digits, dots and dashes (Go would turn another script into its `xn--` form after the refused
+  list was compared), no user name, no URL over 2,048 bytes, and never the instance's own origin unless the
+  caller says so. Until FMD's domain policies exist, the caller passes the refused hosts (each with its
+  subdomains, any case, a trailing dot ignored). The link card stub (`FLOWA_PREVIEW_BASE`) refuses every
+  federation request, since it lets private addresses through.
 - Hosts: the preview allowlist for link cards as today; for federation any host the domain policy
   allows (section 10). Only `https`.
 - Redirects: at most 3, each re-checked against the scheme, the policy and the dial guard; a redirect
@@ -1146,12 +1164,23 @@ Every outbound request goes through one fetcher (`fetcher.do`, **new**, generali
   lets a WebFinger resource redirect (to `https` only), and Mastodon's `WEB_DOMAIN` setting depends on
   it: the handle's domain answers WebFinger with a 301 to the server's own domain (Mastodon
   configuration page). A WebFinger lookup is never retried over `http` (RFC 7033 4.2: MUST NOT).
+  A NodeInfo document follows the same-origin rule of documents. **A POST is never redirected** (as
+  built): a delivery answered 3xx fails and the queue tries again later, because following would send
+  the signed body to an address its signature did not name. Each request after a redirect is built
+  afresh, so no `Authorization`, `Cookie` or signature header is carried over (Go 1.26's client drops only
+  `Authorization`, `WWW-Authenticate`, `Cookie`, `Cookie2` and the two proxy authentication headers, only
+  to a host that is not the first one or under it, and adds a `Referer`, so it is not used to follow
+  redirects), and the signer runs again for the new URL. The final URL is returned for the
+  id check of 7.3 (`sameID`).
 - Headers: a GET for a document sends
   `Accept: application/ld+json; profile="https://www.w3.org/ns/activitystreams", application/activity+json`
   (ActivityPub 3.2 and 7: the client MUST ask with the first); a delivery sends the
   `Content-Type` of 7.1; a NodeInfo GET asks for `application/json` (NodeInfo protocol,
   "Retrieval").
-- Time: 5 s for a document or a delivery (the delivery is retried later), 10 s for a picture.
+- Time: 5 s for a document or a delivery (the delivery is retried later), 10 s for a picture, one
+  deadline over the name lookup, the connection, TLS, every redirect and the whole body. Success is 200
+  for a GET and 200, 201, 202 or 204 for a delivery; 404 and 410 are told apart, other statuses carry
+  their code and `Retry-After` (bounded to 12 hours), and no more than 4 KB of an error's body is read.
 - Size: as in 7.5. Content types: as in 7.5, others refused before reading the body. Mastodon guards
   its own fetches the same way, refusing private address ranges unless an operator lists them in
   `ALLOWED_PRIVATE_ADDRESSES` (configuration page).
