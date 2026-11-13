@@ -95,7 +95,9 @@ def load(url=None,what='the page to load'):
         # Between two pages the browser can answer from an empty document, or refuse to answer at all.
         try: return js(HOOK+";const m=document.querySelector('#main');return !!m&&m.childElementCount>0")
         except RuntimeError: return False
-    wait_for(drawn,what,30);idle()
+    # A whole page, with the figure and its clips, is given as long to go quiet as to draw: on a busy
+    # machine the first load of a run has taken more than the 10 s a change of page gets.
+    wait_for(drawn,what,30);idle(timeout=30)
 def nav(h):
     # Changes the address and waits for the page to have drawn it and fetched what it needs.
     n,moved=js(HOOK+";const b=location.hash,n=__q.nav;location.hash=arguments[0];return [n,location.hash!==b]",h)
