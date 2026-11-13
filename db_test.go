@@ -5383,8 +5383,9 @@ func TestDBSingleRoutes(t *testing.T) {
 	}
 }
 
-// federatedBuilt builds federated mode for one test. No instance can run it yet (modesBuilt), so the
-// tests that reach the code behind it build it themselves and put modesBuilt back after.
+// federatedBuilt builds federated mode for one test when this version does not (modesBuilt), and puts
+// modesBuilt back after. Federated mode is built since discovery (FRD 4), so today it does nothing; it
+// is kept so the tests of the parts below discovery say what they need.
 func federatedBuilt(t *testing.T) {
 	t.Helper()
 	if modesBuilt[modeFederated] {
@@ -5486,11 +5487,17 @@ func refusesKeys(t *testing.T, e *tenv, f *federation, name string) {
 
 // A mode that federates reads FLOWA_ORIGIN and FLOWA_KEY_SECRET before anything is written, and stops
 // the start with a message that names the setting and never shows the secret. The origin's host is a
-// name the server answers to then, and the routes are the routes of local mode: nothing new is served.
+// name the server answers to then, the routes are those of local mode and discovery's three, and the
+// start says once what this version of federation does.
 func TestDBFederatedStart(t *testing.T) {
 	logs := logged(t)
-	if err := rotateCommand(fedEnv(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "not built") {
-		t.Errorf("-rotate-keys while federated mode is not built: %v, want not built", err)
+	for _, mode := range []string{"local", "single"} {
+		if err := rotateCommand(fedEnv(map[string]string{"FLOWA_MODE": mode}), io.Discard); err == nil || !strings.Contains(err.Error(), "does not federate") {
+			t.Errorf("-rotate-keys in %s mode: %v, want does not federate", mode, err)
+		}
+	}
+	if err := rotateCommand(fedEnv(nil), io.Discard); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("-rotate-keys in federated mode without a database: %v, want DATABASE_URL", err)
 	}
 	federatedBuilt(t)
 	for _, c := range []struct {
@@ -5549,10 +5556,13 @@ func TestDBFederatedStart(t *testing.T) {
 			t.Errorf("a request for %s answers %d, want %d", host, w.Code, want)
 		}
 	}
-	// Nothing new is served: the routes are those of local mode.
+	// What is new is discovery and nothing else: the routes are those of local mode and the three.
 	got := slices.Sorted(slices.Values(e.a.table(staticOf(t, nil)).patterns))
-	if want := routesFile(t, "testdata/routes-local.txt"); !slices.Equal(got, want) {
-		t.Errorf("federated mode serves other routes than local mode:\n%v\n%v", got, want)
+	if want := slices.Sorted(slices.Values(slices.Concat(routesFile(t, "testdata/routes-local.txt"), routesFile(t, "testdata/routes-federated.txt")))); !slices.Equal(got, want) {
+		t.Errorf("federated mode serves other routes than local mode and discovery:\n%v\n%v", got, want)
+	}
+	if n := strings.Count(logs.String(), discoveryOnly); n != 1 {
+		t.Errorf("the start says what federation does %d times, want once", n)
 	}
 	// No answer, no audit row and no log line holds the secret, the private key or its sealed form.
 	// The log captured here is what log.Printf writes. main's log.Fatal paths print only the errors of

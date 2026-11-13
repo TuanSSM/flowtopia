@@ -628,10 +628,21 @@ function pageSettings() {
       ${me ? `<div class="field">Dominant hand<div class="seg" role="group" aria-label="Dominant hand" style="width:max-content">${[['L', 'Left'], ['R', 'Right']].map(([k, n]) => `<button class="${state.settings.dominant === k ? 'on' : ''}" data-act="dominant" data-v="${k}" aria-pressed="${state.settings.dominant === k}">${n}</button>`).join('')}</div></div>` : ''}</div></div>
     ${me ? `<div class="card"><div class="card-h"><h2>Data: ${esc(curProp().name)}</h2></div><p class="small muted" style="margin-bottom:12px">Export, import and reset apply to your ${esc(curProp().name.toLowerCase())} progress only. The server also keeps a daily backup for 14 days.</p>
       <div class="row wrap"><button class="btn" data-act="export">Export JSON</button><button class="btn" data-act="file">Import JSON</button><input type="file" accept="application/json" data-change="import" hidden><button class="btn danger" data-act="reset">Reset</button></div></div>` : ''}
+    ${me && fed ? fedCard() : ''}
     <div class="card"><div class="card-h"><h2>About the skill maps</h2></div><p class="small muted">Each map takes its technique names from the sources listed on its skills. Prerequisites and tiers are coaching proposals, not rules of the art. Skills marked unconfirmed could not be checked against a source.</p>
       <p class="small muted" style="margin-top:10px">What is planned for Flowa itself is in its repository, the same for every prop.</p>
       <div class="row wrap" style="margin-top:10px"><a href="${DOCS_URL}roadmap.md" target="_blank" rel="noopener noreferrer" class="btn sm">Roadmap ${icon('ext')}</a><a href="${DOCS_URL}epics.md" target="_blank" rel="noopener noreferrer" class="btn sm">Epics ${icon('ext')}</a></div></div>
   </div>`;
+}
+// Sharing beyond this server, shown only where the server federates (fed). The switch is the member's opt-in;
+// on a Flowa that is one person's own the setting FLOWA_FEDERATE is that choice, so there is no switch.
+function fedCard() {
+  const on = fed.optedIn;
+  return `<div class="card"><div class="card-h"><h2>Beyond this server</h2></div><div class="stack">
+    ${fed.implied ? `<p class="small">Your profile is shared beyond this server: this Flowa is yours alone, and it is set up to federate.</p>`
+    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>Share my profile and public posts beyond this server</span></label>`}
+    <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. For now that is all this Flowa answers: it says who you are when asked, and sends nothing. Your profile and your public posts will follow in a later version. Practice, progress, notes, stats and badges never leave this server.</p>
+    ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}</div></div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
 const pageOff = what => `<div class="empty">${what} is turned off on this Flowa. An admin can turn it on under Admin, Features. <a href="#/">Go to the dashboard</a>.</div>`;
@@ -1074,6 +1085,13 @@ document.addEventListener('change', async e => {
     case 'flag': setFlag(d.k, t.checked); break;
     case 'gate': if (t.checked) state.gates[d.id] = dayKey(); else delete state.gates[d.id]; commit(); break;
     case 'setting': state.settings[d.k] = t.value.trim(); t.blur(); commit(); break;
+    case 'federates': {
+      const want = t.checked, r = await api('me', 'PUT', { federates: want });
+      if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'Your profile is shared beyond this server.' : 'Your profile is no longer shared beyond this server.'); }
+      else toast(r.error);
+      render(); document.querySelector('[data-change="federates"]')?.focus();
+      break;
+    }
     case 'note': { const r = { ...rec(d.id), notes: t.value }; state.skills[d.id] = r; commit(); break; }
     case 'import': {
       const f = t.files[0]; t.value = '';

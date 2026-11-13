@@ -339,7 +339,11 @@ function adminAudit() {
 }
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).
-const MODES = { local: 'a community that lives on this server only, which is what FLOWA_MODE means when it is not set' };
+const MODES = { local: 'a community that lives on this server only, which is what FLOWA_MODE means when it is not set', federated: 'a community whose members can share their profiles with other servers' };
+// In a mode that federates the server says the origin and what this version of federation does, or why
+// federation is refused (a moved origin, a key secret that does not open the keys).
+const fedLine = f => !f ? '' : f.refused ? ` Federation is refused: ${f.refused.replace(/^federation refused: /, '')}.`
+  : ` Federating as ${f.origin}. This version answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents, no inbox, nothing is delivered.`;
 let adminDashboard = () => {
   if (!mod.dash) { loadDash(); return '<div class="card"><div class="empty small">Loading…</div></div>'; }
   const t = mod.dash.totals, W = mod.dash.weeks;
@@ -354,7 +358,7 @@ let adminDashboard = () => {
   <details class="card dash-table"><summary class="small">Show the weekly numbers as a table</summary><div class="table-wrap"><table class="table"><thead><tr><th>Week of</th><th>Sessions</th><th>Posts</th><th>Comments</th><th>Reports</th></tr></thead><tbody>
     ${W.map(w => `<tr><td>${esc(fmtWeek(w.week))}</td><td class="num">${w.sessions}</td><td class="num">${w.posts}</td><td class="num">${w.comments}</td><td class="num">${w.reports}</td></tr>`).join('')}</tbody></table></div></details>
   <p class="tiny dash-version" style="margin-top:12px">Flowa version <span class="num">${esc(mod.dash.version || 'dev')}</span>: what VERSION in the environment says this build is.</p>
-  <p class="tiny dash-mode">Instance mode <span class="num">${esc(mod.dash.mode || 'local')}</span>: ${esc(MODES[mod.dash.mode || 'local'] || 'what FLOWA_MODE in the environment says')}.</p>`;
+  <p class="tiny dash-mode">Instance mode <span class="num">${esc(mod.dash.mode || 'local')}</span>: ${esc(MODES[mod.dash.mode || 'local'] || 'what FLOWA_MODE in the environment says')}.${esc(fedLine(mod.dash.federation))}</p>`;
 };
 const fmtWeek = k => parseDay(k).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 async function loadDash() {

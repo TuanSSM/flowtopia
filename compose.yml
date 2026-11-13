@@ -52,6 +52,7 @@ services:
       FLOWA_MODE: ${FLOWA_MODE:-}
       FLOWA_ORIGIN: ${FLOWA_ORIGIN:-}
       FLOWA_KEY_SECRET: ${FLOWA_KEY_SECRET:-}
+      FLOWA_FEDERATE: ${FLOWA_FEDERATE:-}
       # A link for admins to the start page of this machine, in the Staff group of the menu.
       # An http or https address, like http://raspi.local:8080/. Unset: no link.
       FLOWA_HOME_URL: ${FLOWA_HOME_URL:-}

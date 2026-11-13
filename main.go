@@ -162,6 +162,9 @@ type app struct {
 	healthMu  sync.Mutex   // guards healthAt and healthWas
 	healthAt  time.Time    // when the database was last asked for GET /healthz
 	healthWas health       // what it said then
+	nodeMu    sync.Mutex   // guards nodeUse and nodeAt
+	nodeUse   nodeUsage    // NodeInfo's counts as last read (nodeCounts)
+	nodeAt    time.Time    // when; zero until first asked
 }
 
 // buildVersion names the build. A release image has its tag compiled in (build-image.sh, with -X), and
@@ -186,11 +189,12 @@ const (
 )
 
 // modesBuilt are the modes this version can run. A mode that is planned and not built stops the
-// start, as an unknown word does: an operator who asks for a federated instance must not get a local
-// community that only says "federated" on its dashboard. Single-profile mode is built without
-// federation: it is one person's own instance that shows their profile to visitors (startSingle,
-// handleRoot), and it announces nothing to other servers until FRD and FWR add that.
-var modesBuilt = map[instanceMode]bool{modeLocal: true, modeSingle: true}
+// start, as an unknown word does. All three are built. Federation itself is built only as far as
+// discovery: a federated instance (and a single-profile one with FLOWA_FEDERATE=on) answers WebFinger
+// and NodeInfo for the members who opted in, and has no actor documents, no inbox and delivers
+// nothing yet. The start says so in the log (discoveryOnly), and so do the admin dashboard and the
+// README, so that an operator is not told more than this version does.
+var modesBuilt = map[instanceMode]bool{modeLocal: true, modeFederated: true, modeSingle: true}
 
 // parseMode reads FLOWA_MODE. Unset or blank is local, so a deployment that sets nothing runs as it
 // always has. Capitals and spaces around the word are forgiven; any other word is an error that names
@@ -471,6 +475,7 @@ type limits struct {
 	bookmarks, blocks, follows                  *limiter
 	instance, about                             *limiter // saves of the instance information per admin; reads of the about page per address
 	visitor                                     *limiter // reads of a single-profile instance's visitor page and its picture, per address
+	discovery                                   *limiter // WebFinger and NodeInfo requests, per address, in a mode that federates
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 }
 
@@ -484,6 +489,9 @@ func newLimits() limits {
 		instance: newLimiter(60, time.Hour), about: newLimiter(120, time.Hour),
 		visitor: newLimiter(300, time.Hour), // a page and its picture count two: 150 views an hour from one address is more than a person makes
 		joins:   newLimiter(400, time.Hour), // twice the most requests that can wait at once (maxWaiting)
+		// Another server asks WebFinger once per handle it meets and keeps the answer; 600 an hour from one
+		// address is a mention every six seconds, and stops a harvest of names by guessing (RFC 7033 9.3).
+		discovery: newLimiter(600, time.Hour),
 	}
 }
 
@@ -1495,6 +1503,16 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 	if u != nil && u.Role == "admin" && a.homeURL != "" {
 		out["homeUrl"] = a.homeURL
 	}
+	// In a mode that federates, the member's handle and whether they share it (fedView); in any other
+	// mode the answer is as before, with no word of it.
+	if a.fed != nil && u != nil {
+		var on bool
+		if err := a.db.QueryRow(`SELECT federates FROM users WHERE id = $1`, u.ID).Scan(&on); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out["federation"] = a.fedView(u, on)
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -2030,6 +2048,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		AvatarCfg json.RawMessage `json:"avatarCfg"`
 		// The profile state the edit was made against (profileRev); optional.
 		Rev *string `json:"rev"`
+		// Share the profile beyond this server (docs/federation.md, F2): only in a mode that federates,
+		// and not in single mode, where FLOWA_FEDERATE=on is the owner's choice.
+		Federates *bool `json:"federates"`
 	}
 	if !readJSON(w, r, 200<<10, &in) {
 		return
@@ -2140,6 +2161,16 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		set("stats", string(in.Stats))
 	}
+	if in.Federates != nil {
+		switch {
+		case a.fed == nil:
+			fail(w, http.StatusBadRequest, "This Flowa does not share anything beyond itself, so there is nothing to turn on.")
+			return
+		case a.mode == modeSingle:
+			fail(w, http.StatusBadRequest, "On a Flowa that is one person's own, the setting FLOWA_FEDERATE decides whether the profile is shared beyond it.")
+			return
+		}
+	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		a.serverError(w, err)
@@ -2188,16 +2219,43 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		cur.Rev = profileRev(cur)
 	}
+	// The opt-in is its own column, outside userCols: it is read only in a mode that federates, so no
+	// other answer about a member carries it. It is not part of profileRev either: it is a switch saved
+	// on its own, not text edited against an older copy. was is what it was before, for the key below.
+	var fedOn, fedWas bool
+	if a.fed != nil {
+		if err := tx.QueryRow(`SELECT federates FROM users WHERE id = $1`, u.ID).Scan(&fedWas); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		fedOn = fedWas
+		if in.Federates != nil && *in.Federates != fedWas {
+			if _, err := tx.Exec(`UPDATE users SET federates = $2 WHERE id = $1`, u.ID, *in.Federates); err != nil {
+				a.serverError(w, err)
+				return
+			}
+			fedOn = *in.Federates
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		a.serverError(w, err)
 		return
+	}
+	// A member's key is made when they opt in (docs/federation.md 5.7), in the background; a key made
+	// once stays when they opt out, and is used again if they come back.
+	if fedOn && !fedWas {
+		a.fed.requestKey(keyOwner(u.ID))
 	}
 	// What the visitor's page of a single-profile instance shows changed: it is made again when next
 	// asked. The stats and the other parts the page writes by itself are not on it.
 	if in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil {
 		a.dropVisitorPage()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": cur})
+	out := map[string]any{"user": cur}
+	if a.fed != nil {
+		out["federation"] = a.fedView(cur, fedOn)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *app) handlePassword(w http.ResponseWriter, r *http.Request, u *user) {
@@ -5547,6 +5605,11 @@ func gateOpens(pairs, recent int, now time.Time) string {
 // for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
 func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 	out := map[string]any{"version": a.version, "mode": string(a.mode)}
+	// In a mode that federates, the origin and what this version of federation does, or why it is
+	// refused: the dashboard says it in its mode line, as the start log does.
+	if a.fed != nil {
+		out["federation"] = map[string]string{"origin": a.fed.origin.url, "refused": a.fed.refusal(), "built": discoveryOnly}
+	}
 	var users, mods, admins, active7, active30, open int
 	err := a.db.QueryRow(dashTotalsSQL).Scan(&users, &mods, &admins)
 	if err == nil {
@@ -5638,15 +5701,38 @@ func (a *app) audit(x execer, actor int64, action, kind string, targetID, target
 
 /* ---------- federation: the public origin, the key secret and the keys ----------
 
-The foundation of federation (docs/federation.md, F7, 4.3, 5.1 and 5.7) and nothing that talks to
-another server: there is no WebFinger, no actor document, no signature and no request out yet. All of
-it runs only in a mode that federates, and no such mode is built (modesBuilt), so an instance cannot
-reach any of it today: FLOWA_MODE=federated still stops the start with "not built". The tests reach
-it by building federated mode for themselves. */
+The foundation of federation (docs/federation.md, F7, 4.3, 5.1 and 5.7). All of it runs only in a mode
+that federates: federated mode, or single mode with FLOWA_FEDERATE=on (modeFederates). What talks to
+another server is built as far as discovery (WebFinger and NodeInfo, further down); there is no actor
+document, no inbox and nothing is delivered yet. */
 
-// federates says whether a mode talks to other servers. Single mode will when FLOWA_FEDERATE=on is
-// read (docs/federation.md, 4.1), which is a later item; until then only federated mode does.
-func (m instanceMode) federates() bool { return m == modeFederated }
+// discoveryOnly is what the start logs once in a mode that federates, and what the README, the design
+// note and the admin dashboard say too: what this version of federation does, and what it does not.
+const discoveryOnly = "federation: this version answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents, no inbox, nothing is delivered"
+
+// modeFederates says whether a mode talks to other servers (docs/federation.md, 4.1). Federated mode
+// does, always: FLOWA_FEDERATE is implied there and ignored. Single mode does when FLOWA_FEDERATE is on;
+// unset, blank or off is off, with capitals and spaces around the word forgiven as for FLOWA_MODE, and
+// any other value is an error, so a typing mistake cannot leave an operator thinking the profile is
+// announced when it is not (or the other way round). Local mode never does, and ignores the setting.
+func modeFederates(m instanceMode, federate string) (bool, error) {
+	switch m {
+	case modeFederated:
+		return true, nil
+	case modeSingle:
+		switch strings.ToLower(strings.TrimSpace(federate)) {
+		case "", "off":
+			return false, nil
+		case "on":
+			return true, nil
+		}
+		if len(federate) > 40 {
+			federate = federate[:40] // as parseMode cuts it
+		}
+		return false, fmt.Errorf("FLOWA_FEDERATE must be on or off, not %q (FLOWA_MODE=single reads it; unset is off)", federate)
+	}
+	return false, nil
+}
 
 // publicOrigin is the address other servers know this instance by (FLOWA_ORIGIN): "https://" and a
 // host, with a port only when it is not 443. Every actor id is made from it, and other servers compare
@@ -5924,29 +6010,37 @@ func (s keySecret) open(sealed, keyID string, o keyOwner) ([]byte, error) {
 	return plain, nil
 }
 
-// fedSettings are the two settings a mode that federates needs before it starts.
+// fedSettings are the two settings a mode that federates needs before it starts. on says whether the
+// mode federates at all; the zero value is a mode that does not.
 type fedSettings struct {
+	on     bool
 	origin publicOrigin
 	secret keySecret
 }
 
-// parseFederation reads FLOWA_ORIGIN and FLOWA_KEY_SECRET, and only in a mode that federates: a stray
-// value cannot stop a local or single-profile instance, which never uses them (TestDBLocalModeUnchanged
-// starts one with both set to values that would be refused here). main calls it beside parseMode,
-// before the database is opened, for the same reason; start calls it again before anything is written.
+// parseFederation reads FLOWA_FEDERATE (single mode only), and FLOWA_ORIGIN and FLOWA_KEY_SECRET only in
+// a mode that federates: a stray value cannot stop a local instance or a single-profile one that does
+// not federate, which never use them (TestDBLocalModeUnchanged starts one with both set to values that
+// would be refused here). main calls it beside parseMode, before the database is opened, for the same
+// reason; start calls it again before anything is written.
 func parseFederation(m instanceMode, getenv func(string) string) (fedSettings, error) {
-	if !m.federates() {
-		return fedSettings{}, nil
+	on, err := modeFederates(m, getenv("FLOWA_FEDERATE"))
+	if err != nil || !on {
+		return fedSettings{}, err
+	}
+	which := "FLOWA_MODE=" + string(m)
+	if m == modeSingle {
+		which += " with FLOWA_FEDERATE=on"
 	}
 	o, err := parseOrigin(getenv("FLOWA_ORIGIN"))
 	if err != nil {
-		return fedSettings{}, fmt.Errorf("FLOWA_MODE=%s: %w", m, err)
+		return fedSettings{}, fmt.Errorf("%s: %w", which, err)
 	}
 	s, err := parseKeySecret(getenv("FLOWA_KEY_SECRET"))
 	if err != nil {
-		return fedSettings{}, fmt.Errorf("FLOWA_MODE=%s: %w", m, err)
+		return fedSettings{}, fmt.Errorf("%s: %w", which, err)
 	}
-	return fedSettings{origin: o, secret: s}, nil
+	return fedSettings{on: true, origin: o, secret: s}, nil
 }
 
 const (
@@ -5970,6 +6064,9 @@ type federation struct {
 	mu      sync.Mutex
 	refused string // why this instance federates nothing although its mode federates; "" when it may
 	cache   map[keyOwner]cachedKey
+
+	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
+	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
 
 	ask    chan keyOwner // owners the worker is asked to make a key for
 	once   sync.Once     // starts the worker on the first request
@@ -6108,7 +6205,46 @@ func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 			return false, err
 		}
 	}
-	return made == 1, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	if o == instanceActor {
+		f.recorded.Store(true)
+	}
+	return made == 1, nil
+}
+
+// ensureOrigin records the origin before the first answer that gives an id out (WebFinger), when the
+// instance actor's key has not recorded it yet: in the second or so after the first start in a mode that
+// federates, while that key is made, and on an instance whose record was removed by hand. Once it is
+// recorded this is one atomic load. A different origin recorded meanwhile (by another server on the
+// same database) refuses federation, as at start.
+func (f *federation) ensureOrigin(ctx context.Context) error {
+	if f.recorded.Load() {
+		return nil
+	}
+	f.recordMu.Lock()
+	defer f.recordMu.Unlock()
+	if f.recorded.Load() {
+		return nil
+	}
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := recordOrigin(ctx, tx, f.origin); err != nil {
+		var moved originMoved
+		if errors.As(err, &moved) {
+			f.refuse(moved.Error())
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	f.recorded.Store(true)
+	return nil
 }
 
 // errNoKey says an owner has no key yet.
@@ -6278,6 +6414,7 @@ func (a *app) startFederation(s fedSettings) error {
 		f.refuse(originMoved{was: was, now: s.origin.url}.Error())
 		return nil
 	}
+	f.recorded.Store(was != "")
 	_, _, err = f.privateKey(context.Background(), instanceActor)
 	switch {
 	case errors.Is(err, errNoKey):
@@ -6289,6 +6426,15 @@ func (a *app) startFederation(s fedSettings) error {
 		return err
 	default:
 		log.Printf("federation: origin %s; the instance actor's key opens", s.origin)
+	}
+	// The owner of a single-profile instance has opted in by FLOWA_FEDERATE=on, and a member's key is made
+	// when they opt in (5.7): the owner's is asked for here, after the instance actor's.
+	if a.mode == modeSingle && f.refusal() == "" {
+		var id int64
+		if err := a.db.QueryRow(`SELECT id FROM users WHERE owner`).Scan(&id); err != nil {
+			return err
+		}
+		f.requestKey(keyOwner(id))
 	}
 	return nil
 }
@@ -6340,19 +6486,17 @@ func (f *federation) rotateKeys(ctx context.Context) (replaced, skipped int, err
 	return replaced, skipped, nil
 }
 
-// rotateCommand is /nunchaku -rotate-keys. It reads the mode and the two settings before it opens the
-// database, as the server does, so today, with no mode that federates built, it stops with the same
-// "not built" as a start would.
+// rotateCommand is /nunchaku -rotate-keys. It reads the mode and the settings before it opens the
+// database, as the server does, and refuses a mode that does not federate.
 func rotateCommand(getenv func(string) string, out io.Writer) error {
 	mode, err := parseMode(getenv("FLOWA_MODE"))
 	if err != nil {
 		return fmt.Errorf("-rotate-keys: %w", err)
 	}
-	if !mode.federates() {
-		return fmt.Errorf("-rotate-keys: FLOWA_MODE=%s does not federate, so there are no keys to rotate", mode)
-	}
-	if _, err := parseFederation(mode, getenv); err != nil {
+	if s, err := parseFederation(mode, getenv); err != nil {
 		return fmt.Errorf("-rotate-keys: %w", err)
+	} else if !s.on {
+		return fmt.Errorf("-rotate-keys: FLOWA_MODE=%s does not federate, so there are no keys to rotate", mode)
 	}
 	dsn := getenv("DATABASE_URL")
 	if dsn == "" {
@@ -6368,12 +6512,12 @@ func rotateCommand(getenv func(string) string, out io.Writer) error {
 
 // rotateWith rotates the keys in db for a mode that federates, and says what it did.
 func rotateWith(db *sql.DB, mode instanceMode, getenv func(string) string, out io.Writer) error {
-	if !mode.federates() {
-		return fmt.Errorf("-rotate-keys: FLOWA_MODE=%s does not federate, so there are no keys to rotate", mode)
-	}
 	s, err := parseFederation(mode, getenv)
 	if err != nil {
 		return fmt.Errorf("-rotate-keys: %w", err)
+	}
+	if !s.on {
+		return fmt.Errorf("-rotate-keys: FLOWA_MODE=%s does not federate, so there are no keys to rotate", mode)
 	}
 	f := newFederation(db, s)
 	defer f.cancel()
@@ -6387,6 +6531,444 @@ func rotateWith(db *sql.DB, mode instanceMode, getenv func(string) string, out i
 	}
 	fmt.Fprintf(out, "rotated %d keys. Restart the server so that it reads them. This version does not send Update to followers yet: other servers pick the new keys up when a signature next fails to verify.\n", n)
 	return nil
+}
+
+/* ---------- federation: discovery (WebFinger and NodeInfo) ----------
+
+How another server finds a member of this instance and learns what the instance is (docs/federation.md,
+5.3 and 5.4). Three addresses, registered only in a mode that federates (table): WebFinger
+(RFC 7033), which turns acct:ana@flowa.example.org into the id of ana's actor, and the two NodeInfo
+documents, which say what software runs here and how many people use it. WebFinger answers only for a
+member who opted in (users.federates, F2), or for the owner of a single-profile instance with
+FLOWA_FEDERATE=on, whose opt-in that setting is.
+
+The ids WebFinger gives out (/users/ana, /actor) are not served by this version: actor documents are
+the next item (FRD 5). A server that follows the self link therefore gets the app's ordinary "not
+found" until then, which is what the start log, the README and the dashboard say.
+
+All three answer every request with Access-Control-Allow-Origin: * (RFC 7033 section 5 asks it of
+WebFinger, and the NodeInfo documents are as public), errors included, and sit behind one allowance
+per address (limits.discovery), apart from every allowance a member uses, so a remote server's lookups
+are bounded and cannot lock anyone out of the app. While federation is refused (a moved origin, a key
+secret that does not open the keys: 4.3) every answer is the same 404 as an unknown name. */
+
+const (
+	jrdType       = "application/jrd+json" // RFC 7033 section 10.2
+	activityType  = "application/activity+json"
+	nodeInfoRel   = "http://nodeinfo.diaspora.software/ns/schema/2.1"
+	nodeInfoType  = `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"`
+	flowaRepo     = "https://github.com/TuanSSM/flowtopia"
+	resourceMax   = 300  // bytes of a WebFinger resource once decoded; an acct handle is far shorter
+	wfQueryMax    = 2048 // bytes of the whole query, which may also name several rel values
+	discoveryKeep = "public, max-age=300"
+	notFoundKeep  = "public, max-age=60"
+	nodeCountsAge = 5 * time.Minute
+	notHere       = "Nothing here goes by that name."
+)
+
+// discoveryPaths are the three addresses, for discoveryMethods.
+var discoveryPaths = map[string]bool{"/.well-known/webfinger": true, "/.well-known/nodeinfo": true, "/nodeinfo/2.1": true}
+
+// jrdLink is one link of a JSON Resource Descriptor (RFC 7033 4.4.4).
+type jrdLink struct {
+	Rel  string `json:"rel"`
+	Type string `json:"type,omitempty"`
+	Href string `json:"href"`
+}
+
+// jrd is a JSON Resource Descriptor (RFC 7033 4.4). links is always written, as [] when no link is
+// left, which RFC 7033 4.3 allows for a rel that matched nothing.
+type jrd struct {
+	Subject string    `json:"subject,omitempty"`
+	Aliases []string  `json:"aliases,omitempty"`
+	Links   []jrdLink `json:"links"`
+}
+
+// wfTarget is what a WebFinger resource names on this instance: a member by username, or the
+// instance actor.
+type wfTarget struct {
+	name  string // the username as stored (lower case); "" for the instance actor
+	actor bool
+}
+
+// errResource is a resource WebFinger cannot read, answered with 400 (RFC 7033 4.2).
+var errResource = errors.New("the resource is not an acct: handle or an https URL")
+
+// uriSchemeRE is the scheme of a URI (RFC 3986 3.1), with its colon.
+var uriSchemeRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
+
+// parseResource reads a WebFinger resource against the origin o. It returns errResource when the value
+// is malformed (answered 400), ok false when it is well formed but names nothing here (404, the same
+// answer as for a member who does not exist or has not opted in), and the target otherwise. It runs no
+// query and holds no lock.
+//
+// What is accepted, and why:
+//   - acct:name@host (RFC 7565, the form Mastodon asks: its WebFinger page), with the scheme in any case
+//     (RFC 3986 3.1: schemes are not case sensitive), and without the scheme, as name@host or @name@host,
+//     which is how Mastodon writes handles for people; one leading @ is forgiven in every form.
+//   - the name in any case: Flowa's usernames are lower case (usernameRE), so Ana can only mean ana, and
+//     the answer's subject is the name as stored (RFC 7033 4.4.1 lets the subject differ from the
+//     resource when it is the canonical form).
+//   - the host compared with the origin's host in any case and with one trailing dot taken off (a DNS
+//     name means the same with it). An acct host has no port in RFC 7565's grammar, so a host with one
+//     names no account here.
+//   - the actor's own URL, https://host/users/name or https://host/actor, as an actor id is written:
+//     the path exactly, no query, fragment, user or percent-encoding, the name as stored. Its port may be
+//     written when it is the origin's (":443" for an origin without one, RFC 3986 6.2.3).
+//   - acct:host@host, the instance actor (the form other servers use for an instance's own actor). A
+//     member whose username is the origin's host cannot be found by handle, which usernameRE allows;
+//     the retired names of FRD 5 can reserve it.
+//
+// What is refused as malformed: an empty value, one over resourceMax bytes, a space, a control or a
+// non-ASCII byte (a URI is ASCII: RFC 3986 2), a handle with no @ or more than one after the leading one,
+// an empty name or host, and an https URL that does not parse. Any other scheme (mailto:, http:) is a
+// well formed URI this server has no information about: 404.
+func parseResource(v string, o publicOrigin) (wfTarget, bool, error) {
+	if v == "" || len(v) > resourceMax {
+		return wfTarget{}, false, errResource
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c <= ' ' || c >= 0x7f {
+			return wfTarget{}, false, errResource
+		}
+	}
+	rest := v
+	if m := uriSchemeRE.FindString(v); m != "" {
+		switch strings.ToLower(m) {
+		case "acct:":
+			rest = v[len(m):]
+		case "https:":
+			return parseActorURL(v, o)
+		default:
+			return wfTarget{}, false, nil
+		}
+	}
+	rest = strings.TrimPrefix(rest, "@")
+	name, host, found := strings.Cut(rest, "@")
+	if !found || name == "" || host == "" || strings.Contains(host, "@") {
+		return wfTarget{}, false, errResource
+	}
+	if !sameHost(host, o.host) {
+		return wfTarget{}, false, nil
+	}
+	name = strings.ToLower(name)
+	if sameHost(name, o.host) {
+		return wfTarget{actor: true}, true, nil
+	}
+	if !usernameRE.MatchString(name) {
+		return wfTarget{}, false, nil // no member can have this name, so there is nothing to look up
+	}
+	return wfTarget{name: name}, true, nil
+}
+
+// sameHost compares a host as written in a request with the origin's host (lower case, no trailing
+// dot), in any case and with one trailing dot taken off.
+func sameHost(h, origin string) bool {
+	return strings.EqualFold(strings.TrimSuffix(h, "."), origin)
+}
+
+// parseActorURL reads the URL form of a WebFinger resource (see parseResource).
+func parseActorURL(v string, o publicOrigin) (wfTarget, bool, error) {
+	u, err := url.Parse(v)
+	if err != nil || u.Host == "" {
+		return wfTarget{}, false, errResource
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || !sameHost(u.Hostname(), o.host) {
+		return wfTarget{}, false, nil
+	}
+	want := "443"
+	if _, p, err := net.SplitHostPort(strings.TrimPrefix(o.url, "https://")); err == nil {
+		want = p
+	}
+	if got := u.Port(); got != want && (got != "" || want != "443") {
+		return wfTarget{}, false, nil
+	}
+	if u.Path == "/actor" {
+		return wfTarget{actor: true}, true, nil
+	}
+	if name, ok := strings.CutPrefix(u.Path, "/users/"); ok && usernameRE.MatchString(name) {
+		return wfTarget{name: name}, true, nil
+	}
+	return wfTarget{}, false, nil
+}
+
+// webFingerSQL finds a member WebFinger may answer for: one lookup on the unique username index. $2 is
+// true on a single-profile instance, whose owner's opt-in is FLOWA_FEDERATE=on itself. A suspended
+// member is not found, as one who does not exist, has not opted in or (later) has a retired name: every
+// one of them costs this same query and gets the same answer.
+const webFingerSQL = `SELECT username FROM users WHERE username = $1 AND (federates OR $2) AND (suspended_until IS NULL OR suspended_until <= now())`
+
+// discoveryAllowed counts a request against the address's discovery allowance, and answers 429 when it
+// is used up. It is asked first, before the query string is read or the database asked.
+func (a *app) discoveryAllowed(w http.ResponseWriter, r *http.Request) bool {
+	from := limitKey(a.clientIP(r))
+	if a.lim.discovery.add(from) {
+		return true
+	}
+	logRefusal(w, "too many discovery requests", "from "+from)
+	w.Header().Set("Retry-After", "3600")
+	discoveryFail(w, http.StatusTooManyRequests, "Too many requests from this address. Try again in an hour.")
+	return false
+}
+
+// discoveryFail answers a discovery request with an error. A 404 may be kept for a minute, as the
+// answer to a name that does not federate yet; the other errors are not kept.
+func discoveryFail(w http.ResponseWriter, code int, msg string) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	if code == http.StatusNotFound {
+		h.Set("Cache-Control", notFoundKeep)
+	} else {
+		h.Set("Cache-Control", "no-store")
+	}
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// discoveryWrite sends a discovery document with its type, its length and a short time to keep it: a
+// member who stops sharing should drop out of other servers' caches within minutes.
+func discoveryWrite(w http.ResponseWriter, ctype string, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		log.Printf("error: a discovery document: %v", err)
+		discoveryFail(w, http.StatusInternalServerError, "Something went wrong on the server.")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", ctype)
+	h.Set("Cache-Control", discoveryKeep)
+	h.Set("Content-Length", strconv.Itoa(len(b)))
+	w.Write(b)
+}
+
+// discoveryMethods answers a request to one of the discovery addresses with a method other than GET or
+// HEAD with 405, Allow and the CORS header, before guard would answer it as a write with 403 or 415. It
+// passes everything else on, and is not in the chain at all in a mode that does not federate (routes).
+func (a *app) discoveryMethods(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && discoveryPaths[r.URL.Path] {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", "*")
+			h.Set("Allow", "GET, HEAD")
+			discoveryFail(w, http.StatusMethodNotAllowed, "Only GET and HEAD are answered here.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// handleWebFinger answers GET /.well-known/webfinger (RFC 7033; docs/federation.md 5.3). The resource
+// must be there exactly once (400 otherwise, RFC 7033 4.2); rel, any number of times, keeps only the
+// links of those relations (4.3), compared as plain strings (4.4.4.1). A member is one indexed lookup;
+// the instance actor none. The answer's links are the self link Mastodon needs, to the actor id; the
+// profile page link of the note's example waits for the page itself (FRD 5), and the alias is the id.
+func (a *app) handleWebFinger(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !a.discoveryAllowed(w, r) {
+		return
+	}
+	f := a.fed
+	if f.refusal() != "" {
+		discoveryFail(w, http.StatusNotFound, notHere)
+		return
+	}
+	if len(r.URL.RawQuery) > wfQueryMax {
+		discoveryFail(w, http.StatusBadRequest, "The query is too long.")
+		return
+	}
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil || len(q["resource"]) != 1 {
+		discoveryFail(w, http.StatusBadRequest, "Give the resource exactly once, as acct:name@host.")
+		return
+	}
+	t, ok, err := parseResource(q["resource"][0], f.origin)
+	if err != nil {
+		discoveryFail(w, http.StatusBadRequest, "The resource is not an acct: handle or an https URL of this server.")
+		return
+	}
+	if !ok {
+		discoveryFail(w, http.StatusNotFound, notHere)
+		return
+	}
+	var subject, id string
+	if t.actor {
+		subject, id = "acct:"+f.origin.host+"@"+f.origin.host, f.origin.url+"/actor"
+	} else {
+		var name string
+		err := a.db.QueryRowContext(r.Context(), webFingerSQL, t.name, a.mode == modeSingle).Scan(&name)
+		if errors.Is(err, sql.ErrNoRows) {
+			discoveryFail(w, http.StatusNotFound, notHere)
+			return
+		}
+		if err != nil {
+			log.Printf("error: webfinger: %v", err)
+			discoveryFail(w, http.StatusInternalServerError, "Something went wrong on the server.")
+			return
+		}
+		subject, id = "acct:"+name+"@"+f.origin.host, f.origin.url+"/users/"+name
+	}
+	// This answer gives an id out, which is what federating means (4.3): the origin is recorded first,
+	// once, if the instance actor's key has not recorded it already.
+	if err := f.ensureOrigin(r.Context()); err != nil {
+		var moved originMoved
+		if errors.As(err, &moved) {
+			discoveryFail(w, http.StatusNotFound, notHere)
+			return
+		}
+		log.Printf("error: webfinger: recording the origin: %v", err)
+		discoveryFail(w, http.StatusInternalServerError, "Something went wrong on the server.")
+		return
+	}
+	links := []jrdLink{{Rel: "self", Type: activityType, Href: id}}
+	if rels, asked := q["rel"]; asked && !slices.Contains(rels, "self") {
+		links = links[:0]
+	}
+	discoveryWrite(w, jrdType, jrd{Subject: subject, Aliases: []string{id}, Links: links})
+}
+
+// handleNodeInfoLinks answers GET /.well-known/nodeinfo: a JRD with the one schema this server serves,
+// as application/json (NodeInfo protocol, "Discovery").
+func (a *app) handleNodeInfoLinks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !a.discoveryAllowed(w, r) {
+		return
+	}
+	if a.fed.refusal() != "" {
+		discoveryFail(w, http.StatusNotFound, notHere)
+		return
+	}
+	discoveryWrite(w, "application/json", jrd{Links: []jrdLink{{Rel: nodeInfoRel, Href: a.fed.origin.url + "/nodeinfo/2.1"}}})
+}
+
+// nodeInfo is the NodeInfo 2.1 document. Every member the schema requires is a field without
+// omitempty, and the arrays are never nil, so none is written as null.
+type nodeInfo struct {
+	Version           string       `json:"version"`
+	Software          nodeSoftware `json:"software"`
+	Protocols         []string     `json:"protocols"`
+	Services          nodeServices `json:"services"`
+	OpenRegistrations bool         `json:"openRegistrations"`
+	Usage             nodeUsage    `json:"usage"`
+	Metadata          nodeMetadata `json:"metadata"`
+}
+
+type nodeSoftware struct {
+	Name       string `json:"name"` // ^[a-z0-9-]+$
+	Version    string `json:"version"`
+	Repository string `json:"repository"`
+}
+
+type nodeServices struct {
+	Inbound  []string `json:"inbound"`
+	Outbound []string `json:"outbound"`
+}
+
+type nodeUsage struct {
+	Users      nodeUsers `json:"users"`
+	LocalPosts int       `json:"localPosts"`
+}
+
+type nodeUsers struct {
+	Total          int `json:"total"`
+	ActiveMonth    int `json:"activeMonth"`
+	ActiveHalfyear int `json:"activeHalfyear"`
+}
+
+// nodeMetadata is free form in the schema. It says the mode, and how much of federation this version
+// has, so that nobody reading it takes discovery for the whole of ActivityPub.
+type nodeMetadata struct {
+	Mode            string   `json:"mode"`
+	FederationBuilt []string `json:"federationBuilt"`
+}
+
+// nodeCountsSQL counts as the schema defines its numbers: every registered account, those that signed
+// in during the last 30 and 180 days (last_seen, which a session's use moves once an hour), and every
+// post. Four counts of two small tables, so they are kept for nodeCountsAge (nodeCounts).
+const nodeCountsSQL = `SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM users WHERE last_seen > now() - interval '30 days'),
+	(SELECT count(*) FROM users WHERE last_seen > now() - interval '180 days'), (SELECT count(*) FROM posts)`
+
+// nodeCounts are the usage counts, read at most once every nodeCountsAge: the document is public and
+// each count is a query, so a flood of requests costs one read every few minutes.
+func (a *app) nodeCounts(ctx context.Context) (nodeUsage, error) {
+	a.nodeMu.Lock()
+	defer a.nodeMu.Unlock()
+	if !a.nodeAt.IsZero() && time.Since(a.nodeAt) < nodeCountsAge {
+		return a.nodeUse, nil
+	}
+	var u nodeUsage
+	if err := a.db.QueryRowContext(ctx, nodeCountsSQL).Scan(&u.Users.Total, &u.Users.ActiveMonth, &u.Users.ActiveHalfyear, &u.LocalPosts); err != nil {
+		return nodeUsage{}, err
+	}
+	a.nodeUse, a.nodeAt = u, time.Now()
+	return u, nil
+}
+
+// openRegistrations is NodeInfo's "whether this server allows open self-registration": the signups
+// flag on and sign-up not by approval, and never in single mode, which takes no account. Both are read
+// from the caches the pages use (two and ten seconds).
+func (a *app) openRegistrations() (bool, error) {
+	if a.mode == modeSingle {
+		return false, nil
+	}
+	info, err := a.instanceCached()
+	if err != nil {
+		return false, err
+	}
+	return a.flagsCached()["signups"] && info.Registration != regApproval, nil
+}
+
+// handleNodeInfo answers GET /nodeinfo/2.1 with the document and the content type the NodeInfo protocol
+// names ("Retrieval"). protocols holds activitypub because the schema needs one entry from its list and
+// that is the protocol this server is being built for; metadata says how much of it is built.
+func (a *app) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !a.discoveryAllowed(w, r) {
+		return
+	}
+	if a.fed.refusal() != "" {
+		discoveryFail(w, http.StatusNotFound, notHere)
+		return
+	}
+	use, err := a.nodeCounts(r.Context())
+	if err == nil {
+		var open bool
+		if open, err = a.openRegistrations(); err == nil {
+			discoveryWrite(w, nodeInfoType, nodeInfo{
+				Version:           "2.1",
+				Software:          nodeSoftware{Name: "flowa", Version: a.version, Repository: flowaRepo},
+				Protocols:         []string{"activitypub"},
+				Services:          nodeServices{Inbound: []string{}, Outbound: []string{}},
+				OpenRegistrations: open,
+				Usage:             use,
+				Metadata:          nodeMetadata{Mode: string(a.mode), FederationBuilt: []string{"webfinger", "nodeinfo"}},
+			})
+			return
+		}
+	}
+	log.Printf("error: nodeinfo: %v", err)
+	discoveryFail(w, http.StatusInternalServerError, "Something went wrong on the server.")
+}
+
+// handleWarning is said to a member who opts in with a name that ends with a dot or a dash
+// (docs/federation.md, finding 11): Flowa allows such a name, Mastodon's own usernames may have a dot
+// or a dash only inside, and a handle Mastodon cannot read cannot be mentioned or found from there.
+const handleWarning = "Your name ends with a dot or a dash. Mastodon allows those only inside a name, so people on Mastodon may not be able to mention you or find you by your handle. Names cannot be changed here."
+
+// fedView is what /api/me and PUT /api/me tell a signed-in member about sharing beyond this server, in
+// a mode that federates; nil otherwise, so the page shows no switch. In single mode the owner's opt-in
+// is FLOWA_FEDERATE=on (implied), and there is no switch either.
+func (a *app) fedView(u *user, optedIn bool) map[string]any {
+	if a.fed == nil || u == nil {
+		return nil
+	}
+	v := map[string]any{"handle": "@" + u.Username + "@" + a.fed.origin.host, "optedIn": optedIn || a.mode == modeSingle}
+	if a.mode == modeSingle {
+		v["implied"] = true
+	}
+	if strings.HasSuffix(u.Username, ".") || strings.HasSuffix(u.Username, "-") {
+		v["warning"] = handleWarning
+	}
+	return v
 }
 
 /* ---------- federation: HTTP signatures ----------
@@ -10587,6 +11169,11 @@ var migrations = []string{schema, schemaSocial,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 		CONSTRAINT ap_keys_one_per_owner UNIQUE NULLS NOT DISTINCT (user_id)
 	)`,
+	// 13: a member's opt-in to sharing their profile beyond this server (docs/federation.md, F2 and 11),
+	// off for everyone, existing members included. Read only in a mode that federates (WebFinger, and the
+	// switch in Settings). One column with a constant default: going back to an earlier build is safe,
+	// and that build simply does not read it.
+	`ALTER TABLE users ADD COLUMN IF NOT EXISTS federates BOOLEAN NOT NULL DEFAULT false`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -11215,11 +11802,16 @@ func (a *app) notSingle(h http.HandlerFunc) http.HandlerFunc {
 // routes builds the HTTP handler: every API route, the static files, and the write guard.
 func (a *app) routes(st *static) http.Handler {
 	mux := a.table(st)
-	return a.logged(mux.ServeMux, a.secure(a.guard(mux.ServeMux)))
+	var h http.Handler = a.guard(mux.ServeMux)
+	if a.fed != nil {
+		h = a.discoveryMethods(h)
+	}
+	return a.logged(mux.ServeMux, a.secure(h))
 }
 
 // table registers every route the instance answers in its mode. Routes that only a federating mode
-// has are added here under a.mode and nowhere else, so local mode cannot gain one by accident.
+// has are added here under a.fed (set by start in a mode that federates) and nowhere else, so local
+// mode cannot gain one by accident.
 func (a *app) table(st *static) *routeMux {
 	mux := &routeMux{ServeMux: http.NewServeMux()}
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
@@ -11273,6 +11865,14 @@ func (a *app) table(st *static) *routeMux {
 	if a.mode == modeSingle {
 		mux.HandleFunc("GET /{$}", a.handleRoot(st))
 		mux.HandleFunc("GET /profile-picture", a.handleOwnerPicture(st))
+	}
+	// A mode that federates adds discovery, and nothing else yet: testdata/routes-federated.txt lists the
+	// three, and TestDBFederatedRoutes holds the table to it. They are there while federation is refused
+	// too, and answer 404 then (handleWebFinger).
+	if a.fed != nil {
+		mux.HandleFunc("GET /.well-known/webfinger", a.handleWebFinger)
+		mux.HandleFunc("GET /.well-known/nodeinfo", a.handleNodeInfoLinks)
+		mux.HandleFunc("GET /nodeinfo/2.1", a.handleNodeInfo)
 	}
 	mux.HandleFunc("GET /", a.handleStatic(st))
 	return mux
@@ -11879,15 +12479,15 @@ func (a *app) start(getenv func(string) string) error {
 		return err
 	}
 	log.Printf("mode %s", a.mode)
-	// The public origin and the key secret, in a mode that federates only (parseFederation). No such mode
-	// is built yet, so on a real instance this reads nothing; the tests build one to reach it.
+	// FLOWA_FEDERATE in single mode, and the public origin and the key secret in a mode that federates
+	// (parseFederation), all read before anything is written.
 	fed, err := parseFederation(a.mode, getenv)
 	if err != nil {
 		return err
 	}
-	// FLOWA_FEDERATE (docs/federation.md, 4.1) is not read yet: single-profile mode announces nothing
-	// to other servers in this version. It will be read here, beside the mode, once FRD and FWR build
-	// what it switches on, so that it too is understood before anything is written.
+	if fed.on {
+		log.Print(discoveryOnly)
+	}
 	if rootsPresent() {
 		log.Print("TLS roots: present")
 	} else {
@@ -11913,7 +12513,7 @@ func (a *app) start(getenv func(string) string) error {
 	// The origin's host is a name this server answers to, in a mode that federates and with an origin
 	// that parsed. It is accepted even when federation is refused (an origin that moved): the operator
 	// points that name at this server, and the app is served there as in local mode.
-	if a.mode.federates() {
+	if fed.on {
 		a.hosts = append(a.hosts, fed.origin.host)
 	}
 	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
@@ -11922,7 +12522,7 @@ func (a *app) start(getenv func(string) string) error {
 	// Federation requests name this build and instance in their User-Agent, and never ask the
 	// instance itself. Nothing sends one yet.
 	a.fetch.version = a.version
-	if a.mode.federates() {
+	if fed.on {
 		a.fetch.origin = fed.origin
 	}
 	// A single-profile instance is checked before the admin account is made, so an ADMIN_USER that
@@ -11946,7 +12546,7 @@ func (a *app) start(getenv func(string) string) error {
 	if err := a.seedCatalogs(); err != nil {
 		return err
 	}
-	if a.mode.federates() {
+	if fed.on {
 		return a.startFederation(fed)
 	}
 	return nil
@@ -11990,8 +12590,7 @@ func main() {
 	}
 	// The mode is read before the database is opened, because opening it applies the migrations: a
 	// newer build that is refused its mode must leave the schema for the build before it.
-	// So are the public origin and the key secret of a mode that federates. parseMode refuses every
-	// such mode today, so this reads them only once federated mode is built.
+	// So are FLOWA_FEDERATE, and the public origin and the key secret of a mode that federates.
 	mode, err := parseMode(os.Getenv("FLOWA_MODE"))
 	if err != nil {
 		log.Fatal(err)

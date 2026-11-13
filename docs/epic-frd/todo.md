@@ -6,10 +6,12 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): the first item is
-built behind the mode, which is not startable yet, and waits for its Pi measurement; the guarded fetcher is
-done, and nothing calls its federation part yet; HTTP signatures are built, with no caller yet, and wait
-for their Pi measurements; the owner's review of the design is still asked for. 1 of 8 items done. The design note was checked against the specifications and
+**Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): federated mode, and
+single mode with `FLOWA_FEDERATE=on`, start since the WebFinger and NodeInfo item, and answer discovery only
+(no actor documents, no inbox, nothing delivered); the first item waits for its Pi measurement; the guarded
+fetcher is done, and nothing calls its federation part yet; HTTP signatures are built, with no caller yet, and
+wait for their Pi measurements; WebFinger and NodeInfo are built and wait for a screenshot of the switch; the
+owner's review of the design is still asked for. 1 of 8 items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -26,8 +28,8 @@ design note says it exists.
   recorded and a change refused, `-rotate-keys`, and `main` waiting for `Shutdown` and the worker (8.6);
   `TestOrigin`, `TestKeySecret`, `TestSealKey`, `FuzzOpenKey`, `TestDBKeysGenerated`,
   `TestDBOriginFrozen`, `TestDBFederatedStart`, `TestServeWaits` and `TestDBServeStopsWorker` pass. No
-  key is made for anyone while federation is refused. Not reachable by an instance yet: `federated` is
-  not in `modesBuilt`. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkGenerateKey` is
+  key is made for anyone while federation is refused. Reachable by an instance since the WebFinger and
+  NodeInfo item, which made the mode startable. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkGenerateKey` is
   about 44 ms a key, `BenchmarkSealKey` 3.6 µs and `BenchmarkOpenKey` (open and parse) 0.12 ms.
   Open: the key generation time on the Pi (`go test -run xxx -bench GenerateKey -benchmem .` on the Pi, or
   the line "keys: made the key of the instance actor in N ms" in its log).
@@ -96,6 +98,31 @@ design note says it exists.
   `TestWebFinger` (every edge case in federation.md 5.3, including `rel` and the CORS header on
   errors), `TestNodeInfo` (the discovery JRD, every field the 2.1 schema requires, the content
   type, counts as the schema defines them); `TestDBLocalModeUnchanged` still green.
+  Built (federation.md 4.1, 4.2, 4.3, 5.3, 5.4, 11 and 14.2 say what and why, each in an "As built (FRD 4)"
+  paragraph): `federated` in `modesBuilt` and `FLOWA_FEDERATE` read (`modeFederates`: single mode only, `on` or
+  `off`, anything else stops the start), so a mode that federates is federated mode or single mode with it on;
+  the start logs once that this version answers discovery only, and the README, the note and the dashboard's
+  mode line say the same; `GET /.well-known/webfinger`, `GET /.well-known/nodeinfo` and `GET /nodeinfo/2.1`
+  registered only in a mode that federates (`testdata/routes-federated.txt`), with the CORS header on every
+  answer, 405 and `Allow` for other methods before the write guard, short cache times, and an allowance of
+  600 an hour per address apart from every member's; `parseResource` (every form of 5.3, decided against RFC
+  7033, RFC 3986 and Mastodon's WebFinger page); one statement on the unique username index for a member, the
+  same 404 for an unknown, a not opted in, a suspended and a deleted member; the origin recorded before the
+  first id goes out when the key has not recorded it (`ensureOrigin`); NodeInfo from typed structs, its counts
+  kept five minutes; `users.federates` (migration 13, with `flowa-schema12.dump` for the restore drill), the
+  switch in Settings ("Beyond this server", only in a mode that federates; implied and without a switch in
+  single mode), the member's key asked for on opting in and the owner's at start in single mode, and the
+  warning of finding 11. `TestWebFinger`, `TestDBWebFinger`, `TestNodeInfo`, `TestDBNodeInfo`,
+  `TestFederateSetting`, `TestDBFederatedRoutes`, `TestDBFederateOptIn` pass, and `TestDBLocalModeUnchanged`,
+  `routes-local.txt` and `routes-single.txt` are unedited and green; the `federated` browser suite (new, in
+  `test/ci-plan.sh` and the workflow: federated mode with `https://flowa.test` and a test-only key secret) asks
+  the three addresses over HTTP and works the switch with the keyboard. `BenchmarkWebFinger` with `-benchmem`
+  through the whole server chain on a 2.1 GHz Xeon: the instance actor (no query) about 6.5 µs, 3.3 KB and 37
+  allocations a request; a member (one query to a local Postgres) about 0.29 ms, 4.1 KB and 58 allocations.
+  Open: a screenshot of the switch at desktop and phone width (the screenshots job runs in local mode, where
+  the switch does not exist; the federated suite does not take pictures yet); the instance setting
+  `nodeinfo_version` (5.4), left out because it needs the instance editor to learn a field, so NodeInfo names
+  the build; and the `self` link points at `/users/{name}`, which FRD 5 serves.
 - [ ] **Actor documents and public pages.** `/users/{name}` and `/actor`, content negotiation with
   `Vary: Accept`, the small HTML pages for profiles and Public posts, the public picture URLs, the
   post audience (Public or This server) in the composer. A name is public from here on, so

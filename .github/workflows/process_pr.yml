@@ -352,6 +352,9 @@ jobs:
             combo-avatars) export FLOWA_AVATARS=1; file=combo.py ;;
             # A single-profile instance: the server starts in that mode, and the suite reads the visitor's page.
             single) export FLOWA_MODE=single; file=single.py ;;
+            # A federating instance: federated mode, an origin under .test (a name reserved for tests, RFC 2606) and
+            # a key secret made for these tests only, which seals nothing anyone keeps.
+            federated) export FLOWA_MODE=federated FLOWA_ORIGIN=https://flowa.test FLOWA_KEY_SECRET=7e57f10a7e57c0ffee15b07700dd1ab5f00dfeedfacecafe5ec2e7deadbeef42; file=federated.py ;;
             *) file="$SUITE.py" ;;
           esac
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh "$file" | tee report/result.txt || code=$?

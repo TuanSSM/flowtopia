@@ -10,6 +10,10 @@ let inst = null;
 // the mode; the server gives them the signups flag off, which hides every way to make an account by itself.
 // joinable() is the one place that asks whether one can be made.
 let oneProfile = false;
+// fed: in a mode that federates, the signed-in member's handle and whether they share their profile beyond
+// this server (handle, optedIn, implied on a single-profile Flowa, warning for a name Mastodon cannot read);
+// null in any other mode, and then Settings shows nothing about it.
+let fed = null;
 const joinable = () => !!flags.signups && !oneProfile;
 const docs = {}; // progress per prop for the signed-in user: { rev, state }
 // Per prop, the progress as the server last had it (JSON). When a save meets a newer copy from
@@ -59,7 +63,7 @@ function inProp(id, fn) {
 async function loadSession() {
   const r = await api('me');
   if (!r.ok) throw new Error(r.status);
-  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || []; homeUrl = r.data.homeUrl || ''; inst = r.data.instance || null; oneProfile = r.data.single === true;
+  me = r.data.user; flags = r.data.flags || {}; perms = r.data.perms || []; homeUrl = r.data.homeUrl || ''; inst = r.data.instance || null; oneProfile = r.data.single === true; fed = r.data.federation || null;
   setAchievements(r.data.achievements);
   for (const k in docs) delete docs[k];
   for (const k in synced) delete synced[k];

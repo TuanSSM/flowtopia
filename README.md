@@ -164,8 +164,9 @@ The UI is plain HTML, CSS and JS with no CDN. Two parts have a build step: the g
 link cards for Instagram, TikTok and YouTube, next-trick suggestions from the geometry of moves, and
 customisable avatars. Each epic is described in [docs/epics.md](docs/epics.md) and tracked in a checklist
 under `docs/epic-<code>/todo.md`. A proposed third cycle would let Flowa run as a single-profile,
-federated or local-only instance over ActivityPub, off by default; nothing of it is built yet, and its
-design and plan are in [docs/federation.md](docs/federation.md).
+federated or local-only instance over ActivityPub, off by default. Single-profile mode is built, and federation
+as far as discovery (WebFinger and NodeInfo, for the members who opt in; nothing is delivered yet); the design
+and plan are in [docs/federation.md](docs/federation.md).
 
 ## Run
 
@@ -312,16 +313,19 @@ a value that is not such an address stops the server at start with a message tha
 
 `FLOWA_MODE` in `.env` says how the instance runs. Unset, empty or `local` is what Flowa has always
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
-changes. `single` is one person's own instance (below). The word `federated` belongs to the plan in
-[docs/federation.md](docs/federation.md) and is not built yet, so it stops the server at start with a
-message that says so, as any other word does, before the database is opened (what it will read is under
-"Federation" below). The admin dashboard shows the mode under the version.
+changes. `single` is one person's own instance (below). `federated` is a community whose members can share
+their profiles with other servers; **this version of it answers discovery only** (WebFinger and NodeInfo,
+under "Federation: discovery" below): no actor documents, no inbox, nothing is delivered. Any other word
+stops the server at start with a message that says so, before the database is opened. The admin dashboard
+shows the mode under the version, and in a mode that federates the origin and the same sentence about
+discovery.
 
 ### A single-profile instance
 
 `FLOWA_MODE=single` runs Flowa for one person: their practice, their skill maps and their profile, with
-nobody else on it. It holds exactly one account, the owner, and nothing federates yet (no other server is
-told it exists; that comes with the federation items of the plan).
+nobody else on it. It holds exactly one account, the owner. Nothing federates unless `FLOWA_FEDERATE=on`
+(below, under "Federation: discovery"); unset, empty or `off` is off, and any other value stops the start
+with a message.
 
 **From nothing.** Set `ADMIN_USER`, `ADMIN_PASSWORD` and `FLOWA_MODE=single` in `.env` and start it. The
 first start makes that account, the admin and the owner. Later starts may keep `ADMIN_USER` and
@@ -381,11 +385,10 @@ as they were, and sign-up is again what Open sign-ups and Who can join say.
 
 ### Federation: the origin, the key secret and the keys
 
-Nothing federates yet. The first part of federation is built (the plan is in
-[docs/federation.md](docs/federation.md)), but **it is not reachable by an instance yet**: it runs only in a
-mode that federates, and `FLOWA_MODE=federated` still stops the start as "not built". There is no WebFinger,
-no actor and no request to another server, and the HTTP signatures below sign and check nothing yet. What is
-there, for the day that mode is built:
+These run in a mode that federates: `FLOWA_MODE=federated`, or `FLOWA_MODE=single` with `FLOWA_FEDERATE=on`
+(the plan is in [docs/federation.md](docs/federation.md)). Federation is built as far as discovery (below):
+there is no actor and no request to another server, and the HTTP signatures below sign and check nothing
+yet. The two settings it needs:
 
 - `FLOWA_ORIGIN`: the public address other servers will know the instance by, `https://` and its name, such
   as `https://flowa.example.org`, with a port only when it is not 443. Nothing else: no path, query, user
@@ -402,8 +405,8 @@ there, for the day that mode is built:
   for every account** (`-rotate-keys`, below). No message, log line, backup or page ever shows it.
 
 In a mode that federates, a missing or wrong value stops the start with a message naming the setting,
-before the database is opened. In local and single mode both are ignored, so a value left in `.env` stops
-nothing.
+before the database is opened. In local mode, and in single mode without `FLOWA_FEDERATE=on`, both are
+ignored, so a value left in `.env` stops nothing.
 
 At the first start in such a mode the server makes the instance's own key in the background (RSA 2048, one
 key at a time, so no request waits for one; the log says how long it took) and records the origin and the
@@ -418,10 +421,53 @@ secret.
 `docker exec nunchaku /nunchaku -rotate-keys` makes a new key pair for every account that has one, one at a
 time, prints how many, and exits; restart the server afterwards so it reads them. A key that another
 rotation changed at the same moment is skipped: the command says how many and exits non-zero, and running
-it again replaces them. It needs the mode and the
-two settings (with a mode that is not built it stops as the start would), and it is also the way back after
+it again replaces them. It needs a mode that federates and the
+two settings (otherwise it stops with a message, as the start would), and it is also the way back after
 a lost secret: set a new `FLOWA_KEY_SECRET` first. This version does not tell followers yet: other servers
 pick the new keys up when a signature next fails to verify.
+
+### Federation: discovery (WebFinger and NodeInfo)
+
+**What this version of federation does: discovery only.** Another server can ask who a member is and what
+this server is, and nothing more: there are no actor documents, no inbox, and nothing is delivered. A
+member's handle is `@name@host`, where host is the name in `FLOWA_ORIGIN`. Three addresses answer, only in a
+mode that federates (in local mode they are unknown addresses, as before):
+
+- `GET /.well-known/webfinger?resource=acct:ana@flowa.example.org` (RFC 7033), as `application/jrd+json`:
+  the handle, and a `self` link to the member's actor id, `https://flowa.example.org/users/ana`. **That
+  address is not served by this version yet** (actor documents are the next item of the plan), so a server
+  that follows it gets "not found" until then, and Mastodon cannot follow the account yet. It answers only
+  for a member who opted in (Settings, "Beyond this server"), and on a single-profile instance for the owner,
+  whose opt-in is `FLOWA_FEDERATE=on`. A name nobody has, a member who has not opted in and a suspended
+  member all get the same 404. It also takes the handle without `acct:`, with a leading `@`, in other cases,
+  and the actor's id as the resource; `acct:flowa.example.org@flowa.example.org` names the instance's own
+  actor (`/actor`, not served yet either). A missing, repeated or malformed resource is 400.
+- `GET /.well-known/nodeinfo` and `GET /nodeinfo/2.1` (NodeInfo 2.1): the software (`flowa` and the version
+  the dashboard shows), whether sign-up is open (the signups flag on and Who can join not by approval; never
+  in single mode), and the counts the schema names: every account, those that signed in during the last 30
+  and 180 days, and every post. The counts are read at most every five minutes. **These numbers and the
+  version are public** in a mode that federates; `/healthz` keeps the version to local probes, but NodeInfo
+  names it, as other fediverse servers do.
+
+Every answer, errors included, carries `Access-Control-Allow-Origin: *`; a found member's answer may be kept
+for five minutes (so turning the switch off reaches other servers within minutes) and a 404 for one. Any
+method but GET and HEAD gets 405. Each address may ask the three 600 times an hour, counted apart from every
+allowance members use, so a remote server's lookups are bounded and never lock anyone out of the app;
+behind a reverse proxy, list it in `FLOWA_TRUSTED_PROXIES` (the default trusts Docker's own networks), or
+every server shares the proxy's allowance.
+
+**The member's switch.** In a mode that federates, Settings has "Beyond this server" with "Share my profile
+and public posts beyond this server", off for everyone until they turn it on (members who were there before
+too). On, WebFinger finds them, and the server makes their signing key in the background; off, WebFinger
+answers 404 again (another server may keep the earlier answer for up to five minutes). A name that ends with
+a dot or a dash, which Flowa allows, is warned that Mastodon allows those only inside a name, so people on
+Mastodon may not be able to mention them. On a single-profile instance there is no switch:
+`FLOWA_FEDERATE=on` is the owner's choice, and Settings says so. In local mode nothing of this shows, and the
+API refuses the switch.
+
+The first answer that names a member records the origin, if the instance's own key has not recorded it
+already (it does at the first start, a second or so after it). While federation is refused (a moved origin or
+a key secret that does not open the keys, above) the three answer 404 to everything.
 
 ### Federation: HTTP signatures
 
