@@ -1406,7 +1406,13 @@ func TestKeySecret(t *testing.T) {
 		{strings.Repeat("0123456789abcdef", 4), "not random"},
 		{strings.Repeat(testSecret[:32], 2), "not random"}, // 16 bytes twice
 		{"000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f", "not random"},
-		{strings.Repeat("é", 32), "hexadecimal"}, // 64 bytes, not 64 hexadecimal characters
+		{"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "not random"}, // counts up by one
+		{"05080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f62", "not random"}, // counts up by three
+		{"fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0", "not random"}, // counts down
+		{hex.EncodeToString([]byte("flowa-test-only-flowa-test-only!")), "not random"},     // a typed password
+		{hex.EncodeToString([]byte("correct horse battery staple 123")), "not random"},     // a passphrase
+		{hex.EncodeToString([]byte("Zq8#vT!m2@Lp9$Wr4%Ny7^Hb3&Kc6*Jd")), "not random"},     // a strong-looking typed one
+		{strings.Repeat("é", 32), "hexadecimal"},                                           // 64 bytes, not 64 hexadecimal characters
 	} {
 		_, err := parseKeySecret(c.in)
 		if err == nil || !strings.Contains(err.Error(), "FLOWA_KEY_SECRET") || !strings.Contains(err.Error(), c.says) || !strings.Contains(err.Error(), "openssl rand -hex 32") {
@@ -1422,10 +1428,14 @@ func TestKeySecret(t *testing.T) {
 			}
 		}
 	}
-	// Thirty-two different bytes in a run that does not repeat is accepted: the checks are for what a
-	// person types, not a claim to measure randomness.
-	if _, err := parseKeySecret("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"); err != nil {
-		t.Errorf("32 different bytes: %v", err)
+	// Random secrets are accepted: the checks refuse one with a chance under 2^-45, so ten thousand of
+	// them all pass.
+	for range 10000 {
+		b := make([]byte, 32)
+		rand.Read(b)
+		if weakSecret(b) {
+			t.Fatalf("a random secret is refused as weak: %x", b)
+		}
 	}
 
 	// Printing: every verb, JSON, and as a field of the structs that hold it.
@@ -1588,7 +1598,10 @@ func TestServeWaits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- a.serve(ctx, srv, ln) }()
+	// The signals are let go as soon as the stop begins, while the request is still being answered, so
+	// that a second signal ends the process at once (main passes NotifyContext's stop here).
+	signalsFreed := make(chan struct{})
+	go func() { served <- a.serve(ctx, srv, ln, func() { close(signalsFreed) }) }()
 	answered := make(chan string, 1)
 	go func() {
 		resp, err := http.Get("http://" + ln.Addr().String() + "/")
@@ -1606,6 +1619,11 @@ func TestServeWaits(t *testing.T) {
 	case err := <-served:
 		t.Fatalf("serve returned (%v) while a request was still being answered", err)
 	case <-time.After(300 * time.Millisecond): // fixed: showing that serve does not return early
+	}
+	select {
+	case <-signalsFreed:
+	default:
+		t.Error("the signals were not let go when the stop began, so a second signal would wait")
 	}
 	close(release)
 	select {

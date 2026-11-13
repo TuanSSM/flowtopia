@@ -395,7 +395,9 @@ no actor, no signature and no request to another server. What is there, for the 
 - `FLOWA_KEY_SECRET`: 64 hexadecimal characters that seal each account's signing key in the database, so the
   daily backup holds no usable private key. Make one with `openssl rand -hex 32` and keep it beside the
   database password, never in the repository, and do not use it, or any other secret, for anything else.
-  A value with few different characters or one that repeats itself is refused. **Losing it means new keys
+  A value made by hand is refused: few different bytes, a repeating block, bytes that count up or down,
+  or the hex of typed text (every byte printable). A random value is refused with a chance under one in
+  10^13. **Losing it means new keys
   for every account** (`-rotate-keys`, below). No message, log line, backup or page ever shows it.
 
 In a mode that federates, a missing or wrong value stops the start with a message naming the setting,
@@ -408,10 +410,14 @@ time in the database. **The origin is frozen from then on**: ids announced to ot
 later start with another `FLOWA_ORIGIN` still starts and serves the app as in local mode, but federates
 nothing, and says so once in the log ("federation refused: the origin was https://a and is now https://b;
 actor ids cannot move"). Set the old origin back to federate again. A key secret that does not open the
-stored keys does the same, and no key is made over one that cannot be opened.
+instance's own key (checked at every start) does the same. While federation is refused, for either reason,
+no key is made for any account: none replaces a key that cannot be opened, and none is sealed under a second
+secret.
 
 `docker exec nunchaku /nunchaku -rotate-keys` makes a new key pair for every account that has one, one at a
-time, prints how many, and exits; restart the server afterwards so it reads them. It needs the mode and the
+time, prints how many, and exits; restart the server afterwards so it reads them. A key that another
+rotation changed at the same moment is skipped: the command says how many and exits non-zero, and running
+it again replaces them. It needs the mode and the
 two settings (with a mode that is not built it stops as the start would), and it is also the way back after
 a lost secret: set a new `FLOWA_KEY_SECRET` first. This version does not tell followers yet: other servers
 pick the new keys up when a signature next fails to verify.

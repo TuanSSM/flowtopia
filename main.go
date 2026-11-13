@@ -5175,10 +5175,9 @@ const sealInfo = "flowa ap_keys private key sealing v1"
 const keySecretHow = "make one with openssl rand -hex 32, keep it beside the database password (never in the repository), and use it for nothing else"
 
 // parseKeySecret reads FLOWA_KEY_SECRET: exactly 64 hexadecimal characters (32 bytes), in either case,
-// with spaces around it forgiven. A value with fewer than 8 different bytes, or one that repeats a
-// block of 16 bytes or fewer ("00...", "abab...", "0123456789abcdef" four times), is refused as not
-// random: either happens to random bytes with a chance far below one in 2^100, so refusing them costs
-// nothing, while a value typed by hand often looks like that. Nothing subtler can be checked honestly.
+// with spaces around it forgiven. A value made by hand in a common way is refused as not random
+// (weakSecret, which also gives the chance of refusing a random one: under 2^-45). Nothing subtler
+// can be checked honestly.
 func parseKeySecret(v string) (keySecret, error) {
 	s := strings.TrimSpace(v)
 	if s == "" {
@@ -5193,7 +5192,7 @@ func parseKeySecret(v string) (keySecret, error) {
 	}
 	defer clear(raw)
 	if weakSecret(raw) {
-		return keySecret{}, errors.New("FLOWA_KEY_SECRET is not random: it has too few different bytes or repeats itself; " + keySecretHow)
+		return keySecret{}, errors.New("FLOWA_KEY_SECRET is not random: it repeats itself, counts up, has too few different bytes, or is the hex of typed text; " + keySecretHow)
 	}
 	key, err := hkdf.Key(sha256.New, raw, nil, sealInfo, 32)
 	if err != nil {
@@ -5211,13 +5210,22 @@ func parseKeySecret(v string) (keySecret, error) {
 	return keySecret{aead: aead}, nil
 }
 
-// weakSecret reports whether secret bytes are plainly not random (see parseKeySecret).
+// weakSecret reports whether 32 secret bytes are plainly not random: fewer than 8 different bytes
+// ("00...", "abab..."); a block of 16 bytes or fewer repeated ("0123456789abcdef" four times); an
+// arithmetic run, each byte the one before plus a constant ("000102...1f"); or every byte printable
+// ASCII, 0x20 to 0x7e, which is what the hex of a typed password or passphrase always is. For 32
+// random bytes the last is by far the likeliest, (95/256)^32, about 2^-46 or one in 6 * 10^13; the
+// others are below 2^-120 together. So a random secret is refused with a chance under 2^-45, and a
+// secret made by hand in these common ways never gets through.
 func weakSecret(b []byte) bool {
 	seen := map[byte]bool{}
-	for _, c := range b {
+	printable, run := true, true
+	for i, c := range b {
 		seen[c] = true
+		printable = printable && c >= 0x20 && c <= 0x7e
+		run = run && (i < 2 || c-b[i-1] == b[1]-b[0])
 	}
-	if len(seen) < 8 {
+	if len(seen) < 8 || printable || run {
 		return true
 	}
 	for p := 1; p <= len(b)/2; p++ {
@@ -5332,6 +5340,8 @@ type federation struct {
 	origin publicOrigin
 	secret keySecret
 	gen    func() (*rsa.PrivateKey, error) // makes a key pair; a test counts or holds it
+	// handled, when set (by a test), hears of each request the worker has finished with.
+	handled func(o keyOwner, made bool, err error)
 
 	mu      sync.Mutex
 	refused string // why this instance federates nothing although its mode federates; "" when it may
@@ -5424,6 +5434,12 @@ func (f *federation) makeKey(keyID string, o keyOwner) (pubPEM, sealed string, e
 // also records the origin in the same transaction (recordOrigin): making that key is the first thing
 // this version does as a federating server.
 func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
+	// While federation is refused no key is made for anyone: under a secret that does not open the
+	// stored keys a new one would be sealed under a second secret, and under a moved origin it would
+	// belong to ids that cannot be announced.
+	if f.refusal() != "" {
+		return false, errRefused
+	}
 	var have bool
 	if err := f.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint)`, o.arg()).Scan(&have); err != nil {
 		return false, err
@@ -5438,6 +5454,9 @@ func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 	pub, sealed, err := f.makeKey(keyID, o)
 	if err != nil {
 		return false, err
+	}
+	if f.refusal() != "" { // refused while the key was being made
+		return false, errRefused
 	}
 	tx, err := f.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -5510,9 +5529,16 @@ func (f *federation) privateKey(ctx context.Context, o keyOwner) (*rsa.PrivateKe
 	return k, keyID, nil
 }
 
+// errRefused is what ensureKey answers while federation is refused.
+var errRefused = errors.New("federation is refused, so no key is made")
+
 // requestKey asks the worker to make an owner's key, and returns at once: no request waits for a key.
-// It reports false when the queue is full; the owner is asked for again later.
+// It reports false while federation is refused (no key is made then, for any owner), and when the
+// queue is full; the owner is asked for again later.
 func (f *federation) requestKey(o keyOwner) bool {
+	if f.refusal() != "" {
+		return false
+	}
 	f.once.Do(f.startWorker)
 	select {
 	case f.ask <- o:
@@ -5540,10 +5566,14 @@ func (f *federation) startWorker() {
 				switch {
 				case errors.As(err, &moved):
 					f.refuse(moved.Error())
+				case errors.Is(err, errRefused): // said once already, by refuse
 				case err != nil && f.ctx.Err() == nil:
 					log.Printf("keys: the key of %s was not made: %v", o, err)
 				case made:
 					log.Printf("keys: made the key of %s in %d ms", o, time.Since(began).Milliseconds())
+				}
+				if f.handled != nil {
+					f.handled(o, made, err)
 				}
 			}
 		}
@@ -5640,49 +5670,50 @@ func (a *app) startFederation(s fedSettings) error {
 }
 
 // rotateKeys makes a new key pair for every owner that has one, one at a time, and replaces each old
-// key in one statement, only if it is still the one read (another rotation or a deleted account is
-// skipped). It opens no old key, so it is also what an operator runs after losing the key secret. It
-// returns how many keys it replaced.
-func (f *federation) rotateKeys(ctx context.Context) (int, error) {
+// key in one statement, only if it is still the one read: a key another rotation changed meanwhile,
+// or whose account went, is skipped. It opens no old key, so it is also what an operator runs after
+// losing the key secret. It returns how many keys it replaced and how many it skipped.
+func (f *federation) rotateKeys(ctx context.Context) (replaced, skipped int, err error) {
 	type old struct {
 		owner      keyOwner
 		keyID, pub string
 	}
 	rows, err := f.db.QueryContext(ctx, `SELECT COALESCE(user_id, 0), key_id, public_key FROM ap_keys ORDER BY user_id NULLS FIRST`)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var all []old
 	for rows.Next() {
 		var r old
 		if err := rows.Scan(&r.owner, &r.keyID, &r.pub); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, 0, err
 		}
 		all = append(all, r)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	n := 0
 	for _, r := range all {
 		pub, sealed, err := f.makeKey(r.keyID, r.owner)
 		if err != nil {
-			return n, err
+			return replaced, skipped, err
 		}
 		res, err := f.db.ExecContext(ctx, `UPDATE ap_keys SET public_key = $1, private_sealed = $2, created_at = now() WHERE key_id = $3 AND public_key = $4`, pub, sealed, r.keyID, r.pub)
 		if err != nil {
-			return n, err
+			return replaced, skipped, err
 		}
 		if c, _ := res.RowsAffected(); c == 1 {
-			n++
+			replaced++
+		} else {
+			skipped++
 		}
 		f.mu.Lock()
 		delete(f.cache, r.owner)
 		f.mu.Unlock()
 	}
-	return n, nil
+	return replaced, skipped, nil
 }
 
 // rotateCommand is /nunchaku -rotate-keys. It reads the mode and the two settings before it opens the
@@ -5722,9 +5753,13 @@ func rotateWith(db *sql.DB, mode instanceMode, getenv func(string) string, out i
 	}
 	f := newFederation(db, s)
 	defer f.cancel()
-	n, err := f.rotateKeys(context.Background())
+	n, skipped, err := f.rotateKeys(context.Background())
 	if err != nil {
-		return fmt.Errorf("-rotate-keys: %d keys replaced, then: %w", n, err)
+		return fmt.Errorf("-rotate-keys: %d keys replaced, %d skipped, then: %w", n, skipped, err)
+	}
+	if skipped > 0 {
+		// Exits non-zero (main's log.Fatal): not every key is new, and the operator should know.
+		return fmt.Errorf("-rotate-keys: rotated %d keys and skipped %d that changed or went while this ran (another rotation at the same time, or a deleted account); run it again to replace them", n, skipped)
 	}
 	fmt.Fprintf(out, "rotated %d keys. Restart the server so that it reads them. This version does not send Update to followers yet: other servers pick the new keys up when a signature next fails to verify.\n", n)
 	return nil
@@ -7291,25 +7326,28 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("listening on %s", *listen)
-	if err := a.serve(ctx, srv, ln); err != nil {
+	if err := a.serve(ctx, srv, ln, stop); err != nil {
 		log.Fatal(err)
 	}
 }
 
 // shutdownWait is how long a stop waits, in all, for the requests in flight and the background work.
-// Docker gives a container 10 s after SIGTERM before it kills it.
-const shutdownWait = 5 * time.Second
+// Docker gives a container 10 s after SIGTERM before it kills it. A variable so a test can shorten it.
+var shutdownWait = 5 * time.Second
 
 // serve answers on ln until ctx ends, then stops: it lets the requests in flight finish and the key
 // worker stop, within shutdownWait in all, and returns once both have or the time is up. Before, main
 // returned as soon as srv.Shutdown began (that is when ListenAndServe returns), so the time Shutdown was
 // given was never waited for (docs/federation.md, 8.6). Housekeeping is not waited for: each of its
-// statements is one transaction, and one cut short changes nothing.
-func (a *app) serve(ctx context.Context, srv *http.Server, ln net.Listener) error {
+// statements is one transaction, and one cut short changes nothing. release is called as soon as ctx
+// ends, before the wait: main passes the stop of signal.NotifyContext, so that a second Ctrl-C or
+// SIGTERM during the wait ends the process at once, as it did before the wait existed.
+func (a *app) serve(ctx context.Context, srv *http.Server, ln net.Listener, release func()) error {
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
 		<-ctx.Done()
+		release()
 		c, cancel := context.WithTimeout(context.Background(), shutdownWait)
 		defer cancel()
 		if err := srv.Shutdown(c); err != nil {

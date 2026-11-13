@@ -24,8 +24,9 @@ design note says it exists.
   sealing bound to the row (`v1.`), `ap_keys` (migration 12), `ensureKey` and one key worker, the origin
   recorded and a change refused, `-rotate-keys`, and `main` waiting for `Shutdown` and the worker (8.6);
   `TestOrigin`, `TestKeySecret`, `TestSealKey`, `FuzzOpenKey`, `TestDBKeysGenerated`,
-  `TestDBOriginFrozen`, `TestDBFederatedStart` and `TestServeWaits` pass. Not reachable by an instance yet:
-  `federated` is not in `modesBuilt`. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkGenerateKey` is
+  `TestDBOriginFrozen`, `TestDBFederatedStart`, `TestServeWaits` and `TestDBServeStopsWorker` pass. No
+  key is made for anyone while federation is refused. Not reachable by an instance yet: `federated` is
+  not in `modesBuilt`. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkGenerateKey` is
   about 44 ms a key, `BenchmarkSealKey` 3.6 µs and `BenchmarkOpenKey` (open and parse) 0.12 ms.
   Open: the key generation time on the Pi (`go test -run xxx -bench GenerateKey -benchmem .` on the Pi, or
   the line "keys: made the key of the instance actor in N ms" in its log).

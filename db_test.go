@@ -22,6 +22,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -5443,6 +5444,46 @@ func countKeys(t *testing.T) *atomic.Int32 {
 	return &n
 }
 
+// refusesKeys checks that a refused federation makes no key for a member who has none: requestKey
+// declines, ensureKey declines, and a request that reaches the worker anyway (put on its queue
+// directly) is taken and declined, with no key made and no row written.
+func refusesKeys(t *testing.T, e *tenv, f *federation, name string) {
+	t.Helper()
+	if f.refusal() == "" {
+		t.Fatal("federation is not refused")
+	}
+	id, _ := e.user(name, "user")
+	o := keyOwner(id)
+	var made atomic.Int32
+	f.gen = func() (*rsa.PrivateKey, error) { made.Add(1); return generateKey() }
+	if f.requestKey(o) {
+		t.Errorf("%s: requestKey took a request while federation is refused", name)
+	}
+	if ok, err := f.ensureKey(context.Background(), o); ok || !errors.Is(err, errRefused) {
+		t.Errorf("%s: ensureKey while refused: %v, %v", name, ok, err)
+	}
+	type result struct {
+		o    keyOwner
+		made bool
+		err  error
+	}
+	handled := make(chan result, 1)
+	f.handled = func(o keyOwner, made bool, err error) { handled <- result{o, made, err} }
+	f.once.Do(f.startWorker)
+	f.ask <- o
+	select {
+	case r := <-handled:
+		if r.o != o || r.made || !errors.Is(r.err, errRefused) {
+			t.Errorf("%s: the worker took the request and answered %v, %v", name, r.made, r.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s: waited 30 s for the worker to take the request", name)
+	}
+	if n := e.count(`SELECT count(*) FROM ap_keys WHERE user_id = $1`, id); n != 0 || made.Load() != 0 {
+		t.Errorf("%s: %d keys made and %d rows written while federation is refused", name, made.Load(), n)
+	}
+}
+
 // A mode that federates reads FLOWA_ORIGIN and FLOWA_KEY_SECRET before anything is written, and stops
 // the start with a message that names the setting and never shows the secret. The origin's host is a
 // name the server answers to then, and the routes are the routes of local mode: nothing new is served.
@@ -5514,6 +5555,9 @@ func TestDBFederatedStart(t *testing.T) {
 		t.Errorf("federated mode serves other routes than local mode:\n%v\n%v", got, want)
 	}
 	// No answer, no audit row and no log line holds the secret, the private key or its sealed form.
+	// The log captured here is what log.Printf writes. main's log.Fatal paths print only the errors of
+	// parseMode, parseFederation, start, openDB and rotateCommand; the refused starts above, TestKeySecret
+	// and TestDBKeysGenerated assert that those errors do not hold the secret.
 	var pub, sealed string
 	if err := e.a.db.QueryRow(`SELECT public_key, private_sealed FROM ap_keys`).Scan(&pub, &sealed); err != nil {
 		t.Fatal(err)
@@ -5776,10 +5820,7 @@ func TestDBKeysGenerated(t *testing.T) {
 	if _, _, err := x.a.fed.privateKey(ctx, instanceActor); !errors.Is(err, errOpenKey) || strings.Contains(err.Error(), testSecret2) {
 		t.Errorf("opening with the wrong secret: %v", err)
 	}
-	x.a.fed.requestKey(instanceActor)
-	if err := x.a.fed.stop(c); err != nil {
-		t.Fatal(err)
-	}
+	refusesKeys(t, e, x.a.fed, "eve")
 	var after string
 	if err := e.a.db.QueryRow(`SELECT private_sealed FROM ap_keys WHERE user_id IS NULL`).Scan(&after); err != nil || after != sealed {
 		t.Errorf("the instance actor's key was replaced by a start with the wrong secret (%v)", err)
@@ -5848,11 +5889,36 @@ func TestDBKeysGenerated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.rotateKeys(ctx); err != nil {
+	if _, _, err := g.rotateKeys(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if g2, _, err := g.privateKey(ctx, instanceActor); err != nil || g2.Equal(g1) {
 		t.Errorf("after rotating, the key kept in memory is still served (%v)", err)
+	}
+	// A key another rotation changes while this one runs is skipped, counted, said, and the command
+	// fails (main exits non-zero), so the operator knows not every key is new.
+	n := e.count(`SELECT count(*) FROM ap_keys`)
+	was := generateKey
+	var meddled atomic.Bool
+	generateKey = func() (*rsa.PrivateKey, error) {
+		if !meddled.Swap(true) { // the first key made is the instance actor's (NULL owner first)
+			if _, err := e.a.db.Exec(`UPDATE ap_keys SET public_key = 'changed by another rotation' WHERE user_id IS NULL`); err != nil {
+				t.Error(err)
+			}
+		}
+		return was()
+	}
+	out.Reset()
+	err = rotateWith(e.a.db, modeFederated, fedEnv(map[string]string{"FLOWA_KEY_SECRET": testSecret2}), &out)
+	generateKey = was
+	if want := fmt.Sprintf("rotated %d keys and skipped 1 that changed or went", n-1); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a rotation that met another: %v, want an error saying %q", err, want)
+	}
+	if out.String() != "" {
+		t.Errorf("a rotation that skipped a key still said it was done: %q", out.String())
+	}
+	if p := e.count(`SELECT count(*) FROM ap_keys WHERE public_key = 'changed by another rotation'`); p != 1 {
+		t.Errorf("the key changed meanwhile was overwritten (%d left)", p)
 	}
 
 	// No log line holds a secret or a private key.
@@ -5860,6 +5926,80 @@ func TestDBKeysGenerated(t *testing.T) {
 		if strings.Contains(logs.String(), l) {
 			t.Errorf("the log holds %.12q...", l)
 		}
+	}
+}
+
+// serve waits for the key worker as it does for a request in flight, and gives up at shutdownWait when
+// the work does not end.
+func TestDBServeStopsWorker(t *testing.T) {
+	logs := logged(t)
+	e := newEnv(t)
+	settings, err := parseFederation(modeFederated, fedEnv(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// start serves on a fresh port with a federation whose next key is held, asks for that key, and
+	// returns once the worker is making it.
+	start := func(gen func() (*rsa.PrivateKey, error)) (cancel func(), served chan error) {
+		t.Helper()
+		f := newFederation(e.a.db, settings)
+		entered := make(chan struct{})
+		f.gen = func() (*rsa.PrivateKey, error) { close(entered); return gen() }
+		a := newApp(e.a.db, t.TempDir())
+		a.fed = f
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		served = make(chan error, 1)
+		go func() { served <- a.serve(ctx, &http.Server{Handler: http.NotFoundHandler()}, ln, func() {}) }()
+		f.requestKey(instanceActor)
+		<-entered
+		t.Cleanup(func() { cancel(); f.cancel(); f.wg.Wait() })
+		return cancel, served
+	}
+
+	// A key being made when the stop comes is waited for.
+	held := make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	cancel, served := start(func() (*rsa.PrivateKey, error) { <-held; return generateKey() })
+	t.Cleanup(release) // a failure below must not leave the worker held while the cleanup waits for it
+	cancel()
+	select {
+	case err := <-served:
+		t.Fatalf("serve returned (%v) while the key worker was still making a key", err)
+	case <-time.After(300 * time.Millisecond): // fixed: showing that serve does not return early
+	}
+	release()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not return after the key was made")
+	}
+
+	// Work that never ends is given up at the bound, shortened here from 5 s.
+	was := shutdownWait
+	shutdownWait = 400 * time.Millisecond
+	t.Cleanup(func() { shutdownWait = was })
+	never := make(chan struct{})
+	cancel, served = start(func() (*rsa.PrivateKey, error) { <-never; return generateKey() })
+	t.Cleanup(func() { close(never) }) // registered after start's, so it runs before the worker is waited for
+	began := time.Now()
+	cancel()
+	select {
+	case err := <-served:
+		if took := time.Since(began); err != nil || took < 350*time.Millisecond || took > 3*time.Second {
+			t.Errorf("serve with a worker that never ends returned %v after %s, want about %s", err, took, shutdownWait)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not give up at the bound")
+	}
+	if !strings.Contains(logs.String(), "the key worker did not stop in time") {
+		t.Error("giving up on the worker is not logged")
 	}
 }
 
@@ -5907,10 +6047,13 @@ func TestDBOriginFrozen(t *testing.T) {
 			t.Errorf("FLOWA_ORIGIN=%q after https://flowa.example.org: %v, %q", same, err, s.a.fed.refusal())
 		}
 	}
-	for _, moved := range []string{"https://flowa.example.net", "https://flowa.example.org:8443", "https://www.flowa.example.org"} {
+	for i, moved := range []string{"https://flowa.example.net", "https://flowa.example.org:8443", "https://www.flowa.example.org"} {
 		m := e.again()
 		if err := m.fedStart(map[string]string{"FLOWA_ORIGIN": moved}); err != nil {
 			t.Fatalf("a moved origin stopped the start: %v", err)
+		}
+		if i == 0 { // and no key is made for anyone under it
+			refusesKeys(t, e, m.a.fed, "moved")
 		}
 		want := "federation refused: the origin was https://flowa.example.org and is now " + moved + "; actor ids cannot move"
 		if m.a.federating() || m.a.fed.refusal() != want {

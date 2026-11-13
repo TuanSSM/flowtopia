@@ -666,8 +666,12 @@ header, and a missing one (HTML).
   each sealed key carries a fresh 12-byte nonce, names its scheme (`v1.`), and has its key id and owner
   authenticated with it, so a sealed key copied onto another row does not open; the key id is stored
   without the origin (`/actor#main-key`), which is recorded once in `instance_settings`. A secret that does
-  not open the stored keys stops federation, not the server, and no key is made over one it cannot open.
-  The secret must be 64 hexadecimal characters with at least 8 different bytes and no repeating block.
+  not open the instance actor's key (checked at every start) stops federation, not the server, as a moved
+  origin does (4.3); while federation is refused, for either reason, no key is made for any owner, so none
+  replaces a key that cannot be opened and none is sealed under a second secret. The secret must be 64
+  hexadecimal characters and not made by hand: at least 8 different bytes, no repeating block, no
+  arithmetic run, not every byte printable ASCII (a random secret is refused with a chance under 2^-45).
+  `-rotate-keys` skips a key another rotation changed meanwhile, says how many, and exits non-zero.
 - Rotation: `/nunchaku -rotate-keys` (**new**, a flag like `-healthcheck`) makes new keys for every
   local actor and sends Update(Person) to followers; remote servers that fail to verify with the old
   key refetch the actor (section 7.4). This is what the SWICG report calls a "signed" rotation ("Key
@@ -1241,7 +1245,8 @@ inbound signatures are answered 503 with `Retry-After` in that state instead of 
 
 Until FRD 1, `main` returned as soon as `ListenAndServe` did, which is the moment `srv.Shutdown` begins:
 the 5 s it is given were never waited for, and nothing waited for background work at all. FRD 1 made
-`main` wait for `Shutdown` and for its key worker, 5 s in all (`serve`, `TestServeWaits`). The delivery
+`main` wait for `Shutdown` and for its key worker, 5 s in all (`serve`, `TestServeWaits`,
+`TestDBServeStopsWorker`); a second signal during that wait ends the process at once. The delivery
 item adds its workers to that wait: the workers have their own context and a
 `sync.WaitGroup`, and on SIGTERM they stop claiming and are given 5 s for the request in flight;
 whatever does not finish keeps its lease and is sent again after it ends. Receivers dedupe by activity
