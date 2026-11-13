@@ -1120,40 +1120,52 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
   system clock stepped back cannot bring a forgotten signature back into the window.
 - **When the memory is full, the sender that filled it pays, never a bystander.** It is bounded and the
   number of valid signatures in 12 hours is not, so some valid new signature must sometimes be refused;
-  a replay never is. Entries are grouped by the origin of their key id (scheme, host and port). An entry
-  is dropped only by expiry or by eviction, and an evicted entry is the oldest of its origin, whose own
-  **floor** rises to its time: from then on a new signature from that origin dated at or before its
+  a replay never is. Entries are grouped by the **sender group** of their key id (`senderGroup`): the
+  last two labels of its host in lower case, scheme and port ignored, so `a.b.evil.example:8443` and
+  `evil.example` are both `evil.example`; an IP literal is a group of its own, and a key id on a host
+  of one label is refused before the memory sees it. An entry is dropped only by expiry or by eviction, and an evicted entry is the oldest of its group, whose own
+  **floor** rises to its time: from then on a new signature from that group dated at or before its
   floor is refused as stale, since it might be the one dropped. A signature with exactly the floor's
   time is refused too (by time alone it cannot be told from the dropped one); this only happens to an
-  origin that was itself evicted from. One origin's floor never touches another's, and a floor is
+  group that was itself evicted from. One group's floor never touches another's, and a floor is
   forgotten when the window would refuse its time anyway. Who is evicted from:
-  - an origin holds at most 10,000 entries, a tenth of the memory (an origin at the inbox's allowance,
+  - a group holds at most 10,000 entries, a tenth of the memory (a group at the inbox's allowance,
     300 requests in 5 minutes, fills that in under 3 hours, so a sender that dates its deliveries when
     it sends them loses none); at that cap it evicts its own oldest, whatever dates it claims, so a flood
-    from one origin costs that origin only;
-  - when all 100,000 are taken, the oldest entry of the origin holding the most is evicted, or the
-    inserting origin's own when it already holds an equal share (the memory divided by the origins in
-    it). The heaviest pays because it is the one over its share: an origin at or under an equal share
+    from one group costs that group only;
+  - when all 100,000 are taken, the oldest entry of the group holding the most is evicted, or the
+    inserting group's own when it already holds an equal share (the memory divided by the groups in
+    it). The heaviest pays because it is the one over its share: a group at or under an equal share
     never loses an entry to another's traffic;
-  - at most 2,000 origins are kept: a signature from a new origin then is refused with its own reason
-    (`sigFull`), which the inbox answers with 503 and `Retry-After`, since an origin is never forgotten
+  - at most 2,000 groups are kept: a signature from a new group then is refused with its own reason
+    (`sigFull`), which the inbox answers with 503 and `Retry-After`, since a group is never forgotten
     while it may still have a floor or an entry.
 
-  **The worst case** is a flood of valid signatures from very many origins, each needing a domain the
-  domain policy lets in, a key that verifies, and its host held to the inbox's allowance (subdomains and
-  ports count as origins of their own until the domain is blocked). An honest origin already in the
-  memory keeps at least an equal share of its newest entries, 50 at the full 2,000 origins, and loses
+  **The worst case** is a flood of valid signatures from very many groups, each needing a domain the
+  domain policy lets in, a key that verifies, and its host held to the inbox's allowance. Subdomains and
+  ports share their domain's group, so one wildcard DNS name fills one group's share, not the 2,000
+  groups. An honest group already in the memory keeps at least an equal share of its newest entries, 50 at the full 2,000 groups, and loses
   only a delivery dated no later than the ones evicted, one overtaken by that many of its own later
-  deliveries; an honest origin not yet in the memory gets 503 until the flood's entries expire, up to 13
+  deliveries; an honest group not yet in the memory gets 503 until the flood's entries expire, up to 13
   hours, or the flooding domain is blocked. Either way the sender retries, with a fresh date, and is
   accepted. `TestReplayModel` checks the rule against a reference that remembers everything, over
   thousands of random operations.
 
-  Each check is O(log n): a heap of entries by time for each origin, and heaps of origins by count and
+  **What grouping by the last two labels costs.** It is a rough stand-in for the registrable domain,
+  and safe: a floor kept per group refuses at least everything a floor per origin would, so no replay
+  gets through. The cost is fairness under pressure only: servers that share their last two labels
+  (every server under `co.uk`, or every customer of a host that gives out subdomains) share one
+  group's share of the memory and one floor, so a flood from one of them can cost its group-mates a
+  delivery dated at or before the group's floor, which the sender retries with a fresh date
+  (`TestReplaySharedFloor` writes the trade down). Grouping by origin instead let one wildcard name
+  have every server not yet seen refused for up to 13 hours (`TestReplaySubdomainFlood`). The list of
+  public suffixes would draw the line better; it is not taken as a dependency.
+
+  Each check is O(log n): a heap of entries by time for each group, and heaps of groups by count and
   by oldest time, so expired entries are found without a scan (every call forgets up to 8, the
-  inserting origin's own all; `sweep` is there for the housekeeping pass). Entries share one pool, so
-  memory at the cap is fixed: 52 to 56 bytes an entry measured with 50 and 2,000 origins, 5.2 to 5.6 MB
-  for 100,000, about 7 MB at most with the slack a shrinking origin's heap may keep
+  inserting group's own all; `sweep` is there for the housekeeping pass). Entries share one pool, so
+  memory at the cap is fixed: 52 to 56 bytes an entry measured with 50 and 2,000 groups, 5.2 to 5.6 MB
+  for 100,000, about 7 MB at most with the slack a shrinking group's heap may keep
   (`TestReplayExpiry`, `BenchmarkReplayAdd`). This replaces a first rule, one floor for the whole
   memory raised to the latest time among the oldest half dropped by arrival, under which one key
   sending deliveries dated 59 minutes ahead could make the server refuse everyone else's for an hour,
@@ -1233,7 +1245,7 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
 | Fetched documents (actors, objects) | 1 MB, `application/activity+json` or `application/ld+json` only, the latter with no `profile` or with the Activity Streams one among its profiles (WebFinger: `application/jrd+json`, the type RFC 7033 4.2 names, or plain `application/json`; NodeInfo: `application/json`, any parameters; both 64 KB, as built in FRD 2). Plain `application/json` is refused for an actor or object: ActivityPub 3.2 names only the two types, and no recording shows a server Flowa needs serving it; a fixture that does reopens this. The type is checked before the body is read, and the cap counts the inflated bytes of a compressed answer |
 | Fetched pictures | 8 MB in, 4096 px a side checked with `image.DecodeConfig` before decoding, as `shrinkThumb` does; **one picture decoded at a time** (a mutex), because a 4096 by 4096 picture is 64 MB once decoded and the container has 384 MB |
 | Inbox requests per remote host | 300 in 5 minutes in a `limiter` keyed by host, 429 above |
-| Replay memory (7.2) | 100,000 signatures, at most 10,000 of one origin, at most 2,000 origins; a signature from a new origin beyond that is answered 503 with `Retry-After` |
+| Replay memory (7.2) | 100,000 signatures, at most 10,000 of one sender group (the last two labels of the key id's host), at most 2,000 groups; a signature from a new group beyond that is answered 503 with `Retry-After` |
 | Inbox handling at once | 4, 8 more may wait 2 s, then 503 with `Retry-After: 30` |
 | Inbound queue | 5,000 unprocessed rows; above it the inbox answers 503 with `Retry-After: 120` |
 

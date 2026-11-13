@@ -69,15 +69,17 @@ design note says it exists.
   `Signature-Input`, `Signature` and `Content-Digest`, `rfc9421Base`, `parseDigest`,
   `parseContentDigest`, `parsePublicKeyPEM`), the policy (`sigVerifier.verify`, a typed `sigReason` for
   every refusal), the replay memory (`replaySet`: entries kept until the window would refuse them,
-  grouped by the origin of the key id, each origin with its own floor and a cap of a tenth, the
-  heaviest origin evicted from when full, 2,000 origins at most, so a flood costs only its sender),
+  grouped by the key id's domain (its last two labels), each group with its own floor and a cap of a
+  tenth, the heaviest group evicted from when full, 2,000 groups at most, so a flood costs only its
+  sender and its domain),
   `clockTrusted` and `builtAt`, `verifyRequest` for a
   request that arrived and `httpSigner` for the fetcher's hook. `TestSignatureVectors` (cavage C.1 and
   C.2 verified and reproduced, C.3 kept as a documented negative, RFC 9421 4.3 `proxy_sig` verified and
   reproduced, the bases of 2.5 and B.2.1 to B.2.3 byte for byte, the digests of RFC 9530, RFC 9421 and
   the draft), `TestReplayWindow`, `TestReplayFlood` and `TestReplayFloodThroughVerifier` (the review's
   reproduction: one key's flood dated 59 minutes ahead no longer refuses anyone else),
-  `TestReplayManyOrigins`, `TestReplayModel` (random operations against a reference that remembers
+  `TestReplayManyOrigins`, `TestReplaySenderGroup`, `TestReplaySubdomainFlood`, `TestReplaySharedFloor`
+  (the cost of grouping by domain, written down), `TestReplayModel` (random operations against a reference that remembers
   everything), `TestReplayExpiry`, `TestReplayConcurrent`, `TestSignaturePolicy`, `TestSignatureNever`, `TestSignatureWindow`,
   `TestSignatureThroughFetcher` (both forms, GET with a redirect and POST, over TLS) and their
   neighbours pass, and the three fuzz targets ran 30 s each, and 20 s each again after the replay

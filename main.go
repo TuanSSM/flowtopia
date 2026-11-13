@@ -6412,7 +6412,7 @@ its own date: it says the clock check is skipped. Nothing else here logs. */
 const (
 	sigPast       = 12 * time.Hour // Mastodon's window: "made within the past 12 hours" (security page, Verifying HTTP signatures)
 	sigAhead      = time.Hour      // Flowa's own allowance for a sender whose clock runs ahead (federation.md 7.1)
-	sigSeenMax    = 100_000        // signatures remembered at most; one origin holds a tenth, 2,000 origins at most (federation.md 7.2)
+	sigSeenMax    = 100_000        // signatures remembered at most; one sender group holds a tenth, 2,000 groups at most (federation.md 7.2)
 	sigFieldMax   = 8 << 10        // bytes of Signature, Signature-Input, Digest or Content-Digest, its lines joined
 	sigLinesMax   = 8              // lines of one of those fields
 	sigCoveredMax = 32             // covered components (headers) of one signature
@@ -6465,7 +6465,7 @@ const (
 	sigReplay                                // this signature was accepted before
 	sigStale                                 // older than what the replay memory can still vouch for
 	sigClock                                 // this server's clock is earlier than its build: it cannot judge times
-	sigFull                                  // the replay memory holds as many origins as it can: try later (503)
+	sigFull                                  // the replay memory holds as many sender groups as it can: try later (503)
 )
 
 var sigReasons = [...]string{
@@ -7698,6 +7698,35 @@ func replayKeyOf(sig []byte) replayKey {
 	return replayKey(h[:16])
 }
 
+// senderGroup is the group a key id's signatures share in the replay memory: the last two labels of
+// its host, in lower case, scheme and port ignored, so a.b.evil.example:8443 and evil.example are
+// both evil.example. An IP literal is a group of its own. It returns "" for a host it cannot group (a
+// single label, an empty label), which the verifier refuses before the memory sees it.
+//
+// It is a rough stand-in for the registrable domain, and safe: a floor kept per group refuses at
+// least everything a floor per origin would, so no replay is let through. Its cost is fairness under
+// pressure only. Servers that share their last two labels (every server under co.uk, or every
+// customer of a host that gives out subdomains) share one group's share of the memory and one floor,
+// so a flood from one of them can cost its group-mates a delivery dated at or before the group's floor,
+// which the sender retries with a fresh date. That is far better than grouping by origin, where one
+// wildcard DNS name could fill the 2,000 groups and have every server not yet seen refused for up to
+// 13 hours. The list of public suffixes would draw the line better; it is not taken as a dependency.
+func senderGroup(keyID string) string {
+	u, err := url.Parse(keyID)
+	if err != nil {
+		return ""
+	}
+	h := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if _, err := netip.ParseAddr(h); err == nil {
+		return h
+	}
+	labels := strings.Split(h, ".")
+	if len(labels) < 2 || slices.Contains(labels, "") {
+		return ""
+	}
+	return labels[len(labels)-2] + "." + labels[len(labels)-1]
+}
+
 // replaySig is one signature for the replay memory: its key and the earliest time it vouches for, in
 // Unix seconds. The same signature always vouches for the same time.
 type replaySig struct {
@@ -7706,8 +7735,8 @@ type replaySig struct {
 }
 
 // replaySet remembers the signatures accepted on requests that change something, so that each is
-// accepted once (federation.md 7.2). Each entry is grouped by the origin of its key id (scheme, host
-// and port, as originOf writes it).
+// accepted once (federation.md 7.2). Each entry belongs to the sender group of its key id
+// (senderGroup: the last two labels of its host), and every rule below is per group.
 //
 // An entry lives as long as the time window could still accept its signature: until 12 hours (past)
 // after the time it vouches for, through the last second, which is exactly when inWindow starts to
@@ -7717,132 +7746,132 @@ type replaySig struct {
 // forgotten signature back into the window.
 //
 // The memory is bounded and the number of valid signatures in a window is not, so sometimes a valid
-// new signature has to be refused (a replay never is). The rule decides who that is: the origin that
+// new signature has to be refused (a replay never is). The rule decides who that is: the group that
 // filled the memory, never a bystander.
 //
-//   - An entry is only ever dropped by expiry or by eviction. An evicted entry is its origin's
-//     smallest time, and that origin's floor rises to it: from then on a new signature from that
-//     origin vouching for a time at or before its floor is refused as stale, since it might be the
-//     one dropped. One origin's floor never touches another origin. A signature from the same origin
+//   - An entry is only ever dropped by expiry or by eviction. An evicted entry is its group's
+//     smallest time, and that group's floor rises to it: from then on a new signature from that
+//     group vouching for a time at or before its floor is refused as stale, since it might be the
+//     one dropped. One group's floor never touches another group. A signature from the same group
 //     with exactly the floor's time is refused too: by time alone it cannot be told from the dropped
 //     one. A floor is forgotten when the window would refuse its time anyway.
-//   - One origin holds at most perOrigin entries (a tenth of the memory). At that cap it evicts its
-//     own oldest, whatever dates it claims: a flood from one origin costs only that origin.
-//   - When the whole memory is full, the entry evicted is the oldest of the origin holding the most
-//     entries, or the inserting origin's own when it already holds at least an equal share (the
-//     memory divided by the origins in it). The heaviest pays because it is the one using more than
-//     its share: an origin at or below an equal share is never evicted from by another's traffic, so
-//     an attacker gains nothing by spreading a flood unless it brings more origins than there are
-//     honest ones, and every honest origin keeps at least an equal share of its newest entries.
-//   - At most maxOrigins origins are remembered (one in fifty of the memory). A signature from a new
-//     origin when that many are kept is refused as sigFull, which the inbox answers with 503 and
-//     Retry-After: no origin is forgotten while it might still have a floor or an entry to keep.
+//   - One group holds at most perGroup entries (a tenth of the memory). At that cap it evicts its
+//     own oldest, whatever dates it claims: a flood from one group costs only that group.
+//   - When the whole memory is full, the entry evicted is the oldest of the group holding the most
+//     entries, or the inserting group's own when it already holds at least an equal share (the
+//     memory divided by the groups in it). The heaviest pays because it is the one using more than
+//     its share: an group at or below an equal share is never evicted from by another's traffic, so
+//     an attacker gains nothing by spreading a flood unless it brings more groups than there are
+//     honest ones, and every honest group keeps at least an equal share of its newest entries.
+//   - At most maxGroups groups are remembered (one in fifty of the memory). A signature from a new
+//     group when that many are kept is refused as sigFull, which the inbox answers with 503 and
+//     Retry-After: no group is forgotten while it might still have a floor or an entry to keep.
 //
-// The worst case, a flood of valid signatures from very many origins (each needs a domain the domain
-// policy lets in and a key that verifies, and each host is held to the inbox's allowance): an honest
-// origin already in the memory keeps at least an equal share of its newest entries, 50 at the full
-// 2,000 origins, and loses only a delivery that arrives dated no later than the ones evicted, that
-// is, one overtaken by that many of its own later deliveries; an honest origin not yet in the memory
+// The worst case, a flood of valid signatures from very many groups (each needs a domain of its own
+// that the domain policy lets in, since subdomains and ports share their domain's group, and a key
+// that verifies, and each host is held to the inbox's allowance): an honest group already in the memory keeps at least an equal share of its newest entries, 50 at the full
+// 2,000 groups, and loses only a delivery that arrives dated no later than the ones evicted, that
+// is, one overtaken by that many of its own later deliveries; an honest group not yet in the memory
 // gets 503 until the flood's entries expire, up to 13 hours. Either way the sender retries with a
 // fresh date and the delivery goes through once there is room. Replay is never accepted.
 //
 // Safe for concurrent use, under one mutex held for O(log n) work: a min-heap of entries by time per
-// origin, and two heaps of origins, by count (for the heaviest) and by their oldest time (for a
+// group, and two heaps of groups, by count (for the heaviest) and by their oldest time (for a
 // sweep that never scans). Every call also forgets up to replaySweepStep expired entries, so expired
-// ones are cleared at least as fast as new ones arrive, and a new origin is turned away as full only
+// ones are cleared at least as fast as new ones arrive, and a new group is turned away as full only
 // once nothing expired is left to forget. Entries sit in one pool, grown by doubling up
 // to max and reused, so the memory at the cap is fixed. In memory only: a restart forgets it, and
 // the inbox's de-duplication by activity id (7.2) still holds across one.
 type replaySet struct {
-	mu         sync.Mutex
-	max        int   // signatures remembered at most
-	perOrigin  int   // signatures one origin holds at most
-	maxOrigins int   // origins remembered at most
-	past       int64 // seconds a signature stays acceptable after the time it vouches for
-	now        int64 // the latest time given, Unix seconds: the memory's clock never goes back
-	n          int
-	m          map[replayKey]struct{}
-	pool       []replaySig // entries; a free slot holds the next free slot in at
-	free       int32       // the first free slot of pool, or -1
-	origins    map[string]*replayOrigin
-	byCount    originsByCount
-	byAge      originsByAge
+	mu        sync.Mutex
+	max       int   // signatures remembered at most
+	perGroup  int   // signatures one group holds at most
+	maxGroups int   // groups remembered at most
+	past      int64 // seconds a signature stays acceptable after the time it vouches for
+	now       int64 // the latest time given, Unix seconds: the memory's clock never goes back
+	n         int
+	m         map[replayKey]struct{}
+	pool      []replaySig // entries; a free slot holds the next free slot in at
+	free      int32       // the first free slot of pool, or -1
+	groups    map[string]*replayGroup
+	byCount   groupsByCount
+	byAge     groupsByAge
 }
 
 // replaySweepStep is how many expired entries each call forgets at most, besides the inserting
-// origin's own.
+// group's own.
 const replaySweepStep = 8
 
-// replayOrigin is what the memory keeps for one origin.
-type replayOrigin struct {
+// replayGroup is what the memory keeps for one group.
+type replayGroup struct {
 	s        *replaySet
 	name     string
 	h        []int32 // slots of s.pool, a min-heap by time
-	floor    int64   // with hasFloor: the latest time among this origin's evicted entries
+	floor    int64   // with hasFloor: the latest time among this group's evicted entries
 	hasFloor bool
 	cnt, age int // positions in s.byCount and s.byAge
 }
 
-func (o *replayOrigin) Len() int           { return len(o.h) }
-func (o *replayOrigin) Less(i, j int) bool { return o.s.pool[o.h[i]].at < o.s.pool[o.h[j]].at }
-func (o *replayOrigin) Swap(i, j int)      { o.h[i], o.h[j] = o.h[j], o.h[i] }
-func (o *replayOrigin) Push(x any)         { o.h = append(o.h, x.(int32)) }
-func (o *replayOrigin) Pop() any           { x := o.h[len(o.h)-1]; o.h = o.h[:len(o.h)-1]; return x }
+func (o *replayGroup) Len() int           { return len(o.h) }
+func (o *replayGroup) Less(i, j int) bool { return o.s.pool[o.h[i]].at < o.s.pool[o.h[j]].at }
+func (o *replayGroup) Swap(i, j int)      { o.h[i], o.h[j] = o.h[j], o.h[i] }
+func (o *replayGroup) Push(x any)         { o.h = append(o.h, x.(int32)) }
+func (o *replayGroup) Pop() any           { x := o.h[len(o.h)-1]; o.h = o.h[:len(o.h)-1]; return x }
 
-// oldest is the time by which the sweep orders origins: the oldest entry's, or the floor's when no
+// oldest is the time by which the sweep orders groups: the oldest entry's, or the floor's when no
 // entry is left (a floor is never later than an entry that was kept when it was set).
-func (o *replayOrigin) oldest() int64 {
+func (o *replayGroup) oldest() int64 {
 	if len(o.h) > 0 {
 		return o.s.pool[o.h[0]].at
 	}
 	return o.floor
 }
 
-// originsByCount is a heap of origins, the one holding the most entries first.
-type originsByCount []*replayOrigin
+// groupsByCount is a heap of groups, the one holding the most entries first.
+type groupsByCount []*replayGroup
 
-func (h originsByCount) Len() int           { return len(h) }
-func (h originsByCount) Less(i, j int) bool { return len(h[i].h) > len(h[j].h) }
-func (h originsByCount) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].cnt, h[j].cnt = i, j }
-func (h *originsByCount) Push(x any)        { o := x.(*replayOrigin); o.cnt = len(*h); *h = append(*h, o) }
-func (h *originsByCount) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
+func (h groupsByCount) Len() int           { return len(h) }
+func (h groupsByCount) Less(i, j int) bool { return len(h[i].h) > len(h[j].h) }
+func (h groupsByCount) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].cnt, h[j].cnt = i, j }
+func (h *groupsByCount) Push(x any)        { o := x.(*replayGroup); o.cnt = len(*h); *h = append(*h, o) }
+func (h *groupsByCount) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
 
-// originsByAge is a heap of origins, the one whose oldest time is earliest first.
-type originsByAge []*replayOrigin
+// groupsByAge is a heap of groups, the one whose oldest time is earliest first.
+type groupsByAge []*replayGroup
 
-func (h originsByAge) Len() int           { return len(h) }
-func (h originsByAge) Less(i, j int) bool { return h[i].oldest() < h[j].oldest() }
-func (h originsByAge) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].age, h[j].age = i, j }
-func (h *originsByAge) Push(x any)        { o := x.(*replayOrigin); o.age = len(*h); *h = append(*h, o) }
-func (h *originsByAge) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
+func (h groupsByAge) Len() int           { return len(h) }
+func (h groupsByAge) Less(i, j int) bool { return h[i].oldest() < h[j].oldest() }
+func (h groupsByAge) Swap(i, j int)      { h[i], h[j] = h[j], h[i]; h[i].age, h[j].age = i, j }
+func (h *groupsByAge) Push(x any)        { o := x.(*replayGroup); o.age = len(*h); *h = append(*h, o) }
+func (h *groupsByAge) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(*h)-1]; return o }
 
-// newReplaySet makes a memory of size signatures, of which one origin holds a tenth and which keeps
-// at most one origin in fifty (at least two), for signatures acceptable for past after their time.
+// newReplaySet makes a memory of size signatures, of which one group holds a tenth and which keeps
+// at most one group in fifty (at least two), for signatures acceptable for past after their time.
 func newReplaySet(size int, past time.Duration) *replaySet {
-	return &replaySet{max: size, perOrigin: max(size/10, 1), maxOrigins: max(size/50, 2), past: int64(past / time.Second),
-		free: -1, m: map[replayKey]struct{}{}, origins: map[string]*replayOrigin{}}
+	return &replaySet{max: size, perGroup: max(size/10, 1), maxGroups: max(size/50, 2), past: int64(past / time.Second),
+		free: -1, m: map[replayKey]struct{}{}, groups: map[string]*replayGroup{}}
 }
 
 // expired says whether the window can no longer accept a signature vouching for at.
 func (s *replaySet) expired(at int64) bool { return at+s.past < s.now }
 
-// check says whether signatures from an origin may be accepted now, without remembering them.
-func (s *replaySet) check(origin string, now int64, sigs ...replaySig) sigReason {
-	return s.admit(origin, now, sigs, false)
+// check says whether signatures from an group may be accepted now, without remembering them.
+func (s *replaySet) check(group string, now int64, sigs ...replaySig) sigReason {
+	return s.admit(group, now, sigs, false)
 }
 
-// add remembers the signatures of one request from an origin, all or none: if one is already
+// add remembers the signatures of one request from an group, all or none: if one is already
 // remembered or refused, nothing is added and the reason is returned.
-func (s *replaySet) add(origin string, now int64, sigs ...replaySig) sigReason {
-	return s.admit(origin, now, sigs, true)
+func (s *replaySet) add(group string, now int64, sigs ...replaySig) sigReason {
+	return s.admit(group, now, sigs, true)
 }
 
-func (s *replaySet) admit(origin string, now int64, sigs []replaySig, keep bool) sigReason {
+func (s *replaySet) admit(group string, now int64, sigs []replaySig, keep bool) sigReason {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.now = max(s.now, now)
 	s.sweepLocked(replaySweepStep)
-	o := s.origins[origin]
+	o := s.groups[group]
 	if o != nil {
 		for len(o.h) > 0 && s.expired(o.oldest()) {
 			s.popOldest(o)
@@ -7859,10 +7888,10 @@ func (s *replaySet) admit(origin string, now int64, sigs []replaySig, keep bool)
 			return sigStale
 		}
 	}
-	if o == nil && len(s.origins) >= s.maxOrigins {
-		for len(s.origins) >= s.maxOrigins && s.sweepLocked(replaySweepStep) > 0 { // what has expired goes first
+	if o == nil && len(s.groups) >= s.maxGroups {
+		for len(s.groups) >= s.maxGroups && s.sweepLocked(replaySweepStep) > 0 { // what has expired goes first
 		}
-		if len(s.origins) >= s.maxOrigins {
+		if len(s.groups) >= s.maxGroups {
 			return sigFull
 		}
 	}
@@ -7870,7 +7899,7 @@ func (s *replaySet) admit(origin string, now int64, sigs []replaySig, keep bool)
 		return 0
 	}
 	if o == nil {
-		o = s.newOrigin(origin)
+		o = s.newGroup(group)
 	}
 	for _, g := range sigs {
 		if _, ok := s.m[g.key]; !ok {
@@ -7880,9 +7909,9 @@ func (s *replaySet) admit(origin string, now int64, sigs []replaySig, keep bool)
 	return 0
 }
 
-func (s *replaySet) newOrigin(name string) *replayOrigin {
-	o := &replayOrigin{s: s, name: name}
-	s.origins[name] = o
+func (s *replaySet) newGroup(name string) *replayGroup {
+	o := &replayGroup{s: s, name: name}
+	s.groups[name] = o
 	heap.Push(&s.byCount, o)
 	heap.Push(&s.byAge, o)
 	return o
@@ -7890,19 +7919,19 @@ func (s *replaySet) newOrigin(name string) *replayOrigin {
 
 // insert remembers one signature of o, making room first: o's own oldest when o is at its cap, and
 // when the memory is full, the oldest of o if it holds at least an equal share, else of the heaviest.
-func (s *replaySet) insert(o *replayOrigin, g replaySig) *replayOrigin {
-	if len(o.h) >= s.perOrigin {
+func (s *replaySet) insert(o *replayGroup, g replaySig) *replayGroup {
+	if len(o.h) >= s.perGroup {
 		s.evict(o)
 	}
 	if s.n >= s.max {
 		v := o
-		if len(o.h)*len(s.origins) < s.n {
+		if len(o.h)*len(s.groups) < s.n {
 			v = s.byCount[0]
 		}
 		s.evict(v)
 	}
-	if s.origins[o.name] != o { // evicting o's last entry, already expired, would have let it go
-		o = s.newOrigin(o.name)
+	if s.groups[o.name] != o { // evicting o's last entry, already expired, would have let it go
+		o = s.newGroup(o.name)
 	}
 	var i int32
 	if s.free >= 0 {
@@ -7927,7 +7956,7 @@ func (s *replaySet) insert(o *replayOrigin, g replaySig) *replayOrigin {
 
 // evict drops o's oldest entry to make room and raises o's floor to its time, unless the window
 // refuses that time already.
-func (s *replaySet) evict(o *replayOrigin) {
+func (s *replaySet) evict(o *replayGroup) {
 	e := s.popOldest(o)
 	if !s.expired(e.at) && (!o.hasFloor || e.at > o.floor) {
 		o.floor, o.hasFloor = e.at, true
@@ -7936,7 +7965,7 @@ func (s *replaySet) evict(o *replayOrigin) {
 }
 
 // popOldest forgets o's oldest entry and returns it; the caller settles o.
-func (s *replaySet) popOldest(o *replayOrigin) replaySig {
+func (s *replaySet) popOldest(o *replayGroup) replaySig {
 	i := o.h[0]
 	last := len(o.h) - 1
 	o.Swap(0, last)
@@ -7957,12 +7986,12 @@ func (s *replaySet) popOldest(o *replayOrigin) replaySig {
 
 // settle puts o back in order after a change, forgetting its floor once the window refuses it, and o
 // itself once it has neither entries nor floor; it says whether o is still kept.
-func (s *replaySet) settle(o *replayOrigin) bool {
+func (s *replaySet) settle(o *replayGroup) bool {
 	if o.hasFloor && s.expired(o.floor) {
 		o.hasFloor = false
 	}
 	if len(o.h) == 0 && !o.hasFloor {
-		delete(s.origins, o.name)
+		delete(s.groups, o.name)
 		heap.Remove(&s.byCount, o.cnt)
 		heap.Remove(&s.byAge, o.age)
 		return false
@@ -8332,7 +8361,7 @@ func (v *sigVerifier) check9421(in *sigInput, sig []byte, m *sigMessage, body []
 // only what the signer could read with its own signature anyway, and remembering every signed fetch
 // would fill the memory with them and leave the deliveries, which change things, to the stale rule.
 // The memory is asked before the key is looked up and again after the signature verifies, by the
-// origin of the key id; sigFull from it is for a 503 with Retry-After, not a 401.
+// sender group of the key id (senderGroup); sigFull from it is for a 503 with Retry-After, not a 401.
 //
 // The key lookup is called for whatever https key id a request names, before any cryptography: the
 // inbox must give it a fetch cache and a limit per host before it wires a lookup that fetches (7.4).
@@ -8366,15 +8395,16 @@ func (v *sigVerifier) verify(ctx context.Context, m *sigMessage, body []byte) (*
 	}
 	replay := m.method != "GET" && m.method != "HEAD"
 	keyID := checks[0].keyID
+	group := senderGroup(keyID)
+	if group == "" {
+		return nil, sigFail(sigKeyID) // a host of one label: no key id Flowa can look up has one
+	}
 	var sigs [2]replaySig
-	var origin string
 	if replay {
-		u, _ := url.Parse(keyID) // an https URL: checked above
-		origin = originOf(u)
 		for i, c := range checks {
 			sigs[i] = replaySig{key: replayKeyOf(c.sig), at: c.at.Unix()}
 		}
-		if r := v.seen.check(origin, now.Unix(), sigs[:len(checks)]...); r != 0 {
+		if r := v.seen.check(group, now.Unix(), sigs[:len(checks)]...); r != 0 {
 			return nil, sigFail(r)
 		}
 	}
@@ -8401,7 +8431,7 @@ func (v *sigVerifier) verify(ctx context.Context, m *sigMessage, body []byte) (*
 		}
 	}
 	if replay {
-		if r := v.seen.add(origin, now.Unix(), sigs[:len(checks)]...); r != 0 {
+		if r := v.seen.add(group, now.Unix(), sigs[:len(checks)]...); r != 0 {
 			return nil, sigFail(r)
 		}
 	}

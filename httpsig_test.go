@@ -1121,8 +1121,8 @@ func rk(i int) replayKey {
 	return k
 }
 
-// rorigin is the i-th origin of a test, written as originOf writes one.
-func rorigin(i int) string { return "https://o" + strconv.Itoa(i) + ".example:443" }
+// rgroup is the i-th sender group of a test, as senderGroup writes one.
+func rgroup(i int) string { return "o" + strconv.Itoa(i) + ".example" }
 
 func sig1(k replayKey, at int64) replaySig { return replaySig{key: k, at: at} }
 
@@ -1135,13 +1135,13 @@ func replayInvariants(t *testing.T, s *replaySet, where string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sum := 0
-	for name, o := range s.origins {
+	for name, o := range s.groups {
 		sum += len(o.h)
 		if o.name != name || s.byCount[o.cnt] != o || s.byAge[o.age] != o {
 			t.Fatalf("%s: origin %s is out of its heaps", where, name)
 		}
-		if len(o.h) > s.perOrigin || len(o.h) > len(s.byCount[0].h) {
-			t.Fatalf("%s: origin %s holds %d, cap %d, heaviest %d", where, name, len(o.h), s.perOrigin, len(s.byCount[0].h))
+		if len(o.h) > s.perGroup || len(o.h) > len(s.byCount[0].h) {
+			t.Fatalf("%s: origin %s holds %d, cap %d, heaviest %d", where, name, len(o.h), s.perGroup, len(s.byCount[0].h))
 		}
 		if len(o.h) == 0 && !o.hasFloor {
 			t.Fatalf("%s: origin %s is kept with nothing in it", where, name)
@@ -1152,9 +1152,9 @@ func replayInvariants(t *testing.T, s *replaySet, where string) {
 			}
 		}
 	}
-	if sum != s.n || len(s.m) != s.n || s.n > s.max || len(s.origins) > s.maxOrigins || len(s.byCount) != len(s.origins) ||
-		len(s.byAge) != len(s.origins) || len(s.pool) > s.max || cap(s.pool) > s.max {
-		t.Fatalf("%s: %d entries (%d in origins, %d in the map, %d slots), %d origins; caps %d and %d", where, s.n, sum, len(s.m), len(s.pool), len(s.origins), s.max, s.maxOrigins)
+	if sum != s.n || len(s.m) != s.n || s.n > s.max || len(s.groups) > s.maxGroups || len(s.byCount) != len(s.groups) ||
+		len(s.byAge) != len(s.groups) || len(s.pool) > s.max || cap(s.pool) > s.max {
+		t.Fatalf("%s: %d entries (%d in origins, %d in the map, %d slots), %d origins; caps %d and %d", where, s.n, sum, len(s.m), len(s.pool), len(s.groups), s.max, s.maxGroups)
 	}
 }
 
@@ -1175,8 +1175,8 @@ func TestReplayWindow(t *testing.T) {
 	if r := s.check(o, at+13*3600, sig1(rk(1), at+3600)); r != sigReplay {
 		t.Errorf("13 hours after: %v, want still remembered", rs(r))
 	}
-	if r := s.check(o, at+13*3600+1, sig1(rk(1), at+3600)); r != sigStale || s.size() != 0 || len(s.origins) != 0 {
-		t.Errorf("13 hours and a second after: %v with %d kept in %d origins, want forgotten and refused by the memory's clock", rs(r), s.size(), len(s.origins))
+	if r := s.check(o, at+13*3600+1, sig1(rk(1), at+3600)); r != sigStale || s.size() != 0 || len(s.groups) != 0 {
+		t.Errorf("13 hours and a second after: %v with %d kept in %d origins, want forgotten and refused by the memory's clock", rs(r), s.size(), len(s.groups))
 	}
 	// The two interlock: the second the entry goes, the window refuses the signature too.
 	if r := inWindow(time.Unix(at+3600, 0), time.Unix(at+13*3600+1, 0)); r != sigTooOld {
@@ -1323,8 +1323,8 @@ func TestReplayFlood(t *testing.T) {
 			t.Errorf("size %d: the flooder after its own floor: %v", size, rs(r))
 		}
 		replayInvariants(t, s, "after the flood")
-		if c := len(s.origins[flood].h); c != s.perOrigin {
-			t.Errorf("size %d: the flooder holds %d, its cap is %d", size, c, s.perOrigin)
+		if c := len(s.groups[flood].h); c != s.perGroup {
+			t.Errorf("size %d: the flooder holds %d, its cap is %d", size, c, s.perGroup)
 		}
 	}
 }
@@ -1338,7 +1338,7 @@ func TestReplayFlood(t *testing.T) {
 func TestReplayManyOrigins(t *testing.T) {
 	at := t0.Unix()
 	s := newReplaySet(100, sigPast)
-	s.maxOrigins = 20
+	s.maxGroups = 20
 	const quiet, busy, late = "https://quiet.example:443", "https://busy.example:443", "https://late.example:443"
 	type acc struct {
 		origin string
@@ -1367,7 +1367,7 @@ func TestReplayManyOrigins(t *testing.T) {
 	}
 	for a := range 18 {
 		for j := range 10 {
-			if r := add(rorigin(a), sig1(rk(n), at+3540+int64(j))); r != 0 {
+			if r := add(rgroup(a), sig1(rk(n), at+3540+int64(j))); r != 0 {
 				t.Fatalf("flooding origin %d: %v", a, rs(r))
 			}
 			n++
@@ -1379,15 +1379,15 @@ func TestReplayManyOrigins(t *testing.T) {
 			t.Fatalf("an accepted signature of %s dated %+ds would be accepted again", x.origin, x.g.at-at)
 		}
 	}
-	if c := len(s.origins[quiet].h); c != 5 || s.origins[quiet].hasFloor {
-		t.Errorf("the quiet origin holds %d (floor %v), want all 5 and no floor", c, s.origins[quiet].hasFloor)
+	if c := len(s.groups[quiet].h); c != 5 || s.groups[quiet].hasFloor {
+		t.Errorf("the quiet origin holds %d (floor %v), want all 5 and no floor", c, s.groups[quiet].hasFloor)
 	}
 	for i := range 5 {
 		if r := s.check(quiet, at, sig1(rk(i), at-600+int64(i))); r != sigReplay {
 			t.Errorf("the quiet origin's signature %d: %v, want still remembered", i, rs(r))
 		}
 	}
-	if c := len(s.origins[busy].h); c != 5 {
+	if c := len(s.groups[busy].h); c != 5 {
 		t.Errorf("the busy origin holds %d, want an equal share, 5", c)
 	}
 	for i := range 10 {
@@ -1416,17 +1416,17 @@ func TestReplayManyOrigins(t *testing.T) {
 		t.Errorf("the new origin after the flood expired: %v", rs(r))
 	}
 	s.sweep(at+3549+12*3600+1, 1000)
-	if s.size() != 1 || len(s.origins) != 1 {
-		t.Errorf("after the flood expired: %d entries in %d origins", s.size(), len(s.origins))
+	if s.size() != 1 || len(s.groups) != 1 {
+		t.Errorf("after the flood expired: %d entries in %d origins", s.size(), len(s.groups))
 	}
 }
 
-// A model-based property test: random signatures from a few dozen origins, repeats, times inside and
-// outside the window and a clock that moves, against a reference that remembers every signature it
-// was told was accepted. The memory must never accept one again while the window would; it may
-// refuse a new one only by its own origin's floor (set by that origin's own evicted signatures) or
-// because the origins are full; another origin may only lose an entry by being the heaviest; and the
-// caps always hold.
+// A model-based property test: random signatures from key ids on 40 hosts and two ports, two hosts
+// to each sender group, repeats, times inside and outside the window and a clock that moves, against
+// a reference that remembers every signature it was told was accepted. The memory must never accept
+// one again while the window would; it may refuse a new one only by its own group's floor (set by
+// that group's own evicted signatures) or because the groups are full; another group may only lose
+// an entry by being the heaviest; and the caps always hold.
 func TestReplayModel(t *testing.T) {
 	for _, seed := range []uint64{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprint("seed", seed), func(t *testing.T) { replayModel(t, seed, 20000) })
@@ -1436,8 +1436,11 @@ func TestReplayModel(t *testing.T) {
 func replayModel(t *testing.T, seed uint64, ops int) {
 	rnd := mrand.New(mrand.NewPCG(seed, 0x5eed))
 	s := newReplaySet(200, sigPast)
-	s.maxOrigins = 24
-	const origins = 30
+	s.maxGroups = 16
+	const origins = 40 // key ids on 40 hosts and two ports, in 20 sender groups, two hosts each
+	keyID := func(i int) string {
+		return "https://h" + strconv.Itoa(i) + ".d" + strconv.Itoa(i%20) + ".example:" + strconv.Itoa(443+8000*(i%2)) + "/actor#main-key"
+	}
 	type rec struct {
 		origin string
 		at     int64
@@ -1447,7 +1450,7 @@ func replayModel(t *testing.T, seed uint64, ops int) {
 	triedOrigin := map[replayKey]string{}
 	now := t0.Unix()
 	fail := func(f string, a ...any) { t.Helper(); t.Fatalf("seed %d: "+f, append([]any{seed}, a...)...) }
-	live := func(o *replayOrigin) int {
+	live := func(o *replayGroup) int {
 		c := 0
 		for _, i := range o.h {
 			if s.pool[i].at+s.past >= now {
@@ -1485,7 +1488,7 @@ func replayModel(t *testing.T, seed uint64, ops int) {
 			}
 			continue
 		}
-		o := rorigin(rnd.IntN(origins))
+		o := senderGroup(keyID(rnd.IntN(origins)))
 		g := sig1(rk(nextKey), now+rnd.Int64N(15*3600)-13*3600)
 		nextKey++
 		tried = append(tried, g)
@@ -1494,7 +1497,7 @@ func replayModel(t *testing.T, seed uint64, ops int) {
 			continue
 		}
 		before := map[string][2]int{} // live and total entries of each origin
-		for name, p := range s.origins {
+		for name, p := range s.groups {
 			before[name] = [2]int{live(p), len(p.h)}
 		}
 		heaviestLive := 0
@@ -1507,7 +1510,7 @@ func replayModel(t *testing.T, seed uint64, ops int) {
 		case 0:
 			model[g.key] = rec{o, g.at}
 		case sigStale:
-			p := s.origins[o]
+			p := s.groups[o]
 			if p == nil || !p.hasFloor || g.at > p.floor {
 				fail("op %d: a new signature of %s dated %d refused as stale with no floor of its own over it", op, o, g.at)
 			}
@@ -1522,20 +1525,20 @@ func replayModel(t *testing.T, seed uint64, ops int) {
 				fail("op %d: the floor of %s, %d, is no evicted signature of its own", op, o, p.floor)
 			}
 		case sigFull:
-			if s.origins[o] != nil || len(s.origins) != s.maxOrigins {
-				fail("op %d: full for %s with %d origins kept, it among them: %v", op, o, len(s.origins), s.origins[o] != nil)
+			if s.groups[o] != nil || len(s.groups) != s.maxGroups {
+				fail("op %d: full for %s with %d origins kept, it among them: %v", op, o, len(s.groups), s.groups[o] != nil)
 			}
 		default:
 			fail("op %d: a new signature refused: %v", op, rs(r))
 		}
 		for name, c := range before {
-			p := s.origins[name]
+			p := s.groups[name]
 			after := 0
 			if p != nil {
 				after = live(p)
 			}
 			if lost := c[0] - after; name != o && lost > 0 {
-				counts["another origin evicted from"]++
+				counts["another group evicted from"]++
 				if lost > 1 || r != 0 || c[1] < heaviestLive {
 					fail("op %d: %s lost %d live entries to %s's signature (%v), holding %d of which %d live, the heaviest live %d", op, name, lost, o, rs(r), c[1], c[0], heaviestLive)
 				}
@@ -1553,8 +1556,116 @@ func replayModel(t *testing.T, seed uint64, ops int) {
 		}
 	}
 	t.Logf("seed %d: %d accepted in all; new signatures: %v", seed, len(model), counts)
-	if len(model) < ops/4 || counts["another origin evicted from"] == 0 || counts[sigStale.String()] == 0 || counts[sigFull.String()] == 0 {
+	if len(model) < ops/4 || counts["another group evicted from"] == 0 || counts[sigStale.String()] == 0 || counts[sigFull.String()] == 0 {
 		t.Errorf("seed %d: %d accepted in %d operations, %v: the test exercises too little", seed, len(model), ops, counts)
+	}
+}
+
+// Key ids share a group by the last two labels of their host, whatever the scheme, port or case;
+// an IP literal is its own group, and a host the memory cannot group is refused before it.
+func TestReplaySenderGroup(t *testing.T) {
+	for id, want := range map[string]string{
+		"https://evil.example/actor#main-key":          "evil.example",
+		"https://a.b.evil.example:8443/actor#main-key": "evil.example",
+		"https://evil.example:443/k":                   "evil.example",
+		"https://A.Evil.EXAMPLE./k":                    "evil.example",
+		"https://social.example.co.uk/k":               "co.uk",
+		"https://192.0.2.7/k":                          "192.0.2.7",
+		"https://[2001:db8::1]:8443/k":                 "2001:db8::1",
+		"https://localhost/k":                          "",
+		"https://a..example/k":                         "",
+	} {
+		if got := senderGroup(id); got != want {
+			t.Errorf("senderGroup(%q) = %q, want %q", id, got, want)
+		}
+	}
+	// Through the verifier: a key id on a one-label host is refused as a key id, before any lookup.
+	k := newSigKit(t)
+	looked := false
+	k.v.keyFor = func(context.Context, string) (*rsa.PublicKey, error) { looked = true; return nil, errors.New("no") }
+	req := k.request(t, "POST", tOrigin+"/inbox", inboxBody)
+	req.Header.Set("Digest", digestHeader(inboxBody))
+	cavageWith(t, req, k.key, "https://localhost/actor#main-key", "rsa-sha256", strings.Fields("(request-target) host date digest"), "")
+	if _, err := k.verify(received(req, inboxBody), inboxBody); reasonOf(err) != sigKeyID || looked {
+		t.Errorf("a one-label key id: %v, looked up: %v", err, looked)
+	}
+}
+
+// A flood from 5,000 subdomains of one name, each with its own signatures, takes one group's share:
+// one group, trimmed at its cap, and a server never seen before is still accepted.
+func TestReplaySubdomainFlood(t *testing.T) {
+	at := t0.Unix()
+	s := newReplaySet(sigSeenMax, sigPast)
+	n := 0
+	for i := range 3 * 5000 {
+		id := "https://h" + strconv.Itoa(i%5000) + ".evil.example/actor#main-key"
+		if r := s.add(senderGroup(id), at, sig1(rk(n), at-3600+int64(i)/5)); r != 0 {
+			t.Fatalf("flood signature %d from %s: %s", i, id, rs(r))
+		}
+		n++
+	}
+	if len(s.groups) != 1 || len(s.groups["evil.example"].h) != s.perGroup {
+		t.Errorf("after the flood: %d groups, the flooder's holding %d (cap %d)", len(s.groups), s.size(), s.perGroup)
+	}
+	if r := s.add(senderGroup("https://social.example/users/bo#main-key"), at, sig1(rk(n), at)); r != 0 {
+		t.Errorf("a server never seen before, after the flood: %s", rs(r))
+	}
+	replayInvariants(t, s, "after the subdomain flood")
+
+	// The same through the verifier, small: 30 subdomains fill a memory of 100 that keeps 2 groups,
+	// and an honest server is still accepted in both forms.
+	a, b := sigTestKeys()
+	k := floodKit(t, 100)
+	k.v.keyFor = func(_ context.Context, id string) (*rsa.PublicKey, error) {
+		if id == tKeyID {
+			return &a.PublicKey, nil
+		}
+		if strings.HasSuffix(id, ".evil.example/actor#main-key") {
+			return &b.PublicKey, nil
+		}
+		return nil, errors.New("no such key")
+	}
+	k.now = t0
+	for i := range 30 {
+		r, body := signedPost(t, b, "https://h"+strconv.Itoa(i)+".evil.example/actor#main-key", sigCavage, t0.Add(time.Duration(i)*time.Second), i)
+		if _, err := k.verify(r, body); err != nil {
+			t.Fatalf("subdomain %d: %v", i, err)
+		}
+	}
+	for _, form := range []sigForm{sigCavage, sigRFC9421} {
+		r, body := signedPost(t, a, tKeyID, form, t0, 100+int(form))
+		if _, err := k.verify(r, body); err != nil {
+			t.Errorf("an honest server after the subdomain flood, form %d: %v", form, err)
+		}
+	}
+}
+
+// The cost of grouping, written down: two servers that share their last two labels share a floor,
+// so the quiet one's signature dated at or before the floor the noisy one raised is refused as stale
+// (its sender retries with a fresh date), and one dated after it is accepted.
+func TestReplaySharedFloor(t *testing.T) {
+	at := t0.Unix()
+	noisy := senderGroup("https://noisy.hoster.example/actor#main-key")
+	quiet := senderGroup("https://quiet.hoster.example/actor#main-key")
+	if noisy != quiet || noisy != "hoster.example" {
+		t.Fatalf("groups %q and %q", noisy, quiet)
+	}
+	s := newReplaySet(10, sigPast) // 1 a group
+	if s.add(noisy, at, sig1(rk(1), at+100)) != 0 || s.add(noisy, at, sig1(rk(2), at+200)) != 0 {
+		t.Fatal("the noisy server was refused")
+	}
+	if r := s.check(quiet, at, sig1(rk(3), at+100)); r != sigStale {
+		t.Errorf("the quiet server at the group's floor: %s", rs(r))
+	}
+	if r := s.check(quiet, at, sig1(rk(3), at+50)); r != sigStale {
+		t.Errorf("the quiet server before the group's floor: %s", rs(r))
+	}
+	if r := s.check(quiet, at, sig1(rk(3), at+101)); r != 0 {
+		t.Errorf("the quiet server after the group's floor: %s", rs(r))
+	}
+	// A server in another group is untouched by that floor.
+	if r := s.check(senderGroup("https://other.example/actor#main-key"), at, sig1(rk(4), at+50)); r != 0 {
+		t.Errorf("a server of another group: %s", rs(r))
 	}
 }
 
@@ -1568,23 +1679,23 @@ func TestReplayExpiry(t *testing.T) {
 	if s.add(o, at, sig1(rk(1), at)) != 0 || s.add(p, at, sig1(rk(2), at+5)) != 0 {
 		t.Fatal("the first two were refused")
 	}
-	if q := s.origins[o]; q == nil || len(q.h) != 0 || !q.hasFloor || q.floor != at {
+	if q := s.groups[o]; q == nil || len(q.h) != 0 || !q.hasFloor || q.floor != at {
 		t.Fatalf("o after eviction: %+v", q)
 	}
 	if r := s.check(o, at+12*3600, sig1(rk(3), at)); r != sigStale {
 		t.Errorf("a new signature of o at its floor, the last second the window takes it: %v", rs(r))
 	}
-	if n := s.sweep(at+12*3600, 100); n != 0 || s.origins[o] == nil {
+	if n := s.sweep(at+12*3600, 100); n != 0 || s.groups[o] == nil {
 		t.Errorf("a sweep at the floor's last second forgot %d", n)
 	}
-	if n := s.sweep(at+12*3600+1, 100); n != 1 || s.origins[o] != nil || len(s.origins) != 1 {
-		t.Errorf("a sweep a second later forgot %d, o kept: %v", n, s.origins[o] != nil)
+	if n := s.sweep(at+12*3600+1, 100); n != 1 || s.groups[o] != nil || len(s.groups) != 1 {
+		t.Errorf("a sweep a second later forgot %d, o kept: %v", n, s.groups[o] != nil)
 	}
 	if n := s.sweep(at+12*3600+5, 100); n != 0 || s.size() != 1 {
 		t.Errorf("p's entry, dated 5 s later, went early: %d", n)
 	}
-	if n := s.sweep(at+12*3600+6, 100); n != 1 || s.size() != 0 || len(s.origins) != 0 || len(s.byAge) != 0 || len(s.byCount) != 0 {
-		t.Errorf("all gone: forgot %d, %d entries, %d origins", n, s.size(), len(s.origins))
+	if n := s.sweep(at+12*3600+6, 100); n != 1 || s.size() != 0 || len(s.groups) != 0 || len(s.byAge) != 0 || len(s.byCount) != 0 {
+		t.Errorf("all gone: forgot %d, %d entries, %d origins", n, s.size(), len(s.groups))
 	}
 
 	// A floor with entries above it is forgotten on its own second, the entries kept.
@@ -1592,12 +1703,12 @@ func TestReplayExpiry(t *testing.T) {
 	if s.add(o, at, sig1(rk(1), at)) != 0 || s.add(o, at, sig1(rk(2), at+100)) != 0 {
 		t.Fatal("refused")
 	}
-	if q := s.origins[o]; !q.hasFloor || q.floor != at || len(q.h) != 1 {
+	if q := s.groups[o]; !q.hasFloor || q.floor != at || len(q.h) != 1 {
 		t.Fatalf("o at its own cap: %+v", q)
 	}
 	s.sweep(at+12*3600+1, 100)
-	if r := s.check(o, at+12*3600+1, sig1(rk(3), at+50)); r != 0 || s.origins[o].hasFloor || s.size() != 1 {
-		t.Errorf("after the floor's second: %v, floor kept %v, %d entries", rs(r), s.origins[o].hasFloor, s.size())
+	if r := s.check(o, at+12*3600+1, sig1(rk(3), at+50)); r != 0 || s.groups[o].hasFloor || s.size() != 1 {
+		t.Errorf("after the floor's second: %v, floor kept %v, %d entries", rs(r), s.groups[o].hasFloor, s.size())
 	}
 
 	// 200,000 distinct signatures from 50 origins never take the memory past its cap, and what one
@@ -1608,7 +1719,7 @@ func TestReplayExpiry(t *testing.T) {
 		runtime.ReadMemStats(&before)
 		s = newReplaySet(sigSeenMax, sigPast)
 		for i := range sigSeenMax {
-			s.add(rorigin(i%origins), at, sig1(rk(i), at+int64(i/origins)%3600))
+			s.add(rgroup(i%origins), at, sig1(rk(i), at+int64(i/origins)%3600))
 		}
 		runtime.GC()
 		runtime.ReadMemStats(&after)
@@ -1621,7 +1732,7 @@ func TestReplayExpiry(t *testing.T) {
 	}
 	s = newReplaySet(sigSeenMax, sigPast)
 	for i := range 2 * sigSeenMax {
-		s.add(rorigin(i%50), at, sig1(rk(i), at+int64(i/50)%3600))
+		s.add(rgroup(i%50), at, sig1(rk(i), at+int64(i/50)%3600))
 		if s.n > sigSeenMax || len(s.m) > sigSeenMax || len(s.pool) > sigSeenMax {
 			t.Fatalf("grew to %d entries, %d in the map, %d slots", s.n, len(s.m), len(s.pool))
 		}
@@ -1659,7 +1770,7 @@ func TestReplayConcurrent(t *testing.T) {
 		wg.Go(func() {
 			for i := range 2000 {
 				now := clock.Add(int64(i % 2))
-				o := rorigin((g*7 + i) % 40)
+				o := rgroup((g*7 + i) % 40)
 				g1 := sig1(rk(g*100000+i), now-int64(i%7200))
 				if s.add(o, now, g1) == 0 {
 					accepted.Add(1)
@@ -2100,7 +2211,7 @@ func (s *replaySet) reset() {
 	defer s.mu.Unlock()
 	s.n, s.free, s.pool = 0, -1, s.pool[:0]
 	clear(s.m)
-	clear(s.origins)
+	clear(s.groups)
 	s.byCount, s.byAge = s.byCount[:0], s.byAge[:0]
 }
 
@@ -2111,10 +2222,10 @@ func BenchmarkReplayAdd(b *testing.B) {
 	for _, origins := range []int{1, 50, 5000} {
 		b.Run(strconv.Itoa(origins), func(b *testing.B) {
 			s := newReplaySet(sigSeenMax, sigPast)
-			s.maxOrigins = max(s.maxOrigins, origins)
+			s.maxGroups = max(s.maxGroups, origins)
 			names := make([]string, origins)
 			for i := range names {
-				names[i] = rorigin(i)
+				names[i] = rgroup(i)
 			}
 			at := t0.Unix()
 			i := 0
