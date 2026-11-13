@@ -33,6 +33,13 @@ route and test named below is new unless the design note says it exists.
   `keyId`, so a signature evicted from the replay memory can come back under another domain's key id,
   and only this check refuses it (federation.md 7.2, `TestReplayAcrossDomains`; `TestInboxRefusals`
   gets the case "a delivery signed under a key id not on the actor's origin").
+  From FRD's decoder (federation.md 6.3, 7.5): **required:** the inbox decodes at most 4 bodies at
+  once, the same bound as its handling at once, never one per request that waits. One decode of a
+  256 KB body allocates at most 4 MB (`TestDecodeMemory`; 3.4 MB measured at worst), so 4 at once is
+  16 MB, half of section 12's 32 MB for federation at peak, leaving the other half for the queue and the
+  workers; 8 would take all of it. The readers' counts of what they dropped (`apAudience.Dropped`,
+  `TagsDropped`, `KeysSkipped`, `AlsoKnownAsDropped`, `ObjectsDropped`) and `BadDate` are logged as
+  counts, and a post with `ReplyToUnknown` is handled as a reply to an unknown post.
 - [ ] **A delivery queue in Postgres.** `ap_outbox`, `ap_deliveries`, `ap_hosts`; workers
   (`FLOWA_FEDERATION_WORKERS`), one request at a time per host, 10 a second, at most 3 database
   connections; the retry schedule and the 48-hour horizon (F9); the circuit breaker and unavailable
@@ -67,7 +74,10 @@ route and test named below is new unless the design note says it exists.
   those tags' `href`s only (federation.md 6.6); the Community timeline (`feedSQL`) keeps local posts
   only. This item is the first to store remote posts, so its pull request says that an older build
   after `./deploy.sh --rollback` shows them as local (`/nunchaku -purge-remote` exists since FRD's
-  remote actors item). DoD: `TestRemoteHTMLToText` (a hostile corpus and the fixtures),
+  remote actors item). The decoder cuts `content` at 64 KB without regard to markup (`apNote.Cut`), so
+  `htmlToText` must cope with a text that ends inside a tag, an attribute, a comment or an entity: it
+  drops the unterminated tail and still adds the link to the original. DoD: `TestRemoteHTMLToText` (a
+  hostile corpus and the fixtures, and a cut text ending in each of those),
   `TestDBRemoteNotes` (a short remote mention never notifies or links the local member of that
   name; an Update without `updated` or older than the stored one is ignored), `TestMediaCacheBudget`, `TestDBQueryPlans` with 20,000 remote posts.
 - [ ] **Replies and likes across servers.** Remote replies become comments under local posts (deeper

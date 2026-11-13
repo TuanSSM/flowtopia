@@ -1,0 +1,28 @@
+{
+  "@context": ["https://www.w3.org/ns/activitystreams", {"flowa": "https://github.com/TuanSSM/flowtopia/ns#", "sensitive": "as:sensitive", "Hashtag": "as:Hashtag"}],
+  "id": "https://flowa.example.org/users/ana/activities/k3m9q2w7x1p4r8t5",
+  "type": "Create",
+  "actor": "https://flowa.example.org/users/ana",
+  "published": "2026-11-12T18:04:05Z",
+  "to": ["https://www.w3.org/ns/activitystreams#Public"],
+  "cc": ["https://flowa.example.org/users/ana/followers", "https://social.example/users/bo"],
+  "object": {
+    "id": "https://flowa.example.org/users/ana/posts/812",
+    "type": "Note",
+    "attributedTo": "https://flowa.example.org/users/ana",
+    "url": "https://flowa.example.org/users/ana/posts/812",
+    "published": "2026-11-12T18:04:05Z",
+    "to": ["https://www.w3.org/ns/activitystreams#Public"],
+    "cc": ["https://flowa.example.org/users/ana/followers", "https://social.example/users/bo"],
+    "sensitive": false,
+    "content": "<p>Finally clean! Thanks <span class=\"h-card\"><a href=\"https://social.example/@bo\" class=\"u-url mention\">@<span>bo</span></a></span> for the drill</p><p>Tricks: Six basic figure-8s (nunchaku) <a href=\"https://flowa.example.org/#/prop/nunchaku\" class=\"mention hashtag\" rel=\"tag\">#<span>nunchaku</span></a></p>",
+    "attachment": [
+      {"type": "Image", "mediaType": "image/jpeg", "url": "https://flowa.example.org/users/ana/posts/812/picture.jpg", "name": "", "summary": "", "width": 1280, "height": 960}
+    ],
+    "tag": [
+      {"type": "Mention", "href": "https://social.example/users/bo", "name": "@bo@social.example"},
+      {"type": "Hashtag", "href": "https://flowa.example.org/#/prop/nunchaku", "name": "#nunchaku"}
+    ],
+    "flowa:tricks": [{"type": "flowa:Trick", "flowa:prop": "nunchaku", "flowa:skill": "F7", "name": "Six basic figure-8s"}]
+  }
+}

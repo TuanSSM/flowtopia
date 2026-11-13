@@ -8606,6 +8606,1861 @@ func httpSigner(key *rsa.PrivateKey, keyID string, form sigForm, now func() time
 	}
 }
 
+/* ---------- federation: the shapes activities arrive in ----------
+How Flowa reads what another server sends (docs/federation.md 6.3). Activity Streams 2.0 is written
+as JSON-LD, and Flowa runs no JSON-LD processor, so one property can arrive in several shapes: one
+value or a list of them (AS2 Core 4.2, Example 13: "a JSON Array with a mix of strings and Links"), an
+id as a string or as an embedded object that carries it, null or left out ("semantically
+equivalent", AS2 Core 2), and its name short, as a compact "as:" name or as a full IRI (AS2 Core 5.1
+allows compact names for "property names and the value(s) of the type property"). This section is
+the one place those shapes are read. Everything in it is a pure function of the bytes: nothing
+fetches, logs or touches the database, and nothing calls it yet (FRD's remote actors item and FWR's
+inbox will). Three layers:
+
+  - apScan, one pass over the whole document before anything is decoded: well-formed JSON (RFC
+    8259), UTF-8 (AS2 Core 2: "MUST be serialized using the UTF-8 character encoding") with no
+    escaped half of a surrogate pair, at most 24 levels deep and 1,000 entries in any list or object
+    (federation.md 7.5), and no member name twice in one object. encoding/json, left to itself, keeps
+    the last of two equal names without a word (a name with an escaped letter in it included), replaces invalid
+    UTF-8 and lone surrogates with U+FFFD, and matches struct fields without regard to case; a
+    server that keeps the first of two ids would read another document than Flowa does. So the scan
+    refuses all of it first, and decoding then uses maps keyed by the exact name, never structs;
+  - two small types, oneOrMany and idOrObject, through which every property that may hold a list or
+    a link is read, and apFields, an object's members under their short names;
+  - the readers: decodeActor, decodeActivity, decodeNote, decodeTombstone and decodeCollection for a
+    document, and idOrObject's actor, activity, note, tombstone and collection for one embedded in
+    another. Each reads exactly what federation.md 6.3, 6.5 to 6.7 and 7.3 say Flowa uses, and
+    nothing else.
+
+Every refusal is an *apError: a fixed phrase (apReason) and the path of the property it is about, made
+of the names in apTerms, never of anything the document said; both are safe to log. Rules chosen
+where the texts leave a choice, each written down at the code it governs:
+
+  - @context is never interpreted, whatever its shape; the vocabularies' prefixes as:, ldp:, sec: and
+    toot: are read as the normative context and Mastodon's page define them. AS2 Core 2.1 forbids
+    overriding the normative context.
+  - "@id" and "@type" in an object Flowa reads are refused. The normative context aliases them to id
+    and type, and AS2 Core 2.1 requires a document to be "consistent with" JSON-LD compaction with
+    that context, which writes the aliases; no text shows a server sending the keywords, and a JSON-LD
+    processor errs on an object with both ("colliding keywords"). Inside a property Flowa does not
+    read they are left alone (AS2 Core Appendix C's own example uses them in extensions).
+  - A list inside a list is refused in every property Flowa reads: AS2 Core 5, "JSON-LD forbids
+    arrays of arrays". In a property Flowa does not read it is skipped, since consumers "MUST NOT
+    stop processing" for an extension (AS2 Core 5); Mastodon's focalPoint is a list.
+  - A null inside a list is skipped, as JSON-LD expansion drops it; an empty list is absence (AS2
+    Core 2).
+  - type may be one name or a list. The kind of an object is the one Activity Vocabulary type among
+    its names (with Hashtag, the as: extension Mastodon's page lists); other names are extensions and
+    are ignored; the base types Object and Link beside a more specific type are ignored too (a Note
+    is an Object); two specific vocabulary types in one list are refused as a contradiction. So "is a Note" is
+    Kind == "Note", and an actor is one whose kind is one of the five Actor Types of the Activity
+    Vocabulary 3.2: Application, Group, Organization, Person, Service.
+  - A document is refused only for what Flowa would act on wrongly; what it merely cannot use is
+    dropped. An actor refused is an account whose every later activity fails its key lookup, so the
+    bar for refusing one is high. Ids and the addresses Flowa acts on or delivers to (id, actor,
+    attributedTo, object where it is acted on, inbox, followers, sharedInbox, the key asked for and
+    its owner, movedTo, first, next, items) must be absolute https URLs the fetcher would ask (apIDOK),
+    or the document is refused. Entries of lists Flowa only narrows or shows (recipients, alsoKnownAs,
+    Mentions, other keys, url, icon, an attachment's url, a Hashtag's href) that are not are dropped,
+    and the readers count what they dropped so that a caller can log it. Display fields that cannot be
+    read (a date, a media type, a count) are absent, on the careful side where there is one: an
+    unreadable sensitive is sensitive, an unreadable inReplyTo still makes a reply.
+  - Ids are compared as written (AS2 Core 2.2: an IRI serving as an id "MUST NOT be so mapped"); the
+    SWICG report on HTTP signatures picks a key whose id matches the key id "including fragments".
+  - Where Flowa acts on one value of a property the vocabulary lets hold several (actor, target,
+    inReplyTo, movedTo, endpoints, and object for every activity type but Flag), a list of one is
+    read and a longer list is refused: choosing one would be a second reading the sender did not make.
+  - @context is passed over, so a term a context adds is not seen: with {"author": "as:attributedTo"}
+    in its context, "author" is a second author to a JSON-LD processor and an unknown member to Flowa.
+    Flowa acts for the signer, whose own identity it checks (7.3), and servers that read the plain
+    names, Mastodon among them by its page, read what Flowa reads.
+
+Origin checks (federation.md 7.3) need no new helper: the activity's actor and its key id on one
+origin, and an embedded object's id on its actor's origin, are both sameOrigin(a, b), which compares
+two https URLs' origins whole; apNote.by says whether a Note is attributed to an actor alone. */
+
+const (
+	apDepthMax      = 24       // levels of objects and lists (federation.md 7.5)
+	apEntriesMax    = 1000     // entries in one list or members in one object (federation.md 7.5, for every list)
+	apRecipientsMax = 1000     // to, cc, bto, bcc and audience together
+	apTextMax       = 64 << 10 // bytes of a text property (federation.md 7.5); content is cut there instead
+	apShortMax      = 255      // bytes of a media type or a language tag
+	apLinkDepth     = 2        // an Image's url's Link: how far a link is followed inside one property
+	asNS            = "https://www.w3.org/ns/activitystreams#"
+	asPublic        = asNS + "Public"
+)
+
+// apReason is why a document was refused. Each is a fixed phrase, safe to log.
+type apReason uint8
+
+const (
+	apTooLarge          apReason = iota + 1 // over the size the caller allows
+	apMalformed                             // not well-formed JSON
+	apNotObject                             // the document is not a JSON object
+	apBadText                               // not UTF-8, or an escaped half of a surrogate pair
+	apTooDeep                               // nested deeper than apDepthMax
+	apTooMany                               // a list or an object with more than apEntriesMax entries
+	apDuplicate                             // a member named twice in one object, in any spelling
+	apKeyword                               // "@id" or "@type" in an object Flowa reads
+	apWrongShape                            // a value of a JSON kind the property does not take
+	apNested                                // a list inside a list
+	apTooLong                               // a text, id or type name over its length limit
+	apNoID                                  // no id where one is required
+	apBadID                                 // an id or address that is not an https URL Flowa may fetch
+	apNoType                                // no type
+	apTypeConflict                          // two Activity Vocabulary types in one type list
+	apWrongKind                             // not the kind of object the reader reads
+	apNoInbox                               // an actor without an inbox that is not suspended
+	apMoreThanOne                           // more than one value where Flowa acts on one
+	apTooManyRecipients                     // more than apRecipientsMax addresses
+	apKeyTwice                              // two public keys with the same id
+	apNoKey                                 // no public key with the id asked for
+	apByID                                  // an object given by id only, read as if embedded
+)
+
+var apReasons = [...]string{
+	apTooLarge:          "a document over the size limit",
+	apMalformed:         "a document that is not well-formed JSON",
+	apNotObject:         "a document that is not a JSON object",
+	apBadText:           "text that is not valid UTF-8",
+	apTooDeep:           "a document nested deeper than 24 levels",
+	apTooMany:           "a list or object with more than 1,000 entries",
+	apDuplicate:         "a member named twice in one object",
+	apKeyword:           "@id or @type in place of id or type",
+	apWrongShape:        "a value of the wrong kind",
+	apNested:            "a list inside a list",
+	apTooLong:           "a value over its length limit",
+	apNoID:              "an object without an id",
+	apBadID:             "an id that is not an https URL that may be fetched",
+	apNoType:            "an object without a type",
+	apTypeConflict:      "a type list naming two kinds",
+	apWrongKind:         "an object of another kind than expected",
+	apNoInbox:           "an actor without an inbox",
+	apMoreThanOne:       "more than one value where one is read",
+	apTooManyRecipients: "more than 1,000 recipients",
+	apKeyTwice:          "two public keys with the same id",
+	apNoKey:             "no public key with that id",
+	apByID:              "an object given by id only",
+}
+
+func (r apReason) String() string {
+	if int(r) < len(apReasons) && apReasons[r] != "" {
+		return apReasons[r]
+	}
+	return "refused"
+}
+
+// apError is every refusal of this section. Field is the path of the property, built from the
+// short names in apTerms ("object.tag.href"), never from the document's text; What is what the
+// reader was reading ("actor", "activity", "post", "tombstone", "collection"), "document" before
+// that is known.
+type apError struct {
+	Reason apReason
+	Field  string
+	What   string
+}
+
+func (e *apError) Error() string {
+	what := e.What
+	if what == "" {
+		what = "document"
+	}
+	if e.Field == "" {
+		return what + " refused: " + e.Reason.String()
+	}
+	return what + " refused: " + e.Reason.String() + " (" + e.Field + ")"
+}
+
+// apAs names what was being read in a reader's refusal.
+func apAs(what string, err error) error {
+	var e *apError
+	if err == nil || !errors.As(err, &e) {
+		return err
+	}
+	return &apError{Reason: e.Reason, Field: e.Field, What: what}
+}
+
+func apFail(r apReason) error { return &apError{Reason: r} }
+
+// apIn puts a property's name in front of an error's path.
+func apIn(field string, err error) error {
+	var e *apError
+	if !errors.As(err, &e) {
+		return &apError{Reason: apWrongShape, Field: field}
+	}
+	if e.Field == "" {
+		return &apError{Reason: e.Reason, Field: field}
+	}
+	return &apError{Reason: e.Reason, Field: field + "." + e.Field}
+}
+
+/* The scan */
+
+// apScan checks a whole document in one pass, in time linear in its length and with no recursion,
+// before anything decodes it. 0 is accepted. The root must be an object (an Activity Streams
+// document "is a JSON document whose root value is an Activity Streams Object", AS2 Core 2).
+func apScan(b []byte) apReason {
+	if !utf8.Valid(b) {
+		return apBadText
+	}
+	type level struct {
+		obj    bool
+		n      int
+		serial int // which object this is, counted from 1 through the document
+	}
+	var stack []level
+	// names[d] maps each member name seen at level d to its place in last, which holds the serial of
+	// the last object at that level that had the name: a name is a duplicate when that is the object
+	// open now. Objects at one level come one after another, so nothing is ever cleared, each
+	// distinct name is stored once per level, and the cost is linear.
+	var names []map[string]int
+	var last []int
+	var buf []byte // a name with escapes, unescaped
+	serial := 0
+	i := apSpace(b, 0)
+	if i >= len(b) || b[i] != '{' {
+		return apNotObject
+	}
+	const (
+		wantValue = iota
+		wantName
+		afterValue
+	)
+	state := wantValue
+	for {
+		switch state {
+		case wantValue:
+			if i >= len(b) {
+				return apMalformed
+			}
+			switch c := b[i]; {
+			case c == '{' || c == '[':
+				if len(stack) == apDepthMax {
+					return apTooDeep
+				}
+				d := len(stack)
+				serial++
+				stack = append(stack, level{obj: c == '{', serial: serial})
+				for c == '{' && len(names) <= d {
+					names = append(names, map[string]int{})
+				}
+				i = apSpace(b, i+1)
+				if i < len(b) && (b[i] == '}' && c == '{' || b[i] == ']' && c == '[') {
+					stack = stack[:d]
+					i++
+					state = afterValue
+					continue
+				}
+				if c == '{' {
+					state = wantName
+				} else {
+					stack[d].n = 1
+				}
+				continue
+			case c == '"':
+				j, r := apString(b, i)
+				if r != 0 {
+					return r
+				}
+				i = j
+			case c == 't' && bytes.HasPrefix(b[i:], []byte("true")):
+				i += 4
+			case c == 'f' && bytes.HasPrefix(b[i:], []byte("false")):
+				i += 5
+			case c == 'n' && bytes.HasPrefix(b[i:], []byte("null")):
+				i += 4
+			case c == '-' || isDigit(c):
+				j := apNumber(b, i)
+				if j < 0 {
+					return apMalformed
+				}
+				i = j
+			default:
+				return apMalformed
+			}
+			state = afterValue
+		case wantName:
+			if i >= len(b) || b[i] != '"' {
+				return apMalformed
+			}
+			j, r := apString(b, i)
+			if r != 0 {
+				return r
+			}
+			top := &stack[len(stack)-1]
+			if top.n++; top.n > apEntriesMax {
+				return apTooMany
+			}
+			name := b[i+1 : j-1]
+			if bytes.IndexByte(name, '\\') >= 0 {
+				buf = apUnescape(buf[:0], name)
+				name = buf
+			}
+			// The map gives the name's place in last; only a name new at this level adds a key (and
+			// a string), so assigning to a key already there never copies the name again.
+			m := names[len(stack)-1]
+			if k, ok := m[string(name)]; !ok {
+				m[string(name)] = len(last)
+				last = append(last, top.serial)
+			} else if last[k] == top.serial {
+				return apDuplicate
+			} else {
+				last[k] = top.serial
+			}
+			i = apSpace(b, j)
+			if i >= len(b) || b[i] != ':' {
+				return apMalformed
+			}
+			i = apSpace(b, i+1)
+			state = wantValue
+		case afterValue:
+			i = apSpace(b, i)
+			if len(stack) == 0 {
+				if i != len(b) {
+					return apMalformed
+				}
+				return 0
+			}
+			if i >= len(b) {
+				return apMalformed
+			}
+			top := &stack[len(stack)-1]
+			switch c := b[i]; {
+			case c == ',':
+				i = apSpace(b, i+1)
+				if top.obj {
+					state = wantName
+				} else {
+					if top.n++; top.n > apEntriesMax {
+						return apTooMany
+					}
+					state = wantValue
+				}
+			case c == '}' && top.obj, c == ']' && !top.obj:
+				stack = stack[:len(stack)-1]
+				i++
+			default:
+				return apMalformed
+			}
+		}
+	}
+}
+
+// apSpace skips the four whitespace characters of RFC 8259 2.
+func apSpace(b []byte, i int) int {
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+// apString checks the string that starts at b[i] and returns the index after its closing quote. A
+// control character, an unknown escape and an escaped half of a surrogate pair without its other
+// half are refused: RFC 8259 8.2 leaves such a string's meaning "unpredictable", and I-JSON (RFC
+// 7493 2.1) forbids it.
+func apString(b []byte, i int) (int, apReason) {
+	for j := i + 1; j < len(b); {
+		switch c := b[j]; {
+		case c == '"':
+			return j + 1, 0
+		case c < 0x20:
+			return 0, apMalformed
+		case c == '\\':
+			if j+1 >= len(b) {
+				return 0, apMalformed
+			}
+			switch b[j+1] {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+				j += 2
+			case 'u':
+				r, ok := apHex4(b, j+2)
+				if !ok {
+					return 0, apMalformed
+				}
+				j += 6
+				switch {
+				case r >= 0xDC00 && r <= 0xDFFF:
+					return 0, apBadText
+				case r >= 0xD800 && r <= 0xDBFF:
+					if j+1 >= len(b) || b[j] != '\\' || b[j+1] != 'u' {
+						return 0, apBadText
+					}
+					lo, ok := apHex4(b, j+2)
+					if !ok {
+						return 0, apMalformed
+					}
+					if lo < 0xDC00 || lo > 0xDFFF {
+						return 0, apBadText
+					}
+					j += 6
+				}
+			default:
+				return 0, apMalformed
+			}
+		default:
+			j++
+		}
+	}
+	return 0, apMalformed
+}
+
+func apHex4(b []byte, i int) (rune, bool) {
+	if i+4 > len(b) {
+		return 0, false
+	}
+	var r rune
+	for _, c := range b[i : i+4] {
+		switch {
+		case isDigit(c):
+			r = r<<4 | rune(c-'0')
+		case c >= 'a' && c <= 'f':
+			r = r<<4 | rune(c-'a'+10)
+		case c >= 'A' && c <= 'F':
+			r = r<<4 | rune(c-'A'+10)
+		default:
+			return 0, false
+		}
+	}
+	return r, true
+}
+
+// apUnescape appends to dst the text of a string's contents (without its quotes) that apString has
+// checked, its escapes decoded (RFC 8259 7). It allocates nothing beyond dst's growth.
+func apUnescape(dst, s []byte) []byte {
+	for i := 0; i < len(s); {
+		if s[i] != '\\' {
+			dst = append(dst, s[i])
+			i++
+			continue
+		}
+		c := s[i+1]
+		i += 2
+		switch c {
+		case 'b':
+			dst = append(dst, '\b')
+		case 'f':
+			dst = append(dst, '\f')
+		case 'n':
+			dst = append(dst, '\n')
+		case 'r':
+			dst = append(dst, '\r')
+		case 't':
+			dst = append(dst, '\t')
+		case 'u':
+			r, _ := apHex4(s, i)
+			i += 4
+			if r >= 0xD800 && r <= 0xDBFF { // apString made sure the low half follows
+				if lo, ok := apHex4(s, i+2); ok && i+1 < len(s) && s[i] == '\\' && s[i+1] == 'u' && lo >= 0xDC00 && lo <= 0xDFFF {
+					r = 0x10000 + (r-0xD800)<<10 + (lo - 0xDC00)
+					i += 6
+				}
+			}
+			dst = utf8.AppendRune(dst, r)
+		default: // '"', '\\' and '/' stand for themselves
+			dst = append(dst, c)
+		}
+	}
+	return dst
+}
+
+// apNumber returns the index after the number at b[i] (RFC 8259 6), or -1.
+func apNumber(b []byte, i int) int {
+	digits := func() bool {
+		s := i
+		for i < len(b) && isDigit(b[i]) {
+			i++
+		}
+		return i > s
+	}
+	if b[i] == '-' {
+		i++
+	}
+	switch {
+	case i < len(b) && b[i] == '0':
+		i++
+	case !digits():
+		return -1
+	}
+	if i < len(b) && b[i] == '.' {
+		i++
+		if !digits() {
+			return -1
+		}
+	}
+	if i < len(b) && (b[i] == 'e' || b[i] == 'E') {
+		i++
+		if i < len(b) && (b[i] == '+' || b[i] == '-') {
+			i++
+		}
+		if !digits() {
+			return -1
+		}
+	}
+	return i
+}
+
+/* Names and types */
+
+// apTerms maps every spelling of a property Flowa reads to its short name: the short name, the
+// compact name and the full IRI. The IRIs are those of the normative Activity Streams context
+// (https://www.w3.org/ns/activitystreams, read on 13 November 2026: inbox is ldp:inbox, the rest
+// as:), of the security vocabulary for keys (Mastodon's ActivityPub page, "W3ID Security
+// Vocabulary"), and of Mastodon's own for suspended ("Mastodon extensions"). contentMap, summaryMap,
+// nameMap and orderedItems have no IRI of their own: the context maps them to as:content,
+// as:summary, as:name and as:items, so a document with both items and orderedItems names one
+// property twice and is refused.
+var apTerms = func() map[string]string {
+	m := map[string]string{"id": "id", "type": "type", "contentMap": "contentMap", "summaryMap": "summaryMap", "nameMap": "nameMap", "orderedItems": "orderedItems"}
+	add := func(prefix, iri string, names ...string) {
+		for _, n := range names {
+			m[n], m[prefix+":"+n], m[iri+n] = n, n, n
+		}
+	}
+	add("as", asNS, "actor", "alsoKnownAs", "attachment", "attributedTo", "audience", "bcc", "bto", "cc",
+		"content", "deleted", "endpoints", "first", "followers", "formerType", "href", "icon", "inReplyTo",
+		"items", "manuallyApprovesFollowers", "mediaType", "movedTo", "name", "next", "object",
+		"preferredUsername", "published", "sensitive", "sharedInbox", "summary", "tag", "target", "to",
+		"totalItems", "updated", "url")
+	add("ldp", "http://www.w3.org/ns/ldp#", "inbox")
+	add("sec", "https://w3id.org/security#", "controller", "owner", "publicKey", "publicKeyPem")
+	add("toot", "http://joinmastodon.org/ns#", "suspended")
+	return m
+}()
+
+// apCoreTypes are the types of the Activity Vocabulary (sections 2 and 3), and Hashtag, which
+// Mastodon's page lists among its as: extensions.
+var apCoreTypes = func() map[string]bool {
+	m := map[string]bool{}
+	for _, t := range strings.Fields(`Object Link Activity IntransitiveActivity Collection OrderedCollection
+		CollectionPage OrderedCollectionPage Accept Add Announce Arrive Block Create Delete Dislike Flag
+		Follow Ignore Invite Join Leave Like Listen Move Offer Question Reject Read Remove TentativeReject
+		TentativeAccept Travel Undo Update View Application Group Organization Person Service Article
+		Audio Document Event Image Note Page Place Profile Relationship Tombstone Video Mention Hashtag`) {
+		m[t] = true
+	}
+	return m
+}()
+
+var apActorKinds = map[string]bool{"Application": true, "Group": true, "Organization": true, "Person": true, "Service": true}
+
+// apTypeName gives a vocabulary type written as "as:Note" or in full as its short name; any other
+// name, an extension, is kept as written.
+func apTypeName(s string) string {
+	t := strings.TrimPrefix(s, "as:")
+	if t == s {
+		t = strings.TrimPrefix(s, asNS)
+	}
+	if t != s && apCoreTypes[t] {
+		return t
+	}
+	return s
+}
+
+// apIDOK says whether an id or address may be used: an https URL as httpsURL defines it (RFC 3986
+// characters only, at most 2,048 bytes) that the fetcher would ask for a federation kind (no user
+// name, port 443, a public DNS name: fetcher.check). This instance's own origin passes: an Accept
+// names our own Follow. The instance's refused hosts and its own origin are not known here: the
+// caller applies them when it fetches or acts (the fetcher on every request, FMD's domain policy on
+// what comes in).
+func apIDOK(s string) bool {
+	if !httpsURL(s) {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && apRules.check(&fetchRules[fetchDocument], &fetchReq{}, nil, u) == ""
+}
+
+var apRules = &fetcher{} // only its check is used, with no origin and no refused list
+
+/* The two shapes */
+
+// apFields is an object's members under their short names, each value the bytes of the document it
+// came from (not a copy: the document must not change while a result holding an apFields is used).
+// Members Flowa does not read, @context among them, are passed over unread.
+type apFields map[string]json.RawMessage
+
+// apSkip returns the index just after the value that starts at b[i]. b has passed apScan (or
+// encoding/json's own check, when a type below is handed to it directly), so every value is well
+// formed.
+func apSkip(b []byte, i int) int {
+	switch b[i] {
+	case '"':
+		return apStringEnd(b, i)
+	case '{', '[':
+		depth := 0
+		for ; i < len(b); i++ {
+			switch b[i] {
+			case '"':
+				i = apStringEnd(b, i) - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth--; depth == 0 {
+					return i + 1
+				}
+			}
+		}
+		return i
+	}
+	for i < len(b) && strings.IndexByte(",]} \t\r\n", b[i]) < 0 {
+		i++
+	}
+	return i
+}
+
+// apStringEnd returns the index after the closing quote of the well-formed string at b[i].
+func apStringEnd(b []byte, i int) int {
+	for i++; i < len(b); i++ {
+		switch b[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
+		}
+	}
+	return len(b)
+}
+
+// apEach calls fn for each member of the object, or each entry of the list, that b holds (b has
+// passed apScan): the name with its quotes (nil in a list) and the value, both slices of b. It walks
+// b once.
+func apEach(b []byte, fn func(name, v []byte) error) error {
+	obj := b[0] == '{'
+	i := apSpace(b, 1)
+	if b[i] == '}' || b[i] == ']' {
+		return nil
+	}
+	for {
+		var name []byte
+		if obj {
+			j := apSkip(b, i)
+			name = b[i:j]
+			i = apSpace(b, apSpace(b, j)+1) // past the colon
+		}
+		j := apSkip(b, i)
+		if err := fn(name, b[i:j]); err != nil {
+			return err
+		}
+		if i = apSpace(b, j); b[i] != ',' {
+			return nil
+		}
+		i = apSpace(b, i+1)
+	}
+}
+
+// apStr decodes a JSON string of a scanned document (so valid UTF-8). One without escapes, the usual
+// case, is copied as it is.
+func apStr(b []byte) (string, error) {
+	if b[0] != '"' {
+		return "", apFail(apWrongShape)
+	}
+	if bytes.IndexByte(b, '\\') < 0 {
+		return string(b[1 : len(b)-1]), nil
+	}
+	return string(apUnescape(make([]byte, 0, len(b)), b[1:len(b)-1])), nil
+}
+
+// apFieldsOf reads one object of a scanned document; whitespace may come before it (RFC 8259 2).
+func apFieldsOf(b []byte) (apFields, error) {
+	if b = b[apSpace(b, 0):]; len(b) == 0 || b[0] != '{' {
+		return nil, apFail(apWrongShape)
+	}
+	var f apFields // made at the first member Flowa reads: most embedded objects have few or none
+	dup := ""
+	var buf []byte
+	err := apEach(b, func(q, v []byte) error {
+		raw := q[1 : len(q)-1]
+		if bytes.IndexByte(raw, '\\') >= 0 {
+			buf = apUnescape(buf[:0], raw)
+			raw = buf
+		}
+		if string(raw) == "@id" || string(raw) == "@type" {
+			return &apError{Reason: apKeyword}
+		}
+		n, ok := apTerms[string(raw)]
+		if !ok {
+			return nil
+		}
+		if _, twice := f[n]; twice && (dup == "" || n < dup) {
+			dup = n // the first in name order, so that one document always names the same one
+		}
+		if f == nil {
+			f = make(apFields, 4)
+		}
+		f[n] = v
+		return nil
+	})
+	switch {
+	case err != nil:
+		return nil, err
+	case dup != "":
+		return nil, &apError{Reason: apDuplicate, Field: dup}
+	case f == nil:
+		return apNone, nil
+	}
+	return f, nil
+}
+
+// apNone is every object with no member Flowa reads. Nothing writes to an apFields once read, so
+// they share it, and an embedded object is still told from an id by Obj != nil.
+var apNone = apFields{}
+
+// apDecode decodes one value of a scanned document into v: text into a string, and a type with its
+// own UnmarshalJSON (oneOrMany, idOrObject) through it. A value of a JSON kind the target does not
+// take (a number where text is read) is apWrongShape.
+func apDecode(b []byte, v any) error {
+	switch p := v.(type) {
+	case *string:
+		s, err := apStr(b)
+		*p = s
+		return err
+	case json.Unmarshaler:
+		return p.UnmarshalJSON(b)
+	}
+	return apFail(apWrongShape)
+}
+
+func apNull(b []byte) bool { return len(b) == 4 && string(b) == "null" }
+
+// oneOrMany is a property that may hold one value or a list (AS2 Core 4.2). null, an empty list
+// and absence are no value; a null in a list is skipped; a list in a list is refused (AS2 Core 5);
+// more than apEntriesMax values cannot pass apScan. Like idOrObject it reads a value of a document
+// apParse has scanned: given to encoding/json directly, it would read whatever duplicate names and
+// invalid text encoding/json lets through.
+type oneOrMany[T any] []T
+
+func (m *oneOrMany[T]) UnmarshalJSON(b []byte) error {
+	*m = nil
+	if apNull(b) {
+		return nil
+	}
+	if b[0] != '[' {
+		var v T
+		if err := apDecode(b, &v); err != nil {
+			return err
+		}
+		*m = oneOrMany[T]{v}
+		return nil
+	}
+	var out oneOrMany[T]
+	err := apEach(b, func(_, r []byte) error {
+		switch {
+		case apNull(r):
+			return nil
+		case r[0] == '[':
+			return apFail(apNested)
+		}
+		var v T
+		if err := apDecode(r, &v); err != nil {
+			return err
+		}
+		out = append(out, v)
+		return nil
+	})
+	*m = out
+	return err
+}
+
+// idOrObject is a value that names another object: its id as a string, or the object embedded,
+// which carries its id (and a Link its href). Obj holds an embedded object's members for a reader to
+// read further, and is nil for an id. Shapes are checked here; whether an id may be used is the
+// reader's (apIDOK), since the public collection is written "as:Public" or "Public" too.
+type idOrObject struct {
+	ID    string
+	Href  string   // a Link's target (AS2 Core 4.2)
+	Types []string // the type names, the vocabulary's in their short form
+	Kind  string   // the Activity Vocabulary type among Types, or ""
+	Obj   apFields
+}
+
+func (r *idOrObject) UnmarshalJSON(b []byte) error {
+	*r = idOrObject{}
+	switch {
+	case apNull(b):
+		return nil
+	case b[0] == '"':
+		var err error
+		if r.ID, err = apStr(b); err != nil {
+			return err
+		}
+		switch {
+		case r.ID == "":
+			return apFail(apBadID)
+		case len(r.ID) > maxURL:
+			return apFail(apTooLong)
+		}
+		return nil
+	case b[0] != '{':
+		return apFail(apWrongShape)
+	}
+	f, err := apFieldsOf(b)
+	if err != nil {
+		return err
+	}
+	r.Obj = f
+	if r.ID, err = f.text("id", maxURL); err != nil {
+		return err
+	}
+	if r.Href, err = f.text("href", maxURL); err != nil {
+		return err
+	}
+	if _, ok := f["type"]; ok {
+		if r.Types, r.Kind, err = f.types(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+/* Reading one property */
+
+// text reads a text property: a string or null. Longer than max is refused.
+func (f apFields) text(n string, max int) (string, error) {
+	b, ok := f[n]
+	if !ok || apNull(b) {
+		return "", nil
+	}
+	s, err := apStr(b)
+	switch {
+	case err != nil:
+		return "", apIn(n, err)
+	case len(s) > max:
+		return "", &apError{Reason: apTooLong, Field: n}
+	}
+	return s, nil
+}
+
+// short reads a short display value (a media type): one that is not a string of at most apShortMax
+// bytes is absent.
+func (f apFields) short(n string) string {
+	s, err := f.text(n, apShortMax)
+	if err != nil {
+		return ""
+	}
+	return s
+}
+
+// flag reads a boolean property. Anything but false or null reads as true, the careful side for
+// every flag Flowa reads: an unreadable sensitive hides the media, an unreadable
+// manuallyApprovesFollowers shows a Follow as requested, an unreadable suspended stores nothing new.
+func (f apFields) flag(n string) bool {
+	b, ok := f[n]
+	return ok && !apNull(b) && string(b) != "false"
+}
+
+// date reads a date property: AS2 Core 2.3, the RFC 3339 date-time with seconds optional and an
+// upper case "T" and "Z" (time.Parse takes neither in lower case). The zero time is no date; bad is
+// true when the property was there and could not be read.
+func (f apFields) date(n string) (t time.Time, bad bool) {
+	s, err := f.text(n, 64)
+	if err != nil {
+		return time.Time{}, true
+	}
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04Z07:00"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, false
+		}
+	}
+	return time.Time{}, true
+}
+
+// count reads totalItems (the context types it xsd:nonNegativeInteger): any JSON number whose value
+// is a whole number from 0 to 2^53, so 5, 5.0 and 5e0 alike. Anything else is no count.
+func (f apFields) count(n string) (uint64, bool) {
+	b, ok := f[n]
+	if !ok || (b[0] != '-' && !isDigit(b[0])) {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(string(b), 64)
+	if err != nil || v < 0 || v > 1<<53 || v != math.Trunc(v) {
+		return 0, false
+	}
+	return uint64(v), true
+}
+
+// types reads type: one name or a list of them, the vocabulary's in their short form, and the
+// object's kind, the one vocabulary type among them. Object and Link, the vocabulary's base types,
+// are the kind only when no more specific type is given: ["Object", "Note"] is a Note.
+func (f apFields) types() ([]string, string, error) {
+	b, ok := f["type"]
+	if !ok {
+		return nil, "", &apError{Reason: apNoType, Field: "type"}
+	}
+	var ts oneOrMany[string]
+	if err := ts.UnmarshalJSON(b); err != nil {
+		return nil, "", apIn("type", err)
+	}
+	if len(ts) == 0 {
+		return nil, "", &apError{Reason: apNoType, Field: "type"}
+	}
+	kind, base := "", ""
+	for i, t := range ts {
+		if len(t) > maxURL {
+			return nil, "", &apError{Reason: apTooLong, Field: "type"}
+		}
+		ts[i] = apTypeName(t)
+		switch t := ts[i]; {
+		case !apCoreTypes[t]:
+		case t == "Object" || t == "Link":
+			if base == "" {
+				base = t
+			}
+		case kind != "" && kind != t:
+			return nil, "", &apError{Reason: apTypeConflict, Field: "type"}
+		default:
+			kind = t
+		}
+	}
+	if kind == "" {
+		kind = base
+	}
+	return ts, kind, nil
+}
+
+// each calls fn with each value of a property that may hold one or many: none for null or absence,
+// a null in a list skipped, a list inside a list refused (AS2 Core 5). The values are visited where
+// they lie, never gathered into a slice: a slice of a thousand entries in each of a thousand lists
+// would cost more than the body. An error from fn ends the walk and is returned.
+func (f apFields) each(n string, fn func(e []byte) error) error {
+	b, ok := f[n]
+	switch {
+	case !ok || apNull(b):
+		return nil
+	case b[0] != '[':
+		return fn(b)
+	}
+	return apEach(b, func(_, r []byte) error {
+		switch {
+		case apNull(r):
+			return nil
+		case r[0] == '[':
+			return &apError{Reason: apNested, Field: n}
+		}
+		return fn(r)
+	})
+}
+
+// refs reads a property that names objects, one or many, every entry readable.
+func (f apFields) refs(n string) ([]idOrObject, error) {
+	b, ok := f[n]
+	if !ok {
+		return nil, nil
+	}
+	var rs oneOrMany[idOrObject]
+	if err := rs.UnmarshalJSON(b); err != nil {
+		return nil, apIn(n, err)
+	}
+	return rs, nil
+}
+
+// ref reads a property Flowa acts on one value of: absent, one, or a list of one.
+func (f apFields) ref(n string) (idOrObject, error) {
+	rs, err := f.refs(n)
+	switch {
+	case err != nil:
+		return idOrObject{}, err
+	case len(rs) > 1:
+		return idOrObject{}, &apError{Reason: apMoreThanOne, Field: n}
+	case len(rs) == 0:
+		return idOrObject{}, nil
+	}
+	return rs[0], nil
+}
+
+// ids reads a property of ids Flowa acts on (attributedTo), each a string or an embedded object with
+// its id: every one must pass apIDOK, since an author Flowa cannot name must not vanish from apNote.by.
+func (f apFields) ids(n string) ([]string, error) {
+	rs, err := f.refs(n)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		if err := apCheckID(r.ID); err != nil {
+			return nil, apIn(n, err)
+		}
+		out = append(out, r.ID)
+	}
+	return out, nil
+}
+
+// usable reads a list Flowa only narrows or shows (recipients, alsoKnownAs): an entry that cannot be
+// read, has no id or fails apIDOK is dropped and counted. With public, the public collection's three
+// forms (ActivityPub 5.6) are kept, as asPublic. total is every entry, dropped or not.
+func (f apFields) usable(n string, public bool) (ids []string, dropped, total int, err error) {
+	var r idOrObject
+	err = f.each(n, func(e []byte) error {
+		total++
+		switch {
+		case r.UnmarshalJSON(e) != nil:
+			dropped++
+		case public && (r.ID == asPublic || r.ID == "as:Public" || r.ID == "Public"):
+			ids = append(ids, asPublic)
+		case !apIDOK(r.ID):
+			dropped++
+		default:
+			ids = append(ids, r.ID)
+		}
+		return nil
+	})
+	return ids, dropped, total, err
+}
+
+// id reads a property of one id Flowa acts on; "" when absent.
+func (f apFields) id(n string) (string, error) {
+	r, err := f.ref(n)
+	if err != nil || (r.ID == "" && r.Obj == nil) {
+		return "", err
+	}
+	if err := apCheckID(r.ID); err != nil {
+		return "", apIn(n, err)
+	}
+	return r.ID, nil
+}
+
+func apCheckID(id string) error {
+	switch {
+	case id == "":
+		return apFail(apNoID)
+	case !apIDOK(id):
+		return apFail(apBadID)
+	}
+	return nil
+}
+
+// langMap reads a language map (AS2 Core 4.7: contentMap, summaryMap, nameMap), a language tag to
+// the text in that language, each text cut at apTextMax. An entry that is null is none.
+func (f apFields) langMap(n string) (m map[string]string, cut bool, err error) {
+	b, ok := f[n]
+	if !ok || apNull(b) {
+		return nil, false, nil
+	}
+	if b[0] != '{' {
+		return nil, false, &apError{Reason: apWrongShape, Field: n}
+	}
+	m = map[string]string{}
+	err = apEach(b, func(q, v []byte) error {
+		lang, _ := apStr(q)
+		if len(lang) > apShortMax {
+			return &apError{Reason: apTooLong, Field: n}
+		}
+		if apNull(v) {
+			return nil
+		}
+		s, err := apStr(v)
+		if err != nil {
+			return apIn(n, err)
+		}
+		var c bool
+		m[lang], c = apCut(s)
+		cut = cut || c
+		return nil
+	})
+	return m, cut, err
+}
+
+// apPick is the one text Flowa takes from a property and its language map: the plain property when
+// it has text, otherwise the map's "und" (undetermined) entry, otherwise the entry whose language tag
+// sorts first. Flowa has no reader's language to prefer, and the first by tag is the same on every
+// run.
+func apPick(plain string, m map[string]string) string {
+	if plain != "" || len(m) == 0 {
+		return plain
+	}
+	if s, ok := m["und"]; ok {
+		return s
+	}
+	tags := slices.Sorted(maps.Keys(m))
+	return m[tags[0]]
+}
+
+// prose reads a natural-language property (name, summary) with its map, by apPick, cut at
+// apTextMax. strict refuses a value that cannot be read; otherwise it is no text.
+func (f apFields) prose(n, mapName string, strict bool) (s string, cut bool, err error) {
+	s, err = f.text(n, math.MaxInt)
+	if err == nil {
+		var m map[string]string
+		if m, cut, err = f.langMap(mapName); err == nil {
+			var c bool
+			s, c = apCut(apPick(s, m))
+			cut = cut || c
+		}
+	}
+	if err != nil {
+		if strict {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+	return s, cut, nil
+}
+
+// apLink is a URL to show or fetch, with the media type its Link or Image gave.
+type apLink struct {
+	Href, MediaType string
+}
+
+// links reads a property that points at a resource: a URL, a Link (href), an Image or another object
+// with a url, which may itself be any of these (AS2 Core 4.2, Examples 11 to 13; an actor's icon is
+// "an Image" in Mastodon's page), one or many. Entries that cannot be read, are not https URLs Flowa
+// may fetch, or are objects with neither are left out; so is a media type that cannot be read.
+func (f apFields) links(n string) ([]apLink, error) { return f.linksIn(n, 0) }
+
+func (f apFields) linksIn(n string, depth int) ([]apLink, error) {
+	var out []apLink
+	var r idOrObject
+	err := f.each(n, func(e []byte) error {
+		switch {
+		case r.UnmarshalJSON(e) != nil:
+		case r.Obj == nil:
+			if apIDOK(r.ID) {
+				out = append(out, apLink{Href: r.ID})
+			}
+		case r.Href != "":
+			if apIDOK(r.Href) {
+				out = append(out, apLink{Href: r.Href, MediaType: r.Obj.short("mediaType")})
+			}
+		case depth < apLinkDepth:
+			inner, err := r.Obj.linksIn("url", depth+1)
+			if err != nil {
+				return apIn(n, err)
+			}
+			mt := r.Obj.short("mediaType")
+			for _, l := range inner {
+				if l.MediaType == "" {
+					l.MediaType = mt
+				}
+				out = append(out, l)
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// apAudience is an object's addressing (federation.md 6.7): to, cc, bto, bcc and audience, each
+// entry an actor or collection id, the public collection's three forms read as asPublic. At most
+// apRecipientsMax entries in all, counted before any is dropped.
+//
+// An entry that cannot be read or fails apIDOK is dropped and counted in Dropped. Dropping can only
+// narrow what Flowa takes the audience to be, never widen it: the public collection is recognised
+// before apIDOK and never dropped, so public() is the same with or without the dropped entries; a
+// post is followers-only when the actor's followers collection is addressed, and that collection is
+// an id that passed apIDOK when the actor was read, so a dropped entry cannot be it; and every other
+// entry only names someone else who may see the post, whom Flowa does not deliver to anyway.
+type apAudience struct {
+	To, Cc, Bto, Bcc, Audience []string
+	Dropped                    int
+}
+
+func (f apFields) audience() (apAudience, error) {
+	var a apAudience
+	n := 0
+	for _, p := range []struct {
+		name string
+		dst  *[]string
+	}{{"to", &a.To}, {"cc", &a.Cc}, {"bto", &a.Bto}, {"bcc", &a.Bcc}, {"audience", &a.Audience}} {
+		ids, dropped, total, err := f.usable(p.name, true)
+		if err != nil {
+			return a, err
+		}
+		if n += total; n > apRecipientsMax {
+			return a, &apError{Reason: apTooManyRecipients, Field: p.name}
+		}
+		*p.dst = ids
+		a.Dropped += dropped
+	}
+	return a, nil
+}
+
+// public says whether the object is addressed to the public collection in to or in cc (Mastodon's
+// "public" and "unlisted", federation.md 6.7).
+func (a apAudience) public() bool {
+	return slices.Contains(a.To, asPublic) || slices.Contains(a.Cc, asPublic)
+}
+
+/* The readers */
+
+// apParse checks a document and reads its root object. max is the caller's cap on its size: 256 KB
+// for an inbox body, 1 MB for a fetched document (federation.md 7.5); the reader of the body has
+// already stopped at it, and this is the same limit said again.
+func apParse(body []byte, max int) (apFields, error) {
+	if len(body) > max {
+		return nil, apFail(apTooLarge)
+	}
+	if r := apScan(body); r != 0 {
+		return nil, apFail(r)
+	}
+	return apFieldsOf(body)
+}
+
+// apKey is one entry of an actor's publicKey. A key given by id only (ByID) has no PEM: the SWICG
+// report says to fetch it ("If it's an id, fetch it").
+type apKey struct {
+	ID, Owner, PEM string
+	ByID           bool
+}
+
+// apActor is what Flowa reads from a remote actor (federation.md 6.3, "What Flowa reads").
+type apActor struct {
+	ID                        string
+	Types                     []string
+	Kind                      string // one of apActorKinds
+	PreferredUsername         string
+	Name, Summary             string // Summary is HTML, for htmlToText; both cut at apTextMax
+	URL                       []apLink
+	Icon                      []apLink
+	Inbox, SharedInbox        string
+	Followers                 string
+	Keys                      []apKey
+	KeysSkipped               int // publicKey entries that could not be read
+	ManuallyApprovesFollowers bool
+	MovedTo                   string
+	AlsoKnownAs               []string
+	AlsoKnownAsDropped        int
+	Suspended                 bool
+}
+
+func decodeActor(body []byte, max int) (*apActor, error) {
+	f, err := apParse(body, max)
+	if err != nil {
+		return nil, apAs("actor", err)
+	}
+	a, err := actorFrom(f)
+	return a, apAs("actor", err)
+}
+
+func actorFrom(f apFields) (*apActor, error) {
+	a := &apActor{}
+	var err error
+	if a.Types, a.Kind, err = f.types(); err != nil {
+		return nil, err
+	}
+	if !apActorKinds[a.Kind] {
+		return nil, &apError{Reason: apWrongKind, Field: "type"}
+	}
+	if a.ID, err = f.id("id"); err == nil && a.ID == "" {
+		err = &apError{Reason: apNoID, Field: "id"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if a.PreferredUsername, err = f.text("preferredUsername", apTextMax); err != nil {
+		return nil, err
+	}
+	a.Name, _, _ = f.prose("name", "nameMap", false)
+	a.Summary, _, _ = f.prose("summary", "summaryMap", false)
+	if a.URL, err = f.links("url"); err != nil {
+		return nil, err
+	}
+	if a.Icon, err = f.links("icon"); err != nil {
+		return nil, err
+	}
+	if a.Inbox, err = f.id("inbox"); err != nil {
+		return nil, err
+	}
+	if a.Followers, err = f.id("followers"); err != nil {
+		return nil, err
+	}
+	// endpoints is "a json object" or "a link to a JSON-LD document with these properties"
+	// (ActivityPub 4.1). Flowa does not fetch the latter: without a shared inbox it uses the inbox.
+	ep, err := f.ref("endpoints")
+	if err != nil {
+		return nil, err
+	}
+	if ep.Obj != nil {
+		if a.SharedInbox, err = ep.Obj.id("sharedInbox"); err != nil {
+			return nil, apIn("endpoints", err)
+		}
+	}
+	if a.Keys, a.KeysSkipped, err = f.keys(); err != nil {
+		return nil, err
+	}
+	a.ManuallyApprovesFollowers = f.flag("manuallyApprovesFollowers")
+	if a.MovedTo, err = f.id("movedTo"); err != nil {
+		return nil, err
+	}
+	if a.AlsoKnownAs, a.AlsoKnownAsDropped, _, err = f.usable("alsoKnownAs", false); err != nil {
+		return nil, err
+	}
+	a.Suspended = f.flag("suspended")
+	// ActivityPub 4.1: an actor "MUST have" an inbox. A suspended Mastodon account is served with
+	// "empty data" (its page, "Suspended flag"), so it may have none and is still read, to be marked
+	// gone.
+	if a.Inbox == "" && !a.Suspended {
+		return nil, &apError{Reason: apNoInbox, Field: "inbox"}
+	}
+	return a, nil
+}
+
+// keys reads publicKey: "a compacted id, or an expanded object, or a list of ids or objects" (the
+// SWICG report, "How to obtain a signature's public key"). An entry that cannot be read (no id, an
+// id or owner that fails apIDOK, a PEM that is not text: a did:key beside an https key, say) is
+// skipped and counted: only the key the signature names is acted on, and key fails for a skipped one.
+// Two entries with one id are refused, readable or not, since choosing by id would then be a choice
+// between them.
+func (f apFields) keys() (keys []apKey, skipped int, err error) {
+	seen := map[string]bool{}
+	var r idOrObject
+	err = f.each("publicKey", func(e []byte) error {
+		if r.UnmarshalJSON(e) != nil {
+			skipped++
+			return nil
+		}
+		if r.ID != "" {
+			if seen[r.ID] {
+				return &apError{Reason: apKeyTwice, Field: "publicKey"}
+			}
+			seen[r.ID] = true
+		}
+		if k, ok := apKeyOf(r); ok {
+			keys = append(keys, k)
+		} else {
+			skipped++
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return keys, skipped, nil
+}
+
+// apKeyOf reads one publicKey entry, or says it cannot be used.
+func apKeyOf(r idOrObject) (apKey, bool) {
+	if !apIDOK(r.ID) {
+		return apKey{}, false
+	}
+	k := apKey{ID: r.ID, ByID: r.Obj == nil}
+	if r.Obj == nil {
+		return k, true
+	}
+	var err error
+	if k.Owner, err = r.Obj.id("owner"); err == nil && k.Owner == "" {
+		// The SWICG report follows controller where owner is missing (federation.md 7.3).
+		k.Owner, err = r.Obj.id("controller")
+	}
+	if err == nil {
+		// Handed to parsePublicKeyPEM as it came, after JSON unescaping only.
+		k.PEM, err = r.Obj.text("publicKeyPem", apTextMax)
+	}
+	return k, err == nil
+}
+
+// key is the entry of publicKey whose id is keyID, compared as written, fragment included (the
+// SWICG report: "find the one whose id matches the original keyId", then "Check that this key
+// object's id matches ... including fragments"). That the key's owner is this actor, and the key id
+// on its origin, is the caller's check (federation.md 7.3).
+func (a *apActor) key(keyID string) (apKey, error) {
+	for _, k := range a.Keys {
+		if k.ID == keyID {
+			return k, nil
+		}
+	}
+	return apKey{}, &apError{Reason: apNoKey, Field: "publicKey", What: "actor"}
+}
+
+// apOneObject are the activity types Flowa acts on one object of (federation.md 6.3): each must
+// have exactly one. A Flag names several (Mastodon's page, "Reporting profiles and posts"); any
+// other type keeps its list, since the inbox only counts and drops it.
+var apOneObject = map[string]bool{
+	"Create": true, "Update": true, "Delete": true, "Like": true, "Announce": true, "Follow": true,
+	"Accept": true, "Reject": true, "Undo": true, "Block": true, "Move": true,
+}
+
+// apActivity is an activity's envelope (federation.md 6.3, 6.7, 7.3). Kind is "" for a type the
+// vocabulary does not have (EmojiReact, QuoteRequest), which the inbox counts and drops.
+type apActivity struct {
+	ID             string
+	Types          []string
+	Kind           string
+	Actor          string
+	Object         []idOrObject // one for the types of apOneObject, by id or embedded; a Flag names several
+	ObjectsDropped int          // a Flag's or another type's objects that could not be used
+	Target         idOrObject
+	Audience       apAudience
+	Published      time.Time
+	Updated        time.Time
+	BadDate        bool // published or updated was given and could not be read
+}
+
+func decodeActivity(body []byte, max int) (*apActivity, error) {
+	f, err := apParse(body, max)
+	if err != nil {
+		return nil, apAs("activity", err)
+	}
+	a, err := activityFrom(f)
+	return a, apAs("activity", err)
+}
+
+func activityFrom(f apFields) (*apActivity, error) {
+	a := &apActivity{}
+	var err error
+	if a.Types, a.Kind, err = f.types(); err != nil {
+		return nil, err
+	}
+	// An activity "SHOULD have an id, unless it is intended to be transient" (ActivityPub 7). Flowa
+	// requires one: the inbox removes duplicates by it and checks its origin (federation.md 7.2, 7.3).
+	if a.ID, err = f.id("id"); err == nil && a.ID == "" {
+		err = &apError{Reason: apNoID, Field: "id"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if a.Actor, err = f.id("actor"); err == nil && a.Actor == "" {
+		err = &apError{Reason: apNoID, Field: "actor"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if apOneObject[a.Kind] {
+		// The object is acted on: it must be one, readable, with an id Flowa may use.
+		if a.Object, err = f.refs("object"); err != nil {
+			return nil, err
+		}
+		switch len(a.Object) {
+		case 0:
+			return nil, &apError{Reason: apNoID, Field: "object"}
+		case 1:
+		default:
+			return nil, &apError{Reason: apMoreThanOne, Field: "object"}
+		}
+		if err := apCheckID(a.Object[0].ID); err != nil {
+			return nil, apIn("object", err)
+		}
+	} else {
+		// A Flag's objects that cannot be ours, and those of a type the inbox drops, are dropped.
+		err := f.each("object", func(e []byte) error {
+			var r idOrObject
+			if r.UnmarshalJSON(e) != nil || !apIDOK(r.ID) {
+				a.ObjectsDropped++
+			} else {
+				a.Object = append(a.Object, r)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if a.Target, err = f.ref("target"); err != nil {
+		return nil, err
+	}
+	if a.Target.ID != "" || a.Target.Obj != nil {
+		if err := apCheckID(a.Target.ID); err != nil {
+			return nil, apIn("target", err)
+		}
+	}
+	if a.Audience, err = f.audience(); err != nil {
+		return nil, err
+	}
+	var b1, b2 bool
+	a.Published, b1 = f.date("published")
+	a.Updated, b2 = f.date("updated")
+	a.BadDate = b1 || b2
+	return a, nil
+}
+
+// apMention is a Mention tag: the actor it names (href) and the text shown ("@bo@social.example").
+type apMention struct{ Href, Name string }
+
+// apHashtag is a Hashtag tag; Href is "" when it was not an https URL.
+type apHashtag struct{ Name, Href string }
+
+// apAttachment is one attachment of a post. Name and Summary are both read: Mastodon's page names
+// attachment[].summary "media description", the Activity Vocabulary's name is what many servers
+// use, and which one a current Mastodon writes is open until a recorded post settles it
+// (federation.md, Sources). MediaType is "" when it was absent or could not be read.
+type apAttachment struct {
+	Kind, MediaType string
+	URL             []apLink
+	Name, Summary   string
+}
+
+// alt is the description of the picture: summary first, then name (federation.md 6.5).
+func (t apAttachment) alt() string {
+	if t.Summary != "" {
+		return t.Summary
+	}
+	return t.Name
+}
+
+// apNote is a post or a reply as federation.md 6.5 and 6.6 read it. Kind is its vocabulary type:
+// Note, or one of the types 6.6 keeps as text with a link (Article, Page, Question, ...); the caller
+// decides what it takes.
+type apNote struct {
+	ID           string
+	Types        []string
+	Kind         string
+	AttributedTo []string
+	// InReplyTo is the post this one answers. ReplyToUnknown is true when inReplyTo was given but
+	// Flowa cannot address it (an id that fails apIDOK, or a value it cannot read): the post is still
+	// a reply, to a post Flowa does not know, which 6.3 drops unless the author is followed and never
+	// shows as a new thread.
+	InReplyTo      string
+	ReplyToUnknown bool
+	Name           string // name, or from nameMap by apPick
+	Summary        string // the content warning: summary, or from summaryMap by apPick
+	Content        string // HTML, for htmlToText; cut at apTextMax
+	ContentMap     map[string]string
+	Cut            bool // content, summary, name or a map entry was cut at apTextMax
+	Sensitive      bool
+	Mentions       []apMention
+	Hashtags       []apHashtag
+	TagsDropped    int // Mentions without a usable href, and tags that could not be read
+	Attachments    []apAttachment
+	URL            []apLink
+	Audience       apAudience
+	Published      time.Time
+	Updated        time.Time
+	BadDate        bool // published or updated was given and could not be read
+}
+
+// isNote is the rule for "a Note": the one vocabulary type among its types is Note.
+func (n *apNote) isNote() bool { return n.Kind == "Note" }
+
+// text is the post's text: content, or from contentMap by apPick.
+func (n *apNote) text() string { return apPick(n.Content, n.ContentMap) }
+
+// by says whether the post is attributed to actor alone (federation.md 6.3, Create: "the Note's
+// attributedTo and the activity's actor are the signer"). Several authors cannot all be the signer,
+// so a list of more than one is false.
+func (n *apNote) by(actor string) bool {
+	return len(n.AttributedTo) == 1 && n.AttributedTo[0] == actor
+}
+
+func decodeNote(body []byte, max int) (*apNote, error) {
+	f, err := apParse(body, max)
+	if err != nil {
+		return nil, apAs("post", err)
+	}
+	n, err := noteFrom(f)
+	return n, apAs("post", err)
+}
+
+func noteFrom(f apFields) (*apNote, error) {
+	n := &apNote{}
+	var err error
+	if n.Types, n.Kind, err = f.types(); err != nil {
+		return nil, err
+	}
+	if n.ID, err = f.id("id"); err == nil && n.ID == "" {
+		err = &apError{Reason: apNoID, Field: "id"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if n.AttributedTo, err = f.ids("attributedTo"); err != nil {
+		return nil, err
+	}
+	replies := 0
+	err = f.each("inReplyTo", func(e []byte) error {
+		if replies++; replies > 1 {
+			return &apError{Reason: apMoreThanOne, Field: "inReplyTo"}
+		}
+		var r idOrObject
+		if r.UnmarshalJSON(e) == nil && apIDOK(r.ID) {
+			n.InReplyTo = r.ID
+		} else {
+			n.ReplyToUnknown = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	var cut [4]bool
+	n.Name, cut[0], _ = f.prose("name", "nameMap", false)
+	// A content warning that cannot be read is not dropped: the post would be shown unfolded.
+	if n.Summary, cut[1], err = f.prose("summary", "summaryMap", true); err != nil {
+		return nil, err
+	}
+	// content is cut, not refused, at 64 KB (federation.md 7.5): the converter then adds the link to
+	// the original (6.6).
+	if n.Content, err = f.text("content", math.MaxInt); err != nil {
+		return nil, err
+	}
+	n.Content, cut[2] = apCut(n.Content)
+	if n.ContentMap, cut[3], err = f.langMap("contentMap"); err != nil {
+		return nil, err
+	}
+	n.Cut = cut[0] || cut[1] || cut[2] || cut[3]
+	n.Sensitive = f.flag("sensitive")
+	if err = n.readTags(f); err != nil {
+		return nil, err
+	}
+	if err = n.readAttachments(f); err != nil {
+		return nil, err
+	}
+	if n.URL, err = f.links("url"); err != nil {
+		return nil, err
+	}
+	if n.Audience, err = f.audience(); err != nil {
+		return nil, err
+	}
+	var b1, b2 bool
+	n.Published, b1 = f.date("published")
+	n.Updated, b2 = f.date("updated")
+	n.BadDate = b1 || b2
+	return n, nil
+}
+
+// apCut cuts text at apTextMax bytes, on the start of a character.
+func apCut(s string) (string, bool) {
+	if len(s) <= apTextMax {
+		return s, false
+	}
+	i := apTextMax
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i], true
+}
+
+// readTags reads Mention and Hashtag entries of tag (Mastodon's page, "tag[].type"); Emoji, other
+// types and plain ids are skipped. A Mention whose href Flowa cannot use, and an entry it cannot
+// read, is dropped and counted: nobody is notified for it (federation.md 6.6). A Hashtag keeps its
+// name without an href Flowa cannot use.
+func (n *apNote) readTags(f apFields) error {
+	var r idOrObject
+	return f.each("tag", func(e []byte) error {
+		switch {
+		case r.UnmarshalJSON(e) != nil:
+			n.TagsDropped++
+		case r.Obj == nil:
+		case r.Kind == "Mention" && !apIDOK(r.Href):
+			n.TagsDropped++
+		case r.Kind == "Mention":
+			name, _ := apCut(r.Obj.shown("name"))
+			n.Mentions = append(n.Mentions, apMention{Href: r.Href, Name: name})
+		case r.Kind == "Hashtag":
+			h := apHashtag{}
+			h.Name, _ = apCut(r.Obj.shown("name"))
+			if apIDOK(r.Href) {
+				h.Href = r.Href
+			}
+			n.Hashtags = append(n.Hashtags, h)
+		}
+		return nil
+	})
+}
+
+// shown reads a text that is shown, not acted on: one that cannot be read is no text.
+func (f apFields) shown(n string) string {
+	s, err := f.text(n, math.MaxInt)
+	if err != nil {
+		return ""
+	}
+	return s
+}
+
+// readAttachments reads the attached media: objects only, each with its type, media type, URLs
+// (a Link's own href, or the url of an Image or Document) and both descriptions.
+func (n *apNote) readAttachments(f apFields) error {
+	var r idOrObject
+	return f.each("attachment", func(e []byte) error {
+		if r.UnmarshalJSON(e) != nil || r.Obj == nil {
+			return nil
+		}
+		t := apAttachment{Kind: r.Kind, MediaType: r.Obj.short("mediaType")}
+		if r.Href != "" {
+			if apIDOK(r.Href) {
+				t.URL = []apLink{{Href: r.Href, MediaType: t.MediaType}}
+			}
+		} else {
+			var err error
+			if t.URL, err = r.Obj.links("url"); err != nil {
+				return apIn("attachment", err)
+			}
+		}
+		t.Name, _, _ = r.Obj.prose("name", "nameMap", false)
+		t.Summary, _, _ = r.Obj.prose("summary", "summaryMap", false)
+		n.Attachments = append(n.Attachments, t)
+		return nil
+	})
+}
+
+// apTombstone is a deleted object (Activity Vocabulary, Tombstone; ActivityPub 6.4).
+type apTombstone struct {
+	ID         string
+	FormerType []string
+	Deleted    time.Time
+	Published  time.Time
+	Updated    time.Time
+	BadDate    bool // deleted, published or updated was given and could not be read
+}
+
+func decodeTombstone(body []byte, max int) (*apTombstone, error) {
+	f, err := apParse(body, max)
+	if err != nil {
+		return nil, apAs("tombstone", err)
+	}
+	t, err := tombstoneFrom(f)
+	return t, apAs("tombstone", err)
+}
+
+func tombstoneFrom(f apFields) (*apTombstone, error) {
+	t := &apTombstone{}
+	_, kind, err := f.types()
+	if err != nil {
+		return nil, err
+	}
+	if kind != "Tombstone" {
+		return nil, &apError{Reason: apWrongKind, Field: "type"}
+	}
+	if t.ID, err = f.id("id"); err == nil && t.ID == "" {
+		err = &apError{Reason: apNoID, Field: "id"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	// formerType is shown only: a value that cannot be read is none.
+	var ft oneOrMany[string]
+	if b, ok := f["formerType"]; ok && ft.UnmarshalJSON(b) == nil {
+		for _, s := range ft {
+			if len(s) <= maxURL {
+				t.FormerType = append(t.FormerType, apTypeName(s))
+			}
+		}
+	}
+	var bad [3]bool
+	t.Deleted, bad[0] = f.date("deleted")
+	t.Published, bad[1] = f.date("published")
+	t.Updated, bad[2] = f.date("updated")
+	t.BadDate = bad[0] || bad[1] || bad[2]
+	return t, nil
+}
+
+// apCollection is a collection or one of its pages (ActivityPub 5, AS2 Core 4.6): an outbox, a
+// followers collection, a post's replies. First may be embedded (a reply collection's first page
+// often is); a page is read with idOrObject.collection. Items are ids or embedded objects, each with
+// an id.
+type apCollection struct {
+	ID         string
+	Kind       string // Collection, OrderedCollection, CollectionPage or OrderedCollectionPage
+	TotalItems uint64
+	HasTotal   bool
+	First      idOrObject
+	Next       idOrObject
+	Items      []idOrObject
+}
+
+func decodeCollection(body []byte, max int) (*apCollection, error) {
+	f, err := apParse(body, max)
+	if err != nil {
+		return nil, apAs("collection", err)
+	}
+	c, err := collectionFrom(f)
+	return c, apAs("collection", err)
+}
+
+func collectionFrom(f apFields) (*apCollection, error) {
+	c := &apCollection{}
+	var err error
+	if _, c.Kind, err = f.types(); err != nil {
+		return nil, err
+	}
+	switch c.Kind {
+	case "Collection", "OrderedCollection", "CollectionPage", "OrderedCollectionPage":
+	default:
+		return nil, &apError{Reason: apWrongKind, Field: "type"}
+	}
+	// An embedded first page may come without an id; a fetched one is checked against its URL by
+	// the caller (sameID).
+	if _, ok := f["id"]; ok {
+		if c.ID, err = f.id("id"); err != nil {
+			return nil, err
+		}
+	}
+	c.TotalItems, c.HasTotal = f.count("totalItems")
+	for _, p := range []struct {
+		name string
+		dst  *idOrObject
+	}{{"first", &c.First}, {"next", &c.Next}} {
+		if *p.dst, err = f.ref(p.name); err != nil {
+			return nil, err
+		}
+		if p.dst.ID != "" {
+			if err := apCheckID(p.dst.ID); err != nil {
+				return nil, apIn(p.name, err)
+			}
+		}
+	}
+	name := "items"
+	if _, ok := f["orderedItems"]; ok {
+		if _, both := f["items"]; both {
+			return nil, &apError{Reason: apDuplicate, Field: "items"}
+		}
+		name = "orderedItems"
+	}
+	if c.Items, err = f.refs(name); err != nil {
+		return nil, err
+	}
+	for _, it := range c.Items {
+		if err := apCheckID(it.ID); err != nil {
+			return nil, apIn(name, err)
+		}
+	}
+	return c, nil
+}
+
+// Reading an embedded object as one kind. One given by id only is apByID: the caller fetches it.
+
+func (r idOrObject) embedded() (apFields, error) {
+	if r.Obj == nil {
+		return nil, apFail(apByID)
+	}
+	return r.Obj, nil
+}
+
+func (r idOrObject) actor() (*apActor, error) {
+	f, err := r.embedded()
+	if err != nil {
+		return nil, apAs("actor", err)
+	}
+	a, err := actorFrom(f)
+	return a, apAs("actor", err)
+}
+
+func (r idOrObject) activity() (*apActivity, error) {
+	f, err := r.embedded()
+	if err != nil {
+		return nil, apAs("activity", err)
+	}
+	a, err := activityFrom(f)
+	return a, apAs("activity", err)
+}
+
+func (r idOrObject) note() (*apNote, error) {
+	f, err := r.embedded()
+	if err != nil {
+		return nil, apAs("post", err)
+	}
+	n, err := noteFrom(f)
+	return n, apAs("post", err)
+}
+
+func (r idOrObject) tombstone() (*apTombstone, error) {
+	f, err := r.embedded()
+	if err != nil {
+		return nil, apAs("tombstone", err)
+	}
+	t, err := tombstoneFrom(f)
+	return t, apAs("tombstone", err)
+}
+
+func (r idOrObject) collection() (*apCollection, error) {
+	f, err := r.embedded()
+	if err != nil {
+		return nil, apAs("collection", err)
+	}
+	c, err := collectionFrom(f)
+	return c, apAs("collection", err)
+}
+
 /* ---------- start-up ---------- */
 
 func openDB(dsn string) (*sql.DB, error) {

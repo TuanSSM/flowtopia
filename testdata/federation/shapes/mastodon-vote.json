@@ -1,0 +1,15 @@
+{
+  "@context": "https://www.w3.org/ns/activitystreams",
+  "id": "https://mastodon.example/users/bob#votes/827163/activity",
+  "to": "https://mastodon.example/users/alice",
+  "actor": "https://mastodon.example/users/bob",
+  "type": "Create",
+  "object": {
+    "id": "https://mastodon.example/users/bob#votes/827163",
+    "type": "Note",
+    "name": "orange",
+    "attributedTo": "https://mastodon.example/users/bob",
+    "to": "https://mastodon.example/users/alice",
+    "inReplyTo": "https://mastodon.example/users/alice/statuses/1009947848598745"
+  }
+}

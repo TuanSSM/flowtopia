@@ -1,0 +1,19 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    {
+      "Hashtag": "https://www.w3.org/ns/activitystreams#Hashtag"
+    }
+  ],
+  "id": "https://example.com/some-post",
+  "type": "Note",
+  "attributedTo": "https://example.com",
+  "content": "I love #cats",
+  "tag": [
+    {
+      "type": "Hashtag",
+      "name": "#cats",
+      "href": "https://example.com/tagged/cats"
+    }
+  ]
+}

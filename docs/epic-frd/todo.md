@@ -121,6 +121,37 @@ design note says it exists.
   settled and the note corrected. DoD: `TestDBRemoteActorCache`, `TestFixturesParse`, `TestDecodeShapes`,
   `TestDBPurgeRemote`,
   `TestDBRemoteRowsStayRemote`; `TestDBQueryPlans` holds with 2,000 remote accounts.
+  Built so far, with no caller yet: the decoder (federation.md 6.3 says what it reads and every rule
+  chosen where the texts leave a choice; 7.5 the limits it holds, its memory among them). `apScan` checks
+  a whole document in one pass before anything is decoded (well-formed JSON, UTF-8 without lone
+  surrogates, 24 levels, 1,000 entries in any list or object, no member name twice in any spelling);
+  `oneOrMany` and `idOrObject` read every property that may be a list or a link; `decodeActor` (with
+  `key`, chosen by id, fragment included), `decodeActivity`, `decodeNote`, `decodeTombstone` and
+  `decodeCollection` read exactly what the note uses, and the same for an object embedded in another.
+  After its review it refuses a document only for what Flowa would act on wrongly (an id, the actor,
+  an author, the object acted on, an address it delivers to, more than one value where one is acted on,
+  by a table of activity types for `object`) and drops and counts what it merely cannot use (recipients,
+  `alsoKnownAs`, Mentions, unreadable keys, a Flag's foreign objects); display fields that cannot be read
+  are absent on the careful side, an unreadable `inReplyTo` is a reply to an unknown post
+  (`ReplyToUnknown`), and `summaryMap` and `nameMap` are read. Every refusal is a typed reason with what
+  was read and the property's path. The 28 documents in `testdata/federation/shapes` are examples copied
+  from ActivityPub, Activity Streams 2.0 Core, Mastodon's ActivityPub page and this note, none recorded,
+  so the recorded fixtures, `TestFixturesParse` and the questions only a recording settles (alt text
+  property, mention nesting) are still open. `TestDecodeShapes`, `TestDecodeFixtures`, `TestDecodeActor`,
+  `TestDecodeNote`, `TestDecodeActivity`, `TestDecodeCollection`, `TestDecodeRefusals`, `TestDecodeDrops`,
+  `TestDecodeLanguageMaps`, `TestDecodeErrorText`, `TestDecodeContextTerms`, `TestDecodeAdversarial` and
+  `TestDecodeMemory` pass with `-race -count=3`; `FuzzDecodeDocument`, `FuzzDecodeScan` and the review's
+  two invariants, `FuzzDecodeNames` (the walker sees the names and values `encoding/json` does) and
+  `FuzzDecodeIDs` (every id and link returned passes `apIDOK`), ran 30 s each (the first round's run
+  found that whitespace before the document was refused, fixed and kept as a corpus entry). 28
+  deliberate breakages, three of them for the review's new rules, each fail a test. On a 2.1 GHz Xeon
+  `BenchmarkDecodeNote` (the Create of 6.5 with its Note) is about 41 µs, 14 KB and 173 allocations,
+  `BenchmarkDecodeActor` (the actor of 5.5) about 26 µs, 12 KB and 135 allocations; the costly inputs of
+  `BenchmarkDecodeAdversarial` take 11 to 17 times as long at 1 MB as at 64 KB, the slowest (a thousand
+  attachments of empty objects) about 22 ms for 1 MB, and a list, a nesting or a repeated name over the
+  limit is refused in under 0.05 ms at either size. One decode of a 256 KB body allocates at most 3.4 MB
+  measured (budget 4 MB, `TestDecodeMemory`); FWR's inbox item records that it decodes at most 4 bodies
+  at once.
 - [ ] **People elsewhere: search by handle.** A box that takes `@name@host` or a profile URL,
   resolves it by WebFinger (HTTPS only, the `self` link, the reverse lookup from the actor's
   `preferredUsername` and host: federation.md section 11), and shows the remote profile and the
