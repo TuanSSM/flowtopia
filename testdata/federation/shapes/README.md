@@ -19,13 +19,13 @@ table (`TestDecodeShapes`) takes several of its cases from them.
 | `ap-ex4-create-reply.json` | ActivityPub 1, Example 4 | activity | refused: the example's content string holds raw line breaks, which JSON does not allow (RFC 8259 7) |
 | `ap-ex5-like.json` | ActivityPub 1, Example 5 | activity | read |
 | `ap-ex6-create-public.json` | ActivityPub 1, Example 6 | activity, embedded Note | read, Public in `to` |
-| `ap-ex7-like-embedded.json` | ActivityPub 3 Objects, Example 7 | activity | read; the embedded Note carries its own `@context` object and has another origin than the actor (the forged Note of that section) |
+| `ap-ex7-like-embedded.json` | ActivityPub 3 Objects, Example 7 | activity | refused: the Like has no id of its own (Flowa requires one, 6.3). Its embedded Note carries its own `@context` object, which `TestDecodeShapes` reads past, and has another origin than the actor (the forged Note of that section) |
 | `ap-ex9-actor.json` | ActivityPub 4.1, Example 9 | actor | read; `icon` is a list of one URL |
 | `ap-ex15-note-no-id.json` | ActivityPub 6.2.1, Example 15 | Note | refused: no id (a client's object before its server assigns one) |
 | `ap-ex16-create.json` | ActivityPub 6.2.1, Example 16 | activity, embedded Note | read; the Note's id is on example.com, the actor on example.net |
 | `ap-ex17-tombstone.json` | ActivityPub 6.4, Example 17 | Tombstone | read |
 | `mastodon-block.json` | Mastodon, ActivityPub page (last updated 30 March 2026), "Remote blocking (Block)" | activity | read; `to` is one string |
-| `mastodon-flag.json` | same page, "Reporting profiles and posts (Flag)" | activity | read; `object` is a list of three ids |
+| `mastodon-flag.json` | same page, "Reporting profiles and posts (Flag)" | activity | read; `object` is a list of three ids, which a Flag alone may have (6.3) |
 | `mastodon-move.json` | same page, "Account migration (Move)" | activity | read, with `target` |
 | `mastodon-question.json` | same page, "Polls", the first example | Note reader | read as kind Question; it has no `attributedTo` |
 | `mastodon-vote.json` | same page, "Polls", the second example | activity, embedded Note | read; the ids carry fragments |

@@ -8651,18 +8651,29 @@ where the texts leave a choice, each written down at the code it governs:
     Core 2).
   - type may be one name or a list. The kind of an object is the one Activity Vocabulary type among
     its names (with Hashtag, the as: extension Mastodon's page lists); other names are extensions and
-    are ignored; two vocabulary types in one list are refused as a contradiction. So "is a Note" is
+    are ignored; the base types Object and Link beside a more specific type are ignored too (a Note
+    is an Object); two specific vocabulary types in one list are refused as a contradiction. So "is a Note" is
     Kind == "Note", and an actor is one whose kind is one of the five Actor Types of the Activity
     Vocabulary 3.2: Application, Group, Organization, Person, Service.
-  - Ids, and every URL Flowa would fetch or deliver to, are absolute https URLs the fetcher would ask
-    (apIDOK, the fetcher's own check): a document with one that is not is refused. Links only shown
-    (url, a Hashtag's href) and pictures (icon, attachment url) that are not are left out instead, so
-    a post or a profile is not lost over a broken avatar link.
+  - A document is refused only for what Flowa would act on wrongly; what it merely cannot use is
+    dropped. An actor refused is an account whose every later activity fails its key lookup, so the
+    bar for refusing one is high. Ids and the addresses Flowa acts on or delivers to (id, actor,
+    attributedTo, object where it is acted on, inbox, followers, sharedInbox, the key asked for and
+    its owner, movedTo, first, next, items) must be absolute https URLs the fetcher would ask (apIDOK),
+    or the document is refused. Entries of lists Flowa only narrows or shows (recipients, alsoKnownAs,
+    Mentions, other keys, url, icon, an attachment's url, a Hashtag's href) that are not are dropped,
+    and the readers count what they dropped so that a caller can log it. Display fields that cannot be
+    read (a date, a media type, a count) are absent, on the careful side where there is one: an
+    unreadable sensitive is sensitive, an unreadable inReplyTo still makes a reply.
   - Ids are compared as written (AS2 Core 2.2: an IRI serving as an id "MUST NOT be so mapped"); the
     SWICG report on HTTP signatures picks a key whose id matches the key id "including fragments".
   - Where Flowa acts on one value of a property the vocabulary lets hold several (actor, target,
-    inReplyTo, movedTo, endpoints), a list of one is read and a longer list is refused: choosing one
-    would be a second reading the sender did not make.
+    inReplyTo, movedTo, endpoints, and object for every activity type but Flag), a list of one is
+    read and a longer list is refused: choosing one would be a second reading the sender did not make.
+  - @context is passed over, so a term a context adds is not seen: with {"author": "as:attributedTo"}
+    in its context, "author" is a second author to a JSON-LD processor and an unknown member to Flowa.
+    Flowa acts for the signer, whose own identity it checks (7.3), and servers that read the plain
+    names, Mastodon among them by its page, read what Flowa reads.
 
 Origin checks (federation.md 7.3) need no new helper: the activity's actor and its key id on one
 origin, and an embedded object's id on its actor's origin, are both sameOrigin(a, b), which compares
@@ -8702,8 +8713,6 @@ const (
 	apNoInbox                               // an actor without an inbox that is not suspended
 	apMoreThanOne                           // more than one value where Flowa acts on one
 	apTooManyRecipients                     // more than apRecipientsMax addresses
-	apBadDate                               // a date that is not an AS2 date-time
-	apBadCount                              // a count that is not a whole number from 0 to 2^53
 	apKeyTwice                              // two public keys with the same id
 	apNoKey                                 // no public key with the id asked for
 	apByID                                  // an object given by id only, read as if embedded
@@ -8729,8 +8738,6 @@ var apReasons = [...]string{
 	apNoInbox:           "an actor without an inbox",
 	apMoreThanOne:       "more than one value where one is read",
 	apTooManyRecipients: "more than 1,000 recipients",
-	apBadDate:           "a date that is not an RFC 3339 date-time",
-	apBadCount:          "a count that is not a whole number",
 	apKeyTwice:          "two public keys with the same id",
 	apNoKey:             "no public key with that id",
 	apByID:              "an object given by id only",
@@ -8744,17 +8751,33 @@ func (r apReason) String() string {
 }
 
 // apError is every refusal of this section. Field is the path of the property, built from the
-// short names in apTerms ("object.tag.href"), never from the document's text.
+// short names in apTerms ("object.tag.href"), never from the document's text; What is what the
+// reader was reading ("actor", "activity", "post", "tombstone", "collection"), "document" before
+// that is known.
 type apError struct {
 	Reason apReason
 	Field  string
+	What   string
 }
 
 func (e *apError) Error() string {
-	if e.Field == "" {
-		return "activity refused: " + e.Reason.String()
+	what := e.What
+	if what == "" {
+		what = "document"
 	}
-	return "activity refused: " + e.Reason.String() + " (" + e.Field + ")"
+	if e.Field == "" {
+		return what + " refused: " + e.Reason.String()
+	}
+	return what + " refused: " + e.Reason.String() + " (" + e.Field + ")"
+}
+
+// apAs names what was being read in a reader's refusal.
+func apAs(what string, err error) error {
+	var e *apError
+	if err == nil || !errors.As(err, &e) {
+		return err
+	}
+	return &apError{Reason: e.Reason, Field: e.Field, What: what}
 }
 
 func apFail(r apReason) error { return &apError{Reason: r} }
@@ -8781,11 +8804,19 @@ func apScan(b []byte) apReason {
 		return apBadText
 	}
 	type level struct {
-		obj bool
-		n   int
+		obj    bool
+		n      int
+		serial int // which object this is, counted from 1 through the document
 	}
 	var stack []level
-	var names []map[string]struct{} // the member names of the object open at each level
+	// names[d] maps each member name seen at level d to its place in last, which holds the serial of
+	// the last object at that level that had the name: a name is a duplicate when that is the object
+	// open now. Objects at one level come one after another, so nothing is ever cleared, each
+	// distinct name is stored once per level, and the cost is linear.
+	var names []map[string]int
+	var last []int
+	var buf []byte // a name with escapes, unescaped
+	serial := 0
 	i := apSpace(b, 0)
 	if i >= len(b) || b[i] != '{' {
 		return apNotObject
@@ -8808,18 +8839,10 @@ func apScan(b []byte) apReason {
 					return apTooDeep
 				}
 				d := len(stack)
-				stack = append(stack, level{obj: c == '{'})
-				if c == '{' {
-					for len(names) <= d {
-						names = append(names, map[string]struct{}{})
-					}
-					// A map that held many names is replaced rather than cleared: clearing costs its
-					// capacity, and many small objects after one large one would cost that each time.
-					if len(names[d]) > 64 {
-						names[d] = map[string]struct{}{}
-					} else {
-						clear(names[d])
-					}
+				serial++
+				stack = append(stack, level{obj: c == '{', serial: serial})
+				for c == '{' && len(names) <= d {
+					names = append(names, map[string]int{})
 				}
 				i = apSpace(b, i+1)
 				if i < len(b) && (b[i] == '}' && c == '{' || b[i] == ']' && c == '[') {
@@ -8870,17 +8893,20 @@ func apScan(b []byte) apReason {
 			}
 			name := b[i+1 : j-1]
 			if bytes.IndexByte(name, '\\') >= 0 {
-				var s string
-				if json.Unmarshal(b[i:j], &s) != nil {
-					return apMalformed
-				}
-				name = []byte(s)
+				buf = apUnescape(buf[:0], name)
+				name = buf
 			}
+			// The map gives the name's place in last; only a name new at this level adds a key (and
+			// a string), so assigning to a key already there never copies the name again.
 			m := names[len(stack)-1]
-			if _, dup := m[string(name)]; dup {
+			if k, ok := m[string(name)]; !ok {
+				m[string(name)] = len(last)
+				last = append(last, top.serial)
+			} else if last[k] == top.serial {
 				return apDuplicate
+			} else {
+				last[k] = top.serial
 			}
-			m[string(name)] = struct{}{}
 			i = apSpace(b, j)
 			if i >= len(b) || b[i] != ':' {
 				return apMalformed
@@ -8998,6 +9024,45 @@ func apHex4(b []byte, i int) (rune, bool) {
 	return r, true
 }
 
+// apUnescape appends to dst the text of a string's contents (without its quotes) that apString has
+// checked, its escapes decoded (RFC 8259 7). It allocates nothing beyond dst's growth.
+func apUnescape(dst, s []byte) []byte {
+	for i := 0; i < len(s); {
+		if s[i] != '\\' {
+			dst = append(dst, s[i])
+			i++
+			continue
+		}
+		c := s[i+1]
+		i += 2
+		switch c {
+		case 'b':
+			dst = append(dst, '\b')
+		case 'f':
+			dst = append(dst, '\f')
+		case 'n':
+			dst = append(dst, '\n')
+		case 'r':
+			dst = append(dst, '\r')
+		case 't':
+			dst = append(dst, '\t')
+		case 'u':
+			r, _ := apHex4(s, i)
+			i += 4
+			if r >= 0xD800 && r <= 0xDBFF { // apString made sure the low half follows
+				if lo, ok := apHex4(s, i+2); ok && i+1 < len(s) && s[i] == '\\' && s[i+1] == 'u' && lo >= 0xDC00 && lo <= 0xDFFF {
+					r = 0x10000 + (r-0xD800)<<10 + (lo - 0xDC00)
+					i += 6
+				}
+			}
+			dst = utf8.AppendRune(dst, r)
+		default: // '"', '\\' and '/' stand for themselves
+			dst = append(dst, c)
+		}
+	}
+	return dst
+}
+
 // apNumber returns the index after the number at b[i] (RFC 8259 6), or -1.
 func apNumber(b []byte, i int) int {
 	digits := func() bool {
@@ -9040,11 +9105,12 @@ func apNumber(b []byte, i int) int {
 // compact name and the full IRI. The IRIs are those of the normative Activity Streams context
 // (https://www.w3.org/ns/activitystreams, read on 13 November 2026: inbox is ldp:inbox, the rest
 // as:), of the security vocabulary for keys (Mastodon's ActivityPub page, "W3ID Security
-// Vocabulary"), and of Mastodon's own for suspended ("Mastodon extensions"). contentMap and
-// orderedItems have no IRI of their own: the context maps them to as:content and as:items, so a
-// document with both items and orderedItems names one property twice and is refused.
+// Vocabulary"), and of Mastodon's own for suspended ("Mastodon extensions"). contentMap, summaryMap,
+// nameMap and orderedItems have no IRI of their own: the context maps them to as:content,
+// as:summary, as:name and as:items, so a document with both items and orderedItems names one
+// property twice and is refused.
 var apTerms = func() map[string]string {
-	m := map[string]string{"id": "id", "type": "type", "contentMap": "contentMap", "orderedItems": "orderedItems"}
+	m := map[string]string{"id": "id", "type": "type", "contentMap": "contentMap", "summaryMap": "summaryMap", "nameMap": "nameMap", "orderedItems": "orderedItems"}
 	add := func(prefix, iri string, names ...string) {
 		for _, n := range names {
 			m[n], m[prefix+":"+n], m[iri+n] = n, n, n
@@ -9093,7 +9159,9 @@ func apTypeName(s string) string {
 // apIDOK says whether an id or address may be used: an https URL as httpsURL defines it (RFC 3986
 // characters only, at most 2,048 bytes) that the fetcher would ask for a federation kind (no user
 // name, port 443, a public DNS name: fetcher.check). This instance's own origin passes: an Accept
-// names our own Follow.
+// names our own Follow. The instance's refused hosts and its own origin are not known here: the
+// caller applies them when it fetches or acts (the fetcher on every request, FMD's domain policy on
+// what comes in).
 func apIDOK(s string) bool {
 	if !httpsURL(s) {
 		return false
@@ -9111,20 +9179,19 @@ var apRules = &fetcher{} // only its check is used, with no origin and no refuse
 // Members Flowa does not read, @context among them, are passed over unread.
 type apFields map[string]json.RawMessage
 
-// apSkip returns the index just after the value that starts at b[i]. b has passed apScan, so every
-// value is well formed; a string is skipped by apString, which knows its escapes.
+// apSkip returns the index just after the value that starts at b[i]. b has passed apScan (or
+// encoding/json's own check, when a type below is handed to it directly), so every value is well
+// formed.
 func apSkip(b []byte, i int) int {
 	switch b[i] {
 	case '"':
-		j, _ := apString(b, i)
-		return j
+		return apStringEnd(b, i)
 	case '{', '[':
 		depth := 0
 		for ; i < len(b); i++ {
 			switch b[i] {
 			case '"':
-				j, _ := apString(b, i)
-				i = j - 1
+				i = apStringEnd(b, i) - 1
 			case '{', '[':
 				depth++
 			case '}', ']':
@@ -9139,6 +9206,19 @@ func apSkip(b []byte, i int) int {
 		i++
 	}
 	return i
+}
+
+// apStringEnd returns the index after the closing quote of the well-formed string at b[i].
+func apStringEnd(b []byte, i int) int {
+	for i++; i < len(b); i++ {
+		switch b[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
+		}
+	}
+	return len(b)
 }
 
 // apEach calls fn for each member of the object, or each entry of the list, that b holds (b has
@@ -9177,11 +9257,7 @@ func apStr(b []byte) (string, error) {
 	if bytes.IndexByte(b, '\\') < 0 {
 		return string(b[1 : len(b)-1]), nil
 	}
-	var s string
-	if json.Unmarshal(b, &s) != nil {
-		return "", apFail(apWrongShape)
-	}
-	return s, nil
+	return string(apUnescape(make([]byte, 0, len(b)), b[1:len(b)-1])), nil
 }
 
 // apFieldsOf reads one object of a scanned document; whitespace may come before it (RFC 8259 2).
@@ -9189,13 +9265,14 @@ func apFieldsOf(b []byte) (apFields, error) {
 	if b = b[apSpace(b, 0):]; len(b) == 0 || b[0] != '{' {
 		return nil, apFail(apWrongShape)
 	}
-	f := apFields{}
+	var f apFields // made at the first member Flowa reads: most embedded objects have few or none
 	dup := ""
+	var buf []byte
 	err := apEach(b, func(q, v []byte) error {
 		raw := q[1 : len(q)-1]
 		if bytes.IndexByte(raw, '\\') >= 0 {
-			s, _ := apStr(q)
-			raw = []byte(s)
+			buf = apUnescape(buf[:0], raw)
+			raw = buf
 		}
 		if string(raw) == "@id" || string(raw) == "@type" {
 			return &apError{Reason: apKeyword}
@@ -9207,17 +9284,26 @@ func apFieldsOf(b []byte) (apFields, error) {
 		if _, twice := f[n]; twice && (dup == "" || n < dup) {
 			dup = n // the first in name order, so that one document always names the same one
 		}
+		if f == nil {
+			f = make(apFields, 4)
+		}
 		f[n] = v
 		return nil
 	})
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if dup != "" {
+	case dup != "":
 		return nil, &apError{Reason: apDuplicate, Field: dup}
+	case f == nil:
+		return apNone, nil
 	}
 	return f, nil
 }
+
+// apNone is every object with no member Flowa reads. Nothing writes to an apFields once read, so
+// they share it, and an embedded object is still told from an id by Obj != nil.
+var apNone = apFields{}
 
 // apDecode decodes one value of a scanned document into v: text into a string, and a type with its
 // own UnmarshalJSON (oneOrMany, idOrObject) through it. A value of a JSON kind the target does not
@@ -9344,52 +9430,60 @@ func (f apFields) text(n string, max int) (string, error) {
 	return s, nil
 }
 
-// flag reads a boolean property: true, false or null; anything else, the string "true" too, is
-// refused.
-func (f apFields) flag(n string) (bool, error) {
-	b, ok := f[n]
-	switch {
-	case !ok || apNull(b):
-		return false, nil
-	case string(b) == "true":
-		return true, nil
-	case string(b) == "false":
-		return false, nil
+// short reads a short display value (a media type): one that is not a string of at most apShortMax
+// bytes is absent.
+func (f apFields) short(n string) string {
+	s, err := f.text(n, apShortMax)
+	if err != nil {
+		return ""
 	}
-	return false, &apError{Reason: apWrongShape, Field: n}
+	return s
+}
+
+// flag reads a boolean property. Anything but false or null reads as true, the careful side for
+// every flag Flowa reads: an unreadable sensitive hides the media, an unreadable
+// manuallyApprovesFollowers shows a Follow as requested, an unreadable suspended stores nothing new.
+func (f apFields) flag(n string) bool {
+	b, ok := f[n]
+	return ok && !apNull(b) && string(b) != "false"
 }
 
 // date reads a date property: AS2 Core 2.3, the RFC 3339 date-time with seconds optional and an
-// upper case "T" and "Z" (time.Parse takes neither in lower case). The zero time is no date.
-func (f apFields) date(n string) (time.Time, error) {
+// upper case "T" and "Z" (time.Parse takes neither in lower case). The zero time is no date; bad is
+// true when the property was there and could not be read.
+func (f apFields) date(n string) (t time.Time, bad bool) {
 	s, err := f.text(n, 64)
-	if err != nil || s == "" {
-		return time.Time{}, err
+	if err != nil {
+		return time.Time{}, true
+	}
+	if s == "" {
+		return time.Time{}, false
 	}
 	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04Z07:00"} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t, nil
+			return t, false
 		}
 	}
-	return time.Time{}, &apError{Reason: apBadDate, Field: n}
+	return time.Time{}, true
 }
 
-// count reads totalItems: a whole number from 0 to 2^53 (the context types it
-// xsd:nonNegativeInteger), with no fraction or exponent.
-func (f apFields) count(n string) (uint64, bool, error) {
+// count reads totalItems (the context types it xsd:nonNegativeInteger): any JSON number whose value
+// is a whole number from 0 to 2^53, so 5, 5.0 and 5e0 alike. Anything else is no count.
+func (f apFields) count(n string) (uint64, bool) {
 	b, ok := f[n]
-	if !ok || apNull(b) {
-		return 0, false, nil
+	if !ok || (b[0] != '-' && !isDigit(b[0])) {
+		return 0, false
 	}
-	v, err := strconv.ParseUint(string(b), 10, 64)
-	if err != nil || v > 1<<53 {
-		return 0, false, &apError{Reason: apBadCount, Field: n}
+	v, err := strconv.ParseFloat(string(b), 64)
+	if err != nil || v < 0 || v > 1<<53 || v != math.Trunc(v) {
+		return 0, false
 	}
-	return v, true, nil
+	return uint64(v), true
 }
 
 // types reads type: one name or a list of them, the vocabulary's in their short form, and the
-// object's kind, the one vocabulary type among them.
+// object's kind, the one vocabulary type among them. Object and Link, the vocabulary's base types,
+// are the kind only when no more specific type is given: ["Object", "Note"] is a Note.
 func (f apFields) types() ([]string, string, error) {
 	b, ok := f["type"]
 	if !ok {
@@ -9402,23 +9496,54 @@ func (f apFields) types() ([]string, string, error) {
 	if len(ts) == 0 {
 		return nil, "", &apError{Reason: apNoType, Field: "type"}
 	}
-	kind := ""
+	kind, base := "", ""
 	for i, t := range ts {
 		if len(t) > maxURL {
 			return nil, "", &apError{Reason: apTooLong, Field: "type"}
 		}
 		ts[i] = apTypeName(t)
-		if apCoreTypes[ts[i]] {
-			if kind != "" && kind != ts[i] {
-				return nil, "", &apError{Reason: apTypeConflict, Field: "type"}
+		switch t := ts[i]; {
+		case !apCoreTypes[t]:
+		case t == "Object" || t == "Link":
+			if base == "" {
+				base = t
 			}
-			kind = ts[i]
+		case kind != "" && kind != t:
+			return nil, "", &apError{Reason: apTypeConflict, Field: "type"}
+		default:
+			kind = t
 		}
+	}
+	if kind == "" {
+		kind = base
 	}
 	return ts, kind, nil
 }
 
-// refs reads a property that names objects, one or many.
+// each calls fn with each value of a property that may hold one or many: none for null or absence,
+// a null in a list skipped, a list inside a list refused (AS2 Core 5). The values are visited where
+// they lie, never gathered into a slice: a slice of a thousand entries in each of a thousand lists
+// would cost more than the body. An error from fn ends the walk and is returned.
+func (f apFields) each(n string, fn func(e []byte) error) error {
+	b, ok := f[n]
+	switch {
+	case !ok || apNull(b):
+		return nil
+	case b[0] != '[':
+		return fn(b)
+	}
+	return apEach(b, func(_, r []byte) error {
+		switch {
+		case apNull(r):
+			return nil
+		case r[0] == '[':
+			return &apError{Reason: apNested, Field: n}
+		}
+		return fn(r)
+	})
+}
+
+// refs reads a property that names objects, one or many, every entry readable.
 func (f apFields) refs(n string) ([]idOrObject, error) {
 	b, ok := f[n]
 	if !ok {
@@ -9445,8 +9570,8 @@ func (f apFields) ref(n string) (idOrObject, error) {
 	return rs[0], nil
 }
 
-// ids reads a property of ids, each given as a string or as an embedded object with its id; every
-// one must pass apIDOK.
+// ids reads a property of ids Flowa acts on (attributedTo), each a string or an embedded object with
+// its id: every one must pass apIDOK, since an author Flowa cannot name must not vanish from apNote.by.
 func (f apFields) ids(n string) ([]string, error) {
 	rs, err := f.refs(n)
 	if err != nil {
@@ -9462,7 +9587,29 @@ func (f apFields) ids(n string) ([]string, error) {
 	return out, nil
 }
 
-// id reads a property of one id; "" when absent.
+// usable reads a list Flowa only narrows or shows (recipients, alsoKnownAs): an entry that cannot be
+// read, has no id or fails apIDOK is dropped and counted. With public, the public collection's three
+// forms (ActivityPub 5.6) are kept, as asPublic. total is every entry, dropped or not.
+func (f apFields) usable(n string, public bool) (ids []string, dropped, total int, err error) {
+	var r idOrObject
+	err = f.each(n, func(e []byte) error {
+		total++
+		switch {
+		case r.UnmarshalJSON(e) != nil:
+			dropped++
+		case public && (r.ID == asPublic || r.ID == "as:Public" || r.ID == "Public"):
+			ids = append(ids, asPublic)
+		case !apIDOK(r.ID):
+			dropped++
+		default:
+			ids = append(ids, r.ID)
+		}
+		return nil
+	})
+	return ids, dropped, total, err
+}
+
+// id reads a property of one id Flowa acts on; "" when absent.
 func (f apFields) id(n string) (string, error) {
 	r, err := f.ref(n)
 	if err != nil || (r.ID == "" && r.Obj == nil) {
@@ -9484,6 +9631,73 @@ func apCheckID(id string) error {
 	return nil
 }
 
+// langMap reads a language map (AS2 Core 4.7: contentMap, summaryMap, nameMap), a language tag to
+// the text in that language, each text cut at apTextMax. An entry that is null is none.
+func (f apFields) langMap(n string) (m map[string]string, cut bool, err error) {
+	b, ok := f[n]
+	if !ok || apNull(b) {
+		return nil, false, nil
+	}
+	if b[0] != '{' {
+		return nil, false, &apError{Reason: apWrongShape, Field: n}
+	}
+	m = map[string]string{}
+	err = apEach(b, func(q, v []byte) error {
+		lang, _ := apStr(q)
+		if len(lang) > apShortMax {
+			return &apError{Reason: apTooLong, Field: n}
+		}
+		if apNull(v) {
+			return nil
+		}
+		s, err := apStr(v)
+		if err != nil {
+			return apIn(n, err)
+		}
+		var c bool
+		m[lang], c = apCut(s)
+		cut = cut || c
+		return nil
+	})
+	return m, cut, err
+}
+
+// apPick is the one text Flowa takes from a property and its language map: the plain property when
+// it has text, otherwise the map's "und" (undetermined) entry, otherwise the entry whose language tag
+// sorts first. Flowa has no reader's language to prefer, and the first by tag is the same on every
+// run.
+func apPick(plain string, m map[string]string) string {
+	if plain != "" || len(m) == 0 {
+		return plain
+	}
+	if s, ok := m["und"]; ok {
+		return s
+	}
+	tags := slices.Sorted(maps.Keys(m))
+	return m[tags[0]]
+}
+
+// prose reads a natural-language property (name, summary) with its map, by apPick, cut at
+// apTextMax. strict refuses a value that cannot be read; otherwise it is no text.
+func (f apFields) prose(n, mapName string, strict bool) (s string, cut bool, err error) {
+	s, err = f.text(n, math.MaxInt)
+	if err == nil {
+		var m map[string]string
+		if m, cut, err = f.langMap(mapName); err == nil {
+			var c bool
+			s, c = apCut(apPick(s, m))
+			cut = cut || c
+		}
+	}
+	if err != nil {
+		if strict {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+	return s, cut, nil
+}
+
 // apLink is a URL to show or fetch, with the media type its Link or Image gave.
 type apLink struct {
 	Href, MediaType string
@@ -9491,39 +9705,30 @@ type apLink struct {
 
 // links reads a property that points at a resource: a URL, a Link (href), an Image or another object
 // with a url, which may itself be any of these (AS2 Core 4.2, Examples 11 to 13; an actor's icon is
-// "an Image" in Mastodon's page), one or many. Entries that are not https URLs Flowa may fetch, and
-// objects with neither, are left out.
+// "an Image" in Mastodon's page), one or many. Entries that cannot be read, are not https URLs Flowa
+// may fetch, or are objects with neither are left out; so is a media type that cannot be read.
 func (f apFields) links(n string) ([]apLink, error) { return f.linksIn(n, 0) }
 
 func (f apFields) linksIn(n string, depth int) ([]apLink, error) {
-	rs, err := f.refs(n)
-	if err != nil {
-		return nil, err
-	}
 	var out []apLink
-	for _, r := range rs {
+	var r idOrObject
+	err := f.each(n, func(e []byte) error {
 		switch {
+		case r.UnmarshalJSON(e) != nil:
 		case r.Obj == nil:
 			if apIDOK(r.ID) {
 				out = append(out, apLink{Href: r.ID})
 			}
 		case r.Href != "":
 			if apIDOK(r.Href) {
-				mt, err := r.Obj.text("mediaType", apShortMax)
-				if err != nil {
-					return nil, apIn(n, err)
-				}
-				out = append(out, apLink{Href: r.Href, MediaType: mt})
+				out = append(out, apLink{Href: r.Href, MediaType: r.Obj.short("mediaType")})
 			}
 		case depth < apLinkDepth:
 			inner, err := r.Obj.linksIn("url", depth+1)
 			if err != nil {
-				return nil, apIn(n, err)
+				return apIn(n, err)
 			}
-			mt, err := r.Obj.text("mediaType", apShortMax)
-			if err != nil {
-				return nil, apIn(n, err)
-			}
+			mt := r.Obj.short("mediaType")
 			for _, l := range inner {
 				if l.MediaType == "" {
 					l.MediaType = mt
@@ -9531,15 +9736,24 @@ func (f apFields) linksIn(n string, depth int) ([]apLink, error) {
 				out = append(out, l)
 			}
 		}
-	}
-	return out, nil
+		return nil
+	})
+	return out, err
 }
 
 // apAudience is an object's addressing (federation.md 6.7): to, cc, bto, bcc and audience, each
-// entry an actor or collection id, the public collection's three forms (ActivityPub 5.6) read as
-// asPublic. At most apRecipientsMax in all.
+// entry an actor or collection id, the public collection's three forms read as asPublic. At most
+// apRecipientsMax entries in all, counted before any is dropped.
+//
+// An entry that cannot be read or fails apIDOK is dropped and counted in Dropped. Dropping can only
+// narrow what Flowa takes the audience to be, never widen it: the public collection is recognised
+// before apIDOK and never dropped, so public() is the same with or without the dropped entries; a
+// post is followers-only when the actor's followers collection is addressed, and that collection is
+// an id that passed apIDOK when the actor was read, so a dropped entry cannot be it; and every other
+// entry only names someone else who may see the post, whom Flowa does not deliver to anyway.
 type apAudience struct {
 	To, Cc, Bto, Bcc, Audience []string
+	Dropped                    int
 }
 
 func (f apFields) audience() (apAudience, error) {
@@ -9549,25 +9763,15 @@ func (f apFields) audience() (apAudience, error) {
 		name string
 		dst  *[]string
 	}{{"to", &a.To}, {"cc", &a.Cc}, {"bto", &a.Bto}, {"bcc", &a.Bcc}, {"audience", &a.Audience}} {
-		rs, err := f.refs(p.name)
+		ids, dropped, total, err := f.usable(p.name, true)
 		if err != nil {
 			return a, err
 		}
-		if n += len(rs); n > apRecipientsMax {
+		if n += total; n > apRecipientsMax {
 			return a, &apError{Reason: apTooManyRecipients, Field: p.name}
 		}
-		for _, r := range rs {
-			id := r.ID
-			switch {
-			case id == asPublic || id == "as:Public" || id == "Public":
-				id = asPublic
-			default:
-				if err := apCheckID(id); err != nil {
-					return a, apIn(p.name, err)
-				}
-			}
-			*p.dst = append(*p.dst, id)
-		}
+		*p.dst = ids
+		a.Dropped += dropped
 	}
 	return a, nil
 }
@@ -9606,24 +9810,27 @@ type apActor struct {
 	Types                     []string
 	Kind                      string // one of apActorKinds
 	PreferredUsername         string
-	Name, Summary             string // Summary is HTML, for htmlToText
+	Name, Summary             string // Summary is HTML, for htmlToText; both cut at apTextMax
 	URL                       []apLink
 	Icon                      []apLink
 	Inbox, SharedInbox        string
 	Followers                 string
 	Keys                      []apKey
+	KeysSkipped               int // publicKey entries that could not be read
 	ManuallyApprovesFollowers bool
 	MovedTo                   string
 	AlsoKnownAs               []string
+	AlsoKnownAsDropped        int
 	Suspended                 bool
 }
 
 func decodeActor(body []byte, max int) (*apActor, error) {
 	f, err := apParse(body, max)
 	if err != nil {
-		return nil, err
+		return nil, apAs("actor", err)
 	}
-	return actorFrom(f)
+	a, err := actorFrom(f)
+	return a, apAs("actor", err)
 }
 
 func actorFrom(f apFields) (*apActor, error) {
@@ -9641,14 +9848,11 @@ func actorFrom(f apFields) (*apActor, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, t := range []struct {
-		name string
-		dst  *string
-	}{{"preferredUsername", &a.PreferredUsername}, {"name", &a.Name}, {"summary", &a.Summary}} {
-		if *t.dst, err = f.text(t.name, apTextMax); err != nil {
-			return nil, err
-		}
+	if a.PreferredUsername, err = f.text("preferredUsername", apTextMax); err != nil {
+		return nil, err
 	}
+	a.Name, _, _ = f.prose("name", "nameMap", false)
+	a.Summary, _, _ = f.prose("summary", "summaryMap", false)
 	if a.URL, err = f.links("url"); err != nil {
 		return nil, err
 	}
@@ -9672,21 +9876,17 @@ func actorFrom(f apFields) (*apActor, error) {
 			return nil, apIn("endpoints", err)
 		}
 	}
-	if a.Keys, err = f.keys(); err != nil {
+	if a.Keys, a.KeysSkipped, err = f.keys(); err != nil {
 		return nil, err
 	}
-	if a.ManuallyApprovesFollowers, err = f.flag("manuallyApprovesFollowers"); err != nil {
-		return nil, err
-	}
+	a.ManuallyApprovesFollowers = f.flag("manuallyApprovesFollowers")
 	if a.MovedTo, err = f.id("movedTo"); err != nil {
 		return nil, err
 	}
-	if a.AlsoKnownAs, err = f.ids("alsoKnownAs"); err != nil {
+	if a.AlsoKnownAs, a.AlsoKnownAsDropped, _, err = f.usable("alsoKnownAs", false); err != nil {
 		return nil, err
 	}
-	if a.Suspended, err = f.flag("suspended"); err != nil {
-		return nil, err
-	}
+	a.Suspended = f.flag("suspended")
 	// ActivityPub 4.1: an actor "MUST have" an inbox. A suspended Mastodon account is served with
 	// "empty data" (its page, "Suspended flag"), so it may have none and is still read, to be marked
 	// gone.
@@ -9697,40 +9897,57 @@ func actorFrom(f apFields) (*apActor, error) {
 }
 
 // keys reads publicKey: "a compacted id, or an expanded object, or a list of ids or objects" (the
-// SWICG report, "How to obtain a signature's public key"). Two entries with one id are refused, since
-// choosing by id would then be a choice between them.
-func (f apFields) keys() ([]apKey, error) {
-	rs, err := f.refs("publicKey")
+// SWICG report, "How to obtain a signature's public key"). An entry that cannot be read (no id, an
+// id or owner that fails apIDOK, a PEM that is not text: a did:key beside an https key, say) is
+// skipped and counted: only the key the signature names is acted on, and key fails for a skipped one.
+// Two entries with one id are refused, readable or not, since choosing by id would then be a choice
+// between them.
+func (f apFields) keys() (keys []apKey, skipped int, err error) {
+	seen := map[string]bool{}
+	var r idOrObject
+	err = f.each("publicKey", func(e []byte) error {
+		if r.UnmarshalJSON(e) != nil {
+			skipped++
+			return nil
+		}
+		if r.ID != "" {
+			if seen[r.ID] {
+				return &apError{Reason: apKeyTwice, Field: "publicKey"}
+			}
+			seen[r.ID] = true
+		}
+		if k, ok := apKeyOf(r); ok {
+			keys = append(keys, k)
+		} else {
+			skipped++
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	out := make([]apKey, 0, len(rs))
-	for _, r := range rs {
-		if err := apCheckID(r.ID); err != nil {
-			return nil, apIn("publicKey", err)
-		}
-		k := apKey{ID: r.ID, ByID: r.Obj == nil}
-		if r.Obj != nil {
-			if k.Owner, err = r.Obj.id("owner"); err == nil && k.Owner == "" {
-				// The SWICG report follows controller where owner is missing (federation.md 7.3).
-				k.Owner, err = r.Obj.id("controller")
-			}
-			if err != nil {
-				return nil, apIn("publicKey", err)
-			}
-			// Handed to parsePublicKeyPEM as it came, after JSON unescaping only.
-			if k.PEM, err = r.Obj.text("publicKeyPem", apTextMax); err != nil {
-				return nil, apIn("publicKey", err)
-			}
-		}
-		for _, o := range out {
-			if o.ID == k.ID {
-				return nil, &apError{Reason: apKeyTwice, Field: "publicKey"}
-			}
-		}
-		out = append(out, k)
+	return keys, skipped, nil
+}
+
+// apKeyOf reads one publicKey entry, or says it cannot be used.
+func apKeyOf(r idOrObject) (apKey, bool) {
+	if !apIDOK(r.ID) {
+		return apKey{}, false
 	}
-	return out, nil
+	k := apKey{ID: r.ID, ByID: r.Obj == nil}
+	if r.Obj == nil {
+		return k, true
+	}
+	var err error
+	if k.Owner, err = r.Obj.id("owner"); err == nil && k.Owner == "" {
+		// The SWICG report follows controller where owner is missing (federation.md 7.3).
+		k.Owner, err = r.Obj.id("controller")
+	}
+	if err == nil {
+		// Handed to parsePublicKeyPEM as it came, after JSON unescaping only.
+		k.PEM, err = r.Obj.text("publicKeyPem", apTextMax)
+	}
+	return k, err == nil
 }
 
 // key is the entry of publicKey whose id is keyID, compared as written, fragment included (the
@@ -9743,29 +9960,40 @@ func (a *apActor) key(keyID string) (apKey, error) {
 			return k, nil
 		}
 	}
-	return apKey{}, &apError{Reason: apNoKey, Field: "publicKey"}
+	return apKey{}, &apError{Reason: apNoKey, Field: "publicKey", What: "actor"}
+}
+
+// apOneObject are the activity types Flowa acts on one object of (federation.md 6.3): each must
+// have exactly one. A Flag names several (Mastodon's page, "Reporting profiles and posts"); any
+// other type keeps its list, since the inbox only counts and drops it.
+var apOneObject = map[string]bool{
+	"Create": true, "Update": true, "Delete": true, "Like": true, "Announce": true, "Follow": true,
+	"Accept": true, "Reject": true, "Undo": true, "Block": true, "Move": true,
 }
 
 // apActivity is an activity's envelope (federation.md 6.3, 6.7, 7.3). Kind is "" for a type the
 // vocabulary does not have (EmojiReact, QuoteRequest), which the inbox counts and drops.
 type apActivity struct {
-	ID        string
-	Types     []string
-	Kind      string
-	Actor     string
-	Object    []idOrObject // by id or embedded; a Flag names several
-	Target    idOrObject
-	Audience  apAudience
-	Published time.Time
-	Updated   time.Time
+	ID             string
+	Types          []string
+	Kind           string
+	Actor          string
+	Object         []idOrObject // one for the types of apOneObject, by id or embedded; a Flag names several
+	ObjectsDropped int          // a Flag's or another type's objects that could not be used
+	Target         idOrObject
+	Audience       apAudience
+	Published      time.Time
+	Updated        time.Time
+	BadDate        bool // published or updated was given and could not be read
 }
 
 func decodeActivity(body []byte, max int) (*apActivity, error) {
 	f, err := apParse(body, max)
 	if err != nil {
-		return nil, err
+		return nil, apAs("activity", err)
 	}
-	return activityFrom(f)
+	a, err := activityFrom(f)
+	return a, apAs("activity", err)
 }
 
 func activityFrom(f apFields) (*apActivity, error) {
@@ -9788,12 +10016,34 @@ func activityFrom(f apFields) (*apActivity, error) {
 	if err != nil {
 		return nil, err
 	}
-	if a.Object, err = f.refs("object"); err != nil {
-		return nil, err
-	}
-	for _, o := range a.Object {
-		if err := apCheckID(o.ID); err != nil {
+	if apOneObject[a.Kind] {
+		// The object is acted on: it must be one, readable, with an id Flowa may use.
+		if a.Object, err = f.refs("object"); err != nil {
+			return nil, err
+		}
+		switch len(a.Object) {
+		case 0:
+			return nil, &apError{Reason: apNoID, Field: "object"}
+		case 1:
+		default:
+			return nil, &apError{Reason: apMoreThanOne, Field: "object"}
+		}
+		if err := apCheckID(a.Object[0].ID); err != nil {
 			return nil, apIn("object", err)
+		}
+	} else {
+		// A Flag's objects that cannot be ours, and those of a type the inbox drops, are dropped.
+		err := f.each("object", func(e []byte) error {
+			var r idOrObject
+			if r.UnmarshalJSON(e) != nil || !apIDOK(r.ID) {
+				a.ObjectsDropped++
+			} else {
+				a.Object = append(a.Object, r)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 	}
 	if a.Target, err = f.ref("target"); err != nil {
@@ -9807,12 +10057,10 @@ func activityFrom(f apFields) (*apActivity, error) {
 	if a.Audience, err = f.audience(); err != nil {
 		return nil, err
 	}
-	if a.Published, err = f.date("published"); err != nil {
-		return nil, err
-	}
-	if a.Updated, err = f.date("updated"); err != nil {
-		return nil, err
-	}
+	var b1, b2 bool
+	a.Published, b1 = f.date("published")
+	a.Updated, b2 = f.date("updated")
+	a.BadDate = b1 || b2
 	return a, nil
 }
 
@@ -9825,7 +10073,7 @@ type apHashtag struct{ Name, Href string }
 // apAttachment is one attachment of a post. Name and Summary are both read: Mastodon's page names
 // attachment[].summary "media description", the Activity Vocabulary's name is what many servers
 // use, and which one a current Mastodon writes is open until a recorded post settles it
-// (federation.md, Sources).
+// (federation.md, Sources). MediaType is "" when it was absent or could not be read.
 type apAttachment struct {
 	Kind, MediaType string
 	URL             []apLink
@@ -9848,24 +10096,34 @@ type apNote struct {
 	Types        []string
 	Kind         string
 	AttributedTo []string
-	InReplyTo    string
-	Name         string
-	Summary      string // the content warning
-	Content      string // HTML, for htmlToText; cut at apTextMax
-	ContentMap   map[string]string
-	Cut          bool // content or a contentMap entry was cut at apTextMax
-	Sensitive    bool
-	Mentions     []apMention
-	Hashtags     []apHashtag
-	Attachments  []apAttachment
-	URL          []apLink
-	Audience     apAudience
-	Published    time.Time
-	Updated      time.Time
+	// InReplyTo is the post this one answers. ReplyToUnknown is true when inReplyTo was given but
+	// Flowa cannot address it (an id that fails apIDOK, or a value it cannot read): the post is still
+	// a reply, to a post Flowa does not know, which 6.3 drops unless the author is followed and never
+	// shows as a new thread.
+	InReplyTo      string
+	ReplyToUnknown bool
+	Name           string // name, or from nameMap by apPick
+	Summary        string // the content warning: summary, or from summaryMap by apPick
+	Content        string // HTML, for htmlToText; cut at apTextMax
+	ContentMap     map[string]string
+	Cut            bool // content, summary, name or a map entry was cut at apTextMax
+	Sensitive      bool
+	Mentions       []apMention
+	Hashtags       []apHashtag
+	TagsDropped    int // Mentions without a usable href, and tags that could not be read
+	Attachments    []apAttachment
+	URL            []apLink
+	Audience       apAudience
+	Published      time.Time
+	Updated        time.Time
+	BadDate        bool // published or updated was given and could not be read
 }
 
 // isNote is the rule for "a Note": the one vocabulary type among its types is Note.
 func (n *apNote) isNote() bool { return n.Kind == "Note" }
+
+// text is the post's text: content, or from contentMap by apPick.
+func (n *apNote) text() string { return apPick(n.Content, n.ContentMap) }
 
 // by says whether the post is attributed to actor alone (federation.md 6.3, Create: "the Note's
 // attributedTo and the activity's actor are the signer"). Several authors cannot all be the signer,
@@ -9877,9 +10135,10 @@ func (n *apNote) by(actor string) bool {
 func decodeNote(body []byte, max int) (*apNote, error) {
 	f, err := apParse(body, max)
 	if err != nil {
-		return nil, err
+		return nil, apAs("post", err)
 	}
-	return noteFrom(f)
+	n, err := noteFrom(f)
+	return n, apAs("post", err)
 }
 
 func noteFrom(f apFields) (*apNote, error) {
@@ -9897,13 +10156,26 @@ func noteFrom(f apFields) (*apNote, error) {
 	if n.AttributedTo, err = f.ids("attributedTo"); err != nil {
 		return nil, err
 	}
-	if n.InReplyTo, err = f.id("inReplyTo"); err != nil {
+	replies := 0
+	err = f.each("inReplyTo", func(e []byte) error {
+		if replies++; replies > 1 {
+			return &apError{Reason: apMoreThanOne, Field: "inReplyTo"}
+		}
+		var r idOrObject
+		if r.UnmarshalJSON(e) == nil && apIDOK(r.ID) {
+			n.InReplyTo = r.ID
+		} else {
+			n.ReplyToUnknown = true
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	if n.Name, err = f.text("name", apTextMax); err != nil {
-		return nil, err
-	}
-	if n.Summary, err = f.text("summary", apTextMax); err != nil {
+	var cut [4]bool
+	n.Name, cut[0], _ = f.prose("name", "nameMap", false)
+	// A content warning that cannot be read is not dropped: the post would be shown unfolded.
+	if n.Summary, cut[1], err = f.prose("summary", "summaryMap", true); err != nil {
 		return nil, err
 	}
 	// content is cut, not refused, at 64 KB (federation.md 7.5): the converter then adds the link to
@@ -9911,34 +10183,12 @@ func noteFrom(f apFields) (*apNote, error) {
 	if n.Content, err = f.text("content", math.MaxInt); err != nil {
 		return nil, err
 	}
-	n.Content, n.Cut = apCut(n.Content)
-	if b, ok := f["contentMap"]; ok && !apNull(b) {
-		if b[0] != '{' {
-			return nil, &apError{Reason: apWrongShape, Field: "contentMap"}
-		}
-		// A language map (AS2 Core 4.7): a language tag to the text in it, null for none.
-		n.ContentMap = map[string]string{}
-		err := apEach(b, func(q, v []byte) error {
-			lang, _ := apStr(q)
-			if len(lang) > apShortMax {
-				return apFail(apTooLong)
-			}
-			if apNull(v) {
-				return nil
-			}
-			s, err := apStr(v)
-			var cut bool
-			n.ContentMap[lang], cut = apCut(s)
-			n.Cut = n.Cut || cut
-			return err
-		})
-		if err != nil {
-			return nil, apIn("contentMap", err)
-		}
-	}
-	if n.Sensitive, err = f.flag("sensitive"); err != nil {
+	n.Content, cut[2] = apCut(n.Content)
+	if n.ContentMap, cut[3], err = f.langMap("contentMap"); err != nil {
 		return nil, err
 	}
+	n.Cut = cut[0] || cut[1] || cut[2] || cut[3]
+	n.Sensitive = f.flag("sensitive")
 	if err = n.readTags(f); err != nil {
 		return nil, err
 	}
@@ -9951,12 +10201,10 @@ func noteFrom(f apFields) (*apNote, error) {
 	if n.Audience, err = f.audience(); err != nil {
 		return nil, err
 	}
-	if n.Published, err = f.date("published"); err != nil {
-		return nil, err
-	}
-	if n.Updated, err = f.date("updated"); err != nil {
-		return nil, err
-	}
+	var b1, b2 bool
+	n.Published, b1 = f.date("published")
+	n.Updated, b2 = f.date("updated")
+	n.BadDate = b1 || b2
 	return n, nil
 }
 
@@ -9973,63 +10221,66 @@ func apCut(s string) (string, bool) {
 }
 
 // readTags reads Mention and Hashtag entries of tag (Mastodon's page, "tag[].type"); Emoji, other
-// types and plain ids are skipped. A Mention's href is the actor notified (federation.md 6.6), so one
-// that is not an id Flowa may use refuses the post.
+// types and plain ids are skipped. A Mention whose href Flowa cannot use, and an entry it cannot
+// read, is dropped and counted: nobody is notified for it (federation.md 6.6). A Hashtag keeps its
+// name without an href Flowa cannot use.
 func (n *apNote) readTags(f apFields) error {
-	rs, err := f.refs("tag")
-	if err != nil {
-		return err
-	}
-	for _, r := range rs {
-		if r.Obj == nil {
-			continue
-		}
-		name, err := r.Obj.text("name", apTextMax)
-		if err != nil {
-			return apIn("tag", err)
-		}
-		switch r.Kind {
-		case "Mention":
-			if err := apCheckID(r.Href); err != nil {
-				return apIn("tag.href", err)
-			}
+	var r idOrObject
+	return f.each("tag", func(e []byte) error {
+		switch {
+		case r.UnmarshalJSON(e) != nil:
+			n.TagsDropped++
+		case r.Obj == nil:
+		case r.Kind == "Mention" && !apIDOK(r.Href):
+			n.TagsDropped++
+		case r.Kind == "Mention":
+			name, _ := apCut(r.Obj.shown("name"))
 			n.Mentions = append(n.Mentions, apMention{Href: r.Href, Name: name})
-		case "Hashtag":
-			h := apHashtag{Name: name}
+		case r.Kind == "Hashtag":
+			h := apHashtag{}
+			h.Name, _ = apCut(r.Obj.shown("name"))
 			if apIDOK(r.Href) {
 				h.Href = r.Href
 			}
 			n.Hashtags = append(n.Hashtags, h)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
-// readAttachments reads the attached media: objects only, each with its type, media type, URLs and
-// both descriptions.
-func (n *apNote) readAttachments(f apFields) error {
-	rs, err := f.refs("attachment")
+// shown reads a text that is shown, not acted on: one that cannot be read is no text.
+func (f apFields) shown(n string) string {
+	s, err := f.text(n, math.MaxInt)
 	if err != nil {
-		return err
+		return ""
 	}
-	for _, r := range rs {
-		if r.Obj == nil {
-			continue
+	return s
+}
+
+// readAttachments reads the attached media: objects only, each with its type, media type, URLs
+// (a Link's own href, or the url of an Image or Document) and both descriptions.
+func (n *apNote) readAttachments(f apFields) error {
+	var r idOrObject
+	return f.each("attachment", func(e []byte) error {
+		if r.UnmarshalJSON(e) != nil || r.Obj == nil {
+			return nil
 		}
-		t := apAttachment{Kind: r.Kind}
-		if t.MediaType, err = r.Obj.text("mediaType", apShortMax); err == nil {
-			if t.URL, err = r.Obj.links("url"); err == nil {
-				if t.Name, err = r.Obj.text("name", apTextMax); err == nil {
-					t.Summary, err = r.Obj.text("summary", apTextMax)
-				}
+		t := apAttachment{Kind: r.Kind, MediaType: r.Obj.short("mediaType")}
+		if r.Href != "" {
+			if apIDOK(r.Href) {
+				t.URL = []apLink{{Href: r.Href, MediaType: t.MediaType}}
+			}
+		} else {
+			var err error
+			if t.URL, err = r.Obj.links("url"); err != nil {
+				return apIn("attachment", err)
 			}
 		}
-		if err != nil {
-			return apIn("attachment", err)
-		}
+		t.Name, _, _ = r.Obj.prose("name", "nameMap", false)
+		t.Summary, _, _ = r.Obj.prose("summary", "summaryMap", false)
 		n.Attachments = append(n.Attachments, t)
-	}
-	return nil
+		return nil
+	})
 }
 
 // apTombstone is a deleted object (Activity Vocabulary, Tombstone; ActivityPub 6.4).
@@ -10039,14 +10290,16 @@ type apTombstone struct {
 	Deleted    time.Time
 	Published  time.Time
 	Updated    time.Time
+	BadDate    bool // deleted, published or updated was given and could not be read
 }
 
 func decodeTombstone(body []byte, max int) (*apTombstone, error) {
 	f, err := apParse(body, max)
 	if err != nil {
-		return nil, err
+		return nil, apAs("tombstone", err)
 	}
-	return tombstoneFrom(f)
+	t, err := tombstoneFrom(f)
+	return t, apAs("tombstone", err)
 }
 
 func tombstoneFrom(f apFields) (*apTombstone, error) {
@@ -10064,26 +10317,20 @@ func tombstoneFrom(f apFields) (*apTombstone, error) {
 	if err != nil {
 		return nil, err
 	}
-	if b, ok := f["formerType"]; ok {
-		var ft oneOrMany[string]
-		if err := ft.UnmarshalJSON(b); err != nil {
-			return nil, apIn("formerType", err)
-		}
+	// formerType is shown only: a value that cannot be read is none.
+	var ft oneOrMany[string]
+	if b, ok := f["formerType"]; ok && ft.UnmarshalJSON(b) == nil {
 		for _, s := range ft {
-			if len(s) > maxURL {
-				return nil, &apError{Reason: apTooLong, Field: "formerType"}
+			if len(s) <= maxURL {
+				t.FormerType = append(t.FormerType, apTypeName(s))
 			}
-			t.FormerType = append(t.FormerType, apTypeName(s))
 		}
 	}
-	for _, d := range []struct {
-		name string
-		dst  *time.Time
-	}{{"deleted", &t.Deleted}, {"published", &t.Published}, {"updated", &t.Updated}} {
-		if *d.dst, err = f.date(d.name); err != nil {
-			return nil, err
-		}
-	}
+	var bad [3]bool
+	t.Deleted, bad[0] = f.date("deleted")
+	t.Published, bad[1] = f.date("published")
+	t.Updated, bad[2] = f.date("updated")
+	t.BadDate = bad[0] || bad[1] || bad[2]
 	return t, nil
 }
 
@@ -10104,9 +10351,10 @@ type apCollection struct {
 func decodeCollection(body []byte, max int) (*apCollection, error) {
 	f, err := apParse(body, max)
 	if err != nil {
-		return nil, err
+		return nil, apAs("collection", err)
 	}
-	return collectionFrom(f)
+	c, err := collectionFrom(f)
+	return c, apAs("collection", err)
 }
 
 func collectionFrom(f apFields) (*apCollection, error) {
@@ -10127,9 +10375,7 @@ func collectionFrom(f apFields) (*apCollection, error) {
 			return nil, err
 		}
 	}
-	if c.TotalItems, c.HasTotal, err = f.count("totalItems"); err != nil {
-		return nil, err
-	}
+	c.TotalItems, c.HasTotal = f.count("totalItems")
 	for _, p := range []struct {
 		name string
 		dst  *idOrObject
@@ -10173,41 +10419,46 @@ func (r idOrObject) embedded() (apFields, error) {
 func (r idOrObject) actor() (*apActor, error) {
 	f, err := r.embedded()
 	if err != nil {
-		return nil, err
+		return nil, apAs("actor", err)
 	}
-	return actorFrom(f)
+	a, err := actorFrom(f)
+	return a, apAs("actor", err)
 }
 
 func (r idOrObject) activity() (*apActivity, error) {
 	f, err := r.embedded()
 	if err != nil {
-		return nil, err
+		return nil, apAs("activity", err)
 	}
-	return activityFrom(f)
+	a, err := activityFrom(f)
+	return a, apAs("activity", err)
 }
 
 func (r idOrObject) note() (*apNote, error) {
 	f, err := r.embedded()
 	if err != nil {
-		return nil, err
+		return nil, apAs("post", err)
 	}
-	return noteFrom(f)
+	n, err := noteFrom(f)
+	return n, apAs("post", err)
 }
 
 func (r idOrObject) tombstone() (*apTombstone, error) {
 	f, err := r.embedded()
 	if err != nil {
-		return nil, err
+		return nil, apAs("tombstone", err)
 	}
-	return tombstoneFrom(f)
+	t, err := tombstoneFrom(f)
+	return t, apAs("tombstone", err)
 }
 
 func (r idOrObject) collection() (*apCollection, error) {
 	f, err := r.embedded()
 	if err != nil {
-		return nil, err
+		return nil, apAs("collection", err)
 	}
-	return collectionFrom(f)
+	c, err := collectionFrom(f)
+	return c, apAs("collection", err)
 }
 
 /* ---------- start-up ---------- */
