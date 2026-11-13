@@ -360,6 +360,7 @@ function pageProfile() {
         <div><button class="btn" type="submit">Save</button></div></div></form>
     <form class="card span-2" id="props-form"><div class="card-h"><h2>Your props</h2></div>${propChecks(me.props || [])}
       <p class="form-err" id="props-err" role="alert"></p><div class="row" style="margin-top:14px"><button class="btn" type="submit">Save props</button></div></form>
+    ${blocksCard()}
   </div>`;
 }
 function propPlaceholder(p) {

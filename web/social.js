@@ -4,7 +4,7 @@
 
 // sending: the forms whose answer is still on its way; keys: the Idempotency-Key each unsent form
 // last used, so trying the very same thing again cannot make it twice.
-const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, sending: new Set(), keys: {} });
+const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, sending: new Set(), keys: {} });
 // owner: the account all of this belongs to (0 for a visitor); gen goes up each time it is thrown
 // away, so an answer that was asked for by the previous account is not shown to the next.
 const social = Object.assign(socialBlank(), { owner: 0, gen: 0 });
@@ -84,6 +84,48 @@ async function refreshPost(id) {
 async function loadPeople() {
   const r = await api('users');
   if (r.ok) { social.people = r.data.users; render(); }
+}
+async function loadBlocks() {
+  social.blocks = { loading: true };
+  const gen = social.gen, r = await api('blocks');
+  if (social.gen !== gen) return;
+  social.blocks = r.ok ? r.data : { blocks: [], total: 0, error: r.error };
+  render();
+}
+// Blocks, from a profile or from the list on the viewer's own Profile page. The server hides the other
+// member everywhere at once; the page takes their posts out of what it shows and asks again for the
+// rest (the timeline, the people list, the bell), so nothing waits for a reload.
+async function setBlock(id, name, on) {
+  if (on && !confirm(`Block @${name}?\n\nYou will no longer see their posts and comments, and they will no longer see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block.\n\nYou can unblock them from their profile or from your Profile page.`)) return;
+  const r = await api(`users/${encodeURIComponent(name)}/block`, on ? 'PUT' : 'DELETE');
+  // An account that is gone has no block left to take back: the list is read again without it.
+  if (!r.ok) { toast(r.error); if (!on && r.status === 404) { social.blocks = null; render(); } return; }
+  if (on) social.posts = social.posts.filter(p => p.userId !== id);
+  Object.assign(social, { stale: true, people: null, blocks: null });
+  const pr = social.profile[name];
+  if (pr?.user && on) Object.assign(pr, { blocked: true, posts: 0, likes: 0 });
+  else if (pr?.user) {
+    // On the profile itself, its counts and posts are read before the page is drawn again, so the
+    // Block button that replaces Unblock is there to take the focus and stays.
+    const q = await api('users/' + encodeURIComponent(name));
+    if (q.ok) social.profile[name] = q.data; else delete social.profile[name];
+    if (q.ok && location.hash === '#/u/' + name) { social.loading = false; await loadFeed('user:' + name); }
+  }
+  render(); loadNotifs(); toast(on ? `Blocked @${name}.` : `Unblocked @${name}.`);
+  // The button that was pressed is gone; keyboard focus goes to the one that takes its place.
+  ($(`[data-act=${on ? 'unblock' : 'block'}][data-id="${id}"]`) || $('#blocks-card h2'))?.focus();
+}
+function blocksCard() {
+  if (!flags.community) return '';
+  const b = social.blocks;
+  if (!b) loadBlocks();
+  const rows = !b || b.loading ? '<div class="empty small">Loading…</div>'
+    : b.error ? `<p class="small muted">${esc(b.error)}</p>`
+    : b.blocks.length ? b.blocks.map(({ user: u }) => `<div class="bm-row"><a class="grow row" href="#/u/${esc(u.username)}">${avatarHTML(u, 'sm')}<span class="grow"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a><button class="btn sm" data-act="unblock" data-id="${u.id}" data-name="${esc(u.username)}" aria-label="Unblock @${esc(u.username)}">Unblock</button></div>`).join('')
+      + (b.total > b.blocks.length ? `<p class="tiny" style="margin-top:8px">The ${b.blocks.length} latest of ${b.total.toLocaleString()} blocks are shown. The others hold too.</p>` : '')
+    : '<p class="small muted">You have not blocked anyone.</p>';
+  return `<div class="card span-2" id="blocks-card"><div class="card-h"><h2 class="grow" tabindex="-1">Blocked accounts</h2>${b?.blocks ? `<span class="sub num">${b.total}</span>` : ''}</div>
+    <p class="small muted" style="margin-bottom:10px">You do not see the posts and comments of people you block, and they do not see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block. Block someone from their profile.</p>${rows}</div>`;
 }
 async function loadProfile(name) {
   social.profile[name] = { loading: true };
@@ -392,14 +434,17 @@ function pageUser(name) {
   if (pr.error) return `<div class="empty">${esc(pr.error)} <a href="#/timeline">Back to the timeline</a>.</div>`;
   const u = pr.user, s = u.stats || {}, L = Math.max(1, Math.floor(Number(s.level) || 1)), title = levelTitle(L), mine = u.username === me.username;
   const links = Object.keys(LINK_KINDS).filter(k => (u.links || {})[k]).map(k => `<a class="btn sm social-${k}" href="${esc(linkURL(k, u.links[k]))}" target="_blank" rel="noopener noreferrer">${icon(k)}${esc(LINK_KINDS[k].name)}</a>`).join('');
-  const keys = (pr.achievements || []).slice().reverse();
+  const keys = (pr.achievements || []).slice().reverse(), blocked = !mine && pr.blocked;
+  const blockBtn = mine ? '' : `<button class="btn sm" data-act="${blocked ? 'unblock' : 'block'}" data-id="${u.id}" data-name="${esc(u.username)}">${icon('block')}${blocked ? 'Unblock' : 'Block'}</button>`;
+  const posts = blocked ? `<div class="empty" id="blocked-note">You blocked @${esc(u.username)}, so their posts are not shown, and they cannot comment on, reply to or like what you write. If they mention you, you are not told. Unblock them to see their posts again.</div>`
+    : feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.');
   return `<div class="card prof-head"><div class="row wrap" style="gap:18px;align-items:flex-start">${avatarHTML(u, 'big')}
       <div class="grow" style="min-width:220px"><h1>${esc(u.displayName || u.username)}</h1><p class="muted">@${esc(u.username)}${u.role !== 'user' ? ' · ' + RANK_NAMES[u.role] : ''} · joined ${esc(new Date(u.created).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</p>
         ${u.bio ? `<p class="prof-bio">${richText(u.bio)}</p>` : mine ? '<p class="tiny" style="margin-top:6px">Add a bio and your social links in your profile settings.</p>' : ''}
         <div class="row wrap" style="gap:6px;margin-top:12px">${(u.props || []).map(id => `<span class="chip">${esc(propById(id)?.name || id)}</span>`).join('')}${links}</div></div>
-      ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}${canReport(u.id) ? `<button class="btn sm" data-act="report" data-kind="user" data-id="${u.id}" data-what="@${esc(u.username)}">${icon('flag')}Report</button>` : ''}</div>
+      ${mine ? `<a class="btn" href="#/profile">${icon('edit')}Edit profile</a>` : ''}${canReport(u.id) ? `<button class="btn sm" data-act="report" data-kind="user" data-id="${u.id}" data-what="@${esc(u.username)}">${icon('flag')}Report</button>` : ''}${blockBtn}</div>
     ${flags.game ? `<div class="grid g4 prof-stats">${[['Level', `${L}<small> ${title}</small>`], ['XP', (s.xp || 0).toLocaleString()], ['Streak', `${s.streak || 0}<small> ${s.streak === 1 ? 'day' : 'days'} · best ${s.best || 0}</small>`], ['Clean skills', s.clean || 0]].map(([n, v]) => `<div class="stat"><div class="lbl">${n}</div><div class="val num">${v}</div></div>`).join('')}</div>` : ''}</div>
-  <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2><span class="sub num">${pr.posts} ${pr.posts === 1 ? 'post' : 'posts'} · ${pr.likes} ${pr.likes === 1 ? 'like' : 'likes'} received</span></div>${feedHTML('user:' + name, mine ? 'You have not posted yet.' : 'No posts yet.')}</div>
+  <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2>${blocked ? '<span class="sub">Blocked</span>' : `<span class="sub num">${pr.posts} ${pr.posts === 1 ? 'post' : 'posts'} · ${pr.likes} ${pr.likes === 1 ? 'like' : 'likes'} received</span>`}</div>${posts}</div>
     <div class="stack">${avatarOnProfile(u, pr.clean)}
     ${!flags.game ? '' : `<div class="card"><div class="card-h"><h2 class="grow">Badges</h2><span class="sub num">${keys.length}</span></div>${keys.length ? `<div class="badge-grid one">${keys.map(a => { const b = badgeByKey(a.key); return `<div class="badge on" data-tip="${esc(b?.desc || '')}"><span class="badge-ic on">${icon(b?.icon || 'medal')}</span><span class="grow"><b>${esc(b?.name || a.key)}</b><span class="tiny">${esc(new Date(a.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }))}</span></span></div>`; }).join('')}</div>` : '<div class="empty small">No badges yet.</div>'}</div>`}</div></div>`;
 }
@@ -500,6 +545,8 @@ document.addEventListener('click', async e => {
   switch (d.act) {
     case 'bell': social.nOpen = !social.nOpen; renderBell(); if (social.nOpen) { loadNotifs(); stepInto($('.ntf-panel')); } break;
     case 'bookmark': toggleBookmark(d.kind, d.ref); break;
+    case 'block': setBlock(id, d.name, true); break;
+    case 'unblock': setBlock(id, d.name, false); break;
     case 'ntf-go':
       social.nOpen = false;
       if (d.id) { const n = social.notifs.find(x => x.id === id); if (n && !n.read) { n.read = true; social.unread = Math.max(0, social.unread - 1); api('notifications/read', 'PUT', { ids: [id] }); } }
@@ -512,7 +559,7 @@ document.addEventListener('click', async e => {
       const r = await api(`posts/${id}/like`, 'POST');
       delete post.liking;
       // A like that did not go through (the post is gone, the connection dropped) is taken back.
-      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes; } else { Object.assign(post, was); toast(r.error); }
+      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes ?? post.likes; } else { Object.assign(post, was); toast(r.error); }
       render(); break;
     }
     case 'cmt-toggle':
@@ -540,7 +587,7 @@ document.addEventListener('click', async e => {
       eachComment(id, c => { c.liked = !c.liked; c.likes = (c.likes || 0) + (c.liked ? 1 : -1); liked = c.liked; });
       render();
       const r = await api(`comments/${id}/like`, 'POST');
-      if (r.ok) eachComment(id, c => { c.liked = r.data.liked; c.likes = r.data.likes; });
+      if (r.ok) eachComment(id, c => { c.liked = r.data.liked; c.likes = r.data.likes ?? c.likes; });
       else { toast(r.error); eachComment(id, c => { c.liked = !liked; c.likes = (c.likes || 0) + (liked ? -1 : 1); }); }
       render(); break;
     }
