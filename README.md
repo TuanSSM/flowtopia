@@ -314,8 +314,8 @@ a value that is not such an address stops the server at start with a message tha
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
 changes. `single` is one person's own instance (below). The word `federated` belongs to the plan in
 [docs/federation.md](docs/federation.md) and is not built yet, so it stops the server at start with a
-message that says so, as any other word does, before the database is opened. The admin dashboard shows
-the mode under the version.
+message that says so, as any other word does, before the database is opened (what it will read is under
+"Federation" below). The admin dashboard shows the mode under the version.
 
 ### A single-profile instance
 
@@ -378,6 +378,49 @@ them after 30 days as always.
 **Moving between modes.** Local to single works once one account is left. Single back to local (unset
 `FLOWA_MODE`) changes nothing in the data: the account, its posts and progress, and any requests to join are
 as they were, and sign-up is again what Open sign-ups and Who can join say.
+
+### Federation: the origin, the key secret and the keys
+
+Nothing federates yet. The first part of federation is built (the plan is in
+[docs/federation.md](docs/federation.md)), but **it is not reachable by an instance yet**: it runs only in a
+mode that federates, and `FLOWA_MODE=federated` still stops the start as "not built". There is no WebFinger,
+no actor, no signature and no request to another server. What is there, for the day that mode is built:
+
+- `FLOWA_ORIGIN`: the public address other servers will know the instance by, `https://` and its name, such
+  as `https://flowa.example.org`, with a port only when it is not 443. Nothing else: no path, query, user
+  name, IP address, `localhost`, single-label or private name (`.local`, `.lan`, `.internal` and the like),
+  and a name in another script is written in its `xn--` form. Capitals, one trailing slash and `:443` are
+  forgiven and written away, so `HTTPS://Flowa.Example.org:443/` is the same origin. Its name is one the
+  server answers to, as if it were in `FLOWA_HOSTS`.
+- `FLOWA_KEY_SECRET`: 64 hexadecimal characters that seal each account's signing key in the database, so the
+  daily backup holds no usable private key. Make one with `openssl rand -hex 32` and keep it beside the
+  database password, never in the repository, and do not use it, or any other secret, for anything else.
+  A value made by hand is refused: few different bytes, a repeating block, bytes that count up or down,
+  or the hex of typed text (every byte printable). A random value is refused with a chance under one in
+  10^13. **Losing it means new keys
+  for every account** (`-rotate-keys`, below). No message, log line, backup or page ever shows it.
+
+In a mode that federates, a missing or wrong value stops the start with a message naming the setting,
+before the database is opened. In local and single mode both are ignored, so a value left in `.env` stops
+nothing.
+
+At the first start in such a mode the server makes the instance's own key in the background (RSA 2048, one
+key at a time, so no request waits for one; the log says how long it took) and records the origin and the
+time in the database. **The origin is frozen from then on**: ids announced to other servers cannot move. A
+later start with another `FLOWA_ORIGIN` still starts and serves the app as in local mode, but federates
+nothing, and says so once in the log ("federation refused: the origin was https://a and is now https://b;
+actor ids cannot move"). Set the old origin back to federate again. A key secret that does not open the
+instance's own key (checked at every start) does the same. While federation is refused, for either reason,
+no key is made for any account: none replaces a key that cannot be opened, and none is sealed under a second
+secret.
+
+`docker exec nunchaku /nunchaku -rotate-keys` makes a new key pair for every account that has one, one at a
+time, prints how many, and exits; restart the server afterwards so it reads them. A key that another
+rotation changed at the same moment is skipped: the command says how many and exits non-zero, and running
+it again replaces them. It needs the mode and the
+two settings (with a mode that is not built it stops as the start would), and it is also the way back after
+a lost secret: set a new `FLOWA_KEY_SECRET` first. This version does not tell followers yet: other servers
+pick the new keys up when a signature next fails to verify.
 
 Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from

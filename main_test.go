@@ -3,16 +3,23 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"crypto/hkdf"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +33,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"testing/quick"
 	"time"
 )
 
@@ -1242,6 +1250,445 @@ func TestInstanceText(t *testing.T) {
 		got, msg := plainText(c.in, "It", c.multi, 10)
 		if (msg != "") != c.bad || (!c.bad && got != c.want) {
 			t.Errorf("plainText(%q, multi %v) = %q, %q", c.in, c.multi, got, msg)
+		}
+	}
+}
+
+// Two key secrets for the tests, made with openssl rand -hex 32 for them and used nowhere else.
+const (
+	testSecret  = "b82c1c78dcaa3cf12753e68c6a9c50be5bc8f21cd528b1f3dc75dfc9aa138978"
+	testSecret2 = "824ae9c7db7bda59dd2aafa6728bf7862560a11cbb0ee9a767f2b4fbad625b1b"
+)
+
+func mustSecret(t testing.TB, v string) keySecret {
+	t.Helper()
+	s, err := parseKeySecret(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// FLOWA_ORIGIN: https and a host, optionally a port, in one written form; everything else is refused
+// with a message that names the setting.
+func TestOrigin(t *testing.T) {
+	good := []struct{ in, url, host string }{
+		{"https://flowa.example.org", "https://flowa.example.org", "flowa.example.org"},
+		{"HTTPS://Flowa.Example.ORG", "https://flowa.example.org", "flowa.example.org"},  // capitals: the same origin
+		{"https://flowa.example.org/", "https://flowa.example.org", "flowa.example.org"}, // one trailing slash, as an address bar shows it
+		{"https://flowa.example.org:443", "https://flowa.example.org", "flowa.example.org"},
+		{"https://flowa.example.org:443/", "https://flowa.example.org", "flowa.example.org"},
+		{"https://flowa.example.org:00443", "https://flowa.example.org", "flowa.example.org"},
+		{"https://flowa.example.org:8443", "https://flowa.example.org:8443", "flowa.example.org"},
+		{"https://flowa.example.org:08443", "https://flowa.example.org:8443", "flowa.example.org"},
+		{"https://flowa.example.org:1", "https://flowa.example.org:1", "flowa.example.org"},
+		{"https://flowa.example.org:65535", "https://flowa.example.org:65535", "flowa.example.org"},
+		{"  https://flowa.example.org\n", "https://flowa.example.org", "flowa.example.org"}, // a line from a file
+		{"https://a.b", "https://a.b", "a.b"},
+		{"https://xn--flw-ula.example", "https://xn--flw-ula.example", "xn--flw-ula.example"},
+		{"https://a-b.c-d.example", "https://a-b.c-d.example", "a-b.c-d.example"},
+		{"https://3com.example", "https://3com.example", "3com.example"},
+		{"https://" + strings.Repeat("a", 63) + ".example", "https://" + strings.Repeat("a", 63) + ".example", strings.Repeat("a", 63) + ".example"},
+	}
+	for _, c := range good {
+		o, err := parseOrigin(c.in)
+		if err != nil || o.url != c.url || o.host != c.host || o.String() != c.url {
+			t.Errorf("parseOrigin(%q) = %+v, %v; want %s, %s", c.in, o, err, c.url, c.host)
+		}
+	}
+	label := strings.Repeat("a", 63) + "."
+	host253 := strings.Repeat(label, 3) + strings.Repeat("a", 61) // 253 characters
+	if o, err := parseOrigin("https://" + host253); err != nil || len(o.host) != 253 {
+		t.Errorf("a host of 253 characters: %+v, %v", o, err)
+	}
+	bad := []struct{ in, says string }{
+		{"", "not set"},
+		{"   ", "not set"},
+		{"http://flowa.example.org", "http"},
+		{"HTTP://flowa.example.org", "http"},
+		{"flowa.example.org", "https://"},
+		{"//flowa.example.org", "https://"},
+		{"ftp://flowa.example.org", "scheme"},
+		{"https:/flowa.example.org", "https://"},
+		{"https://", "no host"},
+		{"https:///", "no host"},
+		{"https://:443", "no host"},
+		{"https://flowa.example.org/flowa", "path"},
+		{"https://flowa.example.org//", "path"},
+		{"https://flowa.example.org\\x", "path"},
+		{"https://flowa.example.org/?a=1", "path"},
+		{"https://flowa.example.org?a=1", "query"},
+		{"https://flowa.example.org#top", "fragment"},
+		{"https://ana@flowa.example.org", "user name"},
+		{"https://ana:pw@flowa.example.org", "user name"},
+		{"https://192.168.1.10", "IP address"},
+		{"https://203.0.113.5:8443", "IP address"},
+		{"https://127.1", "IP address"},
+		{"https://10.1.2", "IP address"},
+		{"https://[2001:db8::1]", "IP address"},
+		{"https://[::1]:443", "IP address"},
+		{"https://2001:db8::1", "port"},
+		{"https://localhost", "home network"},
+		{"https://localhost:3169", "home network"},
+		{"https://flowa.localhost", "home network"},
+		{"https://raspi", "home network"},
+		{"https://raspi.local", "private name"},
+		{"https://flowa.lan", "private name"},
+		{"https://flowa.internal", "private name"},
+		{"https://flowa.home.arpa", "private name"},
+		{"https://pi.tail1234.ts.net", "private name"},
+		{"https://flöwa.example", "xn--"},
+		{"https://флоуа.example", "xn--"},
+		{"https://flowa.example.org.", "dot"},
+		{"https://flowa..example.org", "empty label"},
+		{"https://.flowa.example.org", "empty label"},
+		{"https://" + strings.Repeat("a", 64) + ".example", "63"},
+		{"https://" + host253 + "a", "253"},
+		{"https://-flowa.example", "dash"},
+		{"https://flowa-.example", "dash"},
+		{"https://flo_wa.example", "character"},
+		{"https://flo*wa.example", "character"},
+		{"https://flowa.example.org:0", "port"},
+		{"https://flowa.example.org:65536", "port"},
+		{"https://flowa.example.org:99999", "port"},
+		{"https://flowa.example.org:", "port"},
+		{"https://flowa.example.org:+443", "port"},
+		{"https://flowa.example.org:-1", "port"},
+		{"https://flowa.example.org:443:443", "port"},
+		{"https://flowa.example.org:44 3", "space"},
+		{"https://flowa example.org", "space"},
+		{"https://flowa.example.org\x00", "control"},
+		{"https://flowa.exam\tple.org", "space"},
+		{"https://flowa.example.org\x7f", "control"},
+		{"https://flowa.example.org\u200b", "xn--"},
+		{"https://flowa.example.org\u00a0x", "space"},
+		{"https://" + strings.Repeat("a", 5000), "too long"},
+	}
+	for _, c := range bad {
+		o, err := parseOrigin(c.in)
+		if err == nil {
+			t.Errorf("parseOrigin(%q) = %+v; want it refused (%s)", c.in, o, c.says)
+			continue
+		}
+		if !strings.Contains(err.Error(), "FLOWA_ORIGIN") || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("parseOrigin(%q): %q does not name the setting and say %q", c.in, err, c.says)
+		}
+		if len(err.Error()) > 300 {
+			t.Errorf("parseOrigin of %d characters: a message of %d characters, want it cut", len(c.in), len(err.Error()))
+		}
+		if o != (publicOrigin{}) {
+			t.Errorf("parseOrigin(%q) refused with a value: %+v", c.in, o)
+		}
+	}
+}
+
+// FLOWA_KEY_SECRET: 64 hexadecimal characters that look random; no message and no way of printing it
+// shows anything of the value.
+func TestKeySecret(t *testing.T) {
+	for _, v := range []string{testSecret, strings.ToUpper(testSecret), " " + testSecret + "\n"} {
+		if s, err := parseKeySecret(v); err != nil || !s.set() {
+			t.Errorf("a good secret (%d characters) is refused: %v", len(v), err)
+		}
+	}
+	for _, c := range []struct{ in, says string }{
+		{"", "not set"},
+		{" \n", "not set"},
+		{"flowa-test-only", "wrong length"},
+		{testSecret[:63], "wrong length"},
+		{testSecret + "0", "wrong length"},
+		{testSecret[:62] + "zz", "hexadecimal"},
+		{testSecret[:62] + "  ", "wrong length"}, // trimmed, it is short
+		{testSecret[:31] + " " + testSecret[32:], "hexadecimal"},
+		{"0x" + testSecret[:62], "hexadecimal"},
+		{strings.Repeat("0", 64), "not random"},
+		{strings.Repeat("f", 64), "not random"},
+		{strings.Repeat("ab", 32), "not random"},
+		{strings.Repeat("0123456789abcdef", 4), "not random"},
+		{strings.Repeat(testSecret[:32], 2), "not random"}, // 16 bytes twice
+		{"000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f", "not random"},
+		{"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "not random"}, // counts up by one
+		{"05080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f62", "not random"}, // counts up by three
+		{"fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0", "not random"}, // counts down
+		{hex.EncodeToString([]byte("flowa-test-only-flowa-test-only!")), "not random"},     // a typed password
+		{hex.EncodeToString([]byte("correct horse battery staple 123")), "not random"},     // a passphrase
+		{hex.EncodeToString([]byte("Zq8#vT!m2@Lp9$Wr4%Ny7^Hb3&Kc6*Jd")), "not random"},     // a strong-looking typed one
+		{strings.Repeat("é", 32), "hexadecimal"},                                           // 64 bytes, not 64 hexadecimal characters
+	} {
+		_, err := parseKeySecret(c.in)
+		if err == nil || !strings.Contains(err.Error(), "FLOWA_KEY_SECRET") || !strings.Contains(err.Error(), c.says) || !strings.Contains(err.Error(), "openssl rand -hex 32") {
+			t.Errorf("parseKeySecret(a value that is %s): %v", c.says, err)
+			continue
+		}
+		if v := strings.TrimSpace(c.in); len(v) >= 6 && strings.Contains(err.Error(), v[:6]) {
+			t.Errorf("the message shows the value: %q", err)
+		}
+		for _, n := range []string{"15", "62", "63", "65"} {
+			if strings.Contains(err.Error(), n) {
+				t.Errorf("the message says more of the value than that it is wrong: %q", err)
+			}
+		}
+	}
+	// Random secrets are accepted: the checks refuse one with a chance under 2^-45, so ten thousand of
+	// them all pass.
+	for range 10000 {
+		b := make([]byte, 32)
+		rand.Read(b)
+		if weakSecret(b) {
+			t.Fatalf("a random secret is refused as weak: %x", b)
+		}
+	}
+
+	// Printing: every verb, JSON, and as a field of the structs that hold it.
+	s := mustSecret(t, testSecret)
+	raw, _ := hex.DecodeString(testSecret)
+	derived, err := hkdf.Key(sha256.New, raw, nil, sealInfo, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%T"} {
+		fmt.Fprintf(&out, verb+"\n", s)
+	}
+	fmt.Fprint(&out, s, "\n")
+	fmt.Fprintln(&out, s.String(), s.GoString())
+	j, err := json.Marshal(map[string]any{"secret": s, "in": struct{ S keySecret }{s}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Write(j)
+	settings := fedSettings{secret: s}
+	a := &app{fed: &federation{secret: s}}
+	fmt.Fprintf(&out, "\n%v %+v %#v %v %+v %+v %#v\n", settings, settings, settings, a, a, a.fed, a.fed)
+	fmt.Fprint(&out, fmt.Errorf("wrapped: %v", s))
+	for _, leak := range [][]byte{[]byte(testSecret), []byte(strings.ToUpper(testSecret)), raw, derived, []byte(hex.EncodeToString(derived)), []byte(fmt.Sprint(raw)[1:20]), []byte(fmt.Sprint(derived)[1:20])} {
+		if bytes.Contains(out.Bytes(), leak) {
+			t.Fatalf("the secret, or the key made from it, is printed:\n%s", out.String())
+		}
+	}
+	if !strings.Contains(out.String(), `"secret":"[key secret]"`) || strings.Count(out.String(), secretShown) < 10 {
+		t.Errorf("a key secret prints as something other than %s:\n%s", secretShown, out.String())
+	}
+}
+
+// Sealing: AES-256-GCM under a key made from the secret, bound to its row; anything else does not
+// open, never panics, and the error says only that.
+func TestSealKey(t *testing.T) {
+	s1, s2 := mustSecret(t, testSecret), mustSecret(t, testSecret2)
+	plain := make([]byte, 1218) // about the size of a PKCS#8 RSA 2048 key
+	rand.Read(plain)
+	const id = "/actor#main-key"
+	sealed, err := s1.seal(plain, id, instanceActor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(sealed, "v1.") || strings.ContainsAny(sealed[3:], "+/=.") {
+		t.Errorf("sealed is not v1. and base64url: %.20s", sealed)
+	}
+	if got, err := s1.open(sealed, id, instanceActor); err != nil || !bytes.Equal(got, plain) {
+		t.Fatalf("the round trip: %v", err)
+	}
+	// A fresh nonce each time: two seals of the same key differ, and so do their nonces.
+	again, _ := s1.seal(plain, id, instanceActor)
+	if again == sealed || again[:19] == sealed[:19] {
+		t.Error("two seals of the same key are alike")
+	}
+	refused := func(what, in string, s keySecret, keyID string, o keyOwner) {
+		t.Helper()
+		got, err := s.open(in, keyID, o)
+		if err == nil || got != nil {
+			t.Errorf("%s: it opened", what)
+			return
+		}
+		if !errors.Is(err, errOpenKey) || !strings.HasPrefix(err.Error(), "cannot open the key") {
+			t.Errorf("%s: %q, want cannot open the key", what, err)
+		}
+		for _, leak := range []string{testSecret, testSecret2, hex.EncodeToString(plain[:16]), string(plain[:16])} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("%s: the error carries a secret or the key", what)
+			}
+		}
+	}
+	refused("the wrong secret", sealed, s2, id, instanceActor)
+	refused("no secret", sealed, keySecret{}, id, instanceActor)
+	refused("moved to another key id", sealed, s1, "/users/ana#main-key", instanceActor)
+	refused("moved to another owner", sealed, s1, id, keyOwner(1))
+	member, _ := s1.seal(plain, "/users/ana#main-key", keyOwner(7))
+	refused("a member's key on another member", member, s1, "/users/ana#main-key", keyOwner(8))
+	refused("a member's key on the instance actor", member, s1, id, instanceActor)
+	refused("empty", "", s1, id, instanceActor)
+	refused("the prefix alone", "v1.", s1, id, instanceActor)
+	refused("an unknown version", "v2."+sealed[3:], s1, id, instanceActor)
+	refused("the version in capitals", "V1."+sealed[3:], s1, id, instanceActor)
+	refused("no version", sealed[3:], s1, id, instanceActor)
+	refused("padded base64", sealed+"==", s1, id, instanceActor)
+	refused("standard base64", "v1."+base64.StdEncoding.EncodeToString(plain), s1, id, instanceActor)
+	raw, err := base64.RawURLEncoding.DecodeString(sealed[3:])
+	if err != nil || len(raw) != 12+len(plain)+16 {
+		t.Fatalf("v1 is nonce, ciphertext and tag: %d bytes, %v", len(raw), err)
+	}
+	// One flipped bit anywhere: in the nonce, the ciphertext or the tag.
+	for i := range len(raw) * 8 {
+		b := slices.Clone(raw)
+		b[i/8] ^= 1 << (i % 8)
+		if _, err := s1.open("v1."+base64.RawURLEncoding.EncodeToString(b), id, instanceActor); !errors.Is(err, errOpenKey) {
+			t.Fatalf("bit %d flipped: it opened (%v)", i, err)
+		}
+	}
+	// Cut short anywhere, as text and as bytes.
+	for n := range len(sealed) {
+		if _, err := s1.open(sealed[:n], id, instanceActor); err == nil {
+			t.Fatalf("cut to %d characters: it opened", n)
+		}
+	}
+	for n := range len(raw) {
+		if _, err := s1.open("v1."+base64.RawURLEncoding.EncodeToString(raw[:n]), id, instanceActor); err == nil {
+			t.Fatalf("cut to %d bytes: it opened", n)
+		}
+	}
+	if _, err := (keySecret{}).seal(plain, id, instanceActor); err == nil {
+		t.Error("sealing with no secret worked")
+	}
+	// Arbitrary input, as it is and as v1 base64, never opens and never panics.
+	never := func(b []byte, prefixed bool) bool {
+		in := string(b)
+		if prefixed {
+			in = "v1." + base64.RawURLEncoding.EncodeToString(b)
+		}
+		got, err := s1.open(in, id, instanceActor)
+		return err != nil && got == nil
+	}
+	if err := quick.Check(never, &quick.Config{MaxCount: 5000}); err != nil {
+		t.Error(err)
+	}
+}
+
+// FuzzOpenKey: whatever is stored in the column, opening it never panics, and only the sealed key opens.
+func FuzzOpenKey(f *testing.F) {
+	s := mustSecret(f, testSecret)
+	plain := []byte("a private key")
+	sealed, _ := s.seal(plain, "/actor#main-key", instanceActor)
+	for _, seed := range []string{sealed, "", "v1.", "v1.AAAA", "v2." + sealed[3:], sealed[:len(sealed)-1], sealed + "A", "v1." + strings.Repeat("A", 40)} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		got, err := s.open(in, "/actor#main-key", instanceActor)
+		if err == nil && !bytes.Equal(got, plain) {
+			t.Fatalf("%q opened to something that was never sealed", in)
+		}
+		if err != nil && (got != nil || !errors.Is(err, errOpenKey)) {
+			t.Fatalf("%q: %v with %d bytes", in, err, len(got))
+		}
+	})
+}
+
+// serve waits for a request in flight before it returns, where main used to return the moment
+// Shutdown began (docs/federation.md, 8.6).
+func TestServeWaits(t *testing.T) {
+	a := newApp(nil, t.TempDir())
+	entered, release := make(chan struct{}), make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		io.WriteString(w, "done")
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	served := make(chan error, 1)
+	// The signals are let go as soon as the stop begins, while the request is still being answered, so
+	// that a second signal ends the process at once (main passes NotifyContext's stop here).
+	signalsFreed := make(chan struct{})
+	go func() { served <- a.serve(ctx, srv, ln, func() { close(signalsFreed) }) }()
+	answered := make(chan string, 1)
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/")
+		if err != nil {
+			answered <- err.Error()
+			return
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		answered <- string(b)
+	}()
+	<-entered
+	cancel()
+	select {
+	case err := <-served:
+		t.Fatalf("serve returned (%v) while a request was still being answered", err)
+	case <-time.After(300 * time.Millisecond): // fixed: showing that serve does not return early
+	}
+	select {
+	case <-signalsFreed:
+	default:
+		t.Error("the signals were not let go when the stop began, so a second signal would wait")
+	}
+	close(release)
+	select {
+	case got := <-answered:
+		if got != "done" {
+			t.Errorf("the request in flight got %q, want done", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request in flight was not answered")
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return after the request finished")
+	}
+}
+
+// What a key costs: making one (in the background, one at a time), sealing it, and opening and
+// parsing it (once per owner; then it is kept in memory).
+func BenchmarkGenerateKey(b *testing.B) {
+	for b.Loop() {
+		if _, err := rsa.GenerateKey(rand.Reader, keyBits); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func benchKey(b *testing.B) (keySecret, []byte, string) {
+	s := mustSecret(b, testSecret)
+	k, err := rsa.GenerateKey(rand.Reader, keyBits)
+	if err != nil {
+		b.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(k)
+	if err != nil {
+		b.Fatal(err)
+	}
+	sealed, err := s.seal(der, instanceKeyID, instanceActor)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return s, der, sealed
+}
+
+func BenchmarkSealKey(b *testing.B) {
+	s, der, _ := benchKey(b)
+	for b.Loop() {
+		if _, err := s.seal(der, instanceKeyID, instanceActor); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkOpenKey(b *testing.B) {
+	s, _, sealed := benchKey(b)
+	for b.Loop() {
+		der, err := s.open(sealed, instanceKeyID, instanceActor)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := x509.ParsePKCS8PrivateKey(der); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

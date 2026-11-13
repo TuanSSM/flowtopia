@@ -6,8 +6,9 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)); waits for INS's mode setting and the owner's review of
-the design. 0 of 8 items done. The design note was checked against the specifications and
+**Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): the first item is
+built behind the mode, which is not startable yet, and waits for its Pi measurement; the owner's review of the
+design is still asked for. 0 of 8 items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -19,6 +20,16 @@ design note says it exists.
   at a time; the origin recorded at first federation and a later change refused (federation.md 4.3);
   `/nunchaku -rotate-keys`. DoD: `TestOrigin`, `TestSealKey` (wrong secret, tampered bytes),
   `TestDBKeysGenerated`, `TestDBOriginFrozen`; the key generation time on the Pi written here.
+  Built: `parseOrigin`, `parseKeySecret` (HKDF-SHA256 to the AES-256-GCM key; the value never printed),
+  sealing bound to the row (`v1.`), `ap_keys` (migration 12), `ensureKey` and one key worker, the origin
+  recorded and a change refused, `-rotate-keys`, and `main` waiting for `Shutdown` and the worker (8.6);
+  `TestOrigin`, `TestKeySecret`, `TestSealKey`, `FuzzOpenKey`, `TestDBKeysGenerated`,
+  `TestDBOriginFrozen`, `TestDBFederatedStart`, `TestServeWaits` and `TestDBServeStopsWorker` pass. No
+  key is made for anyone while federation is refused. Not reachable by an instance yet: `federated` is
+  not in `modesBuilt`. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkGenerateKey` is
+  about 44 ms a key, `BenchmarkSealKey` 3.6 µs and `BenchmarkOpenKey` (open and parse) 0.12 ms.
+  Open: the key generation time on the Pi (`go test -run xxx -bench GenerateKey -benchmem .` on the Pi, or
+  the line "keys: made the key of the instance actor in N ms" in its log).
 - [ ] **One guarded fetcher.** `fetcher.do` generalises `fetcher.get`: GET and POST, any host the
   policy allows for federation, the preview allowlist for link cards as before, redirects re-checked
   (to another origin only for media and WebFinger), caps on time, size and content type, the
