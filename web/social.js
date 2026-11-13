@@ -96,7 +96,7 @@ async function loadBlocks() {
 // member everywhere at once; the page takes their posts out of what it shows and asks again for the
 // rest (the timeline, the people list, the bell), so nothing waits for a reload.
 async function setBlock(id, name, on) {
-  if (on && !confirm(`Block @${name}?\n\nYou will no longer see their posts and comments, and they will no longer see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block.\n\nYou can unblock them from their profile or from your Profile page.`)) return;
+  if (on && !confirm(`Block @${name}?\n\nYou will no longer see their posts and comments, and they will no longer see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. ${blockTold()}\n\nYou can unblock them from their profile or from your Profile page.`)) return;
   const r = await api(`users/${encodeURIComponent(name)}/block`, on ? 'PUT' : 'DELETE');
   // An account that is gone has no block left to take back: the list is read again without it.
   if (!r.ok) { toast(r.error); if (!on && r.status === 404) { social.blocks = null; render(); } return; }
@@ -118,6 +118,9 @@ async function setBlock(id, name, on) {
   // The button that was pressed is gone; keyboard focus goes to the one that takes its place.
   ($(`[data-act=${on ? 'unblock' : 'block'}][data-id="${id}"]`) || $('#blocks-card h2'))?.focus();
 }
+// What the blocked member is told of a block, and what they may notice: nothing is sent to them, but
+// with follows on they stop following and cannot follow again, which they can see.
+const blockTold = () => flags.follows ? 'They are not told of the block, but they may notice it: you stop following each other, and neither of you can follow the other while it lasts.' : 'They are not told of the block.';
 function blocksCard() {
   if (!flags.community) return '';
   const b = social.blocks;
@@ -128,17 +131,18 @@ function blocksCard() {
       + (b.total > b.blocks.length ? `<p class="tiny" style="margin-top:8px">The ${b.blocks.length} latest of ${b.total.toLocaleString()} blocks are shown. The others hold too.</p>` : '')
     : '<p class="small muted">You have not blocked anyone.</p>';
   return `<div class="card span-2" id="blocks-card"><div class="card-h"><h2 class="grow" tabindex="-1">Blocked accounts</h2>${b?.blocks ? `<span class="sub num">${b.total}</span>` : ''}</div>
-    <p class="small muted" style="margin-bottom:10px">You do not see the posts and comments of people you block, and they do not see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. They are not told of the block. Block someone from their profile.</p>${rows}</div>`;
+    <p class="small muted" style="margin-bottom:10px">You do not see the posts and comments of people you block, and they do not see yours. Neither of you can comment on, reply to or like what the other writes. If they mention you, you are not told. ${blockTold()} Block someone from their profile.</p>${rows}</div>`;
 }
 // Follows, from a profile: the button, the counts under the name and Home change at once, without a
 // reload, and the focus goes to the button that takes the place of the one pressed.
 async function setFollow(id, name, on) {
   const r = await api(`users/${encodeURIComponent(name)}/follow`, on ? 'PUT' : 'DELETE');
   if (!r.ok) { toast(r.error); return; }
-  const pr = social.profile[name];
-  if (pr?.user && pr.followed !== r.data.following) Object.assign(pr, { followed: r.data.following, followers: Math.max(0, (pr.followers || 0) + (r.data.following ? 1 : -1)) });
-  const mine = social.profile[me.username];
-  if (mine?.user && typeof mine.following === 'number') mine.following = Math.max(0, mine.following + (on ? 1 : -1));
+  // The server says whether this changed anything and how many follow them now, so a page that was out
+  // of date (the same follow made in another tab) shows the true count and counts nothing twice.
+  const pr = social.profile[name], mine = social.profile[me.username];
+  if (pr?.user) Object.assign(pr, { followed: r.data.following, followers: r.data.followers });
+  if (r.data.changed && mine?.user && typeof mine.following === 'number') mine.following = Math.max(0, mine.following + (on ? 1 : -1));
   social.follows = null;
   if (social.key === 'home') social.stale = true;
   render(); toast(on ? `You follow @${name}. Their posts show in Home.` : `You no longer follow @${name}.`);

@@ -2509,7 +2509,8 @@ func TestDBFollows(t *testing.T) {
 	}
 
 	// A block removes the follows between the two, both ways, and their follow notifications; neither
-	// can follow the other while it holds, refused as an account that is not there; others keep theirs.
+	// can follow the other while it holds, refused with one sentence that does not say who blocked whom
+	// (acrossBlock); others keep theirs.
 	if rows(anaID, boID) != 1 || rows(boID, anaID) != 1 {
 		t.Fatal("ana and bo do not follow each other before the block")
 	}
@@ -2523,12 +2524,15 @@ func TestDBFollows(t *testing.T) {
 	if rows(cyID, boID) != 1 || rows(modID, boID) != 1 {
 		t.Fatal("the block took someone else's follow")
 	}
-	for _, v := range [][2]string{{ana, "bo"}, {bo, "ana"}} {
-		out := follow(v[0], v[1], 404)
-		if out["error"] != "No such user." {
-			t.Fatalf("a follow across a block is refused in other words: %v", out["_raw"])
+	acrossBlock := func() {
+		t.Helper()
+		for _, v := range [][2]string{{ana, "bo"}, {bo, "ana"}} {
+			if out := follow(v[0], v[1], 403); out["error"] != "You cannot follow this account." {
+				t.Fatalf("a follow across a block is refused in other words: %v", out["_raw"])
+			}
 		}
 	}
+	acrossBlock()
 	unfollow(bo, "ana", 200)
 	if rows(anaID, boID)+rows(boID, anaID) != 0 || told(boID, anaID)+told(anaID, boID) != 0 {
 		t.Fatal("a refused follow wrote a row or told someone")
@@ -2551,7 +2555,40 @@ func TestDBFollows(t *testing.T) {
 	if !has(postIDs(home(mod, "")), many[len(many)-1]) {
 		t.Fatal("the moderator bo blocked does not see bo's posts in Home")
 	}
+	// The other way round, for a member who is not staff: bo blocks ana while ana's follow of bo is in
+	// the table, as a follow written at the same moment as a block can be. Ana's Home shows none of bo's
+	// posts, the refusal is the same sentence, and neither the counts nor the lists show the pair.
 	e.must(200, ana, "DELETE", "/api/users/bo/block", nil)
+	e.must(200, bo, "PUT", "/api/users/ana/block", nil)
+	if rows(anaID, boID) != 0 {
+		t.Fatal("bo's block left ana's follow of him")
+	}
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)`, anaID, boID); err != nil {
+		t.Fatal(err)
+	}
+	if ids := postIDs(home(ana, "")); has(ids, boPost) || has(ids, many[0]) || has(ids, many[len(many)-1]) || len(ids) != 1 {
+		t.Fatalf("Home shows ana bo's posts though bo blocked her: %v", ids)
+	}
+	acrossBlock()
+	for _, v := range []struct {
+		name                 string
+		followers, following int64
+	}{{"bo", 1, 0}, {"ana", 1, 0}} {
+		prof := e.must(200, cy, "GET", "/api/users/"+v.name, nil)
+		if num(prof["followers"]) != v.followers || num(prof["following"]) != v.following {
+			t.Fatalf("across bo's block, %s's counts as cy sees them: %v followers, %v following; want %d, %d", v.name, prof["followers"], prof["following"], v.followers, v.following)
+		}
+	}
+	if got := e.must(200, ana, "GET", "/api/users/bo", nil); got["followed"] != false {
+		t.Fatalf("bo's profile tells ana she follows him across his block: %v", got["_raw"])
+	}
+	if got := e.must(200, bo, "GET", "/api/followers", nil); slices.Contains(names(got, "followers"), "ana") || num(got["total"]) != 1 {
+		t.Fatalf("bo's followers across his block of ana: %v", got["_raw"])
+	}
+	if got := e.must(200, ana, "GET", "/api/following", nil); len(names(got, "following")) != 0 || num(got["total"]) != 0 {
+		t.Fatalf("whom ana follows across bo's block: %v", got["_raw"])
+	}
+	e.must(200, bo, "DELETE", "/api/users/ana/block", nil)
 	follow(bo, "ana", 200)
 	if told(anaID, boID) != 1 {
 		t.Fatal("after the unblock a follow tells again")
@@ -2581,6 +2618,85 @@ func TestDBFollows(t *testing.T) {
 		t.Fatalf("one follow too many: %v", out["_raw"])
 	}
 	follow(mod, "f1", 200)
+}
+
+// Follows sent at the same moment: two identical follows are one row, one notification and two
+// plain answers, never the limit's refusal; and the limit holds when many follows race for its
+// last place, so a member never follows more than maxFollows accounts.
+func TestDBFollowsAtOnce(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("follows", true)
+	anaID, ana := e.user("ana", "user")
+	if _, err := e.a.db.Exec(`INSERT INTO users (username, pw_hash) SELECT 't' || lpad(g::text, 2, '0'), 'x' FROM generate_series(1, 20) g`); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		code int
+		raw  string
+	}
+	at := func(paths []string) []answer {
+		t.Helper()
+		out := make([]answer, len(paths))
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i, p := range paths {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				code, got := e.do(ana, "PUT", p, nil)
+				out[i] = answer{code, got["_raw"].(string)}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		return out
+	}
+	var twice []string
+	for g := 1; g <= 20; g++ {
+		p := fmt.Sprintf("/api/users/t%02d/follow", g)
+		twice = append(twice, p, p)
+	}
+	for _, a := range at(twice) {
+		if a.code != 200 {
+			t.Errorf("a follow sent twice at once: %d %s", a.code, a.raw)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, anaID); n != 20 {
+		t.Fatalf("20 follows sent twice each made %d rows", n)
+	}
+	if n := e.count(`SELECT count(*) FROM notifications WHERE actor_id = $1 AND kind = 'follow'`, anaID); n != 20 {
+		t.Fatalf("20 follows sent twice each told %d times in all, want 20", n)
+	}
+
+	// The last place: ana follows maxFollows - 1 accounts, and 20 follows of others arrive together.
+	if _, err := e.a.db.Exec(`INSERT INTO users (username, pw_hash) SELECT 'f' || g, 'x' FROM generate_series(1, $1::int) g`, maxFollows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.a.db.Exec(`INSERT INTO follows (follower_id, followee_id) SELECT $1, id FROM users WHERE username LIKE 'f%' ORDER BY id LIMIT $2`, anaID, maxFollows-1-20); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, anaID); n != maxFollows-1 {
+		t.Fatalf("ana follows %d before the race, want %d", n, maxFollows-1)
+	}
+	var last []string
+	for _, name := range []string{"f990", "f991", "f992", "f993", "f994", "f995", "f996", "f997", "f998", "f999", "f1000",
+		"f989", "f988", "f987", "f986", "f985", "f984", "f983", "f982", "f981"} {
+		last = append(last, "/api/users/"+name+"/follow")
+	}
+	ok := 0
+	for _, a := range at(last) {
+		switch {
+		case a.code == 200:
+			ok++
+		case a.code == 400 && strings.Contains(a.raw, "Unfollow someone first"):
+		default:
+			t.Errorf("a follow racing for the last place: %d %s", a.code, a.raw)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, anaID); n != maxFollows || ok != 1 {
+		t.Fatalf("after the race ana follows %d accounts with %d follows taken, want %d and 1", n, ok, maxFollows)
+	}
 }
 
 // Every write that opens a transaction, and the social writes beside them, answer on a pool of one
@@ -2644,7 +2760,7 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, ana, "GET", "/api/followers", nil)
 	within(200, ana, "PUT", "/api/users/bo/block", nil)
 	// The block took the follows both ways in its own statement; following across it is refused.
-	within(404, bo, "PUT", "/api/users/ana/follow", nil)
+	within(403, bo, "PUT", "/api/users/ana/follow", nil)
 	// Across the block: the reply's check runs inside its transaction, and is refused there.
 	within(404, bo, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "again", "parentId": r})
 	within(200, ana, "GET", "/api/blocks", nil)

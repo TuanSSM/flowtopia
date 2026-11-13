@@ -5851,7 +5851,8 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *
 	if a.flagsCached()["follows"] {
 		var followers, following int
 		var followed bool
-		if err := a.db.QueryRow(followCountsSQL+`, EXISTS (SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1)`, u.ID, viewer.ID).Scan(&followers, &following, &followed); err != nil {
+		if err := a.db.QueryRow(followCountsSQL+`, EXISTS (SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1) AND `+blockFree("$2", "$1", "false"),
+			u.ID, viewer.ID).Scan(&followers, &following, &followed); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -7585,11 +7586,19 @@ const maxFollows = 1000
 
 // handleFollow follows a member for the one asking; following again changes nothing and is answered
 // the same. Nobody follows themself (400), and a name that is no account is a 404 in the profile
-// route's words. Across a block, whichever blocked whom, it is the same 404, as a like or a comment
-// across one is answered in the words used when the thing is not there, so the refusal does not say
-// who blocked whom. A muted member may follow: a mute stops what they say, not what they read. The
-// one followed is told once, with a follow notification; unfollowing and following again within a
-// day tells them nothing new, and across a block nothing is told at all (notifyAt).
+// route's words. Across a block, whichever blocked whom, the answer is a 403 with the same sentence
+// both ways, "You cannot follow this account.": the account is there (its profile opens), so a 404
+// would be false, and one sentence for both sides does not say who blocked whom. The blocked member
+// can still tell that something stands between them; docs/federation.md says so. A muted member may
+// follow: a mute stops what they say, not what they read. The one followed is told once, with a
+// follow notification; unfollowing and following again within a day tells them nothing new, and
+// across a block nothing is told at all (notifyAt).
+//
+// The follow is written in a short transaction that first locks the follower's row of users, so the
+// follows of one member are written one at a time: a second identical follow sent at the same moment
+// waits, then finds the first one's row and is answered as a repeat, and the limit is counted with
+// every earlier follow of that member in sight, so it is never passed. Everything between Begin and
+// Commit asks the transaction, never a.db (TestDBOneConnection).
 func (a *app) handleFollow(w http.ResponseWriter, r *http.Request, u *user) {
 	w, ok := allowed(w, a.lim.follows, u, "follows")
 	if !ok {
@@ -7599,10 +7608,23 @@ func (a *app) handleFollow(w http.ResponseWriter, r *http.Request, u *user) {
 	if !ok {
 		return
 	}
-	// One statement: the account must still be there, no block may stand between the two, and the
-	// limit holds, all as the row is written. had is whether the follow was there before.
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	// FOR NO KEY UPDATE: it holds back another follow by this member, and nothing that only points at
+	// the row, such as their new post or like.
+	if _, err := tx.Exec(`SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE`, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// The account must still be there and no block may stand between the two as the row is written.
+	// Statements in a READ COMMITTED transaction each see what was committed before they began, so
+	// after the lock this one sees every follow the member made before. had is whether this one was there.
 	var found, free, made, had bool
-	err := a.db.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2),
+	err = tx.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2),
 		ok AS (SELECT id FROM t WHERE `+blockFree("$1::bigint", "t.id", "false")+`),
 		ins AS (INSERT INTO follows (follower_id, followee_id) SELECT $1, id FROM ok
 			WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $3 ON CONFLICT DO NOTHING RETURNING 1)
@@ -7617,12 +7639,19 @@ func (a *app) handleFollow(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
-	if !found || !free {
+	switch {
+	case !found:
 		fail(w, http.StatusNotFound, "No such user.")
 		return
-	}
-	if !made && !had {
+	case !free:
+		fail(w, http.StatusForbidden, "You cannot follow this account.")
+		return
+	case !made && !had:
 		fail(w, http.StatusBadRequest, fmt.Sprintf("You follow %d accounts, the most there can be. Unfollow someone first.", maxFollows))
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
 		return
 	}
 	if made {
@@ -7636,7 +7665,19 @@ func (a *app) handleFollow(w http.ResponseWriter, r *http.Request, u *user) {
 			a.notifyAt(id, u.ID, "follow", 0, 0, "")
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"following": true})
+	a.followAnswer(w, id, true, made)
+}
+
+// followAnswer answers a follow or an unfollow of member id: whether the one asking now follows them,
+// whether this request changed that, and how many follow them now, so a page that was out of date
+// shows the true count and does not count a change twice.
+func (a *app) followAnswer(w http.ResponseWriter, id int64, following, changed bool) {
+	var followers, followed int
+	if err := a.db.QueryRow(followCountsSQL, id).Scan(&followers, &followed); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"following": following, "changed": changed, "followers": followers})
 }
 
 // handleUnfollow takes a follow back. There being no such follow is not an error, and neither is a
@@ -7650,24 +7691,34 @@ func (a *app) handleUnfollow(w http.ResponseWriter, r *http.Request, u *user) {
 	if !ok {
 		return
 	}
-	if _, err := a.db.Exec(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, u.ID, id); err != nil {
+	res, err := a.db.Exec(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, u.ID, id)
+	if err != nil {
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"following": false})
+	n, _ := res.RowsAffected()
+	a.followAnswer(w, id, false, n == 1)
 }
+
+// followShown is the condition that follow f between member $1 and other is shown and counted: no
+// block stands between the two, whichever way. A block removes the follows between them (handleBlock),
+// but a follow written at the same moment as the block can outlast it, and it is left out here as in
+// Home (homeSQL). One look in the primary key of blocks each way per follow.
+func followShown(other string) string { return blockFree("$1", other, "false") }
 
 // followingSQL is the accounts a member follows and followersSQL those who follow them, the latest
 // first ($1 the member, $2 how many). Like blockListSQL, the rows of follows are chosen first through
 // the primary key or follows_followee, and only the accounts shown are read.
-const followingSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT followee_id AS id, created_at FROM follows WHERE follower_id = $1
-	ORDER BY created_at DESC, followee_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
+var followingSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT f.followee_id AS id, f.created_at FROM follows f WHERE f.follower_id = $1
+	AND ` + followShown("f.followee_id") + ` ORDER BY f.created_at DESC, f.followee_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
 
-const followersSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT follower_id AS id, created_at FROM follows WHERE followee_id = $1
-	ORDER BY created_at DESC, follower_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
+var followersSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT f.follower_id AS id, f.created_at FROM follows f WHERE f.followee_id = $1
+	AND ` + followShown("f.follower_id") + ` ORDER BY f.created_at DESC, f.follower_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
 
-// followCountsSQL is how many follow member $1 and how many they follow: one count in an index each.
-const followCountsSQL = `SELECT (SELECT count(*) FROM follows WHERE followee_id = $1), (SELECT count(*) FROM follows WHERE follower_id = $1)`
+// followCountsSQL is how many follow member $1 and how many they follow: the rows of one index each,
+// with followShown asked of each.
+var followCountsSQL = `SELECT (SELECT count(*) FROM follows f WHERE f.followee_id = $1 AND ` + followShown("f.follower_id") + `),
+	(SELECT count(*) FROM follows f WHERE f.follower_id = $1 AND ` + followShown("f.followee_id") + `)`
 
 // maxFollowList is how many accounts each list shows, the latest; the counts say how many there are.
 const maxFollowList = 500

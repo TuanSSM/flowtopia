@@ -1285,7 +1285,11 @@ CREATE UNIQUE INDEX ap_keys_instance ON ap_keys ((user_id IS NULL)) WHERE user_i
 -- migration of that item (FWR 3), state defaulting to 'accepted' for the local rows already there. The
 -- index for "who follows me" is (followee_id, follower_id) for now; state joins it then. Nobody follows
 -- themself (follows_not_self). A block removes the follows between the two, both ways, in the block's
--- own statement, and a follow across a block is refused as a name that is no account (404).
+-- own statement, and a follow across a block is refused, either way, with a 403 and one sentence ("You
+-- cannot follow this account.") that does not say who blocked whom. It is not a 404: the profile still
+-- opens, so "no such user" would be false. The blocked member is not told of the block but can notice
+-- it (they stop following and cannot follow again), as on Mastodon; the page says so before a block.
+-- Counts, lists and Home leave out a follow across a block that was written at the same moment as it.
 CREATE TABLE follows (
   follower_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   followee_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1556,8 +1560,10 @@ keyword filters.
   remote likes count with local ones; notifications for follows, follow requests, mentions, replies,
   likes and shares.
 - **Blocks:** a member blocks an account or a domain; blocked content disappears for them, and the
-  blocked account cannot follow, reply or like (refused in the inbox). Blocking a domain also removes
-  the member's followers there, as Mastodon's "Hiding an entire server" does.
+  blocked account cannot follow, reply or like (refused in the inbox). The blocked account is not
+  told, but it can notice: its follow ends and a new one is refused (locally with "You cannot follow
+  this account.", the same words whoever blocked whom). Blocking a domain also removes the member's
+  followers there, as Mastodon's "Hiding an entire server" does.
 - **The handle on the profile:** `@ana@flowa.example.org`, with a copy button, when the member
   federates.
 - **Privacy defaults:** opt-in off, `discoverable` and `indexable` off, followers and following lists hidden,

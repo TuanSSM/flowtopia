@@ -46,7 +46,8 @@ named but not described.
 - **Blocks:** Block on a member's profile, after a question that says what it does. Neither of you then
   sees the other's posts and comments, in the timeline, on profiles, in threads, in the people list or
   in bookmarks, and neither can comment on, reply to or like what the other writes: those are answered
-  as if the post or comment were not there, and nobody is told of the block. If they mention you, the
+  as if the post or comment were not there, and nobody is told of the block, though the other member
+  may notice it. If they mention you, the
   mention is kept and others see it, but you are not told. Notifications between the two go with the
   block. Their comments from before the block stay under your posts for everyone else; you no longer
   see them, and a moderator can remove them if they should go. Either of you can still take back a
@@ -58,7 +59,9 @@ named but not described.
   and your own, newest first, hidden posts and blocks treated as in Community. Every profile shows how
   many follow it and how many it follows; who they are is listed only on your own profile, to you. The
   member you follow is told once a day at most. A block removes the follows between the two, both ways,
-  and neither can follow the other while it holds. One member follows at most 1,000 accounts.
+  and neither can follow the other while it holds: Follow then answers "You cannot follow this
+  account." to both, whoever blocked whom. The blocked member is not told of the block, but can notice
+  it this way, as on Mastodon; the block question says so. One member follows at most 1,000 accounts.
 - **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions, follows and new
   badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
@@ -470,8 +473,9 @@ comments, each with its two newest replies), `POST /api/posts/{id}/comments` (wi
 the profile; both may be sent again, blocking oneself is a 400 and a name that is no account a 404),
 `GET /api/blocks` (the 500 latest blocks of the one asking, and how many there are; `GET /api/users/{name}`
 says `blocked` when you block them). With the `follows` flag on: `PUT|DELETE /api/users/{name}/follow`
-(follow and unfollow, by username, both may be sent again; following oneself is a 400, a name that is no
-account or a member across a block a 404), `GET /api/home?before=` (Home, in the shape of
+(follow and unfollow, by username, both may be sent again and answer whether this one changed anything
+and the member's follower count; following oneself is a 400, a name that is no account a 404, a member
+across a block, either way, a 403), `GET /api/home?before=` (Home, in the shape of
 `GET /api/posts`), `GET /api/following` and `GET /api/followers` (the 500 latest of the one asking, and
 how many; nobody else's lists can be read), and `GET /api/users/{name}` adds `followers`, `following`
 and `followed`. The like toggles always take back one's own like, across a block too;
