@@ -4267,7 +4267,10 @@ type fetchRule struct {
 // application/json, NodeInfo only that (federation.md 7.5). Link cards keep their caller's
 // allowlist and cap (fetcher.get), their 3 s and their redirect rule, and check no type, as before.
 // Sizes: 1 MB a document, 64 KB a WebFinger or NodeInfo answer (a few KB in practice), 8 MB a
-// picture, and 4 KB read and dropped of a delivery's reply.
+// picture, and 4 KB read and dropped of a delivery's reply. The fetcher allows one request at a time
+// to one host and sets no limit across different hosts: N pictures at once can hold 8 MB times N.
+// Callers bound their own concurrency, as the delivery queue and the picture cache do with their
+// budgets in federation.md section 12.
 var fetchRules = [fetchKinds]fetchRule{
 	// method, accept, ctype, timeout, limit, types, ok, redirect, fed, signed, keep
 	fetchPreview:   {"GET", "", "", fetchTimeout, 0, nil, []int{200}, redirectPreview, false, false, true},
@@ -4322,6 +4325,7 @@ const (
 	failNotFound                      // 404
 	failStatus                        // another status; Status and RetryAfter say which and when to ask again
 	failRedirect                      // a redirect the kind does not follow, or too many
+	failBusy                          // no turn at the host within the kind's time: this server's own queue, not the host's fault; ask again later
 )
 
 // fetchError is every error fetcher.do returns. Reason is short and safe to log: it never holds a
@@ -4364,6 +4368,10 @@ type fetcher struct {
 	origin       publicOrigin         // this instance, in a mode that federates: never asked unless a request says so
 	version      string               // in the User-Agent
 	over         *dialOverride        // tests only
+	// deny are more address ranges never dialled, beside reservedNets: the instance's own public
+	// address and the router's, which a stranger's name can point at and which look public to the
+	// guard. Empty until the federation settings item lets an operator list them.
+	deny []netip.Prefix
 	// dials counts the connections this fetcher tried to open: allowed, refused, or to a name that
 	// did not resolve. Nothing reads it while the server runs; TestDBLocalModeUnchanged holds it at
 	// zero through a start.
@@ -4392,7 +4400,8 @@ func hostAllowed(host string, list []string) bool {
 // shared address space (carrier-grade NAT and VPNs), IETF protocol assignments, benchmarking,
 // documentation, "this network", the reserved class E block, the deprecated 6to4 relay and site-local
 // ranges, discard-only, and the IPv6 ranges that carry an IPv4 address inside (IPv4-compatible,
-// IPv4-translated, NAT64, 6to4 and Teredo), each of which can lead back to a private IPv4.
+// IPv4-translated, NAT64, 6to4 and Teredo), each of which can lead back to a private IPv4, and the
+// IPv6 blocks that are never routed on the internet (ORCHID, SRv6 segment ids).
 // IPv4-mapped addresses (::ffff:a.b.c.d) need no row: net.IP checks them as the IPv4 they carry.
 var reservedNets = func() []*net.IPNet {
 	out := []*net.IPNet{}
@@ -4401,6 +4410,7 @@ var reservedNets = func() []*net.IPNet {
 		"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "192.88.99.0/24", // documentation, 6to4 relay
 		"::/96", "::ffff:0:0:0/96", "2002::/16", "2001::/32", // IPv4-compatible, IPv4-translated, 6to4, Teredo
 		"2001:db8::/32", "3fff::/20", "2001:2::/48", "100::/64", "fec0::/10", // documentation, benchmarking, discard, site-local
+		"2001:10::/28", "2001:20::/28", "5f00::/16", // ORCHID and ORCHIDv2 (never routed), SRv6 segment ids
 	} {
 		_, n, _ := net.ParseCIDR(c)
 		out = append(out, n)
@@ -4426,7 +4436,8 @@ func publicIP(ip net.IP) bool {
 // a private one to the dial, because there is no earlier check: this is the only one. A pooled
 // connection was dialled through it too, and is reused only for the same scheme, host and port.
 // Only port 443 is dialled; the link card stub (allowPrivate) and a test's stub are the exceptions.
-func dialGuard(address string, allowPrivate bool, over *dialOverride) error {
+// deny is the fetcher's own list of ranges never dialled (fetcher.deny), whatever allowPrivate says.
+func dialGuard(address string, allowPrivate bool, over *dialOverride, deny []netip.Prefix) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
@@ -4434,8 +4445,17 @@ func dialGuard(address string, allowPrivate bool, over *dialOverride) error {
 	if over != nil && address == over.stub {
 		return nil
 	}
-	if ip := net.ParseIP(host); ip == nil || (!allowPrivate && !publicIP(ip)) {
+	ip := net.ParseIP(host)
+	if ip == nil || (!allowPrivate && !publicIP(ip)) {
 		return &addrRefused{host}
+	}
+	if a, ok := netip.AddrFromSlice(ip); ok {
+		a = a.Unmap()
+		for _, p := range deny {
+			if p.Contains(a) {
+				return &addrRefused{host}
+			}
+		}
 	}
 	if !allowPrivate && port != "443" {
 		return &addrRefused{"port " + port}
@@ -4446,7 +4466,7 @@ func dialGuard(address string, allowPrivate bool, over *dialOverride) error {
 func newFetcher(base string, allowPrivate bool) *fetcher {
 	f := &fetcher{base: strings.TrimRight(base, "/"), allowPrivate: allowPrivate, busy: map[string]*hostSlot{}, version: buildVersion}
 	dialer := &net.Dialer{Timeout: dialTimeout, Control: func(network, address string, _ syscall.RawConn) error {
-		return dialGuard(address, allowPrivate, f.over)
+		return dialGuard(address, allowPrivate, f.over, f.deny)
 	}}
 	// Counted before the name is looked up: a fetch to a name that does not resolve asked a name
 	// server, and that is a connection to another machine too.
@@ -4536,7 +4556,7 @@ func fedHost(host string) (string, string) {
 
 // check says why a URL may not be asked for a kind, or "" when it may. It runs on the first URL and
 // on every redirect.
-func (f *fetcher) check(rule *fetchRule, r *fetchReq, u *url.URL) string {
+func (f *fetcher) check(rule *fetchRule, r *fetchReq, refused []string, u *url.URL) string {
 	if !rule.fed {
 		if u.Scheme != "https" || !hostAllowed(u.Hostname(), r.allow) {
 			return "not an allowed URL"
@@ -4556,10 +4576,6 @@ func (f *fetcher) check(rule *fetchRule, r *fetchReq, u *url.URL) string {
 	if why != "" {
 		return why
 	}
-	refused := make([]string, 0, len(r.refused))
-	for _, h := range r.refused {
-		refused = append(refused, strings.TrimSuffix(strings.ToLower(h), "."))
-	}
 	if hostAllowed(host, refused) {
 		return "a refused host"
 	}
@@ -4568,6 +4584,28 @@ func (f *fetcher) check(rule *fetchRule, r *fetchReq, u *url.URL) string {
 	}
 	return ""
 }
+
+// refusedHosts builds the refused set from a domain policy's list: each entry lower case without a
+// trailing dot, matched with its subdomains. An entry that is not a plain ASCII DNS name is an error,
+// and the request is refused: the standard library cannot turn bücher.example into the
+// xn--bcher-kva.example a URL carries (golang.org/x/net/idna is not a dependency), so a list in
+// Unicode would let that very host through. Whatever stores the list (FMD's admin page) must store
+// the xn-- form.
+func refusedHosts(list []string) ([]string, error) {
+	out := make([]string, 0, len(list))
+	for _, h := range list {
+		n := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+		if n == "" || len(n) > 253 || strings.Trim(n, "abcdefghijklmnopqrstuvwxyz0123456789.-") != "" || strings.Contains(n, "..") || strings.HasPrefix(n, ".") {
+			return nil, errors.New("a refused host that is not a plain ASCII DNS name (write a name in another script in its xn-- form)")
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// slotKey is the name a host's turn is kept under: lower case, without a trailing dot, so
+// victim.example and VICTIM.example. wait for the same turn.
+func slotKey(host string) string { return strings.TrimSuffix(strings.ToLower(host), ".") }
 
 // originOf is a URL's origin, compared whole: scheme, host and port, the default port written out.
 func originOf(u *url.URL) string {
@@ -4631,6 +4669,22 @@ func (f *fetcher) acquire(ctx context.Context, host string) (func(), error) {
 	}
 }
 
+// turn waits for a turn at host while wait allows, and tells why it got none: the caller gave up
+// (parent cancelled or past its own deadline), or the host stayed busy with this server's other
+// requests (failBusy, which the delivery queue retries like any temporary failure).
+func (f *fetcher) turn(wait, parent context.Context, host string, rule *fetchRule) (func(), error) {
+	release, err := f.acquire(wait, host)
+	switch {
+	case err == nil:
+		return release, nil
+	case errors.Is(parent.Err(), context.Canceled):
+		return nil, &fetchError{Fail: failCanceled, Host: host, Reason: "canceled", err: parent.Err()}
+	case parent.Err() != nil:
+		return nil, &fetchError{Fail: failTimeout, Host: host, Reason: "timed out", err: context.DeadlineExceeded}
+	}
+	return nil, &fetchError{Fail: failBusy, Host: host, Reason: fmt.Sprintf("no turn at %s within %v", host, rule.timeout), err: err}
+}
+
 // do sends one request as its kind allows and returns the answer, or a *fetchError. What it
 // guarantees, for every kind: the URL and every redirect checked before anything is dialled, every
 // address checked by the dialer, one deadline over the whole request, the answer's status and type
@@ -4651,8 +4705,12 @@ func (f *fetcher) do(ctx context.Context, r fetchReq) (*fetchResult, error) {
 	if err != nil {
 		return refuse("", "not a URL")
 	}
-	host := strings.ToLower(u.Hostname())
-	if why := f.check(rule, &r, u); why != "" {
+	host := slotKey(u.Hostname())
+	refused, err := refusedHosts(r.refused)
+	if err != nil {
+		return refuse(host, err.Error())
+	}
+	if why := f.check(rule, &r, refused, u); why != "" {
 		return refuse(host, why)
 	}
 	switch {
@@ -4681,14 +4739,34 @@ func (f *fetcher) do(ctx context.Context, r fetchReq) (*fetchResult, error) {
 		}
 	}
 
-	release, err := f.acquire(ctx, host)
-	if err != nil {
-		return nil, f.failure(ctx, ctx, host, err)
-	}
-	defer release()
+	// One request at a time per host, counted at the host each request is actually sent to: the turn
+	// moves with a redirect to another host, and only one turn is held at once, so two requests
+	// redirected across each other cannot wait on each other. The first wait is capped at the kind's
+	// time, and the kind's deadline starts once the turn is had, as link cards always did.
 	parent := ctx
-	ctx, cancel := context.WithTimeout(ctx, rule.timeout)
+	wait, stop := context.WithTimeout(parent, rule.timeout)
+	release, err := f.turn(wait, parent, host, rule)
+	stop()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { release() }()
+	ctx, cancel := context.WithTimeout(parent, rule.timeout)
 	defer cancel()
+	// moveTo hands the turn over to the host a redirect leads to, within what is left of the deadline.
+	moveTo := func(to string) error {
+		if to = slotKey(to); to == host {
+			return nil
+		}
+		release()
+		release = func() {}
+		next, err := f.turn(ctx, parent, to, rule)
+		if err != nil {
+			return err
+		}
+		release, host = next, to
+		return nil
+	}
 
 	for hops := 0; ; hops++ {
 		resp, err := f.send(ctx, rule, &r, wire)
@@ -4714,26 +4792,34 @@ func (f *fetcher) do(ctx context.Context, r fetchReq) (*fetchResult, error) {
 			return refuse(host, "a redirect to something that is not a URL")
 		}
 		if rule.redirect == redirectPreview {
-			// Link cards, unchanged: in a test the redirect stays on the stub and names an allowed host
-			// as its first segment.
+			// Link cards: to any preview or thumbnail host, over https. In a test the redirect stays on
+			// the stub (whose base is http) and names an allowed host as its first segment.
 			to := next.Hostname()
 			if f.base != "" {
 				if !strings.HasPrefix(next.String(), f.base+"/") {
 					return refuse(host, "redirect off the stub refused")
 				}
 				to, _, _ = strings.Cut(strings.TrimPrefix(next.Path, "/"), "/")
+			} else if next.Scheme != "https" {
+				return refuse(host, "redirect to not https refused")
 			}
 			if !hostAllowed(to, append(append([]string{}, previewHosts...), thumbHosts...)) {
 				return refuse(host, fmt.Sprintf("redirect to %s refused", to))
 			}
+			if err := moveTo(to); err != nil {
+				return nil, err
+			}
 			wire = next
 			continue
 		}
-		if why := f.check(rule, &r, next); why != "" {
+		if why := f.check(rule, &r, refused, next); why != "" {
 			return refuse(host, "redirect to "+why)
 		}
 		if rule.redirect == redirectSameOrigin && originOf(next) != originOf(wire) {
 			return nil, &fetchError{Fail: failRedirect, Host: host, Reason: "a redirect to another origin"}
+		}
+		if err := moveTo(next.Hostname()); err != nil {
+			return nil, err
 		}
 		wire = next
 	}

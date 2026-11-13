@@ -43,8 +43,9 @@ design note says it exists.
   Built: `fetchRules`, one row per kind (link card, document, WebFinger, NodeInfo, picture, delivery) with
   its method, headers, deadline, size, answer types, statuses and redirect rule; `fetcher.get` a thin caller
   for link cards; a typed `signer` hook run on every request sent; `fetchError` with the failure kinds later
-  items decide by; `sameID` for the id check of federation.md 7.3; per-host slots that wait on the caller's
-  context and are dropped when idle; `reservedNets` with 6to4, Teredo and the ranges federation.md 7.8 lists.
+  items decide by; `sameID` for the id check of federation.md 7.3; one turn per host, taken where each request
+  lands after redirects, the wait capped at the kind's time (`failBusy`), dropped when idle;
+  `refusedHosts`, which takes only ASCII names; `fetcher.deny`, the hook for the instance's own addresses; `reservedNets` with 6to4, Teredo and the ranges federation.md 7.8 lists.
   `TestFederationFetcherRefusals` and its neighbours, `TestDialGuard`, `TestSameID` and
   `TestPublicIPReserved` pass; `TestFetcherLookups` and `TestFetcherRefusals` are unedited (the latter
   needs IPv6 on the machine for its `[::1]` line, which CI has). `BenchmarkFetchDocument` on the CI-class

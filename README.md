@@ -444,7 +444,14 @@ federation is built, every request to another server goes through it, and these 
 - Time and size per request, the body included: 5 s and 1 MB for a document, 5 s for a delivery, 10 s and
   8 MB for a picture. The answer's type is checked before its body is read, and an answer over its size is
   refused, never cut, also when it arrives compressed.
-- One request at a time to one server; at least TLS 1.2, with the certificate checked.
+- One request at a time to one server, counted where each request lands after redirects; a request that
+  cannot have its turn within its time fails and is tried again later. At least TLS 1.2, with the
+  certificate checked.
+- **What it cannot see:** "this instance's own name" is checked by name. A stranger's name that points at
+  the instance's own public address, or at your router's internet address, looks like any public server,
+  and the request comes back in through the router. Until a later item lets you list those addresses for
+  the fetcher to refuse, add a firewall rule on the router that drops connections from the Pi to the
+  router's own internet address.
 
 Behind a reverse proxy (nginx, Caddy, Traefik, a Cloudflare tunnel), every connection comes from the
 proxy, so the sign-in and sign-up limits need each visitor's own address. Flowa reads it from
@@ -643,7 +650,8 @@ short links (`vm.`, `vt.`, `/t/`), and YouTube videos, shorts, live and `youtu.b
 canonical form without tracking parameters. Anything else is refused.
 
 Previews are fetched in the background after a post is made, so posting never waits for another site. The
-fetcher only talks to those sites and their image hosts, follows redirects only between them, refuses private
+fetcher only talks to those sites and their image hosts, follows redirects only between them and only over
+https, refuses private
 and loopback addresses and any port but 443, gives up after 3 s, and reads at most 256 KB of an answer and 2 MB of a picture. Short
 links are followed to their video. A preview is fetched once per link and refreshed at most weekly; a failure
 leaves a plain card with the site's name and the link. Instagram answers without a login only sometimes, so

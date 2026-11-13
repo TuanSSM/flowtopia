@@ -98,7 +98,9 @@ func TestPublicIPReserved(t *testing.T) {
 		// The other ranges a careful guard refuses: mapped, compatible and translated IPv4, NAT64's
 		// local prefix, documentation and benchmarking, multicast, site-local, discard-only.
 		"::ffff:127.0.0.1", "::ffff:10.1.2.3", "::127.0.0.1", "::ffff:0:a00:1", "64:ff9b:1::a00:1", "192.0.2.1", "198.51.100.7",
-		"203.0.113.9", "192.88.99.1", "2001:db8::1", "3fff::1", "2001:2::1", "224.0.0.1", "ff0e::1", "fec0::1", "100::1", "::", "0.0.0.0", "255.255.255.255", "fe80::1"} {
+		"203.0.113.9", "192.88.99.1", "2001:db8::1", "3fff::1", "2001:2::1", "224.0.0.1", "ff0e::1", "fec0::1", "100::1", "::", "0.0.0.0", "255.255.255.255", "fe80::1",
+		// Never routed: ORCHID, ORCHIDv2, SRv6 segment ids.
+		"2001:10::1", "2001:1f:ffff::1", "2001:20::1", "2001:2f::1", "5f00::1", "5f00:ffff::1"} {
 		if publicIP(net.ParseIP(s)) {
 			t.Errorf("%s is not public", s)
 		}

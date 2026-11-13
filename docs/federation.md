@@ -1143,7 +1143,8 @@ Every outbound request goes through one fetcher (`fetcher.do`, **new**, generali
   NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`) and IPv4-mapped addresses (`::ffff:a.b.c.d`, checked as the IPv4
   they carry); added with 6to4 and Teredo were IPv4-compatible (`::/96`) and IPv4-translated
   (`::ffff:0:0:0/96`) addresses, the documentation ranges (`192.0.2.0/24`, `198.51.100.0/24`,
-  `203.0.113.0/24`, `2001:db8::/32`, `3fff::/20`), IPv6 benchmarking (`2001:2::/48`), the old 6to4 relay
+  `203.0.113.0/24`, `2001:db8::/32`, `3fff::/20`), IPv6 benchmarking (`2001:2::/48`), the never-routed ORCHID (`2001:10::/28`, `2001:20::/28`) and SRv6
+  segment id (`5f00::/16`) blocks, the old 6to4 relay
   (`192.88.99.0/24`), discard-only (`100::/64`) and site-local (`fec0::/10`). The guard runs in the dialer's
   `Control` function on the address being connected, for each address of a DNS answer and each redirect,
   so a name cannot answer one address to a check and another to the dial: there is no earlier check.
@@ -1154,8 +1155,25 @@ Every outbound request goes through one fetcher (`fetcher.do`, **new**, generali
   ASCII letters, digits, dots and dashes (Go would turn another script into its `xn--` form after the refused
   list was compared), no user name, no URL over 2,048 bytes, and never the instance's own origin unless the
   caller says so. Until FMD's domain policies exist, the caller passes the refused hosts (each with its
-  subdomains, any case, a trailing dot ignored). The link card stub (`FLOWA_PREVIEW_BASE`) refuses every
-  federation request, since it lets private addresses through.
+  subdomains, any case, a trailing dot ignored). **A refused host must be written in ASCII**: a name in
+  another script is stored in its `xn--` form, because the standard library cannot convert
+  `bücher.example` to the `xn--bcher-kva.example` a URL carries; a list with any other entry makes every
+  request refused (`refusedHosts`), so FMD's admin page must convert or refuse such a name when it is
+  saved. The link card stub (`FLOWA_PREVIEW_BASE`) refuses every federation request, since it lets
+  private addresses through.
+- **The own-origin rule is by name only.** A stranger's name whose DNS points at the instance's own
+  public address, or at the home router's WAN address, passes every check: the address is public, so
+  the dial guard lets it through, and the request comes back in to this server or to the router. What an
+  operator can do now: a firewall rule on the router that drops connections from the Pi to its own WAN
+  address (most routers' hairpin NAT is what makes this reach in). The fetcher already has the hook for
+  the rest (`fetcher.deny`, address prefixes refused beside `reservedNets`, empty by default); the
+  federation settings item gives it a setting where the operator lists the instance's own addresses.
+- One request at a time per host is counted at the host each request is actually sent to, the name
+  lower case and without a trailing dot: a redirect hands the request's turn over to the new host (one
+  turn held at a time, so requests redirected across each other cannot wait on each other). Waiting for a
+  turn lasts at most the kind's time, then fails as busy (`failBusy`, this server's queue, retried like
+  any temporary failure). There is no limit across different hosts: callers bound their own concurrency
+  (the delivery queue and the picture cache have their budgets in section 12).
 - Hosts: the preview allowlist for link cards as today; for federation any host the domain policy
   allows (section 10). Only `https`.
 - Redirects: at most 3, each re-checked against the scheme, the policy and the dial guard; a redirect
@@ -1446,7 +1464,7 @@ CREATE TABLE ap_hosts (
 
 -- the admin's policy per domain
 CREATE TABLE domain_policies (
-  domain TEXT PRIMARY KEY,
+  domain TEXT PRIMARY KEY,             -- plain ASCII, lower case, a name in another script in its xn-- form (7.8)
   policy TEXT NOT NULL CHECK (policy IN ('allow', 'limit', 'suspend')),
   reject_media BOOLEAN NOT NULL DEFAULT false,
   reject_reports BOOLEAN NOT NULL DEFAULT false,

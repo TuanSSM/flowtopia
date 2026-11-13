@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"runtime"
 	"strings"
@@ -31,7 +32,7 @@ import (
 )
 
 // stubNames are the names the stub's certificate covers and the override resolves to it.
-var stubNames = []string{"remote.example", "other.example", "flowa.example", "blocked.example", "sub.blocked.example", "xn--bcher-kva.example", "pics.example", "mixed.example"}
+var stubNames = []string{"remote.example", "other.example", "flowa.example", "blocked.example", "sub.blocked.example", "xn--bcher-kva.example", "pics.example", "mixed.example", "www.youtube.com", "victim.example", "a.example", "b.example", "c.example"}
 
 // stubCert is a self-signed certificate for stubNames, made once for the whole run.
 var stubCert = sync.OnceValues(func() (tls.Certificate, *x509.CertPool) {
@@ -76,6 +77,8 @@ func fedStub(t testing.TB, h http.Handler) (*fetcher, *httptest.Server) {
 			return []string{"10.0.0.1:443"}
 		case "mixed.example":
 			return []string{"10.0.0.1:443", stub}
+		case "own.example": // a stranger's name pointing at the instance's own public address
+			return []string{"93.184.216.34:443"}
 		case "port.example":
 			return []string{"93.184.216.34:8443"}
 		}
@@ -132,6 +135,9 @@ func fedHandler() http.Handler {
 	mux.HandleFunc("remote.example/r/ip", redirect("https://127.0.0.1/users/ana"))
 	mux.HandleFunc("remote.example/r/self", redirect("https://flowa.example/actor"))
 	mux.HandleFunc("remote.example/r/loop", redirect("/r/loop"))
+	mux.HandleFunc("www.youtube.com/r/http443", redirect("http://www.youtube.com:443/watch"))
+	mux.HandleFunc("www.youtube.com/r/https", redirect("https://www.youtube.com/watch"))
+	mux.HandleFunc("www.youtube.com/watch", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("<html></html>")) })
 	mux.HandleFunc("remote.example/.well-known/webfinger", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://other.example/.well-known/webfinger?"+r.URL.RawQuery, http.StatusMovedPermanently)
 	})
@@ -246,6 +252,8 @@ func TestFederationFetcherRefusals(t *testing.T) {
 		reason string    // part of the reason, for a failure
 		unsent bool      // refused before any connection was tried
 		self   bool
+		allow  []string // a link card's allowlist
+		list   []string // a refused list other than the usual one
 		check  func(t *testing.T, r *fetchResult)
 	}
 	idIs := func(want bool) func(t *testing.T, r *fetchResult) {
@@ -292,6 +300,12 @@ func TestFederationFetcherRefusals(t *testing.T) {
 		{name: "a redirect to the own origin", kind: fetchWebFinger, url: "https://remote.example/r/self", fail: failRefused, reason: "redirect to this instance's own origin"},
 		{name: "a document redirected to another origin", kind: fetchDocument, url: "https://remote.example/r/other", fail: failRedirect, reason: "another origin"},
 		{name: "a picture redirected to another origin", kind: fetchPicture, url: "https://remote.example/r/other", fail: failType},
+		{name: "a link card redirected to http on port 443", kind: fetchPreview, allow: previewHosts, url: "https://www.youtube.com/r/http443", fail: failRefused, reason: "redirect to not https"},
+		{name: "a link card redirected over https", kind: fetchPreview, allow: previewHosts, url: "https://www.youtube.com/r/https", check: func(t *testing.T, r *fetchResult) {
+			if r.URL.String() != "https://www.youtube.com/watch" || string(r.Body) != "<html></html>" {
+				t.Errorf("final %s, %q", r.URL, r.Body)
+			}
+		}},
 		{name: "too many redirects", kind: fetchDocument, url: "https://remote.example/r/loop", fail: failRedirect, reason: "too many"},
 
 		// The first URL.
@@ -302,6 +316,8 @@ func TestFederationFetcherRefusals(t *testing.T) {
 		{name: "a refused host in capitals with a trailing dot", kind: fetchDocument, url: "https://BLOCKED.example./users/ana", fail: failRefused, reason: "refused host", unsent: true},
 		{name: "a subdomain of a refused host", kind: fetchDocument, url: "https://sub.blocked.example/users/ana", fail: failRefused, reason: "refused host", unsent: true},
 		{name: "a refused xn-- host", kind: fetchDocument, url: "https://xn--bcher-kva.example/", fail: failRefused, reason: "refused host", unsent: true},
+		{name: "a subdomain of a refused xn-- host", kind: fetchDocument, url: "https://sub.xn--bcher-kva.example/", fail: failRefused, reason: "refused host", unsent: true},
+		{name: "a refused list written in Unicode", kind: fetchDocument, list: []string{"bücher.example"}, url: "https://xn--bcher-kva.example/users/ana", fail: failRefused, reason: "plain ASCII", unsent: true},
 		{name: "the same host in Unicode", kind: fetchDocument, url: "https://bücher.example/", fail: failRefused, reason: "not a plain DNS name", unsent: true},
 		{name: "the own origin", kind: fetchDocument, url: "https://flowa.example/actor", fail: failRefused, reason: "own origin", unsent: true},
 		{name: "the own origin in capitals", kind: fetchDocument, url: "https://FLOWA.example./actor", fail: failRefused, reason: "own origin", unsent: true},
@@ -334,7 +350,14 @@ func TestFederationFetcherRefusals(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			before := f.dials.Load()
-			res, err := f.do(context.Background(), fetchReq{kind: c.kind, url: c.url, refused: refused, self: c.self})
+			req := fetchReq{kind: c.kind, url: c.url, refused: refused, self: c.self}
+			if c.list != nil {
+				req.refused = c.list
+			}
+			if c.allow != nil {
+				req.refused, req.allow, req.limit = nil, c.allow, maxMeta
+			}
+			res, err := f.do(context.Background(), req)
 			if c.fail == 0 {
 				if err != nil {
 					t.Fatalf("refused: %v", err)
@@ -369,6 +392,7 @@ func TestFederationFetcherRefusals(t *testing.T) {
 
 // A slow body is cut at the kind's deadline: the clock covers the body, not only the headers.
 func TestFederationFetcherSlowBody(t *testing.T) {
+	t.Parallel() // 5 s of waiting, beside the other such test
 	f, _ := fedStub(t, fedHandler())
 	start := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -616,15 +640,30 @@ func TestDialGuard(t *testing.T) {
 		"not-an-address:443":           false,
 		"[::ffff:169.254.169.254]:443": false,
 	} {
-		err := dialGuard(addr, false, nil)
+		err := dialGuard(addr, false, nil, nil)
 		var ar *addrRefused
 		if ok && err != nil || !ok && !errors.As(err, &ar) {
 			t.Errorf("%s: %v, want allowed %v", addr, err, ok)
 		}
 	}
+	// The fetcher's own list of refused ranges (the instance's public address): an address in it is
+	// refused in either IPv4 form and even where private addresses are let through; others are not.
+	deny := []netip.Prefix{netip.MustParsePrefix("93.184.216.0/24"), netip.MustParsePrefix("2606:4700:10::/48")}
+	for addr, ok := range map[string]bool{
+		"93.184.216.34:443": false, "[::ffff:93.184.216.34]:443": false, "[2606:4700:10::6]:443": false,
+		"93.184.217.1:443": true, "[2606:4700::1]:443": true,
+	} {
+		var ar *addrRefused
+		if err := dialGuard(addr, false, nil, deny); ok && err != nil || !ok && !errors.As(err, &ar) {
+			t.Errorf("%s with the deny list: %v, want allowed %v", addr, err, ok)
+		}
+	}
+	if dialGuard("93.184.216.34:8080", true, nil, deny) == nil {
+		t.Error("the deny list does not hold where private addresses are let through")
+	}
 	// Only the exact stub address passes the test override, and only with it.
 	over := &dialOverride{stub: "127.0.0.1:41234"}
-	if dialGuard("127.0.0.1:41234", false, over) != nil || dialGuard("127.0.0.1:41235", false, over) == nil || dialGuard("127.0.0.1:41234", false, nil) == nil {
+	if dialGuard("127.0.0.1:41234", false, over, nil) != nil || dialGuard("127.0.0.1:41235", false, over, nil) == nil || dialGuard("127.0.0.1:41234", false, nil, nil) == nil {
 		t.Error("the override lets through more or less than its stub")
 	}
 }
@@ -751,6 +790,156 @@ func BenchmarkFetchDocument(b *testing.B) {
 	for b.Loop() {
 		if _, err := f.do(ctx, fetchReq{kind: fetchDocument, url: "https://remote.example/users/ana", refused: []string{"blocked.example"}}); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// peak counts requests in flight and remembers the most at once.
+type peak struct{ now, most atomic.Int32 }
+
+func (p *peak) in() {
+	n := p.now.Add(1)
+	for m := p.most.Load(); n > m && !p.most.CompareAndSwap(m, n); m = p.most.Load() {
+	}
+}
+func (p *peak) out() { p.now.Add(-1) }
+
+// The turn at a host is taken where each request is actually sent: redirects from other hosts and the
+// same name with a trailing dot or in capitals wait for victim.example's one turn too. (Found in review:
+// with the turn kept at the first host only, five requests reached victim.example at once.)
+func TestFederationFetcherTurnFollowsRedirect(t *testing.T) {
+	var victim peak
+	inner := fedHandler()
+	f, _ := fedStub(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimSuffix(strings.ToLower(r.Host), ".") {
+		case "a.example", "b.example", "c.example":
+			http.Redirect(w, r, "https://victim.example/.well-known/webfinger", http.StatusFound)
+		case "victim.example":
+			victim.in()
+			time.Sleep(50 * time.Millisecond) // fixed: long enough for requests to overlap if they could
+			victim.out()
+			w.Header().Set("Content-Type", "application/jrd+json")
+			w.Write([]byte(`{}`))
+		default:
+			inner.ServeHTTP(w, r)
+		}
+	}))
+	urls := []string{"https://a.example/x", "https://b.example/x", "https://c.example/x", "https://victim.example/.well-known/webfinger", "https://VICTIM.example./.well-known/webfinger"}
+	var wg sync.WaitGroup
+	for _, u := range urls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := f.do(context.Background(), fetchReq{kind: fetchWebFinger, url: u}); err != nil {
+				t.Errorf("%s: %v", u, err)
+			}
+		}()
+	}
+	wg.Wait()
+	f.mu.Lock()
+	left := len(f.busy)
+	f.mu.Unlock()
+	if victim.most.Load() != 1 || left != 0 {
+		t.Errorf("%d requests at once reached victim.example, want 1; %d turns left", victim.most.Load(), left)
+	}
+}
+
+// Two requests redirected across each other (a to b while b goes to a) both finish: a request holds
+// one turn at a time, so neither waits for a turn the other holds while it waits.
+func TestFederationFetcherCrossedRedirects(t *testing.T) {
+	var both sync.WaitGroup
+	both.Add(2)
+	met := make(chan struct{})
+	go func() { both.Wait(); close(met) }()
+	f, _ := fedStub(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		other := map[string]string{"a.example": "b.example", "b.example": "a.example"}[r.Host]
+		if r.URL.Path == "/start" {
+			both.Done()
+			select { // both requests hold their first host's turn before either is redirected
+			case <-met:
+			case <-time.After(3 * time.Second):
+			}
+			http.Redirect(w, r, "https://"+other+"/end", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/jrd+json")
+		w.Write([]byte(`{}`))
+	}))
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, h := range []string{"a.example", "b.example"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = f.do(context.Background(), fetchReq{kind: fetchWebFinger, url: "https://" + h + "/start"})
+		}()
+	}
+	wg.Wait()
+	select {
+	case <-met:
+	default:
+		t.Fatal("the two requests were never in flight together")
+	}
+	if errs[0] != nil || errs[1] != nil || time.Since(start) > 4*time.Second { // a deadlock ends only at the 5 s cap
+		t.Errorf("crossed redirects: %v, %v after %v", errs[0], errs[1], time.Since(start))
+	}
+}
+
+// A request that cannot have its host's turn within the kind's time fails as busy, a failure of this
+// server's own queue, not as the host's timeout; the caller's own deadline and cancelling still win.
+func TestFederationFetcherBusy(t *testing.T) {
+	t.Parallel() // 5 s of waiting, beside the other such test
+	f, _ := fedStub(t, fedHandler())
+	held, err := f.acquire(context.Background(), "remote.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held()
+	start := time.Now()
+	guard, unguard := context.WithTimeout(context.Background(), 8*time.Second) // so a missing cap fails, not hangs
+	defer unguard()
+	_, err = f.do(guard, fetchReq{kind: fetchWebFinger, url: "https://REMOTE.example./x"})
+	took := time.Since(start)
+	var fe *fetchError
+	if !errors.As(err, &fe) || fe.Fail != failBusy || f.dials.Load() != 0 {
+		t.Fatalf("waiting behind a held turn: %v, %d dials", err, f.dials.Load())
+	}
+	if took < 4500*time.Millisecond || took > 6500*time.Millisecond {
+		t.Errorf("gave up after %v, want the kind's 5 s", took)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := f.do(ctx, fetchReq{kind: fetchWebFinger, url: "https://remote.example/x"}); !errors.As(err, &fe) || fe.Fail != failTimeout {
+		t.Errorf("the caller's own deadline while waiting: %v", err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if _, err := f.do(ctx, fetchReq{kind: fetchWebFinger, url: "https://remote.example/x"}); !errors.As(err, &fe) || fe.Fail != failCanceled {
+		t.Errorf("a cancelled caller while waiting: %v", err)
+	}
+}
+
+// A name pointing at an address the operator listed as the instance's own is refused when dialled,
+// though the address is public.
+func TestFederationFetcherDeny(t *testing.T) {
+	f, _ := fedStub(t, fedHandler())
+	f.deny = []netip.Prefix{netip.MustParsePrefix("93.184.216.34/32")}
+	_, err := f.do(context.Background(), fetchReq{kind: fetchDocument, url: "https://own.example/users/ana"})
+	var fe *fetchError
+	if !errors.As(err, &fe) || fe.Fail != failRefused || fe.Reason != "refusing to connect to 93.184.216.34" {
+		t.Errorf("a name pointing at the instance's own address: %v", err)
+	}
+}
+
+func TestRefusedHosts(t *testing.T) {
+	got, err := refusedHosts([]string{" Blocked.Example. ", "xn--bcher-kva.example", "example"})
+	if err != nil || strings.Join(got, ",") != "blocked.example,xn--bcher-kva.example,example" {
+		t.Errorf("a plain list: %q %v", got, err)
+	}
+	for _, bad := range []string{"bücher.example", "", ".", "a..example", ".a.example", "a b.example", "a_b.example", "*.example", "1.2.3.4/8", strings.Repeat("a", 254)} {
+		if _, err := refusedHosts([]string{"ok.example", bad}); err == nil {
+			t.Errorf("%q was taken into the refused list", bad)
 		}
 	}
 }
