@@ -383,7 +383,7 @@ federated mode it is implied and ignored.
 | Surface | `local` (default) | `federated` | `single` |
 | --- | --- | --- | --- |
 | Port, addresses, `compose.yml` ports | as today | as today | as today |
-| Sign-up | as today (`signups` flag) | as today, plus registration modes (section 10) | closed for good: `handleSignup` answers 403 whatever the flag says |
+| Sign-up | the `signups` flag, and by approval once an admin chooses it (INS 6; nothing chosen is as before) | as local | closed for good: `handleSignup` answers 403 whatever the flag says |
 | Accounts | many | many | exactly one local account, the owner (F15) |
 | Root page for a signed-out visitor | as today (Welcome) | as today | the owner's profile (F16) |
 | Timelines | Community | Community (local posts) and Home (followed accounts) | Home (followed accounts) and the owner's posts |
@@ -1239,7 +1239,7 @@ a 48-hour outage would not lose anyway.
 -- instance settings that change at runtime, and the recorded identity
 CREATE TABLE instance_settings (
   key TEXT PRIMARY KEY,               -- origin, first_federated_at, policy, authorized_fetch, registration, rules, description, contact, retention_days, nodeinfo_version
-                                      -- (migration 10 made the table; INS 5 writes description, contact and rules, one row each, the rest come with their items)
+                                      -- (migration 10 made the table; INS 5 writes description, contact and rules, one row each; INS 6 writes registration, "open" or "approval"; the rest come with their items)
   value JSONB NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by BIGINT REFERENCES users(id) ON DELETE SET NULL
@@ -1252,6 +1252,17 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false
 CREATE INDEX IF NOT EXISTS users_local ON users (id) WHERE domain = '';
 
 CREATE TABLE retired_usernames (username TEXT PRIMARY KEY, retired_at TIMESTAMPTZ NOT NULL DEFAULT now());
+
+-- requests to join while registration is by approval (migration 11, built in INS 6): not users rows, so
+-- nothing that reads users (lists, counts, mentions, follows, sessions) meets a person nobody approved
+CREATE TABLE join_requests (
+  id BIGSERIAL PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,        -- taken while it waits: sign-up checks users and this table
+  display_name TEXT NOT NULL,
+  pw_hash TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',      -- "Why do you want to join?", at most 500 characters, plain text
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()   -- housekeeping removes a request after 30 days
+);
 
 -- the cached document and key of a remote actor
 CREATE TABLE ap_actors (
@@ -1490,8 +1501,8 @@ keyword filters.
 
 | Mastodon feature | Decision | Why, and where it lives in Flowa |
 | --- | --- | --- |
-| Registration open, closed | adopt | the `signups` flag already; becomes the `registration` instance setting with the flag kept as its switch (INS) |
-| Registration with approval | adopt | new accounts wait in Accounts for an admin; the sign-up page says so (INS) |
+| Registration open, closed | adopt | the `signups` flag already, kept as the one switch that closes sign-up; the `registration` instance setting says how people join while it is on, `open` (what nothing saved means) or `approval`, so it has no third value "closed" that could disagree with the flag (INS). Built in every mode, local included |
+| Registration with approval | adopt | built: a sign-up is a request in `join_requests` (9.1), not an account, with an optional reason ("Why do you want to join?", as Mastodon asks); admins with `user.manage` approve or decline it in Accounts, both audited; the sign-up page says so before the first field; the person is not told (no email) and learns it by signing in, and only the right password hears that the request waits; at most 200 wait, and housekeeping lets a request go after 30 days (INS) |
 | Invites | later | useful for a household; not needed to federate |
 | Server rules shown at sign-up | adopt | instance setting `rules`, shown on sign-up and on the about page; edited in Admin, audited (INS) |
 | Instance description, contact, about page | adopt | instance settings, the NodeInfo `nodeName`, an about page (INS). Built: the about page is in the app for every member in every mode, and opens to a signed-out visitor only while a description is saved, so an instance that saves nothing answers `GET /api/about` as an unknown address; the contact is an email address (letters, digits and `. _ + -` before the `@`), an http or https link whose host is in plain letters (a look-alike host is written in its `xn--` form) or a short text, never another kind of link; a save that meets another admin's newer one is refused (409), and the admin chooses between loading theirs and saving over it |

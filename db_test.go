@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -2777,6 +2778,20 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, admin, "GET", "/api/admin/instance", nil)
 	within(200, ana, "GET", "/api/instance", nil)
 	within(200, "", "GET", "/api/about", nil)
+	// Sign-up by approval: the setting, a request (its count and insert run in one transaction), the
+	// list, an approval and a decline.
+	cur := within(200, admin, "GET", "/api/admin/instance", nil)
+	within(200, admin, "PUT", "/api/admin/instance", map[string]any{"description": cur["description"], "contact": "", "rules": []any{}, "registration": "approval", "updatedAt": cur["updatedAt"]})
+	within(202, "", "POST", "/api/signup", map[string]any{"username": "asks", "password": "a fine long password", "reason": "One connection."})
+	within(202, "", "POST", "/api/signup", map[string]any{"username": "asks2", "password": "a fine long password"})
+	within(403, "", "POST", "/api/signin", map[string]any{"username": "asks", "password": "a fine long password"})
+	within(200, admin, "GET", "/api/admin/requests", nil)
+	var asks, asks2 int64
+	e.a.db.QueryRow(`SELECT id FROM join_requests WHERE username = 'asks'`).Scan(&asks)
+	e.a.db.QueryRow(`SELECT id FROM join_requests WHERE username = 'asks2'`).Scan(&asks2)
+	within(200, admin, "POST", fmt.Sprintf("/api/admin/requests/%d/approve", asks), nil)
+	within(200, admin, "DELETE", fmt.Sprintf("/api/admin/requests/%d", asks2), nil)
+	within(200, admin, "GET", "/api/admin/dashboard", nil)
 	within(200, admin, "DELETE", fmt.Sprintf("/api/admin/users/%d", goneID), nil)
 	pub := within(200, admin, "GET", "/api/admin/catalog/poi", nil)["published"]
 	within(200, admin, "PUT", "/api/admin/catalog/poi/draft", map[string]any{"body": pub})
@@ -2788,7 +2803,8 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, bo, "DELETE", fmt.Sprintf("/api/comments/%d", c), nil)
 	within(200, ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
 	e.a.db.SetMaxOpenConns(8)
-	if e.count(`SELECT count(*) FROM users WHERE id = $1`, goneID) != 0 || e.count(`SELECT count(*) FROM posts WHERE user_id = $1`, anaID) != 0 {
+	if e.count(`SELECT count(*) FROM users WHERE id = $1`, goneID) != 0 || e.count(`SELECT count(*) FROM posts WHERE user_id = $1`, anaID) != 0 ||
+		e.count(`SELECT count(*) FROM users WHERE username = 'asks'`) != 1 || e.count(`SELECT count(*) FROM join_requests`) != 0 {
 		t.Fatal("the writes on one connection did not all happen")
 	}
 }
@@ -3622,6 +3638,17 @@ func poiBranch(t *testing.T, e *tenv) string {
 }
 
 // noDial is a transport that opens no connection and fails the test when asked to.
+// countingDB counts the reads made through it, for a check that a step reads the database once.
+type countingDB struct {
+	db *sql.DB
+	n  int
+}
+
+func (c *countingDB) QueryRow(q string, args ...any) *sql.Row {
+	c.n++
+	return c.db.QueryRow(q, args...)
+}
+
 type noDial struct{ t *testing.T }
 
 func (n noDial) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -3763,8 +3790,15 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	if code, out := e.do(admin, "GET", "/api/instance", nil); code != 200 || out["description"] != "" {
 		t.Errorf("GET /api/instance with nothing saved: %d %v", code, out["_raw"])
 	}
-	if code, out := e.do(admin, "GET", "/api/admin/instance", nil); code != 200 || out["updatedAt"] != "" {
+	if code, out := e.do(admin, "GET", "/api/admin/instance", nil); code != 200 || out["updatedAt"] != "" || out["registration"] != "open" {
 		t.Errorf("GET /api/admin/instance with nothing saved: %d %v", code, out["_raw"])
+	}
+	// Sign-up by approval was never chosen: no request waits, and the dashboard has no count of them.
+	if code, out := e.do(admin, "GET", "/api/admin/requests", nil); code != 200 || len(out["requests"].([]any)) != 0 {
+		t.Errorf("GET /api/admin/requests with nothing saved: %d %v", code, out["_raw"])
+	}
+	if _, out := e.do(admin, "GET", "/api/admin/dashboard", nil); out["totals"].(map[string]any)["waiting"] != nil {
+		t.Errorf("the dashboard with nothing saved counts requests to join: %v", out["totals"])
 	}
 
 	// The dashboard says which mode runs.
@@ -4100,5 +4134,610 @@ func TestDBInstanceInfo(t *testing.T) {
 	unknown("everything cleared")
 	if _, me := e.do("", "GET", "/api/me", nil); me["instance"] != nil {
 		t.Errorf("a visitor's /api/me with everything cleared: %v", me["instance"])
+	}
+}
+
+// Sign-up by approval: with nothing saved sign-up is as before; with approval on a sign-up is a request
+// that waits, is no account anywhere, cannot sign in, and is approved or declined by an admin with
+// user.manage, once, audited; the waiting cap, housekeeping, the setting switched back, the flag off
+// and the operator's account all behave as the README says.
+func TestDBRegistrationApproval(t *testing.T) {
+	e := newEnv(t)
+	logs := logged(t)
+	e.setFlag("follows", true)
+	adminID, admin := e.user("boss", "admin")
+	_, deputy := e.user("deputy", "admin")
+	_, mod := e.user("mo", "moderator")
+	_, ana := e.user("ana", "user")
+	if _, err := e.a.db.Exec(`UPDATE users SET owner = true WHERE id = $1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	const pw = "a fine long password"
+	// Each sign-up and sign-in comes from an address of its own, so the allowances (TestDBSignupLimits,
+	// TestDBSigninLimits) are never what answers here.
+	// sendFrom sends from one given address, for the checks of the allowance itself.
+	var sent atomic.Int32 // some are sent at once, from goroutines
+	sendFrom := func(remote, path string, body map[string]any) (int, map[string]any, http.Header) {
+		b, _ := json.Marshal(body)
+		r := httptest.NewRequest("POST", path, bytes.NewReader(b))
+		r.RemoteAddr = remote
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		e.h.ServeHTTP(w, r)
+		out := map[string]any{}
+		json.Unmarshal(w.Body.Bytes(), &out)
+		out["_raw"] = w.Body.String()
+		return w.Code, out, w.Result().Header
+	}
+	send := func(path string, body map[string]any) (int, map[string]any, http.Header) {
+		t.Helper()
+		addr := int(sent.Add(1))
+		return sendFrom(fmt.Sprintf("198.51.%d.%d:4000", 100+addr/250, addr%250+1), path, body)
+	}
+	signup := func(body map[string]any) (int, map[string]any, http.Header) {
+		t.Helper()
+		return send("/api/signup", body)
+	}
+	signin := func(name, pass string) (int, string, http.Header) {
+		t.Helper()
+		code, out, hdr := send("/api/signin", map[string]any{"username": name, "password": pass})
+		return code, out["_raw"].(string), hdr
+	}
+	hasCookie := func(h http.Header) bool {
+		for _, c := range (&http.Response{Header: h}).Cookies() {
+			if c.Name == cookieName && c.Value != "" {
+				return true
+			}
+		}
+		return false
+	}
+	version := func() string {
+		t.Helper()
+		v, _ := e.must(200, admin, "GET", "/api/admin/instance", nil)["updatedAt"].(string)
+		return v
+	}
+	setReg := func(tok, reg string) (int, map[string]any) {
+		t.Helper()
+		cur := e.must(200, admin, "GET", "/api/admin/instance", nil)
+		return e.do(tok, "PUT", "/api/admin/instance", map[string]any{"description": cur["description"], "contact": cur["contact"], "rules": cur["rules"], "registration": reg, "updatedAt": cur["updatedAt"]})
+	}
+	waitingCount := func() int { return e.count(`SELECT count(*) FROM join_requests`) }
+	totals := func() map[string]any {
+		t.Helper()
+		return e.must(200, admin, "GET", "/api/admin/dashboard", nil)["totals"].(map[string]any)
+	}
+
+	// Nothing saved: sign-up is as before, an account and a session at once, the answer shaped as
+	// before; the editor says open; nothing new shows to a visitor or on the dashboard.
+	code, out, hdr := signup(map[string]any{"username": "plain", "password": pw, "reason": "ignored while sign-up is open"})
+	if code != 200 || len(out) != 2 || out["user"] == nil || !hasCookie(hdr) || waitingCount() != 0 {
+		t.Fatalf("sign-up with nothing saved: %d %v (cookie %v, %d requests)", code, out["_raw"], hasCookie(hdr), waitingCount())
+	}
+	if out := e.must(200, admin, "GET", "/api/admin/instance", nil); out["registration"] != "open" || out["updatedAt"] != "" {
+		t.Errorf("the editor with nothing saved: %v", out["_raw"])
+	}
+	if _, me := e.do("", "GET", "/api/me", nil); me["instance"] != nil {
+		t.Errorf("a visitor's /api/me with nothing saved: %v", me["instance"])
+	}
+	if tot := totals(); tot["waiting"] != nil {
+		t.Errorf("the dashboard with nothing saved has a waiting count: %v", tot)
+	}
+	// Saving open over nothing saved changes nothing, writes no row and is not audited.
+	if code, out := setReg(admin, "open"); code != 200 || e.count(`SELECT count(*) FROM instance_settings`) != 0 || e.count(`SELECT count(*) FROM mod_actions WHERE action = 'instance'`) != 0 {
+		t.Errorf("saving open over nothing: %d %v", code, out["_raw"])
+	}
+
+	// Who may change it, and to what.
+	for _, tok := range []string{ana, mod} {
+		if code, _ := setReg(tok, "approval"); code != 403 {
+			t.Errorf("a member or moderator turning approval on: %d, want 403", code)
+		}
+	}
+	for _, bad := range []string{"closed", "Approval", ""} {
+		if code, out := setReg(admin, bad); code != 400 || out["field"] != "registration" {
+			t.Errorf("registration %q: %d %v", bad, code, out["_raw"])
+		}
+	}
+	v0 := version()
+	if code, out := setReg(admin, "approval"); code != 200 || out["registration"] != "approval" {
+		t.Fatalf("turning approval on: %d %v", code, out["_raw"])
+	}
+	var detail string
+	if err := e.a.db.QueryRow(`SELECT detail::text FROM mod_actions WHERE action = 'instance' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil || detail != `{"parts": ["registration"], "rules": 0, "registration": "approval"}` {
+		t.Errorf("the audit row of turning approval on: %s (%v)", detail, err)
+	}
+	// A save against the version before is refused (409), whichever part it changes.
+	if code, _ := e.do(deputy, "PUT", "/api/admin/instance", map[string]any{"description": "", "contact": "", "rules": []any{}, "registration": "open", "updatedAt": v0}); code != 409 {
+		t.Errorf("a stale save of the registration: %d, want 409", code)
+	}
+	// A save that leaves registration out keeps it.
+	if out := e.must(200, admin, "PUT", "/api/admin/instance", map[string]any{"description": "", "contact": "", "rules": []any{}, "updatedAt": version()}); out["registration"] != "approval" {
+		t.Errorf("a save without registration: %v", out["_raw"])
+	}
+	// A visitor is told before typing; a member is told nothing; the dashboard counts the requests.
+	if _, me := e.do("", "GET", "/api/me", nil); fmt.Sprint(me["instance"]) != "map[about:false approval:true]" {
+		t.Errorf("a visitor's /api/me with approval on: %v", me["instance"])
+	}
+	if _, me := e.do(ana, "GET", "/api/me", nil); me["instance"] != nil {
+		t.Errorf("a member's /api/me with approval on: %v", me["instance"])
+	}
+	if tot := totals(); tot["waiting"] == nil || num(tot["waiting"]) != 0 {
+		t.Errorf("the dashboard with approval on and nobody waiting: %v", tot)
+	}
+
+	// A request: 202, no session, no account; the reason is plain text, cleaned as the instance text is.
+	users0 := e.count(`SELECT count(*) FROM users`)
+	code, out, hdr = signup(map[string]any{"username": "Asker", "password": pw, "displayName": "Asker A", "reason": "<b>I spin poi</b>\r\n\r\n\r\n\r\nAt the park.  "})
+	if code != 202 || out["waiting"] != true || len(out) != 2 || hasCookie(hdr) || hdr.Get("Set-Cookie") != "" {
+		t.Fatalf("a request to join: %d %v (Set-Cookie %q)", code, out["_raw"], hdr.Get("Set-Cookie"))
+	}
+	if e.count(`SELECT count(*) FROM users`) != users0 {
+		t.Error("a request made an account")
+	}
+	var reason, display string
+	if err := e.a.db.QueryRow(`SELECT reason, display_name FROM join_requests WHERE username = 'asker'`).Scan(&reason, &display); err != nil || reason != "<b>I spin poi</b>\n\nAt the park." || display != "Asker A" {
+		t.Errorf("the request as stored: %q %q (%v)", reason, display, err)
+	}
+	for _, c := range []struct {
+		name, reason string
+	}{{"501 characters", strings.Repeat("é", 501)}, {"a NUL", "hi\x00"}, {"an escape", "\x1b[31mred"}, {"a direction override", "\u202eadmin"}} {
+		if code, out, _ := signup(map[string]any{"username": "toolong", "password": pw, "reason": c.reason}); code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "reason") {
+			t.Errorf("a reason with %s: %d %v", c.name, code, out["_raw"])
+		}
+	}
+	if code, out, _ := signup(map[string]any{"username": "fullreason", "password": pw, "reason": strings.Repeat("é", 500)}); code != 202 {
+		t.Errorf("a reason of 500 characters: %d %v", code, out["_raw"])
+	}
+	if code, out, _ := signup(map[string]any{"username": "noreason", "password": pw}); code != 202 {
+		t.Errorf("a request with no reason: %d %v", code, out["_raw"])
+	}
+	// The name waits, so it is taken; and a name with an account cannot be asked for.
+	for _, name := range []string{"asker", "ana"} {
+		if code, out, _ := signup(map[string]any{"username": name, "password": pw}); code != 409 {
+			t.Errorf("asking for %s: %d %v", name, code, out["_raw"])
+		}
+	}
+	if waitingCount() != 3 {
+		t.Fatalf("%d requests, want 3", waitingCount())
+	}
+
+	// Signing in while waiting: the right password is told it waits, with no session; a wrong one gets
+	// exactly what a name nobody has gets.
+	if code, body, hdr := signin("asker", pw); code != 403 || !strings.Contains(body, waitingSentence) || hasCookie(hdr) {
+		t.Errorf("signing in while waiting: %d %s", code, body)
+	}
+	_, nobody, _ := signin("nobody-at-all", pw)
+	if code, body, hdr := signin("asker", "not the password"); code != 401 || body != nobody || hasCookie(hdr) {
+		t.Errorf("a wrong password for a waiting name: %d %s, a name nobody has: %s", code, body, nobody)
+	}
+	if n := e.count(`SELECT count(*) FROM sessions`); n != 5 {
+		t.Errorf("%d sessions, want five: the four the test made and the open sign-up's", n)
+	}
+	// A member's name, a waiting name and an unknown one each cost one read (signinLookup, the only read
+	// handleSignin makes before the password is checked, counted through a wrapper of QueryRow) and one
+	// password hash (pbkdf2Runs, around a whole sign-in).
+	for _, c := range []struct {
+		name           string
+		request, found bool
+	}{{"plain", false, true}, {"asker", true, true}, {"nobody-at-all", false, false}} {
+		q := &countingDB{db: e.a.db}
+		u, hash, request, err := signinLookup(q, c.name)
+		if q.n != 1 || request != c.request || (err == nil) != c.found || (c.found && (u.Username != c.name || hash == "")) {
+			t.Errorf("reading %s for a sign-in: %d reads, request %v, %v", c.name, q.n, request, err)
+		}
+		runs := pbkdf2Runs.Load()
+		signin(c.name, "not the password")
+		if n := pbkdf2Runs.Load() - runs; n != 1 {
+			t.Errorf("a sign-in as %s checked %d hashes, want exactly one", c.name, n)
+		}
+	}
+
+	// A waiting person is nobody anywhere: not in the people list, no profile, no posts, no mention,
+	// no follow, no block, not in Accounts, not a member on the dashboard (counted on its own). The lists
+	// are read first, and by a moderator, who sees past blocks; the open sign-up's account shows they list
+	// a new account at all.
+	if out := e.must(200, mod, "GET", "/api/users", nil); strings.Contains(out["_raw"].(string), `"asker"`) || !strings.Contains(out["_raw"].(string), `"plain"`) {
+		t.Errorf("the people list shows a waiting name, or not a new account: %v", out["_raw"])
+	}
+	if out := e.must(200, admin, "GET", "/api/admin/users", nil); strings.Contains(out["_raw"].(string), `"asker"`) || !strings.Contains(out["_raw"].(string), `"plain"`) {
+		t.Errorf("Accounts lists a waiting name among the accounts: %v", out["_raw"])
+	}
+	for _, w := range []struct {
+		method, path string
+		want         int
+	}{
+		{"GET", "/api/users/asker", 404}, {"GET", "/api/posts?user=asker", 404},
+		{"PUT", "/api/users/asker/follow", 404}, {"PUT", "/api/users/asker/block", 404},
+	} {
+		if code, out := e.do(ana, w.method, w.path, nil); code != w.want {
+			t.Errorf("%s %s for a waiting name: %d %v", w.method, w.path, code, out["_raw"])
+		}
+	}
+	notes := e.count(`SELECT count(*) FROM notifications`)
+	e.post(ana, "hello @asker and @noreason")
+	if e.count(`SELECT count(*) FROM notifications`) != notes {
+		t.Error("a mention of a waiting name made a notification")
+	}
+	if tot := totals(); num(tot["users"]) != int64(users0) || num(tot["waiting"]) != 3 {
+		t.Errorf("the dashboard while three wait: %v", tot)
+	}
+
+	// The list of requests is for user.manage only, and shows the reason.
+	for tok, want := range map[string]int{"": 401, ana: 403, mod: 403} {
+		if code, _ := e.do(tok, "GET", "/api/admin/requests", nil); code != want {
+			t.Errorf("the list of requests for %q: %d, want %d", tok, code, want)
+		}
+	}
+	list := e.must(200, admin, "GET", "/api/admin/requests", nil)
+	reqs := list["requests"].([]any)
+	if len(reqs) != 3 || num(list["max"]) != maxWaiting || num(list["days"]) != joinWaitDays {
+		t.Fatalf("the list of requests: %v", list["_raw"])
+	}
+	if r0 := reqs[0].(map[string]any); r0["username"] != "asker" || r0["reason"] != "<b>I spin poi</b>\n\nAt the park." || r0["displayName"] != "Asker A" || r0["created"] == nil {
+		t.Errorf("the oldest request: %v", r0)
+	}
+	idOf := func(name string) int64 {
+		t.Helper()
+		var id int64
+		if err := e.a.db.QueryRow(`SELECT id FROM join_requests WHERE username = $1`, name).Scan(&id); err != nil {
+			t.Fatalf("the request of %s: %v", name, err)
+		}
+		return id
+	}
+	approve := func(tok string, id int64) (int, map[string]any) {
+		return e.do(tok, "POST", fmt.Sprintf("/api/admin/requests/%d/approve", id), nil)
+	}
+	decline := func(tok string, id int64) (int, map[string]any) {
+		return e.do(tok, "DELETE", fmt.Sprintf("/api/admin/requests/%d", id), nil)
+	}
+	audits := func(action, name string) int {
+		return e.count(`SELECT count(*) FROM mod_actions WHERE action = $1 AND detail->>'username' = $2`, action, name)
+	}
+	askerID := idOf("asker")
+
+	// Without user.manage: refused, and nothing changes.
+	for _, tok := range []string{ana, mod} {
+		if code, _ := approve(tok, askerID); code != 403 {
+			t.Errorf("approve without the permission: %d", code)
+		}
+		if code, _ := decline(tok, askerID); code != 403 {
+			t.Errorf("decline without the permission: %d", code)
+		}
+	}
+	if code, _ := approve("", askerID); code != 401 || waitingCount() != 3 || e.count(`SELECT count(*) FROM users WHERE username = 'asker'`) != 0 {
+		t.Errorf("approve by a visitor: %d, %d waiting", code, waitingCount())
+	}
+
+	// Approve: an ordinary account, once, audited; the person signs in with the password they chose.
+	if code, out := approve(admin, askerID); code != 200 || out["username"] != "asker" {
+		t.Fatalf("approve: %d %v", code, out["_raw"])
+	}
+	var role string
+	var owner bool
+	if err := e.a.db.QueryRow(`SELECT role, owner, display_name FROM users WHERE username = 'asker'`).Scan(&role, &owner, &display); err != nil || role != "user" || owner || display != "Asker A" {
+		t.Errorf("the approved account: %s %v %s (%v)", role, owner, display, err)
+	}
+	if code, _ := approve(admin, askerID); code != 404 {
+		t.Errorf("approve twice: %d, want 404", code)
+	}
+	if code, _ := decline(admin, askerID); code != 404 {
+		t.Errorf("decline after approve: %d, want 404", code)
+	}
+	if n := audits("approve_user", "asker"); n != 1 {
+		t.Errorf("%d audit rows for one approval, want 1", n)
+	}
+	if e.count(`SELECT count(*) FROM mod_actions WHERE action = 'approve_user' AND target_user_id = (SELECT id FROM users WHERE username = 'asker')`) != 1 {
+		t.Error("the approval's audit row does not name the account")
+	}
+	if code, body, hdr := signin("asker", pw); code != 200 || !hasCookie(hdr) {
+		t.Errorf("signing in after approval: %d %s", code, body)
+	}
+	if code, _ := e.do(ana, "GET", "/api/users/asker", nil); code != 200 {
+		t.Errorf("the profile after approval: %d", code)
+	}
+
+	// Decline: the request is gone, once, audited; signing in answers as for a name nobody has; the name
+	// is free again.
+	nrID := idOf("noreason")
+	if code, out := decline(admin, nrID); code != 200 {
+		t.Fatalf("decline: %d %v", code, out["_raw"])
+	}
+	if code, _ := decline(admin, nrID); code != 404 {
+		t.Errorf("decline twice: %d, want 404", code)
+	}
+	if code, _ := approve(admin, nrID); code != 404 {
+		t.Errorf("approve after decline: %d, want 404", code)
+	}
+	if n := audits("decline_user", "noreason"); n != 1 {
+		t.Errorf("%d audit rows for one decline, want 1", n)
+	}
+	if code, body, _ := signin("noreason", pw); code != 401 || body != nobody {
+		t.Errorf("signing in after a decline: %d %s", code, body)
+	}
+	if code, out, _ := signup(map[string]any{"username": "noreason", "password": pw}); code != 202 {
+		t.Errorf("the declined name asked for again: %d %v", code, out["_raw"])
+	}
+
+	// Two admins at once: one approval and one 404; approve and decline together: one wins.
+	for _, name := range []string{"race", "tug"} {
+		if code, out, _ := signup(map[string]any{"username": name, "password": pw}); code != 202 {
+			t.Fatalf("asking as %s: %d %v", name, code, out["_raw"])
+		}
+	}
+	atOnce := func(f, g func() int) []int {
+		var wg sync.WaitGroup
+		codes := make([]int, 2)
+		for i, h := range []func() int{f, g} {
+			wg.Add(1)
+			go func() { defer wg.Done(); codes[i] = h() }()
+		}
+		wg.Wait()
+		sort.Ints(codes)
+		return codes
+	}
+	raceID, tugID := idOf("race"), idOf("tug")
+	if got := atOnce(func() int { c, _ := approve(admin, raceID); return c }, func() int { c, _ := approve(deputy, raceID); return c }); fmt.Sprint(got) != "[200 404]" {
+		t.Errorf("two admins approving at once: %v", got)
+	}
+	if e.count(`SELECT count(*) FROM users WHERE username = 'race'`) != 1 || audits("approve_user", "race") != 1 {
+		t.Error("two approvals at once made more than one account or audit row")
+	}
+	if got := atOnce(func() int { c, _ := approve(admin, tugID); return c }, func() int { c, _ := decline(deputy, tugID); return c }); fmt.Sprint(got) != "[200 404]" {
+		t.Errorf("approve and decline at once: %v", got)
+	}
+	if n := audits("approve_user", "tug") + audits("decline_user", "tug"); n != 1 || waitingCount() != 2 {
+		t.Errorf("approve and decline at once: %d audit rows, %d waiting", n, waitingCount())
+	}
+
+	// An account and a request under one name, as the moment an admin switches the setting can leave
+	// them: the list says the name is taken, Approve answers 409 and changes nothing, Decline removes it.
+	if _, err := e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('clash', 'clash', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	e.user("clash", "user")
+	var clash map[string]any
+	for _, q := range e.must(200, admin, "GET", "/api/admin/requests", nil)["requests"].([]any) {
+		if m := q.(map[string]any); m["username"] == "clash" {
+			clash = m
+		} else if m["taken"] != false {
+			t.Errorf("a request whose name is free is listed as taken: %v", m)
+		}
+	}
+	if clash == nil || clash["taken"] != true {
+		t.Errorf("the request whose name an account took: %v", clash)
+	}
+	clashID := idOf("clash")
+	if code, out := approve(admin, clashID); code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "Decline it") || e.count(`SELECT count(*) FROM join_requests WHERE username = 'clash'`) != 1 || audits("approve_user", "clash") != 0 {
+		t.Errorf("approving a request whose name is taken: %d %v", code, out["_raw"])
+	}
+	if code, _ := decline(admin, clashID); code != 200 || e.count(`SELECT count(*) FROM join_requests WHERE username = 'clash'`) != 0 || e.count(`SELECT count(*) FROM users WHERE username = 'clash'`) != 1 {
+		t.Errorf("declining a request whose name is taken: %d", code)
+	}
+	// Each insert checks the other table in the same statement. A request held at the queue's lock while an
+	// account takes its name is refused when the lock is let go, and stores nothing.
+	ctx := context.Background()
+	held, err := e.a.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := held.ExecContext(ctx, `SELECT pg_advisory_lock(7130653)`); err != nil {
+		t.Fatal(err)
+	}
+	raced := make(chan int, 1)
+	go func() { code, _, _ := signup(map[string]any{"username": "raced", "password": pw}); raced <- code }()
+	for since := time.Now(); e.count(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 7130653 AND NOT granted`) < 1; time.Sleep(10 * time.Millisecond) {
+		if time.Since(since) > 10*time.Second {
+			t.Error("the request never waited for the queue's lock")
+			break
+		}
+	}
+	e.user("raced", "user")
+	held.ExecContext(ctx, `SELECT pg_advisory_unlock(7130653)`)
+	held.Close()
+	if code := <-raced; code != 409 || e.count(`SELECT count(*) FROM join_requests WHERE username = 'raced'`) != 0 {
+		t.Errorf("a request whose name an account took while it waited for the lock: %d", code)
+	}
+
+	// The cap: at most maxWaiting wait; past it sign-up says to come back, and nothing is stored.
+	if _, err := e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash) SELECT 'filler' || g, 'filler', 'x' FROM generate_series(1, $1) g`, maxWaiting-waitingCount()); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _ = signup(map[string]any{"username": "onetoomany", "password": pw})
+	if code != 503 || !strings.Contains(fmt.Sprint(out["error"]), "not taking requests") || waitingCount() != maxWaiting {
+		t.Errorf("a request past the cap: %d %v, %d waiting", code, out["_raw"], waitingCount())
+	}
+	if !strings.Contains(logs.String(), "refused: too many requests to join waiting from 198.51.") {
+		t.Errorf("the refusal past the cap is not in the log:\n%s", logs.String())
+	}
+	// Requests at the same moment at the cap less one: exactly one more waits. The test holds the table
+	// against writes (reads go on), so the three requests are sure to be in flight together: the first has
+	// counted 199 and waits to write, the others wait for the lock the count is made under. Were the count
+	// not made under that lock, all three would count 199, wait to write, and all be stored.
+	e.a.db.Exec(`DELETE FROM join_requests WHERE username = 'filler1'`)
+	hold, err := e.a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(`LOCK TABLE join_requests IN EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		body := map[string]any{"username": fmt.Sprintf("flood%d", i), "password": pw}
+		wg.Add(1)
+		go func() { defer wg.Done(); signup(body) }()
+	}
+	inFlight := `SELECT count(*) FROM pg_locks WHERE NOT granted AND (relation = 'join_requests'::regclass OR (locktype = 'advisory' AND objid = 7130653))`
+	for since := time.Now(); e.count(inFlight) < 3; time.Sleep(10 * time.Millisecond) {
+		if time.Since(since) > 10*time.Second {
+			t.Errorf("the three requests were not all waiting after 10 s: %d", e.count(inFlight))
+			break
+		}
+	}
+	hold.Rollback()
+	wg.Wait()
+	if waitingCount() != maxWaiting {
+		t.Errorf("three requests at once at the cap less one: %d waiting, want %d", waitingCount(), maxWaiting)
+	}
+	// With the queue full, one address asking again and again: each request counts against its allowance
+	// like any attempt, so the eleventh gets the same 429 as the open path gives, and none of the eleven
+	// costs a password hash (pbkdf2Runs counts every hash made or checked).
+	const tooManyBody = `{"error":"Too many new accounts from this address. Try again in an hour."}` + "\n" // the open path's, which TestDBSignupLimits holds
+	runs := pbkdf2Runs.Load()
+	var codes []int
+	var last map[string]any
+	for i := 0; i < 11; i++ {
+		var code int
+		code, last, _ = sendFrom("203.0.113.7:4000", "/api/signup", map[string]any{"username": fmt.Sprintf("full%d", i), "password": pw})
+		codes = append(codes, code)
+	}
+	if fmt.Sprint(codes) != "[503 503 503 503 503 503 503 503 503 503 429]" || last["_raw"] != tooManyBody {
+		t.Errorf("eleven requests from one address while the queue is full: %v, the last %q", codes, last["_raw"])
+	}
+	if n := pbkdf2Runs.Load() - runs; n != 0 {
+		t.Errorf("requests refused by a full queue or the allowance hashed %d passwords, want none", n)
+	}
+	e.a.db.Exec(`DELETE FROM join_requests WHERE username LIKE 'filler%' OR username LIKE 'flood%'`)
+	// Room again: thirty requests at the same moment from one address hash at most the ten the allowance
+	// lets through, and ten wait. The open path counts the same way, before it hashes.
+	burst := func(prefix, remote string) (map[int]int, int64) {
+		t.Helper()
+		runs := pbkdf2Runs.Load()
+		var mu sync.Mutex
+		got := map[int]int{}
+		var wg sync.WaitGroup
+		for i := 0; i < 30; i++ {
+			body := map[string]any{"username": fmt.Sprintf("%s%d", prefix, i), "password": pw}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				code, _, _ := sendFrom(remote, "/api/signup", body)
+				mu.Lock()
+				got[code]++
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		return got, pbkdf2Runs.Load() - runs
+	}
+	if got, n := burst("burst", "203.0.113.8:4000"); got[202] != 10 || got[429] != 20 || n > 10 {
+		t.Errorf("thirty requests at once from one address: %v, %d hashes; want ten 202, twenty 429, at most ten hashes", got, n)
+	}
+	e.a.db.Exec(`DELETE FROM join_requests WHERE username LIKE 'burst%'`)
+
+	// Housekeeping lets go of requests that waited more than 30 days, with a line in the log.
+	e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, created_at) VALUES ('old', 'old', 'x', now() - interval '31 days'), ('recent', 'recent', 'x', now() - interval '29 days')`)
+	if n, err := e.a.housekeep(); err != nil || n["requests"] != 1 {
+		t.Errorf("housekeeping: %v (%v)", n, err)
+	}
+	if e.count(`SELECT count(*) FROM join_requests WHERE username = 'old'`) != 0 || e.count(`SELECT count(*) FROM join_requests WHERE username = 'recent'`) != 1 {
+		t.Error("housekeeping removed the wrong requests")
+	}
+	e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, created_at) VALUES ('older', 'older', 'x', now() - interval '40 days')`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e.a.housekeeping(ctx, time.Hour)
+	if !strings.Contains(logs.String(), "housekeeping: removed 1 requests to join that waited more than 30 days\n") {
+		t.Errorf("the housekeeping log:\n%s", logs.String())
+	}
+	e.a.db.Exec(`DELETE FROM join_requests WHERE username = 'recent'`)
+
+	// Switched back to open: the waiting requests keep waiting, their names stay taken, a new sign-up is
+	// an account at once, and the dashboard still counts them.
+	before := waitingCount()
+	if code, out := setReg(admin, "open"); code != 200 || out["registration"] != "open" || waitingCount() != before || before == 0 {
+		t.Fatalf("back to open: %d %v, %d waiting (was %d)", code, out["_raw"], waitingCount(), before)
+	}
+	if _, me := e.do("", "GET", "/api/me", nil); me["instance"] != nil {
+		t.Errorf("a visitor's /api/me back to open: %v", me["instance"])
+	}
+	if code, body, _ := signin("fullreason", pw); code != 403 || !strings.Contains(body, waitingSentence) {
+		t.Errorf("a waiting person after the switch back: %d %s", code, body)
+	}
+	if code, _, _ := signup(map[string]any{"username": "fullreason", "password": pw}); code != 409 {
+		t.Errorf("a waiting name after the switch back: %d", code)
+	}
+	if code, out, hdr := signup(map[string]any{"username": "openagain", "password": pw}); code != 200 || !hasCookie(hdr) || len(out) != 2 {
+		t.Errorf("an open sign-up after the switch back: %d %v", code, out["_raw"])
+	}
+	// The open path's insert checks for a request in the same statement: an open sign-up held at the users
+	// table while a request takes its name makes no account.
+	hold, err = e.a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(`LOCK TABLE users IN EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	go func() { code, _, _ := signup(map[string]any{"username": "openraced", "password": pw}); raced <- code }()
+	for since := time.Now(); e.count(`SELECT count(*) FROM pg_locks WHERE relation = 'users'::regclass AND NOT granted`) < 1; time.Sleep(10 * time.Millisecond) {
+		if time.Since(since) > 10*time.Second {
+			t.Error("the open sign-up never waited for the users table")
+			break
+		}
+	}
+	e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('openraced', 'openraced', 'x')`)
+	hold.Rollback()
+	if code := <-raced; code != 409 || e.count(`SELECT count(*) FROM users WHERE username = 'openraced'`) != 0 {
+		t.Errorf("an open sign-up whose name a request took while it waited: %d", code)
+	}
+	e.a.db.Exec(`DELETE FROM join_requests WHERE username = 'openraced'`)
+	if tot := totals(); num(tot["waiting"]) != int64(before) {
+		t.Errorf("the dashboard after the switch back: %v", tot)
+	}
+	// The open path under the same burst: it counted the allowance before hashing already.
+	if got, n := burst("openburst", "203.0.113.9:4000"); got[200] != 10 || got[429] != 20 || n > 10 {
+		t.Errorf("thirty open sign-ups at once from one address: %v, %d hashes; want ten 200, twenty 429, at most ten hashes", got, n)
+	}
+
+	// The flag off: sign-up is closed whatever the setting, and the waiting requests can still be
+	// approved or declined.
+	if code, out := setReg(admin, "approval"); code != 200 {
+		t.Fatalf("approval on again: %d %v", code, out["_raw"])
+	}
+	e.setFlag("signups", false)
+	if code, out, _ := signup(map[string]any{"username": "closed", "password": pw}); code != 403 || out["error"] != "New sign-ups are turned off. Ask the admin for an account." {
+		t.Errorf("sign-up with the flag off: %d %v", code, out["_raw"])
+	}
+	if code, _ := approve(admin, idOf("fullreason")); code != 200 {
+		t.Errorf("approve with the flag off: %d", code)
+	}
+	if code, _ := decline(admin, idOf("noreason")); code != 200 {
+		t.Errorf("decline with the flag off: %d", code)
+	}
+	e.setFlag("signups", true)
+
+	// The operator's account is made, approved, whatever the setting says, and a request under its name
+	// gives way to it; the owner is an approved admin.
+	if code, _, _ := signup(map[string]any{"username": "chief", "password": pw}); code != 202 {
+		t.Fatalf("asking as chief: %d", code)
+	}
+	if _, err := e.a.seedAdmin("chief", "flowa-test-only"); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM join_requests WHERE username = 'chief'`) != 0 || e.count(`SELECT count(*) FROM users WHERE username = 'chief' AND role = 'admin'`) != 1 {
+		t.Error("seedAdmin with a request under its name")
+	}
+	if !strings.Contains(logs.String(), `removed the request to join that waited under the name "chief"`) {
+		t.Error("seedAdmin did not log the request it removed")
+	}
+	if code, body, _ := signin("chief", "flowa-test-only"); code != 200 {
+		t.Errorf("the seeded admin signs in with approval on: %d %s", code, body)
+	}
+	f := newEnv(t)
+	if _, err := f.a.db.Exec(`INSERT INTO instance_settings (key, value) VALUES ('registration', '"approval"')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.a.seedAdmin("first", "flowa-test-only"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.a.ensureOwner(); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(`SELECT count(*) FROM users WHERE username = 'first' AND role = 'admin' AND owner`); n != 1 || f.count(`SELECT count(*) FROM join_requests`) != 0 {
+		t.Errorf("a first start with approval on: %d owners, %d requests", n, f.count(`SELECT count(*) FROM join_requests`))
+	}
+	if code, out := f.do("", "POST", "/api/signin", map[string]any{"username": "first", "password": "flowa-test-only"}); code != 200 {
+		t.Errorf("the first owner signs in with approval on: %d %v", code, out["_raw"])
 	}
 }

@@ -272,6 +272,22 @@ try:
     finally:
         api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':inst()['updatedAt']},'PUT');load()
     check('after the about pictures the instance information is cleared and the menu has no About entry',inst()['description']=='' and inst()['rules']==[] and inst()['contact']=='' and 'instance' not in get_me(op) and not js("return !!document.querySelector('#side a[href=\"#/about\"]')"))
+    # Sign-up by approval: Accounts with a request to join waiting, then the sign-up form a visitor meets, at
+    # desktop and phone width. Sign-up is open again with nobody waiting whatever happens, and that is checked.
+    put_back=False
+    try:
+        registration(op,'approval');ask_to_join('rowan','I spin double staff and want to log my practice with the Thursday jam.')
+        load()
+        page('admin-accounts-waiting','Admin: Accounts with a request to join waiting','#/admin/accounts')
+        check('Accounts shows the request with its reason and its two buttons',lambda: 'Thursday jam' in (txt('.req-card') or '') and js("return document.querySelectorAll('.req-card .req button').length")==2,lambda: txt('#main'))
+        js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+        load(BASE+'?approval#/signup');wait_for("return !!document.querySelector('#auth-form [name=reason]')",'the sign-up form by approval',20)
+        page('signup-approval','Create an account, when an admin approves new accounts','#/signup')
+        page('signup-approval-phone','Create an account by approval, phone','#/signup',w=420,ht=900)
+        cmd('WebDriver:SetWindowRect',width=1440,height=1000)
+    finally:
+        put_back=approval_off(op)
+    check('after the approval pictures sign-up is open, no request waits and a visitor is told nothing new',put_back and 'instance' not in get_me(urllib.request.build_opener()))
     # First run: a new member before any prop is chosen. The menu lists only what opens.
     new=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()));api(new,'signup',{'username':'newcomer','password':'flowa-test-only'})
     js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")

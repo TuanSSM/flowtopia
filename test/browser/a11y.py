@@ -363,6 +363,13 @@ try:
     api(op,'admin/instance',{**INST,'updatedAt':json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['updatedAt']},'PUT');load()
     page('admin instance, saved','#/admin/instance')
     page('about this Flowa','#/about')
+    # Sign-up by approval, for staff: the choice in the editor, a request waiting in Accounts with its two
+    # buttons, and its count on the dashboard. Sign-up is open again below until the visitor's stops.
+    registration(op,'approval');ask_to_join('asker','I spin poi at the Thursday jam.')
+    page('admin instance, by approval','#/admin/instance')
+    page('admin accounts, a request to join waiting','#/admin/accounts')
+    page('admin, requests to join counted','#/admin')
+    registration(op,'open')
     page('admin audit log','#/admin/audit')
     page('skill map editor, list of maps','#/admin/maps')
     nav('#/admin/maps/poi');wait_for("return document.querySelectorAll('.ed-skill').length>0",'the editor to list the skills',20)
@@ -382,7 +389,20 @@ try:
     load(BASE+'?rules#/signup');wait_for("return !!document.querySelector('#auth-form .signup-rules')",'the rules on the sign-up form',20)
     page('create an account, with the rules')
     page('about this Flowa, signed out','#/about')
-    # Put back: the instance information cleared, so the new member below meets the sign-up form as it was.
+    # Sign-up by approval, for a visitor: the form that says so and asks why, the page after a request, and
+    # the sign-in that says the request waits.
+    registration(op,'approval')
+    load(BASE+'?approval#/signup');wait_for("return !!document.querySelector('#auth-form [name=reason]')",'the sign-up form by approval',20)
+    page('create an account, by approval')
+    js("const f=document.querySelector('#auth-form');f.username.value='hopeful';f.password.value=f.again.value='flowa-test-only';f.reason.value='To log my practice.';f.requestSubmit()")
+    wait_for("return !!document.querySelector('#join-sent')",'the page after a request to join',30)
+    page('a request to join, sent')
+    nav('#/signin');js("const f=document.querySelector('#auth-form');f.username.value='hopeful';f.password.value='flowa-test-only';f.requestSubmit()")
+    wait_for("return /waiting for an admin/.test(document.querySelector('#auth-err').textContent)",'the sign-in that says the request waits',30)
+    page('sign in, the request waiting')
+    # Put back: the instance information cleared and sign-up open with nobody waiting, so the new member below
+    # meets the sign-up form as it was.
+    check('sign-up is open again and no request waits',approval_off(op))
     api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['updatedAt']},'PUT')
     check('the instance information is cleared again',json.loads(op.open(BASE+'api/admin/instance',timeout=20).read())['description']=='' and 'instance' not in json.loads(op.open(BASE+'api/me',timeout=20).read()))
     cmd('WebDriver:SetWindowRect',width=1440,height=1100);load(BASE+'?new#/signup')

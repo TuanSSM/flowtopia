@@ -452,6 +452,7 @@ type limits struct {
 	posts, comments, likes, badges, marks       *limiter
 	bookmarks, blocks, follows                  *limiter
 	instance, about                             *limiter // saves of the instance information per admin; reads of the about page per address
+	joins                                       *limiter // approvals and declines of requests to join, per admin
 }
 
 func newLimits() limits {
@@ -462,6 +463,7 @@ func newLimits() limits {
 		badges: newLimiter(60, time.Hour), marks: newLimiter(120, time.Hour),
 		bookmarks: newLimiter(300, time.Hour), blocks: newLimiter(100, time.Hour), follows: newLimiter(200, time.Hour),
 		instance: newLimiter(60, time.Hour), about: newLimiter(120, time.Hour),
+		joins: newLimiter(400, time.Hour), // twice the most requests that can wait at once (maxWaiting)
 	}
 }
 
@@ -639,7 +641,13 @@ func scanUser(row scanner, extra ...any) (*user, error) {
 // the Pi, which also runs the printer.
 var hashSlots = make(chan struct{}, 2)
 
+// pbkdf2Runs counts the hashes made and checked since start. Nothing in the server reads it: the tests
+// do, to prove that a refused sign-up costs no hash and a sign-in costs exactly one. A counter here
+// changes nothing the server does, where a hash function a test could swap would add a way in.
+var pbkdf2Runs atomic.Int64
+
 func pbkdf2Key(pw string, salt []byte, rounds, n int) []byte {
+	pbkdf2Runs.Add(1)
 	hashSlots <- struct{}{}
 	defer func() { <-hashSlots }()
 	key, _ := pbkdf2.Key(sha256.New, pw, salt, rounds, n)
@@ -861,7 +869,7 @@ const (
 	permCatalogPublish = "catalog.publish" // publish and roll back skill maps
 	permFlagsEdit      = "flags.edit"      // feature flags
 	permUserRole       = "user.role"       // change roles
-	permUserManage     = "user.manage"     // reset passwords, delete accounts
+	permUserManage     = "user.manage"     // reset passwords, delete accounts, approve and decline requests to join
 )
 
 var roleRank = map[string]int{"user": 0, "moderator": 1, "admin": 2}
@@ -991,8 +999,25 @@ const (
 var instanceLimits = map[string]int{"description": maxInstanceDescription, "contact": maxInstanceContact, "rules": maxInstanceRules, "ruleText": maxRuleText, "ruleHint": maxRuleHint}
 
 // instanceParts are the keys of instance_settings this version reads and writes. Later settings
-// (registration, policy, origin, retention) get their own keys when their items are built.
-var instanceParts = []string{"description", "contact", "rules"}
+// (policy, origin, retention) get their own keys when their items are built.
+var instanceParts = []string{"description", "contact", "rules", "registration"}
+
+// How a person joins, while the signups flag is on (docs/federation.md, section 10). There are two
+// values and one switch, so that each question has one place to be answered: whether anyone may
+// join at all is the signups flag, as it always was, and how they join is this setting.
+//
+//	signups flag   registration           sign-up
+//	off            anything               closed: 403, as before
+//	on             open (or nothing saved) open: an account and a session at once, as before
+//	on             approval               a request to join that waits for an admin
+//
+// A third value "closed" would have made two switches that each close sign-up, and a flag that
+// says on while the setting says closed. Nothing saved means open, so an instance that sets nothing
+// signs people up exactly as it did before the setting existed.
+const (
+	regOpen     = "open"
+	regApproval = "approval"
+)
 
 // instanceRule is one rule: a short sentence, and an optional longer explanation.
 type instanceRule struct {
@@ -1007,6 +1032,9 @@ type instanceInfo struct {
 	Contact     string         `json:"contact"`
 	ContactKind string         `json:"contactKind"` // "email", "link", "text", or "" with no contact
 	Rules       []instanceRule `json:"rules"`
+	// Registration is regOpen or regApproval. It is not part of what the about page shows, so it is
+	// left out of that JSON; the editor's answer (instanceAnswer) and /api/me name it themselves.
+	Registration string `json:"-"`
 }
 
 func (i instanceInfo) empty() bool {
@@ -1023,7 +1051,7 @@ type querier interface {
 func readInstance(q querier) (info instanceInfo, version, by string, err error) {
 	info.Rules = []instanceRule{}
 	rows, err := q.Query(`SELECT s.key, s.value, s.updated_at, COALESCE(u.username, '') FROM instance_settings s LEFT JOIN users u ON u.id = s.updated_by
-		WHERE s.key IN ('description', 'contact', 'rules')`)
+		WHERE s.key IN ('description', 'contact', 'rules', 'registration')`)
 	if err != nil {
 		return info, "", "", err
 	}
@@ -1043,6 +1071,8 @@ func readInstance(q querier) (info instanceInfo, version, by string, err error) 
 			err = json.Unmarshal(raw, &info.Contact)
 		case "rules":
 			err = json.Unmarshal(raw, &info.Rules)
+		case "registration":
+			err = json.Unmarshal(raw, &info.Registration)
 		}
 		if err != nil {
 			return info, "", "", fmt.Errorf("instance setting %s: %w", key, err)
@@ -1056,6 +1086,9 @@ func readInstance(q querier) (info instanceInfo, version, by string, err error) 
 	}
 	if info.Rules == nil {
 		info.Rules = []instanceRule{}
+	}
+	if info.Registration != regApproval {
+		info.Registration = regOpen // no row, or a word this version does not know, is open, as before
 	}
 	info.ContactKind, _ = contactKind(info.Contact)
 	if !latest.IsZero() {
@@ -1164,12 +1197,14 @@ func contactKind(c string) (kind string, ok bool) {
 }
 
 // instanceInput is a save: every part at once, so two admins cannot each save half, and the version
-// the edit was made against.
+// the edit was made against. Registration may be left out, which keeps it as it is: an editor made
+// before the setting existed still saves the rest, and the version check still covers it.
 type instanceInput struct {
-	Description *string        `json:"description"`
-	Contact     *string        `json:"contact"`
-	Rules       []instanceRule `json:"rules"`
-	UpdatedAt   *string        `json:"updatedAt"`
+	Description  *string        `json:"description"`
+	Contact      *string        `json:"contact"`
+	Rules        []instanceRule `json:"rules"`
+	Registration *string        `json:"registration"`
+	UpdatedAt    *string        `json:"updatedAt"`
 }
 
 // cleanInstance checks a save against the limits. It returns what is to be stored, or the field the
@@ -1208,6 +1243,12 @@ func cleanInstance(in instanceInput) (instanceInfo, string, string) {
 		}
 		out.Rules = append(out.Rules, c)
 	}
+	if in.Registration != nil {
+		if *in.Registration != regOpen && *in.Registration != regApproval {
+			return out, "registration", `Registration is "open" or "approval". To close sign-up, turn off Open sign-ups under Features.`
+		}
+		out.Registration = *in.Registration
+	}
 	return out, "", ""
 }
 
@@ -1219,7 +1260,7 @@ func instanceAnswer(info instanceInfo, version, by string) map[string]any {
 		who = by
 	}
 	return map[string]any{"description": info.Description, "contact": info.Contact, "contactKind": info.ContactKind, "rules": info.Rules,
-		"updatedAt": version, "updatedBy": who, "limits": instanceLimits}
+		"registration": info.Registration, "updatedAt": version, "updatedBy": who, "limits": instanceLimits}
 }
 
 func (a *app) handleGetInstanceAdmin(w http.ResponseWriter, _ *http.Request, _ *user) {
@@ -1273,8 +1314,11 @@ func (a *app) handlePutInstance(w http.ResponseWriter, r *http.Request, u *user)
 		writeJSON(w, http.StatusConflict, out)
 		return
 	}
-	values := map[string]any{"description": next.Description, "contact": next.Contact, "rules": next.Rules}
-	before := map[string]any{"description": cur.Description, "contact": cur.Contact, "rules": cur.Rules}
+	if next.Registration == "" {
+		next.Registration = cur.Registration // left out of the save: kept
+	}
+	values := map[string]any{"description": next.Description, "contact": next.Contact, "rules": next.Rules, "registration": next.Registration}
+	before := map[string]any{"description": cur.Description, "contact": cur.Contact, "rules": cur.Rules, "registration": cur.Registration}
 	var changed []string
 	for _, k := range instanceParts {
 		nb, _ := json.Marshal(values[k])
@@ -1294,7 +1338,12 @@ func (a *app) handlePutInstance(w http.ResponseWriter, r *http.Request, u *user)
 	if len(changed) > 0 {
 		// The log keeps rows short, as it does for flags: which parts changed and how many rules
 		// there are now, not the text, which the settings themselves hold.
-		if err := a.audit(tx, u.ID, "instance", "", 0, 0, "", map[string]any{"parts": changed, "rules": len(next.Rules)}); err != nil {
+		// How people join is short and matters, so a change of it is named.
+		detail := map[string]any{"parts": changed, "rules": len(next.Rules)}
+		if slices.Contains(changed, "registration") {
+			detail["registration"] = next.Registration
+		}
+		if err := a.audit(tx, u.ID, "instance", "", 0, 0, "", detail); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -1373,10 +1422,15 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, err)
 		return
 	}
-	if !info.empty() {
+	// approval tells a visitor, before they type, that an admin approves new accounts here; it is
+	// there only while that is so, and an instance that never chose it answers as before.
+	if !info.empty() || (u == nil && info.Registration == regApproval) {
 		in := map[string]any{"about": u != nil || info.Description != ""}
 		if u == nil && len(info.Rules) > 0 {
 			in["rules"] = info.Rules
+		}
+		if u == nil && info.Registration == regApproval {
+			in["approval"] = true
 		}
 		out["instance"] = in
 	}
@@ -1391,6 +1445,7 @@ type credentials struct {
 	Username    string `json:"username"`
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName"`
+	Reason      string `json:"reason"` // why the person wants to join; read only while sign-up is by approval
 }
 
 // passwordProblem says why a password cannot be used for the account with this username, or ""
@@ -1459,9 +1514,25 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Looked up before the password is hashed, so asking for a taken name costs no CPU.
+	// While sign-up is by approval, the person may say why they want to join, as on Mastodon.
+	info, err := a.instanceCached()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	approval := info.Registration == regApproval
+	var reason string
+	if approval {
+		var msg string
+		if reason, msg = plainText(in.Reason, "The reason", true, maxJoinReason); msg != "" {
+			fail(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
+	// Looked up before the password is hashed, so asking for a taken name costs no CPU. A name that
+	// waits in a request to join is taken too, so nobody can claim it while an admin decides.
 	var taken bool
-	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE username = $1)`, name).Scan(&taken); err != nil {
+	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE username = $1) OR EXISTS (SELECT 1 FROM join_requests WHERE username = $1)`, name).Scan(&taken); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -1470,14 +1541,25 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "That username is taken.")
 		return
 	}
+	// The allowance is counted before the password is hashed, on both paths, so what an address can make
+	// the server hash is bounded by it, even when many requests arrive at once: add is one step under the
+	// limiter's lock, and only the requests it lets through go on to hash.
 	if !a.lim.signup.add(from) {
 		tooMany()
 		return
 	}
-	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) VALUES ($1, $2, $3) RETURNING `+userCols,
+	if approval {
+		a.askToJoin(w, from, name, display, in.Password, reason)
+		return
+	}
+	// The insert checks in the same statement that no request to join waits under the name, which leaves
+	// only the moment an admin switches the setting for an account and a request to share one (see
+	// askToJoin). No row back means a request took the name: answered as a taken name.
+	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) SELECT $1, $2, $3
+		WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) RETURNING `+userCols,
 		name, display, hashPassword(in.Password)))
 	var pe *pq.Error
-	if errors.As(err, &pe) && pe.Code == "23505" {
+	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
 		a.lim.signup.addWeight(from, 1-tenths) // someone took the name in between: a tenth, as above
 		fail(w, http.StatusConflict, "That username is taken.")
 		return
@@ -1491,6 +1573,214 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
+/* ---------- requests to join ----------
+
+While registration is by approval, signing up makes a request to join, not an account. A request is a
+row of its own table (join_requests), never a row of users, so nothing that lists, counts, mentions,
+follows, blocks or signs in an account can meet one: the people list, profiles, mentions, the member
+totals and every session read users and only users. An admin with user.manage approves it, which
+makes the account, or declines it, which deletes the request and frees the name. Nobody is told
+either way (Flowa keeps no email address): the person learns it by signing in. */
+
+const (
+	maxJoinReason = 500 // characters in the answer to "Why do you want to join?"
+	maxWaiting    = 200 // requests that may wait at once; past it, sign-up says to try again later
+	joinWaitDays  = 30  // days a request waits before housekeeping removes it
+)
+
+// Said to a person whose request waits, after the right password only.
+const waitingSentence = "Your request to join is waiting for an admin to approve it. Nobody can tell you when that happens, so try signing in again later."
+
+// askToJoin stores a request to join, once handleSignup has counted it against the sign-up allowance
+// exactly as it counts an account, before anything is hashed. At most maxWaiting requests wait at once.
+// A full queue is seen first by a plain count, so it costs no hash; a request it turns away keeps its
+// count against the address like any other attempt, so one address cannot ask without end. The count
+// that decides is made again under a lock with the insert, so requests sent together cannot pass the
+// cap. The answer is 202 with no session: the person is not signed in until an admin approves.
+func (a *app) askToJoin(w http.ResponseWriter, from, name, display, pw, reason string) {
+	full := func() {
+		logRefusal(w, "too many requests to join waiting", "from "+from)
+		fail(w, http.StatusServiceUnavailable, "This Flowa is not taking requests to join right now. Try again in a few days.")
+	}
+	var waiting int
+	if err := a.db.QueryRow(`SELECT count(*) FROM join_requests`).Scan(&waiting); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if waiting >= maxWaiting {
+		full()
+		return
+	}
+	hash := hashPassword(pw) // before the transaction, which holds the lock as briefly as it can
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(7130653)`); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.QueryRow(`SELECT count(*) FROM join_requests`).Scan(&waiting); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if waiting >= maxWaiting {
+		full()
+		return
+	}
+	// The insert checks in the same statement that no account has the name, as the open path checks for
+	// a request. What is left is the moment an admin switches the setting: a sign-up that read "open" just
+	// before and one that reads "approval" just after can each pass the other's check. Then an account and
+	// a request share a name; Accounts says so beside the request, Approve answers 409, and the admin
+	// declines it. Closing that moment for good would need a lock on the open path too.
+	res, err := tx.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, reason) SELECT $1, $2, $3, $4
+		WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`, name, display, hash, reason)
+	var pe *pq.Error
+	taken := errors.As(err, &pe) && pe.Code == "23505"
+	if err == nil {
+		n, _ := res.RowsAffected()
+		taken = n == 0
+	}
+	if taken {
+		a.lim.signup.addWeight(from, 1-tenths) // the name was taken in between: a tenth, as a taken name, as the open path does
+		fail(w, http.StatusConflict, "That username is taken.")
+		return
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"waiting": true})
+}
+
+// joinRequest is a request as the admins' list shows it. The reason is for the staff who decide.
+type joinRequest struct {
+	ID          int64     `json:"id"`
+	Username    string    `json:"username"`
+	DisplayName string    `json:"displayName"`
+	Reason      string    `json:"reason"`
+	Created     time.Time `json:"created"`
+	// Taken says an account has the name now (the setting was switched while two sign-ups were on their
+	// way, see askToJoin): the request cannot become an account, and the page says to decline it.
+	Taken bool `json:"taken"`
+}
+
+// handleJoinRequests lists the requests that wait, oldest first, with the limits the page explains.
+func (a *app) handleJoinRequests(w http.ResponseWriter, _ *http.Request, _ *user) {
+	rows, err := a.db.Query(`SELECT j.id, j.username, j.display_name, j.reason, j.created_at, EXISTS (SELECT 1 FROM users u WHERE u.username = j.username)
+		FROM join_requests j ORDER BY j.created_at, j.id`)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []joinRequest{}
+	for rows.Next() {
+		var j joinRequest
+		if err := rows.Scan(&j.ID, &j.Username, &j.DisplayName, &j.Reason, &j.Created, &j.Taken); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": out, "max": maxWaiting, "days": joinWaitDays})
+}
+
+const noRequest = "No such request: it was approved or declined already, or it waited too long."
+
+// handleApproveRequest makes the account a request asked for. The request is deleted and the account
+// made in one transaction with its audit row; the delete locks the row, so of two admins acting at
+// once the second finds nothing and is told so (404), and only one account and one audit row are
+// made. If an account took the name meanwhile (the setting was changed while a sign-up was on its
+// way, or ADMIN_USER names it), the request stays for the admin to decline.
+func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.joins, u, "approvals and declines of requests to join")
+	if !ok {
+		return
+	}
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var name, display, hash string
+	err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username, display_name, pw_hash`, id).Scan(&name, &display, &hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, noRequest)
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var uid int64
+	err = tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash) VALUES ($1, $2, $3) RETURNING id`, name, display, hash).Scan(&uid)
+	var pe *pq.Error
+	if errors.As(err, &pe) && pe.Code == "23505" {
+		fail(w, http.StatusConflict, "An account with the username @"+name+" exists now, so this request cannot become one. Decline it.")
+		return
+	}
+	if err == nil {
+		// The row names the account and the name it was asked under, as a decline's does, and no more:
+		// the log keeps who decided what, and when the request was made or why matters only until it is
+		// answered (the reason was for the admin who decided, not for the log).
+		err = a.audit(tx, u.ID, "approve_user", "user", uid, uid, "", map[string]any{"username": name})
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": uid, "username": name})
+}
+
+// handleDeclineRequest deletes a request. Nothing of it is kept but the audit row with the name: a
+// declined person's password hash and reason are not Flowa's to keep, and the name is free again, as
+// it was before they asked. They are not told; signing in answers as for any name nobody has.
+func (a *app) handleDeclineRequest(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.joins, u, "approvals and declines of requests to join")
+	if !ok {
+		return
+	}
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var name string
+	err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username`, id).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, noRequest)
+		return
+	}
+	if err == nil {
+		err = a.audit(tx, u.ID, "decline_user", "", id, 0, "", map[string]any{"username": name})
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // clientIP is the visitor's address, which the sign-in and sign-up limits count by. Behind a reverse
@@ -1544,6 +1834,25 @@ func (a *app) viaHTTPS(r *http.Request) bool {
 	return ip != nil && a.trustedProxy(ip) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
+// rowQuerier is what signinLookup reads through: the database, or in a test something that counts.
+type rowQuerier interface {
+	QueryRow(string, ...any) *sql.Row
+}
+
+// signinSQL reads a name in one statement: the account, or, when no account has the name, the request
+// to join that waits under it, shaped as an account (id 0) with request true. A member's name, a waiting
+// name and an unknown one each cost this one query.
+const signinSQL = `SELECT ` + userCols + `, u.pw_hash, false FROM users u WHERE u.username = $1
+	UNION ALL
+	SELECT 0, j.username, j.display_name, 'user', '[]', '[]', false, '', '', '{}', '{}', '{}', j.created_at, NULL, '', NULL, '', false, '{}', false, j.pw_hash, true
+	FROM join_requests j WHERE j.username = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`
+
+// signinLookup is the one read a sign-in makes. err is sql.ErrNoRows for a name nobody has.
+func signinLookup(q rowQuerier, name string) (u *user, hash string, request bool, err error) {
+	u, err = scanUser(q.QueryRow(signinSQL, name), &hash, &request)
+	return u, hash, request, err
+}
+
 func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	var in credentials
 	if !readJSON(w, r, 4096, &in) {
@@ -1566,15 +1875,28 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	// their name. So the password is still checked: the right one signs in, a wrong one is told to
 	// wait and learns nothing more.
 	locked := a.lim.account.over(name)
-	var hash string
-	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, u.pw_hash FROM users u WHERE u.username = $1`, name), &hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		checkPassword(dummyHash, in.Password)
-	} else if err != nil {
+	u, hash, request, err := signinLookup(a.db, name)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		a.serverError(w, err)
 		return
 	}
-	if err != nil || !checkPassword(hash, in.Password) {
+	// Exactly one password check per attempt, whatever the name is: an account's hash, a waiting
+	// request's, or for a name nobody has a hash that matches nothing. Each costs the same time, so how
+	// long the answer takes does not tell which of the three the name is.
+	ok := false
+	if err != nil {
+		checkPassword(dummyHash, in.Password)
+	} else {
+		ok = checkPassword(hash, in.Password)
+	}
+	// A request to join that waits: only the right password is told so. Anyone else learns no more than
+	// for a name nobody has, so a stranger cannot find out who asked to join.
+	if ok && request {
+		a.lim.account.forget(name)
+		fail(w, http.StatusForbidden, waitingSentence)
+		return
+	}
+	if !ok {
 		a.lim.signin.add(key)
 		a.lim.signinIP.add(ip)
 		if locked {
@@ -4547,7 +4869,22 @@ func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 		a.serverError(w, err)
 		return
 	}
-	out["totals"] = map[string]int{"users": users, "moderators": mods, "admins": admins, "active7": active7, "active30": active30, "openReports": open}
+	totals := map[string]int{"users": users, "moderators": mods, "admins": admins, "active7": active7, "active30": active30, "openReports": open}
+	// Requests to join are not members, so they are counted on their own, beside the open reports.
+	// The count is in the answer only while sign-up is by approval or a request still waits, so an
+	// instance that never chose approval answers as before.
+	info, err := a.instanceCached()
+	if err == nil {
+		var waiting int
+		if err = a.db.QueryRow(`SELECT count(*) FROM join_requests`).Scan(&waiting); err == nil && (waiting > 0 || info.Registration == regApproval) {
+			totals["waiting"] = waiting
+		}
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["totals"] = totals
 	rows, err := a.db.Query(dashWeeksSQL, dashWeeks)
 	if err != nil {
 		a.serverError(w, err)
@@ -4705,6 +5042,20 @@ var migrations = []string{schema, schemaSocial,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 		updated_by BIGINT REFERENCES users(id) ON DELETE SET NULL
 	)`,
+	// 11: requests to join, while registration is by approval. A table of their own rather than a
+	// column on users, so that no query that reads users can show, count or sign in a person nobody has
+	// approved. The username is unique here, and sign-up checks both tables, so a name that waits is
+	// taken. A new table only: going back to an earlier build is safe, and that build simply never
+	// sees the requests (the people waiting cannot sign in there either).
+	`CREATE TABLE IF NOT EXISTS join_requests (
+		id BIGSERIAL PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE,
+		display_name TEXT NOT NULL,
+		pw_hash TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	);
+	CREATE INDEX IF NOT EXISTS join_requests_created ON join_requests (created_at)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -4760,6 +5111,9 @@ func (a *app) housekeep() (map[string]int64, error) {
 		{"previews", `DELETE FROM link_previews lp WHERE COALESCE(lp.fetched_at, now() - interval '2 days') < now() - interval '1 day'
 			AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.data->'links' @> jsonb_build_array(jsonb_build_object('url', lp.url)))`},
 		{"bookmarks", `DELETE FROM bookmarks b WHERE b.kind = 'post' AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.id::text = b.ref)`},
+		// A request to join that nobody answered in joinWaitDays is let go, as a decline would, so a
+		// forgotten queue frees its names and its room under the cap by itself.
+		{"requests", `DELETE FROM join_requests WHERE created_at < now() - make_interval(days => ` + strconv.Itoa(joinWaitDays) + `)`},
 	}
 	out := map[string]int64{}
 	for _, st := range steps {
@@ -4777,10 +5131,15 @@ func (a *app) housekeeping(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		if n, err := a.housekeep(); err != nil {
+		n, err := a.housekeep()
+		if err != nil {
 			log.Print(err)
 		} else if n["sessions"]+n["notifications"]+n["previews"]+n["bookmarks"] > 0 {
 			log.Printf("housekeeping: removed %d expired sessions, %d old notifications, %d unused link previews, %d bookmarks of deleted posts", n["sessions"], n["notifications"], n["previews"], n["bookmarks"])
+		}
+		// A line of its own, so the line above reads as it always has.
+		if n["requests"] > 0 {
+			log.Printf("housekeeping: removed %d requests to join that waited more than %d days", n["requests"], joinWaitDays)
 		}
 		select {
 		case <-ctx.Done():
@@ -4799,10 +5158,17 @@ func (a *app) seedAdmin(name, pw string) (int64, error) {
 	var id int64
 	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = a.db.QueryRow(`INSERT INTO users (username, display_name, pw_hash, role) VALUES ($1, $2, $3, 'admin') RETURNING id`,
-			name, "Admin", hashPassword(pw)).Scan(&id)
+		// The account the operator names is made whatever the registration setting says, and a
+		// request to join that waits under the same name gives way to it: the name is the operator's.
+		var dropped bool
+		err = a.db.QueryRow(`WITH gone AS (DELETE FROM join_requests WHERE username = $1 RETURNING 1)
+			INSERT INTO users (username, display_name, pw_hash, role) SELECT $1, $2, $3, 'admin' RETURNING id, EXISTS (SELECT 1 FROM gone)`,
+			name, "Admin", hashPassword(pw)).Scan(&id, &dropped)
 		if err == nil {
 			log.Printf("created admin account %q", name)
+			if dropped {
+				log.Printf("removed the request to join that waited under the name %q", name)
+			}
 		}
 	}
 	return id, err
@@ -5327,6 +5693,9 @@ func (a *app) table(st *static) *routeMux {
 	mux.HandleFunc("GET /api/instance", a.authed("", a.handleInstance))
 	mux.HandleFunc("GET /api/about", a.handleAbout)
 	mux.HandleFunc("GET /api/admin/users", a.authed(permDashboard, a.handleUsers))
+	mux.HandleFunc("GET /api/admin/requests", a.authed(permUserManage, a.handleJoinRequests))
+	mux.HandleFunc("POST /api/admin/requests/{id}/approve", a.authed(permUserManage, a.handleApproveRequest))
+	mux.HandleFunc("DELETE /api/admin/requests/{id}", a.authed(permUserManage, a.handleDeclineRequest))
 	mux.HandleFunc("DELETE /api/admin/users/{id}", a.authed(permUserManage, a.handleDeleteUser))
 	mux.HandleFunc("PUT /api/admin/users/{id}/password", a.authed(permUserManage, a.handleResetPassword))
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", a.authed(permUserRole, a.handleSetRole))

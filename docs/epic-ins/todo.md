@@ -6,7 +6,7 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 4 of 7 items done; the design waits for the owner's review. Every setting, table, route and
+**Status:** in progress (issue [#88](https://github.com/TuanSSM/flowtopia/issues/88)). 5 of 7 items done; the design waits for the owner's review. Every setting, table, route and
 test named below is new unless the design note says it exists.
 
 - [ ] **Design.** [federation.md](../federation.md): the modes, identity, protocol, security, queues,
@@ -61,10 +61,23 @@ test named below is new unless the design note says it exists.
   the sign-up form and the about page; `TestDBInstanceInfo`, `TestInstanceText`, the about address and
   the empty reads in `TestDBLocalModeUnchanged`, the save in `TestDBOneConnection`; checks in `mod.py`,
   stops in `a11y.py` and `contrast.py`, and the about pictures in `pages.py`.
-- [ ] **Sign-up by approval.** The `registration` setting: open, approval or closed (the `signups`
-  flag stays as the switch between open and closed); an account waiting for approval cannot sign in
-  and is listed in Accounts with Approve and Decline, both audited. DoD: `TestDBRegistrationApproval`;
+- [x] **Sign-up by approval.** The `registration` setting: open or approval, while the `signups` flag
+  stays the one switch that closes sign-up; a person waiting for approval cannot sign in and is listed in
+  Accounts with Approve and Decline, both audited. DoD: `TestDBRegistrationApproval`;
   `TestDBSignupLimits` unchanged.
+  Built: `registration` in `instance_settings` with two values, `open` (what nothing saved means) and
+  `approval`, while closed stays the `signups` flag alone (the truth table is in the README); edited in
+  Admin > Instance through the same document, version check and audit row. Migration 11 adds
+  `join_requests`, a table of its own rather than a column on `users`, so a waiting person is no account
+  in any list, count, profile, mention, follow, block or session; the name is taken while it waits. An
+  optional reason of 500 characters, plain text, read only by admins. `GET /api/admin/requests`,
+  `POST /api/admin/requests/{id}/approve` and `DELETE /api/admin/requests/{id}` (user.manage, 400 an hour
+  per admin, audited, 404 when already answered); Decline deletes the request and frees the name. At most
+  200 wait (503 past that), every request counts against the sign-up allowance before its password is
+  hashed (a refused one costs no hash), each insert checks the other table for the name, housekeeping
+  removes requests older than 30 days, `seedAdmin` makes the operator's account whatever the setting says. `TestDBRegistrationApproval`, the new routes in
+  `TestDBLocalModeUnchanged` and `TestDBOneConnection`; checks in `mod.py`, stops in `a11y.py` and
+  `contrast.py`, and the sign-up form and Accounts pictures in `pages.py`; `flowa-schema10.dump`.
 - [ ] **Single-profile mode.** `FLOWA_MODE=single`: refused at start with more than one local
   account (F15); sign-up answers 403 whatever the flag says; the root page shows the owner's profile
   to visitors as a small page the server writes (no script); Community shows the owner's posts.

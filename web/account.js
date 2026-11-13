@@ -311,17 +311,30 @@ function pageWelcome() {
     <div class="card"><div class="card-h"><h2>With an account</h2></div><ul class="steps">
       <li>Track your level on every skill, for each hand.</li><li>Log practice, and see your streak and heatmap.</li><li>Build combos and test their transitions.</li><li>Follow the plan and tick off gates.</li><li>Choose your props and keep notes.</li></ul></div></div>`;
 }
+// While an admin approves new accounts (the server says so in /api/me only then), the sign-up form says it
+// before anything is typed, asks why the person wants to join, and sends a request instead of making an
+// account. joinSent holds the username of a request just sent, for the page that says what happens next; it
+// is forgotten when the person goes to another page.
+let joinSent = '';
+window.addEventListener('hashchange', () => { if (location.hash !== '#/signup') joinSent = ''; });
+const JOIN_REASON = 500; // characters, as maxJoinReason in main.go
 function pageAuth(mode) {
-  const up = mode === 'signup';
+  const up = mode === 'signup', ask = up && !!inst?.approval;
   if (up && !flags.signups) return `<div class="auth card"><h1>Sign-ups are off</h1><p class="muted" style="margin-top:8px">Ask the admin for an account, then <a href="#/signin">sign in</a>.</p></div>`;
+  if (up && joinSent) return `<div class="auth card" id="join-sent"><h1 tabindex="-1">Your request is waiting</h1>
+    <p>An admin of this Flowa will look at the request for <b>@${esc(joinSent)}</b>. Flowa keeps no email address, so nobody can tell you when they have.</p>
+    <p class="small muted">Try signing in again later with the username and password you chose. Once the request is approved, they work. A request nobody answers is let go after 30 days.</p>
+    <a class="btn primary" href="#/signin">Go to sign in</a></div>`;
   return `<form class="auth card" id="auth-form" data-mode="${mode}" novalidate>
     <h1>${up ? 'Create an account' : 'Sign in'}</h1>
+    ${ask ? '<p class="notice" id="join-note">An admin approves new accounts here. You can sign in once your request is approved.</p>' : ''}
     <label class="field">Username<input type="text" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="24" required></label>
     ${up ? '<label class="field">Display name (optional)<input type="text" name="displayName" autocomplete="name" maxlength="40"></label>' : ''}
     <label class="field">Password<input type="password" name="password" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="8" maxlength="200" required></label>
     ${up ? '<label class="field">Repeat password<input type="password" name="again" autocomplete="new-password" maxlength="200" required></label><p class="tiny">At least 8 characters. No email is needed, so nothing can be sent to you if you forget it.</p>' : ''}
-    ${up ? signupRules() : ''}<p class="form-err" id="auth-err" role="alert"></p>
-    <button class="btn primary" type="submit">${up ? 'Create account' : 'Sign in'}</button>
+    ${ask ? `<div class="stack" style="gap:4px"><label class="field">Why do you want to join? (optional, only the admins read it)<textarea name="reason" rows="3" ${countAttrs('join-count', '', JOIN_REASON)}></textarea></label>${countHTML('join-count', '', JOIN_REASON)}</div>` : ''}
+    ${up ? signupRules(ask) : ''}<p class="form-err" id="auth-err" role="alert"></p>
+    <button class="btn primary" type="submit">${ask ? 'Ask to join' : up ? 'Create account' : 'Sign in'}</button>
     <p class="small muted">${up ? 'Already have an account? <a href="#/signin">Sign in</a>' : flags.signups ? 'New here? <a href="#/signup">Create an account</a>' : 'New sign-ups are turned off.'}</p>${!up && inst?.about ? '<p class="small"><a href="#/about">About this Flowa</a></p>' : ''}</form>`;
 }
 // The rules, in the admins' order, each with its explanation. Everything in them is text an admin typed, so
@@ -330,11 +343,11 @@ const rulesHTML = list => `<ol class="rules">${list.map(r => `<li><b class="plai
 // Above the button of the sign-up form, once the admins have saved rules; nothing at all before that. Reading
 // them is the step before the account, as on Mastodon; creating it is agreeing, said in words beside the
 // button rather than with a box to tick, which would only add a click that proves no more than the button does.
-function signupRules() {
+function signupRules(ask) {
   const list = inst?.rules || [];
   if (!list.length) return '';
   return `<section class="signup-rules" aria-labelledby="signup-rules-h"><h2 id="signup-rules-h">The rules of this Flowa</h2>${rulesHTML(list)}
-    <p class="tiny">By creating an account you agree to follow these rules.</p></section>`;
+    <p class="tiny">By ${ask ? 'asking to join' : 'creating an account'} you agree to follow these rules.</p></section>`;
 }
 // The about page: what the admins wrote, the rules and how to reach them. A member reads it in every mode,
 // whatever has been saved; a visitor only once there is a description, and before that the page is as unknown
@@ -540,12 +553,19 @@ document.addEventListener('submit', async e => {
     if (up) {
       if (f.password.value !== f.again.value) { showErr('auth-err', 'The two passwords do not match.', [f.again]); return; }
       body.displayName = f.displayName.value;
+      if (f.reason) body.reason = f.reason.value;
     }
     const btn = f.querySelector('button[type=submit]');
     btn.disabled = true; showErr('auth-err', '');
     const r = await api(up ? 'signup' : 'signin', 'POST', body);
     btn.disabled = false;
-    if (!r.ok) { showErr('auth-err', r.error, errFields(f, r.error, [[/^too many/i, []], [/wrong username or password/i, ['username', 'password']], [/password/i, ['password']], [/username/i, ['username']], [/display name/i, ['displayName']]])); return; }
+    if (!r.ok) { showErr('auth-err', r.error, errFields(f, r.error, [[/^too many/i, []], [/wrong username or password/i, ['username', 'password']], [/^the reason/i, ['reason']], [/password/i, ['password']], [/username/i, ['username']], [/display name/i, ['displayName']]])); return; }
+    // A request to join: no account and no session yet, so the page says what happens next instead.
+    if (r.data?.waiting) {
+      joinSent = f.username.value.trim().toLowerCase(); document.activeElement?.blur?.(); render();
+      $('#join-sent h1')?.focus();
+      return;
+    }
     document.activeElement?.blur?.();
     location.hash = '#/';
     try { await load(); } catch { toast('Signed in, but your progress did not load. Reload the page.'); }

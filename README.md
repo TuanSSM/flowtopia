@@ -66,6 +66,9 @@ named but not described.
   admins and the rules in Admin > Instance. The rules show, in order, above the button of the sign-up form,
   with a sentence that creating an account means agreeing to them, and everything shows on an about page.
   Nothing shows anywhere until it is saved. See [Instance information](#instance-information).
+- **Sign-up by approval:** an admin can choose in Admin > Instance that new accounts wait for an admin.
+  The person asks to join, may say why, and signs in once an admin has approved the request in Admin >
+  Accounts. Nothing changes until an admin chooses it. See [Sign-up by approval](#sign-up-by-approval).
 - **Notifications:** a bell in the header for likes, comments, replies, comment likes, mentions, follows and new
   badges (a reply opens its thread, scrolled to it), plus a warning
   when today's practice would end a streak.
@@ -372,7 +375,8 @@ in the container's environment, when set, is shown instead.
   `TestDBQueryPlans` on 500 members and 10,000 posts, the timeline again with 5,000 blocks for the
   reader, and Home for a reader who follows 500 accounts among 30,000 more posts: none may read a table that grows with use from end to end, and each has a bound on the rows it
   reads. An hourly job removes expired or unused
-  sessions, notifications read more than 180 days ago, and link previews no post uses.
+  sessions, notifications read more than 180 days ago, link previews no post uses, and requests to join
+  that waited more than 30 days.
 
 The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
@@ -422,7 +426,8 @@ on the Admin page. No restart is needed. Every flag but `follows` is on by defau
 gets in the way, and a flag an admin has set keeps that setting. `follows` is off by default, on an instance
 that ran before it as on a new one, so that adding it changes nothing until an admin turns it on. A flag that is off turns off the feature's API as
 well as its pages: with `community` off the timeline, comments, likes, people and notifications answer
-404, and with `game` off so do badges. `signups` opens or closes sign-up, `tour` runs the
+404, and with `game` off so do badges. `signups` opens or closes sign-up (how people join while it is
+open is the `registration` setting, [Sign-up by approval](#sign-up-by-approval)), `tour` runs the
 guided tour, `community` is the timeline, public profiles, people list and notifications, `game` is XP,
 levels, streak sharing, challenges, achievements and XP on the Plan's phases, `moderation` is reports, the queue, hiding,
 mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and
@@ -532,7 +537,7 @@ returns the signed-in user's permissions so the interface shows only what the se
 | --- | --- |
 | Member | Post, comment, like, report |
 | Moderator | Also: delete and hide others' content, mute and suspend members, work the report queue, revoke badges and hide reported stats, see the dashboard and accounts, draft skill map changes |
-| Admin | Also: change roles, feature flags and the instance information, reset passwords, delete accounts, read the audit log, publish and restore skill maps |
+| Admin | Also: change roles, feature flags and the instance information, reset passwords, delete accounts, approve and decline requests to join, read the audit log, publish and restore skill maps |
 
 Nobody acts on someone of their own role or higher, or on themself, and Flowa always keeps one admin.
 That covers deleting someone's posts and comments: a moderator cannot delete an admin's or another
@@ -622,6 +627,72 @@ signed-in member, every mode), `GET /api/about` (anyone, once a description is s
 per address, answered from memory). `GET /api/me` says `instance: {about}` once anything is saved, and
 gives a visitor the rules for the sign-up form. The settings live in `instance_settings` (migration 10),
 one row per part, with who saved it and when; deleting that account keeps the row with nobody named.
+
+### Sign-up by approval
+
+Admin > Instance also says who can join, as Mastodon's registration modes do. The `signups` flag (Open
+sign-ups, under Features) stays the one switch that closes sign-up; the `registration` setting says how
+people join while it is on:
+
+| `signups` flag | `registration` | Sign-up |
+| --- | --- | --- |
+| off | anything | closed: "New sign-ups are turned off", as before |
+| on | `open`, or nothing saved | an account and a session at once, as before |
+| on | `approval` | a request to join that waits for an admin |
+
+There is no third value "closed": with one, two switches could each close sign-up and disagree. Nothing saved
+is `open`, so an instance where nobody chooses approval signs people up exactly as before.
+
+**What the person sees.** While approval is on, the sign-up form says before the first field that an admin
+approves new accounts here, asks "Why do you want to join?" (optional, plain text of at most 500 characters,
+read only by the admins), and its button is Ask to join. After it, a page says the request waits and that
+nobody can tell them when it is answered: **Flowa keeps no email address, so nobody is told**, and the person
+learns the answer by signing in again. Signing in with the right password while the request waits says "Your
+request to join is waiting for an admin to approve it." A wrong password gets the ordinary "Wrong username or
+password.", so a stranger cannot find out who asked. After a decline the name is unknown again, and signing in
+answers as for any name nobody has.
+
+**A request is not an account.** It is kept in a table of its own (`join_requests`, migration 11), so it is in
+no list or count of members, has no profile, cannot be mentioned, followed or blocked, and has no session. Its
+username is taken while it waits. The Overview counts requests to join on a tile of their own, beside the
+members, while approval is on or a request waits; the Accounts tab shows the count in its name.
+
+**Approve and Decline** are in Admin > Accounts under "Waiting to join", oldest first, with the name, when
+they asked and the reason, for admins (permission `user.manage`, the one that resets passwords and deletes
+accounts: approving makes an account). Approve makes an ordinary member account with the name and password
+the person chose. Decline deletes the request, reason and password with it, and the name is free again; the
+audit log keeps who decided and the name, not when the request was made nor its reason, which were for the
+admin who decided. Both are audited, and an answer to a request already answered (by another admin at the
+same moment, or twice) is "No such request" (404) and changes nothing.
+
+**Limits.** Every request that gets past the form's own checks counts against the sign-up allowance of its
+address (10 an hour), before its password is hashed, whatever happens to it next: stored, or turned away
+because the queue is full. A name that is taken costs a tenth, as on the open path. So a refused request costs
+the server no password hash, and one address cannot make it hash more than 10 passwords an hour, even with
+requests sent all at once. At most 200 requests wait at once; past that, sign-up answers "This Flowa is not
+taking requests to join right now" (503), which tells a stranger only that the queue is full. A request
+nobody answers in 30 days is removed by the hourly housekeeping, with a line in the log, as a decline would.
+
+**What anyone can do with it.** Anyone can fill the queue: one address in about 20 hours at 10 requests an
+hour, many addresses far sooner. A full queue stops everyone from joining until an admin declines requests or
+30 days pass, so an admin who sees a flood in Accounts declines it, or turns Open sign-ups off for a while.
+A name can be held by asking for it again each time a request expires. Approval is for an instance that
+wants to choose its members; an instance that wants nobody to join turns Open sign-ups off.
+
+**Switching.** Back to open: the requests that wait keep waiting until an admin answers them; nobody is
+approved without an admin. With the `signups` flag off, nobody can ask, and the requests that wait can still
+be approved or declined. The account named by `ADMIN_USER` is made an admin at start whatever the setting
+says, and a request that waits under that name gives way to it. Each sign-up checks in its own insert that
+the other kind does not have the name (an account for a request, a request for an account), but two
+sign-ups on their way at the moment an admin switches the setting can still each pass the other's check.
+Then an account and a request share a name: Accounts says so beside the request, which has no Approve
+(the server would answer 409), and the admin declines it.
+
+API: `registration` (`open` or `approval`) in `GET|PUT /api/admin/instance` (a save that leaves it out keeps
+it); `POST /api/signup` answers 202 `{"waiting": true}` with no cookie while approval is on, and takes an
+optional `reason`; `GET /api/me` gives a visitor `instance: {approval: true}` while approval is on;
+`GET /api/admin/requests`, `POST /api/admin/requests/{id}/approve` and `DELETE /api/admin/requests/{id}`
+(user.manage; 400 answers an hour per admin).
 
 ## Guided tour
 

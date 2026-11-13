@@ -369,6 +369,13 @@ try:
     api(op,'admin/instance',{**INST,'updatedAt':''},'PUT');load()
     page('admin instance','#/admin/instance')
     page('about this Flowa','#/about')
+    # Sign-up by approval, for staff: the choice in the editor, a request waiting in Accounts, and its count on
+    # the dashboard. Sign-up is open again below until the visitor's stops.
+    registration(op,'approval');ask_to_join('asker','I spin poi at the Thursday jam.')
+    page('admin instance, by approval','#/admin/instance')
+    page('admin accounts, a request to join waiting','#/admin/accounts')
+    page('admin dashboard, requests to join counted','#/admin')
+    registration(op,'open')
     page('admin audit log','#/admin/audit')
     page('skill map editor, list of maps','#/admin/maps')
     nav('#/admin/maps/poi');wait_for("return document.querySelectorAll('.ed-skill').length>0",'the editor to list the skills',20)
@@ -383,8 +390,21 @@ try:
     # Someone new: the page that asks which props they spin, and the guided tour, which is turned on for
     # them alone (it would cover the pages above). The tour takes its colours from the theme when it opens,
     # so it is opened once in each theme, by a new member each time.
-    api(op,'flags',{'flags':{'tour':True,'avatars':False}},'PUT')
     cmd('WebDriver:SetWindowRect',width=1440,height=1100)
+    # Sign-up by approval, for a visitor: the form that says so and asks why, the page after a request, and the
+    # sign-in that says the request waits. Then sign-up is open again, with nobody waiting, and that is checked.
+    registration(op,'approval')
+    js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+    load(BASE+'?approval#/signup');wait_for("return !!document.querySelector('#auth-form [name=reason]')",'the sign-up form by approval',20)
+    page('create an account, by approval')
+    js("const f=document.querySelector('#auth-form');f.username.value='hopeful';f.password.value=f.again.value='flowa-test-only';f.reason.value='To log my practice.';f.requestSubmit()")
+    wait_for("return !!document.querySelector('#join-sent')",'the page after a request to join',30)
+    page('a request to join, sent')
+    nav('#/signin');js("const f=document.querySelector('#auth-form');f.username.value='hopeful';f.password.value='flowa-test-only';f.requestSubmit()")
+    wait_for("return /waiting for an admin/.test(document.querySelector('#auth-err').textContent)",'the sign-in that says the request waits',30)
+    page('sign in, the request waiting')
+    check('sign-up is open again and no request waits',approval_off(op))
+    api(op,'flags',{'flags':{'tour':True,'avatars':False}},'PUT')
     TOUR="[...document.querySelectorAll('[role=alertdialog] button')]"
     for t in ('dark','light'):
         js("return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")

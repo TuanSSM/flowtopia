@@ -244,6 +244,58 @@ try:
     check('Load their version puts theirs in the form, and Save waits for a change',lambda: js("return document.querySelector('#inst-form [name=description]').value")=='Theirs again.' and js("return document.querySelector('#inst-save').disabled") and (txt('#inst-err') or '')=='' and get(op,'admin/instance')['description']=='Theirs again.')
     api(op,'admin/instance',{'description':'','contact':'','rules':[],'updatedAt':ver()},'PUT')
     check('cleared again after the clash checks',lambda: get(op,'admin/instance')['description']=='' and get(op,'admin/instance')['contact']=='')
+    # Sign-up by approval: an admin turns it on in the Instance tab; a person asks to join with a reason, is
+    # told it waits, and cannot sign in; the admin approves by the keys and the person signs in; another is
+    # declined and the name is free again. Everything is put back whatever happens, and that is checked.
+    def put_back_registration():
+        for q in get(op,'admin/requests')['requests']: api(op,f"admin/requests/{q['id']}",{},'DELETE')
+        cur=get(op,'admin/instance')
+        if cur['registration']!='open': api(op,'admin/instance',{'description':cur['description'],'contact':cur['contact'],'rules':cur['rules'],'registration':'open','updatedAt':cur['updatedAt']},'PUT')
+    try:
+        nav('#/admin/audit');nav('#/admin/instance');wait_for("return !!document.querySelector('#inst-form [name=registration]')",'the registration choice')  # read afresh, after the saves made through the API
+        check('the registration choice starts on Open, and Save waits for a change',js("return [document.querySelector('#inst-form [name=registration]:checked').value,document.querySelector('#inst-save').disabled]")==['open',True])
+        js("document.querySelector('#inst-form [name=registration][value=approval]').click()")
+        check('choosing By approval makes Save available',lambda: js("return document.querySelector('#inst-save').disabled")==False)
+        js("document.querySelector('#inst-form').requestSubmit()")
+        check('Save stores By approval',lambda: get(op,'admin/instance')['registration']=='approval',lambda: get(op,'admin/instance'))
+        js("window.__old=1;return fetch('api/signout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+        load(BASE+'?join#/signup');wait_for("return !window.__old&&!!document.querySelector('#auth-form[data-mode=signup] [name=reason]')",'the sign-up form with the reason box',20)
+        form=js("const f=document.querySelector('#auth-form'),n=document.querySelector('#join-note');return [[...f.elements].map(e=>e.name||e.type),n&&n.textContent,!!(n&&n.compareDocumentPosition(f.username)&Node.DOCUMENT_POSITION_FOLLOWING),f.querySelector('[type=submit]').textContent,f.reason.getAttribute('aria-describedby'),f.reason.maxLength]")
+        check('with approval on, the sign-up form says so before the first field, asks why, and its button asks to join',form==[['username','displayName','password','again','reason','submit'],'An admin approves new accounts here. You can sign in once your request is approved.',True,'Ask to join','join-count',500],form)
+        js("const f=document.querySelector('#auth-form');f.username.value='joy';f.password.value=arguments[0];f.again.value=arguments[0];f.reason.value='I spin <b>staff</b> on Thursdays.';f.requestSubmit()",PW)
+        check('a request shows that it waits, names the account, and puts the focus on the heading',lambda: '@joy' in (txt('#join-sent') or '') and on('#join-sent h1'),lambda: (txt('#main'),active()))
+        check('the request made no session: the page is still signed out',js("return fetch('api/me').then(r=>r.json()).then(d=>d.user)") is None)
+        fill_signin('jo1','joy',PW)
+        err=wait_for("return document.querySelector('#auth-err').textContent",'the sign-in to be refused',30) or ''
+        check('signing in while the request waits says so, and marks no field',err.startswith('Your request to join is waiting for an admin') and not js("return !!document.querySelector('#auth-form [aria-invalid]')"),err)
+        fill_signin('jo2','joy','not the right one')
+        err=wait_for("return document.querySelector('#auth-err').textContent",'the sign-in to be refused',30) or ''
+        check('a wrong password for a waiting name gets the ordinary answer',err=='Wrong username or password.',err)
+        api(opener(),'signup',{'username':'kim','password':PW,'reason':'Please'})
+        as_user('admin','flowa-test-only')
+        nav('#/admin/accounts');wait_for("return document.querySelectorAll('.req-card .req').length===2",'the two requests in Accounts')
+        rows=js("return [...document.querySelectorAll('.req')].map(r=>[r.querySelector('.req-who b').textContent,(r.querySelector('.req-reason')||{}).textContent,[...r.querySelectorAll('button')].map(b=>b.getAttribute('aria-label'))])")
+        check('Accounts lists the requests, oldest first, with the reason as typed and buttons that name the person',rows==[['joy','I spin <b>staff</b> on Thursdays.',['Approve the request of @joy','Decline the request of @joy']],['kim','Please',['Approve the request of @kim','Decline the request of @kim']]],rows)
+        check('the Accounts tab counts the requests',lambda: 'Accounts (2)' in (txt('.admin-tabs') or ''),lambda: txt('.admin-tabs'))
+        check('the waiting people are not in the accounts table',not js("return !!document.querySelector('tr[data-user=joy],tr[data-user=kim]')"))
+        js("document.querySelector('.req:nth-child(1) [data-act=req-approve-rm]').focus()");key(ENTER)
+        check('Approve by the keys makes joy a member, and the focus is on no other request\'s button',lambda: js("return !!document.querySelector('tr[data-user=joy]')&&document.querySelectorAll('.req').length===1") and js("const e=document.activeElement;return !!e&&e!==document.body&&!/^req-/.test(e.dataset.act||'')"),lambda: (txt('.req-card'),active()))
+        js("window.__confirm=window.confirm;window.confirm=()=>true;document.querySelector('.req [data-act=req-decline-rm]').focus()");key(ENTER)
+        check('Decline by the keys takes the last request away, and the section with it',lambda: not js("return !!document.querySelector('.req-card')") and get(op,'admin/requests')['requests']==[] and 'Accounts (' not in (txt('.admin-tabs') or ''),lambda: txt('#main'))
+        js("window.confirm=window.__confirm")
+        nav('#/admin/dashboard')
+        check('the dashboard counts requests to join while approval is on',lambda: js("return [...document.querySelectorAll('.stat .lbl')].map(l=>l.textContent).includes('Requests to join')"),lambda: txt('#main'))
+        api(opener(),'signup',{'username':'kim','password':PW})
+        check('the declined name is free again: kim can ask once more',lambda: [q['username'] for q in get(op,'admin/requests')['requests']]==['kim'])
+        nav('#/admin/audit')
+        acts=wait_for(lambda: (lambda a: a if len(a)>=2 else None)(js("return [...document.querySelectorAll('tbody tr')].map(r=>(r.cells[2].textContent+' '+r.cells[3].textContent).trim()).filter(t=>/request to join/.test(t))")),'the approval and the decline in the audit log') or []
+        check('the approval and the decline are in the audit log',len(acts)==2 and acts[0].startswith('Declined a request to join') and '@kim' in acts[0] and acts[1].startswith('Approved the request to join of @joy'),acts)
+        as_user('joy')
+        check('once approved, joy signs in with the password chosen when asking',lambda: js("return fetch('api/me').then(r=>r.json()).then(d=>d.user&&d.user.username)")=='joy')
+        as_user('admin','flowa-test-only')
+    finally:
+        put_back_registration()
+    check('put back: open sign-up and no request waiting',lambda: get(op,'admin/instance')['registration']=='open' and get(op,'admin/requests')['requests']==[])
     nav('#/admin/audit')
     nav('#/admin/accounts')
     ROLE="const s=document.querySelector('[data-change=user-role][data-id=\"'+arguments[0]+'\"]');s.value=arguments[1];s.dispatchEvent(new Event('change',{bubbles:true}))"
