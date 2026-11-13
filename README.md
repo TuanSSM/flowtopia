@@ -661,18 +661,32 @@ members, while approval is on or a request waits; the Accounts tab shows the cou
 they asked and the reason, for admins (permission `user.manage`, the one that resets passwords and deletes
 accounts: approving makes an account). Approve makes an ordinary member account with the name and password
 the person chose. Decline deletes the request, reason and password with it, and the name is free again; the
-audit log keeps who declined which name. Both are audited, and an answer to a request already answered (by
-another admin at the same moment, or twice) is "No such request" (404) and changes nothing.
+audit log keeps who decided and the name, not when the request was made nor its reason, which were for the
+admin who decided. Both are audited, and an answer to a request already answered (by another admin at the
+same moment, or twice) is "No such request" (404) and changes nothing.
 
-**Limits.** The sign-up allowances count a request as they count an account (10 an hour per address). At most
-200 requests wait at once; past that, sign-up answers "This Flowa is not taking requests to join right now"
-(503) until an admin answers some. A request nobody answers in 30 days is removed by the hourly housekeeping,
-with a line in the log, as a decline would.
+**Limits.** Every request that gets past the form's own checks counts against the sign-up allowance of its
+address (10 an hour), before its password is hashed, whatever happens to it next: stored, or turned away
+because the queue is full. A name that is taken costs a tenth, as on the open path. So a refused request costs
+the server no password hash, and one address cannot make it hash more than 10 passwords an hour, even with
+requests sent all at once. At most 200 requests wait at once; past that, sign-up answers "This Flowa is not
+taking requests to join right now" (503), which tells a stranger only that the queue is full. A request
+nobody answers in 30 days is removed by the hourly housekeeping, with a line in the log, as a decline would.
+
+**What anyone can do with it.** Anyone can fill the queue: one address in about 20 hours at 10 requests an
+hour, many addresses far sooner. A full queue stops everyone from joining until an admin declines requests or
+30 days pass, so an admin who sees a flood in Accounts declines it, or turns Open sign-ups off for a while.
+A name can be held by asking for it again each time a request expires. Approval is for an instance that
+wants to choose its members; an instance that wants nobody to join turns Open sign-ups off.
 
 **Switching.** Back to open: the requests that wait keep waiting until an admin answers them; nobody is
 approved without an admin. With the `signups` flag off, nobody can ask, and the requests that wait can still
 be approved or declined. The account named by `ADMIN_USER` is made an admin at start whatever the setting
-says, and a request that waits under that name gives way to it.
+says, and a request that waits under that name gives way to it. Each sign-up checks in its own insert that
+the other kind does not have the name (an account for a request, a request for an account), but two
+sign-ups on their way at the moment an admin switches the setting can still each pass the other's check.
+Then an account and a request share a name: Accounts says so beside the request, which has no Approve
+(the server would answer 409), and the admin declines it.
 
 API: `registration` (`open` or `approval`) in `GET|PUT /api/admin/instance` (a save that leaves it out keeps
 it); `POST /api/signup` answers 202 `{"waiting": true}` with no cookie while approval is on, and takes an

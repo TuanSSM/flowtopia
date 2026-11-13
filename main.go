@@ -641,7 +641,13 @@ func scanUser(row scanner, extra ...any) (*user, error) {
 // the Pi, which also runs the printer.
 var hashSlots = make(chan struct{}, 2)
 
+// pbkdf2Runs counts the hashes made and checked since start. Nothing in the server reads it: the tests
+// do, to prove that a refused sign-up costs no hash and a sign-in costs exactly one. A counter here
+// changes nothing the server does, where a hash function a test could swap would add a way in.
+var pbkdf2Runs atomic.Int64
+
 func pbkdf2Key(pw string, salt []byte, rounds, n int) []byte {
+	pbkdf2Runs.Add(1)
 	hashSlots <- struct{}{}
 	defer func() { <-hashSlots }()
 	key, _ := pbkdf2.Key(sha256.New, pw, salt, rounds, n)
@@ -1535,18 +1541,25 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "That username is taken.")
 		return
 	}
-	if approval {
-		a.askToJoin(w, from, name, display, in.Password, reason, tooMany)
-		return
-	}
+	// The allowance is counted before the password is hashed, on both paths, so what an address can make
+	// the server hash is bounded by it, even when many requests arrive at once: add is one step under the
+	// limiter's lock, and only the requests it lets through go on to hash.
 	if !a.lim.signup.add(from) {
 		tooMany()
 		return
 	}
-	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) VALUES ($1, $2, $3) RETURNING `+userCols,
+	if approval {
+		a.askToJoin(w, from, name, display, in.Password, reason)
+		return
+	}
+	// The insert checks in the same statement that no request to join waits under the name, which leaves
+	// only the moment an admin switches the setting for an account and a request to share one (see
+	// askToJoin). No row back means a request took the name: answered as a taken name.
+	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) SELECT $1, $2, $3
+		WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) RETURNING `+userCols,
 		name, display, hashPassword(in.Password)))
 	var pe *pq.Error
-	if errors.As(err, &pe) && pe.Code == "23505" {
+	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
 		a.lim.signup.addWeight(from, 1-tenths) // someone took the name in between: a tenth, as above
 		fail(w, http.StatusConflict, "That username is taken.")
 		return
@@ -1580,11 +1593,26 @@ const (
 // Said to a person whose request waits, after the right password only.
 const waitingSentence = "Your request to join is waiting for an admin to approve it. Nobody can tell you when that happens, so try signing in again later."
 
-// askToJoin stores a request to join. The sign-up allowance counts it as it counts a new account, and
-// at most maxWaiting requests wait at once: the count and the insert are made under one lock, so a
-// flood of requests sent together cannot pass the cap. The answer is 202 with no session: the person
-// is not signed in until an admin approves.
-func (a *app) askToJoin(w http.ResponseWriter, from, name, display, pw, reason string, tooMany func()) {
+// askToJoin stores a request to join, once handleSignup has counted it against the sign-up allowance
+// exactly as it counts an account, before anything is hashed. At most maxWaiting requests wait at once.
+// A full queue is seen first by a plain count, so it costs no hash; a request it turns away keeps its
+// count against the address like any other attempt, so one address cannot ask without end. The count
+// that decides is made again under a lock with the insert, so requests sent together cannot pass the
+// cap. The answer is 202 with no session: the person is not signed in until an admin approves.
+func (a *app) askToJoin(w http.ResponseWriter, from, name, display, pw, reason string) {
+	full := func() {
+		logRefusal(w, "too many requests to join waiting", "from "+from)
+		fail(w, http.StatusServiceUnavailable, "This Flowa is not taking requests to join right now. Try again in a few days.")
+	}
+	var waiting int
+	if err := a.db.QueryRow(`SELECT count(*) FROM join_requests`).Scan(&waiting); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if waiting >= maxWaiting {
+		full()
+		return
+	}
 	hash := hashPassword(pw) // before the transaction, which holds the lock as briefly as it can
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -1592,7 +1620,6 @@ func (a *app) askToJoin(w http.ResponseWriter, from, name, display, pw, reason s
 		return
 	}
 	defer tx.Rollback()
-	var waiting int
 	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(7130653)`); err != nil {
 		a.serverError(w, err)
 		return
@@ -1602,18 +1629,24 @@ func (a *app) askToJoin(w http.ResponseWriter, from, name, display, pw, reason s
 		return
 	}
 	if waiting >= maxWaiting {
-		logRefusal(w, "too many requests to join waiting", "from "+from)
-		fail(w, http.StatusServiceUnavailable, "This Flowa is not taking requests to join right now. Try again in a few days.")
+		full()
 		return
 	}
-	if !a.lim.signup.add(from) {
-		tooMany()
-		return
-	}
-	_, err = tx.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, reason) VALUES ($1, $2, $3, $4)`, name, display, hash, reason)
+	// The insert checks in the same statement that no account has the name, as the open path checks for
+	// a request. What is left is the moment an admin switches the setting: a sign-up that read "open" just
+	// before and one that reads "approval" just after can each pass the other's check. Then an account and
+	// a request share a name; Accounts says so beside the request, Approve answers 409, and the admin
+	// declines it. Closing that moment for good would need a lock on the open path too.
+	res, err := tx.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, reason) SELECT $1, $2, $3, $4
+		WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`, name, display, hash, reason)
 	var pe *pq.Error
-	if errors.As(err, &pe) && pe.Code == "23505" {
-		a.lim.signup.addWeight(from, 1-tenths) // someone asked for the name in between: a tenth, as a taken name
+	taken := errors.As(err, &pe) && pe.Code == "23505"
+	if err == nil {
+		n, _ := res.RowsAffected()
+		taken = n == 0
+	}
+	if taken {
+		a.lim.signup.addWeight(from, 1-tenths) // the name was taken in between: a tenth, as a taken name, as the open path does
 		fail(w, http.StatusConflict, "That username is taken.")
 		return
 	}
@@ -1634,11 +1667,15 @@ type joinRequest struct {
 	DisplayName string    `json:"displayName"`
 	Reason      string    `json:"reason"`
 	Created     time.Time `json:"created"`
+	// Taken says an account has the name now (the setting was switched while two sign-ups were on their
+	// way, see askToJoin): the request cannot become an account, and the page says to decline it.
+	Taken bool `json:"taken"`
 }
 
 // handleJoinRequests lists the requests that wait, oldest first, with the limits the page explains.
 func (a *app) handleJoinRequests(w http.ResponseWriter, _ *http.Request, _ *user) {
-	rows, err := a.db.Query(`SELECT id, username, display_name, reason, created_at FROM join_requests ORDER BY created_at, id`)
+	rows, err := a.db.Query(`SELECT j.id, j.username, j.display_name, j.reason, j.created_at, EXISTS (SELECT 1 FROM users u WHERE u.username = j.username)
+		FROM join_requests j ORDER BY j.created_at, j.id`)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -1647,7 +1684,7 @@ func (a *app) handleJoinRequests(w http.ResponseWriter, _ *http.Request, _ *user
 	out := []joinRequest{}
 	for rows.Next() {
 		var j joinRequest
-		if err := rows.Scan(&j.ID, &j.Username, &j.DisplayName, &j.Reason, &j.Created); err != nil {
+		if err := rows.Scan(&j.ID, &j.Username, &j.DisplayName, &j.Reason, &j.Created, &j.Taken); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -1680,8 +1717,7 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 	}
 	defer tx.Rollback()
 	var name, display, hash string
-	var asked time.Time
-	err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username, display_name, pw_hash, created_at`, id).Scan(&name, &display, &hash, &asked)
+	err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username, display_name, pw_hash`, id).Scan(&name, &display, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, noRequest)
 		return
@@ -1698,7 +1734,10 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 		return
 	}
 	if err == nil {
-		err = a.audit(tx, u.ID, "approve_user", "user", uid, uid, "", map[string]any{"username": name, "asked": asked.UTC().Format(time.RFC3339)})
+		// The row names the account and the name it was asked under, as a decline's does, and no more:
+		// the log keeps who decided what, and when the request was made or why matters only until it is
+		// answered (the reason was for the admin who decided, not for the log).
+		err = a.audit(tx, u.ID, "approve_user", "user", uid, uid, "", map[string]any{"username": name})
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -1795,6 +1834,25 @@ func (a *app) viaHTTPS(r *http.Request) bool {
 	return ip != nil && a.trustedProxy(ip) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
+// rowQuerier is what signinLookup reads through: the database, or in a test something that counts.
+type rowQuerier interface {
+	QueryRow(string, ...any) *sql.Row
+}
+
+// signinSQL reads a name in one statement: the account, or, when no account has the name, the request
+// to join that waits under it, shaped as an account (id 0) with request true. A member's name, a waiting
+// name and an unknown one each cost this one query.
+const signinSQL = `SELECT ` + userCols + `, u.pw_hash, false FROM users u WHERE u.username = $1
+	UNION ALL
+	SELECT 0, j.username, j.display_name, 'user', '[]', '[]', false, '', '', '{}', '{}', '{}', j.created_at, NULL, '', NULL, '', false, '{}', false, j.pw_hash, true
+	FROM join_requests j WHERE j.username = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`
+
+// signinLookup is the one read a sign-in makes. err is sql.ErrNoRows for a name nobody has.
+func signinLookup(q rowQuerier, name string) (u *user, hash string, request bool, err error) {
+	u, err = scanUser(q.QueryRow(signinSQL, name), &hash, &request)
+	return u, hash, request, err
+}
+
 func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	var in credentials
 	if !readJSON(w, r, 4096, &in) {
@@ -1817,31 +1875,28 @@ func (a *app) handleSignin(w http.ResponseWriter, r *http.Request) {
 	// their name. So the password is still checked: the right one signs in, a wrong one is told to
 	// wait and learns nothing more.
 	locked := a.lim.account.over(name)
-	var hash string
-	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, u.pw_hash FROM users u WHERE u.username = $1`, name), &hash)
-	// A name with no account may be a request to join that waits. Its password is checked as an
-	// account's is, and only the right one is told that it waits: anyone else learns no more than
-	// for a name nobody has, so a stranger cannot find out who asked to join.
-	waiting := false
-	if errors.Is(err, sql.ErrNoRows) {
-		if e := a.db.QueryRow(`SELECT pw_hash FROM join_requests WHERE username = $1`, name).Scan(&hash); e == nil {
-			waiting = checkPassword(hash, in.Password)
-		} else if errors.Is(e, sql.ErrNoRows) {
-			checkPassword(dummyHash, in.Password)
-		} else {
-			a.serverError(w, e)
-			return
-		}
-	} else if err != nil {
+	u, hash, request, err := signinLookup(a.db, name)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		a.serverError(w, err)
 		return
 	}
-	if waiting {
+	// Exactly one password check per attempt, whatever the name is: an account's hash, a waiting
+	// request's, or for a name nobody has a hash that matches nothing. Each costs the same time, so how
+	// long the answer takes does not tell which of the three the name is.
+	ok := false
+	if err != nil {
+		checkPassword(dummyHash, in.Password)
+	} else {
+		ok = checkPassword(hash, in.Password)
+	}
+	// A request to join that waits: only the right password is told so. Anyone else learns no more than
+	// for a name nobody has, so a stranger cannot find out who asked to join.
+	if ok && request {
 		a.lim.account.forget(name)
 		fail(w, http.StatusForbidden, waitingSentence)
 		return
 	}
-	if err != nil || !checkPassword(hash, in.Password) {
+	if !ok {
 		a.lim.signin.add(key)
 		a.lim.signinIP.add(ip)
 		if locked {

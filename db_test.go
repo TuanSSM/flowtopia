@@ -3638,6 +3638,17 @@ func poiBranch(t *testing.T, e *tenv) string {
 }
 
 // noDial is a transport that opens no connection and fails the test when asked to.
+// countingDB counts the reads made through it, for a check that a step reads the database once.
+type countingDB struct {
+	db *sql.DB
+	n  int
+}
+
+func (c *countingDB) QueryRow(q string, args ...any) *sql.Row {
+	c.n++
+	return c.db.QueryRow(q, args...)
+}
+
 type noDial struct{ t *testing.T }
 
 func (n noDial) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -4144,13 +4155,12 @@ func TestDBRegistrationApproval(t *testing.T) {
 	const pw = "a fine long password"
 	// Each sign-up and sign-in comes from an address of its own, so the allowances (TestDBSignupLimits,
 	// TestDBSigninLimits) are never what answers here.
+	// sendFrom sends from one given address, for the checks of the allowance itself.
 	var sent atomic.Int32 // some are sent at once, from goroutines
-	send := func(path string, body map[string]any) (int, map[string]any, http.Header) {
-		t.Helper()
-		addr := int(sent.Add(1))
+	sendFrom := func(remote, path string, body map[string]any) (int, map[string]any, http.Header) {
 		b, _ := json.Marshal(body)
 		r := httptest.NewRequest("POST", path, bytes.NewReader(b))
-		r.RemoteAddr = fmt.Sprintf("198.51.%d.%d:4000", 100+addr/250, addr%250+1)
+		r.RemoteAddr = remote
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		e.h.ServeHTTP(w, r)
@@ -4158,6 +4168,11 @@ func TestDBRegistrationApproval(t *testing.T) {
 		json.Unmarshal(w.Body.Bytes(), &out)
 		out["_raw"] = w.Body.String()
 		return w.Code, out, w.Result().Header
+	}
+	send := func(path string, body map[string]any) (int, map[string]any, http.Header) {
+		t.Helper()
+		addr := int(sent.Add(1))
+		return sendFrom(fmt.Sprintf("198.51.%d.%d:4000", 100+addr/250, addr%250+1), path, body)
 	}
 	signup := func(body map[string]any) (int, map[string]any, http.Header) {
 		t.Helper()
@@ -4297,6 +4312,24 @@ func TestDBRegistrationApproval(t *testing.T) {
 	}
 	if n := e.count(`SELECT count(*) FROM sessions`); n != 5 {
 		t.Errorf("%d sessions, want five: the four the test made and the open sign-up's", n)
+	}
+	// A member's name, a waiting name and an unknown one each cost one read (signinLookup, the only read
+	// handleSignin makes before the password is checked, counted through a wrapper of QueryRow) and one
+	// password hash (pbkdf2Runs, around a whole sign-in).
+	for _, c := range []struct {
+		name           string
+		request, found bool
+	}{{"plain", false, true}, {"asker", true, true}, {"nobody-at-all", false, false}} {
+		q := &countingDB{db: e.a.db}
+		u, hash, request, err := signinLookup(q, c.name)
+		if q.n != 1 || request != c.request || (err == nil) != c.found || (c.found && (u.Username != c.name || hash == "")) {
+			t.Errorf("reading %s for a sign-in: %d reads, request %v, %v", c.name, q.n, request, err)
+		}
+		runs := pbkdf2Runs.Load()
+		signin(c.name, "not the password")
+		if n := pbkdf2Runs.Load() - runs; n != 1 {
+			t.Errorf("a sign-in as %s checked %d hashes, want exactly one", c.name, n)
+		}
 	}
 
 	// A waiting person is nobody anywhere: not in the people list, no profile, no posts, no mention,
@@ -4456,6 +4489,55 @@ func TestDBRegistrationApproval(t *testing.T) {
 		t.Errorf("approve and decline at once: %d audit rows, %d waiting", n, waitingCount())
 	}
 
+	// An account and a request under one name, as the moment an admin switches the setting can leave
+	// them: the list says the name is taken, Approve answers 409 and changes nothing, Decline removes it.
+	if _, err := e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('clash', 'clash', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	e.user("clash", "user")
+	var clash map[string]any
+	for _, q := range e.must(200, admin, "GET", "/api/admin/requests", nil)["requests"].([]any) {
+		if m := q.(map[string]any); m["username"] == "clash" {
+			clash = m
+		} else if m["taken"] != false {
+			t.Errorf("a request whose name is free is listed as taken: %v", m)
+		}
+	}
+	if clash == nil || clash["taken"] != true {
+		t.Errorf("the request whose name an account took: %v", clash)
+	}
+	clashID := idOf("clash")
+	if code, out := approve(admin, clashID); code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "Decline it") || e.count(`SELECT count(*) FROM join_requests WHERE username = 'clash'`) != 1 || audits("approve_user", "clash") != 0 {
+		t.Errorf("approving a request whose name is taken: %d %v", code, out["_raw"])
+	}
+	if code, _ := decline(admin, clashID); code != 200 || e.count(`SELECT count(*) FROM join_requests WHERE username = 'clash'`) != 0 || e.count(`SELECT count(*) FROM users WHERE username = 'clash'`) != 1 {
+		t.Errorf("declining a request whose name is taken: %d", code)
+	}
+	// Each insert checks the other table in the same statement. A request held at the queue's lock while an
+	// account takes its name is refused when the lock is let go, and stores nothing.
+	ctx := context.Background()
+	held, err := e.a.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := held.ExecContext(ctx, `SELECT pg_advisory_lock(7130653)`); err != nil {
+		t.Fatal(err)
+	}
+	raced := make(chan int, 1)
+	go func() { code, _, _ := signup(map[string]any{"username": "raced", "password": pw}); raced <- code }()
+	for since := time.Now(); e.count(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 7130653 AND NOT granted`) < 1; time.Sleep(10 * time.Millisecond) {
+		if time.Since(since) > 10*time.Second {
+			t.Error("the request never waited for the queue's lock")
+			break
+		}
+	}
+	e.user("raced", "user")
+	held.ExecContext(ctx, `SELECT pg_advisory_unlock(7130653)`)
+	held.Close()
+	if code := <-raced; code != 409 || e.count(`SELECT count(*) FROM join_requests WHERE username = 'raced'`) != 0 {
+		t.Errorf("a request whose name an account took while it waited for the lock: %d", code)
+	}
+
 	// The cap: at most maxWaiting wait; past it sign-up says to come back, and nothing is stored.
 	if _, err := e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash) SELECT 'filler' || g, 'filler', 'x' FROM generate_series(1, $1) g`, maxWaiting-waitingCount()); err != nil {
 		t.Fatal(err)
@@ -4497,7 +4579,51 @@ func TestDBRegistrationApproval(t *testing.T) {
 	if waitingCount() != maxWaiting {
 		t.Errorf("three requests at once at the cap less one: %d waiting, want %d", waitingCount(), maxWaiting)
 	}
+	// With the queue full, one address asking again and again: each request counts against its allowance
+	// like any attempt, so the eleventh gets the same 429 as the open path gives, and none of the eleven
+	// costs a password hash (pbkdf2Runs counts every hash made or checked).
+	const tooManyBody = `{"error":"Too many new accounts from this address. Try again in an hour."}` + "\n" // the open path's, which TestDBSignupLimits holds
+	runs := pbkdf2Runs.Load()
+	var codes []int
+	var last map[string]any
+	for i := 0; i < 11; i++ {
+		var code int
+		code, last, _ = sendFrom("203.0.113.7:4000", "/api/signup", map[string]any{"username": fmt.Sprintf("full%d", i), "password": pw})
+		codes = append(codes, code)
+	}
+	if fmt.Sprint(codes) != "[503 503 503 503 503 503 503 503 503 503 429]" || last["_raw"] != tooManyBody {
+		t.Errorf("eleven requests from one address while the queue is full: %v, the last %q", codes, last["_raw"])
+	}
+	if n := pbkdf2Runs.Load() - runs; n != 0 {
+		t.Errorf("requests refused by a full queue or the allowance hashed %d passwords, want none", n)
+	}
 	e.a.db.Exec(`DELETE FROM join_requests WHERE username LIKE 'filler%' OR username LIKE 'flood%'`)
+	// Room again: thirty requests at the same moment from one address hash at most the ten the allowance
+	// lets through, and ten wait. The open path counts the same way, before it hashes.
+	burst := func(prefix, remote string) (map[int]int, int64) {
+		t.Helper()
+		runs := pbkdf2Runs.Load()
+		var mu sync.Mutex
+		got := map[int]int{}
+		var wg sync.WaitGroup
+		for i := 0; i < 30; i++ {
+			body := map[string]any{"username": fmt.Sprintf("%s%d", prefix, i), "password": pw}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				code, _, _ := sendFrom(remote, "/api/signup", body)
+				mu.Lock()
+				got[code]++
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		return got, pbkdf2Runs.Load() - runs
+	}
+	if got, n := burst("burst", "203.0.113.8:4000"); got[202] != 10 || got[429] != 20 || n > 10 {
+		t.Errorf("thirty requests at once from one address: %v, %d hashes; want ten 202, twenty 429, at most ten hashes", got, n)
+	}
+	e.a.db.Exec(`DELETE FROM join_requests WHERE username LIKE 'burst%'`)
 
 	// Housekeeping lets go of requests that waited more than 30 days, with a line in the log.
 	e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, created_at) VALUES ('old', 'old', 'x', now() - interval '31 days'), ('recent', 'recent', 'x', now() - interval '29 days')`)
@@ -4534,8 +4660,34 @@ func TestDBRegistrationApproval(t *testing.T) {
 	if code, out, hdr := signup(map[string]any{"username": "openagain", "password": pw}); code != 200 || !hasCookie(hdr) || len(out) != 2 {
 		t.Errorf("an open sign-up after the switch back: %d %v", code, out["_raw"])
 	}
+	// The open path's insert checks for a request in the same statement: an open sign-up held at the users
+	// table while a request takes its name makes no account.
+	hold, err = e.a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(`LOCK TABLE users IN EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	go func() { code, _, _ := signup(map[string]any{"username": "openraced", "password": pw}); raced <- code }()
+	for since := time.Now(); e.count(`SELECT count(*) FROM pg_locks WHERE relation = 'users'::regclass AND NOT granted`) < 1; time.Sleep(10 * time.Millisecond) {
+		if time.Since(since) > 10*time.Second {
+			t.Error("the open sign-up never waited for the users table")
+			break
+		}
+	}
+	e.a.db.Exec(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('openraced', 'openraced', 'x')`)
+	hold.Rollback()
+	if code := <-raced; code != 409 || e.count(`SELECT count(*) FROM users WHERE username = 'openraced'`) != 0 {
+		t.Errorf("an open sign-up whose name a request took while it waited: %d", code)
+	}
+	e.a.db.Exec(`DELETE FROM join_requests WHERE username = 'openraced'`)
 	if tot := totals(); num(tot["waiting"]) != int64(before) {
 		t.Errorf("the dashboard after the switch back: %v", tot)
+	}
+	// The open path under the same burst: it counted the allowance before hashing already.
+	if got, n := burst("openburst", "203.0.113.9:4000"); got[200] != 10 || got[429] != 20 || n > 10 {
+		t.Errorf("thirty open sign-ups at once from one address: %v, %d hashes; want ten 200, twenty 429, at most ten hashes", got, n)
 	}
 
 	// The flag off: sign-up is closed whatever the setting, and the waiting requests can still be

@@ -61,9 +61,9 @@ test named below is new unless the design note says it exists.
   the sign-up form and the about page; `TestDBInstanceInfo`, `TestInstanceText`, the about address and
   the empty reads in `TestDBLocalModeUnchanged`, the save in `TestDBOneConnection`; checks in `mod.py`,
   stops in `a11y.py` and `contrast.py`, and the about pictures in `pages.py`.
-- [x] **Sign-up by approval.** The `registration` setting: open, approval or closed (the `signups`
-  flag stays as the switch between open and closed); an account waiting for approval cannot sign in
-  and is listed in Accounts with Approve and Decline, both audited. DoD: `TestDBRegistrationApproval`;
+- [x] **Sign-up by approval.** The `registration` setting: open or approval, while the `signups` flag
+  stays the one switch that closes sign-up; a person waiting for approval cannot sign in and is listed in
+  Accounts with Approve and Decline, both audited. DoD: `TestDBRegistrationApproval`;
   `TestDBSignupLimits` unchanged.
   Built: `registration` in `instance_settings` with two values, `open` (what nothing saved means) and
   `approval`, while closed stays the `signups` flag alone (the truth table is in the README); edited in
@@ -73,8 +73,9 @@ test named below is new unless the design note says it exists.
   optional reason of 500 characters, plain text, read only by admins. `GET /api/admin/requests`,
   `POST /api/admin/requests/{id}/approve` and `DELETE /api/admin/requests/{id}` (user.manage, 400 an hour
   per admin, audited, 404 when already answered); Decline deletes the request and frees the name. At most
-  200 wait (503 past that), housekeeping removes requests older than 30 days, `seedAdmin` makes the
-  operator's account whatever the setting says. `TestDBRegistrationApproval`, the new routes in
+  200 wait (503 past that), every request counts against the sign-up allowance before its password is
+  hashed (a refused one costs no hash), each insert checks the other table for the name, housekeeping
+  removes requests older than 30 days, `seedAdmin` makes the operator's account whatever the setting says. `TestDBRegistrationApproval`, the new routes in
   `TestDBLocalModeUnchanged` and `TestDBOneConnection`; checks in `mod.py`, stops in `a11y.py` and
   `contrast.py`, and the sign-up form and Accounts pictures in `pages.py`; `flowa-schema10.dump`.
 - [ ] **Single-profile mode.** `FLOWA_MODE=single`: refused at start with more than one local

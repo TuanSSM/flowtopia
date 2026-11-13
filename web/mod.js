@@ -267,8 +267,9 @@ function joinRequestsHTML() {
   if (!ui.reqs?.length) return '';
   const n = ui.reqs.length;
   const rows = ui.reqs.map(q => `<li class="req" data-req="${q.id}"><div class="grow req-who"><b style="font-weight:560">${esc(q.displayName)}</b> <span class="tiny">@${esc(q.username)}, asked ${esc(fmtWhen(q.created))}</span>
-      ${q.reason ? `<p class="small plain-text req-reason">${esc(q.reason)}</p>` : '<p class="tiny">No reason given.</p>'}</div>
-    <span class="row wrap" style="gap:6px"><button class="btn sm primary" data-act="req-approve-rm" data-id="${q.id}" data-name="${esc(q.username)}" aria-label="Approve the request of @${esc(q.username)}">${icon('check')}Approve</button><button class="btn sm danger" data-act="req-decline-rm" data-id="${q.id}" data-name="${esc(q.username)}" aria-label="Decline the request of @${esc(q.username)}">Decline</button></span></li>`).join('');
+      ${q.reason ? `<p class="small plain-text req-reason">${esc(q.reason)}</p>` : '<p class="tiny">No reason given.</p>'}
+      ${q.taken ? `<p class="notice warn req-taken">An account named @${esc(q.username)} was made while this request was on its way, so it cannot be approved. Decline it.</p>` : ''}</div>
+    <span class="row wrap" style="gap:6px">${q.taken ? '' : `<button class="btn sm primary" data-act="req-approve-rm" data-id="${q.id}" data-name="${esc(q.username)}" aria-label="Approve the request of @${esc(q.username)}">${icon('check')}Approve</button>`}<button class="btn sm danger" data-act="req-decline-rm" data-id="${q.id}" data-name="${esc(q.username)}" aria-label="Decline the request of @${esc(q.username)}">Decline</button></span></li>`).join('');
   return `<section class="card req-card" aria-labelledby="req-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="req-h">Waiting to join (${n})</h2><span class="sub">Oldest first</span></div>
     <p class="tiny">Approve makes the account; Decline deletes the request and frees the name. Nobody is told by email: a person learns the answer by signing in. A request nobody answers is let go after ${ui.reqDays} days.</p>
     <ul class="req-list">${rows}</ul></section>`;
