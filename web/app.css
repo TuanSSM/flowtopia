@@ -601,6 +601,7 @@ button:disabled { opacity: .6; cursor: default; }
 select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
 .compose textarea { min-height: 56px; }
 .compose-img { position: relative; width: max-content; max-width: 100%; }
+.aud-pick { display: inline-flex; align-items: center; gap: 6px; }
 .compose-img img { display: block; max-height: 220px; max-width: 100%; border-radius: 10px; border: 1px solid var(--line); }
 .compose-img .icon-btn { position: absolute; top: 6px; right: 6px; background: rgba(0, 0, 0, .55); color: #fff; }
 .post { display: grid; gap: 12px; }

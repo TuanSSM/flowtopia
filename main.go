@@ -104,6 +104,34 @@ var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
 
 var usernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,23}$`)
 
+/* ---------- names that are never given out again ----------
+
+A username is an identity on other servers once its actor id has gone out (docs/federation.md 4.3 and
+5.2): a remote server that stored https://flowa.example.org/users/ana would take whoever holds the name
+next for the same person. So the name of a deleted account that had opted in is retired, in every mode,
+and refused at every door an account is made by: sign-up, a request to join, approving one, and the
+ADMIN_USER account at start. The refusal says what a taken name says, and nothing about an account that
+once had it. No endpoint renames an account, so a name that has federated cannot move either (4.3).
+
+The instance's own host is taken too, in a mode that federates: usernameRE allows dots, and a member
+named like the host would be shadowed by the instance actor in WebFinger (acct:host@host is the instance
+actor, 5.3), so other servers could never find them by their handle. A member who already has that name
+keeps the account; opting in is refused to them with the reason (handlePutMe). */
+
+// retiredSQL is the condition that the name $1 is retired: one look in the primary key.
+const retiredSQL = `EXISTS (SELECT 1 FROM retired_usernames r WHERE r.username = $1)`
+
+// retireSQL retires the name of the account $1 when it had opted in or ever had a key: a key is made only
+// when a member opts in (and for the owner of a single-profile instance with FLOWA_FEDERATE=on, whose
+// opt-in is that setting and leaves no column behind) and is kept when they opt out, so it marks an
+// account whose actor id may have been seen elsewhere. It runs before the row is deleted, with it.
+const retireSQL = `INSERT INTO retired_usernames (username) SELECT u.username FROM users u
+	WHERE u.id = $1 AND (u.federates OR EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id)) ON CONFLICT DO NOTHING`
+
+// reservedName says whether name is the instance's own host in a mode that federates (fedHost), which no
+// account may take.
+func (a *app) reservedName(name string) bool { return a.fedHost != "" && name == a.fedHost }
+
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
 	id BIGSERIAL PRIMARY KEY,
@@ -149,6 +177,7 @@ type app struct {
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
 	mode      instanceMode // how the instance runs (FLOWA_MODE); local unless the operator says otherwise
 	fed       *federation  // the origin, the keys and whether federation is refused; nil unless the mode federates
+	fedHost   string       // the origin's host in a mode that federates, a name no account may take (takenName); "" otherwise
 	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
 	flagCache map[string]bool
 	flagsAt   time.Time
@@ -1611,12 +1640,14 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Looked up before the password is hashed, so asking for a taken name costs no CPU. A name that
-	// waits in a request to join is taken too, so nobody can claim it while an admin decides.
+	// waits in a request to join is taken too, so nobody can claim it while an admin decides, and so is a
+	// retired name or the instance's own host (takenName), in the same words.
 	var taken bool
-	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE username = $1) OR EXISTS (SELECT 1 FROM join_requests WHERE username = $1)`, name).Scan(&taken); err != nil {
+	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE username = $1) OR EXISTS (SELECT 1 FROM join_requests WHERE username = $1) OR `+retiredSQL, name).Scan(&taken); err != nil {
 		a.serverError(w, err)
 		return
 	}
+	taken = taken || a.reservedName(name)
 	if taken {
 		a.lim.signup.addWeight(from, 1)
 		fail(w, http.StatusConflict, "That username is taken.")
@@ -1637,7 +1668,7 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// only the moment an admin switches the setting for an account and a request to share one (see
 	// askToJoin). No row back means a request took the name: answered as a taken name.
 	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) SELECT $1, $2, $3
-		WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) RETURNING `+userCols,
+		WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) AND NOT `+retiredSQL+` RETURNING `+userCols,
 		name, display, hashPassword(in.Password)))
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
@@ -1719,7 +1750,7 @@ func (a *app) askToJoin(w http.ResponseWriter, from, name, display, pw, reason s
 	// a request share a name; Accounts says so beside the request, Approve answers 409, and the admin
 	// declines it. Closing that moment for good would need a lock on the open path too.
 	res, err := tx.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, reason) SELECT $1, $2, $3, $4
-		WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`, name, display, hash, reason)
+		WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $1) AND NOT `+retiredSQL, name, display, hash, reason)
 	var pe *pq.Error
 	taken := errors.As(err, &pe) && pe.Code == "23505"
 	if err == nil {
@@ -1808,10 +1839,12 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 		return
 	}
 	var uid int64
-	err = tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash) VALUES ($1, $2, $3) RETURNING id`, name, display, hash).Scan(&uid)
+	// A retired name, or the instance's own host, cannot become an account either; the admin is told it
+	// is taken, in the words of a name an account holds, and nothing of an account that once had it.
+	err = tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash) SELECT $1, $2, $3 WHERE NOT `+retiredSQL+` AND NOT $4 RETURNING id`, name, display, hash, a.reservedName(name)).Scan(&uid)
 	var pe *pq.Error
-	if errors.As(err, &pe) && pe.Code == "23505" {
-		fail(w, http.StatusConflict, "An account with the username @"+name+" exists now, so this request cannot become one. Decline it.")
+	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusConflict, "The username @"+name+" is taken, so this request cannot become an account. Decline it.")
 		return
 	}
 	if err == nil {
@@ -2181,6 +2214,10 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusBadRequest, "On a Flowa that is one person's own, the setting FLOWA_FEDERATE decides whether other servers can find the profile.")
 		return
 	}
+	if federates != nil && *federates && a.reservedName(u.Username) {
+		fail(w, http.StatusBadRequest, hostNameRefusal)
+		return
+	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		a.serverError(w, err)
@@ -2535,12 +2572,22 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	defer tx.Rollback()
+	// The name of an account that had opted in, whose actor id other servers may hold, is retired in the
+	// same transaction (retireSQL), before the row and its key go, in every mode: 4.3 says retired names
+	// stay retired whatever the mode, and an instance back in local mode may still hold such accounts. A
+	// delete refused below rolls it back with the rest.
+	if _, err := tx.Exec(retireSQL, id); err != nil {
+		a.serverError(w, err)
+		return
+	}
 	res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
 	if err == nil {
 		if n, _ := res.RowsAffected(); n == 0 {
 			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
 			return
 		}
+	}
+	if err == nil {
 		err = a.audit(tx, u.ID, "delete_user", "user", id, 0, "", map[string]any{"username": name})
 	}
 	if err == nil {
@@ -7051,6 +7098,10 @@ func (a *app) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 // or a dash only inside, and a handle Mastodon cannot read cannot be mentioned or found from there.
 const handleWarning = "Your name ends with a dot or a dash. Mastodon allows those only inside a name, so people on Mastodon may not be able to mention you or find you by your handle. Names cannot be changed here."
 
+// hostNameRefusal is said to a member whose username is the instance's own host when they opt in: other
+// servers read acct:host@host as the instance itself (5.3), so they could never find the member by it.
+const hostNameRefusal = "Your username is this server's own name, which other servers read as the server itself, so they could not find you by it. Names cannot be changed here."
+
 // fedView is what /api/me and PUT /api/me tell a signed-in member about sharing beyond this server, in
 // a mode that federates; the callers leave it out otherwise, so the page shows nothing of it. In single
 // mode the owner's opt-in is FLOWA_FEDERATE=on (implied), and there is no switch. The words the card
@@ -7073,8 +7124,28 @@ func (a *app) fedView(u *user, optedIn bool) map[string]any {
 	if strings.HasSuffix(u.Username, ".") || strings.HasSuffix(u.Username, "-") {
 		v["warning"] = handleWarning
 	}
+	// The composer offers the audience only to a member who may post publicly: opted in (or the owner of a
+	// single-profile instance), while federation is not refused. Its words are the server's, as the card's.
+	if v["optedIn"] == true && v["unavailable"] == nil {
+		v["audiences"] = audienceChoices
+	}
 	return v
 }
+
+// audienceChoice is one audience as the composer offers it, Public first (chosen at first: federation.md 11).
+type audienceChoice struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+	Hint  string `json:"hint"`
+}
+
+var audienceChoices = []audienceChoice{
+	{audPublic, "Public", audPublicHint},
+	{audLocal, "This server", "Only members of this Flowa, signed in."},
+}
+
+// audPublicHint says what Public means in this version.
+const audPublicHint = "Marked to be shown beyond this server. In this version nobody outside this Flowa can read it yet."
 
 /* ---------- federation: HTTP signatures ----------
 How a request between servers says who sent it (docs/federation.md 7.1 to 7.3). Two forms are read
@@ -11279,6 +11350,23 @@ var migrations = []string{schema, schemaSocial,
 	// switch in Settings). One column with a constant default: going back to an earlier build is safe,
 	// and that build simply does not read it.
 	`ALTER TABLE users ADD COLUMN IF NOT EXISTS federates BOOLEAN NOT NULL DEFAULT false`,
+	// 14: who may read a post (docs/federation.md, F2, F3 and 9.1), and the names that are never given out
+	// again (5.2). posts.audience is 'local' (This server) for every post there is and for every post made
+	// outside a mode that federates; 'public' only when a member who opted in chooses it. The check names the
+	// four audiences of the design note, so a later item adds none by a migration; NOT VALID means the rows
+	// already there are not read to check them (they all hold the default), so the column and the check are
+	// changes to the catalog only. posts_public lists a member's Public posts newest first for their public
+	// page; it holds no row until someone posts one, and building it reads posts once. retired_usernames
+	// holds the name of a deleted account that had opted in, whose actor id other servers may have stored.
+	// Additive: an older build ignores the column and the table, and shows no post outside the server.
+	`ALTER TABLE posts ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'local';
+	ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_audience;
+	ALTER TABLE posts ADD CONSTRAINT posts_audience CHECK (audience IN ('local', 'public', 'unlisted', 'followers')) NOT VALID;
+	CREATE INDEX IF NOT EXISTS posts_public ON posts (user_id, id DESC) WHERE audience = 'public' AND hidden_at IS NULL;
+	CREATE TABLE IF NOT EXISTS retired_usernames (
+		username TEXT PRIMARY KEY,
+		retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -11381,6 +11469,20 @@ func (a *app) seedAdmin(name, pw string) (int64, error) {
 	var id int64
 	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
+		// A retired name, or the instance's own host, is taken for the operator too. The start goes on
+		// without the account (a deleted admin used to come back at every start, and a server that will not
+		// start for it would be worse) unless no account exists at all, when there would be nobody to run it.
+		var retired, someone bool
+		if err := a.db.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users)`, name).Scan(&retired, &someone); err != nil {
+			return 0, err
+		}
+		if retired || a.reservedName(name) {
+			if !someone {
+				return 0, fmt.Errorf("ADMIN_USER=%s: that username is taken. Choose another one for the first account", name)
+			}
+			log.Printf("ADMIN_USER=%s: that username is taken, so no account is made for it", name)
+			return 0, nil
+		}
 		// The account the operator names is made whatever the registration setting says, and a
 		// request to join that waits under the same name gives way to it: the name is the operator's.
 		var dropped bool
@@ -12620,6 +12722,7 @@ func (a *app) start(getenv func(string) string) error {
 	// points that name at this server, and the app is served there as in local mode.
 	if fed.on {
 		a.hosts = append(a.hosts, fed.origin.host)
+		a.fedHost = fed.origin.host
 	}
 	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
 	a.fetch = newFetcher(getenv("FLOWA_PREVIEW_BASE"), getenv("FLOWA_PREVIEW_BASE") != "")
@@ -13731,6 +13834,10 @@ type post struct {
 	Hidden string `json:"hidden,omitempty"`
 	// Links are the Instagram, TikTok and YouTube links on the post, with their previews.
 	Links []linkCard `json:"links,omitempty"`
+	// Audience is "public" or "local" (This server), told to the post's author only, and only in a mode
+	// that federates: elsewhere every post is This server and the answer is as it always was.
+	Audience string `json:"audience,omitempty"`
+	aud      string // as stored, for every reader
 }
 
 // blockFree is the SQL condition that what author wrote may be shown to viewer; the three arguments are
@@ -13768,7 +13875,7 @@ func postCols(staff string) string {
 	return `p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
-			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason`
+			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason, p.audience`
 }
 
 // homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
@@ -13822,8 +13929,11 @@ func (a *app) readPosts(viewer *user, q string, args ...any) (map[string]any, er
 	for rows.Next() {
 		p := &post{Comments: []comment{}}
 		var data []byte
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden, &p.aud); err != nil {
 			return nil, err
+		}
+		if a.fed != nil && p.UserID == viewer.ID {
+			p.Audience = p.aud
 		}
 		p.Data = data
 		posts = append(posts, p)
@@ -14044,8 +14154,19 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		Tags  []postTag  `json:"tags"`
 		Combo *postCombo `json:"combo"`
 		Links []string   `json:"links"`
+		// Who may read it (docs/federation.md, F2): "public" or "local", read only in a mode that federates.
+		Audience *string `json:"audience"`
 	}
 	if !readJSON(w, r, maxImage+4*maxPost+8192, &in) {
+		return
+	}
+	audience, msg, err := a.postAudience(in.Audience, u)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if msg != "" {
+		fail(w, http.StatusBadRequest, msg)
 		return
 	}
 	body := strings.TrimSpace(in.Body)
@@ -14112,8 +14233,8 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		prop, skill = tags[0].Prop, tags[0].Skill
 	}
 	var id int64
-	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image, data) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		u.ID, body, prop, skill, in.Image, string(dataJSON)).Scan(&id); err != nil {
+	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image, data, audience) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		u.ID, body, prop, skill, in.Image, string(dataJSON), audience).Scan(&id); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -14123,6 +14244,59 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		go a.preview(l) // in the background: posting never waits for another site
 	}
 	a.writePost(w, u, id)
+}
+
+// Who may read a post (docs/federation.md, F2, F3 and 6.7). This server ("local") is the audience of every
+// post made before audiences existed and of every post made outside a mode that federates; Public
+// ("public") is chosen per post, and only by a member who has opted in, while federation is not refused.
+// Milestone posts are This server until TRU (F13): handleAchievements writes none other. Posts are not
+// edited (1.2), so the audience is decided once, when the post is made: a Public post that another server
+// may have read cannot become private by a change of a column, and taking one back is a deletion, which
+// FWR sends to the servers it went to.
+const (
+	audLocal  = "local"
+	audPublic = "public"
+)
+
+// Said when a post asks for Public and cannot have it.
+const (
+	audNotOptedIn = "Only members who share their profile beyond this server can post publicly. Turn that on in Settings, or post to this server."
+	audOff        = "Posting publicly is not available at the moment. Post to this server instead."
+	audUnknown    = "The audience is public or local (this server)."
+)
+
+// postAudience decides a new post's audience from what the page asked for (nil: nothing). Outside a mode
+// that federates the field is ignored, as every field the handler does not know is, and the post is This
+// server, so an instance that sets nothing new answers as before. In a mode that federates nothing asked
+// means This server too: Public is never given by a default on the server, so a page from before audiences
+// cannot publish by leaving the field out; the composer sends the choice, with Public chosen at first for a
+// member who opted in (federation.md 11). Public is refused, with the reason, to a member who has not opted
+// in (the owner of a single-profile instance has, by FLOWA_FEDERATE=on) and while federation is refused.
+func (a *app) postAudience(want *string, u *user) (aud, msg string, err error) {
+	if a.fed == nil || want == nil {
+		return audLocal, "", nil
+	}
+	switch *want {
+	case audLocal:
+		return audLocal, "", nil
+	case audPublic:
+	default:
+		return "", audUnknown, nil
+	}
+	if !a.federating() {
+		return "", audOff, nil
+	}
+	if a.mode == modeSingle && u.Owner {
+		return audPublic, "", nil
+	}
+	var on bool
+	if err := a.db.QueryRow(`SELECT federates FROM users WHERE id = $1`, u.ID).Scan(&on); err != nil {
+		return "", "", err
+	}
+	if !on {
+		return "", audNotOptedIn, nil
+	}
+	return audPublic, "", nil
 }
 
 // shown makes text a person sent safe to say back in a message: printable characters only, and

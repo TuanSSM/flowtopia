@@ -229,7 +229,7 @@ These change the design and are not obvious from the brief.
    `@name@host` form before the local one (FWR, posts in).
 10. **Usernames can be reused.** `handleDeleteUser` deletes the row and nothing keeps the name, so a
     new sign-up could take it and inherit another person's identity on every server that knew it.
-    Federation keeps a list of retired names (section 9).
+    Federation keeps a list of retired names (section 9; built in FRD 5, 5.2).
 11. **Usernames Flowa allows that other servers may not.** `usernameRE` allows a name that ends in a
     dot or a dash (`ana.`, `bo-`). The SWICG report "ActivityPub and WebFinger" ("Current
     implementation rules") says Mastodon allows a dot or a dash only in the middle of a username
@@ -513,6 +513,21 @@ Usernames never change (no endpoint renames), and the numeric post and comment i
 (`BIGSERIAL`), so these stay stable. A deleted member's name goes into `retired_usernames` (**new**)
 and cannot be taken again.
 
+As built (FRD 5): `retired_usernames` (migration 14, with `flowa-schema13.dump` for the restore drill). A
+name is retired when an admin deletes an account that had opted in or ever had a key (a key is made only on
+opting in, and for the owner of a single-profile instance with `FLOWA_FEDERATE=on`, whose opt-in leaves no
+column; it stays when the member opts out), in the delete's own transaction and before the row goes, in
+every mode (4.3: retired names stay retired whatever the mode). A name of an account that never opted in is
+free again, as before. A retired name is refused at sign-up, at a request to join, at approving a request
+that waited under it, and for `ADMIN_USER` (the start goes on without that account while others exist, and
+stops with the reason when there would be none), always in the words of a taken name ("That username is
+taken."), so the answer does not say whether an account once had it. No endpoint renames an account, so a
+name that has federated cannot move (4.3); `TestDBRetiredNames` holds that `PUT /api/me` takes no name. The
+instance's own host is taken the same way in a mode that federates (5.3 found that a member so named is
+shadowed by the instance actor in WebFinger): it is refused at every door above, and a member who already has
+that name keeps the account but is refused the opt-in, with the reason. A member of that name who had opted
+in before this version stays opted in, and can be reached only by their actor id.
+
 ### 5.3 WebFinger (RFC 7033)
 
 `GET /.well-known/webfinger?resource=acct:ana@flowa.example.org` (**new**), `Content-Type:
@@ -582,7 +597,7 @@ neither says, and one correction:
 - **The instance actor** is `acct:host@host`. `usernameRE` allows dots, so a member whose username is the
   origin's host can exist when the host has 3 to 24 characters (`flowa.example.org` can be a username). The
   instance actor is decided before any member is looked up, so it always wins, and that member can be
-  found only by the URL form of their id. FRD 5's retired names can reserve that name.
+  found only by the URL form of their id. FRD 5 reserves that name (5.2, "As built (FRD 5)").
 - **The owner only, in single mode.** The implied opt-in of single mode is the owner's (`owner` in the
   lookup), not every account's, though `checkSingle` keeps one account there anyway.
 - **One answer for nobody.** An unknown name, a member who has not opted in, a suspended member and a deleted
@@ -1710,7 +1725,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS federates BOOLEAN NOT NULL DEFAULT fa
 ALTER TABLE users ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;      -- approves followers by hand
 CREATE INDEX IF NOT EXISTS users_local ON users (id) WHERE domain = '';
 
-CREATE TABLE retired_usernames (username TEXT PRIMARY KEY, retired_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE retired_usernames (username TEXT PRIMARY KEY, retired_at TIMESTAMPTZ NOT NULL DEFAULT now());   -- migration 14, built in FRD 5
 
 -- requests to join while registration is by approval (migration 11, built in INS 6): not users rows, so
 -- nothing that reads users (lists, counts, mentions, follows, sessions) meets a person nobody approved
@@ -1789,7 +1804,9 @@ CREATE TABLE domain_blocks_member (user_id BIGINT NOT NULL REFERENCES users(id) 
 
 -- remote posts and comments are rows of posts and comments (F5)
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_id TEXT;          -- NULL for local
-ALTER TABLE posts ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'local';  -- local, public, unlisted, followers
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'local';  -- local, public, unlisted, followers (migration 14, built in FRD 5:
+                                                                                     -- the check posts_audience NOT VALID, and posts_public (user_id, id DESC)
+                                                                                     -- WHERE audience = 'public' AND hidden_at IS NULL for the public pages)
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 CREATE UNIQUE INDEX posts_ap_id ON posts (ap_id) WHERE ap_id IS NOT NULL;
 CREATE INDEX posts_local ON posts (id DESC) WHERE ap_id IS NULL;
@@ -2031,6 +2048,21 @@ keyword filters.
   statuses", and what happens when the address comes back is in its code, which could not be
   opened), and the page says so before the button sends anything.
 - **Audience per post:** Public or This server, defaulting to Public for members who opted in.
+- **As built (FRD 5):** `posts.audience` (migration 14), `local` (This server) for every post there was and
+  for every post made outside a mode that federates; the check allows the four audiences of 9.1 and is added
+  `NOT VALID`, so no row is read to add it. The composer shows "Who can read it", a labelled list with Public
+  first and chosen, and This server, only where the server federates, the member has opted in (or is the owner
+  of a single-profile instance with `FLOWA_FEDERATE=on`) and federation is not refused; its labels and the
+  sentence under it are the server's (`fedView`'s `audiences`). The server never gives Public by a default:
+  a post that names no audience is This server, so a page from before audiences cannot publish by leaving the
+  field out; Public is refused with the reason to a member who has not opted in and while federation is
+  refused; outside a mode that federates the field is ignored like any unknown field. The author sees "Public"
+  or "This server" beside the post's time; nobody else's answer carries the audience, and outside a mode that
+  federates no answer does. Milestone posts are This server (F13). Posts are not edited (1.2), so the
+  audience is decided once: a Public post that another server may have read is not made private by a change
+  of a column, and taking it back is deleting it, which FWR's Delete then sends where it went. Comments have
+  no audience of their own: section 14.5 sends comments on Public posts only, and comments are not on the
+  public pages of this version (FWR serves them as Notes).
 - **Following:** a Follow button on profiles (local and remote); "people elsewhere": a search box
   that takes a handle (`@bo@social.example`) or a profile URL only, resolves it by WebFinger, and
   shows the profile with its public posts from the outbox's first page. No full-text search. A
