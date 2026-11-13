@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1196,8 +1197,9 @@ func TestReplayWindow(t *testing.T) {
 	if r := s.check(o, at+1, sig1(rk(2), at-12*3600)); r != sigStale || s.size() != 0 || inWindow(time.Unix(at-12*3600, 0), time.Unix(at+1, 0)) != sigTooOld {
 		t.Errorf("a second later: %v with %d kept", rs(r), s.size())
 	}
-	// A clock stepped back does not bring a forgotten signature back: the memory keeps its own clock.
-	if r := s.check(o, at-3600, sig1(rk(2), at-12*3600)); r != sigStale {
+	// A clock stepped back by up to an hour does not bring a forgotten signature back, although the
+	// window at that clock would take it: the memory keeps its own clock.
+	if r := s.check(o, at+1-3600, sig1(rk(2), at-12*3600)); r != sigStale || inWindow(time.Unix(at-12*3600, 0), time.Unix(at+1-3600, 0)) != 0 || s.stepped() {
 		t.Errorf("after the clock went back an hour: %v", rs(r))
 	}
 
@@ -1579,15 +1581,22 @@ func TestReplaySenderGroup(t *testing.T) {
 			t.Errorf("senderGroup(%q) = %q, want %q", id, got, want)
 		}
 	}
-	// Through the verifier: a key id on a one-label host is refused as a key id, before any lookup.
+	// Through the verifier: a key id on a host the fetcher would refuse (fedHost) is refused as a key
+	// id, before any lookup; a percent-encoded host is not even an https URL.
 	k := newSigKit(t)
 	looked := false
 	k.v.keyFor = func(context.Context, string) (*rsa.PublicKey, error) { looked = true; return nil, errors.New("no") }
-	req := k.request(t, "POST", tOrigin+"/inbox", inboxBody)
-	req.Header.Set("Digest", digestHeader(inboxBody))
-	cavageWith(t, req, k.key, "https://localhost/actor#main-key", "rsa-sha256", strings.Fields("(request-target) host date digest"), "")
-	if _, err := k.verify(received(req, inboxBody), inboxBody); reasonOf(err) != sigKeyID || looked {
-		t.Errorf("a one-label key id: %v, looked up: %v", err, looked)
+	for _, id := range []string{
+		"https://localhost/actor#main-key", "https://raspi/actor#main-key", "https://pi.local/actor#main-key",
+		"https://1.2.3/actor#main-key", "https://192.0.2.7/actor#main-key", "https://[2001:db8::1]/actor#main-key",
+		"https://[fe80::1%25eth0]/actor#main-key", "https://[::ffff:192.0.2.7]/actor#main-key", "https://ex%61mple.example/actor#main-key",
+	} {
+		req := k.request(t, "POST", tOrigin+"/inbox", inboxBody)
+		req.Header.Set("Digest", digestHeader(inboxBody))
+		cavageWith(t, req, k.key, id, "rsa-sha256", strings.Fields("(request-target) host date digest"), "")
+		if _, err := k.verify(received(req, inboxBody), inboxBody); reasonOf(err) != sigKeyID || looked {
+			t.Errorf("key id %s: %v, looked up: %v", id, err, looked)
+		}
 	}
 }
 
@@ -1669,6 +1678,179 @@ func TestReplaySharedFloor(t *testing.T) {
 	}
 }
 
+// A clock that jumped a day ahead and was corrected does not wedge the memory: the step back of more
+// than an hour is taken as a correction, the memory is emptied as by a restart and says so once, and
+// an honest delivery at the true time is accepted again.
+func TestReplayClockStep(t *testing.T) {
+	const o = "remote.example"
+	at := t0.Unix()
+	s := newReplaySet(sigSeenMax, sigPast)
+	if s.add(o, at, sig1(rk(1), at)) != 0 || s.add(o, at+86400, sig1(rk(2), at+86400)) != 0 {
+		t.Fatal("refused")
+	}
+	if r := s.check(o, at+3600, sig1(rk(3), at+3600)); r != 0 || !s.stepped() || s.stepped() || s.size() != 0 {
+		t.Errorf("back from a day ahead: %v, %d kept", rs(r), s.size())
+	}
+	if r := s.add(o, at+3600, sig1(rk(3), at+3600)); r != 0 || s.add(o, at+3601, sig1(rk(3), at+3600)) != sigReplay {
+		t.Errorf("after the reset: %v, and the memory must work again", rs(r))
+	}
+	// Exactly an hour back is not a correction: nothing is forgotten.
+	if r := s.check(o, at+1, sig1(rk(3), at+3600)); r != sigReplay || s.stepped() {
+		t.Errorf("an hour back: %v", rs(r))
+	}
+
+	// Through the verifier: an honest delivery after the clock came back from a day ahead.
+	a, _ := sigTestKeys()
+	k := newSigKit(t)
+	k.now = t0.Add(24 * time.Hour)
+	r, b := signedPost(t, a, tKeyID, sigCavage, k.now, 1)
+	if _, err := k.verify(r, b); err != nil {
+		t.Fatal(err)
+	}
+	k.now = t0
+	r, b = signedPost(t, a, tKeyID, sigCavage, t0, 2)
+	if _, err := k.verify(r, b); err != nil || !k.v.seen.stepped() {
+		t.Errorf("an honest delivery after the clock was corrected: %v", err)
+	}
+}
+
+// A signature evicted in the last second the window takes it still raises its group's floor.
+func TestReplayEvictLastSecond(t *testing.T) {
+	at := t0.Unix()
+	s := newReplaySet(1, sigPast)
+	if s.add("a.example", at, sig1(rk(1), at)) != 0 {
+		t.Fatal("refused")
+	}
+	if r := s.add("b.example", at+12*3600, sig1(rk(2), at+12*3600)); r != 0 {
+		t.Fatalf("the evicting signature: %v", rs(r))
+	}
+	if r := s.check("a.example", at+12*3600, sig1(rk(1), at)); r != sigStale || inWindow(time.Unix(at, 0), time.Unix(at+12*3600, 0)) != 0 {
+		t.Errorf("the evicted signature replayed in its last second: %v", rs(r))
+	}
+}
+
+// Who pays when the memory is full: a group exactly at an equal share pays for itself, and a group at
+// or under an equal share never loses an entry to another group's traffic.
+func TestReplayEqualShare(t *testing.T) {
+	at := t0.Unix()
+	s := newReplaySet(6, sigPast) // shares of 2 with 3 groups
+	s.perGroup, s.maxGroups = 6, 3
+	n := 0
+	put := func(g string, c int) {
+		for range c {
+			if r := s.add(g, at, sig1(rk(n), at+int64(n))); r != 0 {
+				t.Fatalf("%s: %v", g, rs(r))
+			}
+			n++
+		}
+	}
+	put("a.example", 3)
+	put("b.example", 1)
+	put("c.example", 2) // full: a 3, over its share; b 1, under; c 2, exactly at it
+	put("c.example", 1) // c at its share pays for itself, though a is heavier
+	if len(s.groups["a.example"].h) != 3 || len(s.groups["b.example"].h) != 1 || len(s.groups["c.example"].h) != 2 || !s.groups["c.example"].hasFloor {
+		t.Errorf("after c's signature at its share: a %d, b %d, c %d (floor %v)", len(s.groups["a.example"].h), len(s.groups["b.example"].h), len(s.groups["c.example"].h), s.groups["c.example"].hasFloor)
+	}
+	put("b.example", 1) // b under its share: the heaviest, a, pays
+	if len(s.groups["a.example"].h) != 2 || len(s.groups["b.example"].h) != 2 || len(s.groups["c.example"].h) != 2 {
+		t.Errorf("after b's signature under its share: a %d, b %d, c %d", len(s.groups["a.example"].h), len(s.groups["b.example"].h), len(s.groups["c.example"].h))
+	}
+	for range 4 { // every group now at its share: each new signature costs its own group only
+		put("b.example", 1)
+		if len(s.groups["a.example"].h) != 2 || len(s.groups["c.example"].h) != 2 || s.groups["a.example"].hasFloor != true {
+			t.Errorf("b at its share took from another: a %d, c %d", len(s.groups["a.example"].h), len(s.groups["c.example"].h))
+		}
+	}
+}
+
+// Expired entries are released by ordinary traffic of other groups, without a call to sweep.
+func TestReplayReleasedByTraffic(t *testing.T) {
+	at := t0.Unix()
+	s := newReplaySet(1000, sigPast)
+	for i := range 20 {
+		s.add("a.example", at, sig1(rk(i), at))
+	}
+	for i := range 3 {
+		if r := s.add("b.example", at+12*3600+1, sig1(rk(100+i), at+12*3600)); r != 0 {
+			t.Fatal(rs(r))
+		}
+	}
+	if s.size() != 3 || s.groups["a.example"] != nil {
+		t.Errorf("after three signatures of another group: %d kept, a still there: %v", s.size(), s.groups["a.example"] != nil)
+	}
+	// And one call forgets at most replayCallBudget, whoever sends it.
+	s = newReplaySet(sigSeenMax, sigPast)
+	for i := range 1000 {
+		s.add("a.example", at, sig1(rk(i), at))
+	}
+	s.check("a.example", at+12*3600+1, sig1(rk(5000), at+12*3600))
+	if s.size() != 1000-replayCallBudget {
+		t.Errorf("one call forgot %d of 1,000 expired, want %d", 1000-s.size(), replayCallBudget)
+	}
+}
+
+// The memory alone promises "never twice under the same sender group". A cavage signature does not
+// cover its keyId, so once one is evicted from its group, the same bytes under another domain's key
+// id (serving a copy of the sender's public key) are accepted by the verifier. What refuses that
+// delivery is the origin rule of 7.3, which the inbox applies: the body, bound by the digest, still
+// names the first sender's actor, and the key id is not on its origin. This test fails if either half
+// changes. An RFC 9421 signature covers keyid, so the copy fails verification itself.
+func TestReplayAcrossDomains(t *testing.T) {
+	a, _ := sigTestKeys()
+	const copyKeyID = "https://evil.example/copy#key"
+	const actor = "https://remote.example/users/ana"
+	for _, form := range []sigForm{sigCavage, sigRFC9421} {
+		k := newSigKit(t)
+		k.v.keyFor = func(_ context.Context, id string) (*rsa.PublicKey, error) {
+			if id == tKeyID || id == copyKeyID {
+				return &a.PublicKey, nil // public keys are public: evil.example serves a copy
+			}
+			return nil, errors.New("no such key")
+		}
+		k.v.seen = newReplaySet(10, sigPast) // 1 a group
+		post := func(at time.Time, n int) (*http.Request, []byte) {
+			body := []byte(`{"type":"Create","actor":"` + actor + `","n":` + strconv.Itoa(n) + `}`)
+			req, _ := http.NewRequest("POST", tOrigin+"/inbox", bytes.NewReader(body))
+			if err := httpSigner(a, tKeyID, form, func() time.Time { return at }, time.Time{})(req, body); err != nil {
+				t.Fatal(err)
+			}
+			return received(req, body), body
+		}
+		k.now = t0
+		p1, b1 := post(t0, 1)
+		p2, b2 := post(t0.Add(time.Second), 2)
+		if _, err := k.verify(p1, b1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := k.verify(p2, b2); err != nil { // evicts p1: remote.example's floor is t0
+			t.Fatal(err)
+		}
+		if _, err := k.verify(p1, b1); reasonOf(err) != sigStale {
+			t.Errorf("form %d: p1 replayed as it was: %v", form, err)
+		}
+		forged := p1.Clone(context.Background())
+		forged.Header = p1.Header.Clone()
+		h := "Signature"
+		if form == sigRFC9421 {
+			h = "Signature-Input"
+		}
+		forged.Header.Set(h, strings.Replace(p1.Header.Get(h), tKeyID, copyKeyID, 1))
+		res, err := k.verify(forged, b1)
+		if form == sigRFC9421 {
+			if reasonOf(err) != sigInvalid {
+				t.Errorf("RFC 9421: p1 under another domain's keyid: %v, want refused by verification", err)
+			}
+			continue
+		}
+		if err != nil || res.KeyID != copyKeyID {
+			t.Fatalf("cavage: p1 under another domain's keyId: %+v %v; the memory alone was expected to accept it", res, err)
+		}
+		if sameOrigin(res.KeyID, actor) || !sameOrigin(tKeyID, actor) {
+			t.Errorf("the 7.3 origin rule would not refuse it: key %s, actor %s", res.KeyID, actor)
+		}
+	}
+}
+
 // Floors and origins are forgotten exactly when they can no longer matter, and memory stays at the cap.
 func TestReplayExpiry(t *testing.T) {
 	at := t0.Unix()
@@ -1713,22 +1895,34 @@ func TestReplayExpiry(t *testing.T) {
 
 	// 200,000 distinct signatures from 50 origins never take the memory past its cap, and what one
 	// entry costs at the cap.
-	for _, origins := range []int{1, 50, 2000} {
-		runtime.GC()
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
-		s = newReplaySet(sigSeenMax, sigPast)
-		for i := range sigSeenMax {
-			s.add(rgroup(i%origins), at, sig1(rk(i), at+int64(i/origins)%3600))
+	// The heap is measured three times and the median taken, so an allocation or a free by another
+	// goroutine during one measurement (a server left by an earlier test) cannot decide the result.
+	// This test does not run in parallel with any other.
+	for _, groups := range []int{1, 50, 2000} {
+		names := make([]string, groups)
+		for i := range names {
+			names[i] = rgroup(i)
 		}
-		runtime.GC()
-		runtime.ReadMemStats(&after)
-		per := float64(after.HeapAlloc-before.HeapAlloc) / float64(s.size())
-		t.Logf("replay memory, %d origins: %d entries, %.0f bytes an entry, %.1f MB in all", origins, s.size(), per, per*float64(s.size())/1e6)
-		if limit := map[bool]float64{true: 64, false: 100}[s.size() == sigSeenMax]; per > limit {
-			t.Errorf("%d origins: %.0f bytes an entry, over %.0f; federation.md 7.2 and section 12 count about 6 MB for 100,000", origins, per, limit)
+		var pers []float64
+		for range 3 {
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			s = newReplaySet(sigSeenMax, sigPast)
+			for i := range sigSeenMax {
+				s.add(names[i%groups], at, sig1(rk(i), at+int64(i/groups)%3600))
+			}
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			pers = append(pers, (float64(after.HeapAlloc)-float64(before.HeapAlloc))/float64(s.size()))
+			runtime.KeepAlive(s)
 		}
-		runtime.KeepAlive(s)
+		slices.Sort(pers)
+		per := pers[1]
+		t.Logf("replay memory, %d groups: %d entries, %.0f bytes an entry (of %.0f), %.1f MB in all", groups, s.size(), per, pers, per*float64(s.size())/1e6)
+		if limit := map[bool]float64{true: 64, false: 100}[s.size() == sigSeenMax]; per > limit || per <= 0 {
+			t.Errorf("%d groups: %.0f bytes an entry, over %.0f; federation.md 7.2 and section 12 count about 6 MB for 100,000", groups, per, limit)
+		}
 	}
 	s = newReplaySet(sigSeenMax, sigPast)
 	for i := range 2 * sigSeenMax {
@@ -2179,7 +2373,10 @@ func BenchmarkInboxVerify(b *testing.B) {
 				if _, err := k.v.verifyRequest(ctx, r, body); err != nil {
 					b.Fatal(err)
 				}
-				k.v.seen.reset()
+				s := k.v.seen
+				s.mu.Lock()
+				s.forgetAll()
+				s.mu.Unlock()
 			}
 		})
 	}
@@ -2203,16 +2400,6 @@ func BenchmarkSignDelivery(b *testing.B) {
 			}
 		})
 	}
-}
-
-// reset empties a replay memory, keeping its slots, for a benchmark that verifies one request again.
-func (s *replaySet) reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.n, s.free, s.pool = 0, -1, s.pool[:0]
-	clear(s.m)
-	clear(s.groups)
-	s.byCount, s.byAge = s.byCount[:0], s.byAge[:0]
 }
 
 // BenchmarkReplayAdd: one addition to a full replay memory from 1, 50 and 5,000 origins in turn, an

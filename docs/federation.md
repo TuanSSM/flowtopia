@@ -1117,7 +1117,19 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
   12 hours after the time it vouches for, through the last second, which is the second the window starts
   to refuse it (`TestReplayWindow` shows the two meet). A signature dated an hour ahead is kept 13 hours,
   one dated 12 hours back hardly at all. The memory keeps its own clock, the latest it was given, so a
-  system clock stepped back cannot bring a forgotten signature back into the window.
+  system clock stepped back by up to an hour cannot bring a forgotten signature back into the window.
+- **What the memory promises, and what replay safety also rests on.** The memory alone promises that a
+  signature is never accepted twice under the same sender group (below) while the window would take it.
+  For RFC 9421 that is enough: `keyid` is in the signature base, so the same signature under another key
+  id does not verify. For the draft form it is not: a cavage signature does not cover its `keyId`, so once
+  it has been evicted from its group (below), the same bytes sent under a key id of another domain that
+  serves a copy of the sender's public key (public keys are public) pass the memory and verify. That
+  delivery is refused by the origin rule of 7.3, applied by the inbox to every delivery: the body, bound by
+  the digest, still names the first sender's actor, and the key id is not on that actor's origin. **The
+  origin rule is therefore part of replay safety for the draft form, not only of authorship**
+  (`TestReplayAcrossDomains` writes both halves down). No grouping closes it inside the memory: keyed by
+  the key's fingerprint, whoever claimed a fingerprint first would own the victim's floor, and one floor
+  for everyone is the blocker the first rule was.
 - **When the memory is full, the sender that filled it pays, never a bystander.** It is bounded and the
   number of valid signatures in 12 hours is not, so some valid new signature must sometimes be refused;
   a replay never is. Entries are grouped by the **sender group** of their key id (`senderGroup`): the
@@ -1144,11 +1156,15 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
   **The worst case** is a flood of valid signatures from very many groups, each needing a domain the
   domain policy lets in, a key that verifies, and its host held to the inbox's allowance. Subdomains and
   ports share their domain's group, so one wildcard DNS name fills one group's share, not the 2,000
-  groups. An honest group already in the memory keeps at least an equal share of its newest entries, 50 at the full 2,000 groups, and loses
-  only a delivery dated no later than the ones evicted, one overtaken by that many of its own later
-  deliveries; an honest group not yet in the memory gets 503 until the flood's entries expire, up to 13
-  hours, or the flooding domain is blocked. Either way the sender retries, with a fresh date, and is
-  accepted. `TestReplayModel` checks the rule against a reference that remembers everything, over
+  groups. An honest group already in the memory keeps at least an equal share of its newest entries,
+  50 at the full 2,000 groups, and loses only a delivery dated no later than the ones evicted, one
+  overtaken by that many of its own later deliveries. An honest group not yet in the memory gets 503 for
+  as long as the flood is kept up, or until the flooding domains are blocked: holding all 2,000 groups
+  takes 2,000 registered names that the domain policy lets in, each serving a fetchable key and sending a
+  signed request at least every 13 hours (an entry dated an hour ahead lasts 13). Either way the sender
+  retries, with a fresh date, and is accepted. A shared overflow group for the groups beyond the cap was
+  considered and not built: a sender could be in the overflow group at one time and in its own group
+  later, and a floor protects only if a signature always maps to the same group. `TestReplayModel` checks the rule against a reference that remembers everything, over
   thousands of random operations.
 
   **What grouping by the last two labels costs.** It is a rough stand-in for the registrable domain,
@@ -1158,12 +1174,13 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
   group's share of the memory and one floor, so a flood from one of them can cost its group-mates a
   delivery dated at or before the group's floor, which the sender retries with a fresh date
   (`TestReplaySharedFloor` writes the trade down). Grouping by origin instead let one wildcard name
-  have every server not yet seen refused for up to 13 hours (`TestReplaySubdomainFlood`). The list of
+  have every server not yet seen refused for as long as it kept the flood up (`TestReplaySubdomainFlood`). The list of
   public suffixes would draw the line better; it is not taken as a dependency.
 
   Each check is O(log n): a heap of entries by time for each group, and heaps of groups by count and
-  by oldest time, so expired entries are found without a scan (every call forgets up to 8, the
-  inserting group's own all; `sweep` is there for the housekeeping pass). Entries share one pool, so
+  by oldest time, so expired entries are found without a scan. Every call forgets up to 8 expired entries
+  of any group, then the named group's own, at most 64 in all, so a request not yet verified costs at
+  most 64 heap removals; `sweep` is there for the housekeeping pass. Entries share one pool, so
   memory at the cap is fixed: 52 to 56 bytes an entry measured with 50 and 2,000 groups, 5.2 to 5.6 MB
   for 100,000, about 7 MB at most with the slack a shrinking group's heap may keep
   (`TestReplayExpiry`, `BenchmarkReplayAdd`). This replaces a first rule, one floor for the whole
@@ -1172,6 +1189,15 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
   and one sender with a fast clock could do the same by accident.
 - The memory is lost on a restart: a replay within the 12 hours after one then rests on the
   de-duplication by activity id above, and an activity with no id is not protected across a restart.
+  **A clock stepped back by more than an hour is treated the same way.** A Raspberry Pi has no clock of
+  its own and takes its time from the network after it starts; a clock that jumped ahead and was then
+  corrected would otherwise leave the memory's clock ahead, and every honest signature older than the
+  size of the step would be refused as stale, all of them once the step passes 12 hours, until real
+  time caught up. So when the wall clock reads more than an hour behind the memory's clock, the memory
+  forgets everything, as a restart does, takes the wall clock, and says so once for the caller to log
+  one line (`TestReplayClockStep`). An hour is the tolerance ahead the window already gives: a step back
+  within it leaves the memory's clock at most an hour ahead, which refuses as stale only signatures
+  dated more than 11 hours back, and keeps a forgotten signature from coming back.
 
 ### 7.3 Origin checks
 

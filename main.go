@@ -7700,8 +7700,10 @@ func replayKeyOf(sig []byte) replayKey {
 
 // senderGroup is the group a key id's signatures share in the replay memory: the last two labels of
 // its host, in lower case, scheme and port ignored, so a.b.evil.example:8443 and evil.example are
-// both evil.example. An IP literal is a group of its own. It returns "" for a host it cannot group (a
-// single label, an empty label), which the verifier refuses before the memory sees it.
+// both evil.example. It returns "" for a host it cannot group (a single label, an empty label). The
+// verifier refuses before this any key id whose host the fetcher would refuse (fedHost: IP addresses,
+// numeric names, private names, one label), since its key could never be fetched; an IP literal given
+// here anyway is a group of its own.
 //
 // It is a rough stand-in for the registrable domain, and safe: a floor kept per group refuses at
 // least everything a floor per origin would, so no replay is let through. Its cost is fairness under
@@ -7709,8 +7711,8 @@ func replayKeyOf(sig []byte) replayKey {
 // customer of a host that gives out subdomains) share one group's share of the memory and one floor,
 // so a flood from one of them can cost its group-mates a delivery dated at or before the group's floor,
 // which the sender retries with a fresh date. That is far better than grouping by origin, where one
-// wildcard DNS name could fill the 2,000 groups and have every server not yet seen refused for up to
-// 13 hours. The list of public suffixes would draw the line better; it is not taken as a dependency.
+// wildcard DNS name could fill the 2,000 groups and have every server not yet seen refused for as
+// long as it kept the flood up. The list of public suffixes would draw the line better; it is not taken as a dependency.
 func senderGroup(keyID string) string {
 	u, err := url.Parse(keyID)
 	if err != nil {
@@ -7738,16 +7740,29 @@ type replaySig struct {
 // accepted once (federation.md 7.2). Each entry belongs to the sender group of its key id
 // (senderGroup: the last two labels of its host), and every rule below is per group.
 //
+// What it promises, exactly: a signature is never accepted twice under the same sender group while
+// the time window would take it. Across groups it promises nothing more, and for the draft form that
+// matters. A cavage signature does not cover its keyId, so once it has been evicted from its group,
+// the same bytes under a key id of another domain that serves a copy of the sender's public key
+// (public keys are public) pass the memory and verify. That delivery is refused by the origin rule of
+// 7.3, which the inbox applies to every delivery: the body, bound by the digest, still names the
+// first sender's actor, and the key id is not on that actor's origin. So the origin rule is part of
+// replay safety for the draft form, not only of authorship (TestReplayAcrossDomains). An RFC 9421
+// signature covers keyid in its base, so under another key id it does not verify, and the memory
+// alone suffices. No grouping closes this in the memory: keyed by the key's fingerprint, whoever
+// claims a fingerprint first would own its floor; one floor for all is the blocker this replaced.
+//
 // An entry lives as long as the time window could still accept its signature: until 12 hours (past)
 // after the time it vouches for, through the last second, which is exactly when inWindow starts to
 // refuse it as too old. A signature dated an hour ahead is kept 13 hours, one dated 12 hours ago is
 // barely kept at all. The memory keeps its own clock, the latest time it was given, and refuses as
-// stale anything that clock says is past its 12 hours, so a system clock stepped back cannot bring a
-// forgotten signature back into the window.
+// stale anything that clock says is past its 12 hours, so a system clock stepped back by up to an
+// hour cannot bring a forgotten signature back into the window. A step back of more than an hour is
+// a corrected clock, and the memory forgets everything as a restart does (advance).
 //
 // The memory is bounded and the number of valid signatures in a window is not, so sometimes a valid
-// new signature has to be refused (a replay never is). The rule decides who that is: the group that
-// filled the memory, never a bystander.
+// new signature has to be refused (a replay under the same group never is). The rule decides who that
+// is: the group that filled the memory, never a bystander.
 //
 //   - An entry is only ever dropped by expiry or by eviction. An evicted entry is its group's
 //     smallest time, and that group's floor rises to it: from then on a new signature from that
@@ -7760,7 +7775,7 @@ type replaySig struct {
 //   - When the whole memory is full, the entry evicted is the oldest of the group holding the most
 //     entries, or the inserting group's own when it already holds at least an equal share (the
 //     memory divided by the groups in it). The heaviest pays because it is the one using more than
-//     its share: an group at or below an equal share is never evicted from by another's traffic, so
+//     its share: a group at or below an equal share is never evicted from by another's traffic, so
 //     an attacker gains nothing by spreading a flood unless it brings more groups than there are
 //     honest ones, and every honest group keeps at least an equal share of its newest entries.
 //   - At most maxGroups groups are remembered (one in fifty of the memory). A signature from a new
@@ -7768,27 +7783,32 @@ type replaySig struct {
 //     Retry-After: no group is forgotten while it might still have a floor or an entry to keep.
 //
 // The worst case, a flood of valid signatures from very many groups (each needs a domain of its own
-// that the domain policy lets in, since subdomains and ports share their domain's group, and a key
-// that verifies, and each host is held to the inbox's allowance): an honest group already in the memory keeps at least an equal share of its newest entries, 50 at the full
-// 2,000 groups, and loses only a delivery that arrives dated no later than the ones evicted, that
-// is, one overtaken by that many of its own later deliveries; an honest group not yet in the memory
-// gets 503 until the flood's entries expire, up to 13 hours. Either way the sender retries with a
-// fresh date and the delivery goes through once there is room. Replay is never accepted.
+// that the domain policy lets in, since subdomains and ports share their domain's group, a key that
+// verifies and can be fetched, and each host is held to the inbox's allowance): an honest group
+// already in the memory keeps at least an equal share of its newest entries, 50 at the full 2,000
+// groups, and loses only a delivery dated no later than the ones evicted, that is, one overtaken by
+// that many of its own later deliveries. An honest group not yet in the memory gets 503 for as long
+// as the flood is kept up: holding all 2,000 groups takes 2,000 registered names with fetchable keys,
+// each sending a signed request at least every 13 hours (each entry, dated an hour ahead, lasts 13).
+// Either way the sender retries with a fresh date and the delivery goes through once there is room.
 //
 // Safe for concurrent use, under one mutex held for O(log n) work: a min-heap of entries by time per
 // group, and two heaps of groups, by count (for the heaviest) and by their oldest time (for a
-// sweep that never scans). Every call also forgets up to replaySweepStep expired entries, so expired
-// ones are cleared at least as fast as new ones arrive, and a new group is turned away as full only
-// once nothing expired is left to forget. Entries sit in one pool, grown by doubling up
-// to max and reused, so the memory at the cap is fixed. In memory only: a restart forgets it, and
-// the inbox's de-duplication by activity id (7.2) still holds across one.
+// sweep that never scans). Every call forgets up to replaySweepStep expired entries of any group, so
+// expired ones are cleared at least as fast as new ones arrive, and at most replayCallBudget in all;
+// a new group is turned away as full only after that budget has been spent on what had expired.
+// Entries sit in one pool, grown by doubling up to max and reused, so the memory at the cap is
+// fixed. In memory only: a restart forgets it, and the inbox's de-duplication by activity id (7.2)
+// still holds across one.
 type replaySet struct {
 	mu        sync.Mutex
 	max       int   // signatures remembered at most
 	perGroup  int   // signatures one group holds at most
 	maxGroups int   // groups remembered at most
 	past      int64 // seconds a signature stays acceptable after the time it vouches for
-	now       int64 // the latest time given, Unix seconds: the memory's clock never goes back
+	back      int64 // seconds the wall clock may read behind the memory's own before it counts as corrected
+	now       int64 // the latest time given, Unix seconds: the memory's clock goes back only by a reset
+	reset     bool  // the memory was emptied by a clock step back, not yet reported by stepped
 	n         int
 	m         map[replayKey]struct{}
 	pool      []replaySig // entries; a free slot holds the next free slot in at
@@ -7798,9 +7818,47 @@ type replaySet struct {
 	byAge     groupsByAge
 }
 
-// replaySweepStep is how many expired entries each call forgets at most, besides the inserting
-// group's own.
-const replaySweepStep = 8
+// replaySweepStep is how many expired entries of any group each call forgets, oldest first, and
+// replayCallBudget how many in all one call may forget: those, then the named group's own, then, when
+// a new group finds the groups full, any. A call costs at most that many heap removals, whoever sends
+// it: the check before the key lookup runs on requests not yet verified.
+const (
+	replaySweepStep  = 8
+	replayCallBudget = 64
+)
+
+// advance sets the memory's clock from the wall clock. The memory's clock does not go back: a step
+// back of up to sigAhead is taken as the wall clock's error and ignored, so that a forgotten
+// signature cannot come back into the window. A step back of more than that is taken as a clock
+// that was wrong and has been corrected (a Raspberry Pi takes its time from the network after it
+// starts): keeping the memory's clock would refuse as stale every honest signature older than the
+// size of the step, and all of them once it passes 12 hours, until real time caught up. So the memory
+// forgets everything, as a restart does, and takes the wall clock; stepped reports it once.
+func (s *replaySet) advance(now int64) {
+	if now < s.now-s.back {
+		s.forgetAll()
+		s.reset = true
+	}
+	s.now = max(s.now, now)
+}
+
+// forgetAll empties the memory, keeping its slots.
+func (s *replaySet) forgetAll() {
+	s.n, s.free, s.pool, s.now = 0, -1, s.pool[:0], 0
+	clear(s.m)
+	clear(s.groups)
+	s.byCount, s.byAge = s.byCount[:0], s.byAge[:0]
+}
+
+// stepped says, once, that the memory forgot everything because the clock stepped back by more than
+// sigAhead, so the caller can log one line; the memory logs nothing itself.
+func (s *replaySet) stepped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.reset
+	s.reset = false
+	return r
+}
 
 // replayGroup is what the memory keeps for one group.
 type replayGroup struct {
@@ -7848,7 +7906,7 @@ func (h *groupsByAge) Pop() any          { o := (*h)[len(*h)-1]; *h = (*h)[:len(
 // newReplaySet makes a memory of size signatures, of which one group holds a tenth and which keeps
 // at most one group in fifty (at least two), for signatures acceptable for past after their time.
 func newReplaySet(size int, past time.Duration) *replaySet {
-	return &replaySet{max: size, perGroup: max(size/10, 1), maxGroups: max(size/50, 2), past: int64(past / time.Second),
+	return &replaySet{max: size, perGroup: max(size/10, 1), maxGroups: max(size/50, 2), past: int64(past / time.Second), back: int64(sigAhead / time.Second),
 		free: -1, m: map[replayKey]struct{}{}, groups: map[string]*replayGroup{}}
 }
 
@@ -7869,11 +7927,11 @@ func (s *replaySet) add(group string, now int64, sigs ...replaySig) sigReason {
 func (s *replaySet) admit(group string, now int64, sigs []replaySig, keep bool) sigReason {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.now = max(s.now, now)
-	s.sweepLocked(replaySweepStep)
+	s.advance(now)
+	budget := replayCallBudget - s.sweepLocked(replaySweepStep)
 	o := s.groups[group]
 	if o != nil {
-		for len(o.h) > 0 && s.expired(o.oldest()) {
+		for ; budget > 0 && len(o.h) > 0 && s.expired(o.oldest()); budget-- {
 			s.popOldest(o)
 		}
 		if !s.settle(o) {
@@ -7889,7 +7947,8 @@ func (s *replaySet) admit(group string, now int64, sigs []replaySig, keep bool) 
 		}
 	}
 	if o == nil && len(s.groups) >= s.maxGroups {
-		for len(s.groups) >= s.maxGroups && s.sweepLocked(replaySweepStep) > 0 { // what has expired goes first
+		if budget > 0 {
+			s.sweepLocked(budget) // what has expired goes first
 		}
 		if len(s.groups) >= s.maxGroups {
 			return sigFull
@@ -8006,7 +8065,7 @@ func (s *replaySet) settle(o *replayGroup) bool {
 func (s *replaySet) sweep(now int64, budget int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.now = max(s.now, now)
+	s.advance(now)
 	return s.sweepLocked(budget)
 }
 
@@ -8395,9 +8454,10 @@ func (v *sigVerifier) verify(ctx context.Context, m *sigMessage, body []byte) (*
 	}
 	replay := m.method != "GET" && m.method != "HEAD"
 	keyID := checks[0].keyID
+	u, _ := url.Parse(keyID) // an https URL, checked above
 	group := senderGroup(keyID)
-	if group == "" {
-		return nil, sigFail(sigKeyID) // a host of one label: no key id Flowa can look up has one
+	if _, why := fedHost(u.Hostname()); why != "" || group == "" {
+		return nil, sigFail(sigKeyID) // a host the fetcher would refuse: its key could never be had
 	}
 	var sigs [2]replaySig
 	if replay {

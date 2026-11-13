@@ -26,7 +26,13 @@ route and test named below is new unless the design note says it exists.
   fetch cache, a negative cache and a limit of key fetches per host before it is wired to fetch; and a
   restart empties the replay memory, so a replay within 12 hours of a restart rests on de-duplication
   by activity id alone. A `sigFull` refusal from the verifier is answered 503 with `Retry-After`, not
-  401, and the housekeeping pass calls the replay memory's `sweep`.
+  401, the housekeeping pass calls the replay memory's `sweep`, and when the memory's `stepped` says
+  the clock was corrected the inbox logs one line. **Required:** the inbox applies the 7.3 check (the
+  activity's actor and the key id that signed it on one origin, `sameOrigin`) to every delivery before
+  acting on it. Replay safety of the draft form depends on it: a cavage signature does not cover its
+  `keyId`, so a signature evicted from the replay memory can come back under another domain's key id,
+  and only this check refuses it (federation.md 7.2, `TestReplayAcrossDomains`; `TestInboxRefusals`
+  gets the case "a delivery signed under a key id not on the actor's origin").
 - [ ] **A delivery queue in Postgres.** `ap_outbox`, `ap_deliveries`, `ap_hosts`; workers
   (`FLOWA_FEDERATION_WORKERS`), one request at a time per host, 10 a second, at most 3 database
   connections; the retry schedule and the 48-hour horizon (F9); the circuit breaker and unavailable
