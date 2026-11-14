@@ -2755,6 +2755,7 @@ func TestDBOneConnection(t *testing.T) {
 
 	within(200, ana, "PUT", "/api/me", map[string]any{"bio": "one connection"})
 	p := num(within(200, ana, "POST", "/api/posts", map[string]any{"body": "a post"})["posts"].([]any)[0].(map[string]any)["id"])
+	pm := num(within(200, ana, "POST", "/api/posts", map[string]any{"body": "a post that tells @boss"})["posts"].([]any)[0].(map[string]any)["id"]) // told after the lookup's rows close
 	within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil)
 	within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil)
 	c := id(within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "a comment"}), "comment")
@@ -2814,6 +2815,7 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, ana, "DELETE", fmt.Sprintf("/api/comments/%d", r), nil)
 	within(200, bo, "DELETE", fmt.Sprintf("/api/comments/%d", c), nil)
 	within(200, ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
+	within(200, ana, "DELETE", fmt.Sprintf("/api/posts/%d", pm), nil)
 	e.a.db.SetMaxOpenConns(8)
 	if e.count(`SELECT count(*) FROM users WHERE id = $1`, goneID) != 0 || e.count(`SELECT count(*) FROM posts WHERE user_id = $1`, anaID) != 0 ||
 		e.count(`SELECT count(*) FROM users WHERE username = 'asks'`) != 1 || e.count(`SELECT count(*) FROM join_requests`) != 0 {
@@ -2848,6 +2850,89 @@ func TestDBOneConnection(t *testing.T) {
 	s.a.db.SetMaxOpenConns(8)
 	if s.count(`SELECT count(*) FROM users WHERE role = 'admin' AND owner`) != 1 {
 		t.Fatal("the sole member was not made the admin and the owner on one connection")
+	}
+
+	// The public addresses of a mode that federates (FRD 5), with the skill names to read from the database
+	// (an empty cache), for a post with a chip and a combo: each answers on one connection, so none holds a
+	// connection while it asks for another.
+	f := newPubFixture(t)
+	asked := func(x *tenv, path, accept string, want int) {
+		t.Helper()
+		x.a.namesMu.Lock()
+		x.a.names = nil
+		x.a.namesMu.Unlock()
+		at := make(chan int, 1)
+		go func() { at <- pubAsk(x, "GET", path, accept).Code }()
+		select {
+		case code := <-at:
+			if code != want {
+				t.Errorf("GET %s (%q) on one connection: %d, want %d", path, accept, code, want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("GET %s (%q) did not answer in 10 s on one connection: it holds a connection while it asks for another", path, accept)
+		}
+	}
+	f.e.a.db.SetMaxOpenConns(1)
+	for _, accept := range []string{browser, apAccept} {
+		asked(f.e, "/users/ana", accept, 200)
+		asked(f.e, fmt.Sprintf("/users/ana/posts/%d", f.pub), accept, 200)
+		asked(f.e, "/actor", accept, 200)
+	}
+	asked(f.e, "/users/ana/avatar.png", "", 200)
+	asked(f.e, fmt.Sprintf("/users/ana/posts/%d/picture.jpg", f.pub), "", 200)
+	f.e.a.db.SetMaxOpenConns(8)
+	// Single mode with FLOWA_FEDERATE=on: the page at / lists the owner's Public posts.
+	sf := newEnv(t)
+	if err := sf.fedSingleStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	sf.mustExec(`INSERT INTO posts (user_id, body, audience, data) SELECT id, 'chips', 'public', '{"tags":[{"prop":"poi","skill":"F1"}],"combo":{"id":"c","name":"C","role":"","prop":"poi","seq":["F1"],"reps":[1]}}' FROM users WHERE owner`)
+	sf.h = sf.a.routes(staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"}))
+	sf.a.dropVisitorPage()
+	sf.a.db.SetMaxOpenConns(1)
+	asked(sf, "/", "", 200)
+	sf.a.db.SetMaxOpenConns(8)
+}
+
+// The public pages under load at the real pool size: 40 requests at once, at a cold names cache, for a
+// profile whose post has a chip and a combo, as pages and as documents. Every one is answered, within a
+// bound the requests carry as their context, so a pool held up would show as failed answers, not a hang.
+func TestDBPublicPool(t *testing.T) {
+	f := newPubFixture(t)
+	e := f.e
+	e.a.db.SetMaxOpenConns(8) // as openDB sets it
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	e.a.namesMu.Lock()
+	e.a.names = nil
+	e.a.namesMu.Unlock()
+	paths := []string{"/users/ana", fmt.Sprintf("/users/ana/posts/%d", f.pub)}
+	codes := make([]int, 40)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Go(func() {
+			r := httptest.NewRequest("GET", paths[i%2], nil).WithContext(ctx)
+			r.RemoteAddr = "198.51.100.20:4000"
+			r.Header.Set("Accept", []string{browser, apAccept}[(i/2)%2])
+			w := httptest.NewRecorder()
+			<-start
+			e.h.ServeHTTP(w, r)
+			codes[i] = w.Code
+		})
+	}
+	close(start)
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		<-finished // the requests carry ctx: once it ends every query returns, and so does every request
+	}
+	for i, c := range codes {
+		if c != 200 {
+			t.Errorf("request %d (%s): %d", i, paths[i%2], c)
+		}
 	}
 }
 

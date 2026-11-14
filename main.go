@@ -7651,13 +7651,20 @@ func summaryHTML(bio string) string { return noteHTML(bio, nil) }
 
 // skillNames are the names of a prop's skills from its latest published map, kept for a minute: the
 // chips and combos of a public post read as names, and a renamed skill shows under its new name (6.5).
-func (a *app) skillNames(prop string) map[string]string {
+// The lock guards the map only and is never held while the database is asked: a caller that waits for
+// it must never be holding a connection another caller needs. Two requests that find the names old at
+// once both read them, and the later one is kept. The read takes the request's context; when it fails
+// the shipped map's names are used and not kept, so the next request asks again.
+func (a *app) skillNames(ctx context.Context, prop string) map[string]string {
 	a.namesMu.Lock()
-	defer a.namesMu.Unlock()
-	if c, ok := a.names[prop]; ok && time.Since(c.at) < time.Minute {
+	c, ok := a.names[prop]
+	a.namesMu.Unlock()
+	if ok && time.Since(c.at) < time.Minute {
 		return c.names
 	}
-	raw, _, err := a.latestCatalog(prop)
+	var raw []byte
+	err := a.db.QueryRowContext(ctx, `SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'published' ORDER BY rev DESC LIMIT 1`, prop).Scan(&raw)
+	keep := err == nil || errors.Is(err, sql.ErrNoRows)
 	if err != nil {
 		raw, _ = shippedCatalog(prop)
 	}
@@ -7669,6 +7676,11 @@ func (a *app) skillNames(prop string) map[string]string {
 	for _, s := range cat.Skills {
 		names[s.ID] = s.Name
 	}
+	if !keep {
+		return names
+	}
+	a.namesMu.Lock()
+	defer a.namesMu.Unlock()
 	if a.names == nil {
 		a.names = map[string]skillNameCache{}
 	}
@@ -7683,14 +7695,14 @@ type skillNameCache struct {
 
 // postExtras are a post's chips and combo as lines of text (6.5's fallback): "Tricks: Six basic figure-8s
 // (Nunchaku), ..." and "Combo: Name: A, B, C". A skill the map no longer has is shown by its id.
-func (a *app) postExtras(data []byte) []string {
+func (a *app) postExtras(ctx context.Context, data []byte) []string {
 	var d struct {
 		Tags  []postTag  `json:"tags"`
 		Combo *postCombo `json:"combo"`
 	}
 	json.Unmarshal(data, &d)
 	name := func(prop, id string) string {
-		if n := a.skillNames(prop)[id]; n != "" {
+		if n := a.skillNames(ctx, prop)[id]; n != "" {
 			return n
 		}
 		return id
@@ -8157,9 +8169,9 @@ func (a *app) whoOf(name, display, bio string, links []byte, head, tag string) *
 }
 
 // postOf is a Public post as a public page shows it.
-func (a *app) postOf(name string, id int64, body, head string, data []byte, created time.Time) pubPost {
+func (a *app) postOf(ctx context.Context, name string, id int64, body, head string, data []byte, created time.Time) pubPost {
 	url := "/users/" + name + "/posts/" + strconv.FormatInt(id, 10)
-	p := pubPost{URL: url, When: created.UTC().Format(time.RFC3339), Day: created.UTC().Format("2 January 2006"), Extras: a.postExtras(data)}
+	p := pubPost{URL: url, When: created.UTC().Format(time.RFC3339), Day: created.UTC().Format("2 January 2006"), Extras: a.postExtras(ctx, data)}
 	if body = strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n")); body != "" {
 		for _, para := range paraBreak.Split(body, -1) {
 			p.Paras = append(p.Paras, textParts(para))
@@ -8254,44 +8266,56 @@ func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite
 		}
 		before = n
 	}
+	// The rows are read whole and closed before anything else is done: making a post's lines may ask the
+	// database again (skillNames), and a request must never hold one connection while it waits for another,
+	// or a few at once could take the whole pool and stop every request (TestDBOneConnection).
+	type profileRow struct {
+		uid, pid                                  sql.NullInt64
+		uname, display, bio, head, tag, body, img sql.NullString
+		links, data                               []byte
+		created                                   sql.NullTime
+	}
+	var retired bool
+	var got []profileRow
 	rows, err := a.db.QueryContext(r.Context(), profilePageSQL, name, a.mode == modeSingle, before, pubPage+1)
 	if err != nil {
 		pubFailed(w, "a public profile", err)
 		return
 	}
-	defer rows.Close()
+	for rows.Next() {
+		var x profileRow
+		if err = rows.Scan(&retired, &x.uid, &x.uname, &x.display, &x.bio, &x.links, &x.head, &x.tag, &x.pid, &x.body, &x.img, &x.data, &x.created); err != nil {
+			break
+		}
+		got = append(got, x)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		pubFailed(w, "a public profile", err)
+		return
+	}
 	d := pubData{Kind: "profile"}
-	var retired bool
 	var last int64
 	n := 0
-	for rows.Next() {
-		var uid, pid sql.NullInt64
-		var uname, display, bio, head, tag, body, image sql.NullString
-		var links, data []byte
-		var created sql.NullTime
-		if err := rows.Scan(&retired, &uid, &uname, &display, &bio, &links, &head, &tag, &pid, &body, &image, &data, &created); err != nil {
-			pubFailed(w, "a public profile", err)
-			return
-		}
-		if !uid.Valid {
+	for _, x := range got {
+		if !x.uid.Valid {
 			break
 		}
 		if d.Who == nil {
-			d.Who = a.whoOf(uname.String, display.String, bio.String, links, head.String, tag.String)
+			d.Who = a.whoOf(x.uname.String, x.display.String, x.bio.String, x.links, x.head.String, x.tag.String)
 		}
-		if !pid.Valid {
+		if !x.pid.Valid {
 			continue
 		}
 		if n++; n > pubPage {
 			d.Older = "/users/" + name + "?before=" + strconv.FormatInt(last, 10)
 			break
 		}
-		last = pid.Int64
-		d.Posts = append(d.Posts, a.postOf(uname.String, pid.Int64, body.String, image.String, data, created.Time))
-	}
-	if err := rows.Err(); err != nil {
-		pubFailed(w, "a public profile", err)
-		return
+		last = x.pid.Int64
+		d.Posts = append(d.Posts, a.postOf(r.Context(), x.uname.String, x.pid.Int64, x.body.String, x.img.String, x.data, x.created.Time))
 	}
 	switch {
 	case d.Who == nil && retired:
@@ -8369,7 +8393,7 @@ func (a *app) handlePublicPost(st *static) http.HandlerFunc {
 		if !activity {
 			who := a.whoOf(uname, display, "", nil, head, tag)
 			who.App = "/#/post/" + strconv.FormatInt(id, 10)
-			d := pubData{Kind: "post", Who: who, Posts: []pubPost{a.postOf(uname, id, body, image, data, created)}, Title: "Post by " + who.Name + " (" + who.Handle + ")"}
+			d := pubData{Kind: "post", Who: who, Posts: []pubPost{a.postOf(r.Context(), uname, id, body, image, data, created)}, Title: "Post by " + who.Name + " (" + who.Handle + ")"}
 			site.page(d).serve(w, r, http.StatusOK, apKeep)
 			return
 		}
@@ -8378,7 +8402,7 @@ func (a *app) handlePublicPost(st *static) http.HandlerFunc {
 		}
 		actor := a.fed.origin.url + "/users/" + uname
 		note := outNote{Context: noteContext, ID: actor + "/posts/" + strconv.FormatInt(id, 10), Type: "Note", AttributedTo: actor,
-			Published: created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Content: noteHTML(body, a.postExtras(data))}
+			Published: created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Content: noteHTML(body, a.postExtras(r.Context(), data))}
 		note.URL = note.ID
 		if ext, mt, pw, ph, ok := pictureOf(image); ok {
 			note.Attachment = []outAttachment{{Type: "Image", MediaType: mt, URL: note.ID + "/picture." + ext, Width: pw, Height: ph}}
@@ -13643,28 +13667,41 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 	// With FLOWA_FEDERATE=on the owner's Public posts are public (4.2): the newest pubPage of them, and a
 	// link to the profile page for the rest. Without it the page is as it was, with no post.
 	if p.fed {
+		// Read whole and closed before a post's lines are made, which may ask the database again
+		// (skillNames): nothing holds one connection while it waits for another. The page is shared by
+		// every visitor, so it is made without one visitor's context.
+		type visitorRow struct {
+			id         int64
+			body, head string
+			data       []byte
+			created    time.Time
+		}
+		var got []visitorRow
 		rows, err := a.db.Query(`SELECT p.id, p.body, left(p.image, `+pictureHead+`), p.data, p.created_at FROM posts p WHERE p.user_id = $1 AND `+publicPost+`
 			ORDER BY p.id DESC LIMIT $2`, u.ID, pubPage+1)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
 		for rows.Next() {
-			var id int64
-			var body, head string
-			var data []byte
-			var created time.Time
-			if err := rows.Scan(&id, &body, &head, &data, &created); err != nil {
-				return nil, err
+			var x visitorRow
+			if err = rows.Scan(&x.id, &x.body, &x.head, &x.data, &x.created); err != nil {
+				break
 			}
+			got = append(got, x)
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, x := range got {
 			if len(d.Posts) == pubPage {
 				d.AllPosts = "/users/" + u.Username
 				break
 			}
-			d.Posts = append(d.Posts, a.postOf(u.Username, id, body, head, data, created))
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
+			d.Posts = append(d.Posts, a.postOf(context.Background(), u.Username, x.id, x.body, x.head, x.data, x.created))
 		}
 	}
 	// The picture went through cleanImage when it was saved: a JPEG or PNG made again by the server. Its
@@ -15393,17 +15430,26 @@ func (a *app) notifyNames(names []string, actor, postID, commentID int64, skip .
 	if len(names) == 0 {
 		return
 	}
+	// The ids are read whole and the rows closed before anyone is told: telling writes a row, and a
+	// request that held this query's connection while it waited for another could, with a few others
+	// doing the same, take the whole pool and stop every request.
 	rows, err := a.db.Query(`SELECT id FROM users WHERE username = ANY($1)`, pq.Array(names))
 	if err != nil {
 		log.Printf("mentions: %v", err)
 		return
 	}
-	defer rows.Close()
+	var ids []int64
 	for rows.Next() {
 		var id int64
-		if rows.Scan(&id) != nil {
-			continue
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("mentions: %v", err)
+	}
+	rows.Close()
+	for _, id := range ids {
 		told := id == actor
 		for _, s := range skip {
 			told = told || id == s
