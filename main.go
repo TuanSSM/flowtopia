@@ -16735,20 +16735,30 @@ func (q *inboxQueue) step(ctx context.Context) (bool, error) {
 	if q.paused() {
 		return false, nil
 	}
-	done, err := f.dbTurn(ctx)
+	// The claim runs on a context a stop does not cancel, as the delivery queue's does (its step says why), and a row
+	// claimed as the stop came is given back at once.
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	cctx, cancel := own()
+	defer cancel()
+	done, err := f.dbTurn(cctx)
 	if err != nil {
 		return false, err
 	}
 	var id, actor int64
 	var kind string
 	var attempts int
-	err = f.db.QueryRowContext(ctx, inboxClaimSQL, q.now(), inboxLease.Seconds()).Scan(&id, &actor, &kind, &attempts)
+	err = f.db.QueryRowContext(cctx, inboxClaimSQL, q.now(), inboxLease.Seconds()).Scan(&id, &actor, &kind, &attempts)
 	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if ctx.Err() != nil {
+		return true, q.finish(cctx, `UPDATE ap_inbox SET locked_until = NULL, attempts = attempts - 1 WHERE id = $1 AND state = 'queued'`, id)
 	}
 	// A row claimed more often than its attempts allow is one whose handling kept ending its worker (a crash, a
 	// stop at the worst moment) or kept outlasting its lease: it is failed now, not handled again.
@@ -17653,9 +17663,20 @@ func (q *deliveryQueue) step(ctx context.Context) (bool, error) {
 	if err := q.fanOutDue(ctx); err != nil {
 		return false, err
 	}
-	c, err := q.claim(ctx, q.busyHosts())
+	// The claim runs on a context a stop does not cancel: canceled in the middle, its UPDATE could commit while its
+	// answer is lost, leaving the row leased for deliveryLease with an attempt counted that was never tried. A stop is
+	// asked before and after it instead, and a row claimed as the stop came is given back at once.
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	cctx, cancel := own()
+	c, err := q.claim(cctx, q.busyHosts())
+	cancel()
 	if err != nil || c == nil {
 		return false, err
+	}
+	if ctx.Err() != nil {
+		return true, q.giveBack(c, 0)
 	}
 	if q.claimed != nil {
 		q.claimed(c.id)

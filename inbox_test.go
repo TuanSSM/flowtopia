@@ -1463,9 +1463,6 @@ func TestInboxStageOrder(t *testing.T) {
 	}
 }
 
-// closedCh is a channel already closed: a blockBody on it ends at once.
-func closedCh() chan struct{} { c := make(chan struct{}); close(c); return c }
-
 // A forged signature charges nothing to the server it names (the review's R1; 7.10): 300 requests with a
 // well-formed Signature header naming a key id on social.example and no valid signature leave social.example's
 // allowance of deliveries whole, so bo is still taken; requests naming made-up key ids there spend the sending

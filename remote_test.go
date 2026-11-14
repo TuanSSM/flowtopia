@@ -1122,7 +1122,9 @@ func TestDBRemoteActorNotReady(t *testing.T) {
 		t.Fatalf("without the instance actor's key: %v, %d requests", err, w.total())
 	}
 	done := make(chan struct{})
-	f.handled = func(keyOwner, bool, error) { close(done) }
+	closeDone := sync.OnceFunc(func() { close(done) })
+	f.handled = func(keyOwner, bool, error) { closeDone() } // the worker may hear of more than one request
+
 	close(hold)
 	<-done
 	f.actors.built = clock.now().Add(time.Hour)

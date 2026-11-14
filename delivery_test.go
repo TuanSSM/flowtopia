@@ -1247,7 +1247,17 @@ func TestDeliveryShutdown(t *testing.T) {
 		id, _ := e.send("a.example/inbox")
 		waiting := make(chan struct{})
 		e.q.pace.next = e.clock.now().Add(500 * time.Millisecond) // the place is ahead: the worker waits for it
-		e.q.pace.wait = func(ctx context.Context, _ time.Duration) error { close(waiting); <-ctx.Done(); return ctx.Err() }
+		// A worker stopping may claim the row again just after the first gave it back (its claim was under way when
+		// the stop came) and reach its place too; it gives the row back as well and sends nothing, which the checks
+		// below hold. So the signal is closed once, and the places taken are counted only to show it.
+		var places atomic.Int32
+		signal := sync.OnceFunc(func() { close(waiting) })
+		e.q.pace.wait = func(ctx context.Context, _ time.Duration) error {
+			places.Add(1)
+			signal()
+			<-ctx.Done()
+			return ctx.Err()
+		}
 		e.q.manual, e.q.workers = false, 2
 		e.q.kick()
 		<-waiting
@@ -1257,7 +1267,10 @@ func TestDeliveryShutdown(t *testing.T) {
 			t.Fatal(err)
 		}
 		if st, at, _, _ := e.row(id, "a.example/inbox"); st != "queued" || at != 0 || len(e.hits(id)) != 0 || e.count(`SELECT count(*) FROM ap_deliveries WHERE locked_until IS NOT NULL`) != 0 {
-			t.Errorf("after the stop: %s, %d attempts, %d requests", st, at, len(e.hits(id)))
+			t.Errorf("after the stop: %s, %d attempts, %d requests (%d places taken)", st, at, len(e.hits(id)), places.Load())
+		}
+		if n := places.Load(); n < 1 || n > 2 {
+			t.Errorf("%d places taken by 2 workers stopping on one row", n)
 		}
 		e.q.kick() // after a stop nothing starts again
 		if worked, _ := e.q.step(e.q.ctx); worked {
