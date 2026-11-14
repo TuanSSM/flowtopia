@@ -74,6 +74,9 @@ func TestDBOutWhenQueueFull(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM ap_post_out`); n != 0 {
 		t.Errorf("a Delete past the schedule's end is still recorded")
 	}
+	if n, err := e.a.fed.out.numbers(context.Background()); err != nil || n.NotTakenBack != 1 {
+		t.Errorf("the Federation tab's count of posts not taken back: %+v %v", n, err)
+	}
 }
 
 func TestDBOutSwitchesRechecked(t *testing.T) {

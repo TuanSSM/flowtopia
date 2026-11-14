@@ -408,7 +408,8 @@ function fedOutHTML(n) {
     ${n.paused ? `<p class="notice warn">Sending is off under Features: what waits stays queued${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
     <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'activity waits' : 'activities wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
     <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p>
-    ${n.cut ? `<p class="small notice warn">Since the last start, ${num(n.cut)} ${n.cut === 1 ? 'post or profile change' : 'posts or profile changes'} reached only the first 10,000 addresses of a member's followers.</p>` : ''}</section>`;
+    ${n.cut ? `<p class="small notice warn">Since the last start, ${num(n.cut)} ${n.cut === 1 ? 'post or profile change' : 'posts or profile changes'} reached only the first 10,000 addresses of a member's followers.</p>` : ''}
+    ${n.notTakenBack ? `<p class="small notice warn">Since the last start, ${num(n.notTakenBack)} deleted or hidden ${n.notTakenBack === 1 ? 'post' : 'posts'} could not be taken back from other servers: the queue stayed full for about 40 hours.</p>` : ''}</section>`;
 }
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).

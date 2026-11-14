@@ -1569,7 +1569,8 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   **A Delete the full queue refuses is kept** (after FWR 4's review: it was dropped too, and the post stayed on the
   servers it went to): its record is held for the delivery schedule's next wait (8.3: 1 minute, then 5, 15, ...;
   `ap_post_out.tries` and `due_at`) and tried again then, and given up, said in the log, after the schedule's last
-  wait (about 40 hours). A worker's step asks nothing meanwhile (the producer knows when the first held record is due).
+  wait (about 40 hours), counted on the Federation tab since the last start ("could not be taken back"). A worker's step
+  asks nothing meanwhile (the producer knows when the first held record is due).
   **The switches are asked again at the send**: a Create or an Update(Person) found with the `federation`, `follows`
   or `community` flag off is dropped, and turning one of them off drops what waits at once, rather than sending it when
   the switch comes back on; a Delete stays, since it only takes back what already left. **Switches that could not be

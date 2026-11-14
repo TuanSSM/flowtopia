@@ -6400,8 +6400,10 @@ type federation struct {
 	postsDue atomic.Bool
 	postsAt  atomic.Int64 // when the first record held back (a Delete the full queue refused) is due; 0: none
 	cut      atomic.Int64 // activities that went only to the first deliveryTargetsMax addresses since the start
-	personAt atomic.Int64
-	outBusy  atomic.Bool
+	// notTakenBack counts the posts whose Delete the full queue refused past the delivery schedule's end, since the start.
+	notTakenBack atomic.Int64
+	personAt     atomic.Int64
+	outBusy      atomic.Bool
 	// personMade, when set (by a test), hears that an Update(Person) was made, before it is enqueued.
 	personMade func()
 	// switches says whether the switches a post needs are on, and whether they could be read (outSwitches; a test sets
@@ -18542,8 +18544,9 @@ type deliveryNumbers struct {
 	ClockWaiting bool             `json:"clockWaiting"` // nothing is sent until the clock is set (8.3)
 	ClockJumped  bool             `json:"clockJumped"`  // rows too old for the schedule are held: the clock may have jumped forward (8.3)
 	QueueMax     int              `json:"queueMax"`
-	FailedMax    int              `json:"failedMax"`     // Failed stops counting here: the page says "or more"
-	Cut          int64            `json:"cut,omitempty"` // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
+	FailedMax    int              `json:"failedMax"`              // Failed stops counting here: the page says "or more"
+	Cut          int64            `json:"cut,omitempty"`          // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
+	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts whose Delete the full queue refused past the schedule's end, since the start (FWR 4)
 }
 
 // deliveryNumbersSQL reads the queue's state for the Federation tab, the dashboard and a local probe of /healthz
@@ -18559,7 +18562,7 @@ const deliveryNumbersSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_deliv
 // numbers reads the queue's numbers, under one of the federation's turns.
 func (q *deliveryQueue) numbers(ctx context.Context) (*deliveryNumbers, error) {
 	s := q.stats.numbers(time.Now())
-	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep, Cut: q.f.cut.Load()}
+	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep, Cut: q.f.cut.Load(), NotTakenBack: q.f.notTakenBack.Load()}
 	now := q.now()
 	q.numbersRun.Add(1)
 	done, err := q.f.dbTurn(ctx)
@@ -20481,6 +20484,7 @@ func (a *app) postOut(ctx context.Context) (bool, error) {
 			// delivery schedule (8.3), each wait one more step, until the schedule's end (about 40 hours).
 			if tries >= len(deliveryRetries) {
 				log.Printf("federation: the Delete of post %d is not sent: %v, %d times over the schedule", p.id, err, tries+1)
+				f.notTakenBack.Add(1) // and the Federation tab says how many since the start
 				_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'delete'`, p.id)
 				return true, err
 			}
