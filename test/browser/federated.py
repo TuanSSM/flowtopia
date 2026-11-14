@@ -64,7 +64,10 @@ for(const e of document.querySelectorAll('#main *')){const r=e.getBoundingClient
 WIDE_PUB=WIDE.replace("'#main *'","'main *'")
 made=[]
 def picture(name,title):
-    if not out: return
+    if not out:
+        # The integration job runs the suite without a directory for pictures (the screenshots job passes one):
+        # each picture is then a check that cannot run here, counted as skipped, so both runs count the same.
+        print(f'SKIP {name}: no directory for pictures was given',flush=True);return
     from PIL import Image
     img=Image.open(io.BytesIO(base64.b64decode(cmd('WebDriver:TakeScreenshot',full=True)['value']))).convert('RGB')
     img.save(f'{out}/{name}.png',optimize=True);made.append({'file':name+'.png','title':title});check(f'{name} ({img.width}x{img.height})',True)
@@ -278,8 +281,10 @@ try:
     check('a visitor cannot look anyone up',s==401,lambda: (s,j))
     s,j=lookup(op,'@admin@flowa.test',{'Origin':'https://evil.example'})
     check('nor can another page, by a form or a script of its own',s==403,lambda: (s,j))
-    s,_,gb=ask('api/fed/lookup?q=%40admin%40flowa.test')
-    check('a GET looks nobody up (a link or a picture could send one)',b'"result"' not in gb,lambda: (s,gb[:100]))
+    # A GET (a link or a picture could send one) is not the route: the address takes POST alone, so a GET is
+    # answered as an API address nobody has, the same status, Allow and body.
+    s,gh,gb=ask('api/fed/lookup?q=%40admin%40flowa.test');s0,gh0,gb0=ask('api/nobody-has-this-address')
+    check('a GET looks nobody up: answered as an API address nobody has',s==s0==404 and gh.get('Allow')==gh0.get('Allow') and gb==gb0,lambda: (s,gh.get('Allow'),gb[:100],s0,gb0[:100]))
     check('/api/me offers the search in a mode that federates',get_json(op,'me').get('federation',{}).get('lookup') is True,lambda: get_json(op,'me').get('federation'))
     nav('#/timeline')
     check('the timeline has "People elsewhere", with a box named for what it takes',lambda: js("const c=document.querySelector('.look-card');const i=document.querySelector('#look-q');return !!c&&c.querySelector('h2').textContent==='People elsewhere'&&!!i&&i.labels[0].innerText.startsWith('Handle or profile address')"),lambda: txt('main')[:300])
@@ -320,14 +325,22 @@ try:
         # text shown as written, no link that is not https. No other server is asked: the page's own fetch of
         # this one address is answered by the suite for one lookup, and given back after.
         js("""const real=window.fetch;window.fetch=(u,o)=>{if(!String(u).endsWith('api/fed/lookup'))return real(u,o);window.fetch=real;
-            return Promise.resolve(new Response(JSON.stringify({result:{kind:'remote',handle:'x@remote.example',name:'<img src=x id=pwn1>',bio:'<b id=pwn2>bio</b>',link:'javascript:alert(1)',notice:'<i id=pwn3>n</i>',
+            return Promise.resolve(new Response(JSON.stringify({result:{kind:'remote',handle:'x\\u202eelpmaxe.doog@other.example',name:'<img src=x id=pwn1>\\u202e',bio:'<b id=pwn2>bio</b>',link:'https://other.example/@x',notice:'<i id=pwn3>n</i>',
             posts:[{text:'<script id=pwn4>x</script> '+'averyveryverylongwordwithnospace'.repeat(8),summary:'<u id=pwn5>cw</u>',link:'javascript:alert(2)',more:true,published:'2026-11-12T18:04:05Z',pictures:2}]}}),{status:200,headers:{'Content-Type':'application/json'}}))}""")
         tab_to('#look-q','the box again',back=True)
         key('a',hold=(CTRL,));type_text('x@remote.example');key(ENTER)
         made_of=lambda: js("""const o=document.querySelector('#look-out');return [!!o.querySelector('[id^=pwn]'),[...o.querySelectorAll('a')].map(a=>a.getAttribute('href')),o.innerText.includes('<img src=x id=pwn1>')&&o.innerText.includes('<b id=pwn2>bio</b>'),o.innerText.includes('2 pictures, not shown here')]""")
-        check('a remote profile is drawn as text: no element of its words, no link that is not https, its pictures counted, not shown',lambda: made_of()==[False,[],True,True],made_of)
+        check('a remote profile is drawn as text: no element of its words, no link that is not https, its pictures counted, not shown',lambda: made_of()==[False,['https://other.example/@x'],True,True],made_of)
+        # A handle whose name turns the text's direction (the server refuses one; the page must not trust that):
+        # the host stands in a place of its own, exactly the host, after an isolated name, and every link shows
+        # the host it leads to.
+        parts=lambda: js("""const o=document.querySelector('#look-out'),u=o.querySelector('.look-user'),h=o.querySelector('.look-host'),n=o.querySelector('.look-name b bdi');
+            return [!!u&&u.tagName==='BDI',h&&h.textContent,!!n,getComputedStyle(o.querySelector('.look-handle')).unicodeBidi,o.innerText.includes('(other.example)')]""")
+        check('the handle\'s host is shown apart, exactly as proven, after an isolated name; each link shows its host',lambda: parts()==[True,'other.example',True,'isolate',True],parts)
         bad=js(WIDE)
         check('a remote profile with a long word at 420 px: nothing is off the screen',not bad,lambda: bad[:5])
+        js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top
+        picture('federated-lookup-hostile-phone','Federated mode: People elsewhere drawing an answer the suite supplies with a name that turns the text\'s direction (no server asked), phone')
         tab_to('#look-q','the box again',back=True)
         key('a',hold=(CTRL,));type_text('@admin@flowa.test');key(ENTER)
         check('at 420 px the member found is shown too',lambda: js("return !!document.querySelector('.look-out a.person')"),lambda: txt('#look-out'))
@@ -367,7 +380,8 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==12)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==13)
+    else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.
     try: log=open('/tmp/flowa-test/dev.log').read()

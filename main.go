@@ -13207,8 +13207,8 @@ func indexFold(s, sub string) int {
 	return -1
 }
 
-// plainLines tidies converted text: control characters and direction marks out (a tab, a carriage return
-// and a no-break space are spaces), runs of spaces one space, the spaces at either end of a line out, at most one blank line in
+// plainLines tidies converted text: what shownRune refuses out (a tab, a carriage return and a no-break
+// space are spaces, a line or paragraph separator a line break), runs of spaces one space, the spaces at either end of a line out, at most one blank line in
 // a row, none at either end.
 func plainLines(s string) string {
 	s = strings.Map(func(r rune) rune {
@@ -13217,9 +13217,12 @@ func plainLines(s string) string {
 			return r
 		case r == '\t' || r == '\r' || r == '\u00a0':
 			return ' '
-		case unicode.IsControl(r), r >= '\u202a' && r <= '\u202e', r >= '\u2066' && r <= '\u2069':
-			// The marks that embed, override or isolate a direction are dropped: in another server's text they
-			// can make a link or a name read as something else. The page shows each text isolated (dir=auto).
+		case r == '\u2028' || r == '\u2029':
+			return '\n'
+		case !shownRune(r):
+			// The marks that embed, override or isolate a direction, and every other format character, are
+			// dropped: in another server's text they can make a link or a name read as something else. The page
+			// shows each text isolated (dir=auto).
 			return -1
 		}
 		return r
@@ -13239,6 +13242,51 @@ func plainLines(s string) string {
 		out = append(out, l)
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// shownRune says whether a character of another server's text may be shown: not a control character (Cc;
+// the caller keeps line breaks), a format character (Cf: the direction marks among them, and the joiners
+// and zero-width spaces), a private-use one (Co), a lone surrogate (Cs), a separator of lines or paragraphs
+// (Zl, Zp), nor one of those that draw nothing though Unicode classes them otherwise (unseen) or a
+// variation selector. Joiners go too: in a remote text they cost a family emoji its drawing, never its
+// meaning, and they are the zero-width characters a server would use to make two names look alike.
+func shownRune(r rune) bool {
+	switch {
+	case unicode.IsControl(r), unicode.In(r, unicode.Cf, unicode.Co, unicode.Cs, unicode.Zl, unicode.Zp), unseen(r),
+		r >= 0xFE00 && r <= 0xFE0F, r >= 0xE0100 && r <= 0xE01EF:
+		return false
+	}
+	return true
+}
+
+// handleNameOK says whether the name part of a handle may be asked for, believed or shown (FRD 8, the
+// review's H1). After percent-decoding it must be 1 to remoteNameMax bytes of letters (L), decimal digits
+// (Nd), marks (M) that follow a letter, a digit or another mark, and the punctuation of RFC 3986's unreserved
+// set, "-", ".", "_" and "~". RFC 7565 section 7 allows sub-delims in a userpart too ("!$&'()*+,;="), but no
+// server is known to give a user one (Mastodon's rule, the SWICG WebFinger report's "Current implementation
+// rules": letters, digits, "_", and "." and "-" inside), and every character outside that set is one more way
+// to make a handle read as another; RFC 7565 section 4's PRECIS IdentifierClass, which the report quotes,
+// holds letters, digits and marks and no control, format or space character. So the set is RFC 7565's
+// userpart narrowed to what servers use, letters of any script kept (they are shown isolated, beside the
+// host in its xn-- form). Anything else is "not an account", for the query, a WebFinger subject and the
+// handle built from an actor alike.
+func handleNameOK(n string) bool {
+	if n == "" || len(n) > remoteNameMax || !utf8.ValidString(n) {
+		return false
+	}
+	prev := rune(-1)
+	for _, r := range n {
+		switch {
+		case !shownRune(r):
+			return false
+		case unicode.IsLetter(r), unicode.Is(unicode.Nd, r), strings.ContainsRune("-._~", r):
+		case unicode.IsMark(r) && prev >= 0 && (unicode.IsLetter(prev) || unicode.Is(unicode.Nd, prev) || unicode.IsMark(prev)):
+		default:
+			return false
+		}
+		prev = r
+	}
+	return true
 }
 
 // cutText is text of at most max characters, and whether it was cut (6.6: "the first 2000 characters").
@@ -14610,7 +14658,7 @@ func parseAcct(s string) (name, host string, ok bool) {
 		return "", "", false
 	}
 	h = strings.TrimSuffix(strings.ToLower(h), ".")
-	if _, why := fedHost(h); why != "" {
+	if _, why := fedHost(h); why != "" || !handleNameOK(n) {
 		return "", "", false
 	}
 	return n, h, true
@@ -14796,6 +14844,9 @@ func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupPro
 	if f.refusal() != "" || f.actors == nil {
 		return nil, &lookupError{Reason: lookupUnavailable, Step: "start"}
 	}
+	if in.url == "" && !handleNameOK(in.name) {
+		return nil, &lookupError{Reason: lookupNotAccount, Step: "the name asked for"}
+	}
 	r := &lookupRun{f: f, jrds: map[string]wfAnswer{}}
 	var a *remoteActor
 	var actorID, subject string // subject: what the WebFinger of the query named; "" for an address that was an actor
@@ -14839,12 +14890,14 @@ func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupPro
 	if err != nil {
 		return nil, err
 	}
+	// The name as the cache keeps it (remoteDisplay at store: visibleText, one line, 64 characters); without
+	// one, the name part of the proven handle, which handleNameOK has passed.
 	name := a.Name
 	if name == "" {
-		name = a.PreferredUsername
+		name, _, _ = strings.Cut(handle, "@")
 	}
 	link := a.URL
-	if link == "" {
+	if !ownLink(link, a.ID, handle) {
 		link = a.ID
 	}
 	p := &lookupProfile{Kind: "remote", Handle: handle, Name: name, Bio: htmlToText(a.Summary, nil, nil, len(a.Summary) > remoteSummaryMax-utf8.UTFMax),
@@ -14852,7 +14905,7 @@ func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupPro
 	if a.Stale {
 		p.Stale = a.FetchedAt.UTC().Format(time.RFC3339)
 	}
-	p.Posts, p.PostsNote = r.posts(ctx, a)
+	p.Posts, p.PostsNote = r.posts(ctx, a, handle)
 	return p, nil
 }
 
@@ -14871,8 +14924,8 @@ func (r *lookupRun) reverse(ctx context.Context, a *remoteActor, subject string)
 		return err
 	}
 	host := actorHost(a.ID)
-	if a.PreferredUsername == "" || host == "" {
-		return "", notAccount("no preferredUsername")
+	if !handleNameOK(a.PreferredUsername) || host == "" {
+		return "", notAccount("no preferredUsername a handle may hold")
 	}
 	built := acctURI(a.PreferredUsername, host)
 	j, err := r.webfinger(ctx, "reverse webfinger", built, host)
@@ -14912,7 +14965,7 @@ func (r *lookupRun) reverse(ctx context.Context, a *remoteActor, subject string)
 // public and unlisted: both are posts the author let anyone read, and Mastodon shows both on a profile).
 // Items given by id only are not fetched one by one: they are left out. Nothing is stored. A failure here
 // does not fail the lookup: the profile is shown with a sentence instead of posts.
-func (r *lookupRun) posts(ctx context.Context, a *remoteActor) ([]lookupPost, string) {
+func (r *lookupRun) posts(ctx context.Context, a *remoteActor, handle string) ([]lookupPost, string) {
 	if a.Outbox == "" || !sameOrigin(a.Outbox, a.ID) {
 		return nil, lookupNoPosts
 	}
@@ -14952,7 +15005,7 @@ func (r *lookupRun) posts(ctx context.Context, a *remoteActor) ([]lookupPost, st
 		}
 		text, more := cutText(htmlToText(n.text(), n.Mentions, n.Hashtags, n.Cut), remoteTextMax)
 		p := lookupPost{Link: n.ID, Text: text, More: more || n.Cut, Summary: htmlToText(n.Summary, nil, nil, false), Sensitive: n.Sensitive, Pictures: len(n.Attachments)}
-		if l := firstLink(n.URL); l != "" {
+		if l := firstLink(n.URL); ownLink(l, a.ID, handle) {
 			p.Link = l
 		}
 		if !n.Published.IsZero() {
@@ -14964,6 +15017,18 @@ func (r *lookupRun) posts(ctx context.Context, a *remoteActor) ([]lookupPost, st
 		return nil, lookupNoPosts
 	}
 	return out, ""
+}
+
+// ownLink says whether a link another server gave may be offered: an https address on the actor's own origin
+// or on the origin of its proven handle's host (the review's LOW 1: "See the profile on its server" must not
+// lead to https://bank.example/login). Otherwise the page links the actor's or the post's id, which 7.3 has
+// held to the actor's origin, and the page shows the host beside every link.
+func ownLink(link, actorID, handle string) bool {
+	if link == "" || !httpsURL(link) {
+		return false
+	}
+	_, host, _ := strings.Cut(handle, "@")
+	return sameOrigin(link, actorID) || host != "" && sameOrigin(link, "https://"+host+"/")
 }
 
 // collection fetches one collection or page of the actor's, signed, and checks that its id is where it came

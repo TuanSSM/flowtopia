@@ -484,6 +484,16 @@ function peopleCard() {
 // the server's notice says why.
 let lookSeq = 0;
 const httpsOnly = u => /^https:\/\//i.test(String(u || '')) ? String(u) : '';
+// The host a link leads to, shown beside it.
+const hostOf = u => { try { return new URL(u).host; } catch { return ''; } };
+// A handle as the server proved it, name@host: the name and the host each in a place of its own, the name
+// isolated so that no direction mark or right-to-left letter in it can move the host or the @ around it.
+function handleHTML(h) {
+  const s = String(h || ''), i = s.lastIndexOf('@');
+  if (i <= 0) return `<span class="look-handle" dir="ltr">@<bdi class="look-user">${esc(s)}</bdi></span>`;
+  return `<span class="look-handle" dir="ltr">@<bdi class="look-user">${esc(s.slice(0, i))}</bdi>@<span class="look-host">${esc(s.slice(i + 1))}</span></span>`;
+}
+const outLink = (u, words) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer nofollow">${words}</a> <span class="tiny">(${esc(hostOf(u))})</span>`;
 function lookupCard() {
   if (!fed || !fed.lookup) return '';
   return `<div class="card look-card"><div class="card-h"><h2 id="look-h">People elsewhere</h2></div>
@@ -509,17 +519,17 @@ function lookResult() {
   if (p.kind === 'local') return `<a class="person" href="#/u/${esc(p.handle)}"><span class="grow" style="display:grid"><b>${esc(p.name || p.handle)}</b><span class="tiny">@${esc(p.handle)}, a member of this Flowa</span></span></a>`;
   const link = httpsOnly(p.link);
   const posts = (p.posts || []).map(x => {
-    const text = `<p class="look-text" dir="auto">${esc(x.text)}</p>${x.more && httpsOnly(x.link) ? `<p class="tiny"><a href="${esc(x.link)}" target="_blank" rel="noopener noreferrer nofollow">Read the rest on its server</a></p>` : ''}`;
-    const when = x.published ? (httpsOnly(x.link) ? `<a href="${esc(x.link)}" target="_blank" rel="noopener noreferrer nofollow">${esc(fmtWhen(x.published))}</a>` : esc(fmtWhen(x.published))) : '';
+    const text = `<p class="look-text" dir="auto">${esc(x.text)}</p>${x.more && httpsOnly(x.link) ? `<p class="tiny">${outLink(x.link, 'Read the rest on its server')}</p>` : ''}`;
+    const when = x.published ? (httpsOnly(x.link) ? outLink(x.link, esc(fmtWhen(x.published))) : esc(fmtWhen(x.published))) : '';
     return `<article class="look-post">${x.summary ? `<details><summary dir="auto">${esc(x.summary)}</summary>${text}</details>` : text}
       <p class="tiny">${when}${x.pictures ? `${when ? ' · ' : ''}${x.pictures === 1 ? '1 picture' : x.pictures + ' pictures'}, not shown here` : ''}</p></article>`;
   }).join('');
   return `<div class="look-prof">
-    <p class="look-name"><b dir="auto">${esc(p.name || p.handle)}</b><span class="tiny">@${esc(p.handle)}</span></p>
+    <p class="look-name"><b><bdi>${esc(p.name || p.handle)}</bdi></b><span class="tiny">${handleHTML(p.handle)}</span></p>
     ${p.stale ? `<p class="notice warn">Its server did not answer just now. This is the profile as Flowa last saw it, ${esc(fmtWhen(p.stale))}.</p>` : ''}
     ${p.locked ? '<p class="tiny">This account approves its followers by hand.</p>' : ''}
     ${p.bio ? `<p class="small look-text" dir="auto">${esc(p.bio)}</p>` : ''}
-    ${link ? `<p class="small"><a href="${esc(link)}" target="_blank" rel="noopener noreferrer nofollow">See the profile on its server ${icon('ext')}</a></p>` : ''}
+    ${link ? `<p class="small">${outLink(link, `See the profile on its server ${icon('ext')}`)}</p>` : ''}
     <p class="notice">${esc(p.notice)}</p>
     <h3 class="look-sub">Latest public posts</h3>
     ${posts || `<p class="small muted">${esc(p.postsNote || 'No public posts.')}</p>`}</div>`;

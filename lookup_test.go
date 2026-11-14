@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 )
 
 func TestParseLookup(t *testing.T) {
@@ -768,5 +769,92 @@ func TestDBLookupOffered(t *testing.T) {
 	}
 	if code, _ := f.do(tok, "POST", "/api/fed/lookup", map[string]any{"q": "@ana@flowa.example.org"}); code != 404 {
 		t.Errorf("community off: the route answers %d", code)
+	}
+}
+
+// A handle's name part (the review's H1): what RFC 7565's userpart allows, narrowed to letters, digits, marks
+// after them and "-._~", with no control, format, private-use, separator or unseen character.
+func TestHandleNameOK(t *testing.T) {
+	for n, want := range map[string]bool{
+		"bo": true, "Gargron": true, "a.b-c_d~e": true, "ana.": true, "_x": true, "\u540d\u524d": true, "Zo\u00eb": true, "e\u0301": true, "x1": true,
+		"": false, "a b": false, "a\nb": false, "a\x00": false, "a@b": false, "a/b": false, "a!b": false, "a=b": false, "a+b": false,
+		"x\u202eelpmaxe.doog": false, "x\u2066y": false, "a\u200bb": false, "a\u200db": false, "a\ufeffb": false, "a\u00adb": false,
+		"a\u2028b": false, "a\ue000b": false, "\u3164": false, "a\u034fb": false, "a\ufe0fb": false, "\u0301a": false, "._\u0301": false,
+		"a\u00a0b": false, "a\u3000b": false, "\U0001F600": false, strings.Repeat("a", remoteNameMax+1): false, "\xff": false,
+	} {
+		if got := handleNameOK(n); got != want {
+			t.Errorf("%q: %v, want %v", n, got, want)
+		}
+	}
+	// The same rule for the query, a subject and an acct URI built from an actor.
+	for _, q := range []string{"x%E2%80%AEelpmaxe.doog@other.example", "a%E2%80%8Bb@other.example", "a%0Ab@other.example"} {
+		in, bad := parseLookup(q)
+		if bad != "" {
+			continue // refused as a query already
+		}
+		if handleNameOK(in.name) {
+			t.Errorf("%q: the name %q passes", q, in.name)
+		}
+	}
+	if _, _, ok := parseAcct("acct:x%E2%80%AEelpmaxe.doog@other.example"); ok {
+		t.Error("a subject with a direction mark is read")
+	}
+}
+
+// What holds of every name handleNameOK takes, as the page shows it: "@" name "@" host has no direction
+// control, no line break, no format or control character, and percent-encoding it into an acct URI and
+// reading that back gives the same name.
+func FuzzHandleName(f *testing.F) {
+	for _, s := range []string{"bo", "x\u202eelpmaxe.doog", "\u540d\u524d", "e\u0301", "a\u200db", "a%20b", "\u0301"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, n string) {
+		if !handleNameOK(n) {
+			return
+		}
+		shown := "@" + n + "@other.example"
+		for _, r := range shown {
+			if bidiOverride(r) || r == '\n' || r == '\r' || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Zl, unicode.Zp, unicode.Zs) || r == 0x200E || r == 0x200F || r == 0x061C {
+				t.Fatalf("%U in a name taken: %q", r, n)
+			}
+		}
+		if got, h, ok := parseAcct(acctURI(n, "other.example")); !ok || got != n || h != "other.example" {
+			t.Fatalf("%q does not read back: %q %q %v", n, got, h, ok)
+		}
+	})
+}
+
+// The review's probes (H1, M1, LOW 1), kept as tests: a name that turns the text's direction is no account,
+// whether the actor has a name of its own or not; and links go only to the actor's origin or its handle's.
+func TestDBLookupReviewProbes(t *testing.T) {
+	r := newRemoteEnv(t)
+	w := r.w
+	pub := []string{publicCollection}
+	// H1: preferredUsername "x" U+202E "elpmaxe.doog", no name, a WebFinger that agrees, asked by another name.
+	ev := "https://other.example/users/x"
+	pref := "x\u202eelpmaxe.doog"
+	w.put(ev, worldDoc{body: actorDoc(ev, pref, "", nil, map[string]any{"outbox": ev + "/outbox"})})
+	putWF(w, "other.example", acctURI(pref, "other.example"), acctURI(pref, "other.example"), ev)
+	putWF(w, "other.example", "acct:q@other.example", acctURI(pref, "other.example"), ev)
+	for _, q := range []string{"q@other.example", "https://other.example/users/x", "x%E2%80%AEelpmaxe.doog@other.example"} {
+		if p, err := lookupOf(t, r, q); lookupCode(err) != "notAccount" {
+			t.Errorf("%s: %+v %v, want notAccount", q, p, err)
+		}
+	}
+	// The same with a name of its own: the handle is what is refused.
+	ev2 := "https://other.example/users/y"
+	pref2 := "y\u200bz"
+	w.put(ev2, worldDoc{body: actorDoc(ev2, pref2, "Why", nil, nil)})
+	putWF(w, "other.example", acctURI(pref2, "other.example"), acctURI(pref2, "other.example"), ev2)
+	if p, err := lookupOf(t, r, "https://other.example/users/y"); lookupCode(err) != "notAccount" {
+		t.Errorf("a zero-width space in the handle: %+v %v", p, err)
+	}
+	// LOW 1: links elsewhere than the actor's origin or its handle's host are not given.
+	cc := "https://big.example/users/c"
+	person(w, cc, "c", map[string]any{"url": "https://bank.example/login"})
+	outbox(w, cc, noteItem(cc, cc+"/s/1", "hi", pub, nil, map[string]any{"url": "https://bank.example/phish"}))
+	p, err := lookupOf(t, r, "c@big.example")
+	if err != nil || p.Link != cc || len(p.Posts) != 1 || p.Posts[0].Link != cc+"/s/1" {
+		t.Errorf("links elsewhere: %+v %v", p, err)
 	}
 }

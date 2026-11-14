@@ -686,6 +686,7 @@ select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
 .look-prof { display: grid; gap: 8px; }
 .look-name { display: grid; gap: 1px; margin: 0; }
 .look-name b, .look-name .tiny, .look-text, .look-post summary { overflow-wrap: anywhere; }
+.look-handle, .look-user { unicode-bidi: isolate; }
 .look-text { white-space: pre-line; margin: 0; unicode-bidi: isolate; }
 .look-sub { font-size: 12.5px; font-weight: 620; margin: 4px 0 0; }
 .look-post { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line); }
