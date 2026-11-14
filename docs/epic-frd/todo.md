@@ -184,8 +184,10 @@ design note says it exists.
   Xeon through the whole server chain, `BenchmarkActorDocument` (kept in memory, the gate's one query to a local
   Postgres) is about 0.54 ms, 6.5 KB and 61 allocations a request, and `BenchmarkPublicPost` (one query, the Note
   made) about 0.88 ms, 7.8 KB and 108 allocations (`go test -run xxx -bench 'ActorDocument|PublicPost'
-  -benchmem .`). Open: a test that Flowa's documents pass main's strict decoder (`apScan`, `decodeActor`,
-  `decodeNote`) once this branch is rebased on it; the answers local mode gives after federating (410 and a
+  -benchmem .`). `TestDBOwnDocumentsDecode` runs every golden file and documents served for awkward members
+  and posts through the strict decoder of 6.3 (`apScan`, `decodeActor` with `key()`, `decodeNote`,
+  `decodeTombstone`); `TestDBRetireRace` holds that no door gives away a name a delete is retiring (a lock per
+  name, 5.2). Open: the answers local mode gives after federating (410 and a
   Tombstone, 4.3), which the note does not place in this item; the instance setting to let a member be indexed
   by search engines (the pages say `noindex` until then).
 - [ ] **Outbox and collections.** A paged outbox of Create activities for Public posts; followers and
