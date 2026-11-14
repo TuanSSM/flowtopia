@@ -296,6 +296,13 @@ func TestActorDocument(t *testing.T) {
 	if e.count(`SELECT count(*) FROM instance_settings WHERE key = 'origin'`) != 0 {
 		t.Error("the instance actor's document froze the origin")
 	}
+	defer func() {
+		// The same member with follows off (their default): the document says manuallyApprovesFollowers, since a
+		// Follow is then not taken at all (FWR 3); pinned whole beside the one with follows on.
+		e.setFlag("follows", false)
+		w := pubAsk(e, "GET", "/users/ana", apAccept)
+		golden(t, "actor-ana-follows-off.json", w.Body.Bytes())
+	}()
 	for _, c := range []struct{ path, file string }{
 		{"/actor", "actor-instance.json"},
 		{"/users/ana", "actor-ana.json"},

@@ -1389,23 +1389,37 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   "requested" on the sender's server, which is what a locked account shows there, and `false` would promise an Accept
   that never comes; the kept actor documents are dropped when a flag changes. The rows there were stay as they were
   (accepted follows hidden from counts and lists as local follows are while the flag is off; requests wait, and can be
-  answered when it is on again), and turning the flag on replays nothing (`TestDBFollowsFlagOff`).
+  answered when it is on again), and turning the flag on replays nothing (`TestDBFollowsFlagOff`). **A switch that
+  cannot be read is not "off"** (after the second review): `flagsKnown` tells a failed read apart, and then the inbox
+  answers a Follow or an Accept 503 with `Retry-After` (`inFlags`), the worker tries the row again, and an actor
+  document made meanwhile is answered but not kept (`TestDBFollowsSwitchUnread`). The `federation` switch's own reader,
+  the pause, already reads a failed query as paused, which answers 503 and drops nothing; it was left as it was.
+  Settings shows the switch for approving by hand only while both `follows` and `community` are on, as the server reads
+  them.
 - **What a Follow and its Undo leave behind** (after the review): nothing. An Undo of a Follow, a Block and a 410 take
   the `follow` and `follow_request` notifications of that account with the follow. What accounts of other servers leave
   in one member's notifications is bounded, the oldest dropped: the newest 50 from one server (`remoteNotesPerHost`) and
   500 from all of them (`remoteNotesMax`), so a server that floods pushes out only remote notifications, never a local
-  member's (`remoteNotesTrimSQL`, the member's own notifications through `notifications_user`, 81 rows read in
-  `TestDBQueryPlans`). A notification does not keep a remote account in the cache (`userRefsGoing`, apart from
+  member's. The trim (`remoteNotesTrimSQL`) reads only the kinds an account of another server can leave (`follow`,
+  `follow_request`, `follow_rejected`) through `notifications_follows` (migration 20, not shipped, edited in place),
+  so a member with 20,000 notifications from members here costs what their follow notifications cost (2,286 rows read
+  for 300 in `TestDBQueryPlans`), and it spares a `follow_request` whose request still waits, already bounded by the
+  200 waiting requests (`TestDBTrimKeepsLocalAndRequests`). A notification does not keep a remote account in the cache (`userRefsGoing`, apart from
   `userRefs`): it goes with the account when the bound removes one nothing else points at, so a server cycling Follow and
   Undo through new accounts cannot hold the cache above `remoteActorsMax` once the inbox's 7 days of de-duplication are
   over (`TestDBFollowUndoLeavesNothing`: 50 cycles leave no follow, no notification and no account the bound cannot remove).
 - **A repeat is answered at most once an hour** per follower and followee (`followAnswerEvery`, in memory, 10,000 pairs,
   on the delivery queue's clock): a Follow repeated while accepted, and a Follow refused again (across a block, of a
   member who stopped federating, of the instance actor). Inside the hour it is taken with 202 and not answered; each
-  answer is a row to send. A new follow is always answered.
+  answer is a row to send. Only a true repeat is silenced: the memory keeps what was answered and why, so another
+  answer (a Reject after an Accept, after a block) goes out at once, and an Undo or a Block forgets the pair. A new
+  follow is always answered.
 - **Suspending a domain** (Admin, Federation) now ends the follows between members here and its accounts and its
   subdomains', both ways, with their notifications, in the policy's own transaction; nothing is sent (section 10:
-  Mastodon removes them and does not restore them). Lifting the suspension does not bring them back.
+  Mastodon removes them and does not restore them), and the audit row says how many follows it ended
+  (`followsEnded`). Lifting the suspension does not bring them back.
+- **A 410 is matched by the queue's own address** (`inboxAddress`, shared with `collect`: scheme, host and port whole,
+  the host in lower case, no `:443`), so a 410 never removes the followers whose inbox is on another port of the host.
 - **A member who stops sharing** their profile beyond this server keeps their remote followers' rows, and sends nothing
   (11: turning it off sends nothing). Their actor then answers 404, so remote followers' servers see the account as not
   found when they next fetch it, and new Follows of them are answered with Reject. Deleting an account goes out as

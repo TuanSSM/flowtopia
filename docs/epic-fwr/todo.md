@@ -196,6 +196,12 @@ route and test named below is new unless the design note says it exists.
   repeat answered at most once an hour per pair; suspending a domain ends its follows both ways; the bell names a remote
   account by its handle and host. Tests `TestDBFollowsFlagOff`, `TestDBFollowUndoLeavesNothing`, `TestDBFollowsHeld`
   (the review's four mutations, a real 410 through the queue, a suspension), `TestDBQueryPlans` (the trim, 81 rows).
+  After the second review: a switch that cannot be read is not "off" (503 at the inbox, retried by the worker, no
+  actor document kept); the trim reads only follow notifications through `notifications_follows` and spares a request
+  that waits; a 410 compares the queue's own address; only a true repeat is silenced; the suspension's audit counts
+  the follows it ended; a long handle wraps in the bell and the lists. Tests `TestDBTrimKeepsLocalAndRequests`,
+  `TestDBFollowsSwitchUnread`, `TestDBFollowsAnswerAndPort`, the subdomain case of `TestDBFollowsHeld`, and the golden
+  `actor-ana-follows-off.json`.
   **Open:** the DoD's recorded Mastodon Follow and Accept fixtures (the fixtures are written from documentation, as their
   README says, since no session can reach a Mastodon server: the owner's trial, item 9, records them); `TestTwoInstances`
   is item 8's container suite (here `TestDBTwoFlowaFollow` covers the same steps in Go); the box stays unchecked until

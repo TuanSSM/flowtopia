@@ -243,4 +243,137 @@ func TestDBFollowsHeld(t *testing.T) {
 	if e.count(`SELECT count(*) FROM follows`) != 0 || e.count(`SELECT count(*) FROM notifications WHERE actor_id = $1`, bo) != 0 || len(e.sent()) != 0 {
 		t.Errorf("after suspending social.example: %d follows", e.count(`SELECT count(*) FROM follows`))
 	}
+	// A domain covers its subdomains, and only them: suspending example.org ends the follows of an account on
+	// social.example.org and leaves notexample.org's; the audit says how many it ended.
+	e.mustExec(`INSERT INTO users (username, display_name, pw_hash, role, domain) VALUES ('s@social.example.org', '', '!', 'user', 'social.example.org'), ('n@notexample.org', '', '!', 'user', 'notexample.org')`)
+	e.mustExec(`INSERT INTO follows (follower_id, followee_id) SELECT id, $1 FROM users WHERE domain IN ('social.example.org', 'notexample.org')`, anaID)
+	e.must(200, admin, "PUT", "/api/admin/federation/domains/example.org", map[string]any{"policy": "suspend"})
+	if e.count(`SELECT count(*) FROM follows f JOIN users u ON u.id = f.follower_id WHERE u.domain = 'social.example.org'`) != 0 ||
+		e.count(`SELECT count(*) FROM follows f JOIN users u ON u.id = f.follower_id WHERE u.domain = 'notexample.org'`) != 1 {
+		t.Error("suspending example.org did not end its subdomain's follows alone")
+	}
+	if e.count(`SELECT count(*) FROM mod_actions WHERE action = 'domain_policy' AND detail->>'domain' = 'example.org' AND (detail->>'followsEnded')::int = 1`) != 1 {
+		t.Error("the audit does not say how many follows the suspension ended")
+	}
+}
+
+// The trim of what other servers leave never touches a local member's notification (the second review), and spares a
+// follow request that still waits: a server that floods cannot push a real request out of the bell.
+func TestDBTrimKeepsLocalAndRequests(t *testing.T) {
+	e := newFollowEnv(t)
+	anaID, _ := e.member("ana", false)
+	locID, _ := e.member("loc", false)
+	// 600 likes and 600 follows told by members here (a follow is a kind other servers write too).
+	e.mustExec(`INSERT INTO notifications (user_id, actor_id, kind) SELECT $1, $2, CASE WHEN g % 2 = 0 THEN 'like' ELSE 'follow' END FROM generate_series(1, 1200) g`, anaID, locID)
+	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
+	if n := e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2`, anaID, locID); n != 1200 {
+		t.Errorf("a remote Follow trimmed local notifications: %d of 1,200 left", n)
+	}
+	// cyd approves by hand; bo's request waits; then 600 notifications from accounts of other servers, and one more
+	// remote notification: bo's request stays in the bell.
+	cydID, _ := e.member("cyd", true)
+	e.deliver(activity(boID, "Follow", "https://here.example/users/cyd", nil), e.bo())
+	bo := e.remoteID(boID)
+	e.mustExec(`INSERT INTO users (username, display_name, pw_hash, role, domain) SELECT 'n' || g || '@h' || (g % 30) || '.example', '', '!', 'user', 'h' || (g % 30) || '.example' FROM generate_series(1, 600) g`)
+	e.mustExec(`INSERT INTO notifications (user_id, actor_id, kind) SELECT $1, id, 'follow' FROM users WHERE username LIKE 'n%@h%.example'`, cydID)
+	ev := "https://social.example/users/eve"
+	e.w.put(ev, worldDoc{body: actorDoc(ev, "eve", "", &e.other.PublicKey, nil)})
+	e.deliver(activity(ev, "Follow", "https://here.example/users/cyd", nil), e.signer(e.other, ev+"#main-key", sigCavage))
+	if e.count(`SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2 AND kind = 'follow_request'`, cydID, bo) != 1 {
+		t.Error("a waiting request's notification was trimmed")
+	}
+	if n := e.count(`SELECT count(*) FROM notifications n JOIN users u ON u.id = n.actor_id WHERE n.user_id = $1 AND u.domain <> '' AND n.kind = 'follow'`, cydID); n > remoteNotesMax {
+		t.Errorf("cyd keeps %d follow notifications from other servers", n)
+	}
+}
+
+// A switch that cannot be read is not "off" (the second review): a Follow is answered 503 at the inbox, retried by
+// the worker, and an actor document made meanwhile is not kept. The federation switch's own reader (the pause)
+// already reads a failed query as paused, which answers 503 and drops nothing.
+func TestDBFollowsSwitchUnread(t *testing.T) {
+	e := newFollowEnv(t)
+	anaID, _ := e.member("ana", false)
+	bo := e.remoteID(boID)
+	real := e.a.fed.followsOn
+	e.a.fed.followsOn = func() (bool, bool) { return false, false }
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 503 || e.last() != inFlags || w.Result().Header.Get("Retry-After") == "" {
+		t.Errorf("a Follow while the switches cannot be read: %d (%v)", w.Code, e.last())
+	}
+	// One stored while they could be read, handled while they cannot: tried again later, not dropped.
+	e.a.fed.followsOn = real
+	e.clock.add(time.Second)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	e.a.fed.followsOn = func() (bool, bool) { return false, false }
+	if _, err := e.q.step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM ap_inbox WHERE state = 'queued' AND outcome = 'the switches could not be read'`) != 1 || e.state(bo, anaID) != "" {
+		t.Errorf("the worker with the switches unread: %s", e.outcome())
+	}
+	// An actor document made meanwhile says manuallyApprovesFollowers (as off would) and is not kept.
+	var d map[string]any
+	json.Unmarshal([]byte(e.visitBody("/users/ana")), &d)
+	e.a.fed.followsOn = real
+	json.Unmarshal([]byte(e.visitBody("/users/ana")), &d)
+	if d["manuallyApprovesFollowers"] != false {
+		t.Errorf("the document made while the switches could not be read was kept: %v", d["manuallyApprovesFollowers"])
+	}
+	// The row is handled once they can be read again.
+	e.clock.add(inboxRetries[0])
+	if _, err := e.q.step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.state(bo, anaID) != "accepted" {
+		t.Errorf("after the switches could be read again: %q (%s)", e.state(bo, anaID), e.outcome())
+	}
+	// The flags table itself unreadable: the pause reads it as paused, 503 with Retry-After, nothing stored.
+	e.mustExec(`ALTER TABLE flags RENAME TO flags_gone`)
+	e.a.flagMu.Lock()
+	e.a.flagCache = nil
+	e.a.flagMu.Unlock()
+	e.clock.add(time.Second)
+	before := e.count(`SELECT count(*) FROM ap_inbox`)
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 503 || w.Result().Header.Get("Retry-After") == "" || e.count(`SELECT count(*) FROM ap_inbox`) != before {
+		t.Errorf("a delivery while the flags cannot be read: %d (%v)", w.Code, e.last())
+	}
+	e.mustExec(`ALTER TABLE flags_gone RENAME TO flags`)
+}
+
+// Only a true repeat is silenced (the second review): accepted at once, then blocked, a new Follow within the hour is
+// answered with Reject; and a 410 for one address never removes the followers whose inbox is on another port.
+func TestDBFollowsAnswerAndPort(t *testing.T) {
+	e := newFollowEnv(t)
+	anaID, ana := e.member("ana", false)
+	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
+	bo := e.remoteID(boID)
+	if s := e.sent(); len(s) != 1 || s[0].Type != "Accept" {
+		t.Fatalf("the first Follow: %+v", s)
+	}
+	e.must(200, ana, "PUT", fmt.Sprintf("/api/fed/accounts/%d/block", bo), nil)
+	e.sent()
+	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
+	if s := e.sent(); len(s) != 1 || s[0].Type != "Reject" {
+		t.Errorf("a Follow across a block, within the hour of an Accept: %+v (%s)", s, e.outcome())
+	}
+	e.must(200, ana, "DELETE", fmt.Sprintf("/api/fed/accounts/%d/block", bo), nil)
+	// bo follows ana again (an Undo forgets the pair, so the new follow is answered).
+	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
+	if e.state(bo, anaID) != "accepted" || len(e.sent()) != 1 {
+		t.Fatalf("bo's follow after the unblock: %q", e.state(bo, anaID))
+	}
+	// An inbox on another port of the host is another address, both ways.
+	e.mustExec(`UPDATE ap_actors SET inbox = 'https://social.example:8443/users/bo/inbox' WHERE user_id = $1`, bo)
+	e.a.fed.goneFollower(context.Background(), "https://social.example/users/bo/inbox")
+	if e.state(bo, anaID) != "accepted" {
+		t.Error("a 410 at port 443 removed a follower whose inbox is on port 8443")
+	}
+	e.mustExec(`UPDATE ap_actors SET inbox = 'https://social.example/users/bo/inbox' WHERE user_id = $1`, bo)
+	e.a.fed.goneFollower(context.Background(), "https://social.example:8443/users/bo/inbox")
+	if e.state(bo, anaID) != "accepted" {
+		t.Error("a 410 at port 8443 removed a follower whose inbox is on port 443")
+	}
+	e.a.fed.goneFollower(context.Background(), "https://SOCIAL.example:443/users/bo/inbox")
+	if e.state(bo, anaID) != "" {
+		t.Error("a 410 at bo's own inbox, spelled another way, left bo's follow")
+	}
 }

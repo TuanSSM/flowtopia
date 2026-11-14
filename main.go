@@ -5478,6 +5478,29 @@ func (a *app) flagsCached() map[string]bool {
 	return f
 }
 
+// flagsKnown is flagsCached that also says whether the flags could be read: a failed read gives no flags, which most
+// callers may take as every flag off (a page simply shows less), but what drops something for good on "off" must tell
+// "off" from "could not read" (follows across servers, FWR 3: followsKnown).
+func (a *app) flagsKnown() (map[string]bool, bool) {
+	a.flagMu.Lock()
+	defer a.flagMu.Unlock()
+	if time.Since(a.flagsAt) < 2*time.Second && a.flagCache != nil {
+		return a.flagCache, true
+	}
+	f, err := a.flags()
+	if err != nil {
+		return map[string]bool{}, false
+	}
+	a.flagCache, a.flagsAt = f, time.Now()
+	return f, true
+}
+
+// followsKnown is followCountsShown and whether the flags could be read (flagsKnown).
+func (a *app) followsKnown() (on, known bool) {
+	f, ok := a.flagsKnown()
+	return f["community"] && f["follows"], ok
+}
+
 // csp is the Content-Security-Policy. The one exception to "self", a YouTube frame, exists only
 // while the videoEmbeds flag is on.
 func csp(embeds bool) string {
@@ -6329,11 +6352,11 @@ type federation struct {
 	single bool
 	// followsOn says whether follows are on (the community and follows flags, followCountsShown): with them off the
 	// inbox takes no Follow or Accept, and nothing that adds a follow is acted on (FWR 3). Set by startFederation.
-	followsOn func() bool
+	followsOn func() (on, known bool)
 	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
 	// once in followAnswerEvery (followAnswerDue).
 	answersMu sync.Mutex
-	answers   map[[2]int64]time.Time
+	answers   map[[2]int64]answeredAs
 
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
@@ -6740,7 +6763,7 @@ func recordOrigin(ctx context.Context, tx *sql.Tx, o publicOrigin) error {
 func (a *app) startFederation(s fedSettings) error {
 	f := newFederation(a.db, s)
 	f.single = a.mode == modeSingle
-	f.followsOn = a.followCountsShown
+	f.followsOn = a.followsKnown
 	f.actors = newActorCache(f, a.fetch)
 	f.actors.refused, f.actors.admits = f.refusedByPolicy, f.admits
 	a.fed = f
@@ -8422,7 +8445,8 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 	// manuallyApprovesFollowers: the member approves by hand, or follows are off here, when a Follow is not taken at
 	// all and stays "requested" on the sender's server, which is what a locked account shows there (FWR 3). Saying
 	// false would promise an Accept that never comes.
-	approves := locked || !f.follows()
+	on, known := f.followsState()
+	approves := locked || !on
 	doc := outActor{Context: actorContext, ID: id, Type: "Person", PreferredUsername: name, Name: display, Summary: summaryHTML(bio),
 		URL: id, Inbox: id + "/inbox", Outbox: id + "/outbox", Followers: id + "/followers", Following: id + "/following", Featured: id + "/featured",
 		Endpoints:                 &outEndpoints{SharedInbox: a.fed.origin.url + "/inbox"},
@@ -8457,7 +8481,9 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 		return pubAnswer{}, err
 	}
 	p := newAnswer(b, activityType)
-	f.keepActor(keyOwner(uid), gen, p)
+	if known { // a document made while the flags could not be read is answered, and not kept
+		f.keepActor(keyOwner(uid), gen, p)
+	}
 	return p, nil
 }
 
@@ -15675,6 +15701,7 @@ const (
 	inGroupQueued                         // the sender group has inboxGroupQueued rows waiting, 429 (8.5)
 	inServer                              // this server failed, 500
 	inSlowBody                            // the body did not arrive within inboxReadFor, 408
+	inFlags                               // the switches could not be read, so a Follow is not dropped as if follows were off: 503
 	inboxReasonCount
 )
 
@@ -15710,6 +15737,7 @@ var inboxReasons = [inboxReasonCount]struct {
 	inGroupQueued:      {429, 120, "too many activities from this server wait here"},
 	inServer:           {500, 0, "Something went wrong on the server."},
 	inSlowBody:         {408, 0, "the body did not arrive in time"},
+	inFlags:            {503, 60, "this server's switches could not be read just now"},
 }
 
 func (r inboxReason) String() string { return inboxReasons[r].words }
@@ -16577,8 +16605,12 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyI
 	case followKinds[act.Kind]:
 		// A Follow, Accept, Reject, Undo or Block is stored only when it can be about a follow of this instance
 		// (followShaped, read from the activity alone); the worker matches it with the rows (FWR 3).
-		if !f.followShaped(act) || !f.follows() && followAdds(act) {
+		on, known := f.followsState()
+		if !f.followShaped(act) || known && !on && followAdds(act) {
 			return inDropped, kind
+		}
+		if !known && followAdds(act) {
+			return inFlags, kind
 		}
 	default:
 		return inDropped, kind
@@ -17189,6 +17221,25 @@ func own() (context.Context, context.CancelFunc) {
 
 /* Enqueue */
 
+// inboxAddress is an inbox in the queue's one spelling, and its host: https on port 443 only, the scheme and host in
+// lower case, no :443, the path and query as given, so https://A.EXAMPLE:443/inbox and https://a.example/inbox are one
+// row. Anything else (another scheme or port, a host another server cannot have) is not an inbox (ok false).
+func inboxAddress(in string) (addr, host string, ok bool) {
+	u, err := url.Parse(in)
+	if !httpsURL(in) || err != nil || (u.Port() != "" && u.Port() != "443") {
+		return "", "", false
+	}
+	h, why := fedHost(u.Hostname())
+	if why != "" {
+		return "", "", false
+	}
+	addr = "https://" + h + u.EscapedPath()
+	if u.RawQuery != "" {
+		addr += "?" + u.RawQuery
+	}
+	return addr, h, true
+}
+
 // collect turns recipients into the inboxes to write, one per address, each with its host, and counts those refused.
 func (q *deliveryQueue) collect(to []deliveryTarget) (inboxes, hosts []string, refused int) {
 	seen := map[string]bool{}
@@ -17207,22 +17258,12 @@ func (q *deliveryQueue) collect(to []deliveryTarget) (inboxes, hosts []string, r
 			refused++
 			continue
 		}
-		u, err := url.Parse(in)
-		if !httpsURL(in) || err != nil || (u.Port() != "" && u.Port() != "443") {
+		addr, h, ok := inboxAddress(in)
+		if !ok || h == q.f.origin.host || !q.f.admits(h) {
 			refused++
 			continue
 		}
-		h, why := fedHost(u.Hostname())
-		if why != "" || h == q.f.origin.host || !q.f.admits(h) {
-			refused++
-			continue
-		}
-		// One spelling per address: the scheme and host in lower case, no :443, the path and query as given, so
-		// https://A.EXAMPLE:443/inbox and https://a.example/inbox are one row.
-		in = "https://" + h + u.EscapedPath()
-		if u.RawQuery != "" {
-			in += "?" + u.RawQuery
-		}
+		in = addr
 		if seen[in] {
 			continue
 		}
@@ -18290,7 +18331,16 @@ var (
 var errInboxRefused = errors.New("the inbox is refused here, or its host unavailable")
 
 // follows says whether follows are on (followsOn): off, nothing that would add or accept a follow is acted on.
-func (f *federation) follows() bool { return f.followsOn != nil && f.followsOn() }
+func (f *federation) follows() bool { on, _ := f.followsState(); return on }
+
+// followsState is follows and whether the flags could be read: unread, nothing is dropped as "off" (the inbox answers
+// 503, the worker tries again, an actor document is not kept), since "off" drops a Follow for good.
+func (f *federation) followsState() (on, known bool) {
+	if f.followsOn == nil {
+		return false, true
+	}
+	return f.followsOn()
+}
 
 // followAdds says whether an activity would add a follow or accept one: a Follow, or an Accept. With follows off
 // these are dropped at the inbox and by the worker; what only removes a follow (a Reject, an Undo, a Block) is still
@@ -18455,7 +18505,9 @@ func (f *federation) fedRow(ctx context.Context, dest []any, stmt string, args .
 // "" when it did what the activity asks, or a short fixed note; an *errRetry is this server's own failure.
 func (f *federation) followIn(ctx context.Context, s *remoteActor, act *apActivity) (string, error) {
 	o := act.Object[0]
-	if !f.follows() && followAdds(act) {
+	if on, known := f.followsState(); !known && followAdds(act) {
+		return "", &errRetry{"the switches could not be read"}
+	} else if !on && followAdds(act) {
 		return " dropped (follows are off here)", nil
 	}
 	switch act.Kind {
@@ -18550,7 +18602,7 @@ func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, o
 		}
 		out, err := f.answerFollow(ctx, keyOwner(uid), name, s, follow, true, "")
 		if err == nil {
-			f.answered(s.UserID, uid)
+			f.answered(s.UserID, uid, " (a repeat, answered again)") // what a repeat of this follow would be answered
 		}
 		return out, err
 	case made.String == "pending":
@@ -18618,15 +18670,24 @@ func (f *federation) answerFollow(ctx context.Context, from keyOwner, name strin
 // answerOnce answers a repeat (a Follow while accepted, refused again) unless the pair was answered within
 // followAnswerEvery: each answer is a row to send, so a server repeating a Follow costs one an hour at most. The time
 // is recorded only once the answer is queued, so a row tried again after a failure still answers.
+//
+// Only a true repeat is silenced: the same answer for the same reason (outcome) to the same pair. Another answer (a
+// Reject after an Accept, after a block) goes out at once, and an Undo or a Block forgets the pair (forgetAnswer).
 func (f *federation) answerOnce(ctx context.Context, follower, followee int64, from keyOwner, name string, s *remoteActor, follow outFollow, accept bool, outcome string) (string, error) {
-	if !f.followAnswerDue(follower, followee) {
+	if !f.followAnswerDue(follower, followee, outcome) {
 		return outcome + " (answered within the hour: not again)", nil
 	}
 	out, err := f.answerFollow(ctx, from, name, s, follow, accept, outcome)
 	if err == nil {
-		f.answered(follower, followee)
+		f.answered(follower, followee, outcome)
 	}
 	return out, err
+}
+
+// answeredAs is when a pair was last answered, and with what (answerOnce's outcome).
+type answeredAs struct {
+	at   time.Time
+	what string
 }
 
 // followNow is the clock of the answers' memory: the delivery queue's, which a test sets.
@@ -18637,20 +18698,28 @@ func (f *federation) followNow() time.Time {
 	return time.Now()
 }
 
-func (f *federation) followAnswerDue(follower, followee int64) bool {
+func (f *federation) followAnswerDue(follower, followee int64, what string) bool {
 	f.answersMu.Lock()
 	defer f.answersMu.Unlock()
-	t, ok := f.answers[[2]int64{follower, followee}]
-	return !ok || f.followNow().Sub(t) >= followAnswerEvery
+	a, ok := f.answers[[2]int64{follower, followee}]
+	return !ok || a.what != what || f.followNow().Sub(a.at) >= followAnswerEvery
 }
 
-func (f *federation) answered(follower, followee int64) {
+func (f *federation) answered(follower, followee int64, what string) {
 	f.answersMu.Lock()
 	defer f.answersMu.Unlock()
 	if f.answers == nil || len(f.answers) >= followAnswersMax {
-		f.answers = map[[2]int64]time.Time{}
+		f.answers = map[[2]int64]answeredAs{}
 	}
-	f.answers[[2]int64{follower, followee}] = f.followNow()
+	f.answers[[2]int64{follower, followee}] = answeredAs{f.followNow(), what}
+}
+
+// forgetAnswer forgets what a pair was answered (an Undo, a Block, a state the member changed), so the next Follow is
+// answered whatever came before.
+func (f *federation) forgetAnswer(follower, followee int64) {
+	f.answersMu.Lock()
+	defer f.answersMu.Unlock()
+	delete(f.answers, [2]int64{follower, followee})
 }
 
 // notifyFed tells member uid of a follow by, or an answer from, the remote account actor, under a turn: never
@@ -18659,8 +18728,7 @@ func (f *federation) answered(follower, followee int64) {
 // What accounts of other servers leave in one member's notifications is bounded: the newest remoteNotesPerHost from one
 // server and remoteNotesMax from all of them are kept, older ones dropped (the newest are what a member reads, and a
 // server that floods pushes out only its own and other servers' notifications, never a local member's). The trim reads
-// the member's own notifications through notifications_user, each one's account by its primary key: what housekeeping
-// leaves of one member's, not the remote accounts there are.
+// the member's follow notifications through notifications_follows, each one's account by its primary key.
 func (f *federation) notifyFed(ctx context.Context, uid int64, s *remoteActor, kind string, oncePerDay bool) error {
 	n, err := f.fedExec(ctx, `INSERT INTO notifications (user_id, actor_id, kind) SELECT $1::bigint, $2::bigint, $3::text
 		WHERE `+blockFree("$1::bigint", "$2::bigint", "false")+` AND NOT ($4 AND EXISTS (SELECT 1 FROM notifications
@@ -18674,8 +18742,15 @@ func (f *federation) notifyFed(ctx context.Context, uid int64, s *remoteActor, k
 
 // remoteNotesTrimSQL drops member $1's notifications from accounts of host $2 past the newest $3, and from accounts of
 // other servers past the newest $4.
+//
+// Only the kinds an account of another server can leave (remoteNoteKinds) are read, through notifications_follows, so
+// the cost is the member's follow notifications, not every notification they have. A follow_request whose request
+// still waits is spared: it is bounded by followRequestsMax already, and dropping it would hide a request a member
+// should answer behind a server that floods.
 const remoteNotesTrimSQL = `WITH m AS (SELECT n.id, a.domain FROM notifications n
-		CROSS JOIN LATERAL (SELECT domain FROM users a WHERE a.id = n.actor_id AND a.domain <> '' OFFSET 0) a WHERE n.user_id = $1),
+		CROSS JOIN LATERAL (SELECT domain FROM users a WHERE a.id = n.actor_id AND a.domain <> '' OFFSET 0) a
+		WHERE n.user_id = $1 AND n.kind IN ('follow', 'follow_request', 'follow_rejected')
+			AND NOT (n.kind = 'follow_request' AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = n.actor_id AND f.followee_id = $1 AND f.state = 'pending'))),
 	h AS (SELECT id FROM m WHERE domain = $2 ORDER BY id DESC OFFSET $3),
 	r AS (SELECT id FROM m ORDER BY id DESC OFFSET $4)
 	DELETE FROM notifications WHERE id IN (SELECT id FROM h UNION SELECT id FROM r)`
@@ -18742,6 +18817,7 @@ func (f *federation) unfollowedBy(ctx context.Context, s *remoteActor, name stri
 	} else if err != nil {
 		return "", &errRetry{"the database"}
 	}
+	f.forgetAnswer(s.UserID, uid)
 	stmt := `WITH g AS (DELETE FROM follows WHERE follower_id = $2 AND followee_id = $1 RETURNING 1)`
 	if both {
 		stmt = `WITH g AS (DELETE FROM follows WHERE (follower_id = $2 AND followee_id = $1) OR (follower_id = $1 AND followee_id = $2) RETURNING 1)`
@@ -18764,6 +18840,7 @@ func (f *federation) undoByID(ctx context.Context, s *remoteActor, id string) (s
 	case err != nil:
 		return "", &errRetry{"the database"}
 	}
+	f.forgetAnswer(s.UserID, uid)
 	if _, err := f.fedExec(ctx, `DELETE FROM notifications WHERE user_id = $1 AND actor_id = $2 AND kind IN ('follow', 'follow_request')`, uid, s.UserID); err != nil {
 		return "", &errRetry{"the database"}
 	}
@@ -18773,14 +18850,42 @@ func (f *federation) undoByID(ctx context.Context, s *remoteActor, id string) (s
 // goneFollower is the delivery queue's goneInbox (8.3: "410 for an inbox removes that follower"): the remote
 // accounts whose own inbox that was stop following local members, and their requests go with them. Only a
 // personal inbox: a shared one answering 410 names no one account. The queue writes an address in one spelling
-// (its scheme and host in lower case, no :443), so a stored inbox is compared in that spelling too. It reads
-// ap_actors by inbox, at most remoteActorsMax rows, on a 410 alone.
+// (inboxAddress), so a stored inbox is compared in that spelling too. It reads the accounts of the inbox's host, on a
+// 410 alone.
 func (f *federation) goneFollower(ctx context.Context, inbox string) {
-	if _, err := f.fedExec(ctx, `WITH a AS (SELECT user_id FROM ap_actors WHERE inbox = $1
-			OR regexp_replace(inbox, '^https://([^/]+?)(:443)?(/|$)', '') = regexp_replace($1, '^https://([^/]+?)(:443)?(/|$)', '')
-				AND lower(substring(inbox from '^https://([^/:]+)')) = lower(substring($1 from '^https://([^/:]+)'))),
-		g AS (DELETE FROM follows WHERE follower_id IN (SELECT user_id FROM a) AND followee_id IN (SELECT id FROM users WHERE domain = '') RETURNING 1)
-		DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id IN (SELECT user_id FROM a)`, inbox); err != nil {
+	gone, host, ok := inboxAddress(inbox)
+	if !ok {
+		return
+	}
+	// The accounts of that host (users_remote_domain), their inboxes put in the queue's spelling here: scheme, host
+	// and port compared whole, so an inbox on another port of the host is another address.
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return
+	}
+	rows, err := f.db.QueryContext(ctx, `SELECT a.user_id, a.inbox FROM users u JOIN ap_actors a ON a.user_id = u.id WHERE u.domain = $1`, host)
+	if err != nil {
+		done()
+		log.Printf("deliveries: reading the followers whose inbox is gone: %v", err)
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		var in string
+		if rows.Scan(&id, &in) == nil {
+			if addr, _, ok := inboxAddress(in); ok && addr == gone {
+				ids = append(ids, id)
+			}
+		}
+	}
+	rows.Close()
+	done()
+	if len(ids) == 0 {
+		return
+	}
+	if _, err := f.fedExec(ctx, `WITH g AS (DELETE FROM follows WHERE follower_id = ANY($1) AND followee_id IN (SELECT id FROM users WHERE domain = '') RETURNING 1)
+		DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id = ANY($1)`, pq.Array(ids)); err != nil {
 		log.Printf("deliveries: removing the followers whose inbox is gone: %v", err)
 	}
 }
@@ -19529,15 +19634,21 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 	// Mastodon's suspension removes them and does not restore them (section 10); nothing is sent, since nothing goes to
 	// a suspended domain. Its accounts are found by users_remote_domain for the domain itself, and by reading the remote
 	// accounts for its subdomains (at most remoteActorsMax and those something points at), once, on this admin action.
+	ended := 0
 	if in.Policy == "suspend" {
-		if _, err := tx.Exec(`WITH s AS (SELECT id FROM users WHERE domain <> '' AND (domain = $1 OR right(domain, length($1) + 1) = '.' || $1)),
-			n AS (DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id IN (SELECT id FROM s))
-			DELETE FROM follows WHERE follower_id IN (SELECT id FROM s) OR followee_id IN (SELECT id FROM s)`, d); err != nil {
+		if err := tx.QueryRow(`WITH s AS (SELECT id FROM users WHERE domain <> '' AND (domain = $1 OR right(domain, length($1) + 1) = '.' || $1)),
+			n AS (DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id IN (SELECT id FROM s)),
+			g AS (DELETE FROM follows WHERE follower_id IN (SELECT id FROM s) OR followee_id IN (SELECT id FROM s) RETURNING 1)
+			SELECT count(*) FROM g`, d).Scan(&ended); err != nil {
 			a.serverError(w, err)
 			return
 		}
 	}
-	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, map[string]any{"domain": d, "policy": in.Policy, "was": was}); err != nil {
+	detail := map[string]any{"domain": d, "policy": in.Policy, "was": was}
+	if in.Policy == "suspend" {
+		detail["followsEnded"] = ended // the audit says what the suspension ended (FWR 3)
+	}
+	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, detail); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -20033,15 +20144,17 @@ var migrations = []string{schema, schemaSocial,
 	// row there is was made between two local members and is accepted, which the constant default says without
 	// a rewrite; the check is added NOT VALID, so no row is read to add it. follows_pending lists a member's
 	// requests and counts them for the cap; users_remote_domain counts a sending host's requests and follows for
-	// theirs. Columns with constant defaults and new indexes: an older build ignores them, and reads a pending
-	// remote follow as a follow (14.4).
+	// theirs; notifications_follows the notifications of follows of one member, which the trim of what other servers
+	// leave reads (remoteNotesTrimSQL). Columns with constant defaults and new indexes: an older build ignores them,
+	// and reads a pending remote follow as a follow (14.4).
 	`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;
 	ALTER TABLE follows ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'accepted';
 	ALTER TABLE follows ADD COLUMN IF NOT EXISTS ap_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE follows DROP CONSTRAINT IF EXISTS follows_state;
 	ALTER TABLE follows ADD CONSTRAINT follows_state CHECK (state IN ('pending', 'accepted')) NOT VALID;
 	CREATE INDEX IF NOT EXISTS follows_pending ON follows (followee_id, created_at) WHERE state = 'pending';
-	CREATE INDEX IF NOT EXISTS users_remote_domain ON users (domain) WHERE domain <> ''`,
+	CREATE INDEX IF NOT EXISTS users_remote_domain ON users (domain) WHERE domain <> '';
+	CREATE INDEX IF NOT EXISTS notifications_follows ON notifications (user_id, id DESC) WHERE kind IN ('follow', 'follow_request', 'follow_rejected')`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting

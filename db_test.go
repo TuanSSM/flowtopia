@@ -3865,6 +3865,9 @@ func TestDBQueryPlans(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO follows (follower_id, followee_id, ap_id) SELECT id, 1 + id % 500, 'https://' || domain || '/f/' || id FROM users WHERE domain <> '' ON CONFLICT DO NOTHING`,
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT id, CASE WHEN id % 4 = 0 THEN 7 ELSE 8 + id % 400 END, 'pending' FROM users WHERE domain <> '' AND id % 10 < 3 AND 1 + id % 500 NOT IN (7, 8 + id % 400) ON CONFLICT DO NOTHING`,
+		// Member 9 has 20,000 notifications from members here, and 300 follows from other servers told.
+		`INSERT INTO notifications (user_id, actor_id, kind, read) SELECT 9, 1 + g % 500, 'like', false FROM generate_series(1, 20000) g`,
+		`INSERT INTO notifications (user_id, actor_id, kind) SELECT 9, id, 'follow' FROM users WHERE domain <> '' AND id % 7 = 0 LIMIT 300`,
 		`ANALYZE`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -3884,7 +3887,7 @@ func TestDBQueryPlans(t *testing.T) {
 		{"follows: a Follow in, accepted at once", followInSQL, []any{1000003, 9, "https://h3.example/f/new2", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, ""},
 		// The trim after a notification from a remote account, once per one written:
 		// the member's own notifications through notifications_user, each one's account by its primary key.
-		{"follows: trimming a member's notifications from other servers", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 2000, ""},
+		{"follows: trimming a member's notifications from other servers", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 2500, ""},
 	})
 	on = db
 	ftx.Rollback()
