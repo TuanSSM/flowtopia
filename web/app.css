@@ -601,6 +601,7 @@ button:disabled { opacity: .6; cursor: default; }
 select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
 .compose textarea { min-height: 56px; }
 .compose-img { position: relative; width: max-content; max-width: 100%; }
+.aud-pick { display: inline-flex; align-items: center; gap: 6px; }
 .compose-img img { display: block; max-height: 220px; max-width: 100%; border-radius: 10px; border: 1px solid var(--line); }
 .compose-img .icon-btn { position: absolute; top: 6px; right: 6px; background: rgba(0, 0, 0, .55); color: #fff; }
 .post { display: grid; gap: 12px; }
@@ -849,6 +850,13 @@ tr[hidden] { display: none; }
 .pub-hint { color: var(--ink-2); }
 .pub-links { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .pub-rules { margin: 0; padding-left: 22px; display: grid; gap: 8px; }
+.pub-posts { display: grid; gap: 12px; min-width: 0; }
+.pub-post { gap: 8px; }
+.pub-when { margin: 0; font-size: 13px; font-weight: 560; color: var(--ink-2); }
+.pub-when a { color: inherit; }
+.pub-title { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
+.pub-title a { color: inherit; }
+.pub-img { display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); }
 
 /* ---------- touch screens ----------
    A finger needs about 44 px each way. Where the pointer is coarse every control grows to that, by

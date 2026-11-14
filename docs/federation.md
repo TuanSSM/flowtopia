@@ -10,9 +10,9 @@ and [PRT](epics.md#prt-portability), with checklists under `docs/epic-<code>/tod
 is in [roadmap.md](roadmap.md#third-cycle).
 
 **It is a proposal waiting for the owner's review.** Nothing in it was built when it was written; what has
-been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 4: the modes,
-the origin, the keys, the guarded fetcher, HTTP signatures, and discovery, which is all a federating instance
-answers so far). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
+been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 5: the modes,
+the origin, the keys, the guarded fetcher, HTTP signatures, discovery, and the actor documents and public
+pages with the post audience and retired names; a federating instance can be read, and has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
 proceeds on its recommendation, and each decision says what the plan assumes meanwhile.
 
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
@@ -229,7 +229,7 @@ These change the design and are not obvious from the brief.
    `@name@host` form before the local one (FWR, posts in).
 10. **Usernames can be reused.** `handleDeleteUser` deletes the row and nothing keeps the name, so a
     new sign-up could take it and inherit another person's identity on every server that knew it.
-    Federation keeps a list of retired names (section 9).
+    Federation keeps a list of retired names (section 9; built in FRD 5, 5.2).
 11. **Usernames Flowa allows that other servers may not.** `usernameRE` allows a name that ends in a
     dot or a dash (`ana.`, `bo-`). The SWICG report "ActivityPub and WebFinger" ("Current
     implementation rules") says Mastodon allows a dot or a dash only in the middle of a username
@@ -391,6 +391,13 @@ once in the log ("federation: this version answers discovery only (WebFinger and
 who opted in): no actor documents, no inbox, nothing is delivered"), and the README and the admin
 dashboard's mode line say the same.
 
+As built (FRD 5): what a federating instance does is now one sentence, `fedBuilt` in `main.go`, which the start
+logs once ("federation: this version answers discovery (WebFinger and NodeInfo) and serves the profiles and
+Public posts of the members who opted in, to other servers and to people in a browser; it has no inbox, so
+nobody can follow anyone yet, and nothing is delivered"), the dashboard shows as the server sends it, and
+NodeInfo's `metadata.federationBuilt` lists as parts (`webfinger`, `nodeinfo`, `actors`, `notes`). The sentence
+of FRD 4 and its two constants are gone, so there is one copy.
+
 ### 4.2 What each mode means for every surface
 
 | Surface | `local` (default) | `federated` | `single` |
@@ -410,8 +417,12 @@ dashboard's mode line say the same.
 **Single mode as built (INS 7).** The owner's profile at `/` is a small page the server writes from a Go
 `html/template` with the CSP of 5.6: display name, username, bio, links, the profile picture (at
 `/profile-picture`, the one public picture address, for the owner alone) and the instance information. It
-shows no post yet: posts become public only once a post has an audience, which FRD's "Actor documents and
-public pages" adds; until then the owner's posts are seen by the owner alone, signed in. It shows no number
+shows no post without `FLOWA_FEDERATE=on`. As built (FRD 5): with it on, the page also lists the owner's newest
+20 Public posts (the post's text with its links, its chips and combo as text, its picture at the public
+picture address) and links the profile page `/users/{name}` for the rest; the page is made again when the owner
+posts or deletes a post, after any moderator's action, and when the opt-in changes (`TestDBVisitorPageFollows`;
+nobody can moderate the owner, who is the one account and an admin, but the page would follow if anyone could). Without it the page is byte for byte as before, and the owner's posts are seen by the
+owner alone, signed in. It shows no number
 (14.6). The People list is hidden, and Follows and Home stay behind their flag with nobody to follow until
 FWR. `FLOWA_FEDERATE` is read since FRD 4: with it on, the instance answers WebFinger for the owner (whose
 opt-in, F2, is that setting: the `federates` column is not written for them, so going back to local mode
@@ -439,9 +450,12 @@ the start-up with a fetcher that fails the test on any dial.
   a member's actor id to another server: in this version a WebFinger 200 for a member, to a GET (a HEAD gets
   the same headers and no body, so it records nothing). The instance actor's
   WebFinger answer does not freeze it: anyone can ask for `acct:host@host` (a scanner, the operator's own
-  check), and that must not lock a mistyped origin in. The actor document, the first request the instance
-  actor signs (FRD 7, a signed fetch names `/actor#main-key` to another server) and the first delivery will
-  call the same function when they come. Making keys records nothing:
+  check), and that must not lock a mistyped origin in. As built (FRD 5): a member's actor document and a
+  Public post's Note call it too, before the first byte goes out, and a moved origin turns either into the 404;
+  the instance actor's own document does not, by the reasoning of its WebFinger answer (it names no member, and
+  anyone may ask for it), and neither do the HTML pages, which are for people and name no id to a server that
+  stores it. The first request the instance actor signs (FRD 7, a signed fetch names `/actor#main-key` to
+  another server) and the first delivery will call the same function when they come. Making keys records nothing:
   a key holds no origin (`ap_keys` keeps the part of the key id after the origin, and the sealing is bound to
   the key id and the owner), so a key made under one origin serves under another. NodeInfo is no
   announcement: its discovery document names the origin in an `href`, but no actor id, and nothing another
@@ -471,9 +485,11 @@ the start-up with a fetcher that fails the test on any dial.
   Tombstone is the body) and WebFinger answers 404 (RFC 7033 4.2 asks for 404 when the server has no
   information); these are the only federation answers local mode gives, and only on an instance that
   recorded `first_federated_at`, so remote servers stop retrying. (Not built yet: in local mode the
-  discovery addresses are unknown addresses, a 404 without the CORS header. While federation is refused
-  in a mode that federates, as built in FRD 4, the three discovery addresses stay registered and answer the
-  404 of an unknown name, with the CORS header, to everything.) An admin who wants remote servers to forget the accounts first runs "Leave the
+  discovery addresses are unknown addresses, a 404 without the CORS header, and so are the actor and public
+  page addresses of FRD 5: these answers of local mode are left for the item that builds them, since FRD 5
+  serves only a mode that federates. While federation is refused in a mode that federates, as built in FRD 4
+  and 5, the discovery, actor and public addresses stay registered and answer the 404 of an unknown name to
+  everything, discovery with the CORS header.) An admin who wants remote servers to forget the accounts first runs "Leave the
   fediverse" in federated mode (**new**, FMD), which sends Delete for each actor and waits for the
   queue to drain.
 - Retired usernames stay retired in every mode.
@@ -512,6 +528,29 @@ start, and `test/release.sh` fails if `compose.yml` names it.
 Usernames never change (no endpoint renames), and the numeric post and comment ids never repeat
 (`BIGSERIAL`), so these stay stable. A deleted member's name goes into `retired_usernames` (**new**)
 and cannot be taken again.
+
+As built (FRD 5): `retired_usernames` (migration 14, with `flowa-schema13.dump` for the restore drill). A
+name is retired when an admin deletes an account that had opted in or ever had a key (a key is made only on
+opting in, and for the owner of a single-profile instance with `FLOWA_FEDERATE=on`, whose opt-in leaves no
+column; it stays when the member opts out), in the delete's own transaction and before the row goes, in
+every mode (4.3: retired names stay retired whatever the mode). A name of an account that never opted in is
+free again, as before. A retired name is refused at sign-up, at a request to join, at approving a request
+that waited under it, and for `ADMIN_USER` (the start goes on without that account while others exist, and
+stops with the reason when there would be none), always in the words of a taken name ("That username is
+taken."), so the answer does not say whether an account once had it. The transaction that retires a name and each
+that makes an account (sign-up, approving a request, `ADMIN_USER`) first take a lock on that one name
+(`nameLockSQL`, an advisory transaction lock keyed by the name): without it an insert that waited on the
+unique index for a delete went ahead, once the delete committed, with a snapshot from before the
+retirement. Under READ COMMITTED each statement takes a new snapshot when it starts, so an insert sent after
+the lock is granted sees the retirement (`TestDBRetireRace`). The password is hashed before the lock is
+taken, so sign-up waits only for another transaction on the same name. The actor of a retired name answers
+410 with a Tombstone, an accepted disclosure that an account under it once shared its profile (5.5, "As built
+(FRD 5)", says why). No endpoint renames an account, so a
+name that has federated cannot move (4.3); `TestDBRetiredNames` holds that `PUT /api/me` takes no name. The
+instance's own host is taken the same way in a mode that federates (5.3 found that a member so named is
+shadowed by the instance actor in WebFinger): it is refused at every door above, and a member who already has
+that name keeps the account but is refused the opt-in, with the reason. A member of that name who had opted
+in before this version stays opted in, and can be reached only by their actor id.
 
 ### 5.3 WebFinger (RFC 7033)
 
@@ -557,6 +596,10 @@ goes out through WebFinger only when the person has authorised it.
 As built (FRD 4), checked against RFC 7033 and Mastodon's WebFinger page, with these decisions where
 neither says, and one correction:
 
+- **Correction (FRD 5):** the profile-page link is now in every answer, `{"rel":
+  "http://webfinger.net/rel/profile-page", "type": "text/html", "href": <the id>}`, since `/users/{name}` and
+  `/actor` answer a browser with a page (5.6); `rel` keeps only the links asked for. The two paragraphs below
+  are as FRD 4 left them.
 - **Only the `self` link, and the id as the one alias.** The profile-page link of the example above points
   at a page this version does not serve (the HTML profile is FRD 5), so it is left out until then; RFC 7033
   4.4 makes every link optional and Mastodon needs only `self`. The `self` link points at `/users/{name}`,
@@ -582,7 +625,7 @@ neither says, and one correction:
 - **The instance actor** is `acct:host@host`. `usernameRE` allows dots, so a member whose username is the
   origin's host can exist when the host has 3 to 24 characters (`flowa.example.org` can be a username). The
   instance actor is decided before any member is looked up, so it always wins, and that member can be
-  found only by the URL form of their id. FRD 5's retired names can reserve that name.
+  found only by the URL form of their id. FRD 5 reserves that name (5.2, "As built (FRD 5)").
 - **The owner only, in single mode.** The implied opt-in of single mode is the owner's (`owner` in the
   lookup), not every account's, though `checkSingle` keeps one account there anyway.
 - **One answer for nobody.** An unknown name, a member who has not opted in, a suspended member and a deleted
@@ -656,7 +699,8 @@ build. That makes the version private by default, as in `/healthz`; publishing i
 with `nodeinfo_version`, below. `protocols` is
 `["activitypub"]` because the schema needs one entry from its list, though only discovery is built; so that
 nobody takes that for the whole protocol, `metadata` says `{"mode": "...", "federationBuilt": ["webfinger",
-"nodeinfo"]}` instead of the example's `nodeName` (Flowa keeps no instance name). The counts are one query of
+"nodeinfo"]}` (since FRD 5 `["webfinger", "nodeinfo", "actors", "notes"]`, read from the one
+sentence of 4.1) instead of the example's `nodeName` (Flowa keeps no instance name). The counts are one query of
 four counts, kept for five minutes; `openRegistrations` is read from the flag and registration caches the
 pages use. **The instance setting `nodeinfo_version` is not built**: it needs the admin's instance editor to
 learn a new field, which is its own change; until it lands, NodeInfo sends the empty string, so the default
@@ -741,6 +785,51 @@ same purpose, and sends its own Flags from it ("Reporting profiles and posts"); 
 HTTP signatures ("Instance actor") explains why: it breaks the loop of two servers each fetching the
 other's signing actor with a signed request.
 
+As built (FRD 5), checked against `TestActorDocument`'s golden files (`testdata/federation/actor-ana.json`,
+`actor-instance.json`), with these decisions:
+
+- **The context and the properties are those above**, from typed structs, each name once, every id https:
+  `id`, `type` `Person`, `preferredUsername`, `name` (left out when the member has no display name), `summary`
+  (the bio as the HTML of 6.5: escaped, paragraphs, links), `url` (the id), `inbox`, `outbox`,
+  `manuallyApprovesFollowers`, `discoverable` and `indexable` all false, `published` (the account's creation),
+  `icon` (`/users/{name}/avatar.jpg` or `.png` by the picture's type, `?v=` the first 12 hex characters of an
+  MD5 of the stored picture, so a new picture is a new address), `attachment` (`Props` and one field per link,
+  each link `rel="me nofollow noopener"`), `publicKey` from `ap_keys`. No number (F12).
+- **Addresses this version does not serve.** `inbox` and `outbox` are named although nothing answers them
+  yet, because ActivityPub 4.1 says an actor MUST have both and a reader that checks the shape (Mastodon among
+  them) refuses an actor without an inbox; a delivery there fails, which is true: nobody can follow yet.
+  `followers`, `following`, `featured` and `endpoints.sharedInbox` are left out until they answer (FRD 6, FWR
+  1): ActivityPub makes them SHOULD and MAY, and naming an address that answers 404 says more than is built.
+- **The inboxes the actors name** (`/users/{name}/inbox`, `/actor/inbox`) answer every method with 405 and an
+  empty `Allow`, whatever the name, before the write guard (which said 415 or 403), counted against the public
+  allowance. RFC 9110 15.5.6 makes 405 the answer for a method the target does not support, and 10.2.1 an
+  empty `Allow` the way a resource temporarily disabled by configuration says it takes none; a 4xx tells a
+  sender not to keep trying. 404 would say the address does not exist, which the actor contradicts, and 501
+  is for a method the server supports nowhere (15.6.2). Mastodon's pages on disk do not say how it treats
+  each status. So someone on Mastodon can press Follow on a Flowa account now; the Follow is refused, and it
+  stays "requested" there until FWR builds the inbox. Local and plain single mode answer these paths as any
+  unknown address (`TestDBDefaultsUnchanged`); `TestDBInboxNotYet`.
+- **An opted-in member whose key is still being made** (opting in asks for it; it takes a moment, 5.7) gets
+  503 with `Retry-After: 60`, never a document without a key. The instance actor likewise until its key exists.
+- **Kept in memory.** A member's document is made once and kept (at most 1,000, all dropped when full, each
+  remade after ten minutes as a net for a hand edit) and dropped when the member saves their profile (name,
+  bio, links, props, picture, the opt-in) and when their key is made or rotated; who may be shown is asked of
+  the database on every request, so a suspension or an opt-out hides a kept document at once.
+  `TestDBActorCache` changes each.
+- **The instance actor** is `Application`, `preferredUsername` the host, `url` the id, inbox and outbox named,
+  its key; nothing else.
+- **A deleted member who had opted in** (a retired name, 5.2): the actor answers 410 with
+  `{"@context": "https://www.w3.org/ns/activitystreams", "id": ..., "type": "Tombstone", "formerType":
+  "Person"}` (ActivityPub 6.4), and a browser a page that says the account was deleted, so other servers stop
+  asking. Any other name nobody shows (never opted in, opted out, suspended, deleted without having opted in)
+  is the one 404. **This tells something, on purpose:** that an account under the name once shared its
+  profile beyond the server (opted in, or had a key: also one that opted out before it was deleted), where
+  WebFinger's one 404 (5.3) tells nothing. It is accepted because the actor id was public already (other
+  servers may have stored it, which is why the name is retired), and other servers that hold it must learn it
+  is gone, or they keep showing and asking for an account that no longer exists; ActivityPub 6.4 gives 410 and
+  a Tombstone for that, and the SWICG report on HTTP signatures reads a 410 on a key fetch as the actor
+  deleted. An account that never opted in had no public id, and its deletion stays the one 404.
+
 ### 5.6 Content negotiation on the same URL
 
 `/users/{name}` and `/users/{name}/posts/{id}` answer JSON when `Accept` names
@@ -758,6 +847,40 @@ or a cache hands a signed reader's answer to an unsigned one). JSON answers carr
 treat the `ld+json` form as the same) and `Cache-Control: public, max-age=180`, or `private` with
 authorized fetch on. `TestContentNegotiation` (**new**) covers each `Accept` form, `*/*`, a browser's
 header, and a missing one (HTML).
+
+As built (FRD 5), decided against RFC 9110 (5.3, 5.6.2, 5.6.4, 5.6.6, 12.4.2, 12.5.1) where the paragraph
+above is silent:
+
+- **The reader** (`parseAccept`): several `Accept` lines are one list; an element is `type/subtype` (case
+  ignored) with parameters in any order and case, a value a token or a quoted string with its escapes; `q` is 0
+  to 1 with at most three decimals, and what follows it is an extension, not the type's. An element that does
+  not parse is skipped (a profile written without quotes is one: a URI is no token). A header over 4,096 bytes
+  or with more than 64 elements is read as no header, so a hostile one costs bounded work.
+- **The choice** (`wantsActivity`): for each of the two answers, the most specific range that matches gives
+  its weight (the ld+json profile, then the type, then `type/*`, then `*/*`). The document when a JSON type
+  weighs above zero and above `text/html`, or the same and more specific; otherwise the page. So a missing
+  header, `*/*` alone and a browser's header get the page; `text/html;q=0, application/activity+json` gets the
+  document; `application/ld+json` with a profile that does not name ActivityStreams counts for nothing, and a
+  profile parameter on `application/activity+json` changes nothing. A request that accepts neither gets the
+  page rather than 406: RFC 9110 12.5.1 lets a server disregard the header, and a person who gets a page
+  reads why.
+- **Headers.** `Vary: Accept` on every answer of the two negotiated addresses and of `/actor`, the 404, 410,
+  429, 503 and 500 included (`Signature` joins it with authorized fetch, 7.6). Documents are
+  `application/activity+json`; found answers `Cache-Control: public, max-age=180` with an `ETag` (and 304 to
+  `If-None-Match`), a 404 `public, max-age=60`, a 405, 429 or 503 `no-store`. HEAD answers as GET without the
+  body; any other method 405 with `Allow: GET, HEAD`, counted against the allowance and answered before the
+  write guard. No CORS header: the note asks it of WebFinger only (5.3).
+- **The pages** are one `html/template` (`pubTmpl`) with the policy above, no script and no event attribute,
+  text escaped by the template (as the app's own pages escape it; links are the post's http and https URLs),
+  links out `rel="nofollow noopener ugc"`, pictures only from this server, a Sign in button, and `<meta
+  name="robots" content="noindex">`: the note is silent on search engines, and `indexable` false (5.5) and
+  "nothing shared without an action" (F2) make not being indexed the careful default; an owner who wants to be
+  found can be offered a switch later. A profile page lists 20 Public posts newest first and links older ones
+  by `?before=<post id>` (a cursor, so a page does not shift when someone posts); a value that is not one
+  positive id is the 404.
+- **Limits.** Every public address (the two above, `/actor` and the pictures) counts against one allowance
+  of 2,400 requests an hour per address (`limits.public`), before anything is read and apart from every
+  allowance members use; past it 429 with `Retry-After`.
 
 ### 5.7 Keys
 
@@ -809,8 +932,8 @@ app. Both are listed under "Out of scope" in FRD and FWR.
 | `GET /users/{name}/outbox` | OrderedCollection of the member's Create activities for Public posts, `totalItems`, `first`, pages of 20 newest first by post id (`?page=true&max_id=812`); ActivityPub 5.1 requires an OrderedCollection, 5 requires reverse chronological order and names an increasing integer id as a fair key, and 5.1 says an unauthenticated reader gets the Public posts |
 | `GET /users/{name}/followers`, `/following` | OrderedCollection with `totalItems` only; `first` and pages only for the account itself (F10); ActivityPub 5.3 and 5.4 allow either collection type and filtering by who asks |
 | `GET /users/{name}/featured` | an empty OrderedCollection at first (pinned posts do not exist yet); cheap, and Mastodon reads `featured` as the pinned posts it fetches for a profile (its ActivityPub page, "Featured collection") |
-| `GET /users/{name}/posts/{id}`, `/comments/{id}` | the Note, or HTML; 404 for audience This server, 410 with a Tombstone for a deleted one (ActivityPub 6.4: 410 when a Tombstone is the body, 404 otherwise; 3.2 allows 404 for an object whose existence is private) |
-| `GET /users/{name}/posts/{id}/picture.jpg`, `GET /users/{name}/avatar.jpg` | the stored picture, public only for federating members and Public posts |
+| `GET /users/{name}/posts/{id}`, `/comments/{id}` | the Note, or HTML; 404 for audience This server, 410 with a Tombstone for a deleted one (ActivityPub 6.4: 410 when a Tombstone is the body, 404 otherwise; 3.2 allows 404 for an object whose existence is private). As built (FRD 5): posts only; a deleted post is the 404, since nothing keeps a deleted post's id to answer with a Tombstone (6.4 makes replacing an object with one a MAY); comments are FWR's |
+| `GET /users/{name}/posts/{id}/picture.jpg`, `GET /users/{name}/avatar.jpg` | the stored picture, public only for federating members and Public posts. As built (FRD 5): `.png` too, the extension the picture's type has (the other one is the 404) |
 | `GET /api/fed/...` | the page's own endpoints for search by handle and remote accounts (section 11), behind `authed` and the limits. Follows and Home are not here: since INS every instance has `PUT` and `DELETE /api/users/{name}/follow`, `GET /api/home`, `GET /api/following` and `GET /api/followers`, behind the `follows` flag (off by default) and the `community` flag. Blocks of accounts are not here: they are `PUT /api/users/{name}/block`, `DELETE` of the same and `GET /api/blocks`, which every instance has since INS, behind the `community` flag |
 
 ### 6.3 Activities in
@@ -1054,6 +1177,17 @@ The rules:
 - **Comments** are Notes with `inReplyTo` set to the post's id, or to the parent comment's id for a
   reply. Remote replies deeper than Flowa's one level join the thread of the top comment, starting with
   a mention of the person answered, as RPL does for a reply to a reply.
+
+As built (FRD 5), the Note a Public post answers at its id (`testdata/federation/note-ana.json`), as much of the
+above as this version can stand behind: `@context` as above, `id` and `url` the post's address, `type`
+`Note`, `attributedTo`, `published`, `to` the public collection alone (6.7), `sensitive` false, `content` by
+the rules above (`p`, `br` and `a` only; the chips as "Tricks: name (Prop), ..." and the combo as "Combo:
+Name: A, B" in paragraphs of their own, names from the latest published map), and the picture as an `Image`
+attachment with its type, size, and empty `name` and `summary`. Left for the items that serve or send them:
+the followers collection in `cc` (it does not answer until FRD 6), mentions and the `h-card` form and the
+`Mention` and `Hashtag` tags (FWR 4, which also teaches `mentionRE` the remote form; until then a mention is
+plain text), and `flowa:tricks`. A reader that knows only ActivityStreams sees the same post either way. No
+activity wraps it: the Create is FWR's.
 
 `TestNoteFromPost` (**new**) holds the Note for a fixture post byte for byte against a golden file, and
 `TestNoteContentEscaping` (**new**) feeds hostile text (`<script>`, quotes, `javascript:` URLs,
@@ -1710,7 +1844,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS federates BOOLEAN NOT NULL DEFAULT fa
 ALTER TABLE users ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;      -- approves followers by hand
 CREATE INDEX IF NOT EXISTS users_local ON users (id) WHERE domain = '';
 
-CREATE TABLE retired_usernames (username TEXT PRIMARY KEY, retired_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE retired_usernames (username TEXT PRIMARY KEY, retired_at TIMESTAMPTZ NOT NULL DEFAULT now());   -- migration 14, built in FRD 5
 
 -- requests to join while registration is by approval (migration 11, built in INS 6): not users rows, so
 -- nothing that reads users (lists, counts, mentions, follows, sessions) meets a person nobody approved
@@ -1789,7 +1923,9 @@ CREATE TABLE domain_blocks_member (user_id BIGINT NOT NULL REFERENCES users(id) 
 
 -- remote posts and comments are rows of posts and comments (F5)
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_id TEXT;          -- NULL for local
-ALTER TABLE posts ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'local';  -- local, public, unlisted, followers
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'local';  -- local, public, unlisted, followers (migration 14, built in FRD 5:
+                                                                                     -- the check posts_audience NOT VALID, and posts_public (user_id, id DESC)
+                                                                                     -- WHERE audience = 'public' AND hidden_at IS NULL for the public pages)
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 CREATE UNIQUE INDEX posts_ap_id ON posts (ap_id) WHERE ap_id IS NOT NULL;
 CREATE INDEX posts_local ON posts (id DESC) WHERE ap_id IS NULL;
@@ -1947,6 +2083,16 @@ data: blob:` stays as it is and no visitor's address reaches another server. Fil
 daily `pg_dump` backup, which keeps backups small; losing them costs only a refetch. A domain with
 `reject_media` has its pictures shown as links.
 
+As built (FRD 5), the other direction, Flowa's own pictures for other servers and for the public pages:
+`GET /users/{name}/avatar.{jpg,png}` and `GET /users/{name}/posts/{id}/picture.{jpg,png}`. Each statement asks
+for the picture by the member's name, and the post's id with it, under the same conditions as the documents
+(the member shown, the post Public, not hidden, not a milestone), so no other picture can be reached through
+them, whatever name, id or extension is tried; the wrong extension is the 404 too. The bytes are the stored
+picture, which `cleanImage` already made again; found answers are kept three minutes (`public, max-age=180`,
+with an `ETag`), because a picture withdrawn by an opt-out or a hide should leave caches soon, and the avatar's
+`?v=` changes with the picture. The app's own `GET /api/users/{id}/avatar` and `GET /api/previews/{file}` keep
+their session.
+
 ## 10. Administration, with Mastodon as the reference
 
 Mastodon's admin features read as a checklist. Adopt: built as Mastodon has it. Adapt: built in
@@ -2031,6 +2177,27 @@ keyword filters.
   statuses", and what happens when the address comes back is in its code, which could not be
   opened), and the page says so before the button sends anything.
 - **Audience per post:** Public or This server, defaulting to Public for members who opted in.
+- **As built (FRD 5), the switch:** the card's switch is now F2's "Share my profile and Public posts beyond this
+  server", and the server's sentence says what this version does (found by the handle; the profile and the
+  posts marked Public read by anyone, on other servers or in a browser, without signing in; nobody can follow
+  yet and nothing is sent), with a link to the member's public page once on. The composer's sentence under
+  Public says the same ("Anyone can read it, on other servers or in a browser, without signing in. It is not
+  sent to anyone.").
+- **As built (FRD 5):** `posts.audience` (migration 14), `local` (This server) for every post there was and
+  for every post made outside a mode that federates; the check allows the four audiences of 9.1 and is added
+  `NOT VALID`, so no row is read to add it. The composer shows "Who can read it", a labelled list with Public
+  first and chosen, and This server, only where the server federates, the member has opted in (or is the owner
+  of a single-profile instance with `FLOWA_FEDERATE=on`) and federation is not refused; its labels and the
+  sentence under it are the server's (`fedView`'s `audiences`). The server never gives Public by a default:
+  a post that names no audience is This server, so a page from before audiences cannot publish by leaving the
+  field out; Public is refused with the reason to a member who has not opted in and while federation is
+  refused; outside a mode that federates the field is ignored like any unknown field. The author sees "Public"
+  or "This server" beside the post's time; nobody else's answer carries the audience, and outside a mode that
+  federates no answer does. Milestone posts are This server (F13). Posts are not edited (1.2), so the
+  audience is decided once: a Public post that another server may have read is not made private by a change
+  of a column, and taking it back is deleting it, which FWR's Delete then sends where it went. Comments have
+  no audience of their own: section 14.5 sends comments on Public posts only, and comments are not on the
+  public pages of this version (FWR serves them as Notes).
 - **Following:** a Follow button on profiles (local and remote); "people elsewhere": a search box
   that takes a handle (`@bo@social.example`) or a profile URL only, resolves it by WebFinger, and
   shows the profile with its public posts from the outbox's first page. No full-text search. A
@@ -2059,7 +2226,8 @@ keyword filters.
   approve-by-hand off, audience Public only after opting in.
 - **A signed-out visitor from another server** who opens `https://flowa.example.org/users/ana/posts/812`
   in a browser sees the post (text, picture, chips as text, the author) in a small page with "Open in
-  Flowa"; for a This server post or a non-federating member, a 404 page. In local mode, as today.
+  Flowa"; for a This server post or a non-federating member, a 404 page. In local mode, as today. Built in
+  FRD 5 (5.6, "As built").
 
 ## 12. Budgets
 
@@ -2130,9 +2298,9 @@ changes no running instance.
 - The admin dashboard gains a federation tile (queued, oldest undelivered, delivered and failed in 24
   hours, hosts open or unavailable) and a page per host with a retry button and the last errors.
 - As built (FRD 4): the dashboard's mode line says, in a mode that federates, the origin, whether it is
-  "not announced yet" (so it can still change) or since when it is frozen (4.3), and that this version
-  answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents,
-  no inbox, nothing is delivered; or why federation is refused. `/healthz` is unchanged until the queues exist.
+  "not announced yet" (so it can still change) or since when it is frozen (4.3), and what this version
+  does (since FRD 5 the sentence of 4.1's "As built (FRD 5)": discovery, profiles and Public posts can be read,
+  no inbox, nothing delivered); or why federation is refused. `/healthz` is unchanged until the queues exist.
 
 ### 14.3 Order of pull requests
 

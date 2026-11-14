@@ -1,6 +1,14 @@
 # Routes a mode that federates adds to those of its mode (testdata/routes-local.txt, and
 # testdata/routes-single.txt in single mode with FLOWA_FEDERATE=on): discovery, docs/federation.md 5.3 and
-# 5.4. TestDBFederatedRoutes holds the table to it.
+# 5.4; the actors, the public pages and their pictures, 5.5, 5.6, 6.5 and 9.4. TestDBFederatedRoutes holds
+# the table to it.
 GET /.well-known/nodeinfo
 GET /.well-known/webfinger
+GET /actor
 GET /nodeinfo/2.1
+GET /users/{name}
+GET /users/{name}/avatar.jpg
+GET /users/{name}/avatar.png
+GET /users/{name}/posts/{id}
+GET /users/{name}/posts/{id}/picture.jpg
+GET /users/{name}/posts/{id}/picture.png

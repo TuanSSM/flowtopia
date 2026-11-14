@@ -2755,6 +2755,7 @@ func TestDBOneConnection(t *testing.T) {
 
 	within(200, ana, "PUT", "/api/me", map[string]any{"bio": "one connection"})
 	p := num(within(200, ana, "POST", "/api/posts", map[string]any{"body": "a post"})["posts"].([]any)[0].(map[string]any)["id"])
+	pm := num(within(200, ana, "POST", "/api/posts", map[string]any{"body": "a post that tells @boss"})["posts"].([]any)[0].(map[string]any)["id"]) // told after the lookup's rows close
 	within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil)
 	within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil)
 	c := id(within(200, bo, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "a comment"}), "comment")
@@ -2788,6 +2789,8 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, admin, "GET", "/api/admin/instance", nil)
 	within(200, ana, "GET", "/api/instance", nil)
 	within(200, "", "GET", "/api/about", nil)
+	// Open sign-up: the insert runs in a transaction that holds the name's lock (nameLockSQL).
+	within(200, "", "POST", "/api/signup", map[string]any{"username": "opens", "password": "a fine long password"})
 	// Sign-up by approval: the setting, a request (its count and insert run in one transaction), the
 	// list, an approval and a decline.
 	cur := within(200, admin, "GET", "/api/admin/instance", nil)
@@ -2812,6 +2815,7 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, ana, "DELETE", fmt.Sprintf("/api/comments/%d", r), nil)
 	within(200, bo, "DELETE", fmt.Sprintf("/api/comments/%d", c), nil)
 	within(200, ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
+	within(200, ana, "DELETE", fmt.Sprintf("/api/posts/%d", pm), nil)
 	e.a.db.SetMaxOpenConns(8)
 	if e.count(`SELECT count(*) FROM users WHERE id = $1`, goneID) != 0 || e.count(`SELECT count(*) FROM posts WHERE user_id = $1`, anaID) != 0 ||
 		e.count(`SELECT count(*) FROM users WHERE username = 'asks'`) != 1 || e.count(`SELECT count(*) FROM join_requests`) != 0 {
@@ -2846,6 +2850,89 @@ func TestDBOneConnection(t *testing.T) {
 	s.a.db.SetMaxOpenConns(8)
 	if s.count(`SELECT count(*) FROM users WHERE role = 'admin' AND owner`) != 1 {
 		t.Fatal("the sole member was not made the admin and the owner on one connection")
+	}
+
+	// The public addresses of a mode that federates (FRD 5), with the skill names to read from the database
+	// (an empty cache), for a post with a chip and a combo: each answers on one connection, so none holds a
+	// connection while it asks for another.
+	f := newPubFixture(t)
+	asked := func(x *tenv, path, accept string, want int) {
+		t.Helper()
+		x.a.namesMu.Lock()
+		x.a.names = nil
+		x.a.namesMu.Unlock()
+		at := make(chan int, 1)
+		go func() { at <- pubAsk(x, "GET", path, accept).Code }()
+		select {
+		case code := <-at:
+			if code != want {
+				t.Errorf("GET %s (%q) on one connection: %d, want %d", path, accept, code, want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("GET %s (%q) did not answer in 10 s on one connection: it holds a connection while it asks for another", path, accept)
+		}
+	}
+	f.e.a.db.SetMaxOpenConns(1)
+	for _, accept := range []string{browser, apAccept} {
+		asked(f.e, "/users/ana", accept, 200)
+		asked(f.e, fmt.Sprintf("/users/ana/posts/%d", f.pub), accept, 200)
+		asked(f.e, "/actor", accept, 200)
+	}
+	asked(f.e, "/users/ana/avatar.png", "", 200)
+	asked(f.e, fmt.Sprintf("/users/ana/posts/%d/picture.jpg", f.pub), "", 200)
+	f.e.a.db.SetMaxOpenConns(8)
+	// Single mode with FLOWA_FEDERATE=on: the page at / lists the owner's Public posts.
+	sf := newEnv(t)
+	if err := sf.fedSingleStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	sf.mustExec(`INSERT INTO posts (user_id, body, audience, data) SELECT id, 'chips', 'public', '{"tags":[{"prop":"poi","skill":"F1"}],"combo":{"id":"c","name":"C","role":"","prop":"poi","seq":["F1"],"reps":[1]}}' FROM users WHERE owner`)
+	sf.h = sf.a.routes(staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"}))
+	sf.a.dropVisitorPage()
+	sf.a.db.SetMaxOpenConns(1)
+	asked(sf, "/", "", 200)
+	sf.a.db.SetMaxOpenConns(8)
+}
+
+// The public pages under load at the real pool size: 40 requests at once, at a cold names cache, for a
+// profile whose post has a chip and a combo, as pages and as documents. Every one is answered, within a
+// bound the requests carry as their context, so a pool held up would show as failed answers, not a hang.
+func TestDBPublicPool(t *testing.T) {
+	f := newPubFixture(t)
+	e := f.e
+	e.a.db.SetMaxOpenConns(8) // as openDB sets it
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	e.a.namesMu.Lock()
+	e.a.names = nil
+	e.a.namesMu.Unlock()
+	paths := []string{"/users/ana", fmt.Sprintf("/users/ana/posts/%d", f.pub)}
+	codes := make([]int, 40)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Go(func() {
+			r := httptest.NewRequest("GET", paths[i%2], nil).WithContext(ctx)
+			r.RemoteAddr = "198.51.100.20:4000"
+			r.Header.Set("Accept", []string{browser, apAccept}[(i/2)%2])
+			w := httptest.NewRecorder()
+			<-start
+			e.h.ServeHTTP(w, r)
+			codes[i] = w.Code
+		})
+	}
+	close(start)
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		<-finished // the requests carry ctx: once it ends every query returns, and so does every request
+	}
+	for i, c := range codes {
+		if c != 200 {
+			t.Errorf("request %d (%s): %d", i, paths[i%2], c)
+		}
 	}
 }
 
@@ -3590,6 +3677,38 @@ func TestDBQueryPlans(t *testing.T) {
 		{"the followers of a member", followersSQL, []any{followed, maxFollowList}, 600, ""},
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
 		{"the counts of a member who follows 500", followCountsSQL, []any{viewer}, 1500, ""},
+	})
+	// The public face (migration 14, FRD 5): two members opted in, a third of 600 more posts of one of them
+	// Public, some hidden, 70,000 posts in all, 2,000 retired names and 500 keys. Each answer is one statement on an index: the gate on the unique username, the actor's
+	// row and key by their keys, a page of Public posts through posts_public, a post through its key.
+	var pubPost int64
+	for _, q := range []string{
+		`UPDATE users SET federates = true WHERE id IN (7, 9)`,
+		`INSERT INTO retired_usernames (username) SELECT 'gone' || g FROM generate_series(1, 2000) g`,
+		`INSERT INTO ap_keys (user_id, key_id, public_key, private_sealed) SELECT g, '/users/m' || g || '#main-key', 'pem', 'v1.x' FROM generate_series(1, 500) g`,
+		`INSERT INTO posts (user_id, body, audience, hidden_at) SELECT 7, 'mine ' || g, CASE WHEN g % 3 = 0 THEN 'public' ELSE 'local' END, CASE WHEN g % 41 = 0 THEN now() END FROM generate_series(1, 600) g`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	if err := db.QueryRow(`SELECT max(id) FROM posts WHERE user_id = 7 AND audience = 'public' AND hidden_at IS NULL`).Scan(&pubPost); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM posts WHERE user_id = 7 AND audience = 'public'`) < pageSize {
+		t.Fatal("too few Public posts to page")
+	}
+	plans([]planCase{
+		{"public: the gate of an actor", actorGateSQL, []any{"m7", false}, 10, ""},
+		{"public: the gate of a name nobody has", actorGateSQL, []any{"nobody", false}, 10, ""},
+		{"public: an actor document", actorDocSQL, []any{7}, 10, ""},
+		{"public: a profile page", profilePageSQL, []any{"m7", false, 0, pubPage + 1}, 150, ""},
+		{"public: a profile page, older posts", profilePageSQL, []any{"m7", false, pubPost, pubPage + 1}, 150, ""},
+		{"public: the page of a member not shown", profilePageSQL, []any{"m8", false, 0, pubPage + 1}, 10, ""},
+		{"public: a post", publicPostSQL, []any{"m7", false, pubPost}, 10, ""},
+		{"public: a post's picture", postPictureSQL, []any{"m7", false, pubPost}, 10, ""},
+		{"public: a profile picture", avatarSQL, []any{"m7", false}, 10, ""},
 	})
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {
@@ -5556,12 +5675,12 @@ func TestDBFederatedStart(t *testing.T) {
 			t.Errorf("a request for %s answers %d, want %d", host, w.Code, want)
 		}
 	}
-	// What is new is discovery and nothing else: the routes are those of local mode and the three.
+	// What is new is what testdata/routes-federated.txt lists and nothing else: the routes are those of local mode and those.
 	got := slices.Sorted(slices.Values(e.a.table(staticOf(t, nil)).patterns))
 	if want := slices.Sorted(slices.Values(slices.Concat(routesFile(t, "testdata/routes-local.txt"), routesFile(t, "testdata/routes-federated.txt")))); !slices.Equal(got, want) {
-		t.Errorf("federated mode serves other routes than local mode and discovery:\n%v\n%v", got, want)
+		t.Errorf("federated mode serves other routes than local mode and routes-federated.txt:\n%v\n%v", got, want)
 	}
-	if n := strings.Count(logs.String(), discoveryOnly); n != 1 {
+	if n := strings.Count(logs.String(), fedBuiltLog); n != 1 {
 		t.Errorf("the start says what federation does %d times, want once", n)
 	}
 	// No answer, no audit row and no log line holds the secret, the private key or its sealed form.
@@ -5767,14 +5886,26 @@ func TestDBKeysGenerated(t *testing.T) {
 		}
 		return generateKey()
 	}
+	// The worker says when it is done with each request (handled): the test waits for that, not by asking
+	// the database, because a question of its own on the one connection while a key is being made would be
+	// counted above as a connection the worker holds.
+	finished := make(chan keyOwner, 3)
+	w.handled = func(o keyOwner, _ bool, _ error) { finished <- o }
 	for _, id := range []int64{cyID, cy2, cy3} {
 		if !w.requestKey(keyOwner(id)) {
 			t.Fatal("a request for a key was dropped with the queue nearly empty")
 		}
 	}
-	waitFor(t, "three keys", func() bool {
-		return e.count(`SELECT count(*) FROM ap_keys WHERE user_id IN ($1, $2, $3)`, cyID, cy2, cy3) == 3
-	})
+	for range 3 {
+		select {
+		case <-finished:
+		case <-time.After(30 * time.Second):
+			t.Fatal("waited 30 s for the worker to finish three requests")
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM ap_keys WHERE user_id IN ($1, $2, $3)`, cyID, cy2, cy3); n != 3 {
+		t.Fatalf("%d of the three keys were made", n)
+	}
 	if most.Load() != 1 {
 		t.Errorf("%d keys were made at once, want one at a time", most.Load())
 	}
@@ -6045,7 +6176,9 @@ func TestDBOriginFrozen(t *testing.T) {
 	if err := r.fedStart(nil); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys`) == 1 })
+	// The start also asks for ana's key (she opted in), right after the instance actor's, so the number of
+	// keys passes 1 on its way to 2: the wait is for the instance actor's own key, which stays once made.
+	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys WHERE user_id IS NULL`) == 1 })
 	if n := recorded(); n != 0 {
 		t.Fatalf("making the key recorded %d rows of the origin", n)
 	}

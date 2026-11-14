@@ -177,7 +177,7 @@ is "a file that is not there is a usage error" "$code" "2"
 
 # ---- 6. the Go tests on the restored server ----
 if TEST_DATABASE_URL=$(url 55442) go test -count=1 -run DB ./... >"$work/go.log" 2>&1; then ok "the Go database tests pass against the restored server"
-else bad "the Go database tests pass against the restored server" "$(grep -E '^(--- FAIL|FAIL|panic)' "$work/go.log" | head -3 | paste -sd' ' | cut -c1-300)"; fi
+else bad "the Go database tests pass against the restored server" "$(grep -E '^(--- FAIL|FAIL|panic)|^ +[a-z_0-9]+_test\.go:[0-9]+:' "$work/go.log" | head -4 | paste -sd' ' | cut -c1-400)"; fi
 
 # ---- 7. backups from earlier versions ----
 if $keep_fixture; then

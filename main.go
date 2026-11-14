@@ -30,6 +30,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"html/template"
 	"image"
 	_ "image/gif"
@@ -104,6 +105,45 @@ var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
 
 var usernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,23}$`)
 
+/* ---------- names that are never given out again ----------
+
+A username is an identity on other servers once its actor id has gone out (docs/federation.md 4.3 and
+5.2): a remote server that stored https://flowa.example.org/users/ana would take whoever holds the name
+next for the same person. So the name of a deleted account that had opted in is retired, in every mode,
+and refused at every door an account is made by: sign-up, a request to join, approving one, and the
+ADMIN_USER account at start. The refusal says what a taken name says, and nothing about an account that
+once had it. No endpoint renames an account, so a name that has federated cannot move either (4.3).
+
+The instance's own host is taken too, in a mode that federates: usernameRE allows dots, and a member
+named like the host would be shadowed by the instance actor in WebFinger (acct:host@host is the instance
+actor, 5.3), so other servers could never find them by their handle. A member who already has that name
+keeps the account; opting in is refused to them with the reason (handlePutMe). */
+
+// retiredSQL is the condition that the name $1 is retired: one look in the primary key.
+const retiredSQL = `EXISTS (SELECT 1 FROM retired_usernames r WHERE r.username = $1)`
+
+// retireSQL retires the name of the account $1 when it had opted in or ever had a key: a key is made only
+// when a member opts in (and for the owner of a single-profile instance with FLOWA_FEDERATE=on, whose
+// opt-in is that setting and leaves no column behind) and is kept when they opt out, so it marks an
+// account whose actor id may have been seen elsewhere. It runs before the row is deleted, with it.
+const retireSQL = `INSERT INTO retired_usernames (username) SELECT u.username FROM users u
+	WHERE u.id = $1 AND (u.federates OR EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id)) ON CONFLICT DO NOTHING`
+
+// reservedName says whether name is the instance's own host in a mode that federates (fedHost), which no
+// account may take.
+func (a *app) reservedName(name string) bool { return a.fedHost != "" && name == a.fedHost }
+
+// nameLockSQL takes a lock on one username until the transaction ends. The transaction that retires a
+// name and each one that makes an account (sign-up, approving a request, ADMIN_USER) take it first, before
+// they read or write the name. Without it a sign-up could take a name that a delete was retiring: its
+// INSERT waits on the unique index for the deleting transaction, and once that commits it goes ahead with
+// the snapshot it took before, in which the name was not retired yet. Under READ COMMITTED every
+// statement takes a new snapshot when it starts, so an INSERT sent after the lock is granted sees the
+// retirement, which committed before the lock was let go. The two-number form of the key is a space of
+// its own, apart from the one-number locks elsewhere in this file; 7130654 says "a username", hashtext
+// the name (two names that hash alike only wait for each other).
+const nameLockSQL = `SELECT pg_advisory_xact_lock(7130654, hashtext($1))`
+
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
 	id BIGSERIAL PRIMARY KEY,
@@ -149,22 +189,25 @@ type app struct {
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
 	mode      instanceMode // how the instance runs (FLOWA_MODE); local unless the operator says otherwise
 	fed       *federation  // the origin, the keys and whether federation is refused; nil unless the mode federates
+	fedHost   string       // the origin's host in a mode that federates, a name no account may take (takenName); "" otherwise
 	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
 	flagCache map[string]bool
 	flagsAt   time.Time
 	instMu    sync.Mutex    // guards instCache and instAt
 	instCache *instanceInfo // what instanceCached last read; nil after a save, so the next read asks the database
 	instAt    time.Time
-	pageMu    sync.Mutex   // guards page; held while the visitor's page is made, so a flood makes it once
-	page      *visitorPage // the visitor's page of a single-profile instance as last made; nil until asked, and after a save
-	sent      *onceStore   // posts and comments that named themselves, so a repeat is not a second one
-	reqLog    *requestLog  // one line per request; see logged
-	healthMu  sync.Mutex   // guards healthAt and healthWas
-	healthAt  time.Time    // when the database was last asked for GET /healthz
-	healthWas health       // what it said then
-	nodeMu    sync.Mutex   // guards nodeUse and nodeAt
-	nodeUse   nodeUsage    // NodeInfo's counts as last read (nodeCounts)
-	nodeAt    time.Time    // when; zero until first asked
+	pageMu    sync.Mutex                // guards page; held while the visitor's page is made, so a flood makes it once
+	page      *visitorPage              // the visitor's page of a single-profile instance as last made; nil until asked, and after a save
+	sent      *onceStore                // posts and comments that named themselves, so a repeat is not a second one
+	reqLog    *requestLog               // one line per request; see logged
+	healthMu  sync.Mutex                // guards healthAt and healthWas
+	healthAt  time.Time                 // when the database was last asked for GET /healthz
+	healthWas health                    // what it said then
+	nodeMu    sync.Mutex                // guards nodeUse and nodeAt
+	nodeUse   nodeUsage                 // NodeInfo's counts as last read (nodeCounts)
+	nodeAt    time.Time                 // when; zero until first asked
+	namesMu   sync.Mutex                // guards names
+	names     map[string]skillNameCache // skill names per prop for the public pages (skillNames)
 }
 
 // buildVersion names the build. A release image has its tag compiled in (build-image.sh, with -X), and
@@ -190,9 +233,9 @@ const (
 
 // modesBuilt are the modes this version can run. A mode that is planned and not built stops the
 // start, as an unknown word does. All three are built. Federation itself is built only as far as
-// discovery: a federated instance (and a single-profile one with FLOWA_FEDERATE=on) answers WebFinger
-// and NodeInfo for the members who opted in, and has no actor documents, no inbox and delivers
-// nothing yet. The start says so in the log (discoveryOnly), and so do the admin dashboard and the
+// reading: a federated instance (and a single-profile one with FLOWA_FEDERATE=on) answers WebFinger and
+// NodeInfo and serves the actors, profiles and Public posts of the members who opted in, and has no
+// inbox and delivers nothing yet. The start says so in the log (fedBuiltLog), and so do the admin dashboard and the
 // README, so that an operator is not told more than this version does.
 var modesBuilt = map[instanceMode]bool{modeLocal: true, modeFederated: true, modeSingle: true}
 
@@ -476,6 +519,7 @@ type limits struct {
 	instance, about                             *limiter // saves of the instance information per admin; reads of the about page per address
 	visitor                                     *limiter // reads of a single-profile instance's visitor page and its picture, per address
 	discovery                                   *limiter // WebFinger and NodeInfo requests, per address, in a mode that federates
+	public                                      *limiter // reads of actor documents, public pages and their pictures, per address, in a mode that federates
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 }
 
@@ -492,6 +536,10 @@ func newLimits() limits {
 		// Another server asks WebFinger once per handle it meets and keeps the answer; 600 an hour from one
 		// address is a mention every six seconds, and stops a harvest of names by guessing (RFC 7033 9.3).
 		discovery: newLimiter(600, time.Hour),
+		// A person reading a public profile asks for the page, the profile picture and up to 20 pictures of
+		// posts; 2,400 an hour from one address is about a hundred such pages, and far more than a server
+		// that fetches each actor and post once and keeps it.
+		public: newLimiter(2400, time.Hour),
 	}
 }
 
@@ -1611,12 +1659,14 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Looked up before the password is hashed, so asking for a taken name costs no CPU. A name that
-	// waits in a request to join is taken too, so nobody can claim it while an admin decides.
+	// waits in a request to join is taken too, so nobody can claim it while an admin decides, and so is a
+	// retired name or the instance's own host (takenName), in the same words.
 	var taken bool
-	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE username = $1) OR EXISTS (SELECT 1 FROM join_requests WHERE username = $1)`, name).Scan(&taken); err != nil {
+	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE username = $1) OR EXISTS (SELECT 1 FROM join_requests WHERE username = $1) OR `+retiredSQL, name).Scan(&taken); err != nil {
 		a.serverError(w, err)
 		return
 	}
+	taken = taken || a.reservedName(name)
 	if taken {
 		a.lim.signup.addWeight(from, 1)
 		fail(w, http.StatusConflict, "That username is taken.")
@@ -1636,9 +1686,24 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// The insert checks in the same statement that no request to join waits under the name, which leaves
 	// only the moment an admin switches the setting for an account and a request to share one (see
 	// askToJoin). No row back means a request took the name: answered as a taken name.
-	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) SELECT $1, $2, $3
-		WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) RETURNING `+userCols,
-		name, display, hashPassword(in.Password)))
+	// The password is hashed before the transaction, which holds the name's lock (nameLockSQL) only for
+	// the insert.
+	hash := hashPassword(in.Password)
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var u *user
+	if _, err = tx.Exec(nameLockSQL, name); err == nil {
+		u, err = scanUser(tx.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) SELECT $1, $2, $3
+			WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) AND NOT `+retiredSQL+` RETURNING `+userCols,
+			name, display, hash))
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
 		a.lim.signup.addWeight(from, 1-tenths) // someone took the name in between: a tenth, as above
@@ -1719,7 +1784,7 @@ func (a *app) askToJoin(w http.ResponseWriter, from, name, display, pw, reason s
 	// a request share a name; Accounts says so beside the request, Approve answers 409, and the admin
 	// declines it. Closing that moment for good would need a lock on the open path too.
 	res, err := tx.Exec(`INSERT INTO join_requests (username, display_name, pw_hash, reason) SELECT $1, $2, $3, $4
-		WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`, name, display, hash, reason)
+		WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $1) AND NOT `+retiredSQL, name, display, hash, reason)
 	var pe *pq.Error
 	taken := errors.As(err, &pe) && pe.Code == "23505"
 	if err == nil {
@@ -1797,8 +1862,16 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 		return
 	}
 	defer tx.Rollback()
+	// The name's lock is taken before the request's row, in the order makeAdmin takes them (the name, then
+	// the requests under it), so the two cannot wait for each other; the name of a request never changes.
 	var name, display, hash string
-	err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username, display_name, pw_hash`, id).Scan(&name, &display, &hash)
+	err = tx.QueryRow(`SELECT username FROM join_requests WHERE id = $1`, id).Scan(&name)
+	if err == nil {
+		_, err = tx.Exec(nameLockSQL, name)
+	}
+	if err == nil {
+		err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username, display_name, pw_hash`, id).Scan(&name, &display, &hash)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, noRequest)
 		return
@@ -1808,10 +1881,12 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 		return
 	}
 	var uid int64
-	err = tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash) VALUES ($1, $2, $3) RETURNING id`, name, display, hash).Scan(&uid)
+	// A retired name, or the instance's own host, cannot become an account either; the admin is told it
+	// is taken, in the words of a name an account holds, and nothing of an account that once had it.
+	err = tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash) SELECT $1, $2, $3 WHERE NOT `+retiredSQL+` AND NOT $4 RETURNING id`, name, display, hash, a.reservedName(name)).Scan(&uid)
 	var pe *pq.Error
-	if errors.As(err, &pe) && pe.Code == "23505" {
-		fail(w, http.StatusConflict, "An account with the username @"+name+" exists now, so this request cannot become one. Decline it.")
+	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusConflict, "The username @"+name+" is taken, so this request cannot become an account. Decline it.")
 		return
 	}
 	if err == nil {
@@ -2181,6 +2256,10 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusBadRequest, "On a Flowa that is one person's own, the setting FLOWA_FEDERATE decides whether other servers can find the profile.")
 		return
 	}
+	if federates != nil && *federates && a.reservedName(u.Username) {
+		fail(w, http.StatusBadRequest, hostNameRefusal)
+		return
+	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		a.serverError(w, err)
@@ -2256,9 +2335,13 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	if fedOn && !fedWas {
 		a.fed.requestKey(keyOwner(u.ID))
 	}
+	// The actor document says the name, the bio, the picture, the props and the links: any save made it
+	// old. Whether the member is shown at all is asked on every request, so the opt-in needs no drop; it
+	// gets one anyway, so a document never outlives the choice that let it out.
+	a.fed.dropActor(keyOwner(u.ID))
 	// What the visitor's page of a single-profile instance shows changed: it is made again when next
 	// asked. The stats and the other parts the page writes by itself are not on it.
-	if in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil {
+	if in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil || federates != nil {
 		a.dropVisitorPage()
 	}
 	out := map[string]any{"user": cur}
@@ -2535,12 +2618,27 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	defer tx.Rollback()
+	// The name of an account that had opted in, whose actor id other servers may hold, is retired in the
+	// same transaction (retireSQL), before the row and its key go, in every mode: 4.3 says retired names
+	// stay retired whatever the mode, and an instance back in local mode may still hold such accounts. A
+	// delete refused below rolls it back with the rest. The name's lock is held until the commit, so no
+	// account can be made under the name in between (nameLockSQL).
+	if _, err := tx.Exec(nameLockSQL, name); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if _, err := tx.Exec(retireSQL, id); err != nil {
+		a.serverError(w, err)
+		return
+	}
 	res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
 	if err == nil {
 		if n, _ := res.RowsAffected(); n == 0 {
 			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
 			return
 		}
+	}
+	if err == nil {
 		err = a.audit(tx, u.ID, "delete_user", "user", id, 0, "", map[string]any{"username": name})
 	}
 	if err == nil {
@@ -3115,6 +3213,9 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
+	// A hide, a restore or a suspension changes what a single-profile instance's page at / lists
+	// (federation.md 4.2): it is made again when next asked.
+	a.dropVisitorPage()
 	a.notify(owner, u.ID, "moderation", 0, msg)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -5624,7 +5725,7 @@ func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 			a.serverError(w, err)
 			return
 		}
-		out["federation"] = map[string]string{"origin": a.fed.origin.url, "refused": a.fed.refusal(), "built": discoveryBuilt, "announced": announced}
+		out["federation"] = map[string]string{"origin": a.fed.origin.url, "refused": a.fed.refusal(), "built": fedBuilt, "announced": announced}
 	}
 	var users, mods, admins, active7, active30, open int
 	err := a.db.QueryRow(dashTotalsSQL).Scan(&users, &mods, &admins)
@@ -5719,23 +5820,15 @@ func (a *app) audit(x execer, actor int64, action, kind string, targetID, target
 
 The foundation of federation (docs/federation.md, F7, 4.3, 5.1 and 5.7). All of it runs only in a mode
 that federates: federated mode, or single mode with FLOWA_FEDERATE=on (modeFederates). What talks to
-another server is built as far as discovery (WebFinger and NodeInfo, further down); there is no actor
-document, no inbox and nothing is delivered yet. */
-
-// discoveryOnly is what the start logs once in a mode that federates, and what the README, the design
-// note and the admin dashboard say too: what this version of federation does, and what it does not.
-const discoveryOnly = "federation: " + discoveryBuilt
-
-// discoveryBuilt is the same sentence for the admin dashboard, which shows it as the server sends it
-// (built), so the page and the log cannot drift apart.
-const discoveryBuilt = "this version answers discovery only (WebFinger and NodeInfo, for the members who opted in): no actor documents, no inbox, nothing is delivered"
+another server is built as far as reading: discovery (WebFinger and NodeInfo) and the actor documents
+and public pages, further down; there is no inbox and nothing is delivered yet. */
 
 // fedMemberBuilt is what a member is told in Settings about what sharing does in this version, as the
-// server sends it (fedView), and fedSwitch the switch's label: other servers can find the handle, and
-// nothing more yet.
+// server sends it (fedView), and fedSwitch the switch's label, the opt-in of F2 in the note's words: other
+// servers can find the handle and read the profile and the Public posts, and nobody can follow yet.
 const (
-	fedSwitch      = "Let other servers find me by my handle"
-	fedMemberBuilt = "In this version that is all they learn: that you are here, by your handle. Nothing you post is sent to them, and your profile is not shown to them yet. Practice, progress, notes, stats and badges never leave this server."
+	fedSwitch      = "Share my profile and Public posts beyond this server"
+	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. Nobody there can follow you yet, and nothing is sent to them. Practice, progress, notes, stats and badges never leave this server."
 	fedUnavailable = "Sharing beyond this server is not available at the moment. Other servers cannot find anyone here."
 )
 
@@ -6093,6 +6186,8 @@ type federation struct {
 	mu      sync.Mutex
 	refused string // why this instance federates nothing although its mode federates; "" when it may
 	cache   map[keyOwner]cachedKey
+	docs    map[keyOwner]keptDoc // actor documents as made (actorDoc), by owner
+	docsGen uint64               // moves at every dropActor, so a document made meanwhile is not kept
 
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
@@ -6356,6 +6451,7 @@ func (f *federation) startWorker() {
 					log.Printf("keys: the key of %s was not made: %v", o, err)
 				case made:
 					log.Printf("keys: made the key of %s in %d ms", o, time.Since(began).Milliseconds())
+					f.dropActor(o) // a document is not kept without a key, but one may be on its way
 				}
 				if f.handled != nil {
 					f.handled(o, made, err)
@@ -6534,6 +6630,7 @@ func (f *federation) rotateKeys(ctx context.Context) (replaced, skipped int, err
 		f.mu.Lock()
 		delete(f.cache, r.owner)
 		f.mu.Unlock()
+		f.dropActor(r.owner) // its document names the key
 	}
 	return replaced, skipped, nil
 }
@@ -6594,9 +6691,8 @@ documents, which say what software runs here and how many people use it. WebFing
 member who opted in (users.federates, F2), or for the owner of a single-profile instance with
 FLOWA_FEDERATE=on, whose opt-in that setting is.
 
-The ids WebFinger gives out (/users/ana, /actor) are not served by this version: actor documents are
-the next item (FRD 5). A server that follows the self link therefore gets the app's ordinary "not
-found" until then, which is what the start log, the README and the dashboard say.
+The ids WebFinger gives out (/users/ana, /actor) are the actor documents further down (FRD 5), and the
+same address is the member's public page, which the profile-page link names.
 
 All three answer every request with Access-Control-Allow-Origin: * (RFC 7033 section 5 asks it of
 WebFinger, and the NodeInfo documents are as public), errors included, and sit behind one allowance
@@ -6605,17 +6701,18 @@ are bounded and cannot lock anyone out of the app. While federation is refused (
 secret that does not open the keys: 4.3) every answer is the same 404 as an unknown name. */
 
 const (
-	jrdType       = "application/jrd+json" // RFC 7033 section 10.2
-	activityType  = "application/activity+json"
-	nodeInfoRel   = "http://nodeinfo.diaspora.software/ns/schema/2.1"
-	nodeInfoType  = `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"`
-	flowaRepo     = "https://github.com/TuanSSM/flowtopia"
-	resourceMax   = 300  // bytes of a WebFinger resource once decoded; an acct handle is far shorter
-	wfQueryMax    = 2048 // bytes of the whole query, which may also name several rel values
-	discoveryKeep = "public, max-age=300"
-	notFoundKeep  = "public, max-age=60"
-	nodeCountsAge = 5 * time.Minute
-	notHere       = "Nothing here goes by that name."
+	jrdType        = "application/jrd+json" // RFC 7033 section 10.2
+	activityType   = "application/activity+json"
+	nodeInfoRel    = "http://nodeinfo.diaspora.software/ns/schema/2.1"
+	profilePageRel = "http://webfinger.net/rel/profile-page"
+	nodeInfoType   = `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"`
+	flowaRepo      = "https://github.com/TuanSSM/flowtopia"
+	resourceMax    = 300  // bytes of a WebFinger resource once decoded; an acct handle is far shorter
+	wfQueryMax     = 2048 // bytes of the whole query, which may also name several rel values
+	discoveryKeep  = "public, max-age=300"
+	notFoundKeep   = "public, max-age=60"
+	nodeCountsAge  = 5 * time.Minute
+	notHere        = "Nothing here goes by that name."
 )
 
 // discoveryPaths are the three addresses, for discoveryMethods.
@@ -6673,7 +6770,7 @@ var uriSchemeRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 //   - acct:host@host, the instance actor (the form other servers use for an instance's own actor). It is
 //     decided before any member is looked up, so it always wins: usernameRE allows dots, and a member
 //     whose username is the origin's host (possible when the host has 3 to 24 characters) cannot be
-//     found by handle, only by the URL form; the retired names of FRD 5 can reserve that name.
+//     found by handle, only by the URL form. No new account may take that name (reservedName).
 //
 // What is refused as malformed: an empty value, one over resourceMax bytes, a space, a control or a
 // non-ASCII byte (a URI is ASCII: RFC 3986 2), a handle with no @ or more than one after the leading one,
@@ -6831,27 +6928,60 @@ func discoveryWrite(w http.ResponseWriter, ctype string, v any) {
 	w.Write(b)
 }
 
-// discoveryMethods answers a request to one of the discovery addresses with a method other than GET or
-// HEAD with 405, Allow and the CORS header, before guard would answer it as a write with 403 or 415. It
-// passes everything else on, and is not in the chain at all in a mode that does not federate (routes).
-func (a *app) discoveryMethods(next http.Handler) http.Handler {
+// fedMethods answers a request to one of the discovery addresses, or of the public addresses (the actors,
+// the public pages and their pictures), with a method other than GET or HEAD with 405 and Allow, before
+// guard would answer it as a write with 403 or 415: discovery with the CORS header, the public addresses
+// counted against their allowance first, as a GET is. It passes everything else on, and is not in the
+// chain at all in a mode that does not federate (routes).
+//
+// The inboxes the actor documents name (/users/{name}/inbox and /actor/inbox) are not built yet (FWR 1),
+// and answer every method with 405 and an empty Allow, counted against the public allowance: RFC 9110
+// 15.5.6 makes 405 the answer for a method the target does not support, and 10.2.1 an empty Allow the way
+// a resource temporarily disabled by configuration says it takes none. A 4xx tells a sender not to keep
+// trying, so a Follow pressed on Mastodon now is not retried for days and stays requested there. 404
+// would say the address does not exist, which the actor contradicts, and 501 is for a method the server
+// supports nowhere (15.6.2), while it takes POST elsewhere.
+func (a *app) fedMethods(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && discoveryPaths[r.URL.Path] {
+		if inboxPath(r.URL.Path) {
+			if !a.publicAllowed(w, r) {
+				return
+			}
+			h := w.Header()
+			h.Set("Allow", "")
+			h.Set("Cache-Control", "no-store")
+			http.Error(w, "This server does not take deliveries yet.", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch {
+		case discoveryPaths[r.URL.Path]:
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", "*")
 			h.Set("Allow", "GET, HEAD")
 			discoveryFail(w, http.StatusMethodNotAllowed, "Only GET and HEAD are answered here.")
-			return
+		case publicPaths(r.URL.Path):
+			if !a.publicAllowed(w, r) {
+				return
+			}
+			h := w.Header()
+			h.Set("Allow", "GET, HEAD")
+			h.Set("Cache-Control", "no-store")
+			http.Error(w, "Only GET and HEAD are answered here.", http.StatusMethodNotAllowed)
+		default:
+			next.ServeHTTP(w, r)
 		}
-		next.ServeHTTP(w, r)
 	})
 }
 
 // handleWebFinger answers GET /.well-known/webfinger (RFC 7033; docs/federation.md 5.3). The resource
 // must be there exactly once (400 otherwise, RFC 7033 4.2); rel, any number of times, keeps only the
 // links of those relations (4.3), compared as plain strings (4.4.4.1). A member is one indexed lookup;
-// the instance actor none. The answer's links are the self link Mastodon needs, to the actor id; the
-// profile page link of the note's example waits for the page itself (FRD 5), and the alias is the id.
+// the instance actor none. The answer's links are the self link Mastodon needs, to the actor id, and the
+// profile page at the same address (handleActor answers a browser with it); the alias is the id.
 func (a *app) handleWebFinger(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if !a.discoveryAllowed(w, r) {
@@ -6913,9 +7043,11 @@ func (a *app) handleWebFinger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	links := []jrdLink{{Rel: "self", Type: activityType, Href: id}}
-	if rels, asked := q["rel"]; asked && !slices.Contains(rels, "self") {
-		links = links[:0]
+	// The self link Mastodon needs, and the profile page (the same address, answered as HTML to a browser,
+	// 5.6), which the SWICG report lists among the common links.
+	links := []jrdLink{{Rel: "self", Type: activityType, Href: id}, {Rel: profilePageRel, Type: "text/html", Href: id}}
+	if rels, asked := q["rel"]; asked {
+		links = slices.DeleteFunc(links, func(l jrdLink) bool { return !slices.Contains(rels, l.Rel) })
 	}
 	discoveryWrite(w, jrdType, jrd{Subject: subject, Aliases: []string{id}, Links: links})
 }
@@ -7037,7 +7169,7 @@ func (a *app) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 				Services:          nodeServices{Inbound: []string{}, Outbound: []string{}},
 				OpenRegistrations: open,
 				Usage:             use,
-				Metadata:          nodeMetadata{Mode: string(a.mode), FederationBuilt: []string{"webfinger", "nodeinfo"}},
+				Metadata:          nodeMetadata{Mode: string(a.mode), FederationBuilt: fedBuiltParts},
 			})
 			return
 		}
@@ -7050,6 +7182,10 @@ func (a *app) handleNodeInfo(w http.ResponseWriter, r *http.Request) {
 // (docs/federation.md, finding 11): Flowa allows such a name, Mastodon's own usernames may have a dot
 // or a dash only inside, and a handle Mastodon cannot read cannot be mentioned or found from there.
 const handleWarning = "Your name ends with a dot or a dash. Mastodon allows those only inside a name, so people on Mastodon may not be able to mention you or find you by your handle. Names cannot be changed here."
+
+// hostNameRefusal is said to a member whose username is the instance's own host when they opt in: other
+// servers read acct:host@host as the instance itself (5.3), so they could never find the member by it.
+const hostNameRefusal = "Your username is this server's own name, which other servers read as the server itself, so they could not find you by it. Names cannot be changed here."
 
 // fedView is what /api/me and PUT /api/me tell a signed-in member about sharing beyond this server, in
 // a mode that federates; the callers leave it out otherwise, so the page shows nothing of it. In single
@@ -7073,7 +7209,1294 @@ func (a *app) fedView(u *user, optedIn bool) map[string]any {
 	if strings.HasSuffix(u.Username, ".") || strings.HasSuffix(u.Username, "-") {
 		v["warning"] = handleWarning
 	}
+	// The composer offers the audience only to a member who may post publicly: opted in (or the owner of a
+	// single-profile instance), while federation is not refused. Its words are the server's, as the card's;
+	// the card then links the member's public page.
+	if v["optedIn"] == true && v["unavailable"] == nil {
+		v["audiences"] = audienceChoices
+		v["profile"] = "/users/" + u.Username // the public page people read (handleActor)
+	}
 	return v
+}
+
+// audienceChoice is one audience as the composer offers it, Public first (chosen at first: federation.md 11).
+type audienceChoice struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+	Hint  string `json:"hint"`
+}
+
+var audienceChoices = []audienceChoice{
+	{audPublic, "Public", audPublicHint},
+	{audLocal, "This server", "Only members of this Flowa, signed in."},
+}
+
+// audPublicHint says what Public means in this version.
+const audPublicHint = "Anyone can read it, on other servers or in a browser, without signing in. It is not sent to anyone."
+
+/* ---------- federation: actor documents and public pages ----------
+
+What another server, or a person in a browser, may read of this instance (docs/federation.md, F16, 5.2,
+5.5, 5.6, 6.5, 6.7, 9.4 and 11): the profile and the Public posts of a member who opted in, the instance
+actor, and the pictures they show. Registered only in a mode that federates (table), so local mode and
+single mode without FLOWA_FEDERATE have none of these addresses.
+
+  - GET /users/{name} and GET /users/{name}/posts/{id} answer the ActivityStreams document (the actor of
+    5.5, the Note of 6.5) to a request whose Accept prefers it, and a small HTML page the server writes to
+    anyone else (5.6), with Vary: Accept on every answer, errors included.
+  - GET /actor is the instance actor, the same way.
+  - GET /users/{name}/avatar.{jpg,png} and GET /users/{name}/posts/{id}/picture.{jpg,png} are the pictures
+    those name: the member's profile picture and a Public post's picture, and nothing else (9.4).
+
+Who is shown: a member who opted in (users.federates), or the owner of a single-profile instance with
+FLOWA_FEDERATE=on, who is not suspended. What is shown of them: a post whose audience is Public, that is
+not hidden and is not a milestone (F13). Everything else (a This server post, a hidden one, one of a member
+who has not opted in or opted out since, who is suspended or deleted, and an id or a name nobody has) gets
+one 404, the same bytes and headers for all of them, in each representation; while federation is refused
+every answer is that 404 too. The one other answer is 410 with a Tombstone, for the actor of a member who
+deleted the account after opting in (retired_usernames; ActivityPub 6.4), so other servers stop asking.
+
+Every answer costs one statement on an index (TestDBQueryPlans) and is counted against the address's
+allowance (limits.public) before any database work, apart from every allowance members use. The actor
+documents are kept in memory per member (federation.docs) and dropped when the profile, the picture, the
+key or the opt-in changes. Nothing here reads a cookie or a session. */
+
+const (
+	asContext        = "https://www.w3.org/ns/activitystreams"
+	secContext       = "https://w3id.org/security/v1"
+	publicCollection = "https://www.w3.org/ns/activitystreams#Public" // the public collection, sent only in this form (6.7)
+	apKeep           = "public, max-age=180"                          // 5.6; opting out reaches other servers' caches within three minutes
+	acceptMax        = 4096                                           // bytes of Accept read; a longer header is read as none
+	acceptRange      = 64                                             // media ranges read; more is read as no header
+	pubPage          = 20                                             // Public posts on a page of a profile
+	docsMax          = 1000                                           // actor documents kept in memory; all are dropped when it is full
+	docsAge          = 10 * time.Minute                               // a kept document is made again after this, as a net for a change made by hand
+)
+
+// fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
+// dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
+// metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser; it has no inbox, so nobody can follow anyone yet, and nothing is delivered"
+
+const fedBuiltLog = "federation: " + fedBuilt
+
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes"}
+
+/* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
+HTML page. */
+
+// mediaRange is one element of Accept: a type, a subtype, the profile parameter when there is one, and
+// its weight in thousandths.
+type mediaRange struct {
+	typ, sub string
+	profile  []string // the URIs of a profile parameter, split on spaces; nil when there is none
+	q        int      // 0 to 1000
+}
+
+// parseAccept reads the Accept headers of a request (several lines are one list, RFC 9110 5.3) into
+// media ranges. An element that does not parse is skipped, as RFC 9110 lets a recipient ignore what it
+// cannot read; a header longer than acceptMax bytes or with more than acceptRange elements is read as no
+// header at all, so a hostile one costs a bounded amount of work.
+func parseAccept(vals []string) []mediaRange {
+	n := 0
+	for _, v := range vals {
+		n += len(v) + 1
+	}
+	if n > acceptMax {
+		return nil
+	}
+	var out []mediaRange
+	for _, el := range splitQuoted(strings.Join(vals, ","), ',') {
+		if len(out) == acceptRange {
+			return nil
+		}
+		if m, ok := parseMediaRange(el); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// splitQuoted splits s at sep outside quoted strings (a quoted profile may hold the separator), honouring
+// the backslash escapes of a quoted string (RFC 9110 5.6.4).
+func splitQuoted(s string, sep byte) []string {
+	var parts []string
+	start, quoted := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quoted && c == '\\':
+			i++
+		case c == '"':
+			quoted = !quoted
+		case !quoted && c == sep:
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// isToken says whether s is an RFC 9110 token (5.6.2).
+func isToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= ' ' || c >= 0x7f || strings.IndexByte(`"(),/:;<=>?@[\]{}`, c) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// parseMediaRange reads one element: type/subtype, then parameters in any order and case. A parameter
+// value is a token or a quoted string. The weight q is 0 to 1 with at most three decimals (RFC 9110
+// 12.4.2); what follows it is ignored. Only the profile parameter is kept: it is the one that says
+// whether application/ld+json means ActivityStreams.
+func parseMediaRange(el string) (mediaRange, bool) {
+	parts := splitQuoted(el, ';')
+	full := strings.ToLower(strings.TrimSpace(parts[0]))
+	typ, sub, ok := strings.Cut(full, "/")
+	if !ok || !isToken(typ) || !isToken(sub) || (typ == "*" && sub != "*") {
+		return mediaRange{}, false
+	}
+	m := mediaRange{typ: typ, sub: sub, q: 1000}
+	for _, p := range parts[1:] {
+		name, val, ok := strings.Cut(strings.TrimSpace(p), "=")
+		name = strings.ToLower(strings.TrimSpace(name))
+		val = strings.TrimSpace(val)
+		if !ok || !isToken(name) {
+			return mediaRange{}, false
+		}
+		if strings.HasPrefix(val, `"`) {
+			if len(val) < 2 || !strings.HasSuffix(val, `"`) || strings.HasSuffix(val, `\"`) && !strings.HasSuffix(val, `\\"`) {
+				return mediaRange{}, false
+			}
+			var b strings.Builder
+			for i := 1; i < len(val)-1; i++ {
+				if val[i] == '\\' {
+					i++
+				}
+				b.WriteByte(val[i])
+			}
+			val = b.String()
+		} else if !isToken(val) {
+			return mediaRange{}, false
+		}
+		if name == "q" {
+			q, ok := parseQ(val)
+			if !ok {
+				return mediaRange{}, false
+			}
+			m.q = q
+			break // the parameters after the weight are accept extensions, not the media type's
+		}
+		if name == "profile" {
+			m.profile = strings.Fields(val)
+		}
+	}
+	return m, true
+}
+
+// parseQ reads a weight: "0" to "1", with at most three decimals, "1" only as 1.000.
+func parseQ(v string) (int, bool) {
+	whole, frac, _ := strings.Cut(v, ".")
+	if (whole != "0" && whole != "1") || len(frac) > 3 || strings.Trim(frac, "0123456789") != "" {
+		return 0, false
+	}
+	n, _ := strconv.Atoi((frac + "000")[:3])
+	if whole == "1" {
+		if n != 0 {
+			return 0, false
+		}
+		return 1000, true
+	}
+	return n, true
+}
+
+// weigh is the weight a list gives one offered type, and how specific the range that gave it was (3: the
+// type with its profile, 2: the type, 1: type/*, 0: */*): the most specific range that matches decides
+// (RFC 9110 12.5.1). For application/ld+json (asProfile) a range with a profile matches only when the
+// profile names ActivityStreams, since ld+json alone says nothing of the vocabulary; the parameter is a
+// list of URIs, and any of them may be it. For any other type a profile changes nothing:
+// application/activity+json is ActivityStreams whatever parameter follows it, and some servers send it
+// with the ActivityStreams profile too.
+func weigh(ranges []mediaRange, typ, sub string, asProfile bool) (q, spec int) {
+	spec = -1
+	for _, m := range ranges {
+		s := -1
+		switch {
+		case m.typ == typ && m.sub == sub && asProfile && m.profile != nil:
+			if slices.Contains(m.profile, asContext) {
+				s = 3
+			}
+		case m.typ == typ && m.sub == sub:
+			s = 2
+		case m.typ == typ && m.sub == "*":
+			s = 1
+		case m.typ == "*":
+			s = 0
+		}
+		if s > spec || s == spec && s >= 0 && m.q > q {
+			q, spec = m.q, s
+		}
+	}
+	if spec < 0 {
+		return 0, -1
+	}
+	return q, spec
+}
+
+// wantsActivity decides the representation of a negotiated address: the ActivityStreams document when the
+// request's Accept weighs application/activity+json or application/ld+json (with no profile, or one that
+// names ActivityStreams) above zero and above text/html, or the same with a more specific range; the HTML
+// page otherwise: with no Accept, with */* alone, for a browser's header, and when the header accepts
+// neither (RFC 9110 12.5.1 lets a server disregard Accept rather than answer 406, and a person who gets a
+// page reads why). ActivityPub 3.2: a server MUST answer the ld+json profile and SHOULD answer
+// activity+json with the object.
+func wantsActivity(h http.Header) bool {
+	ranges := parseAccept(h.Values("Accept"))
+	if len(ranges) == 0 {
+		return false
+	}
+	qa, sa := weigh(ranges, "application", "activity+json", false)
+	if q, s := weigh(ranges, "application", "ld+json", true); q > qa || q == qa && s > sa {
+		qa, sa = q, s
+	}
+	qh, sh := weigh(ranges, "text", "html", false)
+	return qa > 0 && (qa > qh || qa == qh && sa > sh)
+}
+
+/* The documents. Each is a typed struct written by encoding/json without HTML escaping, so the HTML
+inside summary and content stays as written; every name appears once and every id is https. Their names
+start with out: they are what this server writes, kept apart from the types of the decoder that reads
+what other servers send (6.3), which take the ap names. */
+
+// actorTerms is the object in the @context of an actor (5.5), its terms in the note's order.
+type actorTerms struct {
+	ManuallyApprovesFollowers string `json:"manuallyApprovesFollowers"`
+	Toot                      string `json:"toot"`
+	Discoverable              string `json:"discoverable"`
+	Indexable                 string `json:"indexable"`
+	Featured                  idTerm `json:"featured"`
+	PropertyValue             string `json:"PropertyValue"`
+	Value                     string `json:"value"`
+	Schema                    string `json:"schema"`
+	Flowa                     string `json:"flowa"`
+}
+
+type idTerm struct {
+	ID   string `json:"@id"`
+	Type string `json:"@type"`
+}
+
+// actorContext is 5.5's context. schema is http://schema.org# on purpose: it is what Mastodon expects,
+// though its own page calls it incorrect (5.5).
+var actorContext = []any{asContext, secContext, actorTerms{
+	ManuallyApprovesFollowers: "as:manuallyApprovesFollowers", Toot: "http://joinmastodon.org/ns#",
+	Discoverable: "toot:discoverable", Indexable: "toot:indexable", Featured: idTerm{"toot:featured", "@id"},
+	PropertyValue: "schema:PropertyValue", Value: "schema:value", Schema: "http://schema.org#", Flowa: flowaNS,
+}}
+
+// flowaNS is the one namespace of Flowa's own terms, the same on every Flowa (F14).
+const flowaNS = "https://github.com/TuanSSM/flowtopia/ns#"
+
+// outActor is an actor document (5.5). The addresses an actor MUST name (ActivityPub 4.1: inbox and
+// outbox) are named though this version does not serve them yet; the ones it only SHOULD or MAY name
+// (followers, following, featured, endpoints.sharedInbox) are left out until they answer (FRD 6, FWR 1).
+type outActor struct {
+	Context                   []any         `json:"@context"`
+	ID                        string        `json:"id"`
+	Type                      string        `json:"type"`
+	PreferredUsername         string        `json:"preferredUsername"`
+	Name                      string        `json:"name,omitempty"`
+	Summary                   string        `json:"summary,omitempty"`
+	URL                       string        `json:"url"`
+	Inbox                     string        `json:"inbox"`
+	Outbox                    string        `json:"outbox"`
+	ManuallyApprovesFollowers *bool         `json:"manuallyApprovesFollowers,omitempty"`
+	Discoverable              *bool         `json:"discoverable,omitempty"`
+	Indexable                 *bool         `json:"indexable,omitempty"`
+	Published                 string        `json:"published,omitempty"`
+	Icon                      *outImage     `json:"icon,omitempty"`
+	Attachment                []outProperty `json:"attachment,omitempty"`
+	PublicKey                 outKey        `json:"publicKey"`
+}
+
+type outImage struct {
+	Type      string `json:"type"`
+	MediaType string `json:"mediaType"`
+	URL       string `json:"url"`
+}
+
+type outProperty struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type outKey struct {
+	ID           string `json:"id"`
+	Owner        string `json:"owner"`
+	PublicKeyPem string `json:"publicKeyPem"`
+}
+
+// noteTerms is the context object of a Note (6.5).
+type noteTerms struct {
+	Flowa     string `json:"flowa"`
+	Sensitive string `json:"sensitive"`
+	Hashtag   string `json:"Hashtag"`
+}
+
+var noteContext = []any{asContext, noteTerms{Flowa: flowaNS, Sensitive: "as:sensitive", Hashtag: "as:Hashtag"}}
+
+// outNote is a Public post as a Note (6.5), with what this version can serve: the text (and the chips and
+// the combo as text, the fallback 6.5 asks for), the picture and the addressing of 6.7 (to the public
+// collection). The followers collection in cc, mentions and hashtags in tag, and flowa:tricks come with
+// the items that serve or send them (FRD 6, FWR 4); a reader that knows only ActivityStreams sees the
+// same post either way.
+type outNote struct {
+	Context      []any           `json:"@context"`
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	AttributedTo string          `json:"attributedTo"`
+	URL          string          `json:"url"`
+	Published    string          `json:"published"`
+	To           []string        `json:"to"`
+	Sensitive    bool            `json:"sensitive"`
+	Content      string          `json:"content"`
+	Attachment   []outAttachment `json:"attachment,omitempty"`
+}
+
+// outAttachment is a post's picture. name and summary are its alt text, empty until the composer has a
+// field for it (FWR 4); both are written, as 6.5 says.
+type outAttachment struct {
+	Type      string `json:"type"`
+	MediaType string `json:"mediaType"`
+	URL       string `json:"url"`
+	Name      string `json:"name"`
+	Summary   string `json:"summary"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+}
+
+// outTombstone is what the actor of a deleted member who had opted in answers, with 410 (ActivityPub 6.4).
+type outTombstone struct {
+	Context    string `json:"@context"`
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	FormerType string `json:"formerType"`
+}
+
+// apJSON writes a document as JSON without escaping <, > and &, which encoding/json does by default and
+// which would turn the HTML of summary and content into <.
+func apJSON(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
+}
+
+/* What the documents and the pages say, from the stored text. */
+
+// propNames are the props' names as the page shows them (web/props.js).
+var propNames = map[string]string{"nunchaku": "Nunchaku", "poi": "Poi", "staff": "Staff", "doublestaff": "Double staff", "buugeng": "Buugeng"}
+
+// textURL finds the http and https links in a post's text, as the page links them.
+var textURL = regexp.MustCompile(`https?://[^\s<>"]+`)
+
+// textPart is a run of a post's text, or a link in it (URL set).
+type textPart struct{ Text, URL string }
+
+// textParts cuts text into runs and links. A link loses the punctuation that ends a sentence after it.
+func textParts(s string) []textPart {
+	var out []textPart
+	at := 0
+	for _, m := range textURL.FindAllStringIndex(s, -1) {
+		end := m[1]
+		for end > m[0] && strings.IndexByte(".,;:!?)'", s[end-1]) >= 0 {
+			end--
+		}
+		if at < m[0] {
+			out = append(out, textPart{Text: s[at:m[0]]})
+		}
+		out = append(out, textPart{Text: s[m[0]:end], URL: s[m[0]:end]})
+		at = end
+	}
+	if at < len(s) {
+		out = append(out, textPart{Text: s[at:]})
+	}
+	return out
+}
+
+// paraBreak splits paragraphs: a blank line, or more.
+var paraBreak = regexp.MustCompile(`\n[ \t]*\n\s*`)
+
+// noteHTML is the content of a Note (6.5): the text escaped by html.EscapeString, paragraphs on blank
+// lines as <p>, line breaks as <br>, links as <a href> with rel="nofollow noopener", and each of more (the
+// chips and the combo as text) as a paragraph of its own. Only p, br and a are written, which Mastodon keeps
+// in every version (6.5). Mentions are plain text until FWR 4 writes them as Mastodon reads them.
+func noteHTML(body string, more []string) string {
+	var b strings.Builder
+	para := func(s string) {
+		b.WriteString("<p>")
+		for i, line := range strings.Split(s, "\n") {
+			if i > 0 {
+				b.WriteString("<br>")
+			}
+			for _, p := range textParts(line) {
+				if p.URL == "" {
+					b.WriteString(html.EscapeString(p.Text))
+					continue
+				}
+				b.WriteString(`<a href="` + html.EscapeString(p.URL) + `" rel="nofollow noopener">` + html.EscapeString(p.Text) + `</a>`)
+			}
+		}
+		b.WriteString("</p>")
+	}
+	body = strings.ReplaceAll(strings.TrimSpace(body), "\r\n", "\n")
+	if body != "" {
+		for _, p := range paraBreak.Split(body, -1) {
+			para(p)
+		}
+	}
+	for _, m := range more {
+		para(m)
+	}
+	return b.String()
+}
+
+// summaryHTML is a bio as the actor's summary: the same rules as a post's text.
+func summaryHTML(bio string) string { return noteHTML(bio, nil) }
+
+// skillNames are the names of a prop's skills from its latest published map, kept for a minute: the
+// chips and combos of a public post read as names, and a renamed skill shows under its new name (6.5).
+// The lock guards the map only and is never held while the database is asked: a caller that waits for
+// it must never be holding a connection another caller needs. Two requests that find the names old at
+// once both read them, and the later one is kept. The read takes the request's context; when it fails
+// the shipped map's names are used and not kept, so the next request asks again.
+func (a *app) skillNames(ctx context.Context, prop string) map[string]string {
+	a.namesMu.Lock()
+	c, ok := a.names[prop]
+	a.namesMu.Unlock()
+	if ok && time.Since(c.at) < time.Minute {
+		return c.names
+	}
+	var raw []byte
+	err := a.db.QueryRowContext(ctx, `SELECT body FROM catalog_revisions WHERE prop = $1 AND status = 'published' ORDER BY rev DESC LIMIT 1`, prop).Scan(&raw)
+	keep := err == nil || errors.Is(err, sql.ErrNoRows)
+	if err != nil {
+		raw, _ = shippedCatalog(prop)
+	}
+	var cat struct {
+		Skills []struct{ ID, Name string } `json:"skills"`
+	}
+	json.Unmarshal(raw, &cat)
+	names := map[string]string{}
+	for _, s := range cat.Skills {
+		names[s.ID] = s.Name
+	}
+	if !keep {
+		return names
+	}
+	a.namesMu.Lock()
+	defer a.namesMu.Unlock()
+	if a.names == nil {
+		a.names = map[string]skillNameCache{}
+	}
+	a.names[prop] = skillNameCache{names, time.Now()}
+	return names
+}
+
+type skillNameCache struct {
+	names map[string]string
+	at    time.Time
+}
+
+// postExtras are a post's chips and combo as lines of text (6.5's fallback): "Tricks: Six basic figure-8s
+// (Nunchaku), ..." and "Combo: Name: A, B, C". A skill the map no longer has is shown by its id.
+func (a *app) postExtras(ctx context.Context, data []byte) []string {
+	var d struct {
+		Tags  []postTag  `json:"tags"`
+		Combo *postCombo `json:"combo"`
+	}
+	json.Unmarshal(data, &d)
+	name := func(prop, id string) string {
+		if n := a.skillNames(ctx, prop)[id]; n != "" {
+			return n
+		}
+		return id
+	}
+	var out []string
+	if len(d.Tags) > 0 {
+		var t []string
+		for _, x := range d.Tags {
+			t = append(t, name(x.Prop, x.Skill)+" ("+propNames[x.Prop]+")")
+		}
+		out = append(out, "Tricks: "+strings.Join(t, ", "))
+	}
+	if c := d.Combo; c != nil && knownProp(c.Prop) {
+		var s []string
+		for _, id := range c.Seq {
+			s = append(s, name(c.Prop, id))
+		}
+		out = append(out, "Combo: "+c.Name+": "+strings.Join(s, ", "))
+	}
+	return out
+}
+
+// pictureOf reads the type and size of a stored picture (a data URL cleanImage wrote) from its first
+// bytes: the extension of its public address, its media type, and its width and height in pixels when
+// they can be read. ok is false when it is not a JPEG or a PNG.
+func pictureOf(head string) (ext, mediaType string, w, h int, ok bool) {
+	switch {
+	case strings.HasPrefix(head, "data:image/jpeg;base64,"):
+		ext, mediaType = "jpg", "image/jpeg"
+	case strings.HasPrefix(head, "data:image/png;base64,"):
+		ext, mediaType = "png", "image/png"
+	default:
+		return "", "", 0, 0, false
+	}
+	data := head[strings.IndexByte(head, ',')+1:]
+	data = data[:len(data)/4*4]
+	if raw, err := base64.StdEncoding.DecodeString(data); err == nil {
+		if c, _, err := image.DecodeConfig(bytes.NewReader(raw)); err == nil {
+			w, h = c.Width, c.Height
+		}
+	}
+	return ext, mediaType, w, h, true
+}
+
+// pictureHead is how much of a stored picture the queries read to learn its type and size: the header of
+// a JPEG that cleanImage wrote, or of a PNG, is in its first few hundred bytes.
+const pictureHead = "1024" // bytes, written into the statements below
+
+/* The member's public face: one statement each. $2 is true on a single-profile instance, whose owner's
+opt-in is FLOWA_FEDERATE=on (as in webFingerSQL). */
+
+// publicMember is the condition that the member u may be shown beyond this server.
+const publicMember = `(u.federates OR ($2 AND u.owner)) AND (u.suspended_until IS NULL OR u.suspended_until <= now())`
+
+// publicPost is the condition that the post p may be shown: Public, not hidden, not a milestone (F13).
+const publicPost = `p.audience = 'public' AND p.hidden_at IS NULL AND p.kind = 'post'`
+
+// actorGateSQL finds a member who may be shown, by name, and says whether the name is retired: one look
+// in each primary key.
+const actorGateSQL = `SELECT (SELECT u.id FROM users u WHERE u.username = $1 AND ` + publicMember + `), ` + retiredSQL
+
+// actorDocSQL reads what an actor document says of the member $1 (the gate has let them through): the
+// profile, the first bytes of the picture and a hash of it for its address, and the public key.
+const actorDocSQL = `SELECT u.username, u.display_name, u.bio, u.links, u.props, u.created_at, left(u.avatar, 64),
+	CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END, COALESCE(k.public_key, '')
+	FROM users u LEFT JOIN ap_keys k ON k.user_id = u.id WHERE u.id = $1`
+
+// profilePageSQL is a member's public page in one statement: the member, if they may be shown, with a page
+// of their Public posts newest first ($3: older than this post, 0 for the first page; $4 how many), and
+// whether the name is retired. posts_public serves the posts. $3 is a bigint like the ids it is compared
+// with: written as "$3 = 0" alone, Postgres would take it for an integer and fail on a cursor past 2^31.
+const profilePageSQL = `SELECT r.retired, m.id, m.username, m.display_name, m.bio, m.links, m.head, m.tag, m.pid, m.body, m.image, m.data, m.created_at
+	FROM (SELECT ` + retiredSQL + ` AS retired) r LEFT JOIN (
+		SELECT u.id, u.username, u.display_name, u.bio, u.links, left(u.avatar, 64) AS head, CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END AS tag,
+			p.id AS pid, p.body, left(p.image, ` + pictureHead + `) AS image, p.data, p.created_at
+		FROM users u LEFT JOIN LATERAL (SELECT p.id, p.body, p.image, p.data, p.created_at FROM posts p WHERE p.user_id = u.id AND ` + publicPost + `
+			AND ($3::bigint = 0 OR p.id < $3) ORDER BY p.id DESC LIMIT $4) p ON true
+		WHERE u.username = $1 AND ` + publicMember + `) m ON true ORDER BY m.pid DESC`
+
+// publicPostSQL reads a Public post $3 by the member $1, with what its page and its Note say of the author.
+const publicPostSQL = `SELECT u.username, u.display_name, left(u.avatar, 64), CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END,
+	p.body, left(p.image, ` + pictureHead + `), p.data, p.created_at
+	FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $3 AND u.username = $1 AND ` + publicPost + ` AND ` + publicMember
+
+// postPictureSQL reads the picture of a Public post $3 by the member $1, and avatarSQL a member's picture.
+const (
+	postPictureSQL = `SELECT p.image FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $3 AND u.username = $1 AND ` + publicPost + ` AND ` + publicMember
+	avatarSQL      = `SELECT u.avatar FROM users u WHERE u.username = $1 AND ` + publicMember
+)
+
+/* The answers. */
+
+// publicAllowed counts a request against the address's allowance for these addresses, and answers 429
+// once it is used up. It is asked first, before anything is read.
+func (a *app) publicAllowed(w http.ResponseWriter, r *http.Request) bool {
+	from := limitKey(a.clientIP(r))
+	if a.lim.public.add(from) {
+		return true
+	}
+	logRefusal(w, "too many reads of public pages", "from "+from)
+	h := w.Header()
+	h.Set("Retry-After", "3600")
+	h.Set("Cache-Control", "no-store")
+	http.Error(w, "Too many requests from this address. Try again in an hour.", http.StatusTooManyRequests)
+	return false
+}
+
+// inboxPath says whether a path is an inbox an actor document names: /actor/inbox, or /users/{name}/inbox
+// for any name, so the answer says nothing of who exists.
+func inboxPath(p string) bool {
+	if p == "/actor/inbox" {
+		return true
+	}
+	name, ok := strings.CutSuffix(strings.TrimPrefix(p, "/users/"), "/inbox")
+	return ok && strings.HasPrefix(p, "/users/") && name != "" && !strings.Contains(name, "/")
+}
+
+// publicPaths says whether a path is one of the addresses above, for publicMethods.
+func publicPaths(p string) bool {
+	if p == "/actor" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(p, "/users/")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(rest, "/")
+	switch len(parts) {
+	case 1:
+		return parts[0] != ""
+	case 2:
+		return parts[1] == "avatar.jpg" || parts[1] == "avatar.png"
+	case 3:
+		return parts[1] == "posts"
+	case 4:
+		return parts[1] == "posts" && (parts[3] == "picture.jpg" || parts[3] == "picture.png")
+	}
+	return false
+}
+
+// pubAnswer is a made answer: its bytes, type and validator.
+type pubAnswer struct {
+	body  []byte
+	ctype string
+	etag  string
+}
+
+func newAnswer(body []byte, ctype string) pubAnswer {
+	return pubAnswer{body, ctype, `"` + hashOf(body) + `"`}
+}
+
+// serve sends an answer, a page with the policy of 5.6, and a 200 with its validator: ServeContent answers If-None-Match with 304, HEAD with the
+// headers alone, and sets the length.
+func (p pubAnswer) serve(w http.ResponseWriter, r *http.Request, code int, keep string) {
+	h := w.Header()
+	h.Set("Content-Type", p.ctype)
+	if strings.HasPrefix(p.ctype, "text/html") {
+		h.Set("Content-Security-Policy", visitorCSP) // 5.6: no script, pictures and style from this server only
+	}
+	h.Set("Cache-Control", keep)
+	if code != http.StatusOK {
+		h.Set("Content-Length", strconv.Itoa(len(p.body)))
+		w.WriteHeader(code)
+		if r.Method != http.MethodHead {
+			w.Write(p.body)
+		}
+		return
+	}
+	h.Set("ETag", p.etag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(p.body))
+}
+
+// pubNotFoundJSON is the one 404 of the documents.
+var pubNotFoundJSON = newAnswer([]byte(`{"error":"Not found."}`), "application/json")
+
+// pubNoPicture is the one 404 of the pictures.
+var pubNoPicture = newAnswer([]byte("Not found.\n"), "text/plain; charset=utf-8")
+
+// pubSite is what every public page needs: the style sheet and the icon by their hashed names, and the
+// 404 and 410 pages, made once.
+type pubSite struct {
+	css, icon      string
+	missing, wiped pubAnswer
+}
+
+func (a *app) pubSiteOf(st *static) *pubSite {
+	s := &pubSite{}
+	if st != nil {
+		if f, ok := st.plain["/app.css"]; ok {
+			s.css = "/" + hashedName("app.css", f.hash)
+		}
+		if f, ok := st.plain["/icon.svg"]; ok {
+			s.icon = "/" + hashedName("icon.svg", f.hash)
+		}
+	}
+	s.missing = s.page(pubData{Kind: "missing", Title: "Not found"})
+	s.wiped = s.page(pubData{Kind: "gone", Title: "Account deleted"})
+	return s
+}
+
+// page writes one page with pubTmpl.
+func (s *pubSite) page(d pubData) pubAnswer {
+	d.CSS, d.Icon = s.css, s.icon
+	var b bytes.Buffer
+	if err := pubTmpl.Execute(&b, d); err != nil {
+		// The template and the data are this file's; an error is a mistake here, and the 404 says less.
+		log.Printf("error: a public page: %v", err)
+		return s.missing
+	}
+	return newAnswer(b.Bytes(), "text/html; charset=utf-8")
+}
+
+// notFound is the one 404 of a negotiated address, in the representation asked for.
+func (s *pubSite) notFound(w http.ResponseWriter, r *http.Request, activity bool) {
+	if activity {
+		pubNotFoundJSON.serve(w, r, http.StatusNotFound, notFoundKeep)
+		return
+	}
+	s.missing.serve(w, r, http.StatusNotFound, notFoundKeep)
+}
+
+// unavailable is said while an opted-in member's key is still being made (5.7): the actor document needs
+// it, and it comes within seconds.
+func unavailable(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Retry-After", "60")
+	h.Set("Cache-Control", "no-store")
+	h.Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	w.Write([]byte(`{"error":"Not ready yet. Try again in a minute."}`))
+}
+
+// pubData is what a public page is given. Every field is plain text that html/template escapes for where
+// it stands; none is marked safe. Links and picture addresses are built here from stored values: links
+// only to the sites cleanLink takes (or a post's own http and https links, which html/template checks
+// again), pictures only from this server.
+type pubData struct {
+	Kind, Title, CSS, Icon string
+	Who                    *pubWho
+	Posts                  []pubPost
+	Older                  string
+	Host, ActorHandle      string
+}
+
+type pubWho struct {
+	Name, Username, Handle, Initial, Bio, Picture, Profile, App string
+	Links                                                       []visitorLink
+}
+
+type pubPost struct {
+	URL, Picture, PictureAlt, When, Day string
+	Paras                               [][]textPart
+	Extras                              []string
+}
+
+var pubTmpl = template.Must(template.New("pub").Parse(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>{{.Title}}</title>
+{{with .Icon}}<link rel="icon" href="{{.}}" type="image/svg+xml">
+{{end}}{{with .CSS}}<link rel="stylesheet" href="{{.}}">
+{{end}}</head>
+<body class="pub">
+<header class="pub-top"><a class="btn primary" href="/index.html#/signin">Sign in</a></header>
+<main class="pub-main">
+{{if eq .Kind "missing"}}<section class="card pub-card" aria-labelledby="pub-h"><h1 id="pub-h">Nothing here</h1><p>There is no public profile or post at this address. It may never have been public, or it is no longer shared.</p></section>
+{{else if eq .Kind "gone"}}<section class="card pub-card" aria-labelledby="pub-h"><h1 id="pub-h">Account deleted</h1><p>The account that had this address was deleted. Its name is not given to anyone else.</p></section>
+{{else if eq .Kind "actor"}}<section class="card pub-card" aria-labelledby="pub-h"><h1 id="pub-h">{{.Host}}</h1><p class="pub-handle">{{.ActorHandle}}</p><p>This is the server's own account. Other servers see it when this Flowa asks them for something on nobody's behalf; it posts nothing and follows nobody.</p></section>
+{{else}}{{with .Who}}<article class="card pub-card" aria-labelledby="pub-name">
+<div class="pub-who">{{if .Picture}}<img class="pub-pic" src="{{.Picture}}" alt="" width="72" height="72">{{else}}<span class="pub-pic pub-initial" aria-hidden="true">{{.Initial}}</span>{{end}}
+<div class="pub-names">{{if eq $.Kind "post"}}<p class="pub-title" id="pub-name"><a href="{{.Profile}}">{{.Name}}</a></p>{{else}}<h1 id="pub-name">{{.Name}}</h1>{{end}}<p class="pub-handle">{{.Handle}}</p></div></div>
+{{if ne $.Kind "post"}}{{with .Bio}}<p class="pub-text">{{.}}</p>
+{{end}}{{if .Links}}<ul class="pub-links" aria-label="Links">{{range .Links}}<li><a class="btn sm" href="{{.URL}}" rel="nofollow noopener ugc">{{.Name}}</a></li>{{end}}</ul>
+{{end}}{{end}}</article>
+{{end}}{{if eq .Kind "profile"}}<section class="pub-posts" aria-labelledby="pub-posts-h"><h2 id="pub-posts-h">Public posts</h2>
+{{if not .Posts}}<p class="pub-hint">No public posts yet.</p>
+{{end}}{{end}}{{range .Posts}}<article class="card pub-card pub-post">
+{{if eq $.Kind "post"}}<h1 class="pub-when"><time datetime="{{.When}}">{{.Day}}</time></h1>{{else}}<h3 class="pub-when"><a href="{{.URL}}"><time datetime="{{.When}}">{{.Day}}</time></a></h3>{{end}}
+{{range .Paras}}<p class="pub-text">{{range .}}{{if .URL}}<a href="{{.URL}}" rel="nofollow noopener ugc">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</p>
+{{end}}{{range .Extras}}<p class="pub-text pub-hint">{{.}}</p>
+{{end}}{{if .Picture}}<img class="pub-img" src="{{.Picture}}" alt="{{.PictureAlt}}" loading="lazy">
+{{end}}</article>
+{{end}}{{if eq .Kind "profile"}}{{with .Older}}<p><a class="btn sm" href="{{.}}">Older posts</a></p>
+{{end}}</section>
+{{end}}{{with .Who}}<p class="pub-hint">On Flowa, a tracker for flow arts. <a href="{{.App}}">Open in Flowa</a> (signed in).</p>
+{{end}}{{end}}</main>
+</body>
+</html>
+`))
+
+// keptDoc is an actor document as made, and when.
+type keptDoc struct {
+	ans pubAnswer
+	at  time.Time
+}
+
+// keptActor is an owner's actor document from memory, while it is younger than docsAge.
+func (f *federation) keptActor(o keyOwner) (pubAnswer, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.docs[o]
+	if !ok || time.Since(d.at) >= docsAge {
+		return pubAnswer{}, false
+	}
+	return d.ans, true
+}
+
+// keepActor keeps an owner's document, unless a drop came while it was being made (gen is docsGen as it
+// was read before the database was), so a document made from a profile just replaced is never kept.
+func (f *federation) keepActor(o keyOwner, gen uint64, p pubAnswer) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.docsGen != gen {
+		return
+	}
+	if f.docs == nil || len(f.docs) >= docsMax {
+		f.docs = map[keyOwner]keptDoc{}
+	}
+	f.docs[o] = keptDoc{p, time.Now()}
+}
+
+// dropActor forgets an owner's document, after a change of anything it says: the profile or the picture
+// (handlePutMe), the opt-in (handlePutMe; the gate is asked on every request anyway), or the key (the key
+// worker, rotateKeys). A nil federation has none.
+func (f *federation) dropActor(o keyOwner) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.docsGen++
+	delete(f.docs, o)
+}
+
+// docGen is the generation of the kept documents, read before one is made.
+func (f *federation) docGen() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.docsGen
+}
+
+// actorDoc is a member's actor document (5.5), from memory or made: one statement. errNoKey while the key
+// is still being made.
+func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
+	f := a.fed
+	if p, ok := f.keptActor(keyOwner(uid)); ok {
+		return p, nil
+	}
+	gen := f.docGen()
+	var name, display, bio, head, tag, pubPEM string
+	var links, props []byte
+	var created time.Time
+	if err := a.db.QueryRowContext(ctx, actorDocSQL, uid).Scan(&name, &display, &bio, &links, &props, &created, &head, &tag, &pubPEM); err != nil {
+		return pubAnswer{}, err
+	}
+	if pubPEM == "" {
+		return pubAnswer{}, errNoKey
+	}
+	id := f.origin.url + "/users/" + name
+	no := false
+	doc := outActor{Context: actorContext, ID: id, Type: "Person", PreferredUsername: name, Name: display, Summary: summaryHTML(bio),
+		URL: id, Inbox: id + "/inbox", Outbox: id + "/outbox",
+		ManuallyApprovesFollowers: &no, Discoverable: &no, Indexable: &no, Published: created.UTC().Format(time.RFC3339),
+		PublicKey: outKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}}
+	if ext, mt, _, _, ok := pictureOf(head); ok && tag != "" {
+		doc.Icon = &outImage{Type: "Image", MediaType: mt, URL: id + "/avatar." + ext + "?v=" + tag}
+	}
+	// The props a member practises and their links, as profile fields (5.5); no number (F12).
+	var ids []string
+	json.Unmarshal(props, &ids)
+	var names []string
+	for _, p := range ids {
+		if n := propNames[p]; n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) > 0 {
+		doc.Attachment = append(doc.Attachment, outProperty{Type: "PropertyValue", Name: "Props", Value: html.EscapeString(strings.Join(names, ", "))})
+	}
+	stored := map[string]string{}
+	json.Unmarshal(links, &stored)
+	for _, k := range linkKinds {
+		handle, _ := cleanLink(k, stored[k])
+		if href, ok := visitorLinkURL(k, stored[k]); ok {
+			doc.Attachment = append(doc.Attachment, outProperty{Type: "PropertyValue", Name: visitorLinkNames[k],
+				Value: `<a href="` + html.EscapeString(href) + `" rel="me nofollow noopener" target="_blank">` + html.EscapeString(handle) + `</a>`})
+		}
+	}
+	b, err := apJSON(doc)
+	if err != nil {
+		return pubAnswer{}, err
+	}
+	p := newAnswer(b, activityType)
+	f.keepActor(keyOwner(uid), gen, p)
+	return p, nil
+}
+
+// instanceDoc is the instance actor's document (5.5): an Application named by the host, with its key, and
+// the inbox and outbox ActivityPub 4.1 requires it to name.
+func (a *app) instanceDoc(ctx context.Context) (pubAnswer, error) {
+	f := a.fed
+	if p, ok := f.keptActor(instanceActor); ok {
+		return p, nil
+	}
+	gen := f.docGen()
+	var pubPEM string
+	err := a.db.QueryRowContext(ctx, `SELECT public_key FROM ap_keys WHERE user_id IS NULL`).Scan(&pubPEM)
+	if errors.Is(err, sql.ErrNoRows) {
+		return pubAnswer{}, errNoKey
+	}
+	if err != nil {
+		return pubAnswer{}, err
+	}
+	id := f.origin.url + "/actor"
+	b, err := apJSON(outActor{Context: actorContext, ID: id, Type: "Application", PreferredUsername: f.origin.host, URL: id,
+		Inbox: id + "/inbox", Outbox: id + "/outbox", PublicKey: outKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}})
+	if err != nil {
+		return pubAnswer{}, err
+	}
+	p := newAnswer(b, activityType)
+	f.keepActor(instanceActor, gen, p)
+	return p, nil
+}
+
+// pubFailed answers a public address when the server failed, without a word about why.
+func pubFailed(w http.ResponseWriter, what string, err error) {
+	log.Printf("error: %s: %v", what, err)
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	http.Error(w, "Something went wrong on the server.", http.StatusInternalServerError)
+}
+
+// canonicalName is the {name} of a path when the path is written exactly as an id is (no percent-encoding,
+// lower case, a name usernameRE takes): another spelling of an id is not that id, and is answered as an
+// address nobody has, without a query.
+func canonicalName(r *http.Request, rest string) (string, bool) {
+	name := r.PathValue("name")
+	return name, usernameRE.MatchString(name) && r.URL.EscapedPath() == "/users/"+name+rest
+}
+
+// canonicalID is the {id} of a path when it is a post id written as one: digits, no sign, no leading zero.
+func canonicalID(r *http.Request) (int64, bool) {
+	s := r.PathValue("id")
+	n, err := strconv.ParseInt(s, 10, 64)
+	return n, err == nil && n > 0 && strconv.FormatInt(n, 10) == s
+}
+
+// whoOf is a member as a public page shows them.
+func (a *app) whoOf(name, display, bio string, links []byte, head, tag string) *pubWho {
+	w := &pubWho{Name: display, Username: name, Handle: "@" + name + "@" + a.fed.origin.host, Bio: strings.TrimSpace(bio),
+		Profile: "/users/" + name, App: "/#/u/" + name}
+	if w.Name == "" {
+		w.Name = name
+	}
+	if i := strings.IndexFunc(w.Name, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }); i >= 0 {
+		r, _ := utf8.DecodeRuneInString(w.Name[i:])
+		w.Initial = strings.ToUpper(string(r))
+	}
+	if ext, _, _, _, ok := pictureOf(head); ok && tag != "" {
+		w.Picture = "/users/" + name + "/avatar." + ext + "?v=" + tag
+	}
+	stored := map[string]string{}
+	json.Unmarshal(links, &stored)
+	for _, k := range linkKinds {
+		if href, ok := visitorLinkURL(k, stored[k]); ok {
+			w.Links = append(w.Links, visitorLink{visitorLinkNames[k], href})
+		}
+	}
+	return w
+}
+
+// postOf is a Public post as a public page shows it.
+func (a *app) postOf(ctx context.Context, name string, id int64, body, head string, data []byte, created time.Time) pubPost {
+	url := "/users/" + name + "/posts/" + strconv.FormatInt(id, 10)
+	p := pubPost{URL: url, When: created.UTC().Format(time.RFC3339), Day: created.UTC().Format("2 January 2006"), Extras: a.postExtras(ctx, data)}
+	if body = strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n")); body != "" {
+		for _, para := range paraBreak.Split(body, -1) {
+			p.Paras = append(p.Paras, textParts(para))
+		}
+	}
+	if ext, _, _, _, ok := pictureOf(head); ok {
+		p.Picture, p.PictureAlt = url+"/picture."+ext, "Picture in the post"
+	}
+	return p
+}
+
+// handleActor answers GET /users/{name}: the actor document or the member's public page (5.5, 5.6).
+func (a *app) handleActor(st *static) http.HandlerFunc {
+	site := a.pubSiteOf(st)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "Accept")
+		if !a.publicAllowed(w, r) {
+			return
+		}
+		activity := wantsActivity(r.Header)
+		name, ok := canonicalName(r, "")
+		if a.fed.refusal() != "" || !ok {
+			site.notFound(w, r, activity)
+			return
+		}
+		if activity {
+			a.serveActor(w, r, site, name)
+		} else {
+			a.serveProfile(w, r, site, name)
+		}
+	}
+}
+
+// serveActor sends a member's actor document. The origin is frozen first (ensureOrigin): this names the
+// member's actor id to whoever asked.
+func (a *app) serveActor(w http.ResponseWriter, r *http.Request, site *pubSite, name string) {
+	var uid sql.NullInt64
+	var retired bool
+	if err := a.db.QueryRowContext(r.Context(), actorGateSQL, name, a.mode == modeSingle).Scan(&uid, &retired); err != nil {
+		pubFailed(w, "an actor document", err)
+		return
+	}
+	if !uid.Valid {
+		if retired {
+			b, _ := apJSON(outTombstone{Context: asContext, ID: a.fed.origin.url + "/users/" + name, Type: "Tombstone", FormerType: "Person"})
+			newAnswer(b, activityType).serve(w, r, http.StatusGone, apKeep)
+			return
+		}
+		site.notFound(w, r, true)
+		return
+	}
+	if !a.originFrozen(w, r, site) {
+		return
+	}
+	doc, err := a.actorDoc(r.Context(), uid.Int64)
+	if errors.Is(err, errNoKey) {
+		unavailable(w)
+		return
+	}
+	if err != nil {
+		pubFailed(w, "an actor document", err)
+		return
+	}
+	doc.serve(w, r, http.StatusOK, apKeep)
+}
+
+// originFrozen freezes the origin before an id of a member goes out (4.3), and answers the 404 when the
+// origin turns out to have moved, as WebFinger does.
+func (a *app) originFrozen(w http.ResponseWriter, r *http.Request, site *pubSite) bool {
+	err := a.fed.ensureOrigin(r.Context())
+	if err == nil {
+		return true
+	}
+	var moved originMoved
+	if errors.As(err, &moved) {
+		site.notFound(w, r, true)
+		return false
+	}
+	pubFailed(w, "recording the origin", err)
+	return false
+}
+
+// serveProfile sends a member's public page: the profile and their Public posts, newest first, pubPage at a
+// time, older ones by ?before=<id>. One statement.
+func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite, name string) {
+	var before int64
+	if q := r.URL.Query(); q.Has("before") {
+		n, err := strconv.ParseInt(q.Get("before"), 10, 64)
+		if err != nil || n <= 0 || len(q["before"]) != 1 {
+			site.notFound(w, r, false)
+			return
+		}
+		before = n
+	}
+	// The rows are read whole and closed before anything else is done: making a post's lines may ask the
+	// database again (skillNames), and a request must never hold one connection while it waits for another,
+	// or a few at once could take the whole pool and stop every request (TestDBOneConnection).
+	type profileRow struct {
+		uid, pid                                  sql.NullInt64
+		uname, display, bio, head, tag, body, img sql.NullString
+		links, data                               []byte
+		created                                   sql.NullTime
+	}
+	var retired bool
+	var got []profileRow
+	rows, err := a.db.QueryContext(r.Context(), profilePageSQL, name, a.mode == modeSingle, before, pubPage+1)
+	if err != nil {
+		pubFailed(w, "a public profile", err)
+		return
+	}
+	for rows.Next() {
+		var x profileRow
+		if err = rows.Scan(&retired, &x.uid, &x.uname, &x.display, &x.bio, &x.links, &x.head, &x.tag, &x.pid, &x.body, &x.img, &x.data, &x.created); err != nil {
+			break
+		}
+		got = append(got, x)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		pubFailed(w, "a public profile", err)
+		return
+	}
+	d := pubData{Kind: "profile"}
+	var last int64
+	n := 0
+	for _, x := range got {
+		if !x.uid.Valid {
+			break
+		}
+		if d.Who == nil {
+			d.Who = a.whoOf(x.uname.String, x.display.String, x.bio.String, x.links, x.head.String, x.tag.String)
+		}
+		if !x.pid.Valid {
+			continue
+		}
+		if n++; n > pubPage {
+			d.Older = "/users/" + name + "?before=" + strconv.FormatInt(last, 10)
+			break
+		}
+		last = x.pid.Int64
+		d.Posts = append(d.Posts, a.postOf(r.Context(), x.uname.String, x.pid.Int64, x.body.String, x.img.String, x.data, x.created.Time))
+	}
+	switch {
+	case d.Who == nil && retired:
+		site.wiped.serve(w, r, http.StatusGone, apKeep)
+	case d.Who == nil:
+		site.notFound(w, r, false)
+	default:
+		d.Title = d.Who.Name + " (" + d.Who.Handle + ")"
+		site.page(d).serve(w, r, http.StatusOK, apKeep)
+	}
+}
+
+// handleInstanceActor answers GET /actor: the instance actor's document, or a page that says what it is.
+// It freezes nothing: like its WebFinger answer (5.3, as built in FRD 4), anyone can ask for it, a scanner
+// or the operator checking the setup, and it names no member, so a mistyped origin must not be locked in
+// by it. The first request the instance actor signs (FRD 7) is what announces it.
+func (a *app) handleInstanceActor(st *static) http.HandlerFunc {
+	site := a.pubSiteOf(st)
+	host := a.fed.origin.host
+	page := site.page(pubData{Kind: "actor", Title: host, Host: host, ActorHandle: "@" + host + "@" + host})
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "Accept")
+		if !a.publicAllowed(w, r) {
+			return
+		}
+		activity := wantsActivity(r.Header)
+		if a.fed.refusal() != "" || r.URL.EscapedPath() != "/actor" {
+			site.notFound(w, r, activity)
+			return
+		}
+		if !activity {
+			page.serve(w, r, http.StatusOK, apKeep)
+			return
+		}
+		doc, err := a.instanceDoc(r.Context())
+		if errors.Is(err, errNoKey) {
+			unavailable(w)
+			return
+		}
+		if err != nil {
+			pubFailed(w, "the instance actor", err)
+			return
+		}
+		doc.serve(w, r, http.StatusOK, apKeep)
+	}
+}
+
+// handlePublicPost answers GET /users/{name}/posts/{id}: a Public post as a Note (6.5) or as a page.
+func (a *app) handlePublicPost(st *static) http.HandlerFunc {
+	site := a.pubSiteOf(st)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "Accept")
+		if !a.publicAllowed(w, r) {
+			return
+		}
+		activity := wantsActivity(r.Header)
+		id, idOK := canonicalID(r)
+		name, ok := canonicalName(r, "/posts/"+r.PathValue("id"))
+		if a.fed.refusal() != "" || !ok || !idOK {
+			site.notFound(w, r, activity)
+			return
+		}
+		var uname, display, head, tag, body, image string
+		var data []byte
+		var created time.Time
+		err := a.db.QueryRowContext(r.Context(), publicPostSQL, name, a.mode == modeSingle, id).Scan(&uname, &display, &head, &tag, &body, &image, &data, &created)
+		if errors.Is(err, sql.ErrNoRows) {
+			site.notFound(w, r, activity)
+			return
+		}
+		if err != nil {
+			pubFailed(w, "a public post", err)
+			return
+		}
+		if !activity {
+			who := a.whoOf(uname, display, "", nil, head, tag)
+			who.App = "/#/post/" + strconv.FormatInt(id, 10)
+			d := pubData{Kind: "post", Who: who, Posts: []pubPost{a.postOf(r.Context(), uname, id, body, image, data, created)}, Title: "Post by " + who.Name + " (" + who.Handle + ")"}
+			site.page(d).serve(w, r, http.StatusOK, apKeep)
+			return
+		}
+		if !a.originFrozen(w, r, site) {
+			return
+		}
+		actor := a.fed.origin.url + "/users/" + uname
+		note := outNote{Context: noteContext, ID: actor + "/posts/" + strconv.FormatInt(id, 10), Type: "Note", AttributedTo: actor,
+			Published: created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Content: noteHTML(body, a.postExtras(r.Context(), data))}
+		note.URL = note.ID
+		if ext, mt, pw, ph, ok := pictureOf(image); ok {
+			note.Attachment = []outAttachment{{Type: "Image", MediaType: mt, URL: note.ID + "/picture." + ext, Width: pw, Height: ph}}
+		}
+		b, err := apJSON(note)
+		if err != nil {
+			pubFailed(w, "a note", err)
+			return
+		}
+		newAnswer(b, activityType).serve(w, r, http.StatusOK, apKeep)
+	}
+}
+
+// handlePublicPicture answers the two picture addresses (9.4): a member's profile picture
+// (/users/{name}/avatar.{ext}) when post is false, or a Public post's picture
+// (/users/{name}/posts/{id}/picture.{ext}). The address names the member, and the post, so it reaches
+// only what the documents and the pages name: nothing private can be asked for through it, whatever id is
+// tried, and a picture under the wrong extension or the wrong member is the same 404. The ?v= of the
+// profile picture's address is a hash that changes with it; the picture is still kept only for
+// three minutes, because one that is withdrawn (an opt-out, a hidden post) should leave caches soon.
+func (a *app) handlePublicPicture(post bool, ext string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !a.publicAllowed(w, r) {
+			return
+		}
+		rest := "/avatar." + ext
+		var id int64
+		idOK := true
+		if post {
+			id, idOK = canonicalID(r)
+			rest = "/posts/" + r.PathValue("id") + "/picture." + ext
+		}
+		name, ok := canonicalName(r, rest)
+		if a.fed.refusal() != "" || !ok || !idOK {
+			pubNoPicture.serve(w, r, http.StatusNotFound, notFoundKeep)
+			return
+		}
+		var stored string
+		var err error
+		if post {
+			err = a.db.QueryRowContext(r.Context(), postPictureSQL, name, a.mode == modeSingle, id).Scan(&stored)
+		} else {
+			err = a.db.QueryRowContext(r.Context(), avatarSQL, name, a.mode == modeSingle).Scan(&stored)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			pubFailed(w, "a public picture", err)
+			return
+		}
+		got, mt, _, _, ok := pictureOf(stored[:min(len(stored), 64)])
+		var raw []byte
+		if ok && got == ext {
+			raw, err = base64.StdEncoding.DecodeString(stored[strings.IndexByte(stored, ',')+1:])
+		}
+		if raw == nil || err != nil {
+			pubNoPicture.serve(w, r, http.StatusNotFound, notFoundKeep)
+			return
+		}
+		newAnswer(raw, mt).serve(w, r, http.StatusOK, apKeep)
+	}
 }
 
 /* ---------- federation: HTTP signatures ----------
@@ -9431,6 +10854,9 @@ var apReasons = [...]string{
 }
 
 func (r apReason) String() string {
+	if r == 0 {
+		return "accepted" // apScan's answer for a document it takes; no refusal has the zero value
+	}
 	if int(r) < len(apReasons) && apReasons[r] != "" {
 		return apReasons[r]
 	}
@@ -11279,6 +12705,23 @@ var migrations = []string{schema, schemaSocial,
 	// switch in Settings). One column with a constant default: going back to an earlier build is safe,
 	// and that build simply does not read it.
 	`ALTER TABLE users ADD COLUMN IF NOT EXISTS federates BOOLEAN NOT NULL DEFAULT false`,
+	// 14: who may read a post (docs/federation.md, F2, F3 and 9.1), and the names that are never given out
+	// again (5.2). posts.audience is 'local' (This server) for every post there is and for every post made
+	// outside a mode that federates; 'public' only when a member who opted in chooses it. The check names the
+	// four audiences of the design note, so a later item adds none by a migration; NOT VALID means the rows
+	// already there are not read to check them (they all hold the default), so the column and the check are
+	// changes to the catalog only. posts_public lists a member's Public posts newest first for their public
+	// page; it holds no row until someone posts one, and building it reads posts once. retired_usernames
+	// holds the name of a deleted account that had opted in, whose actor id other servers may have stored.
+	// Additive: an older build ignores the column and the table, and shows no post outside the server.
+	`ALTER TABLE posts ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'local';
+	ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_audience;
+	ALTER TABLE posts ADD CONSTRAINT posts_audience CHECK (audience IN ('local', 'public', 'unlisted', 'followers')) NOT VALID;
+	CREATE INDEX IF NOT EXISTS posts_public ON posts (user_id, id DESC) WHERE audience = 'public' AND hidden_at IS NULL AND kind = 'post';
+	CREATE TABLE IF NOT EXISTS retired_usernames (
+		username TEXT PRIMARY KEY,
+		retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -11381,20 +12824,54 @@ func (a *app) seedAdmin(name, pw string) (int64, error) {
 	var id int64
 	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		// The account the operator names is made whatever the registration setting says, and a
-		// request to join that waits under the same name gives way to it: the name is the operator's.
-		var dropped bool
-		err = a.db.QueryRow(`WITH gone AS (DELETE FROM join_requests WHERE username = $1 RETURNING 1)
-			INSERT INTO users (username, display_name, pw_hash, role) SELECT $1, $2, $3, 'admin' RETURNING id, EXISTS (SELECT 1 FROM gone)`,
-			name, "Admin", hashPassword(pw)).Scan(&id, &dropped)
-		if err == nil {
-			log.Printf("created admin account %q", name)
-			if dropped {
-				log.Printf("removed the request to join that waited under the name %q", name)
-			}
-		}
+		return a.makeAdmin(name, hashPassword(pw))
 	}
 	return id, err
+}
+
+// makeAdmin makes the ADMIN_USER account under the name's lock (nameLockSQL), so the check that the name
+// is not retired and the insert see a delete that retired it meanwhile.
+func (a *app) makeAdmin(name, hash string) (int64, error) {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(nameLockSQL, name); err != nil {
+		return 0, err
+	}
+	// A retired name, or the instance's own host, is taken for the operator too. The start goes on
+	// without the account (a deleted admin used to come back at every start, and a server that will not
+	// start for it would be worse) unless no account exists at all, when there would be nobody to run it.
+	var retired, someone bool
+	if err := tx.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users)`, name).Scan(&retired, &someone); err != nil {
+		return 0, err
+	}
+	if retired || a.reservedName(name) {
+		if !someone {
+			return 0, fmt.Errorf("ADMIN_USER=%s: that username is taken. Choose another one for the first account", name)
+		}
+		log.Printf("ADMIN_USER=%s: that username is taken, so no account is made for it", name)
+		return 0, nil
+	}
+	// The account the operator names is made whatever the registration setting says, and a
+	// request to join that waits under the same name gives way to it: the name is the operator's.
+	var id int64
+	var dropped bool
+	err = tx.QueryRow(`WITH gone AS (DELETE FROM join_requests WHERE username = $1 RETURNING 1)
+		INSERT INTO users (username, display_name, pw_hash, role) SELECT $1, $2, $3, 'admin' RETURNING id, EXISTS (SELECT 1 FROM gone)`,
+		name, "Admin", hash).Scan(&id, &dropped)
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		return 0, err
+	}
+	log.Printf("created admin account %q", name)
+	if dropped {
+		log.Printf("removed the request to join that waited under the name %q", name)
+	}
+	return id, nil
 }
 
 /* ---------- static files ----------
@@ -11909,7 +13386,7 @@ func (a *app) routes(st *static) http.Handler {
 	mux := a.table(st)
 	var h http.Handler = a.guard(mux.ServeMux)
 	if a.fed != nil {
-		h = a.discoveryMethods(h)
+		h = a.fedMethods(h)
 	}
 	return a.logged(mux.ServeMux, a.secure(h))
 }
@@ -11971,13 +13448,20 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("GET /{$}", a.handleRoot(st))
 		mux.HandleFunc("GET /profile-picture", a.handleOwnerPicture(st))
 	}
-	// A mode that federates adds discovery, and nothing else yet: testdata/routes-federated.txt lists the
-	// three, and TestDBFederatedRoutes holds the table to it. They are there while federation is refused
-	// too, and answer 404 then (handleWebFinger).
+	// A mode that federates adds discovery, the actors and the public pages, and nothing else yet:
+	// testdata/routes-federated.txt lists them, and TestDBFederatedRoutes holds the table to it. They are
+	// there while federation is refused too, and answer 404 then (handleWebFinger, handleActor).
 	if a.fed != nil {
 		mux.HandleFunc("GET /.well-known/webfinger", a.handleWebFinger)
 		mux.HandleFunc("GET /.well-known/nodeinfo", a.handleNodeInfoLinks)
 		mux.HandleFunc("GET /nodeinfo/2.1", a.handleNodeInfo)
+		mux.HandleFunc("GET /actor", a.handleInstanceActor(st))
+		mux.HandleFunc("GET /users/{name}", a.handleActor(st))
+		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st))
+		for _, ext := range []string{"jpg", "png"} {
+			mux.HandleFunc("GET /users/{name}/avatar."+ext, a.handlePublicPicture(false, ext))
+			mux.HandleFunc("GET /users/{name}/posts/{id}/picture."+ext, a.handlePublicPicture(true, ext))
+		}
 	}
 	mux.HandleFunc("GET /", a.handleStatic(st))
 	return mux
@@ -11990,13 +13474,13 @@ local account, the owner (F15): the start refuses a database with more, sign-up 
 are closed whatever the flag and the setting say, and nothing that makes, removes, demotes or hands
 over an account is taken. A signed-out visitor to / is shown the owner's profile as a small page the
 server writes (F16); a signed-in owner gets the app there as on any instance, and the app also stays
-at /index.html, where the page's "Sign in" link leads. Federation stays off: nothing is announced to
-other servers until FRD and FWR build it.
+at /index.html, where the page's "Sign in" link leads. Federation is off unless FLOWA_FEDERATE=on; with it
+the owner is discovered and read as a member who opted in is in federated mode.
 
 The page is the first thing Flowa shows a stranger about a person, so it holds only what the owner
 put on their profile (name, handle, bio, links, picture) and what an admin saved about the instance.
-No post is on it: a post becomes public only once posts have an audience, a later item (FRD, actor
-documents and public pages). No level, streak, XP, badge or other number is on it either: the server
+With FLOWA_FEDERATE=on it also shows the owner's Public posts (federation.md 4.2), the newest of them with
+a link to the profile page for the rest; without it no post is on it, as before. No level, streak, XP, badge or other number is on it either: the server
 cannot vouch for them yet (section 14.6, TRU), and section 14.5 keeps them home. */
 
 // singleOnly is what single mode answers to anything that would make, remove, demote or hand over an
@@ -12087,6 +13571,7 @@ type visitorPage struct {
 	picType string // image/jpeg or image/png
 	picTag  string
 	at      time.Time
+	fed     bool // made while the instance federated, so with the owner's Public posts
 }
 
 // visitorLink is one of the owner's links, built from the handle as the app builds it (web/social.js).
@@ -12102,6 +13587,9 @@ type visitorData struct {
 	Description, Contact, ContactURL      string
 	Rules                                 []instanceRule
 	CSS, Icon                             string
+	// With FLOWA_FEDERATE=on, the owner's newest Public posts (federation.md 4.2), and where the rest are.
+	Posts    []pubPost
+	AllPosts string
 }
 
 var visitorTmpl = template.Must(template.New("visitor").Parse(`<!doctype html>
@@ -12123,7 +13611,16 @@ var visitorTmpl = template.Must(template.New("visitor").Parse(`<!doctype html>
 {{with .Bio}}<p class="pub-text">{{.}}</p>
 {{end}}{{if .Links}}<ul class="pub-links" aria-label="Links">{{range .Links}}<li><a class="btn sm" href="{{.URL}}" rel="nofollow noopener noreferrer">{{.Name}}</a></li>{{end}}</ul>
 {{end}}</article>
-{{if or .Description .Contact .Rules}}<section class="card pub-card" aria-labelledby="pub-about">
+{{if .Posts}}<section class="pub-posts" aria-labelledby="pub-posts-h"><h2 id="pub-posts-h">Public posts</h2>
+{{range .Posts}}<article class="card pub-card pub-post">
+<h3 class="pub-when"><a href="{{.URL}}"><time datetime="{{.When}}">{{.Day}}</time></a></h3>
+{{range .Paras}}<p class="pub-text">{{range .}}{{if .URL}}<a href="{{.URL}}" rel="nofollow noopener ugc">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</p>
+{{end}}{{range .Extras}}<p class="pub-text pub-hint">{{.}}</p>
+{{end}}{{if .Picture}}<img class="pub-img" src="{{.Picture}}" alt="{{.PictureAlt}}" loading="lazy">
+{{end}}</article>
+{{end}}{{with .AllPosts}}<p><a class="btn sm" href="{{.}}">All public posts</a></p>
+{{end}}</section>
+{{end}}{{if or .Description .Contact .Rules}}<section class="card pub-card" aria-labelledby="pub-about">
 <h2 id="pub-about">About this Flowa</h2>
 {{with .Description}}<p class="pub-text">{{.}}</p>
 {{end}}{{if .Contact}}<p>Contact: {{if .ContactURL}}<a href="{{.ContactURL}}" rel="nofollow noopener noreferrer">{{.Contact}}</a>{{else}}{{.Contact}}{{end}}</p>
@@ -12201,7 +13698,47 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 			d.Icon = hashedName("icon.svg", f.hash)
 		}
 	}
-	p := &visitorPage{at: time.Now()}
+	p := &visitorPage{at: time.Now(), fed: a.federating()}
+	// With FLOWA_FEDERATE=on the owner's Public posts are public (4.2): the newest pubPage of them, and a
+	// link to the profile page for the rest. Without it the page is as it was, with no post.
+	if p.fed {
+		// Read whole and closed before a post's lines are made, which may ask the database again
+		// (skillNames): nothing holds one connection while it waits for another. The page is shared by
+		// every visitor, so it is made without one visitor's context.
+		type visitorRow struct {
+			id         int64
+			body, head string
+			data       []byte
+			created    time.Time
+		}
+		var got []visitorRow
+		rows, err := a.db.Query(`SELECT p.id, p.body, left(p.image, `+pictureHead+`), p.data, p.created_at FROM posts p WHERE p.user_id = $1 AND `+publicPost+`
+			ORDER BY p.id DESC LIMIT $2`, u.ID, pubPage+1)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var x visitorRow
+			if err = rows.Scan(&x.id, &x.body, &x.head, &x.data, &x.created); err != nil {
+				break
+			}
+			got = append(got, x)
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, x := range got {
+			if len(d.Posts) == pubPage {
+				d.AllPosts = "/users/" + u.Username
+				break
+			}
+			d.Posts = append(d.Posts, a.postOf(context.Background(), u.Username, x.id, x.body, x.head, x.data, x.created))
+		}
+	}
 	// The picture went through cleanImage when it was saved: a JPEG or PNG made again by the server. Its
 	// type is what its bytes decode as, not what the stored prefix says, and anything that decodes as
 	// neither is left out rather than sent. It is decoded once here; the page is kept with it.
@@ -12226,7 +13763,7 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 func (a *app) visitorPageNow(st *static) (*visitorPage, error) {
 	a.pageMu.Lock()
 	defer a.pageMu.Unlock()
-	if a.page != nil && time.Since(a.page.at) < visitorMaxAge {
+	if a.page != nil && time.Since(a.page.at) < visitorMaxAge && a.page.fed == a.federating() {
 		return a.page, nil
 	}
 	p, err := a.makeVisitorPage(st)
@@ -12591,7 +14128,7 @@ func (a *app) start(getenv func(string) string) error {
 		return err
 	}
 	if fed.on {
-		log.Print(discoveryOnly)
+		log.Print(fedBuiltLog)
 	}
 	if rootsPresent() {
 		log.Print("TLS roots: present")
@@ -12620,6 +14157,7 @@ func (a *app) start(getenv func(string) string) error {
 	// points that name at this server, and the app is served there as in local mode.
 	if fed.on {
 		a.hosts = append(a.hosts, fed.origin.host)
+		a.fedHost = fed.origin.host
 	}
 	// FLOWA_PREVIEW_BASE points the fetcher at a stub server in tests; FLOWA_PREVIEW_FETCH=off disables it.
 	a.fetch = newFetcher(getenv("FLOWA_PREVIEW_BASE"), getenv("FLOWA_PREVIEW_BASE") != "")
@@ -13731,6 +15269,10 @@ type post struct {
 	Hidden string `json:"hidden,omitempty"`
 	// Links are the Instagram, TikTok and YouTube links on the post, with their previews.
 	Links []linkCard `json:"links,omitempty"`
+	// Audience is "public" or "local" (This server), told to the post's author only, and only in a mode
+	// that federates: elsewhere every post is This server and the answer is as it always was.
+	Audience string `json:"audience,omitempty"`
+	aud      string // as stored, for every reader
 }
 
 // blockFree is the SQL condition that what author wrote may be shown to viewer; the three arguments are
@@ -13768,7 +15310,7 @@ func postCols(staff string) string {
 	return `p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
-			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason`
+			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason, p.audience`
 }
 
 // homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
@@ -13822,8 +15364,11 @@ func (a *app) readPosts(viewer *user, q string, args ...any) (map[string]any, er
 	for rows.Next() {
 		p := &post{Comments: []comment{}}
 		var data []byte
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden, &p.aud); err != nil {
 			return nil, err
+		}
+		if a.fed != nil && p.UserID == viewer.ID {
+			p.Audience = p.aud
 		}
 		p.Data = data
 		posts = append(posts, p)
@@ -13920,17 +15465,26 @@ func (a *app) notifyNames(names []string, actor, postID, commentID int64, skip .
 	if len(names) == 0 {
 		return
 	}
+	// The ids are read whole and the rows closed before anyone is told: telling writes a row, and a
+	// request that held this query's connection while it waited for another could, with a few others
+	// doing the same, take the whole pool and stop every request.
 	rows, err := a.db.Query(`SELECT id FROM users WHERE username = ANY($1)`, pq.Array(names))
 	if err != nil {
 		log.Printf("mentions: %v", err)
 		return
 	}
-	defer rows.Close()
+	var ids []int64
 	for rows.Next() {
 		var id int64
-		if rows.Scan(&id) != nil {
-			continue
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("mentions: %v", err)
+	}
+	rows.Close()
+	for _, id := range ids {
 		told := id == actor
 		for _, s := range skip {
 			told = told || id == s
@@ -14044,8 +15598,19 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		Tags  []postTag  `json:"tags"`
 		Combo *postCombo `json:"combo"`
 		Links []string   `json:"links"`
+		// Who may read it (docs/federation.md, F2): "public" or "local", read only in a mode that federates.
+		Audience *string `json:"audience"`
 	}
 	if !readJSON(w, r, maxImage+4*maxPost+8192, &in) {
+		return
+	}
+	audience, msg, err := a.postAudience(in.Audience, u)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if msg != "" {
+		fail(w, http.StatusBadRequest, msg)
 		return
 	}
 	body := strings.TrimSpace(in.Body)
@@ -14112,17 +15677,71 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		prop, skill = tags[0].Prop, tags[0].Skill
 	}
 	var id int64
-	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image, data) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		u.ID, body, prop, skill, in.Image, string(dataJSON)).Scan(&id); err != nil {
+	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image, data, audience) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		u.ID, body, prop, skill, in.Image, string(dataJSON), audience).Scan(&id); err != nil {
 		a.serverError(w, err)
 		return
 	}
 	made = id
+	a.dropVisitorPage() // a single-profile instance's page shows the owner's Public posts
 	a.notifyMentions(body, u.ID, id, 0)
 	for _, l := range links {
 		go a.preview(l) // in the background: posting never waits for another site
 	}
 	a.writePost(w, u, id)
+}
+
+// Who may read a post (docs/federation.md, F2, F3 and 6.7). This server ("local") is the audience of every
+// post made before audiences existed and of every post made outside a mode that federates; Public
+// ("public") is chosen per post, and only by a member who has opted in, while federation is not refused.
+// Milestone posts are This server until TRU (F13): handleAchievements writes none other. Posts are not
+// edited (1.2), so the audience is decided once, when the post is made: a Public post that another server
+// may have read cannot become private by a change of a column, and taking one back is a deletion, which
+// FWR sends to the servers it went to.
+const (
+	audLocal  = "local"
+	audPublic = "public"
+)
+
+// Said when a post asks for Public and cannot have it.
+const (
+	audNotOptedIn = "Only members who share their profile beyond this server can post publicly. Turn that on in Settings, or post to this server."
+	audOff        = "Posting publicly is not available at the moment. Post to this server instead."
+	audUnknown    = "The audience is public or local (this server)."
+)
+
+// postAudience decides a new post's audience from what the page asked for (nil: nothing). Outside a mode
+// that federates the field is ignored, as every field the handler does not know is, and the post is This
+// server, so an instance that sets nothing new answers as before. In a mode that federates nothing asked
+// means This server too: Public is never given by a default on the server, so a page from before audiences
+// cannot publish by leaving the field out; the composer sends the choice, with Public chosen at first for a
+// member who opted in (federation.md 11). Public is refused, with the reason, to a member who has not opted
+// in (the owner of a single-profile instance has, by FLOWA_FEDERATE=on) and while federation is refused.
+func (a *app) postAudience(want *string, u *user) (aud, msg string, err error) {
+	if a.fed == nil || want == nil {
+		return audLocal, "", nil
+	}
+	switch *want {
+	case audLocal:
+		return audLocal, "", nil
+	case audPublic:
+	default:
+		return "", audUnknown, nil
+	}
+	if !a.federating() {
+		return "", audOff, nil
+	}
+	if a.mode == modeSingle && u.Owner {
+		return audPublic, "", nil
+	}
+	var on bool
+	if err := a.db.QueryRow(`SELECT federates FROM users WHERE id = $1`, u.ID).Scan(&on); err != nil {
+		return "", "", err
+	}
+	if !on {
+		return "", audNotOptedIn, nil
+	}
+	return audPublic, "", nil
 }
 
 // shown makes text a person sent safe to say back in a message: printable characters only, and
@@ -14155,6 +15774,7 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 		a.serverError(w, err)
 		return
 	}
+	a.dropVisitorPage()
 	if author != u.ID {
 		if err := a.audit(a.db, u.ID, "delete_post", "post", id, author, "", nil); err != nil {
 			a.serverError(w, err)

@@ -4,7 +4,7 @@
 
 // sending: the forms whose answer is still on its way; keys: the Idempotency-Key each unsent form
 // last used, so trying the very same thing again cannot make it twice.
-const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {} });
+const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], draftAud: '', linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {} });
 // owner: the account all of this belongs to (0 for a visitor); gen goes up each time it is thrown
 // away, so an answer that was asked for by the previous account is not shown to the next.
 const social = Object.assign(socialBlank(), { owner: 0, gen: 0 });
@@ -205,7 +205,7 @@ function postCard(p) {
   }
   const thread = threadHTML(p);
   return `<article class="card post" data-post="${p.id}">
-    <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a></span></span>${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}${canReport(p.userId) ? `<button class="icon-btn" data-act="report" data-kind="post" data-id="${p.id}" data-what="this post" aria-label="Report post" data-tip="Report">${icon('flag')}</button>` : ''}</header>
+    <header class="row" style="gap:10px"><a href="#/u/${esc(u.username)}" aria-label="${esc(u.displayName || u.username)}">${avatarHTML(u)}</a><span class="grow" style="display:grid"><a class="post-name" href="#/u/${esc(u.username)}">${esc(u.displayName || u.username || 'Someone')}</a><span class="tiny">@${esc(u.username)} · <a class="muted" href="#/post/${p.id}">${ago(p.created)}</a>${p.audience && AUD_NAMES[p.audience] ? ` · <span class="aud-mark" data-aud="${esc(p.audience)}">${AUD_NAMES[p.audience]}</span>` : ''}</span></span>${mine ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}${canReport(p.userId) ? `<button class="icon-btn" data-act="report" data-kind="post" data-id="${p.id}" data-what="this post" aria-label="Report post" data-tip="Report">${icon('flag')}</button>` : ''}</header>
     ${p.hidden ? `<p class="notice warn">${icon('lock')} Hidden by a moderator: ${esc(p.hidden)}${p.userId === me.id ? '. Only you and the moderators can see it.' : ''}${canDo('post.hide') && p.userId !== me.id ? ` <button class="btn sm" data-act="mod-do" data-do="restore" data-kind="post" data-id="${p.id}">Restore</button>` : ''}</p>` : ''}
     ${body}
     <footer class="post-acts"><button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.commentCount || ''}</span></button>${bmButton('post', String(p.id), true)}</footer>
@@ -446,8 +446,21 @@ function composer() {
     ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}" aria-label="Tag ${esc(t.skill)}, ${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
     <p class="form-err" id="compose-err" role="alert"></p>
     <div class="row wrap" style="gap:8px"><button type="button" class="btn sm" data-act="file">${icon('image')}Picture</button><input type="file" accept="image/*" data-change="compose-img" hidden>
-      <span class="grow"></span>${countHTML('compose-count', social.draftBody, 2000)}<button class="btn primary sm" type="submit" ${sendOff('post')}>${icon('send')}Post</button></div></div></div></form>`;
+      ${audPick()}<span class="grow"></span>${countHTML('compose-count', social.draftBody, 2000)}<button class="btn primary sm" type="submit" ${sendOff('post')}>${icon('send')}Post</button></div>${audHint()}</div></div></form>`;
 }
+// Who may read a new post (docs/federation.md, F2): offered only where the server federates and the member
+// shares their profile beyond it (fed.audiences, the server's words). Public is chosen at first; the choice
+// stays with the draft. Anywhere else nothing is offered and every post stays on this server.
+const audChoices = () => (fed && fed.audiences) || null;
+const audNow = () => { const c = audChoices(); return c ? (c.find(x => x.value === social.draftAud) || c[0]) : null; };
+function audPick() {
+  const c = audChoices(), now = audNow();
+  if (!c) return '';
+  return `<label class="aud-pick tiny">Who can read it <select class="sm" data-change="compose-aud" aria-describedby="aud-hint">${c.map(x => `<option value="${esc(x.value)}" ${x.value === now.value ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select></label>`;
+}
+const audHint = () => { const now = audNow(); return now ? `<p class="tiny muted" id="aud-hint">${esc(now.hint)}</p>` : ''; };
+// The audience of one's own post, as the server tells its author: shown on the post beside its time.
+const AUD_NAMES = { public: 'Public', local: 'This server' };
 // The Combos page's Publish button: bring the combo to the composer with a line to edit.
 function publishCombo(c) {
   social.draftCombo = { id: c.id, name: c.name, role: c.role || '', prop: ui.prop, seq: [...(c.seq || [])], reps: (c.seq || []).map((_, i) => (c.reps || [])[i] || 1) };
@@ -716,6 +729,12 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Enter') { e.preventDefault(); if (items[social.pickIdx]) pickAdd(items[social.pickIdx]); }
 });
 document.addEventListener('change', async e => {
+  if (e.target.dataset.change === 'compose-aud') {
+    social.draftAud = e.target.value;
+    const h = document.getElementById('aud-hint'), now = audNow();
+    if (h && now) h.textContent = now.hint;
+    return;
+  }
   if (e.target.dataset.change !== 'compose-img') return;
   const f = e.target.files[0]; e.target.value = '';
   if (!f) return;
@@ -739,6 +758,7 @@ document.addEventListener('submit', async e => {
     if (f.body.value.length > f.body.maxLength) { showErr('compose-err', `A post holds ${f.body.maxLength} characters. This one has ${f.body.value.length}.`, [f.body]); f.body.focus(); return; }
     showErr('compose-err', '');
     const gen = social.gen, send = { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo, links: social.draftLinks };
+    if (audNow()) send.audience = audNow().value;
     setSending('post', true);
     const r = await api('posts', 'POST', send, { 'Idempotency-Key': onceKey('post', send) });
     if (social.gen !== gen) return; // signed out meanwhile: the draft and its answer are no longer this tab's
