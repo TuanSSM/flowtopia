@@ -3591,6 +3591,38 @@ func TestDBQueryPlans(t *testing.T) {
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
 		{"the counts of a member who follows 500", followCountsSQL, []any{viewer}, 1500, ""},
 	})
+	// The public face (migration 14, FRD 5): two members opted in, a third of 600 more posts of one of them
+	// Public, some hidden, 70,000 posts in all, 2,000 retired names and 500 keys. Each answer is one statement on an index: the gate on the unique username, the actor's
+	// row and key by their keys, a page of Public posts through posts_public, a post through its key.
+	var pubPost int64
+	for _, q := range []string{
+		`UPDATE users SET federates = true WHERE id IN (7, 9)`,
+		`INSERT INTO retired_usernames (username) SELECT 'gone' || g FROM generate_series(1, 2000) g`,
+		`INSERT INTO ap_keys (user_id, key_id, public_key, private_sealed) SELECT g, '/users/m' || g || '#main-key', 'pem', 'v1.x' FROM generate_series(1, 500) g`,
+		`INSERT INTO posts (user_id, body, audience, hidden_at) SELECT 7, 'mine ' || g, CASE WHEN g % 3 = 0 THEN 'public' ELSE 'local' END, CASE WHEN g % 41 = 0 THEN now() END FROM generate_series(1, 600) g`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	if err := db.QueryRow(`SELECT max(id) FROM posts WHERE user_id = 7 AND audience = 'public' AND hidden_at IS NULL`).Scan(&pubPost); err != nil {
+		t.Fatal(err)
+	}
+	if e.count(`SELECT count(*) FROM posts WHERE user_id = 7 AND audience = 'public'`) < pageSize {
+		t.Fatal("too few Public posts to page")
+	}
+	plans([]planCase{
+		{"public: the gate of an actor", actorGateSQL, []any{"m7", false}, 10, ""},
+		{"public: the gate of a name nobody has", actorGateSQL, []any{"nobody", false}, 10, ""},
+		{"public: an actor document", actorDocSQL, []any{7}, 10, ""},
+		{"public: a profile page", profilePageSQL, []any{"m7", false, 0, pubPage + 1}, 150, ""},
+		{"public: a profile page, older posts", profilePageSQL, []any{"m7", false, pubPost, pubPage + 1}, 150, ""},
+		{"public: the page of a member not shown", profilePageSQL, []any{"m8", false, 0, pubPage + 1}, 10, ""},
+		{"public: a post", publicPostSQL, []any{"m7", false, pubPost}, 10, ""},
+		{"public: a post's picture", postPictureSQL, []any{"m7", false, pubPost}, 10, ""},
+		{"public: a profile picture", avatarSQL, []any{"m7", false}, 10, ""},
+	})
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {
 		if e.count(`SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`, idx) != 1 {
@@ -5556,12 +5588,12 @@ func TestDBFederatedStart(t *testing.T) {
 			t.Errorf("a request for %s answers %d, want %d", host, w.Code, want)
 		}
 	}
-	// What is new is discovery and nothing else: the routes are those of local mode and the three.
+	// What is new is what testdata/routes-federated.txt lists and nothing else: the routes are those of local mode and those.
 	got := slices.Sorted(slices.Values(e.a.table(staticOf(t, nil)).patterns))
 	if want := slices.Sorted(slices.Values(slices.Concat(routesFile(t, "testdata/routes-local.txt"), routesFile(t, "testdata/routes-federated.txt")))); !slices.Equal(got, want) {
-		t.Errorf("federated mode serves other routes than local mode and discovery:\n%v\n%v", got, want)
+		t.Errorf("federated mode serves other routes than local mode and routes-federated.txt:\n%v\n%v", got, want)
 	}
-	if n := strings.Count(logs.String(), discoveryOnly); n != 1 {
+	if n := strings.Count(logs.String(), fedBuiltLog); n != 1 {
 		t.Errorf("the start says what federation does %d times, want once", n)
 	}
 	// No answer, no audit row and no log line holds the secret, the private key or its sealed form.

@@ -199,7 +199,9 @@ func TestWebFinger(t *testing.T) {
 	// Through the server: the instance actor needs no database, so its answer is checked whole here.
 	a, h := discoveryApp(t, "https://flowa.example.org")
 	w := ask(h, "GET", wf("acct:flowa.example.org@flowa.example.org"), "", nil)
-	want := `{"subject":"acct:flowa.example.org@flowa.example.org","aliases":["https://flowa.example.org/actor"],"links":[{"rel":"self","type":"application/activity+json","href":"https://flowa.example.org/actor"}]}`
+	self := `{"rel":"self","type":"application/activity+json","href":"https://flowa.example.org/actor"}`
+	page := `{"rel":"http://webfinger.net/rel/profile-page","type":"text/html","href":"https://flowa.example.org/actor"}`
+	want := `{"subject":"acct:flowa.example.org@flowa.example.org","aliases":["https://flowa.example.org/actor"],"links":[` + self + `,` + page + `]}`
 	if w.Code != 200 || w.Body.String() != want {
 		t.Errorf("the instance actor: %d %s", w.Code, w.Body)
 	}
@@ -224,13 +226,13 @@ func TestWebFinger(t *testing.T) {
 
 	// rel: only the links of the relations asked for, the rest of the answer as it was (RFC 7033 4.3).
 	q := "/.well-known/webfinger?resource=" + url.QueryEscape("acct:flowa.example.org@flowa.example.org")
-	noLinks := strings.Replace(want, `[{"rel":"self","type":"application/activity+json","href":"https://flowa.example.org/actor"}]`, `[]`, 1)
+	links := func(l string) string { return strings.Replace(want, `[`+self+`,`+page+`]`, `[`+l+`]`, 1) }
 	for rels, body := range map[string]string{
-		"&rel=self": want,
-		"&rel=" + url.QueryEscape("http://webfinger.net/rel/profile-page"):               noLinks,
+		"&rel=self": links(self),
+		"&rel=" + url.QueryEscape("http://webfinger.net/rel/profile-page"):               links(page),
 		"&rel=" + url.QueryEscape("http://webfinger.net/rel/profile-page") + "&rel=self": want,
-		"&rel=SELF": noLinks, // relation types are compared as plain strings (4.4.4.1)
-		"&rel=":     noLinks,
+		"&rel=SELF": links(""), // relation types are compared as plain strings (4.4.4.1)
+		"&rel=":     links(""),
 	} {
 		if w := ask(h, "GET", q+rels, "", nil); w.Code != 200 || w.Body.String() != body {
 			t.Errorf("rel %q: %d %s", rels, w.Code, w.Body)
@@ -347,7 +349,7 @@ func TestNodeInfo(t *testing.T) {
 	if hd := w.Result().Header; w.Code != 200 || hd.Get("Content-Type") != `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"` || hd.Get("Access-Control-Allow-Origin") != "*" || hd.Get("Cache-Control") != discoveryKeep {
 		t.Fatalf("the document: %d %v", w.Code, hd)
 	}
-	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo"]}}`
+	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo","actors","notes"]}}`
 	if w.Body.String() != want {
 		t.Errorf("the document:\n%s\nwant\n%s", w.Body, want)
 	}
@@ -668,7 +670,7 @@ func patternsOf(t *testing.T, a *app) []string {
 	return slices.Sorted(slices.Values(a.table(staticOf(t, nil)).patterns))
 }
 
-// A mode that federates has the routes of its mode and the three of testdata/routes-federated.txt, no
+// A mode that federates has the routes of its mode and those of testdata/routes-federated.txt, no
 // more; single mode without FLOWA_FEDERATE has none of them (TestDBSingleRoutes holds that table).
 func TestDBFederatedRoutes(t *testing.T) {
 	extra := routesFile(t, "testdata/routes-federated.txt")
@@ -746,7 +748,7 @@ func TestDBWebFinger(t *testing.T) {
 		t.Fatal("the origin was recorded before anything was announced")
 	}
 
-	want := `{"subject":"acct:ana@flowa.example.org","aliases":["https://flowa.example.org/users/ana"],"links":[{"rel":"self","type":"application/activity+json","href":"https://flowa.example.org/users/ana"}]}`
+	want := `{"subject":"acct:ana@flowa.example.org","aliases":["https://flowa.example.org/users/ana"],"links":[{"rel":"self","type":"application/activity+json","href":"https://flowa.example.org/users/ana"},{"rel":"http://webfinger.net/rel/profile-page","type":"text/html","href":"https://flowa.example.org/users/ana"}]}`
 	// A HEAD for a member gets the headers a GET gets but no id in a body, so it records nothing; the GET
 	// that follows does.
 	head := ask(e.h, "HEAD", wf("acct:ana@flowa.example.org"), "", nil)
@@ -953,7 +955,7 @@ func TestDBNodeInfo(t *testing.T) {
 	}
 	// The dashboard says what this version of federation does, and that nothing is announced yet: NodeInfo
 	// names the origin but no actor id, so it records nothing.
-	if _, out := e.do(admin, "GET", "/api/admin/dashboard", nil); out["federation"] == nil || out["federation"].(map[string]any)["built"] != discoveryBuilt || out["federation"].(map[string]any)["origin"] != "https://flowa.example.org" || out["federation"].(map[string]any)["announced"] != "" {
+	if _, out := e.do(admin, "GET", "/api/admin/dashboard", nil); out["federation"] == nil || out["federation"].(map[string]any)["built"] != fedBuilt || out["federation"].(map[string]any)["origin"] != "https://flowa.example.org" || out["federation"].(map[string]any)["announced"] != "" {
 		t.Errorf("the dashboard: %v", out["federation"])
 	}
 	if n := e.count(`SELECT count(*) FROM instance_settings WHERE key IN ('origin', 'first_federated_at')`); n != 0 {
@@ -1202,14 +1204,20 @@ func BenchmarkWebFinger(b *testing.B) {
 	})
 }
 
+// publicAddresses are the actors, the public pages and their pictures of a mode that federates (FRD 5), as
+// a visitor would ask for them.
+var publicAddresses = []string{"/actor", "/users/ana", "/users/ana?before=5", "/users/ana/posts/1", "/users/ana/avatar.jpg", "/users/ana/avatar.png?v=1",
+	"/users/ana/posts/1/picture.jpg", "/users/ana/posts/1/picture.png"}
+
 // What a deployment that federates nothing sees is what it saw before discovery existed, headers
 // included: a few answers of a local instance (signed in and not, /api/me read and saved with a federates
 // field that is not a boolean, the page, an unknown API and page address, WebFinger, /healthz) have the
 // status and the full set of headers testdata/headers-local.txt took from the build before discovery; in
-// local mode and in single mode without FLOWA_FEDERATE, the three discovery addresses answer every method
-// as an address nobody has (no 405 of the discovery gate, no CORS header); and in every mode no answer
-// outside those three addresses carries a CORS header: not a signed-in API answer, not a page, not an
-// error. Bodies are compared where they matter elsewhere (TestDBFederateOptIn, TestDBLocalModeUnchanged).
+// local mode and in single mode without FLOWA_FEDERATE, the three discovery addresses and the public
+// addresses of FRD 5 (the actors, the public pages, their pictures) answer every method, with any Accept,
+// as an address nobody has (no 405 of the gate, no Vary, no CORS header); and in every mode no answer
+// outside the three discovery addresses carries a CORS header: not a signed-in API answer, not a page, not
+// an error. Bodies are compared where they matter elsewhere (TestDBFederateOptIn, TestDBLocalModeUnchanged).
 func TestDBDefaultsUnchanged(t *testing.T) {
 	page := map[string]string{"index.html": "<!doctype html><title>Flowa</title>"}
 	l := newEnv(t)
@@ -1230,16 +1238,17 @@ func TestDBDefaultsUnchanged(t *testing.T) {
 	type answer struct {
 		code                     int
 		body, cors, allow, ctype string
+		header                   string // every header, as one line, so a new one (Vary, a policy) shows too
 	}
 	of := func(w *httptest.ResponseRecorder) answer {
 		h := w.Result().Header
-		return answer{w.Code, w.Body.String(), h.Get("Access-Control-Allow-Origin"), h.Get("Allow"), h.Get("Content-Type")}
+		return answer{w.Code, w.Body.String(), h.Get("Access-Control-Allow-Origin"), h.Get("Allow"), h.Get("Content-Type"), fmt.Sprint(h)}
 	}
 	for name, e := range map[string]*tenv{"local": l, "single without FLOWA_FEDERATE": s} {
-		for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"} {
-			for _, hdr := range []map[string]string{nil, {"Content-Type": "application/json"}} {
+		for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"} {
+			for _, hdr := range []map[string]string{nil, {"Content-Type": "application/json"}, {"Accept": "application/activity+json"}, {"Accept": `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`}} {
 				want := of(ask(e.h, m, "/nobody-has-this-address", "", hdr))
-				for _, p := range []string{"/.well-known/webfinger?resource=acct:ana@flowa.example.org", "/.well-known/nodeinfo", "/nodeinfo/2.1"} {
+				for _, p := range append([]string{"/.well-known/webfinger?resource=acct:ana@flowa.example.org", "/.well-known/nodeinfo", "/nodeinfo/2.1"}, publicAddresses...) {
 					if got := of(ask(e.h, m, p, "", hdr)); got != want {
 						t.Errorf("%s: %s %s %v answers %+v, an unknown address %+v", name, m, p, hdr, got, want)
 					}

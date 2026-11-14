@@ -7,11 +7,12 @@ Commits title of the category's type. An item is checked only when its DoD holds
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
 **Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): federated mode, and
-single mode with `FLOWA_FEDERATE=on`, start since the WebFinger and NodeInfo item, and answer discovery only
-(no actor documents, no inbox, nothing delivered); the first item waits for its Pi measurement; the guarded
+single mode with `FLOWA_FEDERATE=on`, start since the WebFinger and NodeInfo item, and can be read since the
+actor documents item (discovery, the actors, and the profiles and Public posts of members who opted in; no
+inbox, so nobody can follow yet, and nothing is delivered); the first item waits for its Pi measurement; the guarded
 fetcher is done, and nothing calls its federation part yet; HTTP signatures are built, with no caller yet, and
-wait for their Pi measurements; WebFinger and NodeInfo are done (discovery only: the ids they give out are served
-from FRD 5); the owner's review of the design is still asked for. 2 of 8 items done. The design note was checked against the specifications and
+wait for their Pi measurements; WebFinger and NodeInfo are done; actor documents and public pages are done, with the post
+audience and retired names; the owner's review of the design is still asked for. 3 of 8 items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -136,7 +137,7 @@ design note says it exists.
   an admin publish the version (the default stays the empty string); `/users/{name}`, which the `self` link
   names, served by FRD 5; and the `federation` pause flag of F1 and 14.1, which no item has built yet (the
   mode, off by default, is the gate meanwhile), for the owner to place.
-- [ ] **Actor documents and public pages.** `/users/{name}` and `/actor`, content negotiation with
+- [x] **Actor documents and public pages.** `/users/{name}` and `/actor`, content negotiation with
   `Vary: Accept`, the small HTML pages for profiles and Public posts, the public picture URLs, the
   post audience (Public or This server) in the composer. A name is public from here on, so
   `retired_usernames` lands here: the name of a deleted account that had opted in is never given to
@@ -146,6 +147,47 @@ design note says it exists.
   `TestDBPublicSurfaces` (every public route refuses This server posts and members who did not opt
   in), `TestDBRetiredNames` (refused at sign-up and at a rename); a screenshot of the public post
   page.
+  Built (federation.md 4.1, 4.2, 4.3, 5.2, 5.3, 5.5, 5.6, 6.2, 6.5, 9.4 and 11 say what and why, each in an "As
+  built (FRD 5)" paragraph), in two commits. The audience: `posts.audience` (migration 14, `local` for every
+  post there was and every post made outside a mode that federates, the check `NOT VALID`; `posts_public` for
+  the public pages), "Who can read it" in the composer (Public first, only for a member who opted in while
+  federation is not refused; the server never gives Public by a default), the mark beside the author's own
+  post, milestones This server (F13); posts are not edited, so taking a Public post back is deleting it, and
+  sending that Delete to the servers that read it is FWR's (account deletion and Delete of Notes). Retired
+  names: `retired_usernames` (migration 14, with `flowa-schema13.dump` for the restore drill), filled in the
+  delete's transaction for an account that opted in or ever had a key, in every mode; refused at sign-up, at a
+  request to join, at approving one and for `ADMIN_USER`, as a taken name; no endpoint renames; the instance's
+  host reserved in a mode that federates. The read side: `GET /users/{name}`, `GET /users/{name}/posts/{id}`
+  and `GET /actor` with content negotiation on the same URL (`parseAccept`, `wantsActivity`; `Vary: Accept`
+  on every answer), the actor of 5.5 and the Note of 6.5 from typed structs (inbox and outbox named, as
+  ActivityPub 4.1 requires; followers, following, featured and the shared inbox left out until they answer),
+  the small pages from `pubTmpl` (no script, the policy of 5.6, `noindex`, links `nofollow noopener ugc`,
+  pictures from this server, Sign in, a profile's Public posts 20 at a time by a cursor), the two public
+  picture addresses (`.jpg` or `.png`), one 404 per representation for everything not shown, 410 with a
+  Tombstone for a retired name, 503 while an opted-in member's key is being made, `ensureOrigin` before a
+  member's document or Note (not the instance actor's), `limits.public` (2,400 an hour per address, before
+  any database work), 405 with `Allow` for other methods, no CORS header; the actor documents kept per member
+  and dropped on every change of what they say; single mode with `FLOWA_FEDERATE=on` lists the owner's Public
+  posts at `/`; the one sentence of what is built (`fedBuilt`) read by the start log, the dashboard and
+  NodeInfo's `metadata.federationBuilt`. `TestActorDocument` (golden files `actor-ana.json`,
+  `actor-instance.json`, `note-ana.json`, both `Accept` forms, the 304, a strict reader's shape: one `type`, https
+  ids, no name twice), `TestContentNegotiation` (and `FuzzAccept`), `TestNoteHTML`, `TestDBPublicSurfaces`
+  (every public address and every case byte for byte in both representations, every post id under every name
+  for the pictures, HEAD, 405, the allowance, refused federation), `TestDBActorCache`, `TestDBPublicPages`,
+  `TestDBRetiredNames`, `TestDBPostAudience`, `TestDBQueryPlans` (each public statement on an index, with
+  70,000 posts, 2,000 retired names and 500 keys) and `TestDBDefaultsUnchanged` (every public address, seven
+  methods, four `Accept` values, every header compared with an unknown address in local and plain single mode)
+  pass; `routes-local.txt`, `routes-single.txt` and `fetch_test.go` are unedited. The `federated` browser suite
+  works the composer with the keyboard, reads the actor, the Note and a This server post's 404 over HTTP, opens
+  the public post page and the profile page held to the a11y, contrast and keys walks, and writes their pictures
+  at desktop and 420 px (`federated-post`, `federated-profile`, and `-phone`) with the composer's. On a 2.1 GHz
+  Xeon through the whole server chain, `BenchmarkActorDocument` (kept in memory, the gate's one query to a local
+  Postgres) is about 0.54 ms, 6.5 KB and 61 allocations a request, and `BenchmarkPublicPost` (one query, the Note
+  made) about 0.88 ms, 7.8 KB and 108 allocations (`go test -run xxx -bench 'ActorDocument|PublicPost'
+  -benchmem .`). Open: a test that Flowa's documents pass main's strict decoder (`apScan`, `decodeActor`,
+  `decodeNote`) once this branch is rebased on it; the answers local mode gives after federating (410 and a
+  Tombstone, 4.3), which the note does not place in this item; the instance setting to let a member be indexed
+  by search engines (the pages say `noindex` until then).
 - [ ] **Outbox and collections.** A paged outbox of Create activities for Public posts; followers and
   following with public counts and pages only for the account itself; an empty featured collection.
   DoD: `TestOutboxPaging` (empty, one page, many pages, a deleted post, a This server post absent).

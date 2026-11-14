@@ -643,9 +643,10 @@ function fedCard() {
   const on = fed.optedIn, head = '<div class="card fed-card"><div class="card-h"><h2>Beyond this server</h2></div><div class="stack">';
   if (fed.unavailable) return `${head}<p class="small">${esc(fed.unavailable)}</p>${fed.refused ? `<p class="notice warn">${esc(fed.refused)}</p>` : ''}</div></div>`;
   return `${head}
-    ${fed.implied ? '<p class="small">This Flowa is yours alone, and it is set up to let other servers find you.</p>'
+    ${fed.implied ? '<p class="small">This Flowa is yours alone, and it is set up to share your profile and Public posts beyond it.</p>'
     : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>${esc(fed.label)}</span></label>`}
     <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. ${esc(fed.built)}</p>
+    ${on && fed.profile ? `<p class="small"><a href="${esc(fed.profile)}" target="_blank" rel="noopener">See your public page ${icon('ext')}</a></p>` : ''}
     ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}</div></div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
@@ -1091,7 +1092,7 @@ document.addEventListener('change', async e => {
     case 'setting': state.settings[d.k] = t.value.trim(); t.blur(); commit(); break;
     case 'federates': {
       const want = t.checked, r = await api('me', 'PUT', { federates: want });
-      if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'Other servers can now find you by your handle.' : 'Other servers can no longer find you by your handle.'); }
+      if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'Your profile and Public posts are now shared beyond this server.' : 'Your profile and posts are no longer shared beyond this server.'); }
       else toast(r.error);
       render(); document.querySelector('[data-change="federates"]')?.focus();
       break;

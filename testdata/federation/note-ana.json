@@ -1,0 +1,31 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    {
+      "flowa": "https://github.com/TuanSSM/flowtopia/ns#",
+      "sensitive": "as:sensitive",
+      "Hashtag": "as:Hashtag"
+    }
+  ],
+  "id": "https://flowa.example.org/users/ana/posts/1",
+  "type": "Note",
+  "attributedTo": "https://flowa.example.org/users/ana",
+  "url": "https://flowa.example.org/users/ana/posts/1",
+  "published": "2026-11-12T18:04:05Z",
+  "to": [
+    "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "sensitive": false,
+  "content": "<p>Finally clean! &lt;b&gt;Thanks&lt;/b&gt; &amp; see <a href=\"https://example.com/drill\" rel=\"nofollow noopener\">https://example.com/drill</a>.</p><p>Second line</p><p>Tricks: Six basic figure-8s (Nunchaku)</p><p>Combo: Morning: Six basic figure-8s, Six directions</p>",
+  "attachment": [
+    {
+      "type": "Image",
+      "mediaType": "image/jpeg",
+      "url": "https://flowa.example.org/users/ana/posts/1/picture.jpg",
+      "name": "",
+      "summary": "",
+      "width": 32,
+      "height": 24
+    }
+  ]
+}

@@ -314,11 +314,12 @@ a value that is not such an address stops the server at start with a message tha
 `FLOWA_MODE` in `.env` says how the instance runs. Unset, empty or `local` is what Flowa has always
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
 changes. `single` is one person's own instance (below). `federated` is a community whose members can share
-their profiles with other servers; **this version of it answers discovery only** (WebFinger and NodeInfo,
-under "Federation: discovery" below): no actor documents, no inbox, nothing is delivered. Any other word
-stops the server at start with a message that says so, before the database is opened. The admin dashboard
-shows the mode under the version, and in a mode that federates the origin and the same sentence about
-discovery.
+their profiles with other servers; **this version of it can be read, and nothing more**: discovery (WebFinger
+and NodeInfo, under "Federation: discovery" below) and the profiles and Public posts of the members who opted
+in ("Federation: profiles and Public posts"), but no inbox, so nobody can follow anyone yet, and nothing is
+delivered. Any other word stops the server at start with a message that says so, before the database is
+opened. The admin dashboard shows the mode under the version, and in a mode that federates the origin and the
+same sentence about what is served.
 
 ### A single-profile instance
 
@@ -337,9 +338,10 @@ YouTube, as on their profile, each with `rel="nofollow noopener noreferrer"`), t
 uploaded one (served at `/profile-picture`), and, once an admin has saved them, the instance's description,
 contact and rules, with a Sign in button. **This page is public to anyone who can reach the server**: on a
 home network that is the people on it, behind a public name or tunnel it is the whole internet. It never
-shows a post, a comment, a level, a streak, XP, a badge or any other number, nor how many accounts there
-are, the version or the mode: posts become public only once a post can have an audience (a later item of the
-plan), and numbers only once the server can vouch for them. It is kept in memory and made again when the
+shows a comment, a level, a streak, XP, a badge or any other number, nor how many accounts there are, the
+version or the mode, and numbers come only once the server can vouch for them. Posts are on it only with
+`FLOWA_FEDERATE=on`: then the owner's newest 20 Public posts are listed (with a link to the profile page for
+the rest), as under "Federation: profiles and Public posts"; without it no post is on it, as before. It is kept in memory and made again when the
 owner saves their profile or an admin saves the instance information (or after ten minutes). Each address
 has an allowance of 300 reads an hour of `/` and the picture together, counted before anything else; past it
 the answer is 429 with no database read. A visitor with no cookie, or with one that cannot be a session token,
@@ -434,20 +436,20 @@ pick the new keys up when a signature next fails to verify.
 
 ### Federation: discovery (WebFinger and NodeInfo)
 
-**What this version of federation does: discovery only.** Another server can ask who a member is and what
-this server is, and nothing more: there are no actor documents, no inbox, and nothing is delivered. A
+**What this version of federation does: it can be read.** Another server can ask who a member is and what
+this server is, and read the profiles and Public posts of the members who opted in (next section); there is
+no inbox, so nobody can follow anyone yet, and nothing is delivered. A
 member's handle is `@name@host`, where host is the name in `FLOWA_ORIGIN`. Three addresses answer, only in a
 mode that federates (in local mode they are unknown addresses, as before):
 
 - `GET /.well-known/webfinger?resource=acct:ana@flowa.example.org` (RFC 7033), as `application/jrd+json`:
-  the handle, and a `self` link to the member's actor id, `https://flowa.example.org/users/ana`. **That
-  address is not served by this version yet** (actor documents are the next item of the plan), so a server
-  that follows it gets "not found" until then, and Mastodon cannot follow the account yet. It answers only
+  the handle, a `self` link to the member's actor id, `https://flowa.example.org/users/ana`, and a profile
+  page link to the same address, which a browser gets as the member's public page (next section). It answers only
   for a member who opted in (Settings, "Beyond this server"), and on a single-profile instance for the owner,
   whose opt-in is `FLOWA_FEDERATE=on`. A name nobody has, a member who has not opted in and a suspended
   member all get the same 404. It also takes the handle without `acct:`, with a leading `@`, in other cases,
   and the actor's id as the resource; `acct:flowa.example.org@flowa.example.org` names the instance's own
-  actor (`/actor`, not served yet either). A missing, repeated or malformed resource is 400.
+  actor (`/actor`). A missing, repeated or malformed resource is 400.
 - `GET /.well-known/nodeinfo` and `GET /nodeinfo/2.1` (NodeInfo 2.1): the software (`flowa`; its version
   is sent as an empty string, which the schema allows, so the build is not named, as `/healthz` keeps it to
   local probes; publishing it becomes an admin's choice with a later instance setting), whether sign-up is
@@ -462,10 +464,11 @@ allowance members use, so a remote server's lookups are bounded and never lock a
 behind a reverse proxy, list it in `FLOWA_TRUSTED_PROXIES` (the default trusts Docker's own networks), or
 every server shares the proxy's allowance.
 
-**The member's switch.** In a mode that federates, Settings has "Beyond this server" with "Let other servers
-find me by my handle", off for everyone until they turn it on (members who were there before too), and the
-server's own sentence on what that does in this version (the handle can be found, nothing is sent). On,
-WebFinger finds them, and the server makes their signing key in the background (a key that could not be made
+**The member's switch.** In a mode that federates, Settings has "Beyond this server" with "Share my profile
+and Public posts beyond this server", off for everyone until they turn it on (members who were there before
+too), and the server's own sentence on what that does in this version (the handle can be found, the profile
+and the posts marked Public can be read by anyone, nobody can follow yet, nothing is sent), with a link to
+their public page. On, WebFinger finds them, and the server makes their signing key in the background (a key that could not be made
 then, because many were waiting, is made after the next start); off, WebFinger answers 404 again (another
 server may keep the earlier answer for up to five minutes). While federation is refused the card says
 sharing is unavailable, with the reason for staff, and has no switch. A name that ends with
@@ -478,6 +481,45 @@ ignores the field as it ignores any field it does not know, so such an instance 
 The first answer that names a member records and freezes the origin (above). While
 federation is refused (a moved origin or a key secret that does not open the keys, above) the three answer
 404 to everything.
+
+### Federation: profiles and Public posts
+
+In a mode that federates, a member who opted in has a public face that anyone can read without signing in,
+another server or a person in a browser ([docs/federation.md](docs/federation.md), 5.2, 5.5, 5.6, 6.5, 9.4).
+Each address answers two ways from the same URL, by the request's `Accept` header, and says `Vary: Accept`:
+
+- `GET /users/{name}`: for `application/activity+json`, or `application/ld+json` with or without the
+  ActivityStreams profile, the member's actor document (a `Person` with their name, bio, picture, the props
+  they practise and their links as profile fields, their public key, `discoverable` and `indexable` false, and
+  no number at all); for a browser, a small page with the profile and their Public posts, newest first, 20 at
+  a time with a link to older ones.
+- `GET /users/{name}/posts/{id}`: a Public post as a `Note` addressed to the public, or as a small page. The
+  chips and the combo of a post are written out as text.
+- `GET /actor`: the instance's own account (an `Application` named after the host, with its key), or a page
+  that says what it is.
+- `GET /users/{name}/avatar.jpg` (or `.png`) and `GET /users/{name}/posts/{id}/picture.jpg` (or `.png`): the
+  member's profile picture and a Public post's picture. These two addresses reach nothing else: the app's own
+  picture addresses still need a session.
+
+**Every post is "This server" unless its author chose Public.** Posts made before this version, posts made in
+local mode or in single mode without `FLOWA_FEDERATE=on`, and milestone posts are This server and never
+appear here. In a mode that federates the composer offers "Who can read it" (Public first, or This server) to a
+member who opted in, and the author sees the choice beside the post's time; nobody else is told it. Posts
+cannot be edited, so the choice is made once; deleting the post takes it back.
+
+A This server post, a hidden one, the post or profile of a member who has not opted in, opted out since or is
+suspended, and an id or a name nobody has all get one and the same 404 (in each representation, byte for
+byte), so nothing here tells whether something private exists. The actor of a member who opted in and was then
+deleted answers 410 with a `Tombstone`, so other servers stop asking; their name is never given to anyone else
+(it is refused at sign-up, at a request to join and for `ADMIN_USER`, in the words of a taken name). The
+server's own host name is refused as a username in a mode that federates.
+
+The pages are written by the server with no script at all, under a policy that allows only this server's
+pictures and style sheet, carry `noindex` for search engines, link out with `rel="nofollow noopener ugc"`,
+and have a Sign in button. Documents and pages may be kept for three minutes, a 404 for one. Each address may
+make 2,400 of these requests an hour, counted before anything is read and apart from every allowance members
+use; any method but GET and HEAD gets 405. The first member document or Note that goes out records and freezes
+the origin; the instance actor's does not. While federation is refused every address is the 404.
 
 ### Federation: HTTP signatures
 

@@ -850,6 +850,13 @@ tr[hidden] { display: none; }
 .pub-hint { color: var(--ink-2); }
 .pub-links { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .pub-rules { margin: 0; padding-left: 22px; display: grid; gap: 8px; }
+.pub-posts { display: grid; gap: 12px; min-width: 0; }
+.pub-post { gap: 8px; }
+.pub-when { margin: 0; font-size: 13px; font-weight: 560; color: var(--ink-2); }
+.pub-when a { color: inherit; }
+.pub-title { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
+.pub-title a { color: inherit; }
+.pub-img { display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); }
 
 /* ---------- touch screens ----------
    A finger needs about 44 px each way. Where the pointer is coarse every control grows to that, by
