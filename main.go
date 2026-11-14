@@ -2404,13 +2404,14 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	// The opt-in is its own column, outside userCols: it is read only in a mode that federates, so no
 	// other answer about a member carries it. It is not part of profileRev either: it is a switch saved
 	// on its own, not text edited against an older copy. was is what it was before, for the key below.
-	var fedOn, fedWas, lockedNow bool
+	var fedOn, fedWas, lockedNow, personMarked bool
 	if a.fed != nil {
 		if err := tx.QueryRow(`SELECT federates, locked FROM users WHERE id = $1`, u.ID).Scan(&fedWas, &lockedNow); err != nil {
 			a.serverError(w, err)
 			return
 		}
-		if locked != nil && *locked != lockedNow {
+		lockChanged := locked != nil && *locked != lockedNow
+		if lockChanged {
 			if _, err := tx.Exec(`UPDATE users SET locked = $2 WHERE id = $1`, u.ID, *locked); err != nil {
 				a.serverError(w, err)
 				return
@@ -2424,6 +2425,18 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 				return
 			}
 			fedOn = *federates
+		}
+		// A change the actor document shows (the name, the bio, the picture, the props, the links, approving by hand)
+		// goes to the member's followers on other servers as an Update(Person), at most once in personUpdateEvery
+		// (6.4, FWR 4), under the same switches as a post. Marked in this transaction, so a saved change is never
+		// left without its mark.
+		shows := in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil || in.Props != nil || lockChanged
+		if shows && (fedOn || a.mode == modeSingle && u.Owner) && a.postsGoOut(audPublic) {
+			if _, err := tx.Exec(personChangedSQL, u.ID, a.fed.out.now(), personUpdateEvery.Seconds()); err != nil {
+				a.serverError(w, err)
+				return
+			}
+			personMarked = true
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -2439,6 +2452,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	// old. Whether the member is shown at all is asked on every request, so the opt-in needs no drop; it
 	// gets one anyway, so a document never outlives the choice that let it out.
 	a.fed.dropActor(keyOwner(u.ID))
+	if personMarked {
+		a.fed.personWaits()
+	}
 	// What the visitor's page of a single-profile instance shows changed: it is made again when next
 	// asked. The stats and the other parts the page writes by itself are not on it.
 	if in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil || federates != nil {
@@ -3251,11 +3267,21 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 	var res sql.Result
 	detail := map[string]any{}
 	msg := ""
+	outMarked := false // a post's record of its way out was marked for a Delete (FWR 4)
 	table := map[string]string{"post": "posts", "comment": "comments"}[kind]
 	switch in.Action {
 	case "hide":
 		res, err = tx.Exec(`UPDATE `+table+` SET hidden_at = now(), hidden_reason = $2 WHERE id = $1 AND hidden_at IS NULL`, in.ID, reason)
 		msg = "A moderator hid your " + kind + ". Reason: " + reason
+		// A hidden post is taken back from the servers it went to (6.5, FWR 4): its record is marked for a Delete in
+		// the hide's transaction. A restore sends nothing, so a post hidden once stays gone elsewhere.
+		if err == nil && kind == "post" && a.fed != nil {
+			var mark sql.Result
+			if mark, err = tx.Exec(`UPDATE ap_post_out SET state = 'delete' WHERE post_id = $1 AND state <> 'delete'`, in.ID); err == nil {
+				n, _ := mark.RowsAffected()
+				outMarked = n > 0
+			}
+		}
 	case "restore":
 		res, err = tx.Exec(`UPDATE `+table+` SET hidden_at = NULL, hidden_reason = '' WHERE id = $1 AND hidden_at IS NOT NULL`, in.ID)
 		msg = "A moderator restored your " + kind + "."
@@ -3316,6 +3342,9 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 	// A hide, a restore or a suspension changes what a single-profile instance's page at / lists
 	// (federation.md 4.2): it is made again when next asked.
 	a.dropVisitorPage()
+	if outMarked {
+		a.fed.outWaits()
+	}
 	a.notify(owner, u.ID, "moderation", 0, msg)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -5953,10 +5982,11 @@ actor documents and public pages, and the inbox, further down; nothing is delive
 
 // fedMemberBuilt is what a member is told in Settings about what sharing does in this version, as the
 // server sends it (fedView), and fedSwitch the switch's label, the opt-in of F2 in the note's words: other
-// servers can find the handle and read the profile and the Public posts, and nobody can follow yet.
+// servers can find the handle and read the profile and the Public posts, follow the member and be followed, and
+// get the member's Public posts and the changes of their profile (FWR 4).
 const (
 	fedSwitch      = "Share my profile and Public posts beyond this server"
-	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. People there can follow you, and you can follow them; your posts are not sent to them yet. Practice, progress, notes, stats and badges never leave this server."
+	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. People there can follow you, and you can follow them; your Public posts are sent to them, and so are changes to your profile. Practice, progress, notes, stats and badges never leave this server."
 	fedUnavailable = "Sharing beyond this server is not available at the moment. Other servers cannot find anyone here."
 )
 
@@ -6350,6 +6380,14 @@ type federation struct {
 
 	// single says the mode is single, for the gate's condition (publicMember's $2) in what federation asks itself.
 	single bool
+	// postsDue says a record of ap_post_out may wait (outWaits), personAt when the first Update(Person) is due on the
+	// delivery queue's clock (Unix nanoseconds; 0: look now, the largest: none waits), and outBusy that a pass of
+	// sendOut runs in this process: so a worker's step asks the database about them only when one may be due (FWR 4).
+	postsDue atomic.Bool
+	personAt atomic.Int64
+	outBusy  atomic.Bool
+	// personMade, when set (by a test), hears that an Update(Person) was made, before it is enqueued.
+	personMade func()
 	// followsOn says whether follows are on (the community and follows flags, followCountsShown): with them off the
 	// inbox takes no Follow or Accept, and nothing that adds a follow is acted on (FWR 3). Set by startFederation.
 	followsOn func() (on, known bool)
@@ -6778,6 +6816,8 @@ func (a *app) startFederation(s fedSettings) error {
 	f.inbox = newInboxQueue(f, func() bool { return !a.flagsCached()["federation"] })
 	f.out = newDeliveryQueue(f, a.fetch, max(s.workers, 1), func() bool { return !a.flagsCached()["federation"] })
 	f.out.goneInbox = f.goneFollower
+	f.out.produce = a.sendOut // FWR 4: Public posts, their deletions and profiles become activities in the workers
+	f.postsDue.Store(true)    // a record left by a stop is looked for at the first step
 	was, err := recordedOrigin(a.db)
 	if err != nil {
 		return err
@@ -6844,6 +6884,15 @@ func (a *app) startFederation(s fedSettings) error {
 		// The delivery queue's start: the clock's floor, the hosts marked unavailable, and its workers when rows wait.
 		if err := f.out.readStart(a.db); err != nil {
 			return err
+		}
+		// A Public post's Create or Delete, or an Update of a profile, that waited for its worker at the stop (FWR 4):
+		// the workers start for it too.
+		var out bool
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_post_out WHERE state <> 'sent') OR EXISTS (SELECT 1 FROM ap_person_out WHERE due_at IS NOT NULL)`).Scan(&out); err != nil {
+			return err
+		}
+		if out {
+			f.out.kick()
 		}
 	}
 	return nil
@@ -7511,7 +7560,7 @@ var audienceChoices = []audienceChoice{
 }
 
 // audPublicHint says what Public means in this version.
-const audPublicHint = "Anyone can read it, on other servers or in a browser, without signing in. It is not sent to anyone."
+const audPublicHint = "Anyone can read it, on other servers or in a browser, without signing in, and it is sent to your followers on other servers."
 
 /* ---------- federation: actor documents and public pages ----------
 
@@ -7555,11 +7604,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows; posts, replies and likes sent to it are counted and dropped, and no post is sent yet"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows, and sends the Public posts of members who share their profile to their followers on other servers, with a post's deletion and a profile's changes; posts, replies and likes sent to it are counted and dropped"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows", "posts"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -7786,7 +7835,7 @@ const flowaNS = "https://github.com/TuanSSM/flowtopia/ns#"
 // MAY name, a member's followers, following and featured answer since FRD 6 and are named;
 // endpoints.sharedInbox is left out until it answers (FWR 1). The instance actor names none of them.
 type outActor struct {
-	Context                   []any         `json:"@context"`
+	Context                   []any         `json:"@context,omitempty"`
 	ID                        string        `json:"id"`
 	Type                      string        `json:"type"`
 	PreferredUsername         string        `json:"preferredUsername"`
@@ -7841,11 +7890,11 @@ type noteTerms struct {
 
 var noteContext = []any{asContext, noteTerms{Flowa: flowaNS, Sensitive: "as:sensitive", Hashtag: "as:Hashtag"}}
 
-// outNote is a Public post as a Note (6.5), with what this version can serve: the text (and the chips and
-// the combo as text, the fallback 6.5 asks for), the picture and the addressing of 6.4 and 6.7 (to the
-// public collection, cc the author's followers, which answer since FRD 6). Mentions and hashtags in tag,
-// and flowa:tricks, come with the item that sends them (FWR 4); a reader that knows only ActivityStreams
-// sees the same post either way. Inside a Create or a page the Note has no @context of its own.
+// outNote is a Public post as a Note (6.5): the text (and the chips and the combo as text, the fallback 6.5 asks
+// for, with a hashtag per prop), the picture with its alt text, the addressing of 6.4 and 6.7 (to the public
+// collection, cc the author's followers and the actors mentioned), the Mention and Hashtag tags, and
+// flowa:tricks and flowa:combo for another Flowa (FWR 4). A reader that knows only ActivityStreams sees the
+// same post from the content alone. Inside a Create or a page the Note has no @context of its own.
 type outNote struct {
 	Context      []any           `json:"@context,omitempty"`
 	ID           string          `json:"id"`
@@ -7858,10 +7907,42 @@ type outNote struct {
 	Sensitive    bool            `json:"sensitive"`
 	Content      string          `json:"content"`
 	Attachment   []outAttachment `json:"attachment,omitempty"`
+	Tag          []outTag        `json:"tag,omitempty"`
+	Tricks       []outTrick      `json:"flowa:tricks,omitempty"`
+	Combo        *outCombo       `json:"flowa:combo,omitempty"`
 }
 
-// outAttachment is a post's picture. name and summary are its alt text, empty until the composer has a
-// field for it (FWR 4); both are written, as 6.5 says.
+// outTag is a Mention (href the actor id, name the plain WebFinger address with its @) or a Hashtag (href the
+// prop's skill map here, name # and the prop), as Mastodon's ActivityPub page writes them ("Mentions", "Hashtags").
+type outTag struct {
+	Type string `json:"type"`
+	Href string `json:"href"`
+	Name string `json:"name"`
+}
+
+// outTrick is a trick chip (flowa:Trick, F14's namespace): the prop, the skill's id in the prop's map, and its name
+// from the latest published map, so another Flowa reads it back into a chip and anything else ignores it.
+type outTrick struct {
+	Type  string `json:"type"`
+	Prop  string `json:"flowa:prop"`
+	Skill string `json:"flowa:skill"`
+	Name  string `json:"name"`
+}
+
+// outCombo is a combo attached to the post (flowa:Combo): its name, its prop, its steps as tricks in order and the
+// repeats of each when the combo has them. Its role (reliable, signature, stretch) is the member's own measure of
+// their progress and stays here (14.5, F12), as does the id of the combo in their progress document.
+type outCombo struct {
+	Type  string     `json:"type"`
+	Name  string     `json:"name"`
+	Prop  string     `json:"flowa:prop"`
+	Steps []outTrick `json:"flowa:steps"`
+	Reps  []int      `json:"flowa:reps,omitempty"`
+}
+
+// outAttachment is a post's picture. name and summary are both its alt text (the composer's field, FWR 4), as
+// 6.5 says: Mastodon's page reads summary as the media description, the Activity Vocabulary's name is what
+// many other servers read. Both are written, empty when the author wrote none.
 type outAttachment struct {
 	Type      string `json:"type"`
 	MediaType string `json:"mediaType"`
@@ -7970,13 +8051,44 @@ func textParts(s string) []textPart {
 // paraBreak splits paragraphs: a blank line, or more.
 var paraBreak = regexp.MustCompile(`\n[ \t]*\n\s*`)
 
-// noteHTML is the content of a Note (6.5): the text escaped by html.EscapeString, paragraphs on blank
-// lines as <p>, line breaks as <br>, links as <a href> with rel="nofollow noopener", and each of more (the
-// chips and the combo as text) as a paragraph of its own. Only p, br and a are written, which Mastodon keeps
-// in every version (6.5). Mentions are plain text until FWR 4 writes them as Mastodon reads them.
-func noteHTML(body string, more []string) string {
+// noteHTML is the content of a Note (6.5) with no mention made a link and no hashtag: noteHTMLWith. The actor's
+// summary (a bio) is written this way.
+func noteHTML(body string, more []string) string { return noteHTMLWith(body, more, nil, "", nil) }
+
+// noteHTMLWith is the content of a Note (6.5): the text escaped by html.EscapeString, paragraphs on blank lines as
+// <p>, line breaks as <br>, http and https links as <a href> with rel="nofollow noopener", each mention that
+// mentions (by the key of noteMention) resolved as Mastodon's h-card form, and each of more (the chips and the
+// combo as text) as a paragraph of its own, the last with a link for each of tags (the Hashtags) after it.
+// Only p, br, a and span are written, with the attributes Mastodon's sanitiser keeps (6.5, "As built (FWR 4)"):
+// href, rel and class on a, class on span, and only these classes. Every character of the member's text is
+// escaped; a control character (but a line break) and a mark that embeds, overrides or isolates a direction
+// are dropped, so no text can turn what follows it around on another server. own is this instance's host, for
+// @name@own. A mention or a tag-like word inside a link stays part of the link.
+func noteHTMLWith(body string, more []string, mentions map[string]noteMention, own string, tags []outTag) string {
 	var b strings.Builder
-	para := func(s string) {
+	link := true // mentions are links in the member's text, not in the chips' and the combo's lines
+	text := func(s string) {
+		at := 0
+		for _, m := range parseMentions(s, own) {
+			key := m.name
+			if !m.local {
+				key = strings.ToLower(m.name + "@" + m.host)
+			}
+			nm, ok := mentions[key]
+			href := nm.URL
+			if !linkable(href) {
+				href = nm.ID
+			}
+			if !ok || !link || !linkable(href) {
+				continue
+			}
+			b.WriteString(html.EscapeString(s[at:m.start]))
+			b.WriteString(`<span class="h-card"><a href="` + html.EscapeString(href) + `" class="u-url mention">@<span>` + html.EscapeString(nm.user()) + `</span></a></span>`)
+			at = m.end
+		}
+		b.WriteString(html.EscapeString(s[at:]))
+	}
+	para := func(s string, tags []outTag) {
 		b.WriteString("<p>")
 		for i, line := range strings.Split(s, "\n") {
 			if i > 0 {
@@ -7984,24 +8096,87 @@ func noteHTML(body string, more []string) string {
 			}
 			for _, p := range textParts(line) {
 				if p.URL == "" {
-					b.WriteString(html.EscapeString(p.Text))
+					text(p.Text)
 					continue
 				}
 				b.WriteString(`<a href="` + html.EscapeString(p.URL) + `" rel="nofollow noopener">` + html.EscapeString(p.Text) + `</a>`)
 			}
 		}
+		for _, t := range tags {
+			b.WriteString(` <a href="` + html.EscapeString(t.Href) + `" class="mention hashtag" rel="tag">#<span>` + html.EscapeString(strings.TrimPrefix(t.Name, "#")) + `</span></a>`)
+		}
 		b.WriteString("</p>")
 	}
-	body = strings.ReplaceAll(strings.TrimSpace(body), "\r\n", "\n")
+	body = noteText(strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n")))
 	if body != "" {
 		for _, p := range paraBreak.Split(body, -1) {
-			para(p)
+			para(p, nil)
 		}
 	}
-	for _, m := range more {
-		para(m)
+	link = false
+	for i, m := range more {
+		var t []outTag
+		if i == len(more)-1 {
+			t = tags
+		}
+		para(noteText(m), t)
 	}
 	return b.String()
+}
+
+// linkable says whether an address may be a mention's link: https, and nothing a reader could mistake for the end of
+// the address (a space, a quote, an angle bracket, a backslash or a control character). The cache holds only ids the
+// decoder took (apIDOK), so this refuses nothing real; it is the HTML's own guard, whatever was stored.
+func linkable(u string) bool {
+	return strings.HasPrefix(u, "https://") && !strings.ContainsFunc(u, func(r rune) bool {
+		return r <= ' ' || r == 0x7f || strings.ContainsRune(`"'<>\`+"`", r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r)
+	})
+}
+
+// noteText drops from text what must not reach another server's page: control characters other than a line
+// break (a tab becomes a space) and the marks that embed, override or isolate a direction (bidiOverride).
+func noteText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n':
+			return r
+		case r == '\t':
+			return ' '
+		case unicode.IsControl(r), bidiOverride(r):
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// noteMention is a mention of a Public post as resolved when the post was made, kept in posts.ap_mentions: the key
+// the text is matched by (a local name, or name@host of another server, in lower case), the actor's id (the
+// Mention's href and an address in cc), the address its link leads to (the actor's profile page when it names
+// one, else its id), and the Mention's name, the plain WebFinger address with its @ (6.5).
+type noteMention struct {
+	Key  string `json:"k"`
+	ID   string `json:"id"`
+	URL  string `json:"url"`
+	Name string `json:"name"`
+}
+
+// user is the name part of the handle, as the link shows it (@<span>bo</span>).
+func (m noteMention) user() string {
+	n := strings.TrimPrefix(m.Name, "@")
+	if i := strings.LastIndexByte(n, '@'); i > 0 {
+		n = n[:i]
+	}
+	return n
+}
+
+// noteMentionsOf reads posts.ap_mentions; ” (every post but a Public one with a mention) and anything that does
+// not read are none.
+func noteMentionsOf(raw string) []noteMention {
+	var ms []noteMention
+	if raw != "" {
+		json.Unmarshal([]byte(raw), &ms)
+	}
+	return ms
 }
 
 // summaryHTML is a bio as the actor's summary: the same rules as a post's text.
@@ -8060,6 +8235,20 @@ type skillNameCache struct {
 // postExtras are a post's chips and combo as lines of text (6.5's fallback): "Tricks: Six basic figure-8s
 // (Nunchaku), ..." and "Combo: Name: A, B, C". A skill the map no longer has is shown by its id.
 func (a *app) postExtras(ctx context.Context, data []byte) []string {
+	return a.postParts(ctx, data).extras
+}
+
+// noteParts are a post's chips and combo as the Note carries them: the lines of text (postExtras), the tricks
+// and the combo for flowa:tricks and flowa:combo, and the props they belong to, each once, in the order first met
+// (one Hashtag each, 6.5).
+type noteParts struct {
+	extras []string
+	tricks []outTrick
+	combo  *outCombo
+	props  []string
+}
+
+func (a *app) postParts(ctx context.Context, data []byte) noteParts {
 	var d struct {
 		Tags  []postTag  `json:"tags"`
 		Combo *postCombo `json:"combo"`
@@ -8071,20 +8260,38 @@ func (a *app) postExtras(ctx context.Context, data []byte) []string {
 		}
 		return id
 	}
-	var out []string
+	var out noteParts
+	prop := func(p string) {
+		if !slices.Contains(out.props, p) {
+			out.props = append(out.props, p)
+		}
+	}
 	if len(d.Tags) > 0 {
 		var t []string
 		for _, x := range d.Tags {
-			t = append(t, name(x.Prop, x.Skill)+" ("+propNames[x.Prop]+")")
+			n := name(x.Prop, x.Skill)
+			t = append(t, n+" ("+propNames[x.Prop]+")")
+			out.tricks = append(out.tricks, outTrick{Type: "flowa:Trick", Prop: x.Prop, Skill: x.Skill, Name: n})
+			if knownProp(x.Prop) {
+				prop(x.Prop)
+			}
 		}
-		out = append(out, "Tricks: "+strings.Join(t, ", "))
+		out.extras = append(out.extras, "Tricks: "+strings.Join(t, ", "))
 	}
 	if c := d.Combo; c != nil && knownProp(c.Prop) {
 		var s []string
+		oc := &outCombo{Type: "flowa:Combo", Name: c.Name, Prop: c.Prop, Steps: []outTrick{}}
 		for _, id := range c.Seq {
-			s = append(s, name(c.Prop, id))
+			n := name(c.Prop, id)
+			s = append(s, n)
+			oc.Steps = append(oc.Steps, outTrick{Type: "flowa:Trick", Prop: c.Prop, Skill: id, Name: n})
 		}
-		out = append(out, "Combo: "+c.Name+": "+strings.Join(s, ", "))
+		if len(c.Reps) == len(c.Seq) {
+			oc.Reps = c.Reps
+		}
+		out.extras = append(out.extras, "Combo: "+c.Name+": "+strings.Join(s, ", "))
+		out.combo = oc
+		prop(c.Prop)
 	}
 	return out
 }
@@ -8139,17 +8346,17 @@ const actorDocSQL = `SELECT u.username, u.display_name, u.bio, u.links, u.props,
 // of their Public posts newest first ($3: older than this post, 0 for the first page; $4 how many), and
 // whether the name is retired. posts_public serves the posts. $3 is a bigint like the ids it is compared
 // with: written as "$3 = 0" alone, Postgres would take it for an integer and fail on a cursor past 2^31.
-const profilePageSQL = `SELECT r.retired, m.id, m.username, m.display_name, m.bio, m.links, m.head, m.tag, m.pid, m.body, m.image, m.data, m.created_at
+const profilePageSQL = `SELECT r.retired, m.id, m.username, m.display_name, m.bio, m.links, m.head, m.tag, m.pid, m.body, m.image, m.alt, m.ap_mentions, m.data, m.created_at
 	FROM (SELECT ` + retiredSQL + ` AS retired) r LEFT JOIN (
 		SELECT u.id, u.username, u.display_name, u.bio, u.links, left(u.avatar, 64) AS head, CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END AS tag,
-			p.id AS pid, p.body, left(p.image, ` + pictureHead + `) AS image, p.data, p.created_at
-		FROM users u LEFT JOIN LATERAL (SELECT p.id, p.body, p.image, p.data, p.created_at FROM posts p WHERE p.user_id = u.id AND ` + publicPost + `
+			p.id AS pid, p.body, left(p.image, ` + pictureHead + `) AS image, p.alt, p.ap_mentions, p.data, p.created_at
+		FROM users u LEFT JOIN LATERAL (SELECT p.id, p.body, p.image, p.alt, p.ap_mentions, p.data, p.created_at FROM posts p WHERE p.user_id = u.id AND ` + publicPost + `
 			AND ($3::bigint = 0 OR p.id < $3) ORDER BY p.id DESC LIMIT $4) p ON true
 		WHERE u.username = $1 AND ` + publicMember + `) m ON true ORDER BY m.pid DESC`
 
 // publicPostSQL reads a Public post $3 by the member $1, with what its page and its Note say of the author.
 const publicPostSQL = `SELECT u.username, u.display_name, left(u.avatar, 64), CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END,
-	p.body, left(p.image, ` + pictureHead + `), p.data, p.created_at
+	p.body, left(p.image, ` + pictureHead + `), p.alt, p.ap_mentions, p.data, p.created_at
 	FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $3 AND u.username = $1 AND ` + publicPost + ` AND ` + publicMember
 
 // postPictureSQL reads the picture of a Public post $3 by the member $1, and avatarSQL a member's picture.
@@ -8430,15 +8637,36 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 		return p, nil
 	}
 	gen := f.docGen()
+	doc, known, err := a.actorOf(ctx, uid)
+	if err != nil {
+		return pubAnswer{}, err
+	}
+	b, err := apJSON(doc)
+	if err != nil {
+		return pubAnswer{}, err
+	}
+	p := newAnswer(b, activityType)
+	if known { // a document made while the flags could not be read is answered, and not kept
+		f.keepActor(keyOwner(uid), gen, p)
+	}
+	return p, nil
+}
+
+// actorOf is the member uid's actor document (5.5), as the actor's address serves it (actorDoc) and as an
+// Update(Person) carries it (FWR 4): one function, so what is read and what is sent agree. known is false when the
+// switches could not be read (manuallyApprovesFollowers then says true, the careful side): such a document is answered
+// but neither kept nor sent.
+func (a *app) actorOf(ctx context.Context, uid int64) (outActor, bool, error) {
+	f := a.fed
 	var name, display, bio, head, tag, pubPEM string
 	var links, props []byte
 	var created time.Time
 	var locked bool
 	if err := a.db.QueryRowContext(ctx, actorDocSQL, uid).Scan(&name, &display, &bio, &links, &props, &created, &head, &tag, &pubPEM, &locked); err != nil {
-		return pubAnswer{}, err
+		return outActor{}, false, err
 	}
 	if pubPEM == "" {
-		return pubAnswer{}, errNoKey
+		return outActor{}, false, errNoKey
 	}
 	id := f.origin.url + "/users/" + name
 	no := false
@@ -8476,15 +8704,7 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 				Value: `<a href="` + html.EscapeString(href) + `" rel="me nofollow noopener" target="_blank">` + html.EscapeString(handle) + `</a>`})
 		}
 	}
-	b, err := apJSON(doc)
-	if err != nil {
-		return pubAnswer{}, err
-	}
-	p := newAnswer(b, activityType)
-	if known { // a document made while the flags could not be read is answered, and not kept
-		f.keepActor(keyOwner(uid), gen, p)
-	}
-	return p, nil
+	return doc, known, nil
 }
 
 // instanceDoc is the instance actor's document (5.5): an Application named by the host, with its key, and
@@ -8561,17 +8781,32 @@ func (a *app) whoOf(name, display, bio string, links []byte, head, tag string) *
 	return w
 }
 
-// postOf is a Public post as a public page shows it.
-func (a *app) postOf(ctx context.Context, name string, id int64, body, head string, data []byte, created time.Time) pubPost {
-	url := "/users/" + name + "/posts/" + strconv.FormatInt(id, 10)
-	p := pubPost{URL: url, When: created.UTC().Format(time.RFC3339), Day: created.UTC().Format("2 January 2006"), Extras: a.postExtras(ctx, data)}
-	if body = strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n")); body != "" {
+// notePost is a Public post as the public pages, the Note and the Create are made from: its author's name, its
+// id, its text, the first pictureHead bytes of its picture (image) and the picture's alt text, its mentions as
+// resolved when it was made (posts.ap_mentions), its chips and combo (data), and when it was made.
+type notePost struct {
+	name                       string
+	id                         int64
+	body, image, alt, mentions string
+	data                       []byte
+	created                    time.Time
+}
+
+// postOf is a Public post as a public page shows it. The picture's alt is the author's alt text, or words that
+// say there is a picture when they wrote none.
+func (a *app) postOf(ctx context.Context, n notePost) pubPost {
+	url := "/users/" + n.name + "/posts/" + strconv.FormatInt(n.id, 10)
+	p := pubPost{URL: url, When: n.created.UTC().Format(time.RFC3339), Day: n.created.UTC().Format("2 January 2006"), Extras: a.postExtras(ctx, n.data)}
+	if body := strings.TrimSpace(strings.ReplaceAll(n.body, "\r\n", "\n")); body != "" {
 		for _, para := range paraBreak.Split(body, -1) {
 			p.Paras = append(p.Paras, textParts(para))
 		}
 	}
-	if ext, _, _, _, ok := pictureOf(head); ok {
+	if ext, _, _, _, ok := pictureOf(n.image); ok {
 		p.Picture, p.PictureAlt = url+"/picture."+ext, "Picture in the post"
+		if n.alt != "" {
+			p.PictureAlt = n.alt
+		}
 	}
 	return p
 }
@@ -8659,10 +8894,10 @@ func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite
 	// database again (skillNames), and a request must never hold one connection while it waits for another,
 	// or a few at once could take the whole pool and stop every request (TestDBOneConnection).
 	type profileRow struct {
-		uid, pid                                  sql.NullInt64
-		uname, display, bio, head, tag, body, img sql.NullString
-		links, data                               []byte
-		created                                   sql.NullTime
+		uid, pid                                           sql.NullInt64
+		uname, display, bio, head, tag, body, img, alt, ms sql.NullString
+		links, data                                        []byte
+		created                                            sql.NullTime
 	}
 	var retired bool
 	var got []profileRow
@@ -8673,7 +8908,7 @@ func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite
 	}
 	for rows.Next() {
 		var x profileRow
-		if err = rows.Scan(&retired, &x.uid, &x.uname, &x.display, &x.bio, &x.links, &x.head, &x.tag, &x.pid, &x.body, &x.img, &x.data, &x.created); err != nil {
+		if err = rows.Scan(&retired, &x.uid, &x.uname, &x.display, &x.bio, &x.links, &x.head, &x.tag, &x.pid, &x.body, &x.img, &x.alt, &x.ms, &x.data, &x.created); err != nil {
 			break
 		}
 		got = append(got, x)
@@ -8704,7 +8939,7 @@ func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite
 			break
 		}
 		last = x.pid.Int64
-		d.Posts = append(d.Posts, a.postOf(r.Context(), x.uname.String, x.pid.Int64, x.body.String, x.img.String, x.data, x.created.Time))
+		d.Posts = append(d.Posts, a.postOf(r.Context(), notePost{x.uname.String, x.pid.Int64, x.body.String, x.img.String, x.alt.String, x.ms.String, x.data, x.created.Time}))
 	}
 	switch {
 	case d.Who == nil && retired:
@@ -8781,10 +9016,9 @@ func (a *app) handlePublicPost(st *static, create bool) http.HandlerFunc {
 			seeOther(w, "/users/"+name+"/posts/"+strconv.FormatInt(id, 10))
 			return
 		}
-		var uname, display, head, tag, body, image string
-		var data []byte
-		var created time.Time
-		err := a.db.QueryRowContext(r.Context(), publicPostSQL, name, a.mode == modeSingle, id).Scan(&uname, &display, &head, &tag, &body, &image, &data, &created)
+		var display, head, tag string
+		n := notePost{id: id}
+		err := a.db.QueryRowContext(r.Context(), publicPostSQL, name, a.mode == modeSingle, id).Scan(&n.name, &display, &head, &tag, &n.body, &n.image, &n.alt, &n.mentions, &n.data, &n.created)
 		if errors.Is(err, sql.ErrNoRows) {
 			site.notFound(w, r, activity)
 			return
@@ -8794,26 +9028,21 @@ func (a *app) handlePublicPost(st *static, create bool) http.HandlerFunc {
 			return
 		}
 		if !activity {
-			who := a.whoOf(uname, display, "", nil, head, tag)
+			who := a.whoOf(n.name, display, "", nil, head, tag)
 			who.App = "/#/post/" + strconv.FormatInt(id, 10)
-			d := pubData{Kind: "post", Who: who, Posts: []pubPost{a.postOf(r.Context(), uname, id, body, image, data, created)}, Title: "Post by " + who.Name + " (" + who.Handle + ")"}
+			d := pubData{Kind: "post", Who: who, Posts: []pubPost{a.postOf(r.Context(), n)}, Title: "Post by " + who.Name + " (" + who.Handle + ")"}
 			site.page(d).serve(w, r, http.StatusOK, apKeep)
 			return
 		}
 		if !a.originFrozen(w, r, site) {
 			return
 		}
-		var doc any
+		var b []byte
 		if create {
-			c := a.createOf(r.Context(), uname, id, body, image, data, created)
-			c.Context = noteContext
-			doc = c
+			b, err = a.createBody(r.Context(), n)
 		} else {
-			n := a.noteOf(r.Context(), uname, id, body, image, data, created)
-			n.Context = noteContext
-			doc = n
+			b, err = a.noteBody(r.Context(), n)
 		}
-		b, err := apJSON(doc)
 		if err != nil {
 			pubFailed(w, "a note", err)
 			return
@@ -8822,28 +9051,59 @@ func (a *app) handlePublicPost(st *static, create bool) http.HandlerFunc {
 	}
 }
 
-// noteOf is a Public post by the member name as the Note of 6.5, without @context: to the public
-// collection, cc the author's followers (6.4, 6.7), the text with the chips and the combo as text, and
-// the picture. image is the first pictureHead bytes of the stored picture.
-func (a *app) noteOf(ctx context.Context, name string, id int64, body, image string, data []byte, created time.Time) outNote {
-	actor := a.fed.origin.url + "/users/" + name
-	n := outNote{ID: actor + "/posts/" + strconv.FormatInt(id, 10), Type: "Note", AttributedTo: actor,
-		Published: created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Cc: []string{actor + "/followers"},
-		Content: noteHTML(body, a.postExtras(ctx, data))}
+// noteOf is a Public post as the Note of 6.5, without @context: to the public collection, cc the author's
+// followers and the actors it mentions (6.4, 6.7), the text as HTML with its mentions as links (noteHTMLWith),
+// the chips and the combo as text after it with one hashtag per prop, the picture with its alt text as both
+// name and summary, the Mention and Hashtag tags, and flowa:tricks and flowa:combo for another Flowa. It is
+// the one function that makes the Note: for its own address, inside the Create of the outbox and of its own
+// address, and in the body FWR 4 delivers (createBody), so what is read and what is sent are the same bytes.
+func (a *app) noteOf(ctx context.Context, p notePost) outNote {
+	actor := a.fed.origin.url + "/users/" + p.name
+	parts := a.postParts(ctx, p.data)
+	ms := noteMentionsOf(p.mentions)
+	byKey := make(map[string]noteMention, len(ms))
+	n := outNote{ID: actor + "/posts/" + strconv.FormatInt(p.id, 10), Type: "Note", AttributedTo: actor,
+		Published: p.created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Cc: []string{actor + "/followers"}}
 	n.URL = n.ID
-	if ext, mt, pw, ph, ok := pictureOf(image); ok {
-		n.Attachment = []outAttachment{{Type: "Image", MediaType: mt, URL: n.ID + "/picture." + ext, Width: pw, Height: ph}}
+	for _, m := range ms {
+		byKey[m.Key] = m
+		n.Tag = append(n.Tag, outTag{Type: "Mention", Href: m.ID, Name: m.Name})
+		if m.ID != actor && !slices.Contains(n.Cc, m.ID) {
+			n.Cc = append(n.Cc, m.ID)
+		}
 	}
+	for _, prop := range parts.props {
+		n.Tag = append(n.Tag, outTag{Type: "Hashtag", Href: a.fed.origin.url + "/#/prop/" + prop, Name: "#" + prop})
+	}
+	n.Content = noteHTMLWith(p.body, parts.extras, byKey, a.fed.origin.host, n.Tag[len(ms):])
+	if ext, mt, pw, ph, ok := pictureOf(p.image); ok {
+		n.Attachment = []outAttachment{{Type: "Image", MediaType: mt, URL: n.ID + "/picture." + ext, Name: p.alt, Summary: p.alt, Width: pw, Height: ph}}
+	}
+	n.Tricks, n.Combo = parts.tricks, parts.combo
 	return n
 }
 
 // createOf is the Create of a Public post (6.4), without @context: the one function that makes it for the
-// outbox, for its own id, and for FWR's deliveries. The activity is the post's: its actor is the author,
-// its published the post's, its to and cc the Note's (6.7: Mastodon reads the audience from them, and an
+// outbox, for its own id, and for the deliveries (createBody). The activity is the post's: its actor is the
+// author, its published the post's, its to and cc the Note's (6.7: Mastodon reads the audience from them, and an
 // activity whose addressing differs from its object's would be read two ways).
-func (a *app) createOf(ctx context.Context, name string, id int64, body, image string, data []byte, created time.Time) outCreate {
-	n := a.noteOf(ctx, name, id, body, image, data, created)
+func (a *app) createOf(ctx context.Context, p notePost) outCreate {
+	n := a.noteOf(ctx, p)
 	return outCreate{ID: n.ID + "/activity", Type: "Create", Actor: n.AttributedTo, Published: n.Published, To: n.To, Cc: n.Cc, Object: n}
+}
+
+// noteBody and createBody are the Note and its Create as documents, with the Note's @context: the bytes the
+// post's address and its activity's address answer, and createBody the bytes enqueued for the followers.
+func (a *app) noteBody(ctx context.Context, p notePost) ([]byte, error) {
+	n := a.noteOf(ctx, p)
+	n.Context = noteContext
+	return apJSON(n)
+}
+
+func (a *app) createBody(ctx context.Context, p notePost) ([]byte, error) {
+	c := a.createOf(ctx, p)
+	c.Context = noteContext
+	return apJSON(c)
 }
 
 /* The outbox and the collections (ActivityPub 5.1, 5.3 and 5.4; docs/federation.md 5.2, 6.2 and F10), at
@@ -8976,12 +9236,6 @@ func (a *app) serveOutbox(w http.ResponseWriter, r *http.Request, site *pubSite,
 }
 
 // outboxRow is a post of a page of the outbox as profilePageSQL reads it.
-type outboxRow struct {
-	id         int64
-	body, head string
-	data       []byte
-	created    time.Time
-}
 
 // serveOutboxPage sends a page of a member's outbox: pubPage Creates of their Public posts, newest first,
 // older than before (ActivityPub 5: reverse chronological, by the post id, which only grows). It is the
@@ -8994,16 +9248,15 @@ func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubS
 		pubFailed(w, "an outbox page", err)
 		return
 	}
-	var posts []outboxRow
-	var uname string
+	var posts []notePost
 	found := false
 	for rows.Next() {
 		var retired bool
 		var uid, pid sql.NullInt64
-		var un, display, bio, head, tag, body, image sql.NullString
+		var un, display, bio, head, tag, body, image, alt, ms sql.NullString
 		var links, data []byte
 		var created sql.NullTime
-		if err := rows.Scan(&retired, &uid, &un, &display, &bio, &links, &head, &tag, &pid, &body, &image, &data, &created); err != nil {
+		if err := rows.Scan(&retired, &uid, &un, &display, &bio, &links, &head, &tag, &pid, &body, &image, &alt, &ms, &data, &created); err != nil {
 			rows.Close()
 			pubFailed(w, "an outbox page", err)
 			return
@@ -9011,9 +9264,9 @@ func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubS
 		if !uid.Valid {
 			break
 		}
-		found, uname = true, un.String
+		found = true
 		if pid.Valid {
-			posts = append(posts, outboxRow{pid.Int64, body.String, image.String, data, created.Time})
+			posts = append(posts, notePost{un.String, pid.Int64, body.String, image.String, alt.String, ms.String, data, created.Time})
 		}
 	}
 	rows.Close()
@@ -9037,7 +9290,7 @@ func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubS
 		p.Next = id + "?page=true&before=" + strconv.FormatInt(posts[pubPage-1].id, 10)
 	}
 	for _, x := range posts {
-		p.OrderedItems = append(p.OrderedItems, a.createOf(r.Context(), uname, x.id, x.body, x.head, x.data, x.created))
+		p.OrderedItems = append(p.OrderedItems, a.createOf(r.Context(), x))
 	}
 	serveDoc(w, r, "an outbox page", p)
 }
@@ -14702,7 +14955,7 @@ func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use ke
 // from the catalog and fails when one is missing here or has no index that starts with its column.
 // ap_actors.user_id is the row's own cached document and is not a reference to keep it for.
 var userRefs = []struct{ table, column string }{
-	{"achievements", "user_id"}, {"ap_inbox", "actor_id"}, {"ap_keys", "user_id"}, {"ap_outbox", "actor_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
+	{"achievements", "user_id"}, {"ap_inbox", "actor_id"}, {"ap_keys", "user_id"}, {"ap_outbox", "actor_id"}, {"ap_person_out", "user_id"}, {"ap_post_out", "user_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
 	{"blocks", "user_id"}, {"bookmarks", "user_id"}, {"catalog_revisions", "author_id"}, {"comment_likes", "user_id"},
 	{"comments", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
 	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"},
@@ -17094,6 +17347,9 @@ type deliveryQueue struct {
 	goneInbox func(ctx context.Context, inbox string)
 	// claimed, when set (by a test), hears of each row claimed, before anything else is done with it.
 	claimed func(id int64)
+	// produce makes one activity that waits to be made and enqueues it, and says whether there was one: startFederation
+	// sets the app's sendOut (FWR 4).
+	produce func(ctx context.Context) (bool, error)
 }
 
 func newDeliveryQueue(f *federation, ft *fetcher, workers int, paused func() bool) *deliveryQueue {
@@ -17289,6 +17545,14 @@ func (q *deliveryQueue) collect(to []deliveryTarget) (inboxes, hosts []string, r
 // its actor's id, and an inbox that is not on that actor's host is refused and counted (deliveryTarget says why);
 // a shared inbox on another host is passed over for the actor's own inbox.
 func (q *deliveryQueue) enqueue(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget) (enqueued, error) {
+	return q.enqueueThen(ctx, actor, apID, body, to, nil)
+}
+
+// enqueueThen is enqueue with then run in the same transaction just before it commits, also when the activity is a
+// repeat or every recipient was refused (then in a transaction of its own): what the caller writes about having
+// sent it commits with the rows, or neither does (FWR 4's record of a post's way out, ap_post_out). An error from
+// then rolls everything back and is returned.
+func (q *deliveryQueue) enqueueThen(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, then func(*sql.Tx) error) (enqueued, error) {
 	var out enqueued
 	f := q.f
 	switch {
@@ -17304,7 +17568,7 @@ func (q *deliveryQueue) enqueue(ctx context.Context, actor keyOwner, apID string
 	if len(inboxes) > deliveryTargetsMax {
 		return out, fmt.Errorf("an activity goes to at most %d inboxes, not %d", deliveryTargetsMax, len(inboxes))
 	}
-	if len(inboxes) == 0 {
+	if len(inboxes) == 0 && then == nil {
 		return out, nil
 	}
 	done, err := f.dbTurn(ctx)
@@ -17317,6 +17581,12 @@ func (q *deliveryQueue) enqueue(ctx context.Context, actor keyOwner, apID string
 		return out, err
 	}
 	defer tx.Rollback()
+	if len(inboxes) == 0 {
+		if err := then(tx); err != nil {
+			return out, err
+		}
+		return out, tx.Commit()
+	}
 	// One enqueue or fan-out at a time, so the counts below are the counts the rows are written against and the
 	// caps hold exactly (workers only take rows away meanwhile).
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
@@ -17335,7 +17605,13 @@ func (q *deliveryQueue) enqueue(ctx context.Context, actor keyOwner, apID string
 		apID, actor.arg(), string(body), pq.Array(inboxes), now).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.Duplicate = true
-		return out, nil
+		if then == nil {
+			return out, nil
+		}
+		if err := then(tx); err != nil {
+			return out, err
+		}
+		return out, tx.Commit()
 	}
 	if err != nil {
 		return out, err
@@ -17344,6 +17620,11 @@ func (q *deliveryQueue) enqueue(ctx context.Context, actor keyOwner, apID string
 		out.Waiting = true
 	} else if out.Queued, out.Dropped, out.Unavailable, err = q.fanOut(ctx, tx, id, inboxes, hosts, now); err != nil {
 		return out, err
+	}
+	if then != nil {
+		if err := then(tx); err != nil {
+			return out, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return out, err
@@ -17662,6 +17943,13 @@ func (q *deliveryQueue) step(ctx context.Context) (bool, error) {
 	}
 	if err := q.fanOutDue(ctx); err != nil {
 		return false, err
+	}
+	// What waits to become activities (FWR 4: a Public post's Create or Delete, an Update of a profile) is made and
+	// enqueued here, one at a time, under the same pause, clock and refusal as the sending.
+	if q.produce != nil {
+		if did, err := q.produce(ctx); did || err != nil {
+			return did, err
+		}
 	}
 	// The claim runs on a context a stop does not cancel: canceled in the middle, its UPDATE could commit while its
 	// answer is lost, leaving the row leased for deliveryLease with an attempt counted that was never tried. A stop is
@@ -19756,6 +20044,429 @@ func (a *app) fedPolicyChanged(w http.ResponseWriter, r *http.Request, u *user) 
 	a.handleFedAdmin(w, r, u)
 }
 
+/* ---------- federation: public posts out ----------
+
+A member's Public post goes to their followers on other servers as Create(Note), its deletion or a moderator's hide as
+Delete(Tombstone) to the same inboxes, and a change of the profile as Update(Person) (docs/federation.md 6.4, 6.5, 6.7
+and "As built (FWR 4)" under 6.5; FWR item 4). Everything goes through the delivery queue (enqueue: the domain
+policy, the caps, the retries, signed with the member's key at the send), and nothing here waits on the network.
+
+  - Only a post of kind post, audience Public, by a member who shares their profile beyond this server, made while
+    the Federation switch and follows are both on (postsGoOut), is sent. Milestones stay here (F13), and so do
+    This server posts. A post made while either switch is off is never sent later.
+  - Durable from the first statement: the post and its record (ap_post_out, state create) are written by one
+    statement, so a crash leaves both or neither. A worker (sendOut, the delivery queue's producer) reads the
+    record, makes the Create from the post with createBody (the one function the post's addresses answer with),
+    finds the recipients in one bounded statement (postRecipientsSQL: the accepted remote followers, one per
+    shared inbox, and the remote accounts the post mentions), and enqueues it with the record turned to sent, the
+    inboxes in targets, in the same transaction (enqueueThen). A crash between them leaves the record as it was and
+    the activity unwritten, and the next pass does it again; two passes at once write one activity (ap_outbox is
+    unique by id) and one of them rolls back.
+  - A deletion and a hide turn the record to delete in their own statement, whatever state it was in; the worker
+    then enqueues the Delete for the inboxes recorded, the record removed in the same transaction. A record still
+    in create has no inboxes, and goes with nothing sent. A moderator's restore sends nothing (6.5).
+  - A profile saved with a change the actor document shows marks the member's row of ap_person_out due, at most
+    once in personUpdateEvery after the last one sent; the worker makes the document as it is then (actorOf), so
+    the newest state wins, and a change made while one is being sent leaves the row due again.
+  - Mentions are resolved when the post is made, from the cache alone (no fetch): a handle of another server that
+    the cache does not hold, a suspended or gone account, and an account across a block stay plain text and are
+    not sent to. What was resolved is stored with the post (posts.ap_mentions), so the Note is the same bytes
+    every time it is made. */
+
+const (
+	personUpdateEvery = 5 * time.Minute // at most one Update(Person) per member in this (6.4)
+	maxAlt            = 1500            // characters of a picture's alt text (6.5)
+)
+
+// postsGoOut says whether a post made now with audience aud goes out as a note: the mode federates and nothing
+// refused it, the Federation switch and follows are on, and the post is Public (postAudience gave Public only to a
+// member who shares their profile beyond this server). Milestones never come here (F13).
+func (a *app) postsGoOut(aud string) bool {
+	return aud == audPublic && a.federating() && a.flagsCached()["federation"] && a.followCountsShown()
+}
+
+// mentionLookupSQL finds the accounts a post mentions among the names $1 (local usernames, and name@host for other
+// servers, as users holds them): a member who may be shown beyond this server (publicMember, $2 as in the gate), or
+// a remote account whose cached actor is well and that no moderator suspended here; never the author ($3), never an
+// account across a block either way. One statement on the unique username index, at most 3 names per mention.
+const mentionLookupSQL = `SELECT u.username, u.domain, COALESCE(a.ap_id, ''), COALESCE(a.url, '') FROM users u LEFT JOIN ap_actors a ON a.user_id = u.id
+	WHERE u.username = ANY($1) AND u.id <> $3
+		AND (u.domain = '' AND ` + publicMember + ` OR u.domain <> '' AND a.state = 'ok' AND (u.suspended_until IS NULL OR u.suspended_until <= now()))
+		AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = $3 AND b.target_id = u.id)
+		AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = u.id AND b.target_id = $3)`
+
+// resolveMentions finds what the mentions of a Public post by uid name, at most maxMentions of them, in the order
+// they are written, and gives them as posts.ap_mentions holds them ("" for none). Nothing is fetched.
+func (a *app) resolveMentions(ctx context.Context, body string, uid int64) (string, error) {
+	f := a.fed
+	var keys, names []string
+	for _, m := range parseMentions(body, f.origin.host) {
+		key := m.name
+		cand := []string{m.name}
+		if !m.local {
+			key = strings.ToLower(m.name + "@" + m.host)
+			cand = []string{m.name + "@" + m.host, m.name + "@" + strings.ToLower(m.host), key}
+		}
+		if slices.Contains(keys, key) {
+			continue
+		}
+		if len(keys) == maxMentions {
+			break
+		}
+		keys = append(keys, key)
+		names = append(names, cand...)
+	}
+	if len(keys) == 0 {
+		return "", nil
+	}
+	rows, err := a.db.QueryContext(ctx, mentionLookupSQL, pq.Array(names), a.mode == modeSingle, uid)
+	if err != nil {
+		return "", err
+	}
+	found := map[string]noteMention{}
+	for rows.Next() {
+		var name, domain, id, link string
+		if err := rows.Scan(&name, &domain, &id, &link); err != nil {
+			rows.Close()
+			return "", err
+		}
+		m := noteMention{Key: strings.ToLower(name), ID: id, URL: link, Name: "@" + name}
+		switch {
+		case domain == "":
+			m.ID, m.URL, m.Name = f.memberActor(name), f.memberActor(name), "@"+name+"@"+f.origin.host
+		case !httpsURL(m.URL):
+			m.URL = m.ID // the actor names no profile page it can be linked by: its id is
+		}
+		found[m.Key] = m
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	var out []noteMention
+	for _, k := range keys {
+		if m, ok := found[k]; ok {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(out)
+	return string(b), err
+}
+
+// postRecipientsSQL is who a post or a profile of member $1 goes to (6.4): the accepted followers on other servers,
+// and the remote accounts whose actor ids are in $2 (those a post mentions, none across a block), each with a cached
+// actor that is well, an inbox, and no suspension here; one row per address a delivery would go to (the shared inbox
+// when it is on the actor's own host, as enqueue reads it, else the actor's own inbox), at most $3 rows. One
+// statement: the follows through follows_followee, the actors and accounts by their primary keys, the mentions by
+// ap_actors' unique id (TestDBQueryPlans). The follower's account and actor are asked in a LATERAL subquery with
+// OFFSET 0, so the planner looks each up by its key for the member's follows only, never joining the actors whole.
+const postRecipientsSQL = `WITH r AS (
+		SELECT a.user_id, a.ap_id, a.inbox, a.shared_inbox FROM follows f CROSS JOIN LATERAL (SELECT a.user_id, a.ap_id, a.inbox, a.shared_inbox
+			FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.user_id = f.follower_id AND u.domain <> ''
+				AND (u.suspended_until IS NULL OR u.suspended_until <= now()) AND a.state = 'ok' AND a.inbox <> '' OFFSET 0) a
+		WHERE f.followee_id = $1 AND f.state = 'accepted'
+		UNION
+		SELECT a.user_id, a.ap_id, a.inbox, a.shared_inbox FROM ap_actors a JOIN users u ON u.id = a.user_id
+		WHERE a.ap_id = ANY($2) AND u.domain <> '' AND (u.suspended_until IS NULL OR u.suspended_until <= now()) AND a.state = 'ok' AND a.inbox <> ''
+			AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = $1 AND b.target_id = u.id)
+			AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = u.id AND b.target_id = $1))
+	SELECT DISTINCT ON (k) ap_id, inbox, shared_inbox FROM (SELECT r.*, CASE WHEN r.shared_inbox <> '' AND split_part(r.shared_inbox, '/', 3) = split_part(r.ap_id, '/', 3)
+		THEN r.shared_inbox ELSE r.inbox END AS k FROM r) x ORDER BY k, user_id LIMIT $3`
+
+// recipients reads postRecipientsSQL for member uid and the actors mentioned: at most deliveryTargetsMax, the
+// queue's bound for one activity; past it the rest are left out (the first in the order of their addresses are
+// kept), and said in the log with the bound.
+func (f *federation) recipients(ctx context.Context, uid int64, mentioned []string) ([]deliveryTarget, error) {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if mentioned == nil {
+		mentioned = []string{}
+	}
+	rows, err := f.db.QueryContext(ctx, postRecipientsSQL, uid, pq.Array(mentioned), deliveryTargetsMax+1)
+	if err != nil {
+		done()
+		return nil, err
+	}
+	var out []deliveryTarget
+	for rows.Next() {
+		var t deliveryTarget
+		if err = rows.Scan(&t.Actor, &t.Inbox, &t.SharedInbox); err != nil {
+			break
+		}
+		out = append(out, t)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	done()
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > deliveryTargetsMax {
+		log.Printf("federation: member %d has followers at more than %d addresses; an activity goes to the first %d of them", uid, deliveryTargetsMax, deliveryTargetsMax)
+		out = out[:deliveryTargetsMax]
+	}
+	return out, nil
+}
+
+// errOutChanged is what the record's update answers inside enqueueThen when another pass, a deletion or a hide
+// changed the record meanwhile: everything is rolled back, and the record is read again.
+var errOutChanged = errors.New("the post's record changed meanwhile")
+
+// outDelete is the Delete of a Public post that went out (6.4): its id the post's address with #delete, as
+// Mastodon names a status's Delete, its object the post as a Tombstone, to the public collection and cc the
+// author's followers, as the Create was.
+type outDelete struct {
+	Context string        `json:"@context"`
+	ID      string        `json:"id"`
+	Type    string        `json:"type"`
+	Actor   string        `json:"actor"`
+	To      []string      `json:"to"`
+	Cc      []string      `json:"cc"`
+	Object  outTombstoned `json:"object"`
+}
+
+type outTombstoned struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+// outUpdate is an Update(Person) (6.4): a new activity id, the actor document as actorOf makes it without its own
+// @context (the activity carries it), to the public collection and cc the followers, as Mastodon addresses one.
+type outUpdate struct {
+	Context []any    `json:"@context"`
+	ID      string   `json:"id"`
+	Type    string   `json:"type"`
+	Actor   string   `json:"actor"`
+	To      []string `json:"to"`
+	Cc      []string `json:"cc"`
+	Object  outActor `json:"object"`
+}
+
+// outWaits tells the producer that a record of ap_post_out may wait, and wakes a worker. Called after the commit
+// that wrote one, so a pass that cleared the mark before reading finds the row or the mark again.
+func (f *federation) outWaits() {
+	f.postsDue.Store(true)
+	f.out.kick()
+}
+
+// personWaits tells the producer that an Update(Person) may be due now, and wakes a worker.
+func (f *federation) personWaits() {
+	f.personAt.Store(0)
+	f.out.kick()
+}
+
+// sendOut is the delivery queue's producer: it makes and enqueues one activity that waits, a post's first, and says
+// whether there was one. One pass at a time in this process (another finds the mark taken and goes on to its claim);
+// a second process during a deploy may run one too, which the records' states and the unique activity ids make
+// harmless. No turn, transaction or lock is held across another statement's wait.
+func (a *app) sendOut(ctx context.Context) (bool, error) {
+	f := a.fed
+	if !f.outBusy.CompareAndSwap(false, true) {
+		return false, nil
+	}
+	defer f.outBusy.Store(false)
+	if did, err := a.postOut(ctx); did || err != nil {
+		return did, err
+	}
+	return a.personOut(ctx)
+}
+
+// postOutSQL reads the oldest record that waits, with what its Create or Delete needs: the post (none when it is
+// gone), whether it may still be shown beyond this server (publicPost, and publicMember with the gate's $2 as $1),
+// and the author. One look in ap_post_out_due.
+var postOutSQL = `SELECT o.post_id, o.user_id, o.state, o.targets, u.username, COALESCE(p.id IS NOT NULL AND ` + publicPost + ` AND ` + personShown + `, false),
+		COALESCE(p.body, ''), COALESCE(left(p.image, ` + pictureHead + `), ''), COALESCE(p.alt, ''), COALESCE(p.ap_mentions, ''), COALESCE(p.data, '{}'), COALESCE(p.created_at, now())
+	FROM ap_post_out o JOIN users u ON u.id = o.user_id LEFT JOIN posts p ON p.id = o.post_id
+	WHERE o.state <> 'sent' ORDER BY o.post_id LIMIT 1`
+
+// postOut handles the oldest record of ap_post_out that waits: a Create, or a Delete.
+func (a *app) postOut(ctx context.Context) (bool, error) {
+	f := a.fed
+	if !f.postsDue.Swap(false) {
+		return false, nil
+	}
+	var state, targets string
+	var shown bool
+	var uid int64
+	p := notePost{}
+	err := f.fedRow(ctx, []any{&p.id, &uid, &state, &targets, &p.name, &shown, &p.body, &p.image, &p.alt, &p.mentions, &p.data, &p.created}, postOutSQL, a.mode == modeSingle)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	f.postsDue.Store(true) // another may wait behind it
+	if err != nil {
+		return false, err
+	}
+	actor := f.memberActor(p.name)
+	postID := actor + "/posts/" + strconv.FormatInt(p.id, 10)
+	if state == "delete" {
+		var to []deliveryTarget
+		if targets != "" {
+			json.Unmarshal([]byte(targets), &to)
+		}
+		body, err := apJSON(outDelete{Context: asContext, ID: postID + "#delete", Type: "Delete", Actor: actor, To: []string{publicCollection},
+			Cc: []string{actor + "/followers"}, Object: outTombstoned{ID: postID, Type: "Tombstone"}})
+		if err != nil {
+			return false, err
+		}
+		_, err = f.out.enqueueThen(ctx, keyOwner(uid), postID+"#delete", body, to, func(tx *sql.Tx) error {
+			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'delete'`, p.id))
+		})
+		return a.outDone(err, p.id)
+	}
+	// A Create that waits for a post no longer shown (hidden, the member stopped sharing or was suspended) goes with
+	// nothing sent: nothing went out, so there is nothing to take back.
+	if !shown {
+		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id)
+		return true, err
+	}
+	var mentioned []string
+	for _, m := range noteMentionsOf(p.mentions) {
+		if !sameOrigin(m.ID, f.origin.url) {
+			mentioned = append(mentioned, m.ID)
+		}
+	}
+	to, err := f.recipients(ctx, uid, mentioned)
+	if err != nil {
+		return false, err
+	}
+	body, err := a.createBody(ctx, p)
+	if err != nil {
+		return false, err
+	}
+	if len(body) > inboxBodyMax {
+		log.Printf("federation: the Create of post %d is %d bytes, more than a delivery may carry; it is not sent", p.id, len(body))
+		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id)
+		return true, err
+	}
+	sent, _ := json.Marshal(to)
+	_, err = f.out.enqueueThen(ctx, keyOwner(uid), postID+"/activity", body, to, func(tx *sql.Tx) error {
+		if len(to) == 0 { // nobody to send to: nothing to take back later either
+			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id))
+		}
+		return oneRow(tx.ExecContext(ctx, `UPDATE ap_post_out SET state = 'sent', targets = $2 WHERE post_id = $1 AND state = 'create'`, p.id, string(sent)))
+	})
+	return a.outDone(err, p.id)
+}
+
+// outDone reads enqueueThen's answer for a post's record. A record changed meanwhile is read again on the next pass.
+// A full queue (errDeliveryFull) lets the activity go, as an outage would (8.8): the record is removed, and said
+// in the log.
+func (a *app) outDone(err error, post int64) (bool, error) {
+	switch {
+	case err == nil, errors.Is(err, errOutChanged):
+		return true, nil
+	case errors.Is(err, errDeliveryFull):
+		log.Printf("federation: post %d is not sent: %v", post, err)
+		ctx, cancel := own()
+		defer cancel()
+		_, err := a.fed.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1`, post)
+		return true, err
+	}
+	return false, err
+}
+
+// oneRow is nil when a statement changed exactly one row, errOutChanged when it changed none.
+func oneRow(res sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errOutChanged
+	}
+	return nil
+}
+
+// personOutSQL is the member whose Update(Person) is due first, with whether they may still be shown beyond this
+// server ($1 as in the gate): one look in ap_person_out_due.
+var personOutSQL = `SELECT o.user_id, o.gen, o.due_at, u.username, ` + personShown + ` FROM ap_person_out o JOIN users u ON u.id = o.user_id
+	WHERE o.due_at IS NOT NULL ORDER BY o.due_at LIMIT 1`
+
+// personShown is publicMember with the gate's $2 written as $1, for personOutSQL's one parameter.
+var personShown = strings.ReplaceAll(publicMember, "$2", "$1")
+
+// personOut sends the Update(Person) that is due first, if one is due on the queue's clock. When the first is due
+// later, the producer is not asked again until then (personAt), so a worker's step costs no statement meanwhile.
+func (a *app) personOut(ctx context.Context) (bool, error) {
+	f, now := a.fed, a.fed.out.now()
+	if at := f.personAt.Load(); at != 0 && now.UnixNano() < at {
+		return false, nil
+	}
+	var uid, gen int64
+	var due time.Time
+	var name string
+	var shown bool
+	err := f.fedRow(ctx, []any{&uid, &gen, &due, &name, &shown}, personOutSQL, a.mode == modeSingle)
+	if errors.Is(err, sql.ErrNoRows) {
+		f.personAt.Store(math.MaxInt64)
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if due.After(now) {
+		f.personAt.Store(due.UnixNano())
+		return false, nil
+	}
+	f.personAt.Store(0)
+	if !shown { // stopped sharing (or was suspended) since: turning sharing off sends nothing (11)
+		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen)
+		return true, err
+	}
+	doc, known, err := a.actorOf(ctx, uid)
+	if err == nil && !known {
+		// The switches could not be read: the document would say a guess. Tried again after the queue's own wait.
+		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait))
+		return true, err
+	}
+	if errors.Is(err, errNoKey) {
+		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait))
+		return true, err
+	}
+	if err != nil {
+		return false, err
+	}
+	doc.Context = nil
+	to, err := f.recipients(ctx, uid, nil)
+	if err != nil {
+		return false, err
+	}
+	if f.personMade != nil {
+		f.personMade()
+	}
+	id := f.activityID(name)
+	body, err := apJSON(outUpdate{Context: actorContext, ID: id, Type: "Update", Actor: doc.ID, To: []string{publicCollection}, Cc: []string{doc.ID + "/followers"}, Object: doc})
+	if err != nil {
+		return false, err
+	}
+	// The row is done unless the profile changed again meanwhile (gen moved): then it stays due, personUpdateEvery
+	// after this one.
+	_, err = f.out.enqueueThen(ctx, keyOwner(uid), id, body, to, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE ap_person_out SET sent_at = $2, due_at = CASE WHEN gen = $3 THEN NULL ELSE GREATEST(due_at, $2::timestamptz + make_interval(secs => $4)) END
+			WHERE user_id = $1`, uid, now, gen, personUpdateEvery.Seconds())
+		return err
+	})
+	if errors.Is(err, errDeliveryFull) {
+		log.Printf("federation: the profile of member %d is not sent: %v", uid, err)
+		_, err = f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL, sent_at = $2 WHERE user_id = $1 AND gen = $3`, uid, now, gen)
+	}
+	return err == nil, err
+}
+
+// personChangedSQL marks member $1's Update(Person) due: now ($2, the queue's clock) when none was sent in the last
+// personUpdateEvery ($3, in seconds), else that long after the last; a row already due keeps its time. gen counts
+// the changes, so a change made while one is being sent is not lost.
+const personChangedSQL = `INSERT INTO ap_person_out (user_id, due_at, gen) VALUES ($1, $2, 1)
+	ON CONFLICT (user_id) DO UPDATE SET gen = ap_person_out.gen + 1,
+		due_at = COALESCE(ap_person_out.due_at, GREATEST($2, ap_person_out.sent_at + make_interval(secs => $3)))`
+
 /* ---------- federation: removing every remote row ---------- */
 
 // purgeCounts are the rows that point at remote accounts, counted before they go with them: each
@@ -19775,6 +20486,9 @@ var purgeCounts = []struct{ what, sql string }{
 	{"deliveries", `SELECT count(*) FROM ap_deliveries`},
 	{"activities to send", `SELECT count(*) FROM ap_outbox`},
 	{"host records", `SELECT count(*) FROM ap_hosts`},
+	// The records of Public posts sent (FWR 4) name the inboxes they went to: they go too, and a post deleted after
+	// the purge is taken back nowhere.
+	{"records of posts sent", `SELECT count(*) FROM ap_post_out`},
 }
 
 // purgeRemote removes every remote account and everything that hangs off it (docs/federation.md 14.4), in
@@ -19803,7 +20517,7 @@ func purgeRemote(ctx context.Context, db *sql.DB) ([]int64, error) {
 		out = append(out, n)
 	}
 	// The delivery queue: the activities (their rows go with them) and what is kept of each host.
-	for _, q := range []string{`DELETE FROM ap_outbox`, `DELETE FROM ap_hosts`} {
+	for _, q := range []string{`DELETE FROM ap_outbox`, `DELETE FROM ap_hosts`, `DELETE FROM ap_post_out`} {
 		if _, err := tx.ExecContext(ctx, q); err != nil {
 			return nil, err
 		}
@@ -20173,6 +20887,37 @@ var migrations = []string{schema, schemaSocial,
 	CREATE INDEX IF NOT EXISTS follows_pending ON follows (followee_id, created_at) WHERE state = 'pending';
 	CREATE INDEX IF NOT EXISTS users_remote_domain ON users (domain) WHERE domain <> '';
 	CREATE INDEX IF NOT EXISTS notifications_follows ON notifications (user_id, id DESC) WHERE kind IN ('follow', 'follow_request', 'follow_rejected')`,
+	// 21: public posts go out as notes (docs/federation.md 6.4, 6.5 and "As built (FWR 4)" under 6.5; FWR 4).
+	// posts.alt is a picture's alt text, written by its author in every mode, at most 1,500 characters (the check is
+	// added NOT VALID, so no row is read to add it). posts.ap_mentions holds the mentions of a Public post as they were
+	// resolved when it was made (JSON; '' for none and for every other post), so the Note served and the Note sent
+	// are made from the same stored words whatever the cache of remote actors holds later. ap_post_out is the
+	// durable record of a Public post's way out: written in the post's own statement (state create), turned into
+	// the Create and its deliveries by a worker in the transaction that enqueues it (state sent, with the inboxes it
+	// went to in targets), and marked delete by a deletion or a moderator's hide in their own statement, so the
+	// Delete goes to the same inboxes; it has no foreign key to posts, since it outlives the post until that Delete
+	// is enqueued. ap_person_out coalesces Update(Person): one row per member, due_at when one waits (NULL when
+	// none), sent_at the last sent, gen counting the changes. Additive: an older build ignores all of it.
+	`ALTER TABLE posts ADD COLUMN IF NOT EXISTS alt TEXT NOT NULL DEFAULT '';
+	ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_mentions TEXT NOT NULL DEFAULT '';
+	ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_alt_len;
+	ALTER TABLE posts ADD CONSTRAINT posts_alt_len CHECK (char_length(alt) <= 1500) NOT VALID;
+	CREATE TABLE IF NOT EXISTS ap_post_out (
+		post_id BIGINT PRIMARY KEY,
+		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		state TEXT NOT NULL CHECK (state IN ('create', 'sent', 'delete')),
+		targets TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	);
+	CREATE INDEX IF NOT EXISTS ap_post_out_due ON ap_post_out (post_id) WHERE state <> 'sent';
+	CREATE INDEX IF NOT EXISTS ap_post_out_user ON ap_post_out (user_id);
+	CREATE TABLE IF NOT EXISTS ap_person_out (
+		user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		due_at TIMESTAMPTZ,
+		sent_at TIMESTAMPTZ,
+		gen BIGINT NOT NULL DEFAULT 0
+	);
+	CREATE INDEX IF NOT EXISTS ap_person_out_due ON ap_person_out (due_at) WHERE due_at IS NOT NULL`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -21214,21 +21959,15 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 		// Read whole and closed before a post's lines are made, which may ask the database again
 		// (skillNames): nothing holds one connection while it waits for another. The page is shared by
 		// every visitor, so it is made without one visitor's context.
-		type visitorRow struct {
-			id         int64
-			body, head string
-			data       []byte
-			created    time.Time
-		}
-		var got []visitorRow
-		rows, err := a.db.Query(`SELECT p.id, p.body, left(p.image, `+pictureHead+`), p.data, p.created_at FROM posts p WHERE p.user_id = $1 AND `+publicPost+`
+		var got []notePost
+		rows, err := a.db.Query(`SELECT p.id, p.body, left(p.image, `+pictureHead+`), p.alt, p.data, p.created_at FROM posts p WHERE p.user_id = $1 AND `+publicPost+`
 			ORDER BY p.id DESC LIMIT $2`, u.ID, pubPage+1)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var x visitorRow
-			if err = rows.Scan(&x.id, &x.body, &x.head, &x.data, &x.created); err != nil {
+			x := notePost{name: u.Username}
+			if err = rows.Scan(&x.id, &x.body, &x.image, &x.alt, &x.data, &x.created); err != nil {
 				break
 			}
 			got = append(got, x)
@@ -21245,7 +21984,7 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 				d.AllPosts = "/users/" + u.Username
 				break
 			}
-			d.Posts = append(d.Posts, a.postOf(context.Background(), u.Username, x.id, x.body, x.head, x.data, x.created))
+			d.Posts = append(d.Posts, a.postOf(context.Background(), x))
 		}
 	}
 	// The picture went through cleanImage when it was saved: a JPEG or PNG made again by the server. Its
@@ -22051,7 +22790,13 @@ var (
 	handleRE   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,60}$`)
 	ytHandleRE = regexp.MustCompile(`^[A-Za-z0-9._@/-]{1,80}$`)
 	achKeyRE   = regexp.MustCompile(`^[a-z0-9][a-zA-Z0-9:_-]{0,60}$`) // a branch badge ends in its branch's capital letter
-	mentionRE  = regexp.MustCompile(`(?:^|[^a-z0-9._-])@([a-z0-9][a-z0-9._-]{2,23})`)
+	// mentionRE finds what may be a mention: an @ that does not follow a letter, digit, dot, dash or underscore
+	// (so an email address is none), a run of name characters, and an @ and a host after it when there is one.
+	// parseMentions decides what each is. web/links.js (mentionsIn) reads text the same way, and
+	// test/mentions-fixtures.json holds the cases both must agree on (TestMentions, node test/mentions.js).
+	mentionRE   = regexp.MustCompile(`(?:^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)(?:@([A-Za-z0-9.-]+))?`)
+	localNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,23}`) // a local mention: the first 24 characters at most, as before remote handles
+	hostLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 // bidiOverride reports the characters that force the direction of the text after them:
@@ -22175,16 +22920,80 @@ func cleanLink(kind, v string) (string, bool) {
 // maxMentions is how many people one post or comment can notify; further names stay plain text.
 const maxMentions = 10
 
-func mentions(text string) []string {
+func mentions(text string) []string { return mentionNames(text, "") }
+
+// mentionNames lists the local usernames a text mentions, without repeats and at most maxMentions: @name, and
+// @name@own when own is this instance's host. A handle of another server (@anna@social.example) is never read
+// as the local anna (docs/federation.md, finding 9).
+func mentionNames(text, own string) []string {
 	seen := map[string]bool{}
 	out := []string{}
-	for _, m := range mentionRE.FindAllStringSubmatch(strings.ToLower(text), -1) {
-		if !seen[m[1]] && len(out) < maxMentions {
-			seen[m[1]] = true
-			out = append(out, m[1])
+	for _, m := range parseMentions(strings.ToLower(text), own) {
+		if m.local && !seen[m.name] && len(out) < maxMentions {
+			seen[m.name] = true
+			out = append(out, m.name)
 		}
 	}
 	return out
+}
+
+// mentionAt is one mention in a text: where it is (bytes, from its @ to the end of its name or host), the name as
+// written, the host for a handle of another server, and local for a member here (the name then as a username,
+// in lower case).
+type mentionAt struct {
+	start, end int
+	name, host string
+	local      bool
+}
+
+// maxRemoteName is the longest name part of another server's handle that is read as one (Mastodon allows 30).
+const maxRemoteName = 64
+
+// parseMentions finds the mentions in text: @name for a member here (as before: an @ that does not follow a
+// letter, digit, dot, dash or underscore, and up to 24 name characters starting with a letter or a digit), and
+// @name@host for an account elsewhere, the host a DNS name of two labels or more (a full stop after it ends the
+// sentence and is not part of it). A handle on own (this instance's host, "" when it has none) is a local
+// mention. Anything with a host is never read as a local name, whatever its length or characters: at worst it
+// is plain text. own is compared without case.
+func parseMentions(text, own string) []mentionAt {
+	var out []mentionAt
+	for _, m := range mentionRE.FindAllStringSubmatchIndex(text, -1) {
+		at, run := m[2]-1, text[m[2]:m[3]]
+		if m[4] >= 0 {
+			host := strings.TrimRight(text[m[4]:m[5]], ".")
+			if mentionHostOK(host) {
+				switch {
+				case own != "" && strings.EqualFold(host, own):
+					if l := strings.ToLower(run); localNameRE.FindString(l) == l {
+						out = append(out, mentionAt{start: at, end: m[4] + len(host), name: l, local: true})
+					}
+				case len(run) <= maxRemoteName:
+					out = append(out, mentionAt{start: at, end: m[4] + len(host), name: run, host: host})
+				}
+				continue
+			}
+		}
+		if l := localNameRE.FindString(strings.ToLower(run)); l != "" {
+			out = append(out, mentionAt{start: at, end: m[2] + len(l), name: l, local: true})
+		}
+	}
+	return out
+}
+
+// mentionHostOK says whether a mention's host is a DNS name: two labels or more of letters, digits and inner
+// dashes, at most 253 characters, the last label holding a letter (so "@a@1.5" names no server).
+func mentionHostOK(h string) bool {
+	h = strings.ToLower(h)
+	labels := strings.Split(h, ".")
+	if len(h) > 253 || len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if !hostLabelRE.MatchString(l) {
+			return false
+		}
+	}
+	return strings.ContainsFunc(labels[len(labels)-1], func(r rune) bool { return r >= 'a' && r <= 'z' })
 }
 
 // validStats accepts a small flat object of numbers and booleans, as the client reports
@@ -22827,13 +23636,16 @@ type comment struct {
 }
 
 type post struct {
-	ID      int64           `json:"id"`
-	UserID  int64           `json:"userId"`
-	Kind    string          `json:"kind"`
-	Body    string          `json:"body"`
-	Prop    string          `json:"prop"`
-	Skill   string          `json:"skill"`
-	Image   string          `json:"image"`
+	ID     int64  `json:"id"`
+	UserID int64  `json:"userId"`
+	Kind   string `json:"kind"`
+	Body   string `json:"body"`
+	Prop   string `json:"prop"`
+	Skill  string `json:"skill"`
+	Image  string `json:"image"`
+	// Alt is the picture's alt text as its author wrote it (FWR 4); left out when there is none, so an answer
+	// about a post without one is as it always was.
+	Alt     string          `json:"alt,omitempty"`
 	Data    json.RawMessage `json:"data"`
 	Created time.Time       `json:"created"`
 	Likes   int             `json:"likes"`
@@ -22887,7 +23699,7 @@ func postCols(staff string) string {
 	return `p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
-			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason, p.audience`
+			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason, p.audience, p.alt`
 }
 
 // homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
@@ -22941,7 +23753,7 @@ func (a *app) readPosts(viewer *user, q string, args ...any) (map[string]any, er
 	for rows.Next() {
 		p := &post{Comments: []comment{}}
 		var data []byte
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden, &p.aud); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Kind, &p.Body, &p.Prop, &p.Skill, &p.Image, &data, &p.Created, &p.Likes, &p.Liked, &p.CommentCount, &p.Hidden, &p.aud, &p.Alt); err != nil {
 			return nil, err
 		}
 		if a.fed != nil && p.UserID == viewer.ID {
@@ -23034,7 +23846,15 @@ func (a *app) handleGetPost(w http.ResponseWriter, r *http.Request, u *user) {
 
 // notifyMentions tells each @named user, except the actor and anyone already told.
 func (a *app) notifyMentions(text string, actor, postID, commentID int64, skip ...int64) {
-	a.notifyNames(mentions(text), actor, postID, commentID, skip...)
+	a.notifyNames(mentionNames(text, a.ownHost()), actor, postID, commentID, skip...)
+}
+
+// ownHost is this instance's host in a mode that federates, where @name@host on it is a local mention; "" elsewhere.
+func (a *app) ownHost() string {
+	if a.fed == nil {
+		return ""
+	}
+	return a.fed.origin.host
 }
 
 // notifyNames tells each named user, except the actor and anyone in skip.
@@ -23177,8 +23997,10 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		Links []string   `json:"links"`
 		// Who may read it (docs/federation.md, F2): "public" or "local", read only in a mode that federates.
 		Audience *string `json:"audience"`
+		// The picture's alt text (docs/federation.md 6.5, FWR 4), in every mode: optional, at most maxAlt characters.
+		Alt *string `json:"alt"`
 	}
-	if !readJSON(w, r, maxImage+4*maxPost+8192, &in) {
+	if !readJSON(w, r, maxImage+4*maxPost+4*maxAlt+8192, &in) {
 		return
 	}
 	audience, msg, err := a.postAudience(in.Audience, u)
@@ -23201,6 +24023,18 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	in.Image = img
+	alt := ""
+	if in.Alt != nil && in.Image != "" { // a description without a picture describes nothing, and is dropped
+		t, ok := visibleText(*in.Alt)
+		if !ok {
+			fail(w, http.StatusBadRequest, "The description of the picture cannot hold characters that change the direction of the text.")
+			return
+		}
+		if alt = strings.TrimSpace(strings.Join(strings.Fields(t), " ")); len([]rune(alt)) > maxAlt {
+			fail(w, http.StatusBadRequest, "Keep the description of the picture under 1500 characters.")
+			return
+		}
+	}
 	tags, ok := cleanTags(in.Tags)
 	if !ok {
 		fail(w, http.StatusBadRequest, "Tag up to 10 tricks from your props.")
@@ -23254,8 +24088,24 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 		prop, skill = tags[0].Prop, tags[0].Skill
 	}
 	var id int64
-	if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image, data, audience) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		u.ID, body, prop, skill, in.Image, string(dataJSON), audience).Scan(&id); err != nil {
+	if a.postsGoOut(audience) {
+		// A Public post that goes out as a note (FWR 4): its mentions resolved from the cache now, and the post and
+		// the record of its way out written by one statement, so neither is ever there without the other; a worker
+		// makes the Create (sendOut). Posting never waits for another server.
+		ms, err := a.resolveMentions(r.Context(), body, u.ID)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if err := a.db.QueryRow(`WITH p AS (INSERT INTO posts (user_id, body, prop, skill, image, data, audience, alt, ap_mentions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, user_id),
+			o AS (INSERT INTO ap_post_out (post_id, user_id, state) SELECT id, user_id, 'create' FROM p) SELECT id FROM p`,
+			u.ID, body, prop, skill, in.Image, string(dataJSON), audience, alt, ms).Scan(&id); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		a.fed.outWaits()
+	} else if err := a.db.QueryRow(`INSERT INTO posts (user_id, body, prop, skill, image, data, audience, alt) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		u.ID, body, prop, skill, in.Image, string(dataJSON), audience, alt).Scan(&id); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -23341,8 +24191,21 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var author int64
 	// Authors delete their own posts; deleting someone else's needs the permission and a higher role.
-	err := a.db.QueryRow(`DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
-		AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.user_id`, id, u.ID, can(u, permContentDelete), pq.Array(below(u.Role))).Scan(&author)
+	del := `DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
+		AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.user_id`
+	var out int
+	dest := []any{&author}
+	if a.fed != nil {
+		// In a mode that federates the same statement marks the post's record of its way out for a Delete (FWR 4),
+		// whatever state it was in: a post that went out is taken back where it went, one still waiting goes with
+		// nothing sent. One statement, so the deletion and the mark are never apart.
+		del = `WITH d AS (DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
+			AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.id, p.user_id),
+			o AS (UPDATE ap_post_out SET state = 'delete' WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING post_id)
+			SELECT d.user_id, (SELECT count(*) FROM o) FROM d`
+		dest = append(dest, &out)
+	}
+	err := a.db.QueryRow(del, id, u.ID, can(u, permContentDelete), pq.Array(below(u.Role))).Scan(dest...)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such post, or it is not yours.")
 		return
@@ -23352,6 +24215,9 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	a.dropVisitorPage()
+	if out > 0 {
+		a.fed.outWaits()
+	}
 	if author != u.ID {
 		if err := a.audit(a.db, u.ID, "delete_post", "post", id, author, "", nil); err != nil {
 			a.serverError(w, err)
@@ -23988,11 +24854,11 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 		return
 	}
 	before := map[string]bool{}
-	for _, n := range mentions(c.body) {
+	for _, n := range mentionNames(c.body, a.ownHost()) {
 		before[n] = true
 	}
 	added := []string{}
-	for _, n := range mentions(body) {
+	for _, n := range mentionNames(body, a.ownHost()) {
 		if !before[n] {
 			added = append(added, n)
 		}

@@ -126,7 +126,7 @@ try:
 
     check('nothing is announced yet: NodeInfo names the origin but no member, and the dashboard says so',get_json(op,'admin/dashboard').get('federation',{}).get('announced')=='',lambda: get_json(op,'admin/dashboard').get('federation'))
     me=get_json(op,'me')
-    check('the admin is told the handle, and has not opted in',{k:(me.get('federation') or {}).get(k) for k in ('handle','optedIn','label')}=={'handle':'@admin@'+HOST,'optedIn':False,'label':LABEL} and 'your posts are not sent to them yet' in (me.get('federation') or {}).get('built',''),lambda: me.get('federation'))
+    check('the admin is told the handle, and has not opted in',{k:(me.get('federation') or {}).get(k) for k in ('handle','optedIn','label')}=={'handle':'@admin@'+HOST,'optedIn':False,'label':LABEL} and 'your Public posts are sent to them' in (me.get('federation') or {}).get('built',''),lambda: me.get('federation'))
     s,h,b=wf('acct:admin@'+HOST)
     check('WebFinger: 404 for a member who has not opted in, with the CORS header',s==404 and h.get('Access-Control-Allow-Origin')=='*',lambda: (s,dict(h)))
     nobody=wf('acct:nobody@'+HOST)
@@ -141,7 +141,7 @@ try:
     check('Settings has "Beyond this server", with the switch off and the handle',lambda: js("const c=[...document.querySelectorAll('.card h2')].find(h=>h.textContent==='Beyond this server');const b=document.querySelector('[data-change=federates]');return !!c&&!!b&&!b.checked&&c.closest('.card').innerText.includes('@admin@flowa.test')"),
           lambda: js("return document.querySelector('main').innerText.slice(0,400)"))
     check('the switch has a name a screen reader reads',lambda: js("const b=document.querySelector('[data-change=federates]');return b&&b.closest('label').innerText.trim()")==LABEL)
-    check('the card says what this version does, in the server\'s words: read, not followed, nothing sent',lambda: (lambda t: 'read your profile and the posts you mark Public' in t and 'People there can follow you' in t and 'your posts are not sent to them yet' in t)(js("return document.querySelector('.fed-card').innerText")),lambda: js("return document.querySelector('.fed-card').innerText"))
+    check('the card says what this version does, in the server\'s words: read, followed, Public posts sent',lambda: (lambda t: 'read your profile and the posts you mark Public' in t and 'People there can follow you' in t and 'your Public posts are sent to them' in t)(js("return document.querySelector('.fed-card').innerText")),lambda: js("return document.querySelector('.fed-card').innerText"))
     if tab_to('[data-change=federates]','the switch'):
         check('the switch shows a ring of 2 px or more at 3:1 in both themes, and nothing covers it (keys.py)',not ring_ok(),ring_ok)
         key(SPACE)
@@ -164,7 +164,7 @@ try:
 
     # The dashboard's mode line says what this version of federation does.
     nav('#/admin')
-    check('the dashboard: federated mode, the origin, announced since the first answer, and what is served',lambda: (lambda t: bool(t) and t.startswith('Instance mode federated') and 'Federating as https://flowa.test, first announced' in t and 'serves the profiles and Public posts' in t and 'members can follow people on other servers' in t and 'no post is sent yet' in t)(txt('.dash-mode')),lambda: (location_of(),txt('#main')[:300]))
+    check('the dashboard: federated mode, the origin, announced since the first answer, and what is served',lambda: (lambda t: bool(t) and t.startswith('Instance mode federated') and 'Federating as https://flowa.test, first announced' in t and 'serves the profiles and Public posts' in t and 'members can follow people on other servers' in t and 'sends the Public posts of members who share their profile' in t)(txt('.dash-mode')),lambda: (location_of(),txt('#main')[:300]))
     js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top, or the sticky bar lands in its middle
     picture('federated-dashboard','Federated mode: the dashboard says the origin and what this version serves')
     check('the mode line says deliveries are not taken while the Federation switch is off (its default)',lambda: 'Taking deliveries is off under Features' in (txt('.dash-mode') or ''),lambda: txt('.dash-mode'))
@@ -187,7 +187,7 @@ try:
     check('the Federation tab: allowed servers only, no domain yet, and the deliveries refused counted',lambda: (lambda t: 'Allowed servers only' in t and 'No domain is allowed yet' in t and 'not signed' in t)(txt('#main') or ''),lambda: txt('#main')[:600])
     # The delivery queue (FWR 2): built and empty, since nothing in this version sends; its numbers come from the server.
     j=get_json(op,'admin/federation').get('deliveries') or {}
-    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Follows and their answers in this version' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
+    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Follows and their answers, Public posts, their deletions and profile changes' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
     if tab_to('#fed-domain-form [name=domain]','the domain field'):
         check('the field shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
         type_text('Social.Example')
@@ -429,7 +429,7 @@ try:
     check('the requests list is there, and empty',get_json(op,'fed/requests')=={'requests':[],'total':0},lambda: get_json(op,'fed/requests'))
     load(BASE);nav('#/settings')
     check('Settings offers approving followers from other servers by hand, off, once the member shares their profile',lambda: js("const b=document.querySelector('[data-change=locked]');return !!b&&!b.checked&&b.closest('label').innerText.trim()"),lambda: txt('.fed-card'))
-    check('the card says what this version does: people elsewhere can follow, posts are not sent',lambda: (lambda t: 'People there can follow you, and you can follow them' in t and 'your posts are not sent to them yet' in t)(txt('.fed-card') or ''),lambda: txt('.fed-card'))
+    check('the card says what this version does: people elsewhere can follow, and get the Public posts',lambda: (lambda t: 'People there can follow you, and you can follow them' in t and 'your Public posts are sent to them' in t)(txt('.fed-card') or ''),lambda: txt('.fed-card'))
     if tab_to('[data-change=locked]','the switch for approving by hand'):
         check('the switch shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
         key(SPACE)

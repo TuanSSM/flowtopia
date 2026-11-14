@@ -6,7 +6,7 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), the delivery queue is built (item 2, its fan-out on the Pi left to the owner), and follows across servers are built (item 3, the recorded Mastodon fixtures left to the owner's trial). 0 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), the delivery queue is built (item 2, its fan-out on the Pi left to the owner), follows across servers are built (item 3, the recorded Mastodon fixtures left to the owner's trial), and Public posts go out as notes (item 4, in review). 0 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -217,6 +217,45 @@ route and test named below is new unless the design note says it exists.
   `@anna@social.example` is never read as the local `anna`. DoD: `TestNoteFromPost` (golden),
   `TestNoteContentEscaping`, `TestMentions` extended, `TestDBPostFanOut` (one delivery per shared
   inbox).
+  Built (federation.md 6.5, "Public posts out, as built (FWR 4)", says what and why; migration 21 with
+  `flowa-schema20.dump`): `posts.alt`, `posts.ap_mentions`, `ap_post_out` and `ap_person_out`; Create(Note) for a post of
+  kind post, audience Public, by a member who shares, while the mode federates, federation is not refused and the
+  `federation` and `follows` flags are on (a post made while either is off is never sent later; milestones and This
+  server posts never), its record written by the post's own statement and turned into the activity by a worker of the
+  delivery queue in the transaction that enqueues it (`enqueueThen`), so a crash loses or doubles nothing; the
+  recipients in one bounded statement (`postRecipientsSQL`: accepted followers one per shared inbox, a follower whose
+  server names none by its own inbox, the remote accounts mentioned; at most 10,000 addresses, the rest left out and
+  logged), sent as `application/ld+json; profile=...` and signed as the member; the HTML of 6.5 (`noteHTMLWith`: `p`, `br`,
+  `a`, `span`, the classes Mastodon's sanitiser keeps, every character escaped, links only http and https, control and
+  direction characters dropped), mentions as h-card links with `Mention` tags and in `cc`, one `Hashtag` per prop of the
+  chips and the combo, `flowa:tricks` and `flowa:combo` beside the text fallback, the picture with its alt text as both
+  `name` and `summary`; one function for the Note served and the Note sent (`noteOf`); the alt text field in the composer
+  in every mode, shown once a picture is attached, at most 1,500 characters, the picture's alt in Flowa's pages, `alt` in
+  an answer only when a post has one; Delete(Tombstone) on a deletion and a moderator's hide to the inboxes the Create went
+  to (recorded in `ap_post_out`), nothing on a restore; Update(Person) on a change the actor shows, coalesced in
+  `ap_person_out` to one every five minutes with the newest state; `parseMentions` and the page's `mentionsIn` reading
+  `@name@host` as another server's account and never the local name, held to `test/mentions-fixtures.json`; mentions
+  resolved from the cache alone (an unknown handle stays text and is not sent to); `-purge-remote` removes the records;
+  `fedBuilt`, NodeInfo's `posts`, the Settings and composer sentences, the Federation tab's subtitle. Tests:
+  `TestNoteFromPost` (golden `note-full.json` and `create-ana.json`, the Note sent compared byte for byte with the Note
+  served), `TestNoteContentEscaping`, `FuzzNoteContent` (30 s, no failure), `TestMentions` and `node test/mentions.js` (in
+  the lint job), `TestDBPostFanOut` (600 followers on 300 servers give 300 deliveries; a server with no shared inbox, a
+  suspended domain, a gone actor, a pending follow, a suspended account, a mentioned account, every audience, a
+  milestone, each flag off, a member who stops sharing, federation refused, a Create made twice),
+  `TestDBPostDeleteAndHide`, `TestDBPersonUpdateCoalesced`, `TestDBNothingPrivateLeaves`, `TestDBTwoFlowaNotes` (the other
+  Flowa's inbox verifies the Create and the Delete and counts and drops them), `TestDBNotesOneConnection`,
+  `TestDBPostLocalStatements` (8 statements for a post in local mode, as before), `TestDBQueryPlans` (the recipients of
+  1,000 followers on 300 servers through indexes, about 12 rows counted per follower), `TestDBPurgeRemote`,
+  `TestDBEvictionCoversReferences`, `TestDBLocalModeUnchanged` extended, with `-race -count=3` on two cores; the `social`,
+  `keys` and `a11y` browser suites (the field's name, its keyboard path, the post's alt) and `federated` (the new
+  sentences).
+  **Open:** a recorded Mastodon post confirming the h-card nesting and which of `name` and `summary` it writes for alt
+  text (the owner's trial, item 9); Update(Person) after `-rotate-keys`; nothing is sent when a member is suspended; the
+  box stays unchecked until the owner's review merges it. For the owner (defaults built): whether a post made while a
+  switch was off should go out when it comes back on (built: never), whether the alt text field belongs in local mode
+  (built: every mode, shown once a picture is attached), whether a Delete should go after a member stops sharing
+  (built: yes), whether the combo's prop gets a hashtag (built: yes), and the numbers: 10 mentions, 1,500 characters of
+  alt text, 5 minutes between profile updates, 10,000 addresses per activity.
 - [ ] **Posts from followed accounts in Home.** Create, Update and Delete of Note in; `htmlToText`;
   the visibility rules of federation.md 6.7 (direct messages dropped); remote pictures through the
   bounded cache under `-data/media` (F6); Announce of a local post as a `share` notification; polls,

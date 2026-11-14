@@ -1,0 +1,95 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    {
+      "flowa": "https://github.com/TuanSSM/flowtopia/ns#",
+      "sensitive": "as:sensitive",
+      "Hashtag": "as:Hashtag"
+    }
+  ],
+  "id": "https://here.example/users/ana/posts/1",
+  "type": "Note",
+  "attributedTo": "https://here.example/users/ana",
+  "url": "https://here.example/users/ana/posts/1",
+  "published": "2026-11-12T18:04:05Z",
+  "to": [
+    "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+    "https://here.example/users/ana/followers",
+    "https://social.example/users/bo",
+    "https://here.example/users/cyd"
+  ],
+  "sensitive": false,
+  "content": "<p>Finally clean! Thanks <span class=\"h-card\"><a href=\"https://social.example/@bo\" class=\"u-url mention\">@<span>bo</span></a></span> and <span class=\"h-card\"><a href=\"https://here.example/users/cyd\" class=\"u-url mention\">@<span>cyd</span></a></span> for the drill: <a href=\"https://example.com/drill\" rel=\"nofollow noopener\">https://example.com/drill</a></p><p>Next: @zed@unknown.example</p><p>Tricks: Six basic figure-8s (Nunchaku), Four-petal antispin flower (Poi)</p><p>Combo: Morning: Six basic figure-8s, Six directions <a href=\"https://here.example/#/prop/nunchaku\" class=\"mention hashtag\" rel=\"tag\">#<span>nunchaku</span></a> <a href=\"https://here.example/#/prop/poi\" class=\"mention hashtag\" rel=\"tag\">#<span>poi</span></a></p>",
+  "attachment": [
+    {
+      "type": "Image",
+      "mediaType": "image/jpeg",
+      "url": "https://here.example/users/ana/posts/1/picture.jpg",
+      "name": "Ana spinning a nunchaku in a figure-8 in the park",
+      "summary": "Ana spinning a nunchaku in a figure-8 in the park",
+      "width": 32,
+      "height": 24
+    }
+  ],
+  "tag": [
+    {
+      "type": "Mention",
+      "href": "https://social.example/users/bo",
+      "name": "@bo@social.example"
+    },
+    {
+      "type": "Mention",
+      "href": "https://here.example/users/cyd",
+      "name": "@cyd@here.example"
+    },
+    {
+      "type": "Hashtag",
+      "href": "https://here.example/#/prop/nunchaku",
+      "name": "#nunchaku"
+    },
+    {
+      "type": "Hashtag",
+      "href": "https://here.example/#/prop/poi",
+      "name": "#poi"
+    }
+  ],
+  "flowa:tricks": [
+    {
+      "type": "flowa:Trick",
+      "flowa:prop": "nunchaku",
+      "flowa:skill": "F7",
+      "name": "Six basic figure-8s"
+    },
+    {
+      "type": "flowa:Trick",
+      "flowa:prop": "poi",
+      "flowa:skill": "L2",
+      "name": "Four-petal antispin flower"
+    }
+  ],
+  "flowa:combo": {
+    "type": "flowa:Combo",
+    "name": "Morning",
+    "flowa:prop": "nunchaku",
+    "flowa:steps": [
+      {
+        "type": "flowa:Trick",
+        "flowa:prop": "nunchaku",
+        "flowa:skill": "F7",
+        "name": "Six basic figure-8s"
+      },
+      {
+        "type": "flowa:Trick",
+        "flowa:prop": "nunchaku",
+        "flowa:skill": "F5",
+        "name": "Six directions"
+      }
+    ],
+    "flowa:reps": [
+      2,
+      1
+    ]
+  }
+}

@@ -75,6 +75,55 @@ func TestMentions(t *testing.T) {
 	if n := len(mentions("nobody here")); n != 0 {
 		t.Errorf("expected no mentions, got %d", n)
 	}
+	// FWR 4: @name@host is a handle of another server, never the member name here (finding 9); the page reads
+	// every case of test/mentions-fixtures.json the same way (node test/mentions.js).
+	raw, err := os.ReadFile("test/mentions-fixtures.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Cases []struct {
+			Text          string
+			Local, Remote []string
+		}
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil || len(fx.Cases) < 20 {
+		t.Fatalf("the fixtures look cut short: %d cases, %v", len(fx.Cases), err)
+	}
+	for _, c := range fx.Cases {
+		local, remote := []string{}, []string{}
+		for _, m := range parseMentions(c.Text, "") {
+			want := "@" + m.name
+			if m.local {
+				local = append(local, m.name)
+			} else {
+				want += "@" + m.host
+				remote = append(remote, m.name+"@"+m.host)
+			}
+			if got := c.Text[m.start:m.end]; !strings.EqualFold(got, want) {
+				t.Errorf("%q: the mention at %d to %d reads %q, want %q", c.Text, m.start, m.end, got, want)
+			}
+		}
+		if !slices.Equal(local, c.Local) || !slices.Equal(remote, c.Remote) {
+			t.Errorf("parseMentions(%q) = local %q, remote %q; want %q, %q", c.Text, local, remote, c.Local, c.Remote)
+		}
+	}
+	// What is notified: local names only, without repeats; on this instance's own host a handle is a member here.
+	for text, want := range map[string][]string{
+		"@anna@social.example and @boo":      {"boo"},
+		"@anna@flowa.example.org and @Anna":  {"anna"},
+		"@ANNA@Flowa.Example.Org.":           {"anna"},
+		"@an@flowa.example.org":              {},
+		"@anna@flowa.example.org.evil.test":  {},
+		"@anna@social.example @anna@x.test!": {},
+	} {
+		if got := mentionNames(text, "flowa.example.org"); !slices.Equal(got, want) {
+			t.Errorf("mentionNames(%q) = %q, want %q", text, got, want)
+		}
+	}
+	if got := mentions("@anna@flowa.example.org"); len(got) != 0 {
+		t.Errorf("with no host of its own (local mode) a handle with a host is no member here: %q", got)
+	}
 }
 
 func TestValidStats(t *testing.T) {

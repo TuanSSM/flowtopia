@@ -15,8 +15,9 @@ the origin, the keys, the guarded fetcher, HTTP signatures, discovery, the actor
 pages with the post audience and retired names, the outboxes and collections, remote accounts with the
 cache of remote actors, and the search by handle that calls it; a federating instance can be read, its members
 can look up people elsewhere; and as of FWR 1 with FMD 1's domain policies, an inbox that takes deliveries and
-acts only on an account deleting itself or changing its profile, 7.10; as of FWR 2 a delivery queue; and as of FWR 3
-follows across servers, in and out, with approval by hand, 6.4). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
+acts only on an account deleting itself or changing its profile, 7.10; as of FWR 2 a delivery queue; as of FWR 3
+follows across servers, in and out, with approval by hand, 6.4; and as of FWR 4 Public posts sent as notes to followers
+elsewhere, with their deletions and profile changes, 6.5). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
 proceeds on its recommendation, and each decision says what the plan assumes meanwhile.
 
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
@@ -230,7 +231,8 @@ These change the design and are not obvious from the brief.
 9. **Mentions of a remote handle would notify the wrong member.** `mentionRE` in `main.go` and
    `richText` in `web/social.js` read `@anna@social.example` as a mention of the local `anna`: the
    server would notify her (`notifyNames`) and the page would link to her profile. Both must learn the
-   `@name@host` form before the local one (FWR, posts in).
+   `@name@host` form before the local one (FWR, posts in). Built in FWR 4 (6.5, "Public posts out, as built"):
+   `parseMentions` and the page's `mentionsIn`, held to one set of cases.
 10. **Usernames can be reused.** `handleDeleteUser` deletes the row and nothing keeps the name, so a
     new sign-up could take it and inherit another person's identity on every server that knew it.
     Federation keeps a list of retired names (section 9; built in FRD 5, 5.2).
@@ -433,6 +435,11 @@ answers and on an account deleting itself or changing its profile, so members ca
 be followed from them (approving each follower by hand when they choose), and sends those follows, answers and
 unfollows; posts, replies and likes sent to it are counted and dropped, and no post is sent yet", and the parts add
 `follows` (6.4, "Follows across servers, as built").
+
+As built (FWR 4): the sentence now ends "..., and sends those follows, answers and unfollows, and sends the Public posts of
+members who share their profile to their followers on other servers, with a post's deletion and a profile's changes;
+posts, replies and likes sent to it are counted and dropped", and the parts add `posts` (6.5, "Public posts out, as
+built").
 
 ### 4.2 What each mode means for every surface
 
@@ -1288,7 +1295,9 @@ above.
 As built (FRD 6): nothing is sent yet, but the Create(Note) of the first row is built (`createOf`) and read in
 the outbox and at its id (`/users/{name}/posts/{id}/activity`, 5.2's correction): to the public collection, cc
 the author's followers, as 6.7 says; FWR 4 adds the mentioned actors to `cc` of the Create and its Note
-together, in that one function.
+together, in that one function. As built (FWR 4): the first row (Create(Note), to the followers one per shared inbox
+and the remote accounts mentioned), Delete(Tombstone) on a deletion and on a moderator's hide, to the inboxes the Create
+went to, and Update(Person) at most every five minutes, the newest state winning (6.5, "Public posts out, as built").
 
 #### Follows across servers, as built (FWR 3)
 
@@ -1529,6 +1538,150 @@ plain text), and `flowa:tricks`. A reader that knows only ActivityStreams sees t
 activity wraps it: the Create is FWR's. As built (FRD 6): `cc` is the author's followers collection, which now
 answers, and the Create that wraps the Note is built (`createOf`, 6.2's "As built (FRD 6)"), served in the
 outbox and at its own id; FWR 4 sends the same Create.
+
+#### Public posts out, as built (FWR 4)
+
+"federation: public posts out" in `main.go`, migration 21 (with `flowa-schema20.dump` for the restore drill). What was
+built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
+
+- **What is sent, and when** (`postsGoOut`). A post of kind `post`, audience Public, by a member who shares their profile
+  beyond this server (F2; `postAudience` gives Public to no one else), made while the mode federates, federation is not
+  refused, and the `federation` and `follows` flags are both on (14.1). Milestones (F13), This server posts and every
+  other audience send nothing: the API offers only Public and This server (F3), and the worker asks `publicPost` again
+  (Public, not hidden, kind `post`), so a milestone made Public by hand is still not sent. **A post made while either
+  flag is off is never sent later** (decided here: the switches are the admin's pause, 8.8 lets the queue hold rows
+  while paused, but a backlog of posts going out when a switch comes back on would surprise the member who posted under
+  it, and burst the queue).
+- **Durable from the first statement; nothing waits on the network.** The post and its record (`ap_post_out`, state
+  `create`) are written by one statement (a `WITH ... INSERT`), so neither exists without the other. A worker of the
+  delivery queue (its producer, `sendOut`, asked before each claim and only when something may wait) reads the
+  oldest record, makes the Create with `createBody`, finds the recipients, and enqueues it with the record turned to
+  `sent` and the inboxes stored in `targets`, **in the same transaction** (`enqueueThen`, the queue's `enqueue` with a
+  step of the caller's before the commit). A crash between the post and the worker leaves the record, which the next
+  start finds and sends; a crash inside the worker rolls back both the activity and the record's change. Two workers
+  (two processes during a deploy) may make it at once: `ap_outbox` is unique by the activity's id, so one writes and
+  the other's update of the record finds no row in state `create` and rolls back. A full queue (`errDeliveryFull`)
+  lets the post go unsent, as an outage would (8.8), said in the log.
+- **Recipients** (`postRecipientsSQL`, one statement, at most 10,001 rows): the accepted followers whose cached actor is
+  well, has an inbox, and whose account no moderator suspended here, and the remote accounts the post mentions (none
+  across a block either way), **one row per delivery address**: the shared inbox when it is on the actor's own host,
+  else the actor's own inbox, the rule `enqueue` applies (8.8), which also leaves out the domains the policy refuses,
+  hosts marked unavailable and this instance. The follower's account and actor are looked up by key in a `LATERAL`
+  subquery per follow, never by joining `ap_actors` whole (`TestDBQueryPlans`: 1,000 followers on 300 servers, about 12
+  rows counted over the plan's steps per follower, none for other members' follows). **A member followed at more than
+  10,000 addresses** (the queue's bound for one activity, 8.8, after the shared inboxes) has an activity sent to the
+  first 10,000 in the order of their addresses, and one line in the log says so; batching beyond it would need a
+  second activity id for one post, which receivers would read as a second post. Section 12's instance (1,000 followers
+  on 300 servers) is far below it. The Create is sent with `application/ld+json; profile=...` (ActivityPub 7, the
+  delivery kind of 7.8), signed with the member's key at the send.
+- **The record** (`ap_post_out`): the inboxes the Create was enqueued for, after shared inboxes, as JSON, at most 10,000
+  per post, kept while the post exists. A deletion or a hide marks it `delete` in its own statement; the worker then
+  enqueues the Delete for exactly those inboxes and removes the record in the same transaction. So a Delete reaches the
+  servers the Create went to, also a follower's who left since, and not one who arrived since. The record has no
+  foreign key to `posts` (it outlives the post until its Delete is queued); its member's deletion takes it (FWR 7 sends
+  Delete(Person) then). `-purge-remote` removes every record, since each names other servers.
+- **Delete(Tombstone)** on a deletion by the author or a moderator, and on a moderator's hide (6.5): id the post's
+  address with `#delete` (as Mastodon names a status's Delete), `object` `{"id": <post>, "type": "Tombstone"}`, to the
+  public collection and cc the followers. A restore sends nothing (6.5), and a deletion after a hide sends nothing
+  more. A post deleted or hidden before its Create was made sends nothing at all. **A Delete is sent even when the
+  member has stopped sharing** (decided here: 11 says turning sharing off sends nothing, but a Delete only takes back
+  what already left, and a moderator's hide must reach other servers whatever the member did since). The Note's
+  address then answers 404, as FRD 5 decided (nothing keeps a deleted post's id for a Tombstone; ActivityPub 6.4 makes
+  replacing one a MAY). **No audience narrowing and no Update(Note):** posts are not edited (1.2) and no route changes a
+  post's audience (11), so neither exists; a remote reader sees a post as it was first sent until its Delete.
+- **The Note** (`noteOf`, the one function behind the Note's address, the outbox, the Create's address and the body
+  sent, held by `TestNoteFromPost` to `note-full.json` and `create-ana.json`, the object sent compared byte for byte
+  with the Note served): `to` the public collection, `cc` the followers and every actor mentioned, `content` as below,
+  `attachment` the picture with its alt text as both `name` and `summary`, `tag` the Mentions then one Hashtag per prop,
+  `flowa:tricks` and `flowa:combo`. `testdata/federation/note-ana.json` gained its Hashtag, tricks and combo.
+- **The HTML** (`noteHTMLWith`). Mastodon's ActivityPub page ("HTML sanitization", `lib/sanitize_ext/sanitize_config.rb`,
+  read on 14 November 2026) keeps `<p>`, `<span>` (class), `<br>` and `<a>` (href, rel, class) in every version, keeps
+  classes that begin with `h-`, `p-`, `u-`, `dt-`, `e-` or are `mention`, `hashtag`, `ellipsis` or `invisible`, and
+  keeps a link's protocol only for http, https, dat, dweb, ipfs, ipns, ssb, gopher and xmpp. Flowa writes only `p`,
+  `br`, `a` and `span`; `a` only with `href` and either `rel="nofollow noopener"` (a link in the text), `class="u-url
+  mention"` (a mention, inside `<span class="h-card">`, the name in a `<span>`), or `class="mention hashtag" rel="tag"` (a
+  hashtag); `span` only bare or with `class="h-card"`. Every character of the member's text goes through
+  `html.EscapeString` (`<`, `>`, `&`, `'` and `"`); only `http` and `https` text becomes a link (`javascript:` and
+  `data:` stay text); a mention or a `#word` inside a link stays part of the link; control characters (but a line break)
+  and the marks that embed, override or isolate a direction are dropped (`noteText`; the app's own page still shows the
+  text as stored); a mention's address is a link only when it is https with nothing that could end an attribute
+  (`linkable`), else the actor's id is, else the mention stays text. `TestNoteContentEscaping` and `FuzzNoteContent`
+  (30 s, about 214,000 runs, no failure) hold every output to that subset with no `<` of the input left unescaped.
+- **Mentions** (`parseMentions`, finding 9). `@name` is a member here as before (up to 24 characters, the first a letter
+  or digit); `@name@host`, the host a DNS name of two labels or more whose last label holds a letter (a full stop after
+  it ends the sentence), is an account of another server and **never** a member here, whatever its length; on this
+  instance's own host it is the member. The page reads text the same way (`mentionsIn` in `web/links.js`, which
+  `richText` uses, showing another server's handle as text), held to the cases of `test/mentions-fixtures.json` by
+  `TestMentions` and `node test/mentions.js` (in the lint job). Notifications use it, so `@anna@social.example` no longer
+  tells the local anna. When a Public post goes out, its mentions are resolved **from the cache alone, with no fetch**
+  (`mentionLookupSQL`, one statement, at most 10 mentions, `maxMentions`): a member here who shares their profile, or
+  a remote account whose cached actor is well and not suspended here, neither the author nor across a block. **A handle
+  the cache does not hold stays plain text**: no Mention tag, no address in `cc`, no delivery, and nobody there is
+  told; the member can look the account up first (11, people elsewhere), which fills the cache. What was resolved is
+  stored with the post (`posts.ap_mentions`), so the Note is the same bytes every time it is made, whatever the cache
+  holds later. A mention's link goes to the actor's profile page when it names an https one (Mastodon's own form, 6.6's
+  correction), its tag's `href` is the actor id and its `name` the handle with its `@`.
+- **Hashtags**: one per prop of the chips and of the combo (decided here: 6.5 says "in the chips", and a combo's prop is
+  as much the post's), each once, `{"type": "Hashtag", "href": "<origin>/#/prop/<prop>", "name": "#<prop>"}`, and as
+  links at the end of the last line of the text fallback, as 6.5's example puts it.
+- **`flowa:tricks` and `flowa:combo`** (F14's namespace): each chip as `{"type": "flowa:Trick", "flowa:prop",
+  "flowa:skill", "name"}`, the name from the latest published map; the combo as `{"type": "flowa:Combo", "name",
+  "flowa:prop", "flowa:steps": [Trick, ...], "flowa:reps"}` (repeats only when the combo has them). The combo's role
+  (reliable, signature, stretch) is the member's own measure of their progress and its id names their progress
+  document: neither is sent (14.5, F12). The text fallback ("Tricks: ...", "Combo: ...") is in `content` as before.
+- **Alt text** (`posts.alt`): a field "Describe the picture (optional)" under the picture in the composer, **in every
+  mode** (decided here: it is an accessibility gain for members of a local instance as much as for readers elsewhere,
+  and nothing in the design ties it to federation). It appears only once a picture is attached, so a composer without
+  a picture is as it was; a post without a picture sends no `alt`, and the API answers `alt` only for a post that has
+  one, so every answer about a post without alt text is byte for byte as before; routes and headers are unchanged. At
+  most 1,500 characters (`maxAlt`), with what `visibleText` takes out of a bio taken out, line breaks joined into
+  spaces, and a direction override refused with the reason; a description sent without a picture is dropped. It is the
+  picture's `alt` on the post in the app and on the public pages (else the words there were), and `name` and `summary`
+  in the Note. Posts are not edited (1.2), so it is written once, with the post. `a11y.py`, `keys.py` and `social.py`
+  hold the field's name, its keyboard path and the post's alt.
+- **Update(Person)** (6.4): a profile saved with a change the actor shows (the name, the bio, the picture, the props, the
+  links, approving by hand), by a member who shares, with both flags on, marks the member's row of `ap_person_out` due
+  in the profile's own transaction: now when none went in the last 5 minutes (`personUpdateEvery`), else 5 minutes
+  after the last one; a row already due keeps its time. The worker makes the actor document as it is then (`actorOf`,
+  the function the actor's address serves), so the newest state wins; `gen` counts the changes, so one made while an
+  Update is being made leaves the row due again. The coalescing is in the database, on the delivery queue's clock, and
+  survives a restart; no timer per member exists. Turning sharing on again sends no Update, and a member who stopped
+  sharing gets none. To the followers by the same statement as a post, with a new activity id, the document without its
+  own `@context` (the activity carries the actor's).
+- **Bounds**: a post's text at most 2,000 characters as before, at most 10 mentions resolved and 10 chips (so at most 5
+  hashtags), one activity to at most 10,000 addresses, a Create of more than 256 KB not sent (none can be: the text and
+  its fallback are a few KB, the picture is an address), one record per post, one row per member for profiles.
+- **What leaves** is what 14.5 lists: `TestDBNothingPrivateLeaves` sets every private field (practice and its notes,
+  progress, stats, preferences, the password hash and sessions, bookmarks, a This server post, a hidden post, a
+  combo's role and id) and finds none of them in the bytes enqueued for a Create, an Update and a Delete, and a post that
+  is not Public makes no record and no activity.
+- **Cost on the hot paths.** Local mode: `POST /api/posts` sends Postgres 8 statements, as on the commit before
+  (`TestDBPostLocalStatements`, a driver that counts every statement; the alt text is a column of the same insert).
+  In a mode that federates: a Public post that goes out is the same insert as one statement with its record, plus one
+  statement when its text holds a mention; a deletion is one statement as before; a hide adds one statement to its
+  transaction; a profile save that changes what the actor shows adds one. The worker's statements take the federation's
+  turns (8.8), one at a time, and none is held across another wait.
+- **What the admin sees**: the Federation tab's counts are the queue's, unchanged (a post's deliveries are rows like a
+  follow's); its subtitle now says what is sent. The dashboard's sentence and `fedBuilt` say posts go out; NodeInfo's
+  parts add `posts`.
+- Tests: `TestNoteFromPost`, `TestNoteContentEscaping`, `FuzzNoteContent`, `TestMentions` (and `node test/mentions.js`),
+  `TestDBPostFanOut` (600 followers on 300 servers give 300 deliveries, a server with no shared inbox one per follower,
+  a suspended domain nothing, a gone actor, a pending follow and a suspended account nothing, a mentioned account one, a
+  This server post, a post naming no audience, the audiences not offered, a milestone (also one made Public by hand),
+  each flag off, a member who stops sharing and federation refused nothing; a Create made twice is one activity),
+  `TestDBPostDeleteAndHide` (the Delete to the recorded inboxes after followers changed, a hide, a restore, a deletion
+  after a hide, a post deleted or hidden before its Create, a record that cannot be written leaves no post),
+  `TestDBPersonUpdateCoalesced` (on the test's clock), `TestDBNothingPrivateLeaves`, `TestDBTwoFlowaNotes` (two Flowa
+  instances over the real fetcher, signer, inbox and queue: the other one's inbox verifies the Create and the Delete
+  and counts and drops them, notes in being FWR 5), `TestDBNotesOneConnection`, `TestDBPostLocalStatements`,
+  `TestDBQueryPlans`, `TestDBPurgeRemote`, `TestDBEvictionCoversReferences` (the two new tables in `userRefs`),
+  `TestDBLocalModeUnchanged` extended, with `-race -count=3` on two cores.
+- **Open** (later items, or the owner's): a recorded Mastodon post confirming the h-card nesting and which of `name` and
+  `summary` it writes for alt text (the owner's trial, FWR 9); Update(Person) after `-rotate-keys` (5.7 asks for it;
+  the rotation is a command run beside the server and does not mark the rows yet); a Delete when a member is suspended
+  (the public addresses hide their posts at once, nothing is sent); a remote handle that is not in the cache is not
+  fetched while posting (a lookup first fills it); the Federation tab has no count of the records waiting for their
+  worker (they wait for a step, seconds at most); the fan-out time on the Pi (FWR 2's benchmark covers it).
 
 `TestNoteFromPost` (**new**) holds the Note for a fixture post byte for byte against a golden file, and
 `TestNoteContentEscaping` (**new**) feeds hostile text (`<script>`, quotes, `javascript:` URLs,

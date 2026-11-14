@@ -3,6 +3,9 @@
 // card only for a link this accepts, so a card that is offered is one the server will take.
 // test/links-fixtures.json holds the cases both must read the same way (go test and
 // node test/links.js check it); change the two together.
+// Also the page's copy of parseMentions in main.go (mentionsIn): which @names in a text are
+// members here and which are handles of other servers, held to test/mentions-fixtures.json by
+// TestMentions and node test/mentions.js.
 const linkCheck = (() => {
   const YT = /^[A-Za-z0-9_-]{11}$/, IG = /^[A-Za-z0-9_-]{5,40}$/, TT = /^[0-9]{8,25}$/,
     TT_USER = /^@[A-Za-z0-9._]{1,40}$/, TT_SHORT = /^[A-Za-z0-9]{5,20}$/;
@@ -81,6 +84,34 @@ const linkCheck = (() => {
     }
     return null;
   }
-  return { parseLink };
+  // mentionsIn finds the mentions in a text as the server's parseMentions does (with no host of
+  // its own): [{ start, end, name, host, local }], start at the @ and end after the name or the
+  // host. @name is a member here (a letter or digit, then up to 23 more of letters, digits, dot,
+  // dash and underscore; the name in lower case); @name@host, the host a DNS name of two labels
+  // or more whose last label holds a letter (a full stop after it is not part of it), is an
+  // account elsewhere and never a member here.
+  const MENTION = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)(?:@([A-Za-z0-9.-]+))?/g;
+  const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+  const hostOK = h => {
+    const labels = h.toLowerCase().split('.');
+    return h.length <= 253 && labels.length >= 2 && labels.every(l => LABEL.test(l)) && /[a-z]/.test(labels[labels.length - 1]);
+  };
+  function mentionsIn(text) {
+    const out = [];
+    for (const m of String(text).matchAll(MENTION)) {
+      const at = m.index + m[1].length, run = m[2], nameAt = at + 1;
+      if (m[3] !== undefined) {
+        const host = m[3].replace(/\.+$/, '');
+        if (hostOK(host)) {
+          if (run.length <= 64) out.push({ start: at, end: nameAt + run.length + 1 + host.length, name: run, host, local: false });
+          continue;
+        }
+      }
+      const l = /^[a-z0-9][a-z0-9._-]{2,23}/.exec(run.toLowerCase());
+      if (l) out.push({ start: at, end: nameAt + l[0].length, name: l[0], host: '', local: true });
+    }
+    return out;
+  }
+  return { parseLink, mentionsIn };
 })();
 if (typeof module !== 'undefined') module.exports = linkCheck;

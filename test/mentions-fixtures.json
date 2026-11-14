@@ -1,0 +1,27 @@
+{
+  "about": "How a text's @mentions are read, on the server (parseMentions in main.go, TestMentions) and on the page (mentionsIn in web/links.js, node test/mentions.js). local: the members here a text mentions, in lower case, in order, repeats kept. remote: the handles of other servers, name@host as written. A handle of another server is never a member here (docs/federation.md, finding 9).",
+  "cases": [
+    {"text": "Hey @Sam and @sam, @jo-2 did F7! mail me@example.com @x", "local": ["sam", "sam", "jo-2"], "remote": []},
+    {"text": "nobody here", "local": [], "remote": []},
+    {"text": "@anna@social.example taught me this", "local": [], "remote": ["anna@social.example"]},
+    {"text": "Thanks @bo@social.example.", "local": [], "remote": ["bo@social.example"]},
+    {"text": "Thanks @Bo@Social.Example!", "local": [], "remote": ["Bo@Social.Example"]},
+    {"text": "@ANA@SUB.SOCIAL.EXAMPLE, and @ana", "local": ["ana"], "remote": ["ANA@SUB.SOCIAL.EXAMPLE"]},
+    {"text": "@abc@def has no dot in its host", "local": ["abc"], "remote": []},
+    {"text": "(@ana) and [@bo_b]", "local": ["ana", "bo_b"], "remote": []},
+    {"text": "a@ana is an address, @ab is too short", "local": [], "remote": []},
+    {"text": "@abcdefghijklmnopqrstuvwxyz", "local": ["abcdefghijklmnopqrstuvwx"], "remote": []},
+    {"text": "@averyveryverylongremotename_xy@host.example", "local": [], "remote": ["averyveryverylongremotename_xy@host.example"]},
+    {"text": "@ana@1.5 is no server", "local": ["ana"], "remote": []},
+    {"text": "@ana@x..y and @bob@-bad.example", "local": ["ana", "bob"], "remote": []},
+    {"text": "@_x@social.example", "local": [], "remote": ["_x@social.example"]},
+    {"text": "@ana.@social.example ends in a dot", "local": [], "remote": ["ana.@social.example"]},
+    {"text": "@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@social.example", "local": [], "remote": []},
+    {"text": "@ana@social.example@more.example", "local": [], "remote": ["ana@social.example"]},
+    {"text": "path/@ana and #@bo-1 and .@cy", "local": ["ana", "bo-1"], "remote": []},
+    {"text": "@ana\u00e9t\u00e9 and @ana\u202e@evil.example", "local": ["ana", "ana", "evil.example"], "remote": []},
+    {"text": "two lines\n@ana\n@bo@social.example", "local": ["ana"], "remote": ["bo@social.example"]},
+    {"text": "@sam@social.example and @sam", "local": ["sam"], "remote": ["sam@social.example"]},
+    {"text": "@x@social.example.org.", "local": [], "remote": ["x@social.example.org"]}
+  ]
+}

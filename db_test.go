@@ -3904,7 +3904,7 @@ func TestDBQueryPlans(t *testing.T) {
 	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox and domain_policies) the planner reads whole for
 	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
 	// all for 200 removed, a few milliseconds, once for every 200 new actors.
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_inbox ap_outbox badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_inbox ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
 	on = db
 	tx.Rollback()
 	// The delivery queue (FWR 2) at its cap: 50,000 rows queued on 300 hosts, 50 activities, a host whose circuit is
@@ -3955,6 +3955,35 @@ func TestDBQueryPlans(t *testing.T) {
 	})
 	on = db
 	tx.Rollback()
+	// Public posts out (FWR 4): member 11 has 1,000 followers on 300 other servers (a tenth of them with no shared
+	// inbox), beside 2,000 remote accounts following members 1 to 500; 5,000 posts went out and have their records,
+	// 20 wait, and 500 members have had their profile sent. The recipients of a post are one statement through
+	// follows_followee and the accounts' and actors' primary keys, about 12 rows counted over the plan's steps per follower and none per other
+	// member's follow; the record and the profile that wait are one look each in their partial index.
+	for _, q := range []string{
+		`INSERT INTO users (id, username, pw_hash, domain) SELECT 3000000 + g, 'o' || g || '@p' || (g % 300) || '.out.example', '!', 'p' || (g % 300) || '.out.example' FROM generate_series(1, 1000) g`,
+		`INSERT INTO ap_actors (user_id, ap_id, kind, inbox, shared_inbox, key_id, public_key, fetched_at, expires_at) SELECT id, 'https://' || domain || '/users/' || id, 'Person', 'https://' || domain || '/users/' || id || '/inbox',
+			CASE WHEN id % 10 = 0 THEN '' ELSE 'https://' || domain || '/inbox' END, 'https://' || domain || '/users/' || id || '#main-key', 'pem', now(), now() + interval '1 day' FROM users WHERE id > 3000000`,
+		`INSERT INTO follows (follower_id, followee_id, state) SELECT id, 11, 'accepted' FROM users WHERE id > 3000000`,
+		`INSERT INTO follows (follower_id, followee_id, state) SELECT 1000000 + g, 1 + g % 500, 'accepted' FROM generate_series(1, 2000) g WHERE 1 + g % 500 <> 11 ON CONFLICT DO NOTHING`,
+		`INSERT INTO ap_post_out (post_id, user_id, state, targets) SELECT g, 1 + g % 500, CASE WHEN g % 250 = 0 THEN 'create' ELSE 'sent' END, '[]' FROM generate_series(1, 5000) g`,
+		`INSERT INTO ap_person_out (user_id, due_at, sent_at, gen) SELECT g, CASE WHEN g = 7 THEN now() END, now() - interval '1 hour', 1 FROM generate_series(1, 500) g`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	var names []string
+	for i := 0; i < maxMentions; i++ {
+		names = append(names, fmt.Sprintf("m%d", i+1), fmt.Sprintf("o%d@p%d.out.example", i+1, (i+1)%300), fmt.Sprintf("r%d@h%d.example", i+1, (i+1)%50))
+	}
+	plans([]planCase{
+		{"notes: the recipients of a post, 1,000 followers on 300 servers", postRecipientsSQL, []any{11, pq.Array([]string{"https://h3.example/users/1000003"}), deliveryTargetsMax + 1}, 15000, ""},
+		{"notes: the mentions of a post, 10 of them", mentionLookupSQL, []any{pq.Array(names), false, 11}, 600, ""},
+		{"notes: the oldest record of a post that waits", postOutSQL, []any{false}, 100, ""},
+		{"notes: the profile due first", personOutSQL, []any{false}, 100, ""},
+	})
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {
 		if e.count(`SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`, idx) != 1 {
@@ -4186,6 +4215,18 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	}
 	if n := e.a.fetch.dials.Load(); n != 0 {
 		t.Errorf("%d connections were tried by a start, an hour's housekeeping and five requests; want none", n)
+	}
+	// FWR 4: a post made here, Public asked for or not, a handle of another server in it, writes no record of a way
+	// out and starts nothing; its answer has no alt key unless its author wrote alt text for its picture.
+	e.user("anna", "user")
+	for _, body := range []map[string]any{{"body": "hello @anna@social.example", "audience": "public"}, {"body": "x", "alt": "no picture, so dropped"}} {
+		out := e.must(200, admin, "POST", "/api/posts", body)
+		if p := out["posts"].([]any)[0].(map[string]any); p["alt"] != nil || p["audience"] != nil {
+			t.Errorf("a post in local mode answers %v", p)
+		}
+	}
+	if e.count(`SELECT count(*) FROM ap_post_out`)+e.count(`SELECT count(*) FROM ap_outbox`)+e.count(`SELECT count(*) FROM ap_person_out`) != 0 || e.count(`SELECT count(*) FROM notifications WHERE kind = 'mention'`) != 0 {
+		t.Error("a post in local mode wrote a record of a way out, or read a handle of another server as a member here")
 	}
 
 	// Nothing about the instance has been saved, so /api/me says nothing new to a visitor or a member,

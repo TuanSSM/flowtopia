@@ -305,6 +305,8 @@ func TestFixturesParse(t *testing.T) {
 		"actor-ana-follows-off.json":        `actor ok as ana@flowa.example.org, key "", shown as "Ana"`, // the same with follows off (FWR 3)
 		"actor-instance.json":               `actor ok as flowa.example.org@flowa.example.org, key "", shown as "flowa.example.org"`,
 		"note-ana.json":                     "post read",
+		"note-full.json":                    "post read",     // FWR 4: every field of 6.5, mentions and tags included
+		"create-ana.json":                   "activity read", // FWR 4: the Create a Public post is sent as
 		"ap-ex1-actor.json":                 `actor ok as alyssa@social.example, key "", shown as "Alyssa P. Hacker"`,
 		"ap-ex3-create.json":                "activity read",
 		"ap-ex4-create-reply.json":          "scan: a document that is not well-formed JSON",
@@ -1474,6 +1476,8 @@ func TestDBPurgeRemote(t *testing.T) {
 		`INSERT INTO ap_outbox (ap_id, actor_id, body, fanned_out, created_at) VALUES ('https://here.example/a/1', %[2]d, '{}', true, now())`,
 		`INSERT INTO ap_deliveries (outbox_id, inbox, host, next_at, created_at) SELECT id, 'https://remote.example/inbox', 'remote.example', now(), now() FROM ap_outbox WHERE actor_id = %[2]d`,
 		`INSERT INTO ap_hosts (host, created_at) SELECT 'remote.example', now() FROM users WHERE id = %[2]d`,
+		// A local Public post's record of where it went (FWR 4): it names a remote inbox, so it goes too.
+		`INSERT INTO ap_post_out (post_id, user_id, state, targets) VALUES (%[3]d, %[2]d, 'sent', '[{"Actor":"https://remote.example/u/a","Inbox":"https://remote.example/inbox","SharedInbox":""}]')`,
 	} {
 		q = fmt.Sprintf(q, r0, anaID, p, r1, bossID)
 		if _, err := e.a.db.Exec(q); err != nil {
@@ -1493,13 +1497,13 @@ func TestDBPurgeRemote(t *testing.T) {
 	if err := purgeWith(e.a.db, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 3 follows, 1 blocks, 2 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records. Local accounts and their posts are as they were.\n"
+	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 3 follows, 1 blocks, 2 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records, 1 records of posts sent. Local accounts and their posts are as they were.\n"
 	if out.String() != want {
 		t.Errorf("printed %q\nwant    %q", out.String(), want)
 	}
 	if n := e.count(`SELECT count(*) FROM users WHERE domain <> ''`) + e.count(`SELECT count(*) FROM ap_actors`) + e.count(`SELECT count(*) FROM follows`) +
 		e.count(`SELECT count(*) FROM likes`) + e.count(`SELECT count(*) FROM comments`) + e.count(`SELECT count(*) FROM notifications`) + e.count(`SELECT count(*) FROM reports`) + e.count(`SELECT count(*) FROM blocks`) + e.count(`SELECT count(*) FROM ap_inbox`) +
-		e.count(`SELECT count(*) FROM ap_outbox`) + e.count(`SELECT count(*) FROM ap_deliveries`) + e.count(`SELECT count(*) FROM ap_hosts`); n != 0 {
+		e.count(`SELECT count(*) FROM ap_outbox`) + e.count(`SELECT count(*) FROM ap_deliveries`) + e.count(`SELECT count(*) FROM ap_hosts`) + e.count(`SELECT count(*) FROM ap_post_out`); n != 0 {
 		t.Errorf("%d rows left behind", n)
 	}
 	if got := local(); got != before {

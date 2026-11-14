@@ -401,7 +401,7 @@ function fedOutHTML(n) {
   const age = s => s < 120 ? `${s} seconds` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
   const since = n.since ? `since the last start, ${esc(fmtWhen(n.since))}` : 'in the last 24 hours';
   const c = n.counts || {}, num = v => `<span class="num">${(v || 0).toLocaleString()}</span>`;
-  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Follows and their answers in this version</span></div>
+  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Follows and their answers, Public posts, their deletions and profile changes</span></div>
     ${n.clockJumped ? '<p class="notice warn">Waiting for the clock: deliveries older than 4 days wait, which the retries cannot leave, so this server\'s clock may have jumped forward. They are held for an hour, and nothing is cleared meanwhile; if the clock is right (the server was off that long), they are then given up.</p>'
     : n.clockWaiting ? '<p class="notice warn">Waiting for the clock: this server\'s clock is earlier than its build or than the newest time its database holds, so nothing is signed or sent until it is set.</p>' : ''}
     ${n.paused ? `<p class="notice warn">Sending is off under Features: what waits stays queued${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}

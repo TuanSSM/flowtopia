@@ -106,6 +106,9 @@ func (e *followEnv) sent() []sentAct {
 		s.ID, _ = d["id"].(string)
 		s.Object, _ = d["object"].(string)
 		s.Inner, _ = d["object"].(map[string]any)
+		if !followKinds[s.Type] {
+			continue // a member's profile or post going out (FWR 4, notes_test.go), not a follow's activity
+		}
 		if d["@context"] != asContext {
 			e.t.Errorf("an activity without its context: %s", body)
 		}
