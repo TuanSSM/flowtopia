@@ -84,7 +84,10 @@ const FLAGS = [
   ['moderation', 'Reports and moderation', 'Members can report posts, comments and profiles, and moderators get the Moderation page with the queue, mutes and suspensions. When off, the Report buttons and that page are hidden; suspensions already given still hold.'],
   ['catalogEditor', 'Skill map editor', 'Admins edit the skill catalogs in the browser and publish them for everyone. When off, the editor is hidden and nothing can be changed; what was last published stays in use.'],
   ['game', 'Gamification', 'XP and levels, the practice streak with its shareable overlay, weekly challenges, achievements and XP on the phases of the Plan.'],
-  // Only a server that federates has this flag; elsewhere it is not listed (adminFeatures shows the flags the server has).
+];
+// The flags only a server that federates has (fedFlagDefaults in main.go), shown under Features only when the
+// server lists them, so a server that does not federate shows exactly the switches it always did.
+const FED_FLAGS = [
   ['federation', 'Federation: take deliveries', 'Other servers can deliver to this Flowa\'s inboxes, from the domains the Federation tab lets in. It acts only on an account deleting itself or changing its profile; follows, posts and likes are counted and dropped for now. When off, deliveries are answered "try again later" and nothing waiting is handled.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;

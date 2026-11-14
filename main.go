@@ -1045,16 +1045,21 @@ func below(r string) []string {
 
 /* ---------- flags ---------- */
 
-// fedFlag is the flag of a mode that federates (docs/federation.md, F1 and 14.1): the admin's pause switch, off
-// by default, so an instance that upgrades takes no delivery until an admin turns it on. While off, the inbox
-// answers 503 with Retry-After (senders try again later) and its workers handle nothing. It is a flag only in a
-// mode that federates (knownFlag), so an instance that does not federate lists exactly the flags it always did.
+// fedFlagDefaults are the flags of a mode that federates, and their defaults: a list of their own, so that an
+// instance that does not federate lists exactly the flags it always did (knownFlag), and the page keeps them in a
+// list of its own too (FED_FLAGS in web/app.js; test/flags.js compares each list with its counterpart). The one
+// flag is fedFlag (docs/federation.md, F1 and 14.1): the admin's pause switch, off by default, so an instance that
+// upgrades takes no delivery until an admin turns it on. While off, the inbox answers 503 with Retry-After
+// (senders try again later) and its workers handle nothing.
+var fedFlagDefaults = map[string]bool{"federation": false}
+
 const fedFlag = "federation"
 
 // knownFlag says whether a name is a flag of this instance.
 func (a *app) knownFlag(name string) bool {
 	_, ok := flagDefaults[name]
-	return ok || name == fedFlag && a.fed != nil
+	_, fed := fedFlagDefaults[name]
+	return ok || fed && a.fed != nil
 }
 
 func (a *app) flags() (map[string]bool, error) {
@@ -1063,7 +1068,7 @@ func (a *app) flags() (map[string]bool, error) {
 		out[k] = v
 	}
 	if a.fed != nil {
-		out[fedFlag] = false
+		maps.Copy(out, fedFlagDefaults)
 	}
 	rows, err := a.db.Query(`SELECT name, enabled FROM flags`)
 	if err != nil {

@@ -119,7 +119,7 @@ function pageAdmin(tab) {
 }
 function adminFeatures() {
   return `<div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every member, straight away</span></div>
-    <div class="stack" style="gap:8px">${FLAGS.filter(([k]) => k in flags).map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
+    <div class="stack" style="gap:8px">${[...FLAGS, ...FED_FLAGS.filter(([k]) => k in flags)].map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
 }
 // The instance information: a description, a contact and the rules, which people see at sign-up and on the
 // about page (docs/federation.md, section 10). The whole document is saved at once, against the version it
