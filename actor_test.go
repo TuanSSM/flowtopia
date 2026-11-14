@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -800,4 +801,103 @@ func TestAPReasonString(t *testing.T) {
 	if got := apReason(250).String(); got != "refused" {
 		t.Errorf("apReason(250) = %q", got)
 	}
+}
+
+// No page shows a post it must not: a hidden one, a removed (deleted) one, a This server one or a
+// milestone, wherever it falls among the pages. Such posts are mixed among the Public ones from the newest
+// to the oldest, and every page of the profile is walked by its cursor, and single mode's / and the pages
+// after it: each Public post shows exactly once, newest first, and none of the others ever does.
+func TestDBPublicPagesHidden(t *testing.T) {
+	type made struct {
+		public []string // the bodies that must show, oldest first
+		secret []string // the bodies that must never show
+	}
+	fill := func(e *tenv, uid int64, tok string) made {
+		var m made
+		for i := range 72 { // 24 Public, so more than one page
+			body := fmt.Sprintf("shown %02d", i)
+			kind, audience, hidden, remove := "post", "public", false, false
+			switch i % 6 {
+			case 1:
+				body, hidden = fmt.Sprintf("hidden %02d", i), true
+			case 2:
+				body, audience = fmt.Sprintf("local %02d", i), "local"
+			case 3:
+				body, kind = fmt.Sprintf("milestone %02d", i), "milestone"
+			case 4:
+				body, remove = fmt.Sprintf("removed %02d", i), true
+			}
+			var id int64
+			if err := e.a.db.QueryRow(`INSERT INTO posts (user_id, kind, body, audience, hidden_at) VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() END) RETURNING id`,
+				uid, kind, body, audience, hidden).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			if remove {
+				e.must(200, tok, "DELETE", fmt.Sprintf("/api/posts/%d", id), nil)
+			}
+			if strings.HasPrefix(body, "shown") {
+				m.public = append(m.public, body)
+			} else {
+				m.secret = append(m.secret, body)
+			}
+		}
+		return m
+	}
+	older := regexp.MustCompile(`href="(/users/[^"?]+\?before=\d+)"`)
+	shown := regexp.MustCompile(`>((?:shown|hidden|local|milestone|removed) \d\d)<`)
+	// walk reads pages from the first, following the link to older posts, and returns the bodies in order.
+	walk := func(e *tenv, first string) []string {
+		var seen []string
+		for path, n := first, 0; path != ""; n++ {
+			if n > 10 {
+				t.Fatal("more pages than there are posts")
+			}
+			page := pubAsk(e, "GET", path, browser).Body.String()
+			for _, m := range shown.FindAllStringSubmatch(page, -1) {
+				seen = append(seen, m[1])
+			}
+			path = ""
+			if m := older.FindStringSubmatch(page); m != nil {
+				path = strings.ReplaceAll(m[1], "&amp;", "&")
+			}
+		}
+		return seen
+	}
+	check := func(what string, seen []string, m made) {
+		t.Helper()
+		want := slices.Clone(m.public)
+		slices.Reverse(want)
+		if !slices.Equal(seen, want) {
+			t.Errorf("%s shows %v, want %v", what, seen, want)
+		}
+	}
+
+	f := newPubFixture(t)
+	f.e.mustExec(`DELETE FROM posts WHERE user_id = $1`, f.ana)
+	m := fill(f.e, f.ana, f.anaTok)
+	check("the profile page, walked by its cursor", walk(f.e, "/users/ana"), m)
+
+	// Single mode with FLOWA_FEDERATE=on: / lists the newest Public posts, and its link leads to the rest.
+	s := newEnv(t)
+	if err := s.fedSingleStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	s.h = s.a.routes(staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"}))
+	var owner int64
+	var name string
+	if err := s.a.db.QueryRow(`SELECT id, username FROM users WHERE owner`).Scan(&owner, &name); err != nil {
+		t.Fatal(err)
+	}
+	sm := fill(s, owner, s.session(owner))
+	s.a.dropVisitorPage()
+	root := ask(s.h, "GET", "/", "", nil).Body.String()
+	var top []string
+	for _, x := range shown.FindAllStringSubmatch(root, -1) {
+		top = append(top, x[1])
+	}
+	check("single mode's /, its first 20", top, made{public: sm.public[len(sm.public)-pubPage:]})
+	if !strings.Contains(root, `href="/users/`+name+`"`) {
+		t.Error("single mode's / has no link to the rest of the posts")
+	}
+	check("single mode's profile page, walked by its cursor", walk(s, "/users/"+name), sm)
 }
