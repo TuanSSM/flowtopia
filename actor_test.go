@@ -687,3 +687,117 @@ func benchPublic(b *testing.B, target string) {
 		h.ServeHTTP(w, r)
 	}
 }
+
+// Flowa's own documents are shapes the strict reader of what other servers send accepts (federation.md 6.3):
+// apScan takes each whole, decodeActor finds the key by its id, decodeNote and decodeTombstone read the rest,
+// and what they read is what was written. Every golden file, and documents served for awkward members and
+// posts: a name with dots, a bio and a post with characters that need escaping, a post with a picture, the
+// instance actor and a retired name's Tombstone.
+func TestDBOwnDocumentsDecode(t *testing.T) {
+	const max = 1 << 20
+	actor := func(what string, b []byte, id string) *apActor {
+		t.Helper()
+		if r := apScan(b); r != 0 {
+			t.Fatalf("%s: apScan: %v", what, r)
+		}
+		a, err := decodeActor(b, max)
+		if err != nil {
+			t.Fatalf("%s: decodeActor: %v\n%s", what, err, b)
+		}
+		k, err := a.key(id + "#main-key")
+		if err != nil || k.Owner != id || !strings.HasPrefix(k.PEM, "-----BEGIN PUBLIC KEY-----") || a.ID != id || a.Inbox != id+"/inbox" {
+			t.Errorf("%s: %+v, key %+v %v", what, a, k, err)
+		}
+		return a
+	}
+	note := func(what string, b []byte, id, by string) *apNote {
+		t.Helper()
+		if r := apScan(b); r != 0 {
+			t.Fatalf("%s: apScan: %v", what, r)
+		}
+		n, err := decodeNote(b, max)
+		if err != nil {
+			t.Fatalf("%s: decodeNote: %v\n%s", what, err, b)
+		}
+		if n.ID != id || !n.isNote() || !n.by(by) || !n.Audience.public() || n.Published.IsZero() || n.BadDate || n.Content == "" || n.Cut {
+			t.Errorf("%s: %+v", what, n)
+		}
+		return n
+	}
+	const origin = "https://flowa.example.org"
+	for _, c := range []struct{ file, id string }{{"actor-ana.json", origin + "/users/ana"}, {"actor-instance.json", origin + "/actor"}} {
+		b, err := os.ReadFile("testdata/federation/" + c.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actor(c.file, b, c.id)
+	}
+	b, err := os.ReadFile("testdata/federation/note-ana.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := note("note-ana.json", b, origin+"/users/ana/posts/1", origin+"/users/ana"); len(n.Attachments) != 1 || n.Attachments[0].MediaType != "image/jpeg" {
+		t.Errorf("note-ana.json: the picture: %+v", n.Attachments)
+	}
+
+	// Served documents for awkward members and posts.
+	f := newPubFixture(t)
+	e := f.e
+	odd, _ := e.user("a.b-c_d.e", "user")
+	bio := "<script>alert('x')</script> & \"quoted\" été \U0001F938\n\nhttps://example.com/?a=1&b=<2>"
+	e.mustExec(`UPDATE users SET federates = true, display_name = $2, bio = $3, avatar = $4, links = '{"youtube":"@odd.one"}' WHERE id = $1`,
+		odd, "O'Dd & <Co>", bio, jpegData(t, 20, 20))
+	e.mustExec(`INSERT INTO ap_keys (user_id, key_id, public_key, private_sealed) VALUES ($1, '/users/a.b-c_d.e#main-key', $2, 'v1.x')`, odd, cavageKeyPEM)
+	body := "</p><b>\"bold\"</b> & 'single' \\   tab\there\n\nsee https://example.com/x?y=1&z=\"2\". \U0001F525"
+	var pid int64
+	if err := e.a.db.QueryRow(`INSERT INTO posts (user_id, body, image, audience, data) VALUES ($1, $2, $3, 'public', '{"tags":[{"prop":"poi","skill":"F1"}]}') RETURNING id`,
+		odd, body, jpegData(t, 64, 48)).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string, code int) []byte {
+		t.Helper()
+		w := pubAsk(e, "GET", path, ldAccept)
+		if w.Code != code {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+		return w.Body.Bytes()
+	}
+	oddID := origin + "/users/a.b-c_d.e"
+	a := actor("a member with dots", get("/users/a.b-c_d.e", 200), oddID)
+	if a.PreferredUsername != "a.b-c_d.e" || a.Name != "O'Dd & <Co>" || !strings.Contains(a.Summary, "&lt;script&gt;") || len(a.Icon) != 1 || !strings.HasPrefix(a.Icon[0].Href, oddID+"/avatar.jpg?v=") {
+		t.Errorf("a member with dots: %+v", a)
+	}
+	actor("ana served", get("/users/ana", 200), origin+"/users/ana")
+	if a := actor("the instance actor", get("/actor", 200), origin+"/actor"); a.Kind != "Application" || a.PreferredUsername != "flowa.example.org" {
+		t.Errorf("the instance actor: %+v", a)
+	}
+	postID := fmt.Sprintf("%s/posts/%d", oddID, pid)
+	n := note("an awkward post", get(fmt.Sprintf("/users/a.b-c_d.e/posts/%d", pid), 200), postID, oddID)
+	// The text escaped, and the link ending at the quote, as a link in a post's text does.
+	if !strings.Contains(n.Content, "&lt;b&gt;&#34;bold&#34;&lt;/b&gt;") || !strings.Contains(n.Content, `<a href="https://example.com/x?y=1&amp;z=" rel="nofollow noopener">`) ||
+		len(n.Attachments) != 1 || n.Attachments[0].Kind != "Image" || len(n.Attachments[0].URL) != 1 || n.Attachments[0].URL[0].Href != postID+"/picture.jpg" {
+		t.Errorf("an awkward post: %+v", n)
+	}
+	note("ana's Public post served", get(fmt.Sprintf("/users/ana/posts/%d", f.pub), 200), fmt.Sprintf("%s/users/ana/posts/%d", origin, f.pub), origin+"/users/ana")
+	tb := get("/users/eve", 410)
+	if r := apScan(tb); r != 0 {
+		t.Fatalf("the Tombstone: apScan: %v", r)
+	}
+	if ts, err := decodeTombstone(tb, max); err != nil || ts.ID != origin+"/users/eve" || len(ts.FormerType) != 1 || ts.FormerType[0] != "Person" || ts.BadDate {
+		t.Errorf("the Tombstone: %+v %v", ts, err)
+	}
+}
+
+// A reason reads as what it is: zero is apScan's answer for a document it accepts, never a refusal, and a
+// value outside the list reads as a refusal.
+func TestAPReasonString(t *testing.T) {
+	if got := apReason(0).String(); got != "accepted" {
+		t.Errorf("apReason(0) = %q", got)
+	}
+	if got := apDuplicate.String(); got != "a member named twice in one object" {
+		t.Errorf("apDuplicate = %q", got)
+	}
+	if got := apReason(250).String(); got != "refused" {
+		t.Errorf("apReason(250) = %q", got)
+	}
+}

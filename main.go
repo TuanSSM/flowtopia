@@ -10759,6 +10759,9 @@ var apReasons = [...]string{
 }
 
 func (r apReason) String() string {
+	if r == 0 {
+		return "accepted" // apScan's answer for a document it takes; no refusal has the zero value
+	}
 	if int(r) < len(apReasons) && apReasons[r] != "" {
 		return apReasons[r]
 	}
