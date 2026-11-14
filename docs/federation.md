@@ -2136,6 +2136,19 @@ the note was silent or is corrected:
   row stored, or at start when rows wait; they wait on a signal or 5 s, stop with the federation's context and
   wait group (8.6), and a row claimed when they stop is given back at once (its lease cleared, the attempt not
   counted); a row whose process died is claimed again when its lease ends.
+- **Kept keys follow their rows, and the workers their limits** (after the review of #111). A key in `keyMemo` is
+  forgotten whenever its actor's row changes in this process: the cache writing the actor (a refetch, a changed
+  key, a suspension), a 410, the worker marking it gone, and the cache's bound removing actors (which forgets every
+  kept key, since it does not list the ids it removed); a lookup that read the row before such a drop does not keep
+  its key after it (the memo's generation). A row removed by `-purge-remote` beside the server is met as a foreign
+  key refusal when the delivery is stored: the key is forgotten and the sender told 503, to try again
+  (`TestDBInboxKeyFollowsRow`). A row claimed more often than its attempts allow (its handling kept ending its
+  worker or outlasting its lease) is failed at the claim, not handled again; a row whose actor's domain was
+  suspended after it was taken is dropped and counted when a worker reaches it, as an admin who suspends means
+  nothing more from it to be acted on (section 10; `TestDBInboxWorkerLimits`). **The caps are soft by a little:**
+  the queue's 5,000 and a group's 500 are counted in the statement that inserts, under READ COMMITTED, so deliveries
+  stored at the same moment can pass them by at most 3 rows (one fewer than the 4 decode turns, under which alone a
+  delivery is stored), and the 10,000 domain policies by the saves running at once.
 - **Connections (section 12).** Every statement federation makes for its own work takes one of `fedConnsMax` (3)
   turns (`dbTurn`), never across a fetch and never while taking another: the inbox (the indexed lookup, the row),
   the workers (claim, handling, finishing, giving a row back), the actor cache (reads, the write of an actor, a 410,

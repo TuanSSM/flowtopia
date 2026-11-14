@@ -14439,8 +14439,9 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	if doc.Suspended {
 		state = "suspended"
 	}
-	// Whatever is written, a key the inbox kept for this actor is not used again before it is read anew.
-	defer c.keys.drop(doc.ID)
+	// Whatever is written, a key the inbox kept for this actor is not used again before it is read anew. This
+	// write is the one a lookup waits for and then reads, so it does not move the memo's generation (forget).
+	defer c.keys.forget(doc.ID)
 	done, err := c.fed.dbTurn(ctx)
 	if err != nil {
 		return nil, err
@@ -14630,6 +14631,9 @@ func (c *actorCache) added(ctx context.Context, keep int64) {
 		}
 		gone, _ := res.RowsAffected()
 		have -= int(gone)
+		if gone > 0 {
+			c.keys.clear() // a kept key of a removed actor would name a row that is no more
+		}
 	}
 	n = have
 }
@@ -15717,6 +15721,36 @@ type keyMemo struct {
 	max int
 	m   map[string]*list.Element // by key id
 	l   *list.List               // of *keyHeld, the most recently used first
+	// gen moves at every drop: a key read from a row before a drop (the worker marking its actor gone, a refetch,
+	// an eviction) is not kept after it (putAt), so a lookup that raced a drop cannot keep a key the drop meant to
+	// forget.
+	gen uint64
+}
+
+// generation is the memo's generation now, read before a key is looked up, for putAt.
+func (k *keyMemo) generation() uint64 {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.gen
+}
+
+// putAt keeps a key looked up at generation gen, unless something was dropped since.
+func (k *keyMemo) putAt(h *keyHeld, gen uint64) {
+	k.mu.Lock()
+	stale := k.gen != gen
+	k.mu.Unlock()
+	if !stale {
+		k.put(h)
+	}
+}
+
+// clear forgets every key: the cache removed actors it no longer keeps (added's bound), whose ids it does not list.
+func (k *keyMemo) clear() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.gen++
+	clear(k.m)
+	k.l.Init()
 }
 
 // keyHeld is a key the inbox verified with, and whose it is.
@@ -15764,6 +15798,19 @@ func (k *keyMemo) put(h *keyHeld) {
 func (k *keyMemo) drop(actor string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.gen++
+	k.forgetLocked(actor)
+}
+
+// forget is drop without moving the generation: for the cache's own write of the actor, which the lookup that
+// will put the key reads after it.
+func (k *keyMemo) forget(actor string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.forgetLocked(actor)
+}
+
+func (k *keyMemo) forgetLocked(actor string) {
 	for e := k.l.Front(); e != nil; {
 		next := e.Next()
 		if h := e.Value.(*keyHeld); h.actor == actor {
@@ -15777,6 +15824,7 @@ func (k *keyMemo) drop(actor string) {
 func (k *keyMemo) dropKey(keyID string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.gen++
 	if e, ok := k.m[keyID]; ok {
 		k.l.Remove(e)
 		delete(k.m, keyID)
@@ -15870,6 +15918,7 @@ func (f *federation) inboxKeyFor(ctx context.Context, keyID string) (*rsa.Public
 		return nil, errKeyTurns
 	}
 	defer release()
+	gen := c.keys.generation()
 	use := keyToVerify
 	actor, ok := peekOwnDelete(call.body, keyID)
 	call.peeked, call.ownShaped = true, ok
@@ -15894,7 +15943,7 @@ func (f *federation) inboxKeyFor(ctx context.Context, keyID string) (*rsa.Public
 	}
 	call.held = &keyHeld{keyID: keyID, actor: r.ID, domain: r.Domain, user: r.UserID, key: key, until: r.ExpiresAt}
 	if r.keyUsable(keyToVerify) == nil {
-		c.keys.put(call.held)
+		c.keys.putAt(call.held, gen)
 	}
 	return key, nil
 }
@@ -16318,6 +16367,10 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyI
 	return a.queueDelivery(ctx, act, held, kind, group, body)
 }
 
+// The two caps are counted in the statement that inserts, under READ COMMITTED, so statements that run at the same
+// moment each see the count before the others' rows: the queue can pass inboxQueueMax, and a group its share, by at
+// most inboxAtOnce-1 rows, since a delivery is stored only under one of the decode turns. That is the true bound.
+//
 // inboxEnqueueSQL stores a delivery unless the queue, or the sender group's share of it, is full, and says how
 // full each was and whether a row was written: none with room means this actor sent this id before. A repeat is
 // known by the verified signer's actor and the id together: the id alone is only held to the actor's origin, so a
@@ -16341,7 +16394,13 @@ func (a *app) queueDelivery(ctx context.Context, act *apActivity, held *keyHeld,
 	var total, mine, made int
 	err = f.db.QueryRowContext(ctx, inboxEnqueueSQL, act.ID, held.user, group, act.Kind, string(body), q.now(), inboxQueueMax, inboxGroupQueued).Scan(&total, &mine, &made)
 	done()
+	var pqe *pq.Error
 	switch {
+	case errors.As(err, &pqe) && pqe.Code == "23503":
+		// The actor's row went while its key was kept (a -purge-remote run beside the server): its key is
+		// forgotten, and the sender is told to try again, when the actor is fetched anew.
+		f.actors.keys.drop(held.actor)
+		return inKeyBusy, kind
 	case err != nil:
 		log.Printf("error: inbox: storing an activity: %v", err)
 		return inServer, kind
@@ -16440,6 +16499,13 @@ func (q *inboxQueue) step(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// A row claimed more often than its attempts allow is one whose handling kept ending its worker (a crash, a
+	// stop at the worst moment) or kept outlasting its lease: it is failed now, not handled again.
+	if attempts > len(inboxRetries)+1 {
+		q.stats.handled(time.Now(), kind+" failed")
+		return true, q.finish(ctx, `UPDATE ap_inbox SET state = 'failed', body = NULL, locked_until = NULL, handled_at = $2, outcome = $3 WHERE id = $1`,
+			id, q.now(), "claimed more often than its attempts allow")
+	}
 	outcome, herr := q.handle(ctx, actor, kind)
 	if ctx.Err() != nil {
 		// Stopping: the row goes back as it was, on a context of its own, since the federation's has ended.
@@ -16488,6 +16554,11 @@ func (q *inboxQueue) handle(ctx context.Context, actor int64, kind string) (stri
 	}
 	if err != nil {
 		return "", &errRetry{"the database"}
+	}
+	// A domain suspended since the row was taken: what an admin means by suspending is that nothing more from
+	// it is acted on (section 10), so the row is dropped and counted, not handled nor retried.
+	if f.policyNow().decide(actorHost(apID)) == policySuspended {
+		return " dropped (its domain is suspended)", nil
 	}
 	switch kind {
 	case "Delete":
@@ -16820,6 +16891,8 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
+	// Counted in the transaction that inserts, so admins saving at the same moment can pass the cap by the number of
+	// saves running at once, a handful: the cap bounds memory and checks, which that does not change.
 	if n >= domainPoliciesMax {
 		fail(w, http.StatusConflict, fmt.Sprintf("This server keeps at most %d domain policies. Remove one first.", domainPoliciesMax))
 		return

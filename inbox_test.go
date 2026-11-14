@@ -1114,6 +1114,84 @@ func TestInboxOwnDeleteByAnother(t *testing.T) {
 	}
 }
 
+// A kept key follows its actor's row (the review's low 1): the cache's bound removing actors forgets their keys,
+// so the actor's next delivery fetches it anew and is taken, not refused by a foreign key; a row removed beside
+// the server (-purge-remote) is told to try again; and a key looked up while a drop ran is not kept after it.
+func TestDBInboxKeyFollowsRow(t *testing.T) {
+	e := newInboxEnv(t)
+	c := e.a.fed.actors
+	upd := func() []byte {
+		return activity(boID, "Update", map[string]any{"id": boID, "type": "Person", "inbox": boID + "/inbox"}, nil)
+	}
+	if w := e.post("/inbox", upd(), e.bo(), nil); w.Code != 202 {
+		t.Fatalf("bo first: %d", w.Code)
+	}
+	e.mustExec(`DELETE FROM ap_inbox`)
+	// The bound removes bo (nothing points at bo once the row is gone).
+	c.max, c.count = 0, -1
+	c.added(context.Background(), 0)
+	if e.count(`SELECT count(*) FROM ap_actors WHERE ap_id = $1`, boID) != 0 {
+		t.Fatal("the bound did not remove bo")
+	}
+	if _, ok := c.keys.get(boKeyID, c.now()); ok {
+		t.Error("bo's key is still kept after the bound removed bo")
+	}
+	c.max = remoteActorsMax
+	e.clock.add(time.Second)
+	if w := e.post("/inbox", upd(), e.bo(), nil); w.Code != 202 || e.last() != inAccepted {
+		t.Errorf("bo after the bound removed it: %d (%v)", w.Code, e.last())
+	}
+	// Removed beside the server, with the key still kept: 503, and the key forgotten.
+	e.mustExec(`DELETE FROM users WHERE domain = 'social.example'`)
+	e.clock.add(time.Second)
+	if w := e.post("/inbox", upd(), e.bo(), nil); w.Code != 503 || e.last() != inKeyBusy {
+		t.Errorf("bo removed beside the server: %d (%v)", w.Code, e.last())
+	}
+	if _, ok := c.keys.get(boKeyID, c.now()); ok {
+		t.Error("bo's key is still kept after its row went")
+	}
+	// A drop between the lookup and the put wins.
+	gen := c.keys.generation()
+	c.keys.drop(boID)
+	c.keys.putAt(&keyHeld{keyID: boKeyID, actor: boID, until: c.now().Add(time.Hour)}, gen)
+	if _, ok := c.keys.get(boKeyID, c.now()); ok {
+		t.Error("a key looked up before a drop was kept after it")
+	}
+}
+
+// The workers (the review's low 3 and 4): a row claimed more often than its attempts allow is failed at the claim,
+// not handled again; a row of a domain suspended since it was taken is dropped, not handled or retried.
+func TestDBInboxWorkerLimits(t *testing.T) {
+	e := newInboxEnv(t)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	var bo int64
+	if err := e.a.db.QueryRow(`SELECT user_id FROM ap_actors WHERE ap_id = $1`, boID).Scan(&bo); err != nil {
+		t.Fatal(err)
+	}
+	e.mustExec(`INSERT INTO ap_inbox (activity_id, actor_id, host, kind, body, received_at, next_at, attempts) VALUES ($2 || '/crashes', $1, 'social.example', 'Delete', '{}', $3, $3, $4)`,
+		bo, boID, e.clock.now(), len(inboxRetries)+1)
+	if worked, err := e.q.step(context.Background()); !worked || err != nil {
+		t.Fatal(worked, err)
+	}
+	if e.count(`SELECT count(*) FROM ap_inbox WHERE state = 'failed'`) != 1 || e.count(`SELECT count(*) FROM ap_actors WHERE state = 'gone'`) != 0 {
+		t.Error("a row past its attempts was handled, not failed")
+	}
+	e.mustExec(`DELETE FROM ap_inbox`)
+	e.mustExec(`INSERT INTO ap_inbox (activity_id, actor_id, host, kind, body, received_at, next_at) VALUES ($2 || '/later', $1, 'social.example', 'Update', '{}', $3, $3)`, bo, boID, e.clock.now())
+	e.mustExec(`INSERT INTO domain_policies (domain, policy) VALUES ('social.example', 'suspend') ON CONFLICT (domain) DO UPDATE SET policy = 'suspend'`)
+	if err := e.a.fed.loadPolicy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.add(actorRecheck)
+	before := e.w.total()
+	if worked, err := e.q.step(context.Background()); !worked || err != nil {
+		t.Fatal(worked, err)
+	}
+	if e.count(`SELECT count(*) FROM ap_inbox WHERE state = 'done' AND outcome LIKE '%suspended%'`) != 1 || e.w.total() != before {
+		t.Errorf("a row of a suspended domain: %d done, %d fetches", e.count(`SELECT count(*) FROM ap_inbox WHERE state = 'done'`), e.w.total()-before)
+	}
+}
+
 // limiterCount is what a limiter has counted for a key, in whole events.
 func limiterCount(l *limiter, key string) int {
 	l.mu.Lock()
