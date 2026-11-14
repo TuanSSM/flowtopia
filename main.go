@@ -23062,11 +23062,8 @@ func cleanLink(kind, v string) (string, bool) {
 	return v, handleRE.MatchString(v)
 }
 
-// mentions lists the usernames written as @name in a text, without repeats.
 // maxMentions is how many people one post or comment can notify; further names stay plain text.
 const maxMentions = 10
-
-func mentions(text string) []string { return mentionNames(text, "") }
 
 // mentionNames lists the local usernames a text mentions, without repeats and at most maxMentions: @name, and
 // @name@own when own is this instance's host. A handle of another server (@anna@social.example) is never read

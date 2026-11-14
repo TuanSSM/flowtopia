@@ -67,12 +67,12 @@ func TestCleanLink(t *testing.T) {
 }
 
 func TestMentions(t *testing.T) {
-	got := mentions("Hey @Sam and @sam, @jo-2 did F7! mail me@example.com @x")
+	got := mentionNames("Hey @Sam and @sam, @jo-2 did F7! mail me@example.com @x", "")
 	want := []string{"sam", "jo-2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("mentions = %v, want %v", got, want)
 	}
-	if n := len(mentions("nobody here")); n != 0 {
+	if n := len(mentionNames("nobody here", "")); n != 0 {
 		t.Errorf("expected no mentions, got %d", n)
 	}
 	// FWR 4: @name@host is a handle of another server, never the member name here (finding 9); the page reads
@@ -123,7 +123,7 @@ func TestMentions(t *testing.T) {
 			t.Errorf("mentionNames(%q) = %q, want %q", text, got, want)
 		}
 	}
-	if got := mentions("@anna@flowa.example.org"); len(got) != 0 {
+	if got := mentionNames("@anna@flowa.example.org", ""); len(got) != 0 {
 		t.Errorf("with no host of its own (local mode) a handle with a host is no member here: %q", got)
 	}
 	// After FWR 4's review: a name inside a link is no mention, as the Note's content and the page read it (in local
