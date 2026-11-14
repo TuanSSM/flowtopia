@@ -193,8 +193,8 @@ func TestLookupReasons(t *testing.T) {
 			t.Errorf("reason %d: %+v %d", r, w, lookupHTTP[r])
 		}
 	}
-	for f, want := range map[fetchFail]lookupReason{failRefused: lookupRefused, failConnect: lookupNotFound, failTimeout: lookupTimeout,
-		failCanceled: lookupTimeout, failTooLarge: lookupNotAccount, failType: lookupNotAccount, failGone: lookupGone, failNotFound: lookupNotFound,
+	for f, want := range map[fetchFail]lookupReason{failRefused: lookupNotFound, failConnect: lookupNotFound, failTimeout: lookupNotFound,
+		failCanceled: lookupNotFound, failTooLarge: lookupNotAccount, failType: lookupNotAccount, failGone: lookupGone, failNotFound: lookupNotFound,
 		failStatus: lookupNotFound, failRedirect: lookupNotFound, failBusy: lookupBusy} {
 		if got := lookupReasonOf(&fetchError{Fail: f, Host: "secret.internal", Reason: "x"}); got != want {
 			t.Errorf("fetch failure %d: %d, want %d", f, got, want)
@@ -450,7 +450,7 @@ func TestDBResolveHandle(t *testing.T) {
 	for q, want := range map[string]string{
 		"https://social.example/about": "notFound",
 		"bo@nowhere.example":           "notFound",
-		"bo@private.example":           "refused",
+		"bo@private.example":           "notFound",
 		"html@social.example":          "notAccount",
 		"noself@social.example":        "notAccount",
 		"left@social.example":          "gone",
@@ -597,7 +597,7 @@ func TestDBResolveHandle(t *testing.T) {
 	<-w.arrived
 	cancel() // the member's request ended
 	wg.Wait()
-	if lookupCode(slowErr) != "timeout" {
+	if lookupCode(slowErr) != "notFound" {
 		t.Errorf("a lookup whose member left: %v", slowErr)
 	}
 }
@@ -610,6 +610,7 @@ func TestDBResolveHandle(t *testing.T) {
 func TestDBLookupRoute(t *testing.T) {
 	r := newRemoteEnv(t)
 	w := r.w
+	r.a.fed.lookupPause = func(context.Context, time.Duration) {} // lookupFloor is TestDBLookupTimingFloor's
 	r.setFlag("community", true)
 	_, ana := r.user("ana", "user")
 	_, boss := r.user("boss", "admin")
@@ -875,5 +876,65 @@ func TestDBLookupReviewProbes(t *testing.T) {
 	p, err := lookupOf(t, r, "c@big.example")
 	if err != nil || p.Link != cc || len(p.Posts) != 1 || p.Posts[0].Link != cc+"/s/1" {
 		t.Errorf("links elsewhere: %+v %v", p, err)
+	}
+}
+
+// The review's M2: a public name that resolves to a private address (refused at connect time) and a name that
+// does not resolve are told the same, with the same status and body, and neither is answered sooner than
+// lookupFloor after the lookup began. The clock is the test's: nothing waits.
+func TestDBLookupTimingFloor(t *testing.T) {
+	r := newRemoteEnv(t)
+	_, ana := r.user("ana", "user")
+	var mu sync.Mutex
+	var paused []time.Duration
+	t0 := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	elapsed := time.Duration(0)
+	r.a.fed.lookupNow = func() time.Time { mu.Lock(); defer mu.Unlock(); e := elapsed; return t0.Add(e) }
+	r.a.fed.lookupPause = func(_ context.Context, d time.Duration) { mu.Lock(); paused = append(paused, d); mu.Unlock() }
+	ask := func(q string) (int, string, []time.Duration) {
+		t.Helper()
+		mu.Lock()
+		paused = nil
+		mu.Unlock()
+		code, out := r.do(ana, "POST", "/api/fed/lookup", map[string]any{"q": q})
+		mu.Lock()
+		defer mu.Unlock()
+		return code, out["_raw"].(string), append([]time.Duration(nil), paused...)
+	}
+	c1, b1, p1 := ask("bo@private.example") // resolves to 10.0.0.1, refused at connect time
+	c2, b2, p2 := ask("bo@nowhere.example") // does not resolve
+	if c1 != 404 || c1 != c2 || b1 != b2 {
+		t.Errorf("refused at connect %d %s, no such name %d %s: told apart", c1, b1, c2, b2)
+	}
+	if len(p1) != 1 || len(p2) != 1 || p1[0] != lookupFloor || p2[0] != lookupFloor {
+		t.Errorf("pauses %v and %v, want %v each", p1, p2, lookupFloor)
+	}
+	// A lookup that took part of the floor waits the rest; one that took longer does not wait.
+	r.a.fed.lookupNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		elapsed += 300 * time.Millisecond
+		return t0.Add(elapsed)
+	}
+	if _, _, p := ask("bo@nowhere.example"); len(p) != 1 || p[0] != lookupFloor-300*time.Millisecond {
+		t.Errorf("after 300 ms: pause %v", p)
+	}
+	r.a.fed.lookupNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		elapsed += 2 * lookupFloor
+		return t0.Add(elapsed)
+	}
+	if _, _, p := ask("bo@nowhere.example"); len(p) != 0 {
+		t.Errorf("a slow lookup waited again: %v", p)
+	}
+	// What is refused from the typed text alone is refused at once, with its own reason; an answer that is
+	// no account and one that finds someone do not wait.
+	if code, b, p := ask("bo@10.0.0.1"); code != 422 || !strings.Contains(b, `"refused"`) || len(p) != 0 {
+		t.Errorf("an IP address typed: %d %s %v", code, b, p)
+	}
+	r.w.put(wfURL("social.example", "acct:html@social.example"), worldDoc{ctype: "text/html", body: []byte("<p>no</p>")})
+	if code, _, p := ask("html@social.example"); code != 422 || len(p) != 0 {
+		t.Errorf("not an account: %d %v", code, p)
 	}
 }

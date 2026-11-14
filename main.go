@@ -6181,6 +6181,9 @@ type federation struct {
 	actors *actorCache
 	// lookups holds a turn for each search by handle running (lookupsAtOnce: handleLookup).
 	lookups chan struct{}
+	// lookupNow and lookupPause are the clock of lookupFloor; a test sets its own, so nothing waits in a test.
+	lookupNow   func() time.Time
+	lookupPause func(ctx context.Context, d time.Duration)
 
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
@@ -6205,7 +6208,17 @@ var generateKey = func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.
 func newFederation(db *sql.DB, s fedSettings) *federation {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &federation{db: db, origin: s.origin, secret: s.secret, cache: map[keyOwner]cachedKey{}, gen: generateKey,
-		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), ctx: ctx, cancel: cancel}
+		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupNow: time.Now, lookupPause: lookupWait, ctx: ctx, cancel: cancel}
+}
+
+// lookupWait waits for d, or until ctx ends: lookupFloor's pause.
+func lookupWait(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
 }
 
 // refuse stops federation for as long as the server runs, says why once in the log, and keeps the
@@ -14471,18 +14484,30 @@ const (
 	// canonical account's WebFinger (1); the outbox (1) and its first page (1). A handle saves the first; an
 	// address that is the actor saves the first, the WebFinger and the second actor fetch.
 	lookupFetches = 8
+	// lookupFloor is the soonest a lookup that failed after the resolver is answered, counted from its start
+	// (M2). A name that does not resolve, one refused at connect time and a connection refused all end within
+	// a DNS round trip and a connect, which is milliseconds to a few hundred of them; a second covers them with
+	// room, and is what a person waits for a search anyway. A lookup that takes longer (a server that answers
+	// slowly, or not at all until the 5 s of a request) is answered when it ends: that time is a public
+	// server's, which a refused private address never has.
+	lookupFloor = time.Second
 )
 
 // lookupReason is what a member is told when a lookup finds nobody. Each has fixed words, safe to show and
-// to log; the reasons do not tell a name that did not resolve from a server that did not answer, so the
-// answer says nothing about the network behind a host.
+// to log. What holds (the review's M2): every failure after a name was handed to the resolver (no such name,
+// an address refused at connect time because it is private, a connection refused, TLS that fails, no answer
+// within the time, a status that is not a success) is the one reason lookupNotFound, with one status, and is
+// answered no sooner than lookupFloor after the lookup began, so neither the answer nor its time tells a
+// public name that resolves to a private address from one that does not resolve. lookupRefused is only for
+// what is refused from the text the member typed, before any DNS lookup (an IP address, localhost, a private
+// suffix, another port: lookupHostOK). What a member can still learn is that a public server answered with
+// something that is no account (lookupNotAccount), was deleted (lookupGone) or is suspended.
 type lookupReason uint8
 
 const (
 	lookupBadInput    lookupReason = iota + 1 // not a handle or a profile address
-	lookupNotFound                            // no such account, no answer, or an answer that is not a success
-	lookupRefused                             // an address Flowa does not connect to: before or at connect, the same
-	lookupTimeout                             // too slow
+	lookupNotFound                            // after the resolver: no such name, no connection, no answer in time, no success
+	lookupRefused                             // refused from the typed text alone, before any DNS lookup
 	lookupNotAccount                          // an answer that is no account Flowa can show, or whose handle does not check out
 	lookupGone                                // the account was deleted on its server (410)
 	lookupSuspended                           // its server says it is suspended
@@ -14492,9 +14517,8 @@ const (
 
 var lookupReasons = [...]struct{ code, words string }{
 	lookupBadInput:    {"badInput", "Enter a handle such as @name@server.example, or the address of a profile starting with https://."},
-	lookupNotFound:    {"notFound", "No account was found at that address, or its server did not answer."},
+	lookupNotFound:    {"notFound", "No account was found at that address, or its server did not answer in time."},
 	lookupRefused:     {"refused", "Flowa does not connect to that address."},
-	lookupTimeout:     {"timeout", "That server took too long to answer. Try again later."},
 	lookupNotAccount:  {"notAccount", "That address does not lead to an account Flowa can show."},
 	lookupGone:        {"gone", "That account was deleted on its server."},
 	lookupSuspended:   {"suspended", "That account is suspended on its server."},
@@ -14503,7 +14527,7 @@ var lookupReasons = [...]struct{ code, words string }{
 }
 
 // lookupHTTP is the status each reason is answered with.
-var lookupHTTP = [...]int{lookupBadInput: 400, lookupNotFound: 404, lookupRefused: 422, lookupTimeout: 504, lookupNotAccount: 422,
+var lookupHTTP = [...]int{lookupBadInput: 400, lookupNotFound: 404, lookupRefused: 422, lookupNotAccount: 422,
 	lookupGone: 410, lookupSuspended: 403, lookupBusy: 503, lookupUnavailable: 503}
 
 // lookupHTTPWord is said when http:// was typed: WebFinger is HTTPS only (RFC 7033 4, 9.1), and so is every
@@ -14724,12 +14748,8 @@ func lookupReasonOf(err error) lookupReason {
 		return le.Reason
 	case errors.As(err, &ae):
 		switch ae.Reason {
-		case actorRefused:
-			return lookupRefused
-		case actorTimeout, actorCanceled:
-			return lookupTimeout
-		case actorUnreachable, actorNotFound:
-			return lookupNotFound
+		case actorRefused, actorTimeout, actorCanceled, actorUnreachable, actorNotFound:
+			return lookupNotFound // after the resolver: one reason (M2)
 		case actorGone:
 			return lookupGone
 		case actorBusy:
@@ -14740,10 +14760,6 @@ func lookupReasonOf(err error) lookupReason {
 		return lookupNotAccount // a bad or local id, too large, another type, not an actor, not where it came from
 	case errors.As(err, &fe):
 		switch fe.Fail {
-		case failRefused:
-			return lookupRefused
-		case failTimeout, failCanceled:
-			return lookupTimeout
 		case failGone:
 			return lookupGone
 		case failBusy:
@@ -14751,9 +14767,11 @@ func lookupReasonOf(err error) lookupReason {
 		case failTooLarge, failType:
 			return lookupNotAccount
 		}
-		return lookupNotFound // could not connect, 404, another status, a redirect not followed
+		// Refused (a private address at connect time, a redirect to one), could not connect, timed out, the
+		// caller gone, 404, another status, a redirect not followed: one reason (M2).
+		return lookupNotFound
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-		return lookupTimeout
+		return lookupNotFound
 	}
 	return lookupUnavailable // this server's own trouble, the database among it: logged by the handler
 }
@@ -15115,11 +15133,15 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 		answer(rw, lookupBusy, "")
 		return
 	}
+	start := a.fed.lookupNow()
 	ctx, cancel := context.WithTimeout(r.Context(), lookupTime)
 	defer cancel()
 	p, err := a.fed.findRemote(ctx, in)
 	if err != nil {
 		reason := lookupReasonOf(err)
+		if left := lookupFloor - a.fed.lookupNow().Sub(start); reason == lookupNotFound && left > 0 {
+			a.fed.lookupPause(r.Context(), left)
+		}
 		var ae *actorError
 		var fe *fetchError
 		var le *lookupError
