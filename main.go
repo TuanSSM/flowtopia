@@ -2049,11 +2049,24 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		// The profile state the edit was made against (profileRev); optional.
 		Rev *string `json:"rev"`
 		// Share the profile beyond this server (docs/federation.md, F2): only in a mode that federates,
-		// and not in single mode, where FLOWA_FEDERATE=on is the owner's choice.
-		Federates *bool `json:"federates"`
+		// and not in single mode, where FLOWA_FEDERATE=on is the owner's choice. Kept raw and read below
+		// only in such a mode, so that elsewhere no value of it, of any type, can change the answer.
+		Federates json.RawMessage `json:"federates"`
 	}
 	if !readJSON(w, r, 200<<10, &in) {
 		return
+	}
+	// Outside a mode that federates the field is ignored, as every field this handler does not know is, so
+	// an instance that sets nothing new answers as it always has, whatever the field holds. In a mode that
+	// federates it is true or false; null is the same as leaving it out, as it is for the fields above.
+	var federates *bool
+	if a.fed != nil && len(in.Federates) > 0 && string(in.Federates) != "null" {
+		var on bool
+		if json.Unmarshal(in.Federates, &on) != nil {
+			fail(w, http.StatusBadRequest, "The field federates must be true or false.")
+			return
+		}
+		federates = &on
 	}
 	// Everything is checked before the account is read, so the row is locked only briefly.
 	var cols []string
@@ -2161,11 +2174,10 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		}
 		set("stats", string(in.Stats))
 	}
-	// Outside a mode that federates the field is ignored, as every field this handler does not know is, so
-	// an instance that sets nothing new answers as it always has. In single mode with FLOWA_FEDERATE=on it
-	// is refused with the reason: that mode is new, so nothing relied on the field there, and the owner who
-	// sends it should learn that the setting, not the field, decides.
-	if in.Federates != nil && a.fed != nil && a.mode == modeSingle {
+	// In single mode with FLOWA_FEDERATE=on the field is refused with the reason: that mode is new, so
+	// nothing relied on the field there, and the owner who sends it should learn that the setting, not the
+	// field, decides.
+	if federates != nil && a.mode == modeSingle {
 		fail(w, http.StatusBadRequest, "On a Flowa that is one person's own, the setting FLOWA_FEDERATE decides whether other servers can find the profile.")
 		return
 	}
@@ -2227,12 +2239,12 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 			return
 		}
 		fedOn = fedWas
-		if in.Federates != nil && *in.Federates != fedWas {
-			if _, err := tx.Exec(`UPDATE users SET federates = $2 WHERE id = $1`, u.ID, *in.Federates); err != nil {
+		if federates != nil && *federates != fedWas {
+			if _, err := tx.Exec(`UPDATE users SET federates = $2 WHERE id = $1`, u.ID, *federates); err != nil {
 				a.serverError(w, err)
 				return
 			}
-			fedOn = *in.Federates
+			fedOn = *federates
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -6474,8 +6486,10 @@ func (a *app) startFederation(s fedSettings) error {
 	return nil
 }
 
-// missingKeysSQL lists members who opted in and have no key, oldest first, at most $1.
-const missingKeysSQL = `SELECT u.id FROM users u WHERE u.federates AND NOT EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) ORDER BY u.id LIMIT $1`
+// missingKeysSQL lists members who opted in and have no key, oldest first, at most $1. A suspended member
+// is left out, with the condition webFingerSQL uses, since nobody can find them while it lasts; they get
+// their key at the first start after it ends.
+const missingKeysSQL = `SELECT u.id FROM users u WHERE u.federates AND (u.suspended_until IS NULL OR u.suspended_until <= now()) AND NOT EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) ORDER BY u.id LIMIT $1`
 
 // rotateKeys makes a new key pair for every owner that has one, one at a time, and replaces each old
 // key in one statement, only if it is still the one read: a key another rotation changed meanwhile,
@@ -6664,7 +6678,10 @@ var uriSchemeRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 // What is refused as malformed: an empty value, one over resourceMax bytes, a space, a control or a
 // non-ASCII byte (a URI is ASCII: RFC 3986 2), a handle with no @ or more than one after the leading one,
 // an empty name or host, and an https URL that does not parse. Any other scheme (mailto:, http:) is a
-// well formed URI this server has no information about: 404.
+// well formed URI this server has no information about: 404. The two forms differ on one edge: a
+// percent-encoded host is normalized in an acct handle (acct:ana@flowa%2Eexample.org is ana) but makes
+// the URL form a 400, because Go's URL parser refuses an escape in a host name; RFC 3986 allows it in
+// both, and no server writes it, so the URL form is not parsed by hand for it.
 func parseResource(v string, o publicOrigin) (wfTarget, bool, error) {
 	if v == "" || len(v) > resourceMax {
 		return wfTarget{}, false, errResource
@@ -6883,7 +6900,8 @@ func (a *app) handleWebFinger(w http.ResponseWriter, r *http.Request) {
 	// A member's id going out is what announces the origin (4.3): it is recorded first, once. The instance
 	// actor's answer records nothing, so a scanner, or the operator's own check of acct:host@host, cannot
 	// freeze a mistyped origin; the first request the instance actor signs (FRD 7) will call ensureOrigin.
-	if !t.actor {
+	// Nor does a HEAD request: it gets the same headers as a GET, but no id leaves in a body.
+	if !t.actor && r.Method != http.MethodHead {
 		if err := f.ensureOrigin(r.Context()); err != nil {
 			var moved originMoved
 			if errors.As(err, &moved) {

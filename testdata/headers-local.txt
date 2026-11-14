@@ -1,0 +1,73 @@
+GET /api/me (signed in): 200
+  Cache-Control: no-store
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Content-Type: application/json
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+GET /api/me (visitor): 200
+  Cache-Control: no-store
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Content-Type: application/json
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+PUT /api/me (signed in): 200
+  Cache-Control: no-store
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Content-Type: application/json
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+GET / (visitor): 200
+  Accept-Ranges: bytes
+  Cache-Control: no-cache
+  Content-Length: 35
+  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; frame-src https://www.youtube-nocookie.com
+  Content-Type: text/html; charset=utf-8
+  Cross-Origin-Opener-Policy: same-origin
+  Etag: "3934731dd1c5679a"
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  Vary: Accept-Encoding
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+GET /api/nothing-here (visitor): 404
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Content-Type: text/plain; charset=utf-8
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+GET /nobody-has-this-address (visitor): 404
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Content-Type: text/plain; charset=utf-8
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+GET /.well-known/webfinger?resource=acct:ana@flowa.example.org (visitor): 404
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Content-Type: text/plain; charset=utf-8
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+GET /healthz (visitor): 200
+  Cache-Control: no-store
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Content-Type: application/json
+  Cross-Origin-Opener-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY

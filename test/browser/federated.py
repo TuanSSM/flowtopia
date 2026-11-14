@@ -15,6 +15,9 @@
 #     FIELDS and IDS), text and the edges of controls stand out in both themes (contrast.py's CHECK), and at
 #     420 px wide nothing reaches past the edge. The walks are taken from those suites' source, as single.py
 #     takes them, so they cannot drift apart.
+# Not covered here: the card's "unavailable" state (federation refused under a moved origin). It needs a second
+# start of the server with another FLOWA_ORIGIN, and run.sh starts one; TestDBOriginFrozen (db_test.go) checks
+# what /api/me tells a member and an admin then, and fedCard in web/app.js shows that text with no switch.
 # federated.py [<out dir>]: with an out dir, the Settings card at desktop and at 420 px and the dashboard's mode
 # line are also written there (federated-*.png) and added to the index.json the screenshots job publishes.
 import sys,os,io,ast,json,base64,urllib.request,urllib.error,urllib.parse,http.cookiejar

@@ -436,7 +436,8 @@ the start-up with a fetcher that fails the test on any dial.
   WebFinger request, or delivers anything), it records the origin and the time in `instance_settings`
   (`origin`, `first_federated_at`). As built (FRD 4, which moved it from FRD 1's first key): the two rows are
   written in one transaction (`recordOrigin`, from `ensureOrigin`) just before the first answer that names
-  a member's actor id to another server: in this version a WebFinger 200 for a member. The instance actor's
+  a member's actor id to another server: in this version a WebFinger 200 for a member, to a GET (a HEAD gets
+  the same headers and no body, so it records nothing). The instance actor's
   WebFinger answer does not freeze it: anyone can ask for `acct:host@host` (a scanner, the operator's own
   check), and that must not lock a mistyped origin in. The actor document, the first request the instance
   actor signs (FRD 7, a signed fetch names `/actor#main-key` to another server) and the first delivery will
@@ -451,14 +452,20 @@ the start-up with a fetcher that fails the test on any dial.
   answer while another transaction writes the rows waits for its commit (`INSERT ... ON CONFLICT DO
   NOTHING`) and reads its row. One process runs per database, so an origin recorded by another process after
   this one started is not a case Flowa sets up; if two did overlap with two origins, the second to record
-  finds the other origin and refuses federation, before any id goes out under it.
+  finds the other origin and refuses federation, before any id goes out under it. A database that a
+  development build of FRD 4 before this rule started in a mode that federates has its origin recorded
+  already (that build recorded it with the instance actor's first key), and its dashboard shows "first
+  announced" with that date; no released build could start in such a mode, so only a development
+  database can be in that state.
 - **Frozen once federated.** An actor id has been announced to other servers and cannot change
   (Mastodon's configuration page says the same of its `LOCAL_DOMAIN`: changing it makes remote
   servers "confuse your existing accounts with entirely new ones"). So the public origin and every username that has federated are frozen. If `FLOWA_ORIGIN` later
   differs from the recorded origin, the server starts, serves the app as in local mode, logs
   "federation refused: the origin was https://a and is now https://b; actor ids cannot move", shows
   it on the dashboard, and federates nothing. Moving a whole instance to a new name is not supported
-  (members move one by one with PRT's Move).
+  (members move one by one with PRT's Move). As built (FRD 4), the instance actor's own id is the one
+  exception until its first signed request freezes the origin (FRD 7): before a member is announced, an
+  instance answers `acct:host@host` under whatever `FLOWA_ORIGIN` it was started with.
 - `federated` back to `local`: allowed, but the remote copies stay where they are. In local mode
   after federating, the actor URLs answer **410 Gone** with a Tombstone (ActivityPub 6.4: 410 when a
   Tombstone is the body) and WebFinger answers 404 (RFC 7033 4.2 asks for 404 when the server has no
@@ -481,7 +488,7 @@ Its host is added to the names `allowedHost` accepts. As built (FRD 1): an IP ad
 single-label or private names are refused, a host in another script must be in its `xn--` form, a trailing
 dot is refused, and capitals, one trailing slash and `:443` are forgiven and written away, so one origin has
 one written form (actor ids are compared as text). It can change freely until it is first announced, and
-is frozen from then on (4.3, as built in FRD 4). A test-only setting,
+is frozen from then on (4.3, as built in FRD 4; the instance actor's id follows it until then). A test-only setting,
 `FLOWA_FEDERATION_ALLOW_PRIVATE` (**new**), lets an `http://` origin and private addresses through
 for the two-instance test, as `FLOWA_PREVIEW_BASE` does for the preview stub; the server logs it at
 start, and `test/release.sh` fails if `compose.yml` names it.

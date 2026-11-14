@@ -145,6 +145,8 @@ func TestWebFinger(t *testing.T) {
 		{"https://flowa.example.org/users/an%2561", o, none},
 		{"acct:%61na@flowa.example.org", o, ana}, // RFC 7565 section 4: compared after normalization
 		{"acct:ana@flowa%2Eexample.org", o, ana},
+		{"https://flowa%2Eexample.org/users/ana", o, bad}, // the URL parser refuses an escape in a host (parseResource)
+		{"https://fl%6Fwa.example.org/users/ana", o, bad},
 		{"acct:ana%40flowa.example.org@flowa.example.org", o, none}, // an encoded @ is part of a name nobody has
 		{"acct:ana%zz@flowa.example.org", o, bad},
 		{"acct:ana%4@flowa.example.org", o, bad},
@@ -395,25 +397,81 @@ func checkNodeInfoSchema(t *testing.T, body []byte) {
 	if err := json.Unmarshal(body, &doc); err != nil {
 		t.Fatalf("not JSON: %v", err)
 	}
-	for _, p := range checkSchema(schema, doc, "") {
+	for _, p := range checkSchema(schema, doc) {
 		t.Errorf("against the schema: %s", p)
 	}
 }
 
-// checkSchema validates v against a JSON Schema (draft 4) node and returns what does not hold. It reads
-// the keywords the NodeInfo 2.1 schema uses: type, enum, pattern, required, properties,
-// additionalProperties (false, true or absent), items, minItems, minimum and minProperties. Any other
-// keyword in the node is reported, so the check cannot pass a rule it does not understand.
-func checkSchema(s map[string]any, v any, at string) []string {
+// checkSchema validates v against a JSON Schema (draft 4) and returns what does not hold. It reads the
+// keywords the NodeInfo 2.1 schema uses, in the forms it uses them: type (one name), enum, pattern,
+// required (a list of names), properties, additionalProperties (true or false), items (one schema),
+// minItems, minimum and minProperties, beside the annotations $schema, id and description. Before it looks
+// at the document it walks the whole schema (schemaForms), so a keyword it does not read, or a form of one
+// it does not implement, is reported wherever it is, even in a part of the schema the document does not
+// reach: the check cannot pass a rule it does not understand.
+func checkSchema(s map[string]any, v any) []string {
+	if bad := schemaForms(s, "schema"); len(bad) > 0 {
+		return bad
+	}
+	return checkNode(s, v, "")
+}
+
+// schemaForms walks a schema node and every node under it, and says what checkNode would not read.
+func schemaForms(s map[string]any, at string) []string {
 	var bad []string
 	say := func(f string, a ...any) { bad = append(bad, at+": "+fmt.Sprintf(f, a...)) }
-	known := map[string]bool{"$schema": true, "id": true, "description": true, "type": true, "enum": true, "pattern": true, "required": true,
-		"properties": true, "additionalProperties": true, "items": true, "minItems": true, "minimum": true, "minProperties": true}
-	for k := range s {
-		if !known[k] {
+	isNum := func(x any) bool { _, ok := x.(float64); return ok }
+	isStr := func(x any) bool { _, ok := x.(string); return ok }
+	for k, x := range s {
+		ok := true
+		switch k {
+		case "$schema", "id", "description", "pattern":
+			ok = isStr(x)
+		case "type":
+			ok = isStr(x) && slices.Contains([]string{"object", "array", "string", "boolean", "number", "integer"}, x.(string))
+		case "enum":
+			_, ok = x.([]any)
+		case "minItems", "minimum", "minProperties":
+			ok = isNum(x)
+		case "additionalProperties":
+			_, ok = x.(bool)
+		case "required":
+			l, isList := x.([]any)
+			ok = isList && len(l) > 0
+			for _, r := range l {
+				ok = ok && isStr(r)
+			}
+		case "items":
+			sub, isObj := x.(map[string]any)
+			if ok = isObj; ok {
+				bad = append(bad, schemaForms(sub, at+".items")...)
+			}
+		case "properties":
+			props, isObj := x.(map[string]any)
+			ok = isObj
+			for name, p := range props {
+				sub, isObj := p.(map[string]any)
+				if !isObj {
+					say("properties.%s is not a schema", name)
+					continue
+				}
+				bad = append(bad, schemaForms(sub, at+"."+name)...)
+			}
+		default:
 			say("the schema uses %q, which this check does not read", k)
+			continue
+		}
+		if !ok {
+			say("%q is written in a form this check does not implement: %v", k, x)
 		}
 	}
+	return bad
+}
+
+// checkNode validates v against one schema node that schemaForms has accepted.
+func checkNode(s map[string]any, v any, at string) []string {
+	var bad []string
+	say := func(f string, a ...any) { bad = append(bad, at+": "+fmt.Sprintf(f, a...)) }
 	if typ, ok := s["type"].(string); ok {
 		okType := false
 		switch x := v.(type) {
@@ -456,7 +514,7 @@ func checkSchema(s map[string]any, v any, at string) []string {
 		props, _ := s["properties"].(map[string]any)
 		for k, x := range obj {
 			if sub, ok := props[k].(map[string]any); ok {
-				bad = append(bad, checkSchema(sub, x, at+"."+k)...)
+				bad = append(bad, checkNode(sub, x, at+"."+k)...)
 			} else if s["additionalProperties"] == false {
 				say("%s is not allowed (additionalProperties is false)", k)
 			}
@@ -471,32 +529,41 @@ func checkSchema(s map[string]any, v any, at string) []string {
 		}
 		if items, ok := s["items"].(map[string]any); ok {
 			for i, x := range arr {
-				bad = append(bad, checkSchema(items, x, fmt.Sprintf("%s[%d]", at, i))...)
+				bad = append(bad, checkNode(items, x, fmt.Sprintf("%s[%d]", at, i))...)
 			}
 		}
 	}
 	return bad
 }
 
-// The schema check catches what it should: each document here breaks one rule of the schema file.
+// The schema check catches what it should: each document here breaks one rule of the schema file, and
+// so does the least document with any one required member taken away, at every level the schema names
+// one (the cases come from the file, so none can be left out). A schema written in a form the check does
+// not implement fails it, wherever the form is.
 func TestNodeInfoSchemaCheck(t *testing.T) {
 	raw, err := os.ReadFile(nodeInfoSchemaFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var schema map[string]any
-	json.Unmarshal(raw, &schema)
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
 	good := `{"version":"2.1","software":{"name":"flowa","version":""},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":false,"usage":{"users":{}},"metadata":{}}`
-	var g any
-	json.Unmarshal([]byte(good), &g)
-	if p := checkSchema(schema, g, ""); len(p) != 0 {
+	parse := func(s string) any {
+		var d any
+		if err := json.Unmarshal([]byte(s), &d); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+		return d
+	}
+	if p := checkSchema(schema, parse(good)); len(p) != 0 {
 		t.Errorf("the least document the schema allows: %v", p)
 	}
 	for _, bad := range []string{
 		strings.Replace(good, `"2.1"`, `"2.0"`, 1),
 		strings.Replace(good, `"flowa"`, `"Flowa"`, 1),
 		strings.Replace(good, `"version":""`, `"version":null`, 1),
-		strings.Replace(good, `,"version":""`, ``, 1),
 		strings.Replace(good, `["activitypub"]`, `[]`, 1),
 		strings.Replace(good, `["activitypub"]`, `["webfinger"]`, 1),
 		strings.Replace(good, `"inbound":[]`, `"inbound":null`, 1),
@@ -505,17 +572,72 @@ func TestNodeInfoSchemaCheck(t *testing.T) {
 		strings.Replace(good, `"users":{}`, `"users":{"total":-1}`, 1),
 		strings.Replace(good, `"users":{}`, `"users":{"total":1.5}`, 1),
 		strings.Replace(good, `"users":{}`, `"users":{"opted":1}`, 1),
-		strings.Replace(good, `"usage":{"users":{}}`, `"usage":{}`, 1),
 		strings.Replace(good, `"metadata":{}`, `"metadata":[]`, 1),
-		strings.Replace(good, `,"metadata":{}`, ``, 1),
 		strings.Replace(good, `"metadata":{}`, `"metadata":{},"extra":1`, 1),
 	} {
-		var d any
-		if err := json.Unmarshal([]byte(bad), &d); err != nil {
-			t.Fatalf("%s: %v", bad, err)
-		}
-		if len(checkSchema(schema, d, "")) == 0 {
+		if len(checkSchema(schema, parse(bad))) == 0 {
 			t.Errorf("passed the check: %s", bad)
+		}
+	}
+
+	// Every required member, at every level: walk the schema's properties, and for each name a required
+	// list holds, take that member out of a fresh copy of the least document at the same place.
+	n := 0
+	var walk func(s map[string]any, path []string)
+	walk = func(s map[string]any, path []string) {
+		req, _ := s["required"].([]any)
+		for _, r := range req {
+			d := parse(good)
+			obj := d.(map[string]any)
+			for _, k := range path {
+				next, ok := obj[k].(map[string]any)
+				if !ok {
+					t.Fatalf("the least document has no object at %v for the required %s", path, r)
+				}
+				obj = next
+			}
+			if _, there := obj[r.(string)]; !there {
+				t.Fatalf("the least document lacks the required %v.%s already", path, r)
+			}
+			delete(obj, r.(string))
+			n++
+			p := checkSchema(schema, d)
+			if !slices.ContainsFunc(p, func(m string) bool { return strings.Contains(m, fmt.Sprintf("%s is required and missing", r)) }) {
+				t.Errorf("without the required %v.%s: %v", path, r, p)
+			}
+		}
+		props, _ := s["properties"].(map[string]any)
+		for k, sub := range props {
+			walk(sub.(map[string]any), append(slices.Clone(path), k))
+		}
+	}
+	walk(schema, nil)
+	if n == 0 {
+		t.Error("the schema file names no required member")
+	}
+	t.Logf("%d required members taken away one at a time", n)
+
+	// Forms the check does not implement, each beside a document that would otherwise pass: refused, not
+	// skipped, even where the document does not reach.
+	for _, c := range []struct{ schema, doc string }{
+		{`{"type":["string","null"]}`, `"x"`},
+		{`{"type":"null"}`, `null`},
+		{`{"type":"object","additionalProperties":{"type":"string"}}`, `{"a":"x"}`},
+		{`{"type":"array","items":[{"type":"string"}]}`, `["x"]`},
+		{`{"type":"object","required":"a"}`, `{"a":1}`},
+		{`{"type":"object","required":[1]}`, `{"a":1}`},
+		{`{"type":"object","required":[]}`, `{"a":1}`},
+		{`{"type":"object","properties":{"a":{"oneOf":[]}}}`, `{}`},
+		{`{"type":"object","properties":{"a":{"type":"array","items":{"format":"uri"}}}}`, `{}`},
+		{`{"type":"object","properties":{"a":true}}`, `{}`},
+		{`{"minimum":"0"}`, `1`},
+	} {
+		var s map[string]any
+		if err := json.Unmarshal([]byte(c.schema), &s); err != nil {
+			t.Fatal(err)
+		}
+		if p := checkSchema(s, parse(c.doc)); len(p) == 0 {
+			t.Errorf("the schema %s passed the check", c.schema)
 		}
 	}
 }
@@ -625,6 +747,19 @@ func TestDBWebFinger(t *testing.T) {
 	}
 
 	want := `{"subject":"acct:ana@flowa.example.org","aliases":["https://flowa.example.org/users/ana"],"links":[{"rel":"self","type":"application/activity+json","href":"https://flowa.example.org/users/ana"}]}`
+	// A HEAD for a member gets the headers a GET gets but no id in a body, so it records nothing; the GET
+	// that follows does.
+	head := ask(e.h, "HEAD", wf("acct:ana@flowa.example.org"), "", nil)
+	if e.count(`SELECT count(*) FROM instance_settings`) != 0 {
+		t.Fatal("a HEAD for a member recorded the origin")
+	}
+	get := ask(e.h, "GET", wf("acct:ana@flowa.example.org"), "", nil)
+	if head.Code != 200 || get.Code != 200 || !headersEqual(head.Result().Header, get.Result().Header) {
+		t.Errorf("HEAD for a member: %d %v; GET: %d %v", head.Code, head.Result().Header, get.Code, get.Result().Header)
+	}
+	if e.count(`SELECT count(*) FROM instance_settings WHERE key IN ('origin', 'first_federated_at')`) != 2 {
+		t.Error("the GET after a HEAD did not record the origin")
+	}
 	for _, r := range []string{"acct:ana@flowa.example.org", "ACCT:Ana@Flowa.Example.ORG.", "@ana@flowa.example.org", "ana@flowa.example.org", "https://flowa.example.org/users/ana", "https://flowa.example.org:443/users/ana"} {
 		w := ask(e.h, "GET", wf(r), "", nil)
 		if w.Code != 200 || w.Body.String() != want || w.Result().Header.Get("Content-Type") != jrdType || w.Result().Header.Get("Access-Control-Allow-Origin") != "*" {
@@ -857,12 +992,16 @@ func TestDBFederateOptIn(t *testing.T) {
 			t.Errorf("local /api/me (%q) has the keys %v, want %v", tok, keys, want)
 		}
 	}
-	// The field is ignored, as any field the handler does not know: the answer is that of the same save
-	// without it, and nothing is stored.
+	// The field is ignored, as any field the handler does not know, whatever it holds: the answer is that of
+	// the same save without it, byte for byte, and nothing is stored. On main a value that is not a boolean
+	// was ignored too, since the field did not exist; it must not become a 400 here.
+	anyKind := []any{true, false, "yes", 1, 0.5, map[string]any{"on": true}, nil, []any{true}, ""}
 	_, plain := l.do(ltok, "PUT", "/api/me", map[string]any{"bio": "spinning"})
-	code, out := l.do(ltok, "PUT", "/api/me", map[string]any{"bio": "spinning", "federates": true})
-	if code != 200 || out["_raw"] != plain["_raw"] {
-		t.Errorf("local mode and the switch: %d %v, want %v", code, out["_raw"], plain["_raw"])
+	for _, v := range anyKind {
+		code, out := l.do(ltok, "PUT", "/api/me", map[string]any{"bio": "spinning", "federates": v})
+		if code != 200 || out["_raw"] != plain["_raw"] {
+			t.Errorf("local mode and the switch %#v: %d %v, want %v", v, code, out["_raw"], plain["_raw"])
+		}
 	}
 	if l.count(`SELECT count(*) FROM users WHERE federates`) != 0 {
 		t.Error("local mode wrote the switch")
@@ -875,8 +1014,11 @@ func TestDBFederateOptIn(t *testing.T) {
 	var slID int64
 	sl.a.db.QueryRow(`SELECT id FROM users`).Scan(&slID)
 	stok := sl.session(slID)
-	if code, out := sl.do(stok, "PUT", "/api/me", map[string]any{"federates": true}); code != 200 || out["federation"] != nil || sl.count(`SELECT count(*) FROM users WHERE federates`) != 0 {
-		t.Errorf("single mode without FLOWA_FEDERATE and the switch: %d %v", code, out["_raw"])
+	_, splain := sl.do(stok, "PUT", "/api/me", map[string]any{"bio": "spinning"})
+	for _, v := range anyKind {
+		if code, out := sl.do(stok, "PUT", "/api/me", map[string]any{"bio": "spinning", "federates": v}); code != 200 || out["_raw"] != splain["_raw"] || sl.count(`SELECT count(*) FROM users WHERE federates`) != 0 {
+			t.Errorf("single mode without FLOWA_FEDERATE and the switch %#v: %d %v", v, code, out["_raw"])
+		}
 	}
 	if _, out := sl.do(stok, "GET", "/api/me", nil); out["federation"] != nil || strings.Contains(out["_raw"].(string), `"federation"`) {
 		t.Errorf("single mode without FLOWA_FEDERATE tells of federation: %v", out["_raw"])
@@ -901,7 +1043,7 @@ func TestDBFederateOptIn(t *testing.T) {
 	if _, out := e.do("", "GET", "/api/me", nil); out["federation"] != nil {
 		t.Error("a visitor is told of federation")
 	}
-	code, out = e.do(bo, "PUT", "/api/me", map[string]any{"federates": true})
+	code, out := e.do(bo, "PUT", "/api/me", map[string]any{"federates": true})
 	if f, _ := out["federation"].(map[string]any); code != 200 || f["optedIn"] != true {
 		t.Errorf("bo opts in: %d %v", code, out["_raw"])
 	}
@@ -930,8 +1072,18 @@ func TestDBFederateOptIn(t *testing.T) {
 	if fedOf(bo)["optedIn"] != false || fedOf(dot)["optedIn"] != true {
 		t.Error("the switch did not hold")
 	}
-	if code, _ := e.do(bo, "PUT", "/api/me", map[string]any{"federates": "yes"}); code != 400 {
-		t.Errorf("a switch that is not a boolean: %d", code)
+	// Where the instance federates, a switch that is not a boolean is refused with the reason, and nothing
+	// of that save is written; null is the same as leaving it out.
+	for _, v := range []any{"yes", "", 1, 0.5, map[string]any{"on": true}, []any{true}} {
+		if code, out := e.do(bo, "PUT", "/api/me", map[string]any{"bio": "changed", "federates": v}); code != 400 || out["error"] != "The field federates must be true or false." {
+			t.Errorf("a switch %#v that is not a boolean: %d %v", v, code, out["_raw"])
+		}
+	}
+	if code, out := e.do(bo, "PUT", "/api/me", map[string]any{"federates": nil}); code != 200 || fedOf(bo)["optedIn"] != false {
+		t.Errorf("a null switch: %d %v", code, out["_raw"])
+	}
+	if e.count(`SELECT count(*) FROM users WHERE bio = 'changed'`) != 0 {
+		t.Error("a save with a switch that is not a boolean was written")
 	}
 
 	s := newEnv(t)
@@ -950,21 +1102,43 @@ func TestDBFederateOptIn(t *testing.T) {
 	}
 
 	// A member who opted in and has no key (the queue was full, or federation was refused when they opted
-	// in) gets one after the next start.
+	// in) gets one after the next start; a suspended one does not, as WebFinger does not find them. The
+	// suspended member is older, so the one worker would make their key first if the query listed them.
 	k := newEnv(t)
+	susID, _ := k.user("held", "user")
 	kid, _ := k.user("late", "user")
 	if err := k.fedStart(nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the instance actor's key", func() bool { return k.count(`SELECT count(*) FROM ap_keys`) == 1 })
-	if _, err := k.a.db.Exec(`UPDATE users SET federates = true WHERE id = $1`, kid); err != nil {
+	if _, err := k.a.db.Exec(`UPDATE users SET federates = true WHERE id IN ($1, $2)`, kid, susID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := k.a.db.Exec(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, susID); err != nil {
+		t.Fatal(err)
+	}
+	var listed []int64
+	rows, err := k.a.db.Query(missingKeysSQL, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		rows.Scan(&id)
+		listed = append(listed, id)
+	}
+	rows.Close()
+	if !slices.Equal(listed, []int64{kid}) {
+		t.Errorf("missing keys listed %v, want only %d (not the suspended %d)", listed, kid, susID)
 	}
 	r := k.again()
 	if err := r.fedStart(nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the key of a member who opted in without one", func() bool { return k.count(`SELECT count(*) FROM ap_keys WHERE user_id = $1`, kid) == 1 })
+	if n := k.count(`SELECT count(*) FROM ap_keys WHERE user_id = $1`, susID); n != 0 {
+		t.Error("a suspended member was given a key")
+	}
 }
 
 // testDB opens a database of its own for a benchmark, as newEnv does for a test.
@@ -1029,10 +1203,13 @@ func BenchmarkWebFinger(b *testing.B) {
 }
 
 // What a deployment that federates nothing sees is what it saw before discovery existed, headers
-// included: in local mode and in single mode without FLOWA_FEDERATE, the three discovery addresses answer
-// every method as an address nobody has (no 405 of the discovery gate, no CORS header), and in every mode
-// no answer outside those three addresses carries a CORS header: not a signed-in API answer, not a page,
-// not an error.
+// included: a few answers of a local instance (signed in and not, /api/me read and saved with a federates
+// field that is not a boolean, the page, an unknown API and page address, WebFinger, /healthz) have the
+// status and the full set of headers testdata/headers-local.txt took from the build before discovery; in
+// local mode and in single mode without FLOWA_FEDERATE, the three discovery addresses answer every method
+// as an address nobody has (no 405 of the discovery gate, no CORS header); and in every mode no answer
+// outside those three addresses carries a CORS header: not a signed-in API answer, not a page, not an
+// error. Bodies are compared where they matter elsewhere (TestDBFederateOptIn, TestDBLocalModeUnchanged).
 func TestDBDefaultsUnchanged(t *testing.T) {
 	page := map[string]string{"index.html": "<!doctype html><title>Flowa</title>"}
 	l := newEnv(t)
@@ -1071,6 +1248,13 @@ func TestDBDefaultsUnchanged(t *testing.T) {
 		}
 	}
 	_, ltok := l.user("ana", "user")
+	want, err := os.ReadFile("testdata/headers-local.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := localAnswers(l.h, ltok); got != string(want) {
+		t.Errorf("local answers differ from testdata/headers-local.txt; they are now:\n%s", got)
+	}
 	_, stok := s.user("bob", "user")
 	_, ftok := f.user("cyd", "user")
 	for name, c := range map[string]struct {
@@ -1093,4 +1277,37 @@ func TestDBDefaultsUnchanged(t *testing.T) {
 			}
 		}
 	}
+}
+
+// localAnswers is the status and every header of a few answers of a local instance, one request after
+// another, as text: what testdata/headers-local.txt holds, taken from the build before discovery. The
+// answers carry no date and no random value, so the same build gives the same text.
+func localAnswers(h http.Handler, tok string) string {
+	var b strings.Builder
+	for _, r := range []struct {
+		signedIn           bool
+		method, path, body string
+	}{
+		{true, "GET", "/api/me", ""}, {false, "GET", "/api/me", ""}, {true, "PUT", "/api/me", `{"bio":"spinning","federates":"yes"}`},
+		{false, "GET", "/", ""}, {false, "GET", "/api/nothing-here", ""}, {false, "GET", "/nobody-has-this-address", ""},
+		{false, "GET", "/.well-known/webfinger?resource=acct:ana@flowa.example.org", ""}, {false, "GET", "/healthz", ""},
+	} {
+		req := httptest.NewRequest(r.method, r.path, strings.NewReader(r.body))
+		req.Header.Set("Content-Type", "application/json")
+		who := "visitor"
+		if r.signedIn {
+			req.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
+			who = "signed in"
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		fmt.Fprintf(&b, "%s %s (%s): %d\n", r.method, r.path, who, w.Code)
+		hd := w.Result().Header
+		for _, k := range slices.Sorted(maps.Keys(hd)) {
+			for _, v := range hd[k] {
+				fmt.Fprintf(&b, "  %s: %s\n", k, v)
+			}
+		}
+	}
+	return b.String()
 }
