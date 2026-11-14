@@ -480,7 +480,8 @@ function showErr(id, msg, fields = []) {
 const errFields = (form, msg, rules) => (rules.find(([re]) => re.test(msg)) || [0, []])[1].map(n => form.elements[n]);
 // Whether what is in a field now could be sent: something in it when it is required, and within its lengths.
 // The browser's own check is not asked, because it only counts what a person typed, not a draft put back.
-const fieldOK = f => !(f.required && !f.value.trim()) && !(f.minLength > 0 && f.value.length < f.minLength) && !(f.maxLength > 0 && f.value.length > f.maxLength);
+const fieldOK = f => !(f.required && !f.value.trim()) && !(f.minLength > 0 && f.value.length < f.minLength) && !(f.maxLength > 0 && f.value.length > f.maxLength)
+  && !(f.dataset?.max && textLen(f.value, f.dataset.chars) > Number(f.dataset.max)); // a box that counts characters (countAttrs)
 
 /* ---------- the room left in a text box ---------- */
 // A box with a limit has a counter beside it, which it points at, so the count is read with the box. It
