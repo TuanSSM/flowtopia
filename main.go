@@ -17797,7 +17797,8 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 //     holding it): that request may have arrived (a 504 from the other server's proxy after it stored the post), so the
 //     first is given up ("taken back after an attempt") and the second goes as any row;
 //   - the first claimed (a request may be in flight): the second is due no earlier than the end of its lease, and
-//     deliver asks again at the send (heldBackSQL).
+//     deliver asks again at the send (heldBackSQL), which also covers a claim made after this statement's snapshot (g
+//     then waits for the row and, rechecked, leaves it alone, and h does not see it).
 //
 // attempts counts the claims that may have sent a request. A claim counts one, and every path that gives a claimed row
 // back unsent takes it back (giveBack, attempts - 1): another worker of this process sending to the host, the clock
@@ -17819,10 +17820,12 @@ const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', loc
 	SELECT (SELECT count(*) FROM x) + 0 * (SELECT count(*) FROM h)`
 
 // heldBackSQL is deliver's question, at the send of a row of an activity that takes back activity $1 to inbox $2 ($3
-// the queue's clock): is the first still queued for that inbox? Claimed: the end of its lease, until which the second
-// waits. Not claimed (it failed in flight and waits for another attempt): it is given up, and the second is sent, since
-// the first may have arrived before its answer was lost.
-const heldBackSQL = `WITH x AS (SELECT id, locked_until FROM ap_deliveries WHERE outbox_id = $1 AND inbox = $2 AND state = 'queued'),
+// the queue's clock): is the first still queued for that inbox? Its row is locked first (FOR UPDATE: a claim by another
+// worker made after this statement began is waited for and then seen as it is now), and the conditions are the locked
+// row's. Claimed: the end of its lease, until which the second waits. Not claimed (it failed in flight and waits for
+// another attempt): it is given up, and the second is sent, since the first may have arrived before its answer was
+// lost.
+const heldBackSQL = `WITH x AS (SELECT id, locked_until FROM ap_deliveries WHERE outbox_id = $1 AND inbox = $2 AND state = 'queued' FOR UPDATE),
 	g AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $3, last_error = 'taken back after an attempt that may have arrived'
 		FROM x WHERE d.id = x.id AND (x.locked_until IS NULL OR x.locked_until < $3) RETURNING d.id)
 	SELECT (SELECT max(locked_until) FROM x WHERE locked_until >= $3), (SELECT count(*) FROM g)`
