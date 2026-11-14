@@ -20190,7 +20190,7 @@ const mentionLookupSQL = `SELECT u.username, u.domain, COALESCE(a.ap_id, ''), CO
 func (a *app) resolveMentions(ctx context.Context, body string, uid int64) (string, error) {
 	f := a.fed
 	var keys, names []string
-	for _, m := range parseMentions(body, f.origin.host) {
+	for _, m := range bodyMentions(body, f.origin.host) {
 		key := m.name
 		cand := []string{m.name}
 		if !m.local {
@@ -22885,10 +22885,10 @@ var (
 	ytHandleRE = regexp.MustCompile(`^[A-Za-z0-9._@/-]{1,80}$`)
 	achKeyRE   = regexp.MustCompile(`^[a-z0-9][a-zA-Z0-9:_-]{0,60}$`) // a branch badge ends in its branch's capital letter
 	// mentionRE finds what may be a mention: an @ that does not follow a letter, digit, dot, dash or underscore
-	// (so an email address is none), a run of name characters, and an @ and a host after it when there is one.
-	// parseMentions decides what each is. web/links.js (mentionsIn) reads text the same way, and
+	// (so an email address is none), and a run of name characters; parseMentions reads a host after it and decides
+	// what each is. web/links.js (mentionsIn) reads text the same way, and
 	// test/mentions-fixtures.json holds the cases both must agree on (TestMentions, node test/mentions.js).
-	mentionRE   = regexp.MustCompile(`(?:^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)(?:@([A-Za-z0-9.-]+))?`)
+	mentionRE   = regexp.MustCompile(`(?:^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)`)
 	localNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,23}`) // a local mention: the first 24 characters at most, as before remote handles
 	hostLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
@@ -23018,11 +23018,12 @@ func mentions(text string) []string { return mentionNames(text, "") }
 
 // mentionNames lists the local usernames a text mentions, without repeats and at most maxMentions: @name, and
 // @name@own when own is this instance's host. A handle of another server (@anna@social.example) is never read
-// as the local anna (docs/federation.md, finding 9).
+// as the local anna (docs/federation.md, finding 9), and a name inside a link (https://x.example/@anna) is no
+// mention: the text is read once, as written, by bodyMentions, the reading the Note's content uses.
 func mentionNames(text, own string) []string {
 	seen := map[string]bool{}
 	out := []string{}
-	for _, m := range parseMentions(strings.ToLower(text), own) {
+	for _, m := range bodyMentions(text, own) {
 		if m.local && !seen[m.name] && len(out) < maxMentions {
 			seen[m.name] = true
 			out = append(out, m.name)
@@ -23043,32 +23044,57 @@ type mentionAt struct {
 // maxRemoteName is the longest name part of another server's handle that is read as one (Mastodon allows 30).
 const maxRemoteName = 64
 
-// parseMentions finds the mentions in text: @name for a member here (as before: an @ that does not follow a
-// letter, digit, dot, dash or underscore, and up to 24 name characters starting with a letter or a digit), and
-// @name@host for an account elsewhere, the host a DNS name of two labels or more (a full stop after it ends the
-// sentence and is not part of it). A handle on own (this instance's host, "" when it has none) is a local
-// mention. Anything with a host is never read as a local name, whatever its length or characters: at worst it
-// is plain text. own is compared without case.
+// parseMentions finds the mentions in text, as written: @name for a member here (as before: an @ that does not
+// follow a letter, digit, dot, dash or underscore, and up to 24 name characters starting with a letter or a digit,
+// compared in lower case as usernames are), and @name@host for an account elsewhere, the host an ASCII DNS name of
+// two labels or more whose last holds a letter (a full stop after it ends the sentence and is not part of it), ending
+// where the name characters end: before a space or punctuation, never before another @, an underscore or any letter,
+// digit or mark. Anything shaped @name@... is never read as the local name: when its host is not such a name (a host
+// in another script, with an underscore, two dots, a dash at a label's end, more than 253 characters, or nothing) it is
+// plain text, whole. A host in another script is plain text because Flowa keeps hosts in their xn-- form (9.2) and has
+// no converter (golang.org/x/net/idna is not a dependency); its xn-- form is read. A handle on own (this instance's
+// host, "" when it has none) is the member here of that name. web/links.js (mentionsIn) is the same reading.
 func parseMentions(text, own string) []mentionAt {
 	var out []mentionAt
 	for _, m := range mentionRE.FindAllStringSubmatchIndex(text, -1) {
-		at, run := m[2]-1, text[m[2]:m[3]]
-		if m[4] >= 0 {
-			host := strings.TrimRight(text[m[4]:m[5]], ".")
-			if mentionHostOK(host) {
-				switch {
-				case own != "" && strings.EqualFold(host, own):
-					if l := strings.ToLower(run); localNameRE.FindString(l) == l {
-						out = append(out, mentionAt{start: at, end: m[4] + len(host), name: l, local: true})
-					}
-				case len(run) <= maxRemoteName:
-					out = append(out, mentionAt{start: at, end: m[4] + len(host), name: run, host: host})
-				}
-				continue
+		at, run, end := m[2]-1, text[m[2]:m[3]], m[3]
+		if end < len(text) && text[end] == '@' {
+			j := end + 1
+			for j < len(text) && (text[j] == '.' || text[j] == '-' || text[j] >= '0' && text[j] <= '9' || text[j]|0x20 >= 'a' && text[j]|0x20 <= 'z') {
+				j++
 			}
+			host := strings.TrimRight(text[end+1:j], ".")
+			r, _ := utf8.DecodeRuneInString(text[j:])
+			if j < len(text) && (r == '@' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)) || !mentionHostOK(host) {
+				continue // shaped like a handle, and not one: plain text
+			}
+			switch {
+			case own != "" && strings.EqualFold(host, own):
+				if l := strings.ToLower(run); localNameRE.FindString(l) == l {
+					out = append(out, mentionAt{start: at, end: end + 1 + len(host), name: l, host: host, local: true})
+				}
+			case len(run) <= maxRemoteName:
+				out = append(out, mentionAt{start: at, end: end + 1 + len(host), name: run, host: host})
+			}
+			continue
 		}
 		if l := localNameRE.FindString(strings.ToLower(run)); l != "" {
 			out = append(out, mentionAt{start: at, end: m[2] + len(l), name: l, local: true})
+		}
+	}
+	return out
+}
+
+// bodyMentions are the mentions of a post's or a comment's text where its content shows them: in the text runs
+// between links, line by line, after noteText, exactly the runs noteHTMLWith makes mention links in. So what is
+// notified, addressed and delivered to is what a reader sees as a mention, never a name inside a link.
+func bodyMentions(body, own string) []mentionAt {
+	var out []mentionAt
+	for _, line := range strings.Split(noteText(strings.ReplaceAll(body, "\r\n", "\n")), "\n") {
+		for _, p := range textParts(line) {
+			if p.URL == "" {
+				out = append(out, parseMentions(p.Text, own)...)
+			}
 		}
 	}
 	return out

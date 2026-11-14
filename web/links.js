@@ -84,31 +84,38 @@ const linkCheck = (() => {
     }
     return null;
   }
-  // mentionsIn finds the mentions in a text as the server's parseMentions does (with no host of
-  // its own): [{ start, end, name, host, local }], start at the @ and end after the name or the
-  // host. @name is a member here (a letter or digit, then up to 23 more of letters, digits, dot,
-  // dash and underscore; the name in lower case); @name@host, the host a DNS name of two labels
-  // or more whose last label holds a letter (a full stop after it is not part of it), is an
-  // account elsewhere and never a member here.
-  const MENTION = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)(?:@([A-Za-z0-9.-]+))?/g;
+  // mentionsIn finds the mentions in a text as the server's parseMentions does: [{ start, end,
+  // name, host, local }], start at the @ and end after the name or the host. @name is a member
+  // here (a letter or digit, then up to 23 more of letters, digits, dot, dash and underscore; the
+  // name in lower case); @name@host, the host an ASCII DNS name of two labels or more whose last
+  // label holds a letter (a full stop after it is not part of it) and that ends before anything
+  // but another @, an underscore or a letter, digit or mark, is an account elsewhere. Anything
+  // shaped @name@... is never a member here: with a host that is no such name it is plain text,
+  // whole. own is this server's host ('' when it has none): @name@own is the member here.
+  const MENTION = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)/g;
   const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
   const hostOK = h => {
     const labels = h.toLowerCase().split('.');
     return h.length <= 253 && labels.length >= 2 && labels.every(l => LABEL.test(l)) && /[a-z]/.test(labels[labels.length - 1]);
   };
-  function mentionsIn(text) {
-    const out = [];
-    for (const m of String(text).matchAll(MENTION)) {
-      const at = m.index + m[1].length, run = m[2], nameAt = at + 1;
-      if (m[3] !== undefined) {
-        const host = m[3].replace(/\.+$/, '');
-        if (hostOK(host)) {
-          if (run.length <= 64) out.push({ start: at, end: nameAt + run.length + 1 + host.length, name: run, host, local: false });
-          continue;
-        }
+  const LOCAL = /^[a-z0-9][a-z0-9._-]{2,23}/;
+  function mentionsIn(text, own = '') {
+    const out = [], s = String(text);
+    for (const m of s.matchAll(MENTION)) {
+      const at = m.index + m[1].length, run = m[2], end = at + 1 + run.length;
+      if (s[end] === '@') {
+        let j = end + 1;
+        while (j < s.length && /[A-Za-z0-9.-]/.test(s[j])) j++;
+        const host = s.slice(end + 1, j).replace(/\.+$/, '');
+        if ((j < s.length && /[@_\p{L}\p{N}\p{M}]/u.test(String.fromCodePoint(s.codePointAt(j)))) || !hostOK(host)) continue;
+        if (own && host.toLowerCase() === own.toLowerCase()) {
+          const l = run.toLowerCase();
+          if ((LOCAL.exec(l) || [''])[0] === l) out.push({ start: at, end: end + 1 + host.length, name: l, host, local: true });
+        } else if (run.length <= 64) out.push({ start: at, end: end + 1 + host.length, name: run, host, local: false });
+        continue;
       }
-      const l = /^[a-z0-9][a-z0-9._-]{2,23}/.exec(run.toLowerCase());
-      if (l) out.push({ start: at, end: nameAt + l[0].length, name: l[0], host: '', local: true });
+      const l = LOCAL.exec(run.toLowerCase());
+      if (l) out.push({ start: at, end: at + 1 + l[0].length, name: l[0], host: '', local: true });
     }
     return out;
   }

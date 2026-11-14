@@ -10,8 +10,8 @@ const check = (ok, msg) => { n++; if (!ok) { fails++; console.log('FAIL ' + msg)
 if (!Array.isArray(fx.cases) || fx.cases.length < 20) { console.log('FAIL the fixtures look cut short'); process.exit(1); }
 for (const c of fx.cases) {
   const local = [], remote = [];
-  for (const m of mentionsIn(c.text)) {
-    const want = '@' + m.name + (m.local ? '' : '@' + m.host);
+  for (const m of mentionsIn(c.text, c.own || '')) {
+    const want = '@' + m.name + (m.host ? '@' + m.host : '');
     check(c.text.slice(m.start, m.end).toLowerCase() === want.toLowerCase(), `${JSON.stringify(c.text)}: the mention at ${m.start} to ${m.end} reads ${JSON.stringify(c.text.slice(m.start, m.end))}, want ${JSON.stringify(want)}`);
     (m.local ? local : remote).push(m.local ? m.name : `${m.name}@${m.host}`);
   }

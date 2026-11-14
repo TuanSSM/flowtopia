@@ -4216,10 +4216,10 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	if n := e.a.fetch.dials.Load(); n != 0 {
 		t.Errorf("%d connections were tried by a start, an hour's housekeeping and five requests; want none", n)
 	}
-	// FWR 4: a post made here, Public asked for or not, a handle of another server in it, writes no record of a way
-	// out and starts nothing; its answer has no alt key unless its author wrote alt text for its picture.
+	// FWR 4: a post made here, Public asked for or not, a handle of another server or a name inside a link in it, writes no
+	// record of a way out, starts nothing and tells nobody; its answer has no alt key unless its author wrote alt text.
 	e.user("anna", "user")
-	for _, body := range []map[string]any{{"body": "hello @anna@social.example", "audience": "public"}, {"body": "x", "alt": "no picture, so dropped"}} {
+	for _, body := range []map[string]any{{"body": "hello @anna@social.example", "audience": "public"}, {"body": "x", "alt": "no picture, so dropped"}, {"body": "see https://x.example/@anna, @anna@h..example"}} {
 		out := e.must(200, admin, "POST", "/api/posts", body)
 		if p := out["posts"].([]any)[0].(map[string]any); p["alt"] != nil || p["audience"] != nil {
 			t.Errorf("a post in local mode answers %v", p)

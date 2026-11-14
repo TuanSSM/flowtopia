@@ -1612,9 +1612,21 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   (`linkable`), else the actor's id is, else the mention stays text. `TestNoteContentEscaping` and `FuzzNoteContent`
   (30 s, about 214,000 runs, no failure) hold every output to that subset with no `<` of the input left unescaped.
 - **Mentions** (`parseMentions`, finding 9). `@name` is a member here as before (up to 24 characters, the first a letter
-  or digit); `@name@host`, the host a DNS name of two labels or more whose last label holds a letter (a full stop after
-  it ends the sentence), is an account of another server and **never** a member here, whatever its length; on this
-  instance's own host it is the member. The page reads text the same way (`mentionsIn` in `web/links.js`, which
+  or digit); `@name@host`, the host an ASCII DNS name of two labels or more whose last label holds a letter (a full stop
+  after it ends the sentence), ending before a space or punctuation (never before another `@`, an underscore or a
+  letter, digit or mark), is an account of another server. **Anything shaped `@name@...` is never a member here**: when
+  its host is not such a name (a host in another script, `h.exa_mple`, two dots, a dash at a label's end, more than 253
+  characters, nothing at all) it is plain text, whole (after FWR 4's review: these used to tell the local member). A
+  host in another script stays text because hosts are kept in their `xn--` form (9.2) and converting needs
+  `golang.org/x/net/idna`, which is not a dependency; its `xn--` form is read. On this instance's own host
+  (`@anna@flowa.example.org`) it is the member here, on the server and on the page alike (the page reads its host from
+  the member's handle, which `/api/me` gives only in a mode that federates; in local mode neither side has a host of its
+  own, so such a handle is text on both). **One reading of a text** (`bodyMentions`): mentions are only looked for in the
+  runs between links, as the content shows them, and the text is read as written (names compared in lower case, as
+  usernames are), so what is notified, what is linked, what is addressed and what is delivered to are the same: an
+  account named inside a link (`https://x.example/@anna`) is none of them. **This changes two things in local mode**,
+  both small and correct: a name inside a link no longer tells that member (the page never linked it), and
+  `@anna@host` with a host that is not one no longer tells anna. The page reads text the same way (`mentionsIn` in `web/links.js`, which
   `richText` uses, showing another server's handle as text), held to the cases of `test/mentions-fixtures.json` by
   `TestMentions` and `node test/mentions.js` (in the lint job). Notifications use it, so `@anna@social.example` no longer
   tells the local anna. When a Public post goes out, its mentions are resolved **from the cache alone, with no fetch**

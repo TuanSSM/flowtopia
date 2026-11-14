@@ -813,7 +813,8 @@ member who shares their profile goes to their followers on other servers ([docs/
   other servers (as both `name` and `summary`). A post without a picture has no such field, and its answer is as
   before.
 - **Mentions.** `@name` is a member here, and `@name@server.example` an account on another server, never the member
-  here with that name: nobody here is told of it, and the page shows it as text. A Public post that mentions an
+  here with that name: nobody here is told of it, and the page shows it as text; so is anything shaped like a handle
+  whose server name is not one. A name inside a link is no mention, in every mode (it used to tell that member). A Public post that mentions an
   account of another server sends it the post when Flowa already knows the account (it was looked up, or follows or
   is followed); an account Flowa has never seen stays text and is not sent to. At most 10 mentions per post.
 - **Deleting and hiding.** Deleting a post that went out, or a moderator hiding it, sends a Delete to the servers it

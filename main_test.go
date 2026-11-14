@@ -83,7 +83,7 @@ func TestMentions(t *testing.T) {
 	}
 	var fx struct {
 		Cases []struct {
-			Text          string
+			Text, Own     string
 			Local, Remote []string
 		}
 	}
@@ -92,12 +92,14 @@ func TestMentions(t *testing.T) {
 	}
 	for _, c := range fx.Cases {
 		local, remote := []string{}, []string{}
-		for _, m := range parseMentions(c.Text, "") {
+		for _, m := range parseMentions(c.Text, c.Own) {
 			want := "@" + m.name
+			if m.host != "" {
+				want += "@" + m.host
+			}
 			if m.local {
 				local = append(local, m.name)
 			} else {
-				want += "@" + m.host
 				remote = append(remote, m.name+"@"+m.host)
 			}
 			if got := c.Text[m.start:m.end]; !strings.EqualFold(got, want) {
@@ -123,6 +125,18 @@ func TestMentions(t *testing.T) {
 	}
 	if got := mentions("@anna@flowa.example.org"); len(got) != 0 {
 		t.Errorf("with no host of its own (local mode) a handle with a host is no member here: %q", got)
+	}
+	// After FWR 4's review: a name inside a link is no mention, as the Note's content and the page read it (in local
+	// mode too: https://x.example/@anna told anna before), and the text is read as written, not in lower case first.
+	for text, want := range map[string][]string{
+		"see https://x.example/@anna and @boo":           {"boo"},
+		"https://x.example/a?b=@anna, then (@cyd)":       {"cyd"},
+		"\u212a@anna and @\u212aboo":                     {"anna"},
+		"@anna@b\u00fccher.example and @anna@h..example": {},
+	} {
+		if got := mentionNames(text, ""); !slices.Equal(got, want) {
+			t.Errorf("mentionNames(%q) = %q, want %q", text, got, want)
+		}
 	}
 }
 

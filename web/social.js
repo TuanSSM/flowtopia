@@ -35,12 +35,15 @@ function ago(t) {
 // Escaped text with @mentions and links made clickable, and line breaks kept. Mentions
 // are only looked for outside links, so an @ inside a URL stays part of the URL. A handle of
 // another server (@anna@social.example) is never read as the member anna here: it stays text
-// (linkCheck.mentionsIn reads mentions as the server does).
+// (linkCheck.mentionsIn reads mentions as the server does). On this server's own host, which a
+// server that federates names in the member's handle, @anna@host is the member here.
+const ownHost = () => { const h = (fed && fed.handle) || ''; return h.includes('@', 1) ? h.slice(h.lastIndexOf('@') + 1) : ''; };
 function richText(s) {
+  const own = ownHost();
   return esc(s).split(/(https?:\/\/[^\s<]+[^\s<.,)])/).map((part, i) => {
     if (i % 2) return `<a href="${part}" target="_blank" rel="noopener noreferrer">${part}</a>`;
     let out = '', at = 0;
-    for (const m of linkCheck.mentionsIn(part)) {
+    for (const m of linkCheck.mentionsIn(part, own)) {
       if (!m.local) continue;
       out += part.slice(at, m.start) + `<a href="#/u/${m.name}">${part.slice(m.start, m.end)}</a>`;
       at = m.end;
