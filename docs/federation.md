@@ -536,7 +536,13 @@ every mode (4.3: retired names stay retired whatever the mode). A name of an acc
 free again, as before. A retired name is refused at sign-up, at a request to join, at approving a request
 that waited under it, and for `ADMIN_USER` (the start goes on without that account while others exist, and
 stops with the reason when there would be none), always in the words of a taken name ("That username is
-taken."), so the answer does not say whether an account once had it. No endpoint renames an account, so a
+taken."), so the answer does not say whether an account once had it. The transaction that retires a name and each
+that makes an account (sign-up, approving a request, `ADMIN_USER`) first take a lock on that one name
+(`nameLockSQL`, an advisory transaction lock keyed by the name): without it an insert that waited on the
+unique index for a delete went ahead, once the delete committed, with a snapshot from before the
+retirement. Under READ COMMITTED each statement takes a new snapshot when it starts, so an insert sent after
+the lock is granted sees the retirement (`TestDBRetireRace`). The password is hashed before the lock is
+taken, so sign-up waits only for another transaction on the same name. No endpoint renames an account, so a
 name that has federated cannot move (4.3); `TestDBRetiredNames` holds that `PUT /api/me` takes no name. The
 instance's own host is taken the same way in a mode that federates (5.3 found that a member so named is
 shadowed by the instance actor in WebFinger): it is refused at every door above, and a member who already has

@@ -2788,6 +2788,8 @@ func TestDBOneConnection(t *testing.T) {
 	within(200, admin, "GET", "/api/admin/instance", nil)
 	within(200, ana, "GET", "/api/instance", nil)
 	within(200, "", "GET", "/api/about", nil)
+	// Open sign-up: the insert runs in a transaction that holds the name's lock (nameLockSQL).
+	within(200, "", "POST", "/api/signup", map[string]any{"username": "opens", "password": "a fine long password"})
 	// Sign-up by approval: the setting, a request (its count and insert run in one transaction), the
 	// list, an approval and a decline.
 	cur := within(200, admin, "GET", "/api/admin/instance", nil)

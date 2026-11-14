@@ -5,9 +5,12 @@ package main
 // documents, the Notes and the small pages that show them. The DB tests ask through the whole server.
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // mustExec runs a statement on the test's database.
@@ -229,5 +232,157 @@ func TestDBPostAudience(t *testing.T) {
 	}
 	if code, out := s.do(s.session(owner), "POST", "/api/posts", map[string]any{"body": "mine", "audience": "public"}); code != 200 || out["posts"].([]any)[0].(map[string]any)["audience"] != "public" {
 		t.Errorf("the owner of a single-profile instance, Public: %d %v", code, out["_raw"])
+	}
+}
+
+// holdRetirement opens the transaction a delete of an opted-in member runs (the name's lock, the name
+// retired, the row gone) and leaves it open. When make is true the account is first made inside it, so
+// that the name is free in every snapshot taken before the commit: the case where a sign-up's first look
+// found the name free. It returns the transaction and its backend's pid.
+func holdRetirement(t *testing.T, e *tenv, name string, make bool) (*sql.Tx, int) {
+	t.Helper()
+	tx, err := e.a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	var pid int
+	var id int64
+	steps := []func() error{
+		func() error { return tx.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid) },
+		func() error { _, err := tx.Exec(nameLockSQL, name); return err },
+	}
+	if make {
+		steps = append(steps, func() error {
+			return tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash, federates) VALUES ($1, $1, 'x', true) RETURNING id`, name).Scan(&id)
+		})
+	} else {
+		steps = append(steps, func() error { return tx.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id) })
+	}
+	steps = append(steps,
+		func() error { _, err := tx.Exec(retireSQL, id); return err },
+		func() error { _, err := tx.Exec(`DELETE FROM users WHERE id = $1`, id); return err })
+	for _, s := range steps {
+		if err := s(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return tx, pid
+}
+
+// blockedBy waits until some statement waits for the backend pid: the other side of a race has reached
+// the point where it must wait for the retirement, whatever it waits on (the name's lock, or the unique
+// index without it).
+func blockedBy(t *testing.T, e *tenv, pid int) {
+	t.Helper()
+	waitFor(t, "a statement waiting for the retirement", func() bool {
+		return e.count(`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, pid) > 0
+	})
+}
+
+// No account can be made under a name while a delete is retiring it: every door waits for the delete and
+// then sees the name retired (nameLockSQL). Each case holds the retirement open, waits until the door is
+// blocked on it, and commits; without the lock the door's insert would go ahead with the snapshot it took
+// before the commit and give the name away. Then the real handlers race many times.
+func TestDBRetireRace(t *testing.T) {
+	e := newEnv(t)
+	if err := e.fedStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	e.a.lim.signup = newLimiter(1<<20, time.Hour)
+	var root int64
+	if err := e.a.db.QueryRow(`SELECT id FROM users WHERE username = 'root'`).Scan(&root); err != nil {
+		t.Fatal(err)
+	}
+	rootTok := e.session(root)
+	answer := func(f func() int) chan int {
+		c := make(chan int, 1)
+		go func() { c <- f() }()
+		return c
+	}
+
+	// Sign-up whose first look found the name free (the account was made and is being deleted inside one
+	// open transaction).
+	tx, pid := holdRetirement(t, e, "sam", true)
+	got := answer(func() int {
+		code, _ := e.do("", "POST", "/api/signup", map[string]any{"username": "sam", "password": "flowa-test-only"})
+		return code
+	})
+	blockedBy(t, e, pid)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-got; code != 409 || e.count(`SELECT count(*) FROM users WHERE username = 'sam'`) != 0 {
+		t.Errorf("sign-up during a retirement: %d, %d accounts", code, e.count(`SELECT count(*) FROM users WHERE username = 'sam'`))
+	}
+
+	// Approving a request that waits under the name of an account being deleted.
+	e.user("ria", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE username = 'ria'`)
+	var req int64
+	if err := e.a.db.QueryRow(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('ria', 'ria', 'x') RETURNING id`).Scan(&req); err != nil {
+		t.Fatal(err)
+	}
+	tx, pid = holdRetirement(t, e, "ria", false)
+	got = answer(func() int {
+		code, _ := e.do(rootTok, "POST", fmt.Sprintf("/api/admin/requests/%d/approve", req), nil)
+		return code
+	})
+	blockedBy(t, e, pid)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-got; code != 409 || e.count(`SELECT count(*) FROM users WHERE username = 'ria'`) != 0 {
+		t.Errorf("approval during a retirement: %d", code)
+	}
+
+	// ADMIN_USER, whose first look found the name free.
+	tx, pid = holdRetirement(t, e, "ada", true)
+	type made struct {
+		id  int64
+		err error
+	}
+	adm := make(chan made, 1)
+	go func() { id, err := e.a.seedAdmin("ada", "flowa-test-only"); adm <- made{id, err} }()
+	blockedBy(t, e, pid)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if m := <-adm; m.id != 0 || m.err != nil || e.count(`SELECT count(*) FROM users WHERE username = 'ada'`) != 0 {
+		t.Errorf("ADMIN_USER during a retirement: %d %v", m.id, m.err)
+	}
+
+	// The real handlers against each other, many times: a delete of an opted-in member and a sign-up and
+	// an approval under the same name, started together. However they interleave, nobody gets the name.
+	for i := range 40 {
+		name := fmt.Sprintf("race%d", i)
+		uid, _ := e.user(name, "user")
+		e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, uid)
+		var rq int64
+		if err := e.a.db.QueryRow(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ($1, $1, 'x') RETURNING id`, name).Scan(&rq); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		codes := make([]int, 3)
+		for j, f := range []func() int{
+			func() int { c, _ := e.do(rootTok, "DELETE", fmt.Sprintf("/api/admin/users/%d", uid), nil); return c },
+			func() int {
+				c, _ := e.do("", "POST", "/api/signup", map[string]any{"username": name, "password": "flowa-test-only"})
+				return c
+			},
+			func() int {
+				c, _ := e.do(rootTok, "POST", fmt.Sprintf("/api/admin/requests/%d/approve", rq), nil)
+				return c
+			},
+		} {
+			wg.Go(func() { <-start; codes[j] = f() })
+		}
+		close(start)
+		wg.Wait()
+		if codes[0] != 200 || codes[1] == 200 || codes[2] == 200 || e.count(`SELECT count(*) FROM users WHERE username = $1`, name) != 0 ||
+			e.count(`SELECT count(*) FROM retired_usernames WHERE username = $1`, name) != 1 {
+			t.Fatalf("round %d: delete %d, sign-up %d, approval %d", i, codes[0], codes[1], codes[2])
+		}
 	}
 }

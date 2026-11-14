@@ -133,6 +133,17 @@ const retireSQL = `INSERT INTO retired_usernames (username) SELECT u.username FR
 // account may take.
 func (a *app) reservedName(name string) bool { return a.fedHost != "" && name == a.fedHost }
 
+// nameLockSQL takes a lock on one username until the transaction ends. The transaction that retires a
+// name and each one that makes an account (sign-up, approving a request, ADMIN_USER) take it first, before
+// they read or write the name. Without it a sign-up could take a name that a delete was retiring: its
+// INSERT waits on the unique index for the deleting transaction, and once that commits it goes ahead with
+// the snapshot it took before, in which the name was not retired yet. Under READ COMMITTED every
+// statement takes a new snapshot when it starts, so an INSERT sent after the lock is granted sees the
+// retirement, which committed before the lock was let go. The two-number form of the key is a space of
+// its own, apart from the one-number locks elsewhere in this file; 7130654 says "a username", hashtext
+// the name (two names that hash alike only wait for each other).
+const nameLockSQL = `SELECT pg_advisory_xact_lock(7130654, hashtext($1))`
+
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
 	id BIGSERIAL PRIMARY KEY,
@@ -1675,9 +1686,24 @@ func (a *app) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// The insert checks in the same statement that no request to join waits under the name, which leaves
 	// only the moment an admin switches the setting for an account and a request to share one (see
 	// askToJoin). No row back means a request took the name: answered as a taken name.
-	u, err := scanUser(a.db.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) SELECT $1, $2, $3
-		WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) AND NOT `+retiredSQL+` RETURNING `+userCols,
-		name, display, hashPassword(in.Password)))
+	// The password is hashed before the transaction, which holds the name's lock (nameLockSQL) only for
+	// the insert.
+	hash := hashPassword(in.Password)
+	tx, err := a.db.Begin()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var u *user
+	if _, err = tx.Exec(nameLockSQL, name); err == nil {
+		u, err = scanUser(tx.QueryRow(`INSERT INTO users AS u (username, display_name, pw_hash) SELECT $1, $2, $3
+			WHERE NOT EXISTS (SELECT 1 FROM join_requests WHERE username = $1) AND NOT `+retiredSQL+` RETURNING `+userCols,
+			name, display, hash))
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
 		a.lim.signup.addWeight(from, 1-tenths) // someone took the name in between: a tenth, as above
@@ -1848,7 +1874,12 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 	}
 	var uid int64
 	// A retired name, or the instance's own host, cannot become an account either; the admin is told it
-	// is taken, in the words of a name an account holds, and nothing of an account that once had it.
+	// is taken, in the words of a name an account holds, and nothing of an account that once had it. The
+	// name's lock comes first, so a delete retiring it meanwhile is seen (nameLockSQL).
+	if _, err := tx.Exec(nameLockSQL, name); err != nil {
+		a.serverError(w, err)
+		return
+	}
 	err = tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash) SELECT $1, $2, $3 WHERE NOT `+retiredSQL+` AND NOT $4 RETURNING id`, name, display, hash, a.reservedName(name)).Scan(&uid)
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
@@ -2587,7 +2618,12 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 	// The name of an account that had opted in, whose actor id other servers may hold, is retired in the
 	// same transaction (retireSQL), before the row and its key go, in every mode: 4.3 says retired names
 	// stay retired whatever the mode, and an instance back in local mode may still hold such accounts. A
-	// delete refused below rolls it back with the rest.
+	// delete refused below rolls it back with the rest. The name's lock is held until the commit, so no
+	// account can be made under the name in between (nameLockSQL).
+	if _, err := tx.Exec(nameLockSQL, name); err != nil {
+		a.serverError(w, err)
+		return
+	}
 	if _, err := tx.Exec(retireSQL, id); err != nil {
 		a.serverError(w, err)
 		return
@@ -12729,34 +12765,54 @@ func (a *app) seedAdmin(name, pw string) (int64, error) {
 	var id int64
 	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		// A retired name, or the instance's own host, is taken for the operator too. The start goes on
-		// without the account (a deleted admin used to come back at every start, and a server that will not
-		// start for it would be worse) unless no account exists at all, when there would be nobody to run it.
-		var retired, someone bool
-		if err := a.db.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users)`, name).Scan(&retired, &someone); err != nil {
-			return 0, err
-		}
-		if retired || a.reservedName(name) {
-			if !someone {
-				return 0, fmt.Errorf("ADMIN_USER=%s: that username is taken. Choose another one for the first account", name)
-			}
-			log.Printf("ADMIN_USER=%s: that username is taken, so no account is made for it", name)
-			return 0, nil
-		}
-		// The account the operator names is made whatever the registration setting says, and a
-		// request to join that waits under the same name gives way to it: the name is the operator's.
-		var dropped bool
-		err = a.db.QueryRow(`WITH gone AS (DELETE FROM join_requests WHERE username = $1 RETURNING 1)
-			INSERT INTO users (username, display_name, pw_hash, role) SELECT $1, $2, $3, 'admin' RETURNING id, EXISTS (SELECT 1 FROM gone)`,
-			name, "Admin", hashPassword(pw)).Scan(&id, &dropped)
-		if err == nil {
-			log.Printf("created admin account %q", name)
-			if dropped {
-				log.Printf("removed the request to join that waited under the name %q", name)
-			}
-		}
+		return a.makeAdmin(name, hashPassword(pw))
 	}
 	return id, err
+}
+
+// makeAdmin makes the ADMIN_USER account under the name's lock (nameLockSQL), so the check that the name
+// is not retired and the insert see a delete that retired it meanwhile.
+func (a *app) makeAdmin(name, hash string) (int64, error) {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(nameLockSQL, name); err != nil {
+		return 0, err
+	}
+	// A retired name, or the instance's own host, is taken for the operator too. The start goes on
+	// without the account (a deleted admin used to come back at every start, and a server that will not
+	// start for it would be worse) unless no account exists at all, when there would be nobody to run it.
+	var retired, someone bool
+	if err := tx.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users)`, name).Scan(&retired, &someone); err != nil {
+		return 0, err
+	}
+	if retired || a.reservedName(name) {
+		if !someone {
+			return 0, fmt.Errorf("ADMIN_USER=%s: that username is taken. Choose another one for the first account", name)
+		}
+		log.Printf("ADMIN_USER=%s: that username is taken, so no account is made for it", name)
+		return 0, nil
+	}
+	// The account the operator names is made whatever the registration setting says, and a
+	// request to join that waits under the same name gives way to it: the name is the operator's.
+	var id int64
+	var dropped bool
+	err = tx.QueryRow(`WITH gone AS (DELETE FROM join_requests WHERE username = $1 RETURNING 1)
+		INSERT INTO users (username, display_name, pw_hash, role) SELECT $1, $2, $3, 'admin' RETURNING id, EXISTS (SELECT 1 FROM gone)`,
+		name, "Admin", hash).Scan(&id, &dropped)
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		return 0, err
+	}
+	log.Printf("created admin account %q", name)
+	if dropped {
+		log.Printf("removed the request to join that waited under the name %q", name)
+	}
+	return id, nil
 }
 
 /* ---------- static files ----------
