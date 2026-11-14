@@ -1021,6 +1021,46 @@ func TestDBInboxForwardPays(t *testing.T) {
 	}
 }
 
+// An activity id is kept to the actor that sent it (the review's R3; 7.2): mal, on bo's server, sends an Update
+// of itself under the id Mastodon gives bo's own Delete (<actor>#delete); it is taken as mal's, and bo's real
+// Delete under that id is still taken and handled. A repeat by the same actor is still "accepted before".
+func TestInboxIDSquat(t *testing.T) {
+	e := newInboxEnv(t)
+	mal := "https://social.example/users/mal"
+	e.w.put(mal, worldDoc{body: actorDoc(mal, "mal", "Mal", &e.other.PublicKey, nil)})
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	upd := activity(mal, "Update", map[string]any{"id": mal, "type": "Person", "inbox": mal + "/inbox"}, map[string]any{"id": boID + "#delete"})
+	if w := e.post("/inbox", upd, e.signer(e.other, mal+"#main-key", sigCavage), nil); w.Code != 202 {
+		t.Fatalf("mal's update: %d %s %v", w.Code, w.Body, e.last())
+	}
+	e.clock.add(time.Second)
+	if w := e.post("/inbox", upd, e.signer(e.other, mal+"#main-key", sigCavage), nil); w.Code != 202 || e.last() != inDuplicate {
+		t.Errorf("mal's own repeat: %d (%v), want accepted before", w.Code, e.last())
+	}
+	for {
+		ok, err := e.q.step(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+	}
+	del := activity(boID, "Delete", boID, map[string]any{"id": boID + "#delete"})
+	if w := e.post("/inbox", del, e.bo(), nil); w.Code != 202 || e.last() != inAccepted {
+		t.Errorf("bo's own Delete under the id mal used: %d (%v)", w.Code, e.last())
+	}
+	for {
+		ok, _ := e.q.step(context.Background())
+		if !ok {
+			break
+		}
+	}
+	if e.count(`SELECT count(*) FROM ap_actors WHERE ap_id = $1 AND state = 'gone'`, boID) != 1 {
+		t.Error("bo's own Delete was swallowed as a repeat of mal's activity")
+	}
+}
+
 // limiterCount is what a limiter has counted for a key, in whole events.
 func limiterCount(l *limiter, key string) int {
 	l.mu.Lock()

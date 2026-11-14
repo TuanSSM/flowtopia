@@ -663,7 +663,7 @@ the name exists, makes no difference to the answer.
   6. room in the queue.
   Each refusal has its status (401 for a signature, 403 for the policy, 408 for a body that did not arrive, 413,
   429, 503 with `Retry-After` when this server is busy or its clock is not set) and is counted.
-- **What is done with it.** An activity is stored once by its id (a repeat is answered 202 and not stored
+- **What is done with it.** An activity is stored once by its account and id (a repeat is answered 202 and not stored
   again) in the `ap_inbox` table and handled in the background: **only an account deleting itself** (marked
   gone) **or changing its profile** (fetched again) is acted on. Follows, posts, replies, likes and the rest are
   answered 202, counted by type, and dropped: they come with later versions. At most 5,000 rows wait (then

@@ -1635,7 +1635,7 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
 ### 7.2 Replay
 
 - An activity id is processed once (ActivityPub 5.2: a server MUST de-duplicate by `id`):
-  `ap_inbox.activity_id` is unique; processed rows lose their body
+  `ap_inbox.activity_id` is unique (as built, FWR 1: per signer's actor, 7.10); processed rows lose their body
   at once and are kept 7 days. **The id must have the actor's origin before it is written**, or a
   hostile server could send activities carrying ids another server will use and have the real ones
   dropped as repeats. An activity with no id (ActivityPub 3.1 and 7 allow it for one "intentionally
@@ -2107,7 +2107,11 @@ the note was silent or is corrected:
   stored as received: 7.3). Everything else, Follow included, is answered 202, counted per type (the vocabulary's
   types and Mastodon's extensions by name, any other as `other`) and dropped with no row. Nothing is answered
   back: no Accept or Reject goes out (no delivery exists yet), so a Follow pressed on Mastodon stays requested.
-- **`ap_inbox`** (migration 18, with `flowa-schema17.dump`): as 9.1 with these **corrections**: `body` is `TEXT`,
+- **`ap_inbox`** (migration 18, with `flowa-schema17.dump`): as 9.1 with these **corrections**: unique by the
+  verified signer's actor and the activity id together, not by the id alone (7.2 holds an id only to the actor's
+  origin, so another account of the same server could send its own activity under the first one's id, Mastodon's
+  `<actor>#delete` among them, and have the real one refused as a repeat for the 7 days a row is kept;
+  `TestInboxIDSquat`; a repeat by the same actor is still refused); `body` is `TEXT`,
   not `JSONB`, so the bytes the signature covered are kept as received (the worker decodes them again; a forward,
   7.1.2, sends them as received); `host` (the sender group) for the per-group share; `kind`, `next_at`,
   `locked_until`, `outcome` and `handled_at` for the claim, the retries and the retention; `actor_id` indexed and in

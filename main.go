@@ -16288,13 +16288,16 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group strin
 }
 
 // inboxEnqueueSQL stores a delivery unless the queue, or the sender group's share of it, is full, and says how
-// full each was and whether a row was written: none with room means the id was stored before. Each count stops
+// full each was and whether a row was written: none with room means this actor sent this id before. A repeat is
+// known by the verified signer's actor and the id together: the id alone is only held to the actor's origin, so a
+// second account of the same server could otherwise send its own activity under the first one's id (Mastodon
+// names an account's own Delete <actor>#delete) and have the real one refused as a repeat. Each count stops
 // at its cap, so it reads at most that many index entries.
 const inboxEnqueueSQL = `WITH c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_inbox WHERE state = 'queued' LIMIT $7) a) AS total,
 		(SELECT count(*) FROM (SELECT 1 FROM ap_inbox WHERE state = 'queued' AND host = $3 LIMIT $8) h) AS mine),
 	ins AS (INSERT INTO ap_inbox (activity_id, actor_id, host, kind, body, received_at, next_at)
 		SELECT $1, $2, $3, $4, $5, $6, $6 FROM c WHERE c.total < $7 AND c.mine < $8
-		ON CONFLICT (activity_id) DO NOTHING RETURNING id)
+		ON CONFLICT (actor_id, activity_id) DO NOTHING RETURNING id)
 	SELECT c.total, c.mine, (SELECT count(*) FROM ins) FROM c`
 
 // queueDelivery writes the row and wakes a worker.
@@ -17193,15 +17196,17 @@ var migrations = []string{schema, schemaSocial,
 	);
 	CREATE INDEX IF NOT EXISTS domain_policies_by ON domain_policies (created_by)`,
 	// 18: the inbound queue (docs/federation.md 7.2, 8.1, 9.1 and 9.3; FWR 1): one row per delivery the inbox
-	// took, unique by activity id (ActivityPub 5.2), with the body as received (text, not JSONB: the decoder
-	// reads it again byte for byte, and a later forward sends it as received, 7.1.2), dropped once the row is
-	// handled; claimed by a worker with a lease (8.1); the row kept 7 days after (9.3). host is the sender group
-	// (the last two labels of the key id's host), whose share of the queue is bounded (8.5). actor_id is the
-	// remote account that signed it, indexed for the actor cache's bound (userRefs). A new table: an older build
+	// took, unique by the signer's actor and the activity id (ActivityPub 5.2: de-duplicated by id; by the actor too,
+	// so that one account of a server cannot take another's ids, such as Mastodon's <actor>#delete), with the body
+	// as received (text, not JSONB: the decoder reads it again byte for byte, and a later forward sends it as
+	// received, 7.1.2), dropped once the row is handled; claimed by a worker with a lease (8.1); the row kept 7 days
+	// after (9.3). host is the sender group (the last two labels of the key id's host), whose share of the queue is
+	// bounded (8.5). actor_id is the remote account that signed it; the unique index starts with it, which serves
+	// the actor cache's bound (userRefs). A new table: an older build
 	// ignores it, and the rows it leaves are handled when this build runs again.
 	`CREATE TABLE IF NOT EXISTS ap_inbox (
 		id BIGSERIAL PRIMARY KEY,
-		activity_id TEXT NOT NULL UNIQUE,
+		activity_id TEXT NOT NULL,
 		actor_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		host TEXT NOT NULL,
 		kind TEXT NOT NULL,
@@ -17212,12 +17217,12 @@ var migrations = []string{schema, schemaSocial,
 		locked_until TIMESTAMPTZ,
 		outcome TEXT NOT NULL DEFAULT '',
 		received_at TIMESTAMPTZ NOT NULL,
-		handled_at TIMESTAMPTZ
+		handled_at TIMESTAMPTZ,
+		UNIQUE (actor_id, activity_id)
 	);
 	CREATE INDEX IF NOT EXISTS ap_inbox_due ON ap_inbox (next_at, id) WHERE state = 'queued';
 	CREATE INDEX IF NOT EXISTS ap_inbox_host ON ap_inbox (host) WHERE state = 'queued';
-	CREATE INDEX IF NOT EXISTS ap_inbox_handled ON ap_inbox (handled_at) WHERE state <> 'queued';
-	CREATE INDEX IF NOT EXISTS ap_inbox_actor ON ap_inbox (actor_id)`,
+	CREATE INDEX IF NOT EXISTS ap_inbox_handled ON ap_inbox (handled_at) WHERE state <> 'queued'`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
