@@ -174,6 +174,10 @@ function followsCard() {
 // A member as a link to their profile: a local one at #/u/name, an account on another server at #/fed/id with its
 // handle as the server proved it could be shown (remote.handle) and its host apart, never its raw name.
 const whoName = u => u.remote ? (u.displayName || u.remote.handle || u.remote.host) : (u.displayName || u.username);
+// An account of another server beside local ones (the bell): its name isolated, then its handle with its host, or
+// the host alone when the server sent no name that may be shown as a handle, so "root" from elsewhere never reads as
+// a member here.
+const remoteWho = u => `<bdi>${esc(u.displayName || u.remote.handle || u.remote.host)}</bdi> ${u.remote.handle ? handleHTML(u.remote.handle) : `(on <span class="look-host">${esc(u.remote.host)}</span>)`}`;
 function memberLink(u, cls) {
   if (!u.remote) return `<a class="${cls}" href="#/u/${esc(u.username)}">${avatarHTML(u, 'sm')}<span class="grow"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a>`;
   return `<a class="${cls}" href="#/fed/${u.remote.id}">${avatarHTML(u, 'sm')}<span class="grow"><b><bdi>${esc(whoName(u))}</bdi></b><span class="tiny">${u.remote.handle ? handleHTML(u.remote.handle) : `on ${esc(u.remote.host)}`}</span></span></a>`;
@@ -677,7 +681,7 @@ async function loadNotifs() {
   renderBell();
 }
 function notifText(n) {
-  const a = social.nUsers[n.actorId], who = a ? (a.remote ? `<bdi>${esc(whoName(a))}</bdi>` : esc(a.displayName || a.username)) : 'Someone';
+  const a = social.nUsers[n.actorId], who = a ? (a.remote ? remoteWho(a) : esc(a.displayName || a.username)) : 'Someone';
   switch (n.kind) {
     case 'like': return `<b>${who}</b> liked your post`;
     case 'comment': return `<b>${who}</b> commented on your post`;

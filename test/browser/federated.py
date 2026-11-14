@@ -417,7 +417,10 @@ try:
     # TestDBTwoFlowaFollow); here the page's own fetch of the few addresses of one remote account is answered by
     # the suite, as the hostile lookup above is, to check how the page draws the profile, the Follow button's three
     # states and a follow request with Approve and Decline. Over HTTP, an account nobody has is the one 404.
-    api(op,'flags',{'flags':{'follows':True}},'PUT');api(op,'me',{'federates':True},'PUT')
+    api(op,'me',{'federates':True},'PUT')
+    load(BASE);nav('#/settings')
+    check('with Follows off (the default), Settings offers no switch for approving followers by hand',lambda: js("return !!document.querySelector('[data-change=federates]')&&!document.querySelector('[data-change=locked]')"),lambda: txt('.fed-card'))
+    api(op,'flags',{'flags':{'follows':True}},'PUT')
     s,_,b=ask('api/fed/accounts/999999')
     check('a remote account nobody has: the API wants a session first',s==401,lambda: (s,b[:100]))
     try: op.open(BASE+'api/fed/accounts/999999',timeout=20);fa=200
@@ -470,6 +473,8 @@ try:
     js("scrollTo(0,0)");frames()
     picture('federated-remote-profile','Federated mode: a remote account\'s profile drawn from an answer the suite supplies (no server asked): followed, its request waiting')
     click('[data-act=bell]')
+    who=lambda: js("const r=document.querySelector('.ntf-panel .ntf');return r&&[(r.querySelector('bdi')||{}).textContent,(r.querySelector('.look-host')||{}).textContent,r.innerText.includes('@bo@social.example')]")
+    check('the bell names an account of another server by its handle with its host, its name isolated (never a bare name beside members\' names)',lambda: who()==['Bo \u202eexe','social.example',True],who)
     check('the bell lists the follow request with Approve and Decline beside it, not inside a link',lambda: js("const r=document.querySelector('.ntf-panel .ntf');return !!r&&r.tagName==='DIV'&&r.innerText.includes('asked to follow you')&&r.querySelectorAll('button[data-act=req-approve],button[data-act=req-decline]').length===2"),lambda: txt('.ntf-panel'))
     js("scrollTo(0,0)");frames()
     picture('federated-follow-request','Federated mode: a follow request from another server in the notifications, with Approve and Decline (the answer supplied by the suite)')

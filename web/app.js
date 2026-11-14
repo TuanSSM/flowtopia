@@ -653,7 +653,7 @@ function fedCard() {
     <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. ${esc(fed.built)}</p>
     ${on && fed.profile ? `<p class="small"><a href="${esc(fed.profile)}" target="_blank" rel="noopener">See your public page ${icon('ext')}</a></p>` : ''}
     ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}
-    ${on ? `<label class="check"><input type="checkbox" data-change="locked" ${fed.locked ? 'checked' : ''} aria-describedby="locked-hint"><span>Approve followers from other servers by hand</span></label>
+    ${on && flags.follows ? `<label class="check"><input type="checkbox" data-change="locked" ${fed.locked ? 'checked' : ''} aria-describedby="locked-hint"><span>Approve followers from other servers by hand</span></label>
     <p class="tiny" id="locked-hint">${fed.locked ? 'Someone on another server who follows you waits until you approve them from your notifications.' : 'When it is on, someone on another server who follows you waits until you approve them from your notifications.'} Members of this Flowa follow you as before.</p>` : ''}</div></div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
