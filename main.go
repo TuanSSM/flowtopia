@@ -12961,6 +12961,287 @@ func (r idOrObject) collection() (*apCollection, error) {
 	return c, apAs("collection", err)
 }
 
+/* ---------- federation: remote HTML as text ----------
+
+Remote HTML is never stored or shown as HTML (docs/federation.md 6.6). htmlToText turns it into plain text,
+which the page then escapes like any other text: a state machine over the bytes, with no recursion and no
+stack, so 10,000 nested tags cost what 10,000 letters do. It drops every tag; turns <br> and </li> into a
+line break and </p> into a blank line; keeps the href of a link as a URL in the text where the link's text was
+not already that URL; drops the contents of <script> and <style>, comments, CDATA sections, declarations and
+processing instructions; and decodes entities with html.UnescapeString, in text and in an href. A link that a
+Mention of the post names becomes the full handle (@bo@social.example), since Mastodon writes the short @bo,
+which would read as a local member's name; a link a Hashtag names keeps its text alone (#poi), its address
+being the remote server's page for the tag. Only an http or https href is kept as text.
+
+A text the decoder cut at 64 KB (apNote.Cut, or a summary cut where it was kept) may end inside a tag, an
+attribute, a comment or an entity. Whatever is not closed at the end is dropped in every case (an unclosed tag
+is no tag a browser would show either), and with cut also an entity left without its semicolon, which
+html.UnescapeString would otherwise leave as "&am". No HTML parser is added (6.6): golang.org/x/net/html would
+replace about a hundred lines with a module. */
+
+// remoteTextMax is how much of a remote post's text is shown (6.6): the rest is a link to its server.
+const remoteTextMax = 2000
+
+// htmlToText is remote HTML as plain text. mentions and hashtags are the post's tags (apNote), nil for a bio.
+func htmlToText(s string, mentions []apMention, hashtags []apHashtag, cut bool) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	var out []byte          // the text so far
+	var run strings.Builder // raw text not yet decoded
+	var link struct {
+		on    bool
+		href  string
+		start int // where the link's text starts in out
+	}
+	flush := func() {
+		out = append(out, html.UnescapeString(run.String())...)
+		run.Reset()
+	}
+	closeLink := func() {
+		if !link.on {
+			return
+		}
+		link.on = false
+		t := strings.TrimSpace(string(out[link.start:]))
+		hashtag := slices.ContainsFunc(hashtags, func(h apHashtag) bool { return link.href != "" && h.Href == link.href })
+		switch m := linkMention(mentions, link.href, t); {
+		case m != "":
+			out = append(out[:link.start], m...)
+		case hashtag || link.href == "" || sameLinkText(t, link.href):
+		case t == "":
+			out = append(out, link.href...)
+		default:
+			out = append(out, " ("+link.href+")"...)
+		}
+	}
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c != '<' {
+			run.WriteByte(c)
+			i++
+			continue
+		}
+		rest := s[i:]
+		skipTo := func(end string, from int) {
+			if e := strings.Index(rest[from:], end); e >= 0 {
+				i += from + e + len(end)
+			} else {
+				i = len(s)
+			}
+		}
+		switch {
+		case strings.HasPrefix(rest, "<!--"):
+			skipTo("-->", 4)
+			continue
+		case strings.HasPrefix(rest, "<![CDATA["):
+			skipTo("]]>", 9)
+			continue
+		case strings.HasPrefix(rest, "<!"), strings.HasPrefix(rest, "<?"):
+			skipTo(">", 2)
+			continue
+		}
+		// A tag: < then an optional /, a name of letters and digits, attributes, >. A < that does not start
+		// one ("a < b") is text.
+		j := i + 1
+		closing := j < len(s) && s[j] == '/'
+		if closing {
+			j++
+		}
+		k := j
+		for k < len(s) && (isAlpha(s[k]) || k > j && isDigit(s[k])) {
+			k++
+		}
+		if k == j {
+			run.WriteByte(c)
+			i++
+			continue
+		}
+		name := strings.ToLower(s[j:k])
+		attrs, end, ok := tagAttrs(s, k)
+		if !ok {
+			break // a tag left open at the end: dropped
+		}
+		i = end
+		flush()
+		switch {
+		case name == "br" && !closing:
+			out = append(out, '\n')
+		case name == "p" && closing:
+			out = append(out, "\n\n"...)
+		case name == "li" && closing:
+			out = append(out, '\n')
+		case name == "a":
+			closeLink()
+			if closing {
+				break
+			}
+			href := html.UnescapeString(attrs["href"])
+			if !strings.HasPrefix(href, "https://") && !strings.HasPrefix(href, "http://") {
+				href = ""
+			}
+			link.on, link.href, link.start = true, href, len(out)
+		case (name == "script" || name == "style") && !closing:
+			// Their contents are not text: skipped to the closing tag, or to the end when there is none.
+			if e := indexFold(s[i:], "</"+name); e >= 0 {
+				i += e
+			} else {
+				i = len(s)
+			}
+		}
+	}
+	if cut {
+		// An entity the cut left without its end: & and up to 32 letters, digits or #, then the end.
+		r := run.String()
+		if a := strings.LastIndexByte(r, '&'); a >= 0 && len(r)-a <= 33 && strings.Trim(r[a+1:], "#abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") == "" {
+			run.Reset()
+			run.WriteString(r[:a])
+		}
+	}
+	flush()
+	closeLink()
+	return plainLines(string(out))
+}
+
+// tagAttrs reads a tag's attributes from s[i:], up to and past its >: a > inside a quoted value does not end
+// it. Names are lower case, values as written (not yet decoded); the first of two equal names is kept, as
+// HTML does, and at most 64 are kept. ok is false when the tag is not closed before the end.
+func tagAttrs(s string, i int) (map[string]string, int, bool) {
+	const space = " \t\n\r\f"
+	attrs := map[string]string{}
+	skip := func() {
+		for i < len(s) && strings.IndexByte(space, s[i]) >= 0 {
+			i++
+		}
+	}
+	for i < len(s) {
+		switch c := s[i]; {
+		case c == '>':
+			return attrs, i + 1, true
+		case c == '/' || strings.IndexByte(space, c) >= 0:
+			i++
+		default:
+			n := i
+			for i < len(s) && strings.IndexByte(space+"/>=", s[i]) < 0 {
+				i++
+			}
+			name := strings.ToLower(s[n:i])
+			skip()
+			val := ""
+			if i < len(s) && s[i] == '=' {
+				i++
+				skip()
+				if i < len(s) && (s[i] == '"' || s[i] == '\'') {
+					e := strings.IndexByte(s[i+1:], s[i])
+					if e < 0 {
+						return nil, len(s), false
+					}
+					val, i = s[i+1:i+1+e], i+e+2
+				} else {
+					v := i
+					for i < len(s) && strings.IndexByte(space+">", s[i]) < 0 {
+						i++
+					}
+					val = s[v:i]
+				}
+			}
+			if _, seen := attrs[name]; !seen && len(attrs) < 64 {
+				attrs[name] = val
+			}
+		}
+	}
+	return nil, len(s), false
+}
+
+// sameLinkText says whether a link's text is its address already, as Mastodon writes a link (its text is
+// the whole URL, parts of it in hidden spans), or the address without its scheme or its last slash.
+func sameLinkText(t, href string) bool {
+	h := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(href, "https://"), "http://"), "/")
+	return t == href || strings.TrimSuffix(t, "/") == h
+}
+
+// linkMention is the full handle (@name@host) of the Mention a link stands for, or "". Mastodon's link goes to
+// the profile page (https://social.example/@bo) and its Mention's href is the actor id
+// (https://social.example/users/bo), so a link is the Mention's when its href is the Mention's, or when its
+// text is the short @name of the Mention's handle and its href is on the host of the Mention's href. The
+// handle is the Mention's name when it carries a host (which may be a handle domain apart from the actor's
+// host), else the name with the host of its href.
+func linkMention(mentions []apMention, href, text string) string {
+	if href == "" {
+		return ""
+	}
+	for _, m := range mentions {
+		name, host, _ := strings.Cut(strings.TrimPrefix(m.Name, "@"), "@")
+		if name == "" {
+			continue
+		}
+		if host == "" {
+			host = actorHost(m.Href)
+		}
+		if m.Href == href || text == "@"+name && actorHost(href) == actorHost(m.Href) {
+			return "@" + name + "@" + host
+		}
+	}
+	return ""
+}
+
+func isAlpha(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+
+// indexFold is strings.Index without regard to ASCII case.
+func indexFold(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if strings.EqualFold(s[i:i+len(sub)], sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+// plainLines tidies converted text: control characters and direction marks out (a tab, a carriage return
+// and a no-break space are spaces), runs of spaces one space, the spaces at either end of a line out, at most one blank line in
+// a row, none at either end.
+func plainLines(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n':
+			return r
+		case r == '\t' || r == '\r' || r == '\u00a0':
+			return ' '
+		case unicode.IsControl(r), r >= '\u202a' && r <= '\u202e', r >= '\u2066' && r <= '\u2069':
+			// The marks that embed, override or isolate a direction are dropped: in another server's text they
+			// can make a link or a name read as something else. The page shows each text isolated (dir=auto).
+			return -1
+		}
+		return r
+	}, s)
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	blank := 0
+	for _, l := range lines {
+		l = strings.Join(strings.Fields(l), " ")
+		if l == "" {
+			if blank++; blank > 1 {
+				continue
+			}
+		} else {
+			blank = 0
+		}
+		out = append(out, l)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// cutText is text of at most max characters, and whether it was cut (6.6: "the first 2000 characters").
+func cutText(s string, max int) (string, bool) {
+	n := 0
+	for i := range s {
+		if n == max {
+			return strings.TrimSpace(s[:i]), true
+		}
+		n++
+	}
+	return s, false
+}
+
 /* ---------- federation: remote actors ----------
 
 Accounts on other servers, fetched by their ids, signed by the instance actor, and kept (docs/federation.md,
