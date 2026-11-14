@@ -2036,27 +2036,46 @@ the note was silent or is corrected:
   `handleInbox` checks the type itself (`application/activity+json`, or `application/ld+json` with no profile or
   the Activity Streams one, as the fetcher takes them: 7.5), so plain JSON and anything else is 415. Every other
   address keeps `guard` unchanged (`TestDBInboxMethods`).
-- **Order and statuses.** Before the body is read: federation refused, 404 (as every federation address then);
-  3,600 deliveries an hour per address, 429; the type, 415; no signature or one that does not parse, 401; the
-  key id's domain suspended, or not allowed in allowlist mode, 403 (7.7, section 10); the `federation` flag off,
-  503 with `Retry-After` (F1's pause switch, off by default, a flag only in a mode that federates); 300 deliveries
-  in 5 minutes per sender group, 429 (7.5: "per remote host" is held per sender group, the last two labels of the
-  key id's host, as the replay memory groups them, so a wildcard name's subdomains share one allowance); a
-  `Content-Length` over 256 KB, 413; no free turn among 8 bodies read at once, 503 at once. Then the body (256 KB,
-  `http.MaxBytesReader`, 413), the signature (401; 503 for `sigClock`, `sigFull`, and a key lookup that was busy,
-  past its allowance, or found both key turns taken), the decode under one of 4 decode turns (7.5's "handling at
-  once": 8 more wait 2 s, then 503) with what follows, so at most 4 bodies are decoded at once, each verified first
-  (400 when it does not decode), the origin rule, the queue (503 at 5,000 rows waiting, 429 at 500 of
-  one sender group: 8.5's per-host share, decided here as a tenth of the queue). Every refusal has a fixed phrase,
-  logged through `logRefusal` with the host or the address and nothing the sender wrote, and counted.
+- **Order and statuses, and who pays** (corrected after the review of #111: before, a sender group's allowances
+  were counted before its signature was checked, so forged requests could spend a real server's). The rule:
+  nothing a sender has not proven is charged to anyone but the address it came from. In order, each pinned by
+  `TestInboxStageOrder` (each refusal reached with every earlier stage passed and no later stage's work done):
+  1. Before the body is read, at the cost of a few counters: federation refused, 404 (as every federation address
+     then); 3,600 deliveries an hour per address (the server's client-address rule, so a trusted proxy's
+     forwarded address), 429; the type, 415; no signature or one that does not parse, 401; the key id's domain
+     suspended, or not allowed in allowlist mode, 403 (7.7, section 10); the `federation` flag off, 503 with
+     `Retry-After` (F1's pause switch, off by default, a flag only in a mode that federates); a `Content-Length`
+     over 256 KB, 413; no read turn, 503 at once: 8 at once, at most 2 for one address, so no address can hold
+     them all.
+  2. The body within 256 KB (413) and 10 s (408): 256 KB at about 200 kbit/s, a slow mobile link. The
+     connection's read deadline is set, and the read runs beside a timer as well; on any failure the read turn is
+     given back before the answer (`TestInboxSlowBodies`: two from one address, the rest of it 503 at once and a
+     real delivery taken meanwhile; eight addresses holding every turn until their time runs out).
+  3. The signature (401; 503 for `sigClock`, `sigFull`, and a key lookup that was busy, past an allowance, or found
+     both key turns taken). A key not kept is looked up under one of 2 key turns; the request's address pays for
+     each fetch (60 an hour per address), and the key id's sender group is charged only for a fetch whose key
+     then verified (120 an hour per group; while it is used up nothing more is fetched for that group). Forged
+     requests therefore never spend a group's allowance, and what a flood of distinct made-up key ids from many
+     addresses costs a peer is bounded by the cache's pace: one request at a time per host, 2 at once in all, 5 s
+     each, every key id that leads to no key remembered 10 minutes (`spend`'s comment, `TestInboxForgedSpendsGroup`,
+     `TestInboxKeyFetchBound`).
+  4. Verified, so charged to the sender: 300 deliveries in 5 minutes per host of the key id (7.5's "per remote
+     host") and 3,000 per sender group, the last two labels of the host as the replay memory groups them, so a
+     wildcard name gets ten hosts' worth, and other servers under `co.uk` or `github.io` are touched only by ten
+     times one server's verified traffic; 429.
+  5. The decode under one of 4 decode turns (7.5's "handling at once": 8 more wait 2 s, then 503), so at most 4
+     bodies are decoded at once, each verified first (400 when it does not decode); the origin rule.
+  6. The queue: 503 at 5,000 rows waiting, 429 at 500 of one sender group (8.5's per-host share, decided here as a
+     tenth of the queue).
+  Every refusal has a fixed phrase, logged through `logRefusal` with the host or the address and nothing the sender
+  wrote, and counted.
 - **Keys (7.4).** `inboxKeyFor` gives the verifier the key: from `keyMemo` (at most 1,000 parsed keys, least
   recently used out, each kept no longer than its row is fresh and dropped whenever the cache writes the actor,
-  so it is always a key `remoteKey` would give to verify with), else `remoteKey`, whose fetches are counted
-  against 120 an hour per sender group (`actorCache.keyFetches`; past it `actorHostLimit`, 503, not remembered)
-  on top of the cache's 2 at once and one per host, and the 10 minute memory of failures. A signature that does
-  not verify is tried once more after `remoteKeyFailed`. A stale, gone or suspended actor's key verifies nothing;
-  an actor's own Delete asks with `keyForOwnDelete`. A restart empties the replay memory and `keyMemo`; a replay
-  within 12 hours of one rests on the activity ids stored.
+  so it is always a key `remoteKey` would give to verify with), else `remoteKey`, with the fetches paid for as
+  above, on top of the cache's 2 at once and one per host, and the 10 minute memory of failures. A signature that
+  does not verify is tried once more after `remoteKeyFailed`. A stale, gone or suspended actor's key verifies
+  nothing; an actor's own Delete asks with `keyForOwnDelete`. A restart empties the replay memory and `keyMemo`; a
+  replay within 12 hours of one rests on the activity ids stored.
 - **Keys not kept have turns of their own.** A key not in `keyMemo` is looked up (and perhaps fetched) under one of
   2 key turns (`inboxKeyAtOnce`, the cache's own 2 fetches at once), taken at once or not at all (503): a flood of
   deliveries naming keys nobody has holds at most 2 of the 8 read turns, and no decode turn, so deliveries whose

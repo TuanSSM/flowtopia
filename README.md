@@ -646,14 +646,23 @@ the name exists, makes no difference to the answer.
   taken from one, until an admin allows a domain or chooses open**. A domain covers its subdomains; a
   suspended domain is never fetched from in either mode. Moderators read the page; admins change it, and every change is
   in the audit log. Neither choice stops anyone reading the public profiles and posts, as a browser can.
-- **What a delivery must pass**, cheapest first: an Activity Streams content type, a signature (both forms
-  above, the digest, the 12 hours, never twice), a domain the policy lets in, the allowances (300 deliveries in
-  5 minutes from one server's domain, more per address before anything is read), at most 256 KB, at most 4
-  handled at once. Its key is fetched from its server (signed, counted against at most 120 key fetches an hour
-  per domain) and kept; a key whose server stopped answering, of an account that is gone or suspended,
-  verifies nothing, except that account's own deletion. The activity must be by the account whose key signed
-  it, and its id on that account's server. Each refusal has its status (401 for a signature, 403 for the
-  policy, 413, 429, 503 with `Retry-After` when this server is busy or its clock is not set) and is counted.
+- **What a delivery must pass**, in this order, cheapest first, and nothing a sender has not proven is charged
+  to anyone but the address it came from:
+  1. before the body is read: at most 3,600 deliveries an hour per address, an Activity Streams content type, a
+     signature header that parses, a domain the policy lets in, the switch on, at most 256 KB announced, and one
+     of 8 bodies read at once (at most 2 for one address);
+  2. the body itself, within 256 KB and 10 seconds (256 KB at about 200 kbit/s);
+  3. the signature (both forms above, the digest, the 12 hours, never twice). Its key is fetched from its server
+     when it is not kept (signed, at most 2 such lookups at once); the address pays for that fetch (at most 60 an
+     hour per address), and the server's domain only once the key verified (at most 120 such fetches an hour per
+     domain). A key whose server stopped answering, of an account that is gone or suspended, verifies nothing,
+     except that account's own deletion;
+  4. once verified, the server's allowances: 300 deliveries in 5 minutes per host, 3,000 per domain;
+  5. the decode (at most 4 at once), and the activity must be by the account whose key signed it, its id on that
+     account's server;
+  6. room in the queue.
+  Each refusal has its status (401 for a signature, 403 for the policy, 408 for a body that did not arrive, 413,
+  429, 503 with `Retry-After` when this server is busy or its clock is not set) and is counted.
 - **What is done with it.** An activity is stored once by its id (a repeat is answered 202 and not stored
   again) in the `ap_inbox` table and handled in the background: **only an account deleting itself** (marked
   gone) **or changing its profile** (fetched again) is acted on. Follows, posts, replies, likes and the rest are

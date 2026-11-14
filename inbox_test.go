@@ -33,6 +33,10 @@ type inboxEnv struct {
 	other *rsa.PrivateKey // another key, for a rotation or a stranger
 	heard []inboxReason
 	mu    sync.Mutex
+	from  string // the client address deliveries come from, when not the usual one
+	// onServer, when set, changes the request as the server receives it (its body, its length), after post has
+	// made it from the signed client request.
+	onServer func(*http.Request)
 }
 
 const (
@@ -95,6 +99,16 @@ func activity(actor, kind string, object any, more map[string]any) []byte {
 // more applied last, from one address.
 func (e *inboxEnv) post(path string, body []byte, sign signer, more func(*http.Request)) *httptest.ResponseRecorder {
 	e.t.Helper()
+	from := "198.51.100.7:4000"
+	if e.from != "" {
+		from = e.from
+	}
+	return e.postFrom(from, path, body, sign, more)
+}
+
+// postFrom is post from a given client address ("203.0.113.9:1").
+func (e *inboxEnv) postFrom(from, path string, body []byte, sign signer, more func(*http.Request)) *httptest.ResponseRecorder {
+	e.t.Helper()
 	req, err := http.NewRequest("POST", "https://here.example"+path, bytes.NewReader(body))
 	if err != nil {
 		e.t.Fatal(err)
@@ -109,7 +123,10 @@ func (e *inboxEnv) post(path string, body []byte, sign signer, more func(*http.R
 		more(req)
 	}
 	in := received(req, body)
-	in.RemoteAddr = "198.51.100.7:4000"
+	in.RemoteAddr = from
+	if e.onServer != nil {
+		e.onServer(in)
+	}
 	w := httptest.NewRecorder()
 	e.h.ServeHTTP(w, in)
 	return w
@@ -301,13 +318,19 @@ func TestInboxRefusals(t *testing.T) {
 	}
 	e.mustExec(`DELETE FROM ap_inbox`)
 
-	// Allowances: per sender group, and per address before the signature is read.
+	// Allowances: per host and per sender group once the signature verified, and per address before.
 	e.a.lim.inbox = newLimiter(1, time.Hour)
-	e.post("/inbox", body, e.bo(), nil)
-	if w := e.post("/inbox", body, e.bo(), nil); w.Code != 429 || e.last() != inGroupLimit {
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 429 || e.last() != inGroupLimit {
 		t.Errorf("past the sender group's allowance: %d (%v)", w.Code, e.last())
 	}
 	e.a.lim.inbox = newLimiter(inboxGroupRate, inboxGroupWindow)
+	e.a.lim.inboxHost = newLimiter(1, time.Hour)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 429 || e.last() != inGroupLimit {
+		t.Errorf("past the host's allowance: %d (%v)", w.Code, e.last())
+	}
+	e.a.lim.inboxHost = newLimiter(inboxHostRate, inboxGroupWindow)
 	e.a.lim.inboxAddr = newLimiter(1, time.Hour)
 	e.post("/inbox", body, nil, nil)
 	if w := e.post("/inbox", body, nil, nil); w.Code != 429 || e.last() != inAddrLimit {
@@ -414,36 +437,58 @@ func TestInboxKeys(t *testing.T) {
 func TestInboxKeyFetchBound(t *testing.T) {
 	e := newInboxEnv(t)
 	e.allow("big.example")
-	e.a.fed.actors.keyFetches = newLimiter(3, time.Hour)
+	c := e.a.fed.actors
+	// One address inventing key ids on one host: at most its own allowance of fetches, then 503, no fetch.
+	c.addrFetches = newLimiter(3, time.Hour)
 	for i := range 10 {
 		id := fmt.Sprintf("https://big.example/users/x%d", i)
 		e.post("/inbox", activity(id, "Follow", "x", nil), e.signer(e.key, id+"#main-key", sigCavage), nil)
 	}
 	if n := e.w.total(); n != 3 {
-		t.Errorf("10 distinct key ids on one host cost %d fetches, want the allowance of 3", n)
+		t.Errorf("10 distinct key ids from one address cost %d fetches, want its allowance of 3", n)
 	}
 	if e.last() != inKeyBusy {
-		t.Errorf("past the allowance: %v, want a 503", e.last())
+		t.Errorf("past the address's allowance: %v, want a 503", e.last())
+	}
+	// None of those verified, so none was charged to big.example: another address still gets its keys.
+	if c.keyFetches.over("big.example") {
+		t.Error("forged requests spent the sender group's allowance of key fetches")
+	}
+	e.from = "198.51.100.8:4000"
+	if w := e.post("/inbox", activity("https://big.example/users/y", "Follow", "x", nil), e.signer(e.key, "https://big.example/users/y#main-key", sigCavage), nil); e.w.total() != 4 {
+		t.Errorf("another address, after the first ran out: %d (%v), %d fetches", w.Code, e.last(), e.w.total())
 	}
 	// The same failing key id again within 10 minutes: remembered, no fetch.
-	e.a.fed.actors.keyFetches = newLimiter(100, time.Hour)
+	e.from = "198.51.100.9:4000"
 	id := "https://big.example/users/x0"
 	e.post("/inbox", activity(id, "Follow", "x", nil), e.signer(e.key, id+"#main-key", sigCavage), nil)
-	if n := e.w.total(); n != 3 {
+	if n := e.w.total(); n != 4 {
 		t.Errorf("a remembered failure was fetched again: %d", n)
 	}
-	// Another domain has an allowance of its own.
-	e.allow("other.example")
-	oid := "https://other.example/users/x"
-	e.post("/inbox", activity(oid, "Follow", "x", nil), e.signer(e.key, oid+"#main-key", sigCavage), nil)
-	if n := e.w.hit(oid); n != 1 {
-		t.Errorf("another domain's key: %d fetches", n)
-	}
-	// Subdomains share their domain's allowance: a wildcard name gets one, not one per name (senderGroup).
-	c := newActorCache(&federation{}, nil)
+	// A key fetched and then verified is charged to its sender group: with the group's allowance used up, a new
+	// key of that group is not fetched, from any address.
 	c.keyFetches = newLimiter(1, time.Hour)
-	if !c.spend("https://a.wild.example/k") || c.spend("https://b.wild.example/k") || !c.spend("https://wild2.example/k") {
-		t.Error("the allowance of key fetches is not per sender group")
+	ev := "https://social.example/users/eve"
+	e.w.put(ev, worldDoc{body: actorDoc(ev, "eve", "", &e.other.PublicKey, nil)})
+	if w := e.post("/inbox", activity(ev, "Follow", "https://here.example/users/ana", nil), e.signer(e.other, ev+"#main-key", sigCavage), nil); w.Code != 202 || !c.keyFetches.over("social.example") {
+		t.Fatalf("eve's first delivery: %d (%v); the group charged %v", w.Code, e.last(), c.keyFetches.over("social.example"))
+	}
+	zed := "https://social.example/users/zed"
+	e.w.put(zed, worldDoc{body: actorDoc(zed, "zed", "", &e.other.PublicKey, nil)})
+	if w := e.post("/inbox", activity(zed, "Follow", "x", nil), e.signer(e.other, zed+"#main-key", sigCavage), nil); w.Code != 503 || e.w.hit(zed) != 0 {
+		t.Errorf("a new key of a group past its allowance: %d, %d fetches", w.Code, e.w.hit(zed))
+	}
+	// The unit: the address pays every request; the group is only looked at.
+	u := newActorCache(&federation{}, nil)
+	u.addrFetches, u.keyFetches = newLimiter(1, time.Hour), newLimiter(1, time.Hour)
+	var n int
+	o := lookupOpts{payer: "192.0.2.1", fetched: func() { n++ }}
+	if !u.spend("https://a.wild.example/k", o) || u.spend("https://b.wild.example/k", o) || n != 1 || u.keyFetches.over("wild.example") {
+		t.Errorf("spend: the address's second request passed, or the group was charged (%d heard)", n)
+	}
+	u.keyFetches.add("wild2.example")
+	if u.spend("https://wild2.example/k", lookupOpts{payer: "192.0.2.2"}) {
+		t.Error("a group past its allowance of verified fetches was fetched for")
 	}
 }
 
@@ -491,7 +536,9 @@ func TestDBInboxQueue(t *testing.T) {
 		if err := e.bo()(req, same); err != nil {
 			t.Fatal(err)
 		}
-		copies = append(copies, received(req, same))
+		in := received(req, same)
+		in.RemoteAddr = fmt.Sprintf("198.51.100.%d:4000", 20+len(copies)) // each from its own address: one holds at most inboxReadsPerAddr read turns
+		copies = append(copies, in)
 	}
 	var wg sync.WaitGroup
 	var bad atomic.Int32
@@ -906,9 +953,9 @@ func TestDBInboxFlood(t *testing.T) {
 	pad := strings.Repeat("x", inboxBodyMax-400)
 	for i := range 50 {
 		zed := fmt.Sprintf("https://social.example/users/zed%d", i)
-		w := e.post("/inbox", follow(zed, map[string]any{"padding": pad}), nil, func(r *http.Request) {
-			r.Body = countingBody{r: r.Body, n: &read}
-		})
+		e.onServer = func(r *http.Request) { r.Body = countingBody{r: r.Body, n: &read} }
+		w := e.post("/inbox", follow(zed, map[string]any{"padding": pad}), nil, nil)
+		e.onServer = nil
 		if w.Code != 401 {
 			t.Fatalf("unsigned %d: %d", i, w.Code)
 		}
@@ -927,7 +974,7 @@ func TestDBInboxFlood(t *testing.T) {
 		id := fmt.Sprintf("https://%s/users/slow%d", hosts[i], i)
 		held = append(held, e.w.holdAt(id))
 		go func() {
-			done <- e.post("/inbox", follow(id, nil), e.signer(e.other, id+"#main-key", sigCavage), nil).Code
+			done <- e.postFrom(fmt.Sprintf("203.0.113.%d:1", 30+i), "/inbox", follow(id, nil), e.signer(e.other, id+"#main-key", sigCavage), nil).Code
 		}()
 		<-e.w.arrived
 	}
@@ -971,6 +1018,262 @@ func TestDBInboxForwardPays(t *testing.T) {
 	}
 	if e.queued() != 0 {
 		t.Error("a forward was stored")
+	}
+}
+
+// limiterCount is what a limiter has counted for a key, in whole events.
+func limiterCount(l *limiter, key string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if f := l.m[key]; f != nil {
+		return f.n / tenths
+	}
+	return 0
+}
+
+// The inbox's stages in their order (7.10, and the README's "What a delivery must pass"): each refusal is reached
+// with every earlier stage satisfied, and none of a later stage's work done: the body not read before its stage,
+// no key fetched before the signature's, nothing charged to the sender's host before it verified, nothing decoded
+// or stored before those stages.
+func TestInboxStageOrder(t *testing.T) {
+	e := newInboxEnv(t)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo's key kept
+	e.a.lim.inboxHost = newLimiter(1000, time.Hour)
+	own := func() []byte { return activity(boID, "Delete", boID, nil) } // stored when it passes everything
+	type work struct{ read, fetched, charged, rows int }
+	var read atomic.Int64
+	measure := func() work {
+		return work{int(read.Load()), e.w.total(), limiterCount(e.a.lim.inboxHost, "social.example"), e.count(`SELECT count(*) FROM ap_inbox`)}
+	}
+	e.onServer = func(r *http.Request) { r.Body = countingBody{r: r.Body, n: &read} }
+	defer func() { e.onServer = nil }()
+	body := func(*http.Request) {}
+	for _, s := range []struct {
+		stage string
+		setup func() func() // returns the undo
+		sign  signer
+		more  func(*http.Request)
+		code  int
+		why   inboxReason
+		did   work // what this request may have done: body bytes read (any), fetches, charges, rows
+	}{
+		{"the address's allowance", func() func() {
+			e.a.lim.inboxAddr = newLimiter(1, time.Hour)
+			e.a.lim.inboxAddr.add(limitKey("198.51.100.7"))
+			return func() { e.a.lim.inboxAddr = newLimiter(inboxAddrRate, time.Hour) }
+		}, e.bo(), body, 429, inAddrLimit, work{}},
+		{"the content type", nil, e.bo(), func(r *http.Request) { body(r); r.Header.Set("Content-Type", "text/plain") }, 415, inType, work{}},
+		{"a signature that parses", nil, nil, body, 401, inUnsigned, work{}},
+		{"the domain policy", nil, e.signer(e.key, "https://unlisted.example/users/x#k", sigCavage), body, 403, inNotListed, work{}},
+		{"the switch", func() func() { e.setFlag(fedFlag, false); return func() { e.setFlag(fedFlag, true) } }, e.bo(), body, 503, inPaused, work{}},
+		{"the size", func() func() {
+			e.onServer = func(r *http.Request) { r.Body = countingBody{r: r.Body, n: &read}; r.ContentLength = inboxBodyMax + 1 }
+			return func() { e.onServer = func(r *http.Request) { r.Body = countingBody{r: r.Body, n: &read} } }
+		}, e.bo(), body, 413, inTooLarge, work{}},
+		{"a read turn", func() func() {
+			for range inboxReadsAtOnce {
+				e.q.reads <- struct{}{}
+			}
+			return func() {
+				for range inboxReadsAtOnce {
+					<-e.q.reads
+				}
+			}
+		}, e.bo(), body, 503, inBusy, work{}},
+		{"the body's time", func() func() {
+			gone := make(chan time.Time)
+			close(gone)
+			e.q.readDeadline = func() <-chan time.Time { return gone }
+			e.onServer = func(r *http.Request) { r.Body = blockBody{ch: closedCh()} }
+			return func() {
+				e.q.readDeadline = func() <-chan time.Time { return time.After(inboxReadFor) }
+				e.onServer = func(r *http.Request) { r.Body = countingBody{r: r.Body, n: &read} }
+			}
+		}, e.bo(), body, 408, inSlowBody, work{}},
+		{"the signature", nil, e.bo(), func(r *http.Request) { body(r); r.Header.Set("Digest", digestHeader([]byte("other"))) }, 401, inSignature, work{read: 1}},
+		{"the host's allowance, once verified", func() func() {
+			e.a.lim.inboxHost = newLimiter(1, time.Hour)
+			e.a.lim.inboxHost.add("social.example")
+			return func() { e.a.lim.inboxHost = newLimiter(1000, time.Hour) }
+		}, e.bo(), body, 429, inGroupLimit, work{read: 1}},
+		{"a decode turn", func() func() {
+			for range inboxAtOnce {
+				e.q.slots <- struct{}{}
+			}
+			e.q.waiting.Store(inboxWaitMax)
+			return func() {
+				e.q.waiting.Store(0)
+				for range inboxAtOnce {
+					<-e.q.slots
+				}
+			}
+		}, e.bo(), body, 503, inBusy, work{read: 1, charged: 1}},
+		{"the queue", func() func() {
+			e.mustExec(`INSERT INTO ap_inbox (activity_id, actor_id, host, kind, received_at, next_at) SELECT 'https://filler.example/' || g, u.id, 'filler.example', 'Delete', now(), now() + interval '1 day'
+				FROM generate_series(1, $1) g, (SELECT id FROM users WHERE domain <> '' LIMIT 1) u`, inboxQueueMax)
+			return func() { e.mustExec(`DELETE FROM ap_inbox`) }
+		}, e.bo(), body, 503, inQueueFull, work{read: 1, charged: 1}},
+		{"everything passed", nil, e.bo(), body, 202, inAccepted, work{read: 1, charged: 1, rows: 1}},
+	} {
+		undo := func() {}
+		if s.setup != nil {
+			undo = s.setup()
+		}
+		read.Store(0)
+		before := measure()
+		e.clock.add(time.Second) // a fresh signature each time
+		w := e.post("/inbox", own(), s.sign, s.more)
+		after := measure()
+		undo()
+		if w.Code != s.code || e.last() != s.why {
+			t.Errorf("%s: %d (%v), want %d (%v)", s.stage, w.Code, e.last(), s.code, s.why)
+		}
+		got := work{min(after.read-before.read, 1), after.fetched - before.fetched, after.charged - before.charged, after.rows - before.rows}
+		if s.stage == "the queue" {
+			got.rows = 0 // the filler rows went in and out around it
+		}
+		if got != s.did {
+			t.Errorf("%s: did %+v, want %+v", s.stage, got, s.did)
+		}
+	}
+}
+
+// closedCh is a channel already closed: a blockBody on it ends at once.
+func closedCh() chan struct{} { c := make(chan struct{}); close(c); return c }
+
+// A forged signature charges nothing to the server it names (the review's R1; 7.10): 300 requests with a
+// well-formed Signature header naming a key id on social.example and no valid signature leave social.example's
+// allowance of deliveries whole, so bo is still taken; requests naming made-up key ids there spend the sending
+// address's allowance of key fetches and never the domain's, so bo's rotated key is still fetched after them.
+func TestInboxForgedSpendsGroup(t *testing.T) {
+	e := newInboxEnv(t)
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+		t.Fatalf("bo first: %d", w.Code)
+	}
+	codes := map[int]int{}
+	for range inboxHostRate {
+		w := e.postFrom("203.0.113.9:1", "/inbox", []byte(`{}`), nil, func(r *http.Request) {
+			r.Header.Set("Signature", `keyId="https://social.example/nobody#k",algorithm="rsa-sha256",headers="(request-target) host date",signature="AAAA"`)
+		})
+		codes[w.Code]++
+	}
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+		t.Errorf("after %v forged requests, bo's server: %d %s", codes, w.Code, w.Body)
+	}
+	// Made-up key ids on bo's host, with signatures that parse: each costs the sending address a fetch, at most
+	// keyFetchesPerAddr, and none is charged to social.example.
+	for i := range keyFetchesPerAddr + 10 {
+		id := fmt.Sprintf("https://social.example/made-up/%d", i)
+		e.postFrom("203.0.113.10:1", "/inbox", activity(id, "Follow", "x", nil), e.signer(e.other, id+"#k", sigCavage), nil)
+	}
+	if e.a.fed.actors.keyFetches.over("social.example") {
+		t.Error("forged requests spent social.example's allowance of key fetches")
+	}
+	e.clock.add(actorRecheck)
+	e.w.put(boID, worldDoc{body: actorDoc(boID, "bo", "Bo", &e.other.PublicKey, nil)})
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.signer(e.other, boKeyID, sigCavage), nil); w.Code != 202 {
+		t.Errorf("bo's rotated key after the made-up ones: %d (%v)", w.Code, e.last())
+	}
+}
+
+// blockBody is a request body that never arrives until the test lets it go.
+type blockBody struct{ ch chan struct{} }
+
+func (b blockBody) Read(p []byte) (int, error) { <-b.ch; return 0, io.EOF }
+func (b blockBody) Close() error               { return nil }
+
+// Bodies that never arrive cannot hold the inbox (the review's R4; 7.10): one address holds at most
+// inboxReadsPerAddr read turns, the rest of its requests are 503 at once, and a real delivery from elsewhere is
+// taken meanwhile; eight addresses can hold every turn only until a body's time runs out, when each is answered
+// 408 and its turn given back. The deadline is the test's (q.readDeadline), so nothing waits on the clock.
+func TestInboxSlowBodies(t *testing.T) {
+	e := newInboxEnv(t)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	expire := make(chan time.Time)
+	e.q.readDeadline = func() <-chan time.Time { return expire }
+	started := make(chan struct{}, 2*inboxReadsAtOnce)
+	e.q.reading = func() { started <- struct{}{} }
+	given := make(chan struct{}, 2*inboxReadsAtOnce)
+	e.q.readGiven = func() { given <- struct{}{} }
+	trickle := func(addrs []string) (chan int, chan struct{}) {
+		ch, done := make(chan struct{}), make(chan int, len(addrs))
+		for _, from := range addrs {
+			go func() {
+				req := httptest.NewRequest("POST", "https://here.example/inbox", blockBody{ch})
+				req.Header.Set("Content-Type", asType)
+				req.Header.Set("Signature", `keyId="https://social.example/nobody#k",algorithm="rsa-sha256",headers="(request-target) host date",signature="AAAA"`)
+				req.RemoteAddr = from
+				w := httptest.NewRecorder()
+				e.h.ServeHTTP(w, req)
+				done <- w.Code
+			}()
+		}
+		return done, ch
+	}
+	// From one address: two read, six are refused at once.
+	one := make([]string, inboxReadsAtOnce)
+	for i := range one {
+		one[i] = "203.0.113.9:1"
+	}
+	done, ch := trickle(one)
+	for range inboxReadsPerAddr {
+		<-started
+	}
+	refused := 0
+	for range inboxReadsAtOnce - inboxReadsPerAddr {
+		if <-done == 503 {
+			refused++
+		}
+	}
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 || refused != inboxReadsAtOnce-inboxReadsPerAddr {
+		t.Errorf("bo while one address trickles: %d (%v); %d of that address's requests refused at once", w.Code, e.last(), refused)
+	}
+	<-started // bo's own read
+	// The time runs out: each turn is given back at once (the answer is written before the handler waits for its
+	// read to end, which on a real connection the read deadline ends, and here the test, by letting the bodies go).
+	expire <- time.Time{}
+	expire <- time.Time{}
+	for range inboxReadsPerAddr {
+		<-given
+	}
+	if len(e.q.reads) != 0 {
+		t.Errorf("%d read turns held after the time ran out", len(e.q.reads))
+	}
+	close(ch)
+	for range inboxReadsPerAddr {
+		if code := <-done; code != 408 {
+			t.Errorf("a body that did not arrive: %d", code)
+		}
+	}
+	// From eight addresses: every turn held until the time runs out, then given back.
+	var eight []string
+	for i := range inboxReadsAtOnce {
+		eight = append(eight, fmt.Sprintf("203.0.113.%d:1", 40+i))
+	}
+	done, ch = trickle(eight)
+	for range inboxReadsAtOnce {
+		<-started
+	}
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 503 || e.last() != inBusy {
+		t.Errorf("bo while eight addresses hold every read turn: %d (%v)", w.Code, e.last())
+	}
+	for range inboxReadsAtOnce {
+		expire <- time.Time{}
+	}
+	for range inboxReadsAtOnce {
+		<-given
+	}
+	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+		t.Errorf("bo once the time ran out: %d (%v)", w.Code, e.last())
+	}
+	close(ch)
+	for range inboxReadsAtOnce {
+		if code := <-done; code != 408 {
+			t.Errorf("a body that did not arrive: %d", code)
+		}
+	}
+	if len(e.q.reads) != 0 {
+		t.Errorf("%d read turns still held", len(e.q.reads))
 	}
 }
 

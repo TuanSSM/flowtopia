@@ -525,7 +525,8 @@ type limits struct {
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 	lookups                                     *limiter // searches by handle of people on other servers, per member, in a mode that federates
 	domains                                     *limiter // changes to domain policies, per admin, in a mode that federates
-	inbox                                       *limiter // deliveries per sender group (the last two labels of the key id's host), in a mode that federates
+	inbox                                       *limiter // verified deliveries per sender group (the last two labels of the key id's host), in a mode that federates
+	inboxHost                                   *limiter // verified deliveries per host of the key id, in a mode that federates
 	inboxAddr                                   *limiter // deliveries per address, before a signature is read, in a mode that federates
 }
 
@@ -555,6 +556,7 @@ func newLimits() limits {
 		// 7.5: 300 deliveries in 5 minutes from one server; and per address a bound a server's own traffic stays
 		// under, so a flood of requests that are not even signed is turned away for the cost of a counter.
 		inbox:     newLimiter(inboxGroupRate, inboxGroupWindow),
+		inboxHost: newLimiter(inboxHostRate, inboxGroupWindow),
 		inboxAddr: newLimiter(inboxAddrRate, time.Hour),
 	}
 }
@@ -13755,9 +13757,12 @@ type lookupOpts struct {
 	keyDoc *apKey // the key document already fetched, whose owner is being fetched
 	depth  int    // 1 while a key document's owner is fetched: an owner is never followed further
 	again  bool   // a caller's own fetch after the one it waited for answered another question
-	// budget says the inbox asks, for a key a delivery names: each request the fetch sends is counted against
-	// the allowance of key fetches of the address's sender group (keyFetches), and refused past it (7.4).
-	budget bool
+	// payer is the client address of the delivery whose key this is, when the inbox asks: each request the fetch
+	// sends is counted against that address's allowance of key fetches (addrFetches), and none is sent while the
+	// key id's sender group has used its allowance of fetches that went on to verify a signature (keyFetches).
+	// fetched hears of each request sent, so that the group is charged only once the key verifies (spend).
+	payer   string
+	fetched func()
 }
 
 // actorCache is the cache of remote actors of one federation. Its rows live in Postgres; in memory it
@@ -13775,12 +13780,11 @@ type actorCache struct {
 	// admits is the domain policy's verdict on a host (fetchReq.admits); nil, before FMD's policies, admits all.
 	admits func(host string) bool
 	slots  chan struct{} // actorFetchers turns
-	// keyFetches counts the requests a delivery's key costs, per sender group of the address fetched
-	// (lookupOpts.budget): the verifier asks for whatever key id a request names, so a stranger inventing key
-	// ids on one domain, or a wildcard name's subdomains, gets at most keyFetchesPerHour fetches an hour from
-	// this server for them (7.4). Other callers (the search by handle) have allowances of their own.
-	keyFetches *limiter
-	keys       keyMemo // the parsed keys the inbox verified with lately (7.4)
+	// keyFetches and addrFetches bound the requests a delivery's key costs (spend; 7.4, 7.10). Other callers (the
+	// search by handle) have allowances of their own.
+	keyFetches  *limiter // per sender group of the key id, charged only for fetches whose key then verified
+	addrFetches *limiter // per client address of the delivery, charged for every request sent
+	keys        keyMemo  // the parsed keys the inbox verified with lately (7.4)
 
 	mu       sync.Mutex
 	hosts    map[string]*hostSlot // one turn per host, taken before one of slots
@@ -13800,7 +13804,7 @@ type actorCache struct {
 func newActorCache(f *federation, ft *fetcher) *actorCache {
 	return &actorCache{fed: f, fetch: ft, now: time.Now, built: builtAt(), wait: actorWait, max: remoteActorsMax,
 		slots: make(chan struct{}, actorFetchers), hosts: map[string]*hostSlot{}, flights: map[string]*actorFlight{},
-		memo: map[[16]byte]actorMemo{}, names: map[string]int{}, count: -1, keyFetches: newLimiter(keyFetchesPerHour, time.Hour),
+		memo: map[[16]byte]actorMemo{}, names: map[string]int{}, count: -1, keyFetches: newLimiter(keyFetchesPerHour, time.Hour), addrFetches: newLimiter(keyFetchesPerAddr, time.Hour),
 		keys: keyMemo{max: keyMemoMax, m: map[string]*list.Element{}, l: list.New()}}
 }
 
@@ -13825,7 +13829,7 @@ func (f *federation) remoteKey(ctx context.Context, keyID string, use keyUse) (*
 	if f.actors == nil {
 		return nil, &actorError{Reason: actorFedRefused}
 	}
-	return f.actors.byKey(ctx, keyID, false, use, false)
+	return f.actors.byKey(ctx, keyID, false, use, lookupOpts{})
 }
 
 // remoteKeyFailed is remoteKey (to verify) after a signature did not verify with the key it returned: the
@@ -13836,7 +13840,7 @@ func (f *federation) remoteKeyFailed(ctx context.Context, keyID string) (*remote
 	if f.actors == nil {
 		return nil, &actorError{Reason: actorFedRefused}
 	}
-	return f.actors.byKey(ctx, keyID, true, keyToVerify, false)
+	return f.actors.byKey(ctx, keyID, true, keyToVerify, lookupOpts{})
 }
 
 // allowed checks an id before anything else: an https id the fetcher may ask, and not on this instance's
@@ -14098,7 +14102,7 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 	if r, done, err := c.cached(prev, addr, o); done {
 		return r, err
 	}
-	if o.budget && !c.spend(addr) {
+	if o.payer != "" && !c.spend(addr, o) {
 		return nil, &actorError{Reason: actorHostLimit, Host: actorHost(addr)}
 	}
 	res, err := c.get(ctx, addr)
@@ -14130,7 +14134,7 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 		if prev != nil {
 			kept = prev.KeyID
 		}
-		keyDoc = c.followKey(ctx, doc, o.want, kept, o.budget)
+		keyDoc = c.followKey(ctx, doc, o.want, kept, o)
 	}
 	return c.store(ctx, doc, o.want, keyDoc)
 }
@@ -14140,7 +14144,7 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 // it's an id, fetch it"): the key asked for, else the one kept, else the first such key on the actor's
 // origin. One fetch, never followed further; nil when there is none to follow or it does not vouch for
 // the actor (its id where it came from and the key id, its owner the actor, a PEM).
-func (c *actorCache) followKey(ctx context.Context, doc *apActor, want, kept string, budget bool) *apKey {
+func (c *actorCache) followKey(ctx context.Context, doc *apActor, want, kept string, o lookupOpts) *apKey {
 	var pick string
 	for _, id := range []string{want, kept} {
 		if k, err := doc.key(id); id != "" && err == nil && k.ByID {
@@ -14159,7 +14163,7 @@ func (c *actorCache) followKey(ctx context.Context, doc *apActor, want, kept str
 	if pick == "" || !sameOrigin(pick, doc.ID) || noFragment(pick) == noFragment(doc.ID) {
 		return nil
 	}
-	if budget && !c.spend(pick) {
+	if o.payer != "" && !c.spend(pick, o) {
 		return nil
 	}
 	res, err := c.get(ctx, noFragment(pick))
@@ -14200,7 +14204,7 @@ func (c *actorCache) keyDocument(ctx context.Context, addr string, res *fetchRes
 	if !ok || noFragment(k.Owner) == noFragment(k.ID) || noFragment(k.Owner) == addr {
 		return c.failure(ctx, addr, nil, actorNoKey, nil)
 	}
-	return c.lookup(ctx, k.Owner, lookupOpts{want: o.want, keyDoc: &k, depth: 1, budget: o.budget})
+	return c.lookup(ctx, k.Owner, lookupOpts{want: o.want, keyDoc: &k, depth: 1, payer: o.payer, fetched: o.fetched})
 }
 
 // failure records a failed fetch. A 410 marks a stored actor gone for good (7.4); every failure the remote
@@ -14517,7 +14521,7 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 // the key a cached actor keeps, else through lookup with the address it names (its fragment removed), so
 // every rule of lookup holds here too; a key id that leads to no actor keeping it is remembered as that
 // failure, so asking it again costs nothing for actorFailFor.
-func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use keyUse, budget bool) (*remoteActor, error) {
+func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use keyUse, pay lookupOpts) (*remoteActor, error) {
 	if !httpsURL(keyID) {
 		return nil, &actorError{Reason: actorBadID, Host: actorHost(keyID)}
 	}
@@ -14535,7 +14539,7 @@ func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use ke
 	if kept != nil {
 		id = kept.ID
 	}
-	r, err := c.lookup(ctx, id, lookupOpts{want: keyID, force: force, budget: budget})
+	r, err := c.lookup(ctx, id, lookupOpts{want: keyID, force: force, payer: pay.payer, fetched: pay.fetched})
 	if err != nil {
 		var ae *actorError
 		if errors.As(err, &ae) && !ae.Cached {
@@ -15415,33 +15419,35 @@ take application/activity+json and application/ld+json from other servers, with 
 check, so they are the one exemption from guard (fedMethods sends a POST to them past it); everything else
 about guard is unchanged, and only a mode that federates registers them.
 
-A delivery is refused as early as the refusal can be known, so that a request nobody vouched for costs no query
-and no fetch:
+A delivery is refused as early as the refusal can be known, and nothing a sender has not proven is charged to
+anyone but the address it came from (TestInboxStageOrder pins this order):
 
-  1. Before anything is read: federation refused (404, as every federation address then), the address's
-     allowance (inboxAddrRate an hour, 429), the content type (415), no signature or one that does not parse
-     (401), the key id's domain suspended or, in allowlist mode, not allowed (403, 7.7 and section 10), the
-     Federation switch off (503, the pause of F1), the sender group's allowance (300 in 5 minutes, 7.5: 429), a
-     Content-Length over 256 KB (413), and no free turn among the inboxReadsAtOnce bodies read at once (503). The
-     sender group is the last two labels of the key id's host (senderGroup, 7.2): a host would let a wildcard
-     name's subdomains each have the allowance.
-  2. The body, read within 256 KB (http.MaxBytesReader, 413 above).
+  1. Before anything is read, at the cost of a few counters: federation refused (404, as every federation address
+     then), the address's allowance (inboxAddrRate an hour, 429), the content type (415), no signature or one
+     that does not parse (401), the key id's domain suspended or, in allowlist mode, not allowed (403, 7.7 and
+     section 10), the Federation switch off (503, the pause of F1), a Content-Length over 256 KB (413), and no
+     read turn (503 at once): inboxReadsAtOnce in all, at most inboxReadsPerAddr for one address.
+  2. The body, within 256 KB (413) and inboxReadFor (408), the connection's read deadline set; on a failure the
+     read turn goes back before anything else.
   3. The signature (verifyRequest: both forms, the digest, the window, replay), with the key from inboxKeyFor:
-     the parsed keys verified with lately (keyMemo, at most 1,000, kept no longer than their row is fresh), else
-     remoteKey, whose fetches are counted against the sender group's allowance of key fetches (7.4) and never
-     run more than 2 at once nor more than one per host (actorFetchers). A signature that does not verify asks
-     once more after remoteKeyFailed, so a rotated key is taken (7.4). A key not kept is looked up under one of
-     inboxKeyAtOnce turns, or 503 at once. Refused: 401; this server's clock before its build, a full replay
-     memory, and a busy or used-up key lookup: 503 with Retry-After.
-  4. Only then the body is decoded, under one of the inboxAtOnce decode turns (8 more wait 2 s, then 503) (decodeActivity: depth, sizes, names, 400) and the origin rule of 7.3
-     applied: the activity's actor must be the actor whose key signed it, which is on the key id's origin (the
-     cache keeps only a key its actor names, owned by it, on its origin). A cavage signature does not cover its
-     keyId, so this rule is what refuses a signature replayed under another domain's key id (7.2,
-     TestReplayAcrossDomains). A delivery whose signer is not its actor (a forward) is answered 202 and dropped,
-     as 7.3 says of forwards; its id is not recorded, since only its own origin may claim it. The activity's id
-     must be on the actor's origin before it is written (7.2): 400.
-  5. Stored in ap_inbox, one row per activity id (ActivityPub 5.2: de-duplicated by id), and answered 202; a
-     repeat is answered 202 and not stored again. Past inboxQueueMax rows waiting the answer is 503 with
+     the parsed keys verified with lately (keyMemo, at most 1,000, kept no longer than their row is fresh), else,
+     under one of inboxKeyAtOnce key turns (503 at once beyond), remoteKey, whose fetches the address pays for and
+     the key id's sender group only once the key verified (spend). A signature that does not verify asks once
+     more after remoteKeyFailed, so a rotated key is taken (7.4). Refused: 401; this server's clock before its
+     build, a full replay memory, and a busy or used-up key lookup: 503 with Retry-After.
+  4. Proven now, so charged to the sender: its host's allowance (inboxHostRate in 5 minutes, 7.5) and its sender
+     group's (inboxGroupRate; the last two labels of the host, senderGroup, so a wildcard name's subdomains share
+     one), 429; and the key fetches it cost, to the group.
+  5. Only then the body is decoded, under one of the inboxAtOnce decode turns (8 more wait 2 s, then 503)
+     (decodeActivity: depth, sizes, names, 400), and the origin rule of 7.3 applied: the activity's actor must be
+     the actor whose key signed it, which is on the key id's origin (the cache keeps only a key its actor names,
+     owned by it, on its origin). A cavage signature does not cover its keyId, so this rule is what refuses a
+     signature replayed under another domain's key id (7.2, TestReplayAcrossDomains). A delivery whose signer is
+     not its actor (a forward) is answered 202 and dropped, as 7.3 says of forwards; its id is not recorded, since
+     only its own origin may claim it. The activity's id must be on the actor's origin before it is written
+     (7.2): 400.
+  6. Stored in ap_inbox, one row per actor and activity id (ActivityPub 5.2: de-duplicated by id), and answered
+     202; a repeat is answered 202 and not stored again. Past inboxQueueMax rows waiting the answer is 503 with
      Retry-After (7.5), and past inboxGroupQueued rows of one sender group 429 (8.5).
 
 The one exception to "decode only after the signature verified" is peekOwnDelete: when the key is not cached
@@ -15474,10 +15480,14 @@ const (
 	inboxWaitFor      = 2 * time.Second    // how long they wait, then 503
 	inboxQueueMax     = 5000               // rows waiting in ap_inbox, then 503 (7.5, section 12)
 	inboxGroupQueued  = 500                // rows waiting from one sender group, then 429: a tenth of the queue (8.5)
-	inboxGroupRate    = 300                // deliveries per sender group in inboxGroupWindow (7.5)
+	inboxHostRate     = 300                // verified deliveries per host of the key id in inboxGroupWindow (7.5)
+	inboxGroupRate    = 3000               // verified deliveries per sender group in inboxGroupWindow: ten hosts' worth, so a wildcard name gets ten, and the other servers under co.uk or github.io are hurt only by ten times one server's traffic
 	inboxGroupWindow  = 5 * time.Minute    //
-	inboxAddrRate     = 3600               // deliveries per address an hour, counted before a signature is read; above the sender group's rate, so a server's own traffic is held by that one
-	keyFetchesPerHour = 120                // requests for keys one sender group can make this server send in an hour (7.4)
+	inboxAddrRate     = 3600               // deliveries per address an hour, counted before a signature is read; above a host's own rate, so a server's own traffic is held by that one
+	inboxReadsPerAddr = 2                  // read turns one address may hold, so no address can hold them all
+	inboxReadFor      = 10 * time.Second   // the longest a body may take to arrive: 256 KB at about 200 kbit/s, a slow mobile link
+	keyFetchesPerHour = 120                // fetches whose key then verified that one sender group may cause in an hour (7.4, spend)
+	keyFetchesPerAddr = 60                 // key fetches one client address may cause in an hour, verified or not: one a minute, more than a server's first contacts need (spend)
 	inboxWorkers      = 2                  // goroutines that handle rows; with the inbox they stay within fedConnsMax
 	inboxLease        = time.Minute        // a claimed row is another worker's again after this (8.1)
 	inboxPoll         = 5 * time.Second    // an idle worker looks again after this, or at once when a row is written (8.2)
@@ -15523,6 +15533,7 @@ const (
 	inQueueFull                        // the queue holds inboxQueueMax rows, 503 (7.5)
 	inGroupQueued                      // the sender group has inboxGroupQueued rows waiting, 429 (8.5)
 	inServer                           // this server failed, 500
+	inSlowBody                         // the body did not arrive within inboxReadFor, 408
 	inboxReasonCount
 )
 
@@ -15544,7 +15555,7 @@ var inboxReasons = [inboxReasonCount]struct {
 	inBlocked:       {403, 0, "this server's domain is suspended here"},
 	inNotListed:     {403, 0, "this server's domain is not on the allowlist here"},
 	inPaused:        {503, 3600, "deliveries are paused here"},
-	inGroupLimit:    {429, 300, "too many deliveries from this server"},
+	inGroupLimit:    {429, 300, "too many deliveries from this server or its domain"},
 	inTooLarge:      {413, 0, "the body is over 256 KB"},
 	inBusy:          {503, 30, "too many deliveries at once"},
 	inKeyBusy:       {503, 60, "the key could not be fetched just now"},
@@ -15556,6 +15567,7 @@ var inboxReasons = [inboxReasonCount]struct {
 	inQueueFull:     {503, 120, "too many activities wait here"},
 	inGroupQueued:   {429, 120, "too many activities from this server wait here"},
 	inServer:        {500, 0, "Something went wrong on the server."},
+	inSlowBody:      {408, 0, "the body did not arrive in time"},
 }
 
 func (r inboxReason) String() string { return inboxReasons[r].words }
@@ -15771,9 +15783,26 @@ func (k *keyMemo) dropKey(keyID string) {
 
 // spend counts one key fetch against the sender group of the address (keyFetches), and says whether there was
 // room for it.
-func (c *actorCache) spend(addr string) bool {
+//
+// Nothing a sender has not proven is charged to anyone else (7.10). Before a signature verifies, the only thing
+// known about a delivery is the address it came from, so that address pays: every request its key costs counts
+// against keyFetchesPerAddr an hour for it. The key id's sender group pays only for a fetch whose key then
+// verified the signature (the inbox charges it after verifyRequest), and while the group has used its
+// keyFetchesPerHour of those, nothing more is fetched for it, so a real server that floods with new keys is
+// bounded, and forged requests, which never verify, cannot use the group's allowance up. What bounds a flood of
+// distinct made-up key ids on one peer from many addresses is not an allowance but the cache's own pace: one
+// request at a time per host and actorFetchers at once in all, each within its 5 s, and every key id that leads to
+// no key remembered for 10 minutes; so the peer receives at most one of these requests at a time, and this server
+// spends at most its two fetch turns, which an inbox delivery takes only under one of its two key turns.
+func (c *actorCache) spend(addr string, o lookupOpts) bool {
 	g := senderGroup(addr)
-	return g != "" && c.keyFetches.add(g)
+	if g == "" || c.keyFetches.over(g) || !c.addrFetches.add(o.payer) {
+		return false
+	}
+	if o.fetched != nil {
+		o.fetched()
+	}
+	return true
 }
 
 // dbTurn takes one of the federation's turns at the database (fedConnsMax), or gives up when ctx ends. The
@@ -15795,10 +15824,12 @@ func (f *federation) dbTurn(ctx context.Context) (func(), error) {
 // actor whose key it was, and whether it may only be the actor's own Delete.
 type inboxCall struct {
 	body          []byte
-	force         bool     // the signature did not verify with the key first given: ask after remoteKeyFailed
-	held          *keyHeld // the key verified with, and its actor
-	ownDelete     bool     // the key was given for the actor's own Delete only (keyForOwnDelete)
-	unknownDelete bool     // a Delete from an actor never seen: nothing was fetched
+	payer         string       // the client address, which pays for the key fetches (spend)
+	fetches       atomic.Int32 // requests the key cost, charged to the sender group once it verifies
+	force         bool         // the signature did not verify with the key first given: ask after remoteKeyFailed
+	held          *keyHeld     // the key verified with, and its actor
+	ownDelete     bool         // the key was given for the actor's own Delete only (keyForOwnDelete)
+	unknownDelete bool         // a Delete from an actor never seen: nothing was fetched
 }
 
 type inboxCallKey struct{}
@@ -15847,7 +15878,7 @@ func (f *federation) inboxKeyFor(ctx context.Context, keyID string) (*rsa.Public
 		}
 		use, call.ownDelete = keyForOwnDelete, true
 	}
-	r, err := c.byKey(ctx, keyID, call.force, use, true)
+	r, err := c.byKey(ctx, keyID, call.force, use, lookupOpts{payer: call.payer, fetched: func() { call.fetches.Add(1) }})
 	if err != nil {
 		return nil, err
 	}
@@ -15937,10 +15968,18 @@ type inboxQueue struct {
 	keyTurns chan struct{}    // inboxKeyAtOnce turns, for looking up a key not kept (inboxKeyFor)
 	waiting  atomic.Int32     // deliveries waiting for a decode turn
 	waitFor  time.Duration    // inboxWaitFor; a test shortens it
-	wake     chan struct{}
-	once     sync.Once
-	manual   bool // set by a test, which then calls step itself: no worker starts
-	stats    inboxStats
+	// readsMu guards readsBy, the read turns each address holds (inboxReadsPerAddr).
+	readsMu sync.Mutex
+	readsBy map[string]int
+	// readDeadline gives the end of a body's time to arrive (inboxReadFor); a test gives a channel it closes.
+	readDeadline func() <-chan time.Time
+	// reading and readGiven, when set (by a test), hear that a delivery took a read turn and began to read its
+	// body, and that a delivery whose body failed gave its read turn back.
+	reading, readGiven func()
+	wake               chan struct{}
+	once               sync.Once
+	manual             bool // set by a test, which then calls step itself: no worker starts
+	stats              inboxStats
 	// stepped says the replay memory forgot everything because the clock stepped back (7.2); logged once.
 	stepped atomic.Bool
 	// heard, when set (by a test), hears how each delivery was answered.
@@ -15949,7 +15988,8 @@ type inboxQueue struct {
 
 func newInboxQueue(f *federation, paused func() bool) *inboxQueue {
 	q := &inboxQueue{f: f, now: time.Now, paused: paused, slots: make(chan struct{}, inboxAtOnce), reads: make(chan struct{}, inboxReadsAtOnce),
-		keyTurns: make(chan struct{}, inboxKeyAtOnce), waitFor: inboxWaitFor, wake: make(chan struct{}, 1)}
+		keyTurns: make(chan struct{}, inboxKeyAtOnce), waitFor: inboxWaitFor, wake: make(chan struct{}, 1), readsBy: map[string]int{},
+		readDeadline: func() <-chan time.Time { return time.After(inboxReadFor) }}
 	q.stats.started = time.Now()
 	return q
 }
@@ -15962,6 +16002,68 @@ func (q *inboxQueue) take(turns chan struct{}) (func(), bool) {
 	default:
 		return nil, false
 	}
+}
+
+// takeRead takes a read turn for an address: one of inboxReadsAtOnce, and at most inboxReadsPerAddr for one
+// address, so that a few slow connections from one place cannot hold them all (7.10). It never waits.
+func (q *inboxQueue) takeRead(addr string) (func(), bool) {
+	q.readsMu.Lock()
+	if q.readsBy[addr] >= inboxReadsPerAddr {
+		q.readsMu.Unlock()
+		return nil, false
+	}
+	q.readsBy[addr]++
+	q.readsMu.Unlock()
+	give := func() {
+		q.readsMu.Lock()
+		if q.readsBy[addr]--; q.readsBy[addr] <= 0 {
+			delete(q.readsBy, addr)
+		}
+		q.readsMu.Unlock()
+	}
+	release, ok := q.take(q.reads)
+	if !ok {
+		give()
+		return nil, false
+	}
+	return sync.OnceFunc(func() { release(); give() }), true
+}
+
+// errSlowBody is a body that did not arrive within inboxReadFor.
+var errSlowBody = errors.New("the body did not arrive in time")
+
+// readBody reads a delivery's body within inboxBodyMax and inboxReadFor. The connection's read deadline is set
+// (best effort: a server connection has one, a test's recorder does not), and the read also runs beside a timer,
+// so a body that never arrives is answered at the deadline whatever the connection allows. The caller gives the
+// read turn back at once on an error, answers, and only then calls wait, which returns when the read has ended
+// (at the deadline on a server connection), since a handler must not return while its body is still being read.
+func (q *inboxQueue) readBody(w http.ResponseWriter, r *http.Request) (body []byte, wait func(), err error) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(inboxReadFor))
+	type read struct {
+		b   []byte
+		err error
+	}
+	got := make(chan read, 1)
+	go func() {
+		b, err := io.ReadAll(io.LimitReader(r.Body, inboxBodyMax+1))
+		got <- read{b, err}
+	}()
+	if q.reading != nil {
+		q.reading()
+	}
+	var x read
+	select {
+	case x = <-got:
+	case <-q.readDeadline():
+		return nil, func() { <-got }, errSlowBody
+	}
+	if x.err != nil {
+		return nil, func() {}, x.err
+	}
+	if len(x.b) > inboxBodyMax {
+		return nil, func() {}, &http.MaxBytesError{Limit: inboxBodyMax}
+	}
+	return x.b, func() {}, nil
 }
 
 // enter takes one of the inboxAtOnce turns, waiting at most inboxWaitFor behind at most inboxWaitMax others.
@@ -16064,39 +16166,42 @@ func (a *app) handleInbox(w http.ResponseWriter, r *http.Request) {
 		answer(inPaused, "")
 		return
 	}
-	group := senderGroup(keyID)
-	if !a.lim.inbox.add(group) {
-		answer(inGroupLimit, "")
-		return
-	}
 	if r.ContentLength > inboxBodyMax {
 		answer(inTooLarge, "")
 		return
 	}
-	release, ok := q.take(q.reads)
+	release, ok := q.takeRead(addr)
 	if !ok {
 		answer(inBusy, "")
 		return
 	}
 	defer release()
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, inboxBodyMax))
+	body, wait, err := q.readBody(w, r)
 	if err != nil {
+		release() // the turn goes back before the answer, and before a read that never ends is waited for
+		if q.readGiven != nil {
+			q.readGiven()
+		}
 		var mb *http.MaxBytesError
-		if errors.As(err, &mb) {
+		switch {
+		case errors.Is(err, errSlowBody):
+			answer(inSlowBody, "")
+		case errors.As(err, &mb):
 			answer(inTooLarge, "")
-		} else {
+		default:
 			answer(inUndecodable, "")
 		}
+		wait()
 		return
 	}
-	why2, kind := a.takeDelivery(r, body, group)
+	why2, kind := a.takeDelivery(r, body, addr, host, senderGroup(keyID))
 	answer(why2, kind)
 }
 
 // takeDelivery verifies, decodes, checks and stores a delivery whose body was read (steps 3 to 5 above).
-func (a *app) takeDelivery(r *http.Request, body []byte, group string) (inboxReason, string) {
+func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group string) (inboxReason, string) {
 	f, q := a.fed, a.fed.inbox
-	call := &inboxCall{body: body}
+	call := &inboxCall{body: body, payer: addr}
 	ctx := context.WithValue(r.Context(), inboxCallKey{}, call)
 	_, err := f.verifier.verifyRequest(ctx, r, body)
 	var se *sigError
@@ -16132,6 +16237,14 @@ func (a *app) takeDelivery(r *http.Request, body []byte, group string) (inboxRea
 			return inServer, ""
 		}
 		return inSignature, ""
+	}
+	// Proven now: the key id's server signed this. Only from here is anything charged to it: the key fetches the
+	// request cost, its host's and its domain's allowances of deliveries (7.5), and later its share of the queue.
+	for n := call.fetches.Load(); n > 0; n-- {
+		f.actors.keyFetches.add(group)
+	}
+	if !a.lim.inboxHost.add(host) || !a.lim.inbox.add(group) {
+		return inGroupLimit, ""
 	}
 	// The decode, and only it with what follows, takes one of the inboxAtOnce turns (7.5), so at most that many
 	// bodies are decoded at once, each verified first.
