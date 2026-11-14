@@ -10,10 +10,10 @@ and [PRT](epics.md#prt-portability), with checklists under `docs/epic-<code>/tod
 is in [roadmap.md](roadmap.md#third-cycle).
 
 **It is a proposal waiting for the owner's review.** Nothing in it was built when it was written; what has
-been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 6: the modes,
+been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 7: the modes,
 the origin, the keys, the guarded fetcher, HTTP signatures, discovery, the actor documents and public
-pages with the post audience and retired names, and the outboxes and collections; a federating instance can be
-read, and has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
+pages with the post audience and retired names, the outboxes and collections, and remote accounts with the
+cache of remote actors, which nothing calls yet; a federating instance can be read, and has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
 proceeds on its recommendation, and each decision says what the plan assumes meanwhile.
 
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
@@ -461,7 +461,9 @@ the start-up with a fetcher that fails the test on any dial.
   the instance actor's own document does not, by the reasoning of its WebFinger answer (it names no member, and
   anyone may ask for it), and neither do the HTML pages, which are for people and name no id to a server that
   stores it. The first request the instance actor signs (FRD 7, a signed fetch names `/actor#main-key` to
-  another server) and the first delivery will call the same function when they come. Making keys records nothing:
+  another server) and the first delivery will call the same function when they come. As built (FRD 7): the
+  actor cache calls it before it signs its first fetch (`actorCache.get`), so the first actor fetched freezes
+  the origin if no member's id has; a refused federation fetches nothing. Making keys records nothing:
   a key holds no origin (`ap_keys` keeps the part of the key id after the origin, and the sealing is bound to
   the key id and the owner), so a key made under one origin serves under another. NodeInfo is no
   announcement: its discovery document names the origin in an `href`, but no actor id, and nothing another
@@ -484,8 +486,9 @@ the start-up with a fetcher that fails the test on any dial.
   "federation refused: the origin was https://a and is now https://b; actor ids cannot move", shows
   it on the dashboard, and federates nothing. Moving a whole instance to a new name is not supported
   (members move one by one with PRT's Move). As built (FRD 4), the instance actor's own id is the one
-  exception until its first signed request freezes the origin (FRD 7): before a member is announced, an
-  instance answers `acct:host@host` under whatever `FLOWA_ORIGIN` it was started with.
+  exception until its first signed request freezes the origin (built in FRD 7, above): before a member is
+  announced or an actor fetched, an instance answers `acct:host@host` under whatever `FLOWA_ORIGIN` it was
+  started with.
 - `federated` back to `local`: allowed, but the remote copies stay where they are. In local mode
   after federating, the actor URLs answer **410 Gone** with a Tombstone (ActivityPub 6.4: 410 when a
   Tombstone is the body) and WebFinger answers 404 (RFC 7033 4.2 asks for 404 when the server has no
@@ -1142,6 +1145,23 @@ actor `gone` in `ap_actors` and stores nothing new from it until an Update clear
 `discoverable` and `indexable` concern directories and full-text search, which Flowa does not have
 (section 10), so Flowa does not read them. Everything else is ignored.
 
+As built (FRD 7), where each is kept (`store`, "federation: remote actors" in `main.go`): `name` in
+`users.display_name` as plain text (AS2 Core 4.7: no markup), with what `visibleText` takes out of a local
+name taken out, a name that turns the text's direction dropped whole, at most 64 characters, the plain
+`preferredUsername` standing in when there is none; `preferredUsername` as written, case kept, in
+`ap_actors.preferred_username` (empty when over 255 bytes or holding NUL), and in the account's username
+(9.2); `summary` as the HTML received, NUL removed, cut at 2,048 bytes on a character boundary, in
+`ap_actors.summary`, for FWR's `htmlToText` (FWR 5 in the order of 14.3), which no item before it needs, so no
+page shows it until then; the first usable `url` and `icon` as addresses (the picture itself comes through
+F6's cache, FWR 5); `inbox`, `endpoints.sharedInbox`, `followers` and `movedTo` as addresses the decoder
+already holds to `apIDOK`; `manuallyApprovesFollowers` in `ap_actors.locked` (not `users.locked`, as 9.1
+had it: it describes the remote actor, and a local member's choice comes with FWR 3's follows); one key
+(7.3, 7.4); `alsoKnownAs` not at all, until PRT. **Correction:** a suspended actor is not marked `gone`:
+`ap_actors.state` is `suspended`, because a suspension can be lifted and `gone` (410) is final. A known
+actor that says it is suspended keeps what was stored and gets only its state and times; one never seen is
+stored with its id, kind, name and key, and no display name, summary, `url` or `icon`; a later fetch that no
+longer says so is read in full again (the document is the actor's own word, as an Update would be).
+
 The inbox verifies (section 7), stores the activity in `ap_inbox` and answers 202; a worker handles
 it. "Actor" below is the verified signer's actor.
 
@@ -1672,6 +1692,20 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
   author's `users.id` after the signer is mapped to it, never by comparing strings a remote document
   supplied. Only the origin may delete or update its objects.
 
+As built (FRD 7), for fetched actors (`actorCache.lead`, `keyDocument`, `actorKey`): the document's `id` must
+be the address it came from after redirects (`sameID`; the document kind follows same-origin redirects only,
+so it is on the origin asked), or nothing is stored and the failure is remembered (`actorWrongID`). A key is
+kept only when the actor names it, its `owner` (or, without one, `controller`, as the SWICG report follows)
+is the actor, its id is on the actor's origin (`sameOrigin`, whole origins) and its PEM is an RSA key of 2,048
+to 8,192 bits; otherwise the actor is stored with no key, and a lookup by that key id fails (`actorNoKey`).
+A key at a path of its own is the SWICG report's case ("How to obtain a signature's public key", step 5: "If
+it's a raw Key object, use its controller or owner property as the new key id ... and repeat"): the document
+at the key id (its fragment removed) that is not an actor is read as a key, whose id must be the key id
+asked for and where it came from, and whose owner must be on its origin; the owner is then fetched (once
+more, whatever its row's age, since only its document can say whether it names the key) and must name the
+key id back, embedded or by id only (the report: "It may be a compacted id"), when the key document's PEM is
+taken. An owner is never followed further than one key document.
+
 ### 7.4 Keys of remote actors
 
 - Fetched with a signed GET by the instance actor (so authorized-fetch servers answer), through the
@@ -1694,6 +1728,90 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
   of key fetches per host before it wires a lookup that fetches; otherwise one unsigned request per key
   id a stranger invents costs a fetch. `parsePublicKeyPEM` refuses keys no RSA key has (an exponent
   under 3 or even, an even modulus), so none of those is cached as good.
+
+**As built (FRD 7)** ("federation: remote actors" in `main.go`; `TestDBRemoteActorCache`, `TestDBRemoteOneAnswer`,
+`TestDBRemoteKeyOfItsOwn`, `TestDBRemoteKeyLoops`, `TestDBRemoteActorTurns`, `TestDBRemoteActorWaiters`,
+`TestDBRemoteActorFlight`, `TestDBRemoteActorBound`, `TestDBEvictionCoversReferences`,
+`TestDBRemoteActorNotReady`, `TestDBRemoteActorStop`, `TestDBRemoteActorStaleBound`):
+
+- **One way in for now:** `federation.remoteActor(ctx, id)`, which FRD 8's search by handle calls with the
+  id a WebFinger answer gave (or a profile address: an address that redirects to the actor's id answers with
+  that actor). `remoteKey(ctx, keyID, use)` and `remoteKeyFailed(ctx, keyID)` are the two lookups FWR's inbox
+  gives its verifier; nothing calls any of them in this version, no route reaches them, and the cache exists
+  only in a mode that federates (`federation.actors`), with no goroutine until a fetch starts.
+- **One answer per actor, however it is asked for.** Every way in goes through one function (`lookup`). The
+  address fetched is the string asked for without its fragment (the SWICG report: "fetch it, discarding its
+  fragment first if necessary"). A string that led to an actor whose id it is not (an id with a fragment, an
+  address that redirects to the actor's own) is remembered as that actor's **name** for as long as the row is
+  fresh, so asking it again is asking the actor; an actor gets at most 8 names (an attacker's server can
+  answer every path with a redirect to one actor), and a ninth address is refused and that refusal
+  remembered. A key id is a key only in the document of the actor that owns it (7.3, and the SWICG report:
+  "Check that this key object's id matches the original keyId"): a key id under a redirecting address, or one
+  the actor does not name, is refused, and the refusal is remembered under the key id. So N lookups of any one
+  string cost at most one fetch in 10 minutes for a failure or a key, and one in 24 hours for a fresh actor:
+  5 lookups of a redirecting id cost 2 requests (the redirect and the document, once; the first version paid
+  10), 5 of an id with a fragment of a cached actor none (5), 5 of a key id under a redirecting path 2 (10), 5
+  of a key the actor does not name none within 10 minutes of its fetch and one after.
+- **Signed by the instance actor**, with draft-cavage as every GET (7.1), through `fetcher.do` with the
+  document kind; the origin is frozen first (4.3); the instance actor's key is read before a turn is taken.
+  Before the instance actor has its key nothing is fetched (`actorNotReady`), nor while the clock is earlier
+  than the build (`actorClock`, as 8.3), federation is refused, or the server is stopping. The refused hosts
+  come from a hook (`actorCache.refused`), empty until FMD's domain policies fill it; the instance's own
+  origin is refused by name before anything (`actorLocal`), as the fetcher refuses it again, and
+  `fetcher.deny` holds at connect time.
+- **Keys:** a key the actor names by id only is followed to its own document at **every** fetch of the actor,
+  one request more, never further (`followKey`), so an actor whose key sits at a path of its own keeps it
+  through refetches and a rotation there is taken (the first version lost the key at the first refetch). A
+  key document whose owner is itself is refused at once; a key document's owner is fetched at depth 1, a
+  fetch at depth 1 never follows a key document and never waits for another fetch, so no two fetches can
+  wait for each other (the first version waited on itself for 15 s). An actor keeps one key (9.1): an actor
+  that names two RSA keys is served for the one asked last, and asking for the other within 10 minutes of a
+  fetch fails and is remembered; Mastodon names one.
+- **Expiry and the 10 minute rule** are decided on the cache's own clock (`actorCache.now`, which the tests
+  move): a row younger than 24 hours is the answer; `remoteKeyFailed`, and a lookup that needs a key the row
+  does not keep, fetch again only when the row was fetched 10 minutes ago or more. A changed key in a fetched
+  document replaces the kept one: the document comes from the actor's origin by its id, which is the
+  vouching a rotation has (5.7).
+- **What a caller gets, and what a key may be used for.** `remoteActor` answers with the row when there is
+  one, saying how fresh it is: `Stale` with `StaleReason` when its refetch failed (any reason, a busy turn
+  included), and `State` `gone` or `suspended`. A stale row is answered for at most 30 days after its last
+  fetch (9.3's retention), then the failure is the answer. **A key verifies a signed request only when its
+  row is fresh and the actor neither gone nor suspended**: `remoteKey(ctx, keyID, keyToVerify)` and
+  `remoteKeyFailed` refuse the others with their reason (`actorStale`, `actorGone`, `actorSuspended`), and
+  `remoteActor.publicKey(keyToVerify)` does the same. The one exception 6.3 allows is the actor's own Delete
+  verified against the cached key, which asks with `keyForOwnDelete`. So a leaked key that its owner rotated
+  cannot keep verifying past its 24 hours by keeping this server's turns busy (`TestDBRemoteActorTurns`).
+- **Failures remembered, by kind:** the remote server's answers (refused, unreachable or another status,
+  timed out, 404, too large, not an Activity Streams type, a redirect to another origin, a document that does
+  not decode as an actor, an id that is not where it came from, a key document that vouches for no actor, an
+  address beyond an actor's 8 names) for 10 minutes; 410 for 24 hours for an id never stored, and for good for
+  a stored actor, whose row becomes `gone` and is kept. This server's own state (no key yet, a busy turn, a
+  caller that gave up, an unset clock, a refused or stopping federation) is never remembered. Failures and
+  names share one memory of at most 10,000 strings, by 16 bytes of the SHA-256 of each; when full the expired
+  go, then about a tenth of the rest, so a flood of distinct strings costs refetches, not memory.
+- **One fetch per address at a time; callers wait.** The first caller starts the fetch on its own context (the
+  federation's, so a stop ends it, and the stop waits for it: 8.6) with 15 s for the fetch and its writes, and
+  every caller of the same address waits for it as long as its own context allows; one that gives up does not
+  fail the others. A caller whose question the shared fetch did not answer (a key it did not keep) asks once
+  more with a fetch of its own, so two keys of one actor asked at once both verify. At most 2 fetches run at
+  once and **at most one per host**: a lookup takes its host's turn before one of the two, within 5 s in all
+  (then `actorBusy`, which FWR's inbox answers with 503), so a slow host holds one of them and every other host
+  keeps the other. No database connection and no lock is held while the network is waited on.
+- **The bound:** 20,000 cached actors (section 12). The count is read from the table at the first new actor
+  and after each removal; one over the bound removes the least recently fetched and a hundredth of the bound
+  more, never the actor just stored, never one a moderator muted or suspended, and **never one that any
+  table points at**: the removal asks every column that references `users` (`userRefs`), each through an
+  index that starts with it, and `TestDBEvictionCoversReferences` reads the foreign keys to `users` from the
+  catalog and fails when one is missing from `userRefs` or has no such index. Migration 15 adds the nine such
+  indexes that were missing (comments, notifications by actor, reports by reporter and by resolver,
+  `mod_actions` by actor and by target, catalog revisions by author, instance settings by who saved them,
+  sessions). So a later item that adds a table referencing `users` cannot forget it. The bound is soft only if
+  more than 20,000 remote accounts are each kept by something.
+- **An actor that moved host** is a new id, so a new actor; the old row keeps `moved_to`, which PRT reads.
+- **Not built here:** the in-memory cache of parsed public keys (1,000, least recently used out) is the
+  verifier's, and comes with FWR's inbox, which is the first to verify; so does the limit of key fetches per
+  host the paragraph above asks for, which the inbox needs because the verifier fetches for any key id. The
+  inbox's requirements on this cache are written into its item (`docs/epic-fwr/todo.md`).
 
 ### 7.5 Limits on what comes in
 
@@ -2114,12 +2232,74 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS forwarded_at TIMESTAMPTZ;
 Every column added to an existing table has a constant default, so Postgres adds it without
 rewriting the table, and an older build that does not name it is unaffected.
 
+As built (FRD 7, migration 15, with `flowa-schema14.dump` for the restore drill): `users.domain` and
+`users_local` as above, and a check, `users_remote_inert`, that keeps a remote row inert whatever writes it
+(this build, or an older one after a rollback): `domain = '' OR (pw_hash = '!' AND role = 'user' AND NOT
+owner AND NOT federates AND` the username ending in `@` and the domain`)`. Every existing row has `domain`
+'', so every existing account is local and the check holds for it; adding the column and the check reads
+`users` once. `ap_actors` differs from the block above: **corrections** found while building it:
+`preferred_username`, `summary` (HTML as received, at most 2,048 bytes, for `htmlToText`) and `icon` are
+added, since 6.3 reads them and no other table holds them (`name` goes in `users.display_name`);
+`locked` (manuallyApprovesFollowers) is here, not on `users` (`users.locked` is not added: a local member's
+choice comes with FWR 3); `gone` is `state`, one of `ok`, `suspended` or `gone` (6.3, as built); `kind` is
+checked against the five actor types; `inbox` may be empty (a suspended actor may have none); `key_id` and
+`public_key` may be empty (an actor naming no usable key is still cached, and a key lookup then fails);
+`ap_actors_key` holds only rows with a key; and `ap_actors_fetched (fetched_at, user_id)` serves the removal
+of the least recently fetched. The migration also adds an index for each column referencing `users` that had
+none (`comments_user`, `notifications_actor`, `reports_reporter`, `reports_resolver`, `mod_actions_actor`,
+`mod_actions_target`, `catalog_revisions_author`, `instance_settings_by`, `sessions_user`), so the removal can
+ask whether anything points at an account one row at a time (7.4); each reads its table once when it is made. `fetched_at` and `expires_at` have no default: the cache writes them from its
+own clock.
+
 ### 9.2 Why remote content joins the existing tables (F5)
 
 Remote accounts become `users` rows with `domain` set, `username` of the form `bo@social.example`
 (which `usernameRE` can never produce, so no local name can collide), `pw_hash` `!` (which
 `checkPassword` can never match), role `user`, never an owner. Remote posts and comments are rows of
 `posts` and `comments` with `ap_id` set.
+
+As built (FRD 7): the one unique index on `username` stays and holds local and remote names apart, since every
+remote name holds an `@` and the check `users_remote_inert` requires it to end in `@` and its domain;
+`(username, domain)` needs no index of its own. A name is not an identity (the SWICG WebFinger report:
+implementers "SHOULD use the actor id in any references to an actor"), so `ap_actors.ap_id` identifies the
+row, and the username is a key that is written once and never renamed (`remoteUsername`): the
+`preferredUsername` as written, **case kept** (the same report: "SHOULD NOT assume case insensitivity for
+external usernames"), when it is 1 to 64 bytes of the characters RFC 3986 leaves unreserved, which hold
+every name Mastodon allows; otherwise, or when another actor of the host holds the name already, it gets
+`+` and twelve hex digits of the SHA-256 of the actor id, which no plain name has. So a local `ana` and a
+remote `ana@social.example` are two names, as are `Bo@social.example` and `bo@social.example` if a server has
+both, and a name in another script or with an `@` of its own is kept in `ap_actors.preferred_username` and
+shown by later items from there. Hosts are compared and kept in ASCII: an id in another script arrives in its
+`xn--` form (the decoder takes nothing else, 6.3), and it is kept and shown in that form, which also shows a
+name that imitates another in a different script for what it is; turning it back into Unicode would need
+`golang.org/x/net/idna`, which is not a dependency.
+
+What reads `users` (every statement in `main.go`, gone through for this item) and where it stands with
+remote rows, `TestDBRemoteRowsStayRemote` holding each surface byte for byte with and without them:
+
+- **Local only, by `domain = ''` in the statement:** sign-in (`signinSQL`, both halves, so a remote name costs
+  the same dummy hash as an unknown one), sessions (`currentUser`; `startSession` writes none for a remote
+  row), the people list (`peopleSQL`, now through `users_local`), a profile (`handleUserProfile`), a member's
+  posts by name (`handleGetPosts`), mentions (`notifyNames`), follows and blocks by name and by id
+  (`memberNamed`, `handleBlock`, `handleFollow`), a profile picture (`handleAvatar`), the admin's list
+  (`handleUsers`), deleting an account, resetting its password, its role and handing over the owner
+  (`handleDeleteUser`, `handleResetPassword`, `handleSetRole`, `handleSetOwner`: a remote id is "No such
+  user"; FMD acts on remote accounts its own way), the dashboard's totals and active count (`dashTotalsSQL`,
+  `dashActiveSQL`), NodeInfo's counts (`nodeCountsSQL`), a key's owner (`keyIDOf`, so no remote row gets a
+  key) and the members missing one (`missingKeysSQL`), the operator's account (`seedAdmin`), and every count
+  of single mode (`checkSingle`, `soleAdmin`, `makeVisitorPage`).
+- **Local by the check, with no change:** WebFinger (`webFingerSQL`) and every public address (the actor,
+  posts, pictures, outbox and collections, through `publicMember`) need `federates` or the owner, which a remote
+  row never has; `ensureOwner` and the last-admin checks need the admin role, which it never has. Sign-up, a
+  request to join and its approval check a name `usernameRE` allowed, which has no `@`.
+- **Local by construction:** the follow, block and follower lists read the rows of `follows` and `blocks`,
+  which only the local-only statements above write; the reads by the session's own id (Settings, password,
+  progress, the progress backup) are a local account's.
+- **Open to remote rows on purpose (F5, as above):** `usersByID` (how a post's author is shown), the
+  moderation queue and the audit log's names, `targetOwner` and `handleModAction` (moderating a remote
+  account, once one can be met), and `retireSQL` (a remote row never federates nor has a key, so it is never
+  retired). Nothing in this version shows a remote row through them, since nothing points at one.
+
 
 For it: `likes`, `comment_likes`, `comments`, `notifications`, `reports`, `bookmarks`, `mod_actions`,
 `targetOwner`, `handleModAction` (mute and suspend become "limit" and "suspend" of a remote account),
@@ -2135,7 +2315,12 @@ Against it, and what holds each:
   new query (below).
 - The plans: `TestDBQueryPlans` is extended with 2,000 remote accounts, 20,000 remote posts and
   20,000 follows, and holds the people list, the Community timeline, Home, a profile and the
-  dashboard to index scans or to the row counts it already allows.
+  dashboard to index scans or to the row counts it already allows. As built (FRD 7): with the 2,000 remote
+  accounts (each with its cached actor and key, the most XP, signed in just now) every plan it held holds,
+  the people list and the dashboard's totals and active count now reading local members through
+  `users_local` rather than `users` whole (700, 501 and 7,501 rows read); the lookups by id and by key id read
+  one row each, and removing the 200 least recently fetched about 1,200. The remote posts and follows come with
+  FWR, whose items extend it.
 - An older build after a rollback shows remote rows as local (section 14.4).
 
 Home:
@@ -2165,7 +2350,7 @@ moderator, who also sees hidden posts), under a bound of 50,000.
 | Remote posts nobody local liked, commented, bookmarked or reported | 30 days (instance setting `retention_days`, 7 to 365) |
 | Remote posts someone interacted with | while the interaction exists |
 | Remote accounts nobody follows, with no content left | 30 days after their last content |
-| Cached actor documents | refreshed after 24 hours on use |
+| Cached actor documents | refreshed after 24 hours on use; at most 20,000, the least recently fetched removed first, never one something points at (as built in FRD 7, 7.4) |
 | Pictures in the cache | until the cache passes 200 MB, then least recently used first, down to 160 MB |
 | `ap_inbox` rows | 7 days |
 | Failed deliveries | 7 days |
@@ -2350,7 +2535,7 @@ the budget, and the first measured value is written into the pull request that a
 | Database connections held by federation | at most 3 of 8 | `TestDBDeliveryQueue` reads `db.Stats().InUse` during a burst |
 | Queue rows | 50,000 in all, 2,000 per host | `TestDBDeliveryBackPressure` (**new**) |
 | Inbound queue | 5,000 rows; 503 above | `TestInboxRefusals` |
-| Remote actors cached | 20,000 rows, about 2 KB each | `TestDBRemoteActorCache` (**new**) |
+| Remote actors cached | 20,000 rows, about 2 KB each | `TestDBRemoteActorCache` and `TestDBRemoteActorBound` (as built in FRD 7: 858 bytes for an actor with a 2048-bit key and short addresses, both rows, indexes apart; at most about 18 KB for one with a 2,048-byte summary and seven addresses of 2,048 bytes; `BenchmarkRemoteActorCached` about 0.8 ms, 6.2 KB and 79 allocations a lookup the cache answers, one query to a local Postgres; `BenchmarkRemoteActorFetch` about 7 ms, 50 KB and 586 allocations a fetch of an expired actor, signing, the local TLS stub and five queries counted, on a 2.1 GHz Xeon) |
 | Picture cache | 200 MB on disk | `TestMediaCacheBudget` (**new**) with a 2 MB budget |
 | Replay memory | 100,000 signatures, about 6 MB (5.2 to 5.6 MB measured: 52 to 56 bytes each; at most about 7 MB) | `TestReplayExpiry` |
 | What a small instance serves within these | 1,000 remote followers on 300 hosts: a post fans out in about 30 s; 20 verified inbound activities a second | measured once on the Pi in FWR's queue item and written into the todo |
@@ -2374,13 +2559,27 @@ Interoperability is shown in four ways, in rising order of trust, and the last i
    `testdata/federation/<software>/<what>.json` with where and when it was recorded), run by the owner
    or by a session that can reach those servers. The pull request that adds them says which were
    recorded and which were written from documentation examples. `TestFixturesParse` (**new**) reads
-   every fixture through the inbox's parser and the actor cache.
+   every fixture through the inbox's parser and the actor cache. As built (FRD 7): **none is recorded**;
+   this sandbox reaches no fediverse server and `test/federation-record.sh` is not written. The 28 documents
+   of `testdata/federation/shapes` (copied as printed) and three of `testdata/federation/actors` (written
+   from Mastodon's "Public key" example and the SWICG report's key steps, each row of its README saying from
+   where) and Flowa's own golden documents are what `TestFixturesParse` reads, through the decoder and the
+   cache's choice of a key and a name, with an outcome written for each; `TestDBRemoteFixtures` fetches each
+   actor among them through the cache from a stub. The details the Sources section leaves to a recording
+   stay open.
 3. **Two Flowa instances.** In Go, `TestTwoInstances` (**new**) starts two apps on `httptest` TLS
    servers with their own databases and runs follow, accept, post, like, reply, edit, delete, block,
    unfollow and account deletion between them. In CI, the `federation` suite (**new**,
    `test/federation.sh`, in `ALL` in `test/ci-plan.sh` and its self-test) runs two containers from
    the built image on a Docker network with `FLOWA_FEDERATION_ALLOW_PRIVATE`, drives them through
    their APIs, and checks each step arrived.
+   As built (FRD 7), the first step of it in Go: `TestDBTwoFlowaActors` starts
+   two federated apps on their own databases; one fetches the actor of a member of the other, signed, through
+   the real fetcher, over TLS to the other's real routes, which check the signature with `verifyRequest`
+   (requiring one is authorized fetch, F11, not built yet), and stores it. The stub is reached through the
+   fetcher's `dialOverride`, a field only a test sets: no setting reaches it, `TestDialOverrideTestOnly` holds
+   that `main.go` never assigns or makes one, and every address the override gives still passes the dial
+   guard.
 4. **A real server, by the owner.** FWR's last item: the owner's stage instance against a Mastodon
    account, following the checklist in that item, with the results written into the todo. Federated
    mode stays marked experimental (in the Admin page and the README) until it passes.
@@ -2445,7 +2644,14 @@ changes no running instance.
   timeline would show remote posts (from 18). Pull request 13 says this in its description and adds
   `/nunchaku -purge-remote` (**new**), which deletes every remote account and its content (the
   follows of local members to remote accounts go with them) and is the step to run before going back
-  past it. The README's rollback section says the same.
+  past it. The README's rollback section says the same. As built (FRD 7, `purgeCommand`): one transaction
+  that locks the remote rows, counts what hangs off them (cached actors, posts, comments, likes, comment
+  likes, follows, blocks, notifications and reports), deletes them (the rest goes by `ON DELETE CASCADE`; an
+  audit line keeps its action with the account emptied, `ON DELETE SET NULL`) and prints the counts; run again
+  it removes nothing. It needs only `DATABASE_URL` and works in every mode. Like `-rotate-keys` it does not
+  check whether the server runs: the image has no shell, so it runs beside the server with `docker exec`
+  before `./deploy.sh --rollback`, and a server of this version fetches no actor by itself. A database backup
+  restored into an older build is the same case: purge first.
 - **Social facts cannot be rolled back.** Activities delivered stay delivered; an actor id announced
   stays announced (section 4.3). A rollback to a build without federation leaves remote servers
   retrying for their own horizon, then giving up.
@@ -2537,7 +2743,9 @@ repository), FEP-2c59, FEP-8b32 and FEP-e2ce (codeberg.org is not reachable from
   Mastodon's documentation. Settled by Mastodon's WebFinger controller or by a WebFinger answer
   recorded from a Mastodon server for its own host.
 - Which property a current Mastodon writes alt text in, `name` or `summary` (6.5): its page names
-  only `summary`. Settled by a recorded Mastodon post with alt text (FRD's fixtures).
+  only `summary`. Settled by a recorded Mastodon post with alt text (FRD's fixtures). FRD 7, whose item the
+  recorded fixtures belong to, could record nothing from here (section 13, as built), so this and the two
+  below that wait for a recording stay open.
 - The exact nesting of a mention's `h-card` (6.5) and whether a hashtag `href` with a fragment is used
   as is (6.5): the pages give the classes, not the nesting, and a plain path in the example. Settled
   by a recorded Mastodon post and the owner's trial.

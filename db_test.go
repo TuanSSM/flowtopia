@@ -2906,6 +2906,39 @@ func TestDBOneConnection(t *testing.T) {
 	sf.a.db.SetMaxOpenConns(1)
 	asked(sf, "/", "", 200)
 	sf.a.db.SetMaxOpenConns(8)
+	// Remote actors (FRD 7) on one connection: a fetch waiting on the network holds no connection and no
+	// lock (the row is read and closed first, the write is a transaction after), so while one is held at the
+	// stub the pool's one connection still answers, another actor is fetched and stored meanwhile, and the
+	// held one finishes once let go.
+	re := newRemoteEnv(t)
+	slow, quick := "https://remote.example/users/slow", "https://other.example/users/quick"
+	re.w.put(slow, worldDoc{body: actorDoc(slow, "slow", "", nil, nil)})
+	re.w.put(quick, worldDoc{body: actorDoc(quick, "quick", "", nil, nil)})
+	re.a.db.SetMaxOpenConns(1)
+	release := re.w.holdAt(slow)
+	defer release()
+	held := make(chan error, 1)
+	go func() { _, err := re.actor(slow); held <- err }()
+	<-re.w.arrived
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var one int
+	if err := re.a.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one); err != nil {
+		t.Fatalf("while a fetch waits on the network, the pool's one connection is taken: %v", err)
+	}
+	if row, err := re.a.fed.remoteActor(ctx, quick); err != nil || row.Username != "quick@other.example" {
+		t.Fatalf("another actor while one waits on the network, on one connection: %+v %v", row, err)
+	}
+	release()
+	select {
+	case err := <-held:
+		if err != nil {
+			t.Fatalf("the held fetch: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the held fetch did not finish on one connection")
+	}
+	re.a.db.SetMaxOpenConns(8)
 }
 
 // The public pages under load at the real pool size: 40 requests at once, at a cold names cache, for a
@@ -3529,6 +3562,12 @@ func TestDBQueryPlans(t *testing.T) {
 	db := e.a.db
 	for _, q := range []string{
 		`INSERT INTO users (username, pw_hash, last_seen, stats) SELECT 'm' || g, 'x', now() - (g % 60) * interval '1 day', jsonb_build_object('xp', g * 7 % 5000) FROM generate_series(1, 500) g`,
+		// 2,000 remote accounts (FRD 7), on 50 hosts, with ids of their own so the members' ids above stay
+		// 1 to 500: the most XP, signed in just now, each with its cached actor and key. Every plan below holds
+		// with them, and none of them is read by a statement about local members.
+		`INSERT INTO users (id, username, pw_hash, domain, last_seen, stats) SELECT 1000000 + g, 'r' || g || '@h' || (g % 50) || '.example', '!', 'h' || (g % 50) || '.example', now(), '{"xp": 99999}' FROM generate_series(1, 2000) g`,
+		`INSERT INTO ap_actors (user_id, ap_id, kind, inbox, key_id, public_key, fetched_at, expires_at) SELECT id, 'https://' || domain || '/users/' || id, 'Person', 'https://' || domain || '/inbox',
+			'https://' || domain || '/users/' || id || '#main-key', 'pem', now() - (id % 1000) * interval '1 minute', now() + interval '1 day' FROM users WHERE domain <> ''`,
 		`INSERT INTO posts (user_id, body, created_at, hidden_at) SELECT 1 + (g * 7919) % 500, 'post ' || g, now() - (10000 - g) * interval '13 minutes', CASE WHEN g % 97 = 0 THEN now() END FROM generate_series(1, 10000) g`,
 		`INSERT INTO comments (post_id, user_id, body, created_at) SELECT 1 + (g * 31) % 10000, 1 + (g * 13) % 500, 'c' || g, now() - (30000 - g) * interval '4 minutes' FROM generate_series(1, 30000) g`,
 		`INSERT INTO comments (post_id, user_id, body, parent_id) SELECT c.post_id, 1 + (c.id * 17) % 500, 'r' || c.id, c.id FROM comments c WHERE c.id % 5 = 0`,
@@ -3568,11 +3607,16 @@ func TestDBQueryPlans(t *testing.T) {
 		most  float64 // rows the plan may read, counting every step
 		whole string  // small tables this one reads from end to end, by design
 	}
+	// on is where the plans are asked: the database, or a transaction a statement that writes is asked in
+	// and rolled back.
+	var on interface {
+		QueryRow(string, ...any) *sql.Row
+	} = db
 	plans := func(cases []planCase) {
 		t.Helper()
 		for _, c := range cases {
 			var raw []byte
-			if err := db.QueryRow(`EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, BUFFERS OFF) `+c.sql, c.args...).Scan(&raw); err != nil {
+			if err := on.QueryRow(`EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, BUFFERS OFF) `+c.sql, c.args...).Scan(&raw); err != nil {
 				t.Errorf("%s: %v", c.name, err)
 				continue
 			}
@@ -3619,9 +3663,10 @@ func TestDBQueryPlans(t *testing.T) {
 		{"notifications", notificationsSQL, []any{viewer, maxNotifList}, 400, ""},
 		{"the unread count of the bell", unreadSQL, []any{viewer}, 400, ""},
 		{"bookmarks", bookmarksSQL, []any{viewer}, 200, ""},
-		{"people", peopleSQL, []any{viewer, false}, 1500, "users"},
-		{"dashboard, totals", dashTotalsSQL, nil, 1500, "users"},
-		{"dashboard, active members", dashActiveSQL, nil, 12000, "users sessions progress"},
+		// Local members are read through users_local (migration 15), so the 2,000 remote accounts cost nothing.
+		{"people", peopleSQL, []any{viewer, false}, 1500, ""},
+		{"dashboard, totals", dashTotalsSQL, nil, 1500, ""},
+		{"dashboard, active members", dashActiveSQL, nil, 12000, "sessions progress"},
 		{"dashboard, open reports", dashOpenSQL, nil, 800, "reports"},
 		{"dashboard, the weeks", dashWeeksSQL, []any{dashWeeks}, 60000, "progress reports"},
 	})
@@ -3751,6 +3796,34 @@ func TestDBQueryPlans(t *testing.T) {
 		{"public: the outbox of a member not shown", outboxSQL, []any{"m8", false}, 10, ""},
 		{"public: the outbox of a name nobody has", outboxSQL, []any{"nobody", false}, 10, ""},
 	})
+	// Remote actors (FRD 7), the 2,000 inserted at the top among 8,500 members. A lookup by id or by key id is
+	// one row through its index. The members who opted in and have no key are read once at a start, with
+	// users and ap_keys whole, as before. The removal of the least recently fetched (asked in a transaction that
+	// is rolled back, since EXPLAIN ANALYZE runs it) walks ap_actors_fetched oldest first and asks, for each
+	// candidate, whether anything points at it, one at a time (below).
+	var someID, someKey string
+	if err := db.QueryRow(`SELECT ap_id, key_id FROM ap_actors ORDER BY user_id LIMIT 1 OFFSET 777`).Scan(&someID, &someKey); err != nil {
+		t.Fatal(err)
+	}
+	plans([]planCase{
+		{"remote: an actor by its id", actorByIDSQL, []any{someID}, 10, ""},
+		{"remote: an id nobody has", actorByIDSQL, []any{"https://nobody.example/users/x"}, 10, ""},
+		{"remote: an actor by its key id", actorByKeySQL, []any{someKey}, 10, ""},
+		{"remote: a key id nobody has", actorByKeySQL, []any{"https://nobody.example/users/x#main-key"}, 10, ""},
+		{"keys: members who opted in and have none", missingKeysSQL, []any{keyQueue - 2}, 20000, "users ap_keys"},
+	})
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	on = tx
+	// It asks every table that references users (userRefs), each through its index for a table the size it
+	// is meant for; a table this small (the 200 reports, the empty achievements) the planner reads whole for
+	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
+	// all for 200 removed, a few milliseconds, once for every 200 new actors.
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements badge_blocks catalog_revisions instance_settings mod_actions reports"}})
+	on = db
+	tx.Rollback()
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {
 		if e.count(`SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`, idx) != 1 {

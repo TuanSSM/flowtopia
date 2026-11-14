@@ -13,7 +13,9 @@ outbox item their outboxes and collections; no inbox, so nobody can follow yet, 
 first item waits for its Pi measurement; the guarded fetcher is done, and nothing calls its federation part yet;
 HTTP signatures are built, with no caller yet, and wait for their Pi measurements; WebFinger and NodeInfo are
 done; actor documents and public pages are done, with the post audience and retired names; the outbox and
-collections are done; the owner's review of the design is still asked for. 4 of 8 items done. The design note was checked against the specifications and
+collections are done; remote accounts and the cache of remote actors are built, with one way in that nothing
+calls yet, and wait for the recorded fixtures; the owner's review of the design is still asked for. 4 of 8
+items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -278,6 +280,58 @@ design note says it exists.
   limit is refused in under 0.05 ms at either size. One decode of a 256 KB body allocates at most 3.4 MB
   measured (budget 4 MB, `TestDecodeMemory`); FWR's inbox item records that it decodes at most 4 bodies
   at once.
+  Built next, with one way in and no caller yet (federation.md F5, 4.3, 6.3, 7.3, 7.4, 9.1, 9.2, 9.3, 12, 13
+  and 14.4 say what and why, each in an "As built (FRD 7)" paragraph, with the corrections the code settled):
+  remote accounts as `users` rows with `domain` and `ap_actors` (migration 15, with `flowa-schema14.dump` for
+  the restore drill; every existing account local; the check `users_remote_inert` keeps a remote row from a
+  password, a role, the owner, the opt-in and a name that is not "name@host"; `users_local`); the username
+  of a remote account (the `preferredUsername` as written, case kept, else or when taken "+" and twelve hex
+  digits of the actor id's hash, always "@host"; hosts in their `xn--` form), its display name as plain text,
+  its summary kept as HTML for FWR's `htmlToText`; every statement that reads `users` gone through, each
+  surface that lists or looks up members local only (9.2 lists them with the decision for each), sessions
+  and sign-in included; the cache (`remoteActor`, the one way in, for FRD 8; `remoteKey(ctx, keyID, use)` and
+  `remoteKeyFailed` for FWR's verifier): fetches signed by the instance actor (cavage) through `fetcher.do`
+  after `ensureOrigin` (the first signed request freezes the origin), `decodeActor`, `sameID` after
+  redirects, the key owned by the actor and on its origin, a key at a path of its own followed to its owner
+  and back, expiry after 24 hours on the cache's own clock, a key fetched again on a failed verification at
+  most once in 10 minutes per actor and a changed key taken, failures remembered by kind (10 minutes; 410 a day
+  for an id never stored, for good for a stored actor, which turns `gone`; this server's own state never), a
+  stored actor answered stale when its fetch fails, `suspended` as a state of its own, one fetch per actor
+  (callers wait, each on its own context), at most 2 at once, no connection or lock held across the network,
+  20,000 actors at most with the least recently fetched removed first and never one something points at,
+  the instance's own origin and the refused hosts (a hook, empty until FMD) never asked; `/nunchaku
+  -purge-remote` (one transaction, any mode, prints what it removed, idempotent; it does not check for a running
+  server, as `-rotate-keys` does not). `TestDBRemoteActorCache`, `TestDBRemoteActorFlight`,
+  `TestDBRemoteActorBound`, `TestDBRemoteActorNotReady`, `TestDBRemoteFixtures`, `TestDBTwoFlowaActors` (one
+  Flowa fetches a member of another through the real fetcher and the other's routes, which verify the signature
+  with `verifyRequest`), `TestFixturesParse` (every document under `testdata/federation`, the shapes, three
+  actors written from Mastodon's page and the SWICG report in `testdata/federation/actors`, and the golden
+  files, through the decoder and the cache's choices), `TestDecodeShapes`, `TestDBPurgeRemote`,
+  `TestDBRemoteRowsStayRemote` (every surface byte for byte with and without remote rows, in local, federated
+  and single mode), `TestDialOverrideTestOnly`, `TestRemoteUsername`, `TestRemoteDisplay`, `TestActorReasons`,
+  `TestDBOneConnection` (a fetch held at the stub on a pool of one) and `TestDBQueryPlans` with 2,000 remote
+  accounts (people and the dashboard now through `users_local`; each new statement on its index) pass, the new
+  ones with `-race -count=3` on two cores; `routes-local.txt`, `routes-single.txt`, `headers-local.txt` and
+  `fetch_test.go` are unedited, and `TestDBLocalModeUnchanged` and `TestDBDefaultsUnchanged` pass. On a 2.1 GHz
+  Xeon `BenchmarkRemoteActorCached` is about 0.8 ms, 6.2 KB and 79 allocations a lookup and
+  `BenchmarkRemoteActorFetch` about 7 ms, 50 KB and 586 allocations a refetch (signing, the local stub and five
+  queries); a cached actor with a 2048-bit key takes 858 bytes in its two rows (budget about 2 KB). After the
+  review, every way in goes through one lookup: a string that is not the actor's id (a fragment, a
+  redirecting address) is remembered as its name (at most 8 per actor) and a key id the actor does not name is
+  refused and remembered, so N asks of one string cost at most one fetch in the time its answer is kept
+  (`TestDBRemoteOneAnswer`: 5 lookups of a redirecting id 2 requests, were 10); a key kept at a path of its
+  own is followed at every fetch (`TestDBRemoteKeyOfItsOwn`); no lookup can wait on itself
+  (`TestDBRemoteKeyLoops`); one turn per host (`TestDBRemoteActorTurns`); a key verifies only from a fresh
+  row of an actor neither gone nor suspended, except for its own Delete (`keyForOwnDelete`); a caller that
+  waited for another's fetch gets an answer to its own question (`TestDBRemoteActorWaiters`); the bound never
+  removes an account any table points at, checked against the catalog's foreign keys
+  (`TestDBEvictionCoversReferences`, with the nine indexes it needs in migration 15); a stop waits for a fetch
+  (`TestDBRemoteActorStop`); a stale row is answered for at most 30 days (`TestDBRemoteActorStaleBound`).
+  Open: the
+  recorded fixtures (none can be recorded here; `test/federation-record.sh` is not written), and with them the
+  details federation.md's Sources section leaves to a recording (the alt text property, the nesting of a
+  mention, an actor beside `TestActorDocument`'s golden file); the in-memory cache of parsed keys and the limit
+  of key fetches per host, which come with FWR's inbox, the first to verify.
 - [ ] **People elsewhere: search by handle.** A box that takes `@name@host` or a profile URL,
   resolves it by WebFinger (HTTPS only, the `self` link, the reverse lookup from the actor's
   `preferredUsername` and host: federation.md section 11), and shows the remote profile and the
