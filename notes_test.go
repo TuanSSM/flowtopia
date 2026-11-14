@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -740,8 +741,10 @@ func TestDBTwoFlowaNotes(t *testing.T) {
 	bf.actors.now, bf.actors.built = e.clock.now, time.Time{}
 	bf.verifier.now, bf.verifier.built = e.clock.now, time.Time{}
 	bf.inbox.now, bf.inbox.manual = e.clock.now, true
-	var heard []inboxReason
-	bf.inbox.heard = func(r inboxReason) { heard = append(heard, r) }
+	var hmu sync.Mutex
+	var heard []inboxReason // the inbox answers on the server's goroutines: under hmu, any number of times
+	bf.inbox.heard = func(r inboxReason) { hmu.Lock(); heard = append(heard, r); hmu.Unlock() }
+	heardNow := func() []inboxReason { hmu.Lock(); defer hmu.Unlock(); return slices.Clone(heard) }
 	bq := bf.out
 	bq.manual, bq.now, bq.built, bq.jitter = true, e.clock.now, time.Time{}, func() float64 { return 0 }
 	bq.mu.Lock()
@@ -781,16 +784,18 @@ func TestDBTwoFlowaNotes(t *testing.T) {
 		t.Fatal("bob does not follow ana")
 	}
 	dropped := func(kind string) int64 { return bf.inbox.stats.numbers(time.Now()).Dropped[kind] }
+	hmu.Lock()
 	heard = nil
+	hmu.Unlock()
 	p := e.postAs(e.ana, map[string]any{"body": "hello b.example", "audience": "public"})
 	pump()
-	if !slices.Equal(heard, []inboxReason{inDropped}) || dropped("Create") != 1 {
-		t.Fatalf("b.example heard %v, dropped Creates %d", heard, dropped("Create"))
+	if !slices.Equal(heardNow(), []inboxReason{inDropped}) || dropped("Create") != 1 {
+		t.Fatalf("b.example heard %v, dropped Creates %d", heardNow(), dropped("Create"))
 	}
 	e.must(200, e.ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
 	pump()
-	if !slices.Equal(heard, []inboxReason{inDropped, inDropped}) || dropped("Delete") != 1 {
-		t.Fatalf("b.example heard %v, dropped Deletes %d", heard, dropped("Delete"))
+	if !slices.Equal(heardNow(), []inboxReason{inDropped, inDropped}) || dropped("Delete") != 1 {
+		t.Fatalf("b.example heard %v, dropped Deletes %d", heardNow(), dropped("Delete"))
 	}
 	if n := e.count(`SELECT count(*) FROM ap_deliveries`) + be.count(`SELECT count(*) FROM ap_deliveries`); n != 0 {
 		t.Errorf("%d deliveries left on the two queues", n)

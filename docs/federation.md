@@ -1572,7 +1572,12 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   wait (about 40 hours). A worker's step asks nothing meanwhile (the producer knows when the first held record is due).
   **The switches are asked again at the send**: a Create or an Update(Person) found with the `federation`, `follows`
   or `community` flag off is dropped, and turning one of them off drops what waits at once, rather than sending it when
-  the switch comes back on; a Delete stays, since it only takes back what already left.
+  the switch comes back on; a Delete stays, since it only takes back what already left. **Switches that could not be
+  read are not "off"** (as FWR 3's follows read them since its second review, `flagsKnown`): nothing is dropped or sent,
+  the record waits, and the worker looks again after its pause; an actor document made then (its
+  `manuallyApprovesFollowers` a guess) is neither kept nor sent in an Update (`TestDBOutSwitchesUnread`). The worker
+  claims no record with a lease: it reads one and enqueues its activity with the record's change in one transaction,
+  so a stop in the middle leaves the record as it was, for the next pass.
 - **Recipients** (`postRecipientsSQL`, one statement, at most 10,001 rows): the accepted followers whose cached actor is
   well, has an inbox, and whose account no moderator suspended here, and the remote accounts the post mentions (none
   across a block either way), **one row per delivery address**: the shared inbox when it is on the actor's own host,

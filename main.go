@@ -6404,6 +6404,9 @@ type federation struct {
 	outBusy  atomic.Bool
 	// personMade, when set (by a test), hears that an Update(Person) was made, before it is enqueued.
 	personMade func()
+	// switches says whether the switches a post needs are on, and whether they could be read (outSwitches; a test sets
+	// its own to stand for a failed read).
+	switches func() (on, known bool)
 	// followsOn says whether follows are on (the community and follows flags, followCountsShown): with them off the
 	// inbox takes no Follow or Accept, and nothing that adds a follow is acted on (FWR 3). Set by startFederation.
 	followsOn func() (on, known bool)
@@ -6833,7 +6836,8 @@ func (a *app) startFederation(s fedSettings) error {
 	f.out = newDeliveryQueue(f, a.fetch, max(s.workers, 1), func() bool { return !a.flagsCached()["federation"] })
 	f.out.goneInbox = f.goneFollower
 	f.out.produce = a.sendOut // FWR 4: Public posts, their deletions and profiles become activities in the workers
-	f.postsDue.Store(true)    // a record left by a stop is looked for at the first step
+	f.switches = a.outSwitches
+	f.postsDue.Store(true) // a record left by a stop is looked for at the first step
 	was, err := recordedOrigin(a.db)
 	if err != nil {
 		return err
@@ -20191,6 +20195,18 @@ const (
 	maxAlt            = 1500            // characters of a picture's alt text (6.5)
 )
 
+// outSwitches is what the worker asks before it sends a post or a profile: whether the switches a post needs are on
+// (federation, follows, community), and whether they could be read at all (flagsKnown). A failed read is not "off":
+// the worker drops a record only on a read that succeeded and said off, and otherwise tries again (errSwitchesUnread).
+func (a *app) outSwitches() (on, known bool) {
+	f, ok := a.flagsKnown()
+	return ok && a.federating() && f["federation"] && f["follows"] && f["community"], ok
+}
+
+// errSwitchesUnread is the producer's answer when the switches could not be read: what waits stays, and the worker's
+// loop looks again after its pause.
+var errSwitchesUnread = errors.New("the switches could not be read, so nothing waiting to go out is sent or dropped")
+
 // postsGoOut says whether a post made now with audience aud goes out as a note: the mode federates and nothing
 // refused it, the Federation switch and follows are on, and the post is Public (postAudience gave Public only to a
 // member who shares their profile beyond this server). Milestones never come here (F13).
@@ -20460,8 +20476,13 @@ func (a *app) postOut(ctx context.Context) (bool, error) {
 	}
 	// A Create that waits for a post no longer shown (hidden, the member stopped sharing or was suspended), or made
 	// while the switches were on and found with one off now, goes with nothing sent: nothing went out, so there is
-	// nothing to take back.
-	if !shown || !a.postsGoOut(audPublic) {
+	// nothing to take back. Switches that could not be read drop nothing: the record waits for the next pass.
+	on, known := f.switches()
+	if shown && !known {
+		f.postsDue.Store(true)
+		return false, errSwitchesUnread
+	}
+	if !shown || !on {
 		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id)
 		return true, err
 	}
@@ -20555,8 +20576,13 @@ func (a *app) personOut(ctx context.Context) (bool, error) {
 	}
 	f.personAt.Store(0)
 	// Stopped sharing (or was suspended) since, or a switch is off now: turning sharing off sends nothing (11), and
-	// what a switch held back is dropped, not kept for later.
-	if !shown || !a.postsGoOut(audPublic) {
+	// what a switch held back is dropped, not kept for later. Switches that could not be read drop nothing.
+	on, known := f.switches()
+	if shown && !known {
+		f.personAt.Store(0)
+		return false, errSwitchesUnread
+	}
+	if !shown || !on {
 		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen)
 		return true, err
 	}

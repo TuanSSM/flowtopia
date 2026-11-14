@@ -123,13 +123,21 @@ func TestDBDeleteNeverOvertakesCreate(t *testing.T) {
 	// Its due time is moved back to now, as if the lease had been renewed past it: deliver asks again and holds it.
 	e2.mustExec(`UPDATE ap_deliveries d SET next_at = $2 FROM ap_outbox o WHERE o.id = d.outbox_id AND o.ap_id = $1`, d3, now2)
 	e2.mustExec(`UPDATE ap_deliveries d SET locked_until = $2 FROM ap_outbox o WHERE o.id = d.outbox_id AND o.ap_id = $1`, c3, now2.Add(2*deliveryLease))
-	var sent2 []string
-	e2.out.fetch = deliveryStub(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { sent2 = append(sent2, r.Host); w.WriteHeader(202) }))
+	var sent2 []string // the stub's handler runs on the server's goroutines: under mu, and safe to call any number of times
+	e2.out.fetch = deliveryStub(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sent2 = append(sent2, r.Host)
+		mu.Unlock()
+		w.WriteHeader(202)
+	}))
 	e2.out.fetch.origin = e2.a.fed.origin
 	if _, err := e2.out.step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if s, next, _, _ := e2.rowOf(d3, "https://late.fan.example/inbox"); len(sent2) != 0 || s != "queued" || next.Before(now2.Add(2*deliveryLease)) {
+	mu.Lock()
+	n2 := len(sent2)
+	mu.Unlock()
+	if s, next, _, _ := e2.rowOf(d3, "https://late.fan.example/inbox"); n2 != 0 || s != "queued" || next.Before(now2.Add(2*deliveryLease)) {
 		t.Errorf("a Delete claimed while its Create is in flight: sent %v, %q due %v", sent2, s, next)
 	}
 	var attempts int
