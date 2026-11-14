@@ -289,7 +289,7 @@ design note says it exists.
   digits of the actor id's hash, always "@host"; hosts in their `xn--` form), its display name as plain text,
   its summary kept as HTML for FWR's `htmlToText`; every statement that reads `users` gone through, each
   surface that lists or looks up members local only (9.2 lists them with the decision for each), sessions
-  and sign-in included; the cache (`remoteActor`, the one way in, for FRD 8; `remoteKey` and
+  and sign-in included; the cache (`remoteActor`, the one way in, for FRD 8; `remoteKey(ctx, keyID, use)` and
   `remoteKeyFailed` for FWR's verifier): fetches signed by the instance actor (cavage) through `fetcher.do`
   after `ensureOrigin` (the first signed request freezes the origin), `decodeActor`, `sameID` after
   redirects, the key owned by the actor and on its origin, a key at a path of its own followed to its owner
@@ -315,7 +315,19 @@ design note says it exists.
   `fetch_test.go` are unedited, and `TestDBLocalModeUnchanged` and `TestDBDefaultsUnchanged` pass. On a 2.1 GHz
   Xeon `BenchmarkRemoteActorCached` is about 0.8 ms, 6.2 KB and 79 allocations a lookup and
   `BenchmarkRemoteActorFetch` about 7 ms, 50 KB and 586 allocations a refetch (signing, the local stub and five
-  queries); a cached actor with a 2048-bit key takes 858 bytes in its two rows (budget about 2 KB). Open: the
+  queries); a cached actor with a 2048-bit key takes 858 bytes in its two rows (budget about 2 KB). After the
+  review, every way in goes through one lookup: a string that is not the actor's id (a fragment, a
+  redirecting address) is remembered as its name (at most 8 per actor) and a key id the actor does not name is
+  refused and remembered, so N asks of one string cost at most one fetch in the time its answer is kept
+  (`TestDBRemoteOneAnswer`: 5 lookups of a redirecting id 2 requests, were 10); a key kept at a path of its
+  own is followed at every fetch (`TestDBRemoteKeyOfItsOwn`); no lookup can wait on itself
+  (`TestDBRemoteKeyLoops`); one turn per host (`TestDBRemoteActorTurns`); a key verifies only from a fresh
+  row of an actor neither gone nor suspended, except for its own Delete (`keyForOwnDelete`); a caller that
+  waited for another's fetch gets an answer to its own question (`TestDBRemoteActorWaiters`); the bound never
+  removes an account any table points at, checked against the catalog's foreign keys
+  (`TestDBEvictionCoversReferences`, with the nine indexes it needs in migration 15); a stop waits for a fetch
+  (`TestDBRemoteActorStop`); a stale row is answered for at most 30 days (`TestDBRemoteActorStaleBound`).
+  Open: the
   recorded fixtures (none can be recorded here; `test/federation-record.sh` is not written), and with them the
   details federation.md's Sources section leaves to a recording (the alt text property, the nesting of a
   mention, an actor beside `TestActorDocument`'s golden file); the in-memory cache of parsed keys and the limit

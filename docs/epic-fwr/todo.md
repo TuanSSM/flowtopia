@@ -40,6 +40,15 @@ route and test named below is new unless the design note says it exists.
   workers; 8 would take all of it. The readers' counts of what they dropped (`apAudience.Dropped`,
   `TagsDropped`, `KeysSkipped`, `AlsoKnownAsDropped`, `ObjectsDropped`) and `BadDate` are logged as
   counts, and a post with `ReplyToUnknown` is handled as a reply to an unknown post.
+  From FRD's actor cache (federation.md 7.4, "As built (FRD 7)"): **required:** the verifier's key lookup is
+  `remoteKey(ctx, keyID, keyToVerify)`, then `remoteKeyFailed(ctx, keyID)` once when the signature does not
+  verify; a stale row (its refetch failed, for any reason, a busy turn included), a gone actor and a suspended
+  one give no key to verify with, and only the handling of an actor's own Delete asks with `keyForOwnDelete`
+  for the cached key (6.3). `TestInboxRefusals` gets the cases "signed with the key of a stale row", "of a gone
+  actor", "of a suspended actor" and "an actor's own Delete signed with its cached key after a 410", beside
+  `TestDBRemoteActorTurns`. `actorBusy` (no turn within 5 s) is answered 503 with `Retry-After`, as `sigFull` is.
+  The first inbox request that fetches a key freezes the origin through `ensureOrigin`, by design: a signed
+  fetch names the instance actor's key id under it (federation.md 4.3).
 - [ ] **A delivery queue in Postgres.** `ap_outbox`, `ap_deliveries`, `ap_hosts`; workers
   (`FLOWA_FEDERATION_WORKERS`), one request at a time per host, 10 a second, at most 3 database
   connections; the retry schedule and the 48-hour horizon (F9); the circuit breaker and unavailable

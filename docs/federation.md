@@ -1729,54 +1729,89 @@ taken. An owner is never followed further than one key document.
   id a stranger invents costs a fetch. `parsePublicKeyPEM` refuses keys no RSA key has (an exponent
   under 3 or even, an even modulus), so none of those is cached as good.
 
-**As built (FRD 7)** ("federation: remote actors" in `main.go`; `TestDBRemoteActorCache`,
-`TestDBRemoteActorFlight`, `TestDBRemoteActorBound`, `TestDBRemoteActorNotReady`):
+**As built (FRD 7)** ("federation: remote actors" in `main.go`; `TestDBRemoteActorCache`, `TestDBRemoteOneAnswer`,
+`TestDBRemoteKeyOfItsOwn`, `TestDBRemoteKeyLoops`, `TestDBRemoteActorTurns`, `TestDBRemoteActorWaiters`,
+`TestDBRemoteActorFlight`, `TestDBRemoteActorBound`, `TestDBEvictionCoversReferences`,
+`TestDBRemoteActorNotReady`, `TestDBRemoteActorStop`, `TestDBRemoteActorStaleBound`):
 
 - **One way in for now:** `federation.remoteActor(ctx, id)`, which FRD 8's search by handle calls with the
-  id a WebFinger answer gave. `remoteKey(ctx, keyID)` and `remoteKeyFailed(ctx, keyID)` are the two lookups
-  FWR's inbox gives its verifier; nothing calls any of them in this version, no route reaches them, and the
-  cache exists only in a mode that federates (`federation.actors`), with no goroutine until a fetch starts.
+  id a WebFinger answer gave (or a profile address: an address that redirects to the actor's id answers with
+  that actor). `remoteKey(ctx, keyID, use)` and `remoteKeyFailed(ctx, keyID)` are the two lookups FWR's inbox
+  gives its verifier; nothing calls any of them in this version, no route reaches them, and the cache exists
+  only in a mode that federates (`federation.actors`), with no goroutine until a fetch starts.
+- **One answer per actor, however it is asked for.** Every way in goes through one function (`lookup`). The
+  address fetched is the string asked for without its fragment (the SWICG report: "fetch it, discarding its
+  fragment first if necessary"). A string that led to an actor whose id it is not (an id with a fragment, an
+  address that redirects to the actor's own) is remembered as that actor's **name** for as long as the row is
+  fresh, so asking it again is asking the actor; an actor gets at most 8 names (an attacker's server can
+  answer every path with a redirect to one actor), and a ninth address is refused and that refusal
+  remembered. A key id is a key only in the document of the actor that owns it (7.3, and the SWICG report:
+  "Check that this key object's id matches the original keyId"): a key id under a redirecting address, or one
+  the actor does not name, is refused, and the refusal is remembered under the key id. So N lookups of any one
+  string cost at most one fetch in 10 minutes for a failure or a key, and one in 24 hours for a fresh actor:
+  5 lookups of a redirecting id cost 2 requests (the redirect and the document, once; the first version paid
+  10), 5 of an id with a fragment of a cached actor none (5), 5 of a key id under a redirecting path 2 (10), 5
+  of a key the actor does not name none within 10 minutes of its fetch and one after.
 - **Signed by the instance actor**, with draft-cavage as every GET (7.1), through `fetcher.do` with the
   document kind; the origin is frozen first (4.3); the instance actor's key is read before a turn is taken.
   Before the instance actor has its key nothing is fetched (`actorNotReady`), nor while the clock is earlier
-  than the build (`actorClock`, as 8.3) or federation is refused. The refused hosts come from a hook
-  (`actorCache.refused`), empty until FMD's domain policies fill it; the instance's own origin is refused by
-  name before anything (`actorLocal`), as the fetcher refuses it again, and `fetcher.deny` holds at connect
-  time.
+  than the build (`actorClock`, as 8.3), federation is refused, or the server is stopping. The refused hosts
+  come from a hook (`actorCache.refused`), empty until FMD's domain policies fill it; the instance's own
+  origin is refused by name before anything (`actorLocal`), as the fetcher refuses it again, and
+  `fetcher.deny` holds at connect time.
+- **Keys:** a key the actor names by id only is followed to its own document at **every** fetch of the actor,
+  one request more, never further (`followKey`), so an actor whose key sits at a path of its own keeps it
+  through refetches and a rotation there is taken (the first version lost the key at the first refetch). A
+  key document whose owner is itself is refused at once; a key document's owner is fetched at depth 1, a
+  fetch at depth 1 never follows a key document and never waits for another fetch, so no two fetches can
+  wait for each other (the first version waited on itself for 15 s). An actor keeps one key (9.1): an actor
+  that names two RSA keys is served for the one asked last, and asking for the other within 10 minutes of a
+  fetch fails and is remembered; Mastodon names one.
 - **Expiry and the 10 minute rule** are decided on the cache's own clock (`actorCache.now`, which the tests
   move): a row younger than 24 hours is the answer; `remoteKeyFailed`, and a lookup that needs a key the row
-  does not keep, fetch again only when the row was fetched 10 minutes ago or more, so the rule is "at most one
-  fetch in 10 minutes per actor" whatever asks. A changed key in a fetched document replaces the kept one:
-  the document comes from the actor's origin by its id, which is the vouching a rotation has (5.7).
+  does not keep, fetch again only when the row was fetched 10 minutes ago or more. A changed key in a fetched
+  document replaces the kept one: the document comes from the actor's origin by its id, which is the
+  vouching a rotation has (5.7).
+- **What a caller gets, and what a key may be used for.** `remoteActor` answers with the row when there is
+  one, saying how fresh it is: `Stale` with `StaleReason` when its refetch failed (any reason, a busy turn
+  included), and `State` `gone` or `suspended`. A stale row is answered for at most 30 days after its last
+  fetch (9.3's retention), then the failure is the answer. **A key verifies a signed request only when its
+  row is fresh and the actor neither gone nor suspended**: `remoteKey(ctx, keyID, keyToVerify)` and
+  `remoteKeyFailed` refuse the others with their reason (`actorStale`, `actorGone`, `actorSuspended`), and
+  `remoteActor.publicKey(keyToVerify)` does the same. The one exception 6.3 allows is the actor's own Delete
+  verified against the cached key, which asks with `keyForOwnDelete`. So a leaked key that its owner rotated
+  cannot keep verifying past its 24 hours by keeping this server's turns busy (`TestDBRemoteActorTurns`).
 - **Failures remembered, by kind:** the remote server's answers (refused, unreachable or another status,
   timed out, 404, too large, not an Activity Streams type, a redirect to another origin, a document that does
-  not decode as an actor, an id that is not where it came from, a key document that vouches for no actor) for 10
-  minutes; 410 for 24 hours for an id
-  never stored, and for good for a stored actor, whose row becomes `gone` and is kept (its cached key is what
-  FWR's handling of an actor's own Delete checks, 6.3). This server's own state (no key yet, a busy queue, a
-  caller that gave up, an unset clock, a refused federation) is never remembered. At most 10,000 failures are
-  kept, by 16 bytes of the SHA-256 of the id (about 60 bytes each with the map's own); when full the expired
-  go, then about a tenth of the rest, so a flood of failing ids costs refetches, not memory. A stored actor
-  whose fetch fails is still the answer, marked `Stale` (a key that verified yesterday is better than none
-  while its server is down); a lookup returns an error only when there is no row.
-- **One fetch per actor at a time; callers wait.** The first caller starts the fetch on its own context (the
-  federation's, so a stop ends it, with 15 s for the whole fetch and its writes) and every caller of the same
-  id waits for it as long as its own context allows; one that gives up does not fail the others. At most 2
-  fetches run at once, a third waiting at most 5 s for a turn (then `actorBusy`, which FWR's inbox answers
-  with 503). No database connection and no lock is held while the network is waited on: the row is read and
-  its connection given back, the write is one short transaction after (`TestDBOneConnection` holds a fetch
-  at the stub on a pool of one connection, and the pool still answers and fetches another actor meanwhile).
+  not decode as an actor, an id that is not where it came from, a key document that vouches for no actor, an
+  address beyond an actor's 8 names) for 10 minutes; 410 for 24 hours for an id never stored, and for good for
+  a stored actor, whose row becomes `gone` and is kept. This server's own state (no key yet, a busy turn, a
+  caller that gave up, an unset clock, a refused or stopping federation) is never remembered. Failures and
+  names share one memory of at most 10,000 strings, by 16 bytes of the SHA-256 of each; when full the expired
+  go, then about a tenth of the rest, so a flood of distinct strings costs refetches, not memory.
+- **One fetch per address at a time; callers wait.** The first caller starts the fetch on its own context (the
+  federation's, so a stop ends it, and the stop waits for it: 8.6) with 15 s for the fetch and its writes, and
+  every caller of the same address waits for it as long as its own context allows; one that gives up does not
+  fail the others. A caller whose question the shared fetch did not answer (a key it did not keep) asks once
+  more with a fetch of its own, so two keys of one actor asked at once both verify. At most 2 fetches run at
+  once and **at most one per host**: a lookup takes its host's turn before one of the two, within 5 s in all
+  (then `actorBusy`, which FWR's inbox answers with 503), so a slow host holds one of them and every other host
+  keeps the other. No database connection and no lock is held while the network is waited on.
 - **The bound:** 20,000 cached actors (section 12). The count is read from the table at the first new actor
-  and after each removal, and kept in memory between; one over the bound removes the least recently fetched
-  (by `fetched_at`, which a use refreshes once a day) and a hundredth of the bound more, so a full cache
-  removes once per 200 new actors. An account something on this server points at (a post, a like, a follow
-  or a block) is never removed this way; nothing can point at a remote account in this version, and FWR adds
-  the tables it writes to (comments, notifications, reports) with their indexes. The bound is soft only if
-  more than 20,000 remote accounts each have something pointing at them.
+  and after each removal; one over the bound removes the least recently fetched and a hundredth of the bound
+  more, never the actor just stored, never one a moderator muted or suspended, and **never one that any
+  table points at**: the removal asks every column that references `users` (`userRefs`), each through an
+  index that starts with it, and `TestDBEvictionCoversReferences` reads the foreign keys to `users` from the
+  catalog and fails when one is missing from `userRefs` or has no such index. Migration 15 adds the nine such
+  indexes that were missing (comments, notifications by actor, reports by reporter and by resolver,
+  `mod_actions` by actor and by target, catalog revisions by author, instance settings by who saved them,
+  sessions). So a later item that adds a table referencing `users` cannot forget it. The bound is soft only if
+  more than 20,000 remote accounts are each kept by something.
 - **An actor that moved host** is a new id, so a new actor; the old row keeps `moved_to`, which PRT reads.
 - **Not built here:** the in-memory cache of parsed public keys (1,000, least recently used out) is the
   verifier's, and comes with FWR's inbox, which is the first to verify; so does the limit of key fetches per
-  host the paragraph above asks for, which the inbox needs because the verifier fetches for any key id.
+  host the paragraph above asks for, which the inbox needs because the verifier fetches for any key id. The
+  inbox's requirements on this cache are written into its item (`docs/epic-fwr/todo.md`).
 
 ### 7.5 Limits on what comes in
 
@@ -2210,7 +2245,10 @@ choice comes with FWR 3); `gone` is `state`, one of `ok`, `suspended` or `gone` 
 checked against the five actor types; `inbox` may be empty (a suspended actor may have none); `key_id` and
 `public_key` may be empty (an actor naming no usable key is still cached, and a key lookup then fails);
 `ap_actors_key` holds only rows with a key; and `ap_actors_fetched (fetched_at, user_id)` serves the removal
-of the least recently fetched. `fetched_at` and `expires_at` have no default: the cache writes them from its
+of the least recently fetched. The migration also adds an index for each column referencing `users` that had
+none (`comments_user`, `notifications_actor`, `reports_reporter`, `reports_resolver`, `mod_actions_actor`,
+`mod_actions_target`, `catalog_revisions_author`, `instance_settings_by`, `sessions_user`), so the removal can
+ask whether anything points at an account one row at a time (7.4); each reads its table once when it is made. `fetched_at` and `expires_at` have no default: the cache writes them from its
 own clock.
 
 ### 9.2 Why remote content joins the existing tables (F5)
