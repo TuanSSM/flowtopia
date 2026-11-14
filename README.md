@@ -434,6 +434,33 @@ two settings (otherwise it stops with a message, as the start would), and it is 
 a lost secret: set a new `FLOWA_KEY_SECRET` first. This version does not tell followers yet: other servers
 pick the new keys up when a signature next fails to verify.
 
+### Federation: remote accounts, and going back past them
+
+This version can keep accounts of other servers (docs/federation.md, F5 and 9.2): each is an account row with
+the other server's name beside it and a cached copy of its actor (name, inbox, key), fetched with a request
+the instance's own actor signs and kept for 24 hours. **Nothing in this version fetches one yet**: the search
+by handle of the next version is the first thing that will, so a deployment of this version has none. Such
+an account can never sign in, hold a session, a role, a password or a key, and no list or count of members
+shows it (people, Accounts, the dashboard, NodeInfo, mentions, follows and blocks all count local members
+only). Its name is the other server's name for it and that server's host, such as `Gargron@mastodon.social`,
+which no member's name can be.
+
+**Before `./deploy.sh --rollback` to a build older than this one, remove them**: an older build does not
+know which accounts are remote and would list them as members (and, from later versions on, show their posts
+as local ones). While this version still runs:
+
+```sh
+docker exec nunchaku /nunchaku -purge-remote   # removes every remote account and what hangs off it, then says what went
+./deploy.sh --rollback
+```
+
+It runs in one transaction, in any mode, needs only the database, and prints the number of remote accounts
+it removed and of each kind of row that went with them (cached actors and, once later versions add them,
+their posts, comments, likes, follows, blocks, notifications and reports). Local accounts and everything they
+wrote stay as they were; an audit line about a removed account keeps its action with the account left empty.
+Run it again and it removes nothing. A backup taken before is the way back to them, if ever wanted. The
+same applies to a backup restored into an older build: purge first, or the older build lists them.
+
 ### Federation: discovery (WebFinger and NodeInfo)
 
 **What this version of federation does: it can be read.** Another server can ask who a member is and what

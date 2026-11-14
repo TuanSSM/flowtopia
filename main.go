@@ -779,9 +779,10 @@ func (a *app) startSession(w http.ResponseWriter, r *http.Request, id int64) err
 	rand.Read(raw)
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	exp := time.Now().Add(sessionTTL)
-	// The account remembers when it was last used, so "Last active" outlives its sessions.
-	if _, err := a.db.Exec(`WITH s AS (INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3))
-		UPDATE users SET last_seen = now() WHERE id = $2`, tokenHash(token), id, exp); err != nil {
+	// The account remembers when it was last used, so "Last active" outlives its sessions. Only a local
+	// account gets a session (a remote one cannot sign in, and currentUser would not take it anyway).
+	if _, err := a.db.Exec(`WITH s AS (INSERT INTO sessions (token_hash, user_id, expires_at) SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM users WHERE id = $2 AND domain = ''))
+		UPDATE users SET last_seen = now() WHERE id = $2 AND domain = ''`, tokenHash(token), id, exp); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", Expires: exp, HttpOnly: true,
@@ -818,7 +819,8 @@ func (a *app) currentUser(r *http.Request) *user {
 	// A session ends at expires_at, or after sessionIdle without use; use is noted once an hour.
 	th := tokenHash(tok)
 	var stale bool
-	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, s.last_seen < now() - interval '1 hour' FROM sessions s JOIN users u ON u.id = s.user_id
+	// A session of a remote account, which nothing here writes (startSession), is no session.
+	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+`, s.last_seen < now() - interval '1 hour' FROM sessions s JOIN users u ON u.id = s.user_id AND u.domain = ''
 		WHERE s.token_hash = $1 AND s.expires_at > now() AND s.last_seen > now() - $2::interval`, th, sessionIdle), &stale)
 	if err != nil || u.SuspendedUntil != nil {
 		return nil
@@ -1998,10 +2000,10 @@ type rowQuerier interface {
 // signinSQL reads a name in one statement: the account, or, when no account has the name, the request
 // to join that waits under it, shaped as an account (id 0) with request true. A member's name, a waiting
 // name and an unknown one each cost this one query.
-const signinSQL = `SELECT ` + userCols + `, u.pw_hash, false FROM users u WHERE u.username = $1
+const signinSQL = `SELECT ` + userCols + `, u.pw_hash, false FROM users u WHERE u.username = $1 AND u.domain = ''
 	UNION ALL
 	SELECT 0, j.username, j.display_name, 'user', '[]', '[]', false, '', '', '{}', '{}', '{}', j.created_at, NULL, '', NULL, '', false, '{}', false, j.pw_hash, true
-	FROM join_requests j WHERE j.username = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE username = $1)`
+	FROM join_requests j WHERE j.username = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE username = $1 AND domain = '')`
 
 // signinLookup is the one read a sign-in makes. err is sql.ErrNoRows for a name nobody has.
 func signinLookup(q rowQuerier, name string) (u *user, hash string, request bool, err error) {
@@ -2561,7 +2563,7 @@ func (a *app) handleUsers(w http.ResponseWriter, _ *http.Request, _ *user) {
 	// Last active: the latest sign-in, hour of use or progress save. The account keeps its own
 	// record (last_seen), because a suspension or a password reset removes the sessions.
 	rows, err := a.db.Query(`SELECT ` + userCols + `, GREATEST(u.last_seen, (SELECT max(created_at) FROM sessions s WHERE s.user_id = u.id), (SELECT max(updated_at) FROM progress p WHERE p.user_id = u.id))
-		FROM users u ORDER BY u.id`)
+		FROM users u WHERE u.domain = '' ORDER BY u.id`)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -2593,7 +2595,7 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 	// Only user.manage reaches here (admins); the last admin is protected below.
 	var name, role string
 	var owner bool
-	err := a.db.QueryRow(`SELECT username, role, owner FROM users WHERE id = $1`, id).Scan(&name, &role, &owner)
+	err := a.db.QueryRow(`SELECT username, role, owner FROM users WHERE id = $1 AND domain = ''`, id).Scan(&name, &role, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return
@@ -2631,7 +2633,7 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 		a.serverError(w, err)
 		return
 	}
-	res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
+	res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND domain = '' AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
 	if err == nil {
 		if n, _ := res.RowsAffected(); n == 0 {
 			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
@@ -2668,14 +2670,14 @@ func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, u *use
 	// The name is read only to refuse a password that repeats it; whether this admin may reset
 	// this account at all is decided by the update below.
 	var name string
-	if err := a.db.QueryRow(`SELECT username FROM users WHERE id = $1`, id).Scan(&name); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := a.db.QueryRow(`SELECT username FROM users WHERE id = $1 AND domain = ''`, id).Scan(&name); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		a.serverError(w, err)
 		return
 	}
 	if !validPassword(w, in.Next, name) {
 		return
 	}
-	res, err := a.db.Exec(`UPDATE users SET pw_hash = $2 WHERE id = $1 AND role = ANY($3)`, id, hashPassword(in.Next), pq.Array(below(u.Role)))
+	res, err := a.db.Exec(`UPDATE users SET pw_hash = $2 WHERE id = $1 AND domain = '' AND role = ANY($3)`, id, hashPassword(in.Next), pq.Array(below(u.Role)))
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -2719,7 +2721,7 @@ func (a *app) handleSetRole(w http.ResponseWriter, r *http.Request, u *user) {
 	defer tx.Rollback()
 	var old string
 	var owner bool
-	err = tx.QueryRow(`SELECT role, owner FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&old, &owner)
+	err = tx.QueryRow(`SELECT role, owner FROM users WHERE id = $1 AND domain = '' FOR UPDATE`, id).Scan(&old, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return
@@ -2780,7 +2782,7 @@ func (a *app) handleSetOwner(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	defer tx.Rollback()
 	// Both rows are locked in id order, so two requests cannot wait on each other.
-	rows, err := tx.Query(`SELECT id, username, role, owner, suspended_until IS NOT NULL AND suspended_until > now() FROM users WHERE id IN ($1, $2) ORDER BY id FOR UPDATE`, u.ID, id)
+	rows, err := tx.Query(`SELECT id, username, role, owner, suspended_until IS NOT NULL AND suspended_until > now() FROM users WHERE id IN ($1, $2) AND domain = '' ORDER BY id FOR UPDATE`, u.ID, id)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -5661,11 +5663,11 @@ const dashWeeks = 12
 
 // The admin dashboard's four questions. The first three read small tables whole, on purpose: users,
 // sessions and progress hold a row or a few per member, and open reports are few by their nature.
-const dashTotalsSQL = `SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users`
+const dashTotalsSQL = `SELECT count(*), count(*) FILTER (WHERE role = 'moderator'), count(*) FILTER (WHERE role = 'admin') FROM users WHERE domain = ''`
 
 // Active: signed in or saved progress within the window.
 const dashActiveSQL = `WITH act AS (SELECT user_id, created_at AS t FROM sessions UNION ALL SELECT user_id, updated_at FROM progress
-		UNION ALL SELECT id, last_seen FROM users WHERE last_seen IS NOT NULL)
+		UNION ALL SELECT id, last_seen FROM users WHERE last_seen IS NOT NULL AND domain = '')
 	SELECT count(DISTINCT user_id) FILTER (WHERE t > now() - interval '7 days'), count(DISTINCT user_id) FILTER (WHERE t > now() - interval '30 days') FROM act`
 
 const dashOpenSQL = `SELECT count(DISTINCT (target_kind, target_id)) FROM reports WHERE status = 'open'`
@@ -6189,6 +6191,10 @@ type federation struct {
 	docs    map[keyOwner]keptDoc // actor documents as made (actorDoc), by owner
 	docsGen uint64               // moves at every dropActor, so a document made meanwhile is not kept
 
+	// actors is the cache of remote actors (remoteActor), set by startFederation with the app's fetcher;
+	// nil in the federation -rotate-keys makes, which fetches nothing.
+	actors *actorCache
+
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
 
@@ -6241,7 +6247,7 @@ func (f *federation) keyIDOf(ctx context.Context, o keyOwner) (string, error) {
 		return instanceKeyID, nil
 	}
 	var name string
-	if err := f.db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1`, int64(o)).Scan(&name); err != nil {
+	if err := f.db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1 AND domain = ''`, int64(o)).Scan(&name); err != nil {
 		return "", err
 	}
 	return "/users/" + name + "#main-key", nil
@@ -6525,6 +6531,7 @@ func recordOrigin(ctx context.Context, tx *sql.Tx, o publicOrigin) error {
 // (federation.refused). Otherwise the instance actor's key is asked for when there is none yet.
 func (a *app) startFederation(s fedSettings) error {
 	f := newFederation(a.db, s)
+	f.actors = newActorCache(f, a.fetch)
 	a.fed = f
 	was, err := recordedOrigin(a.db)
 	if err != nil {
@@ -6585,7 +6592,7 @@ func (a *app) startFederation(s fedSettings) error {
 // missingKeysSQL lists members who opted in and have no key, oldest first, at most $1. A suspended member
 // is left out, with the condition webFingerSQL uses, since nobody can find them while it lasts; they get
 // their key at the first start after it ends.
-const missingKeysSQL = `SELECT u.id FROM users u WHERE u.federates AND (u.suspended_until IS NULL OR u.suspended_until <= now()) AND NOT EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) ORDER BY u.id LIMIT $1`
+const missingKeysSQL = `SELECT u.id FROM users u WHERE u.domain = '' AND u.federates AND (u.suspended_until IS NULL OR u.suspended_until <= now()) AND NOT EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) ORDER BY u.id LIMIT $1`
 
 // rotateKeys makes a new key pair for every owner that has one, one at a time, and replaces each old
 // key in one statement, only if it is still the one read: a key another rotation changed meanwhile,
@@ -6882,7 +6889,8 @@ func unreservedEscapes(p string) bool {
 // true on a single-profile instance, whose owner's opt-in is FLOWA_FEDERATE=on itself: the owner only,
 // not whoever else a database might hold. A suspended
 // member is not found, as one who does not exist, has not opted in or (later) has a retired name: every
-// one of them costs this same query and gets the same answer.
+// one of them costs this same query and gets the same answer. A remote account is never found: its name
+// holds an "@" no resource here can ask, and users_remote_inert keeps its federates and owner false.
 const webFingerSQL = `SELECT username FROM users WHERE username = $1 AND (federates OR ($2 AND owner)) AND (suspended_until IS NULL OR suspended_until <= now())`
 
 // discoveryAllowed counts a request against the address's discovery allowance, and answers 429 when it
@@ -7110,8 +7118,8 @@ type nodeMetadata struct {
 // nodeCountsSQL counts as the schema defines its numbers: every registered account, those that signed
 // in during the last 30 and 180 days (last_seen, which a session's use moves once an hour), and every
 // post. Four counts of two small tables, so they are kept for nodeCountsAge (nodeCounts).
-const nodeCountsSQL = `SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM users WHERE last_seen > now() - interval '30 days'),
-	(SELECT count(*) FROM users WHERE last_seen > now() - interval '180 days'), (SELECT count(*) FROM posts)`
+const nodeCountsSQL = `SELECT (SELECT count(*) FROM users WHERE domain = ''), (SELECT count(*) FROM users WHERE domain = '' AND last_seen > now() - interval '30 days'),
+	(SELECT count(*) FROM users WHERE domain = '' AND last_seen > now() - interval '180 days'), (SELECT count(*) FROM posts)`
 
 // nodeCounts are the usage counts, read at most once every nodeCountsAge: the document is public and
 // each count is a query, so a flood of requests costs one read every few minutes.
@@ -7832,7 +7840,8 @@ const pictureHead = "1024" // bytes, written into the statements below
 /* The member's public face: one statement each. $2 is true on a single-profile instance, whose owner's
 opt-in is FLOWA_FEDERATE=on (as in webFingerSQL). */
 
-// publicMember is the condition that the member u may be shown beyond this server.
+// publicMember is the condition that the member u may be shown beyond this server. A remote account never
+// meets it: the check users_remote_inert (migration 15) keeps its federates and owner false.
 const publicMember = `(u.federates OR ($2 AND u.owner)) AND (u.suspended_until IS NULL OR u.suspended_until <= now())`
 
 // publicPost is the condition that the post p may be shown: Public, not hidden, not a milestone (F13).
@@ -12946,6 +12955,926 @@ func (r idOrObject) collection() (*apCollection, error) {
 	return c, apAs("collection", err)
 }
 
+/* ---------- federation: remote actors ----------
+
+Accounts on other servers, fetched by their ids, signed by the instance actor, and kept (docs/federation.md,
+F5, 6.3, 7.3, 7.4, 9.1, 9.2, 9.3 and section 12). A remote account is a users row with a domain and a row of
+ap_actors beside it; nothing it holds can sign in, be given a role, opt in or get a key (the check
+users_remote_inert, migration 15), and every statement that lists or looks up members by name says
+domain = ''. This version has one way in, remoteActor, which the search by handle (FRD 8) calls with the
+id a WebFinger answer gave; remoteKey and remoteKeyFailed are the lookups FWR's inbox will give its
+signature verifier (7.4), built here because finding a key by its id and following its owner are this
+item's (7.3). No route reaches any of them, and nothing runs until one is called: no goroutine, timer or
+row exists before.
+
+What a lookup does, in order: the id is checked (an https id the fetcher may ask, never this instance's own
+origin); the row is read and the connection given back; a row younger than 24 hours is the answer; so is a
+gone one (410), and an id that failed within its time is answered from memory (with its row, marked stale,
+when there is one). Otherwise one fetch per id is made at a time (the first caller's, which every other
+caller of that id waits for, each for as long as its own context allows), at most actorFetchers at once,
+signed by the instance actor (draft-cavage, as every GET is: 7.1), through fetcher.do (the document kind:
+same-origin redirects, 5 s, 1 MB, the two Activity Streams types). Before the first signed request the
+origin is frozen (ensureOrigin: the request names /actor#main-key under it, 4.3). The answer is decoded
+(decodeActor), its id must be the address it came from after redirects (sameID, 7.3), and its key must be
+one the actor names, owned by it and on its origin (7.3). Only then is anything written, in one short
+transaction. No database connection and no lock is held while the network is waited on. */
+
+const (
+	actorTTL         = 24 * time.Hour   // a cached actor is fetched again after this, on use (7.4, 9.3)
+	actorRecheck     = 10 * time.Minute // a failed verification fetches the key again at most this often per actor (7.4)
+	actorFailFor     = 10 * time.Minute // a failed fetch is not tried again for this long (7.4)
+	actorGoneFor     = 24 * time.Hour   // an id never stored that answered 410: a stored one is marked gone for good
+	actorFetchers    = 2                // fetches at once (7.4: at most 2 key fetches at once)
+	actorWait        = 5 * time.Second  // the longest wait for one of them; the inbox answers 503 after it (7.4)
+	actorFlightMax   = 15 * time.Second // a fetch and its writes, from the wait for a turn to the commit
+	actorDocMax      = 1 << 20          // a fetched document (7.5), as fetchRules[fetchDocument] caps it
+	remoteActorsMax  = 20000            // cached actors (section 12); the least recently fetched go first
+	actorFailsMax    = 10000            // failed ids remembered (about 60 bytes each)
+	remoteNameMax    = 255              // bytes of preferredUsername kept, for FRD 8's reverse lookup
+	remoteSummaryMax = 2048             // bytes of a summary kept, as HTML, for FWR's htmlToText
+	remoteDisplayMax = 64               // characters of a display name
+	remotePlainMax   = 64               // bytes of a preferredUsername written into a username as it is
+)
+
+// remoteActor is a cached remote actor: its ap_actors row and the users row it belongs to.
+type remoteActor struct {
+	UserID            int64
+	ID                string // the actor id, which never moves: a new id is a new actor
+	Kind              string // one of apActorKinds
+	Username          string // users.username, "name@host": a key for this row, never a Flowa name and not shown as a handle
+	Domain            string // the host of ID, lower case, in its xn-- form when it is in another script
+	Name              string // users.display_name: the actor's name as plain text, at most remoteDisplayMax characters
+	PreferredUsername string // as the actor wrote it, case kept (empty when over remoteNameMax bytes or holding NUL)
+	Summary           string // HTML as received, cut at remoteSummaryMax bytes; FWR's htmlToText turns it into text
+	URL, Icon         string // the first usable of each (6.3); the picture is fetched through F6's cache, later
+	Inbox             string
+	SharedInbox       string
+	Followers         string
+	MovedTo           string
+	Locked            bool   // manuallyApprovesFollowers: a Follow shows as requested until Accept (6.3)
+	KeyID             string // the one key kept; "" when the actor names none Flowa can use
+	PublicKeyPEM      string
+	State             string // ok, suspended (the actor says so: nothing new is stored) or gone (410)
+	FetchedAt         time.Time
+	ExpiresAt         time.Time
+	Stale             bool // the row is past its time and fetching it again failed just now, or within actorFailFor
+}
+
+// publicKey parses the kept key, as the verifier will.
+func (r *remoteActor) publicKey() (*rsa.PublicKey, error) {
+	if r.KeyID == "" {
+		return nil, &actorError{Reason: actorNoKey, Host: r.Domain}
+	}
+	return parsePublicKeyPEM(r.PublicKeyPEM, sigKeyMin)
+}
+
+const actorCols = `a.user_id, a.ap_id, a.kind, u.username, u.domain, u.display_name, a.preferred_username, a.summary, a.url, a.icon,
+	a.inbox, a.shared_inbox, a.followers_url, a.moved_to, a.locked, a.key_id, a.public_key, a.state, a.fetched_at, a.expires_at`
+
+// actorByIDSQL reads a cached actor by its id, through ap_actors' unique index.
+const actorByIDSQL = `SELECT ` + actorCols + ` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.ap_id = $1`
+
+// actorByKeySQL reads the cached actor whose kept key is $1, through ap_actors_key. Two actors of one origin
+// naming the same key id is a broken server; the latest fetched wins.
+const actorByKeySQL = `SELECT ` + actorCols + ` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.key_id = $1 AND a.key_id <> ''
+	ORDER BY a.fetched_at DESC LIMIT 1`
+
+func scanActor(row scanner) (*remoteActor, error) {
+	var r remoteActor
+	err := row.Scan(&r.UserID, &r.ID, &r.Kind, &r.Username, &r.Domain, &r.Name, &r.PreferredUsername, &r.Summary, &r.URL, &r.Icon,
+		&r.Inbox, &r.SharedInbox, &r.Followers, &r.MovedTo, &r.Locked, &r.KeyID, &r.PublicKeyPEM, &r.State, &r.FetchedAt, &r.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// actorReason is why a remote actor could not be had. Each has a fixed phrase, safe to log.
+type actorReason uint8
+
+const (
+	actorBadID       actorReason = iota + 1 // not an https id the fetcher may ask (apIDOK)
+	actorLocal                              // an id on this instance's own origin, which is never fetched
+	actorFedRefused                         // federation is refused here (a moved origin, a secret that does not open)
+	actorNotReady                           // the instance actor has no key to sign with yet (it is made in the background)
+	actorClock                              // this server's clock is earlier than its build, so nothing is signed
+	actorBusy                               // no turn among the fetches within actorWait, or at the host: this server's queue
+	actorCanceled                           // the caller gave up
+	actorRefused                            // the fetcher refused the address: a refused host, a private address, a port
+	actorUnreachable                        // the host could not be reached, or answered another status
+	actorTimeout                            // the fetch took longer than its time
+	actorNotFound                           // 404
+	actorGone                               // 410
+	actorTooLarge                           // over 1 MB
+	actorWrongType                          // not one of the two Activity Streams types
+	actorRedirect                           // a redirect to another origin, or too many
+	actorUndecodable                        // the document does not decode as an actor (decodeActor refused it)
+	actorWrongID                            // the document's id is not the address it came from (7.3)
+	actorNoKey                              // the actor names no key Flowa can use with that id (7.3)
+)
+
+var actorReasons = [...]string{
+	actorBadID:       "not an https id that may be fetched",
+	actorLocal:       "an id on this instance's own origin",
+	actorFedRefused:  "federation is refused",
+	actorNotReady:    "the instance actor has no key yet",
+	actorClock:       "the clock is earlier than this build",
+	actorBusy:        "too many fetches at once",
+	actorCanceled:    "canceled",
+	actorRefused:     "the address is refused",
+	actorUnreachable: "the server could not be reached",
+	actorTimeout:     "timed out",
+	actorNotFound:    "not found",
+	actorGone:        "gone",
+	actorTooLarge:    "the document is too large",
+	actorWrongType:   "the document is not an Activity Streams document",
+	actorRedirect:    "a redirect to another origin",
+	actorUndecodable: "the document is not an actor Flowa can read",
+	actorWrongID:     "the document's id is not where it came from",
+	actorNoKey:       "no usable key with that id",
+}
+
+func (r actorReason) String() string {
+	if int(r) < len(actorReasons) && actorReasons[r] != "" {
+		return actorReasons[r]
+	}
+	return "refused"
+}
+
+// cached says whether a failure of this kind is remembered for actorFailFor (actorGoneFor for gone): what
+// the remote server answered is; this server's own state (no key yet, a busy queue, a canceled caller, an
+// unset clock, federation refused) is not, since it says nothing about the actor.
+func (r actorReason) cached() bool {
+	switch r {
+	case actorRefused, actorUnreachable, actorTimeout, actorNotFound, actorGone, actorTooLarge, actorWrongType, actorRedirect, actorUndecodable, actorWrongID, actorNoKey:
+		return true
+	}
+	return false
+}
+
+// actorError is every error of this section. Host is the actor's host, cut to a DNS name's length; the
+// cause is kept for errors.As (a fetchError, an apError) and never printed.
+type actorError struct {
+	Reason actorReason
+	Host   string
+	Cached bool // answered from the memory of failures, with no fetch
+	err    error
+}
+
+func (e *actorError) Error() string {
+	s := "remote actor"
+	if e.Host != "" {
+		s += " on " + e.Host
+	}
+	s += ": " + e.Reason.String()
+	if e.Cached {
+		s += " (remembered)"
+	}
+	return s
+}
+
+func (e *actorError) Unwrap() error { return e.err }
+
+// actorHost is the host of an id for an error: lower case, at most 253 bytes, "" when it has none.
+func actorHost(id string) string {
+	u, err := url.Parse(id)
+	if err != nil {
+		return ""
+	}
+	h := strings.ToLower(u.Hostname())
+	if len(h) > 253 {
+		h = h[:253]
+	}
+	return h
+}
+
+// fetchReason maps the fetcher's failure kinds onto the cache's.
+func fetchReason(err error) actorReason {
+	var fe *fetchError
+	if !errors.As(err, &fe) {
+		return actorUnreachable
+	}
+	switch fe.Fail {
+	case failRefused:
+		return actorRefused
+	case failTimeout:
+		return actorTimeout
+	case failCanceled:
+		return actorCanceled
+	case failTooLarge:
+		return actorTooLarge
+	case failType:
+		return actorWrongType
+	case failGone:
+		return actorGone
+	case failNotFound:
+		return actorNotFound
+	case failRedirect:
+		return actorRedirect
+	case failBusy:
+		return actorBusy
+	}
+	return actorUnreachable // failConnect, failStatus
+}
+
+// actorFail is a failure remembered: why, and until when.
+type actorFail struct {
+	reason actorReason
+	until  time.Time
+}
+
+// actorFlight is the one fetch of an id in progress. Its row and error are written before done is closed.
+type actorFlight struct {
+	done chan struct{}
+	row  *remoteActor
+	err  error
+}
+
+// lookupOpts are what a lookup asks beyond the id.
+type lookupOpts struct {
+	force  bool   // a failed verification: fetch again unless fetched within actorRecheck
+	want   string // the key id the caller needs; the document may also be that key's own (7.3)
+	keyDoc *apKey // the key document already fetched, whose owner is being fetched
+	depth  int    // 1 while a key document's owner is fetched: an owner is never followed further
+}
+
+// actorCache is the cache of remote actors of one federation. Its rows live in Postgres; in memory it
+// keeps only the fetches in flight, the failures remembered and a count of the rows.
+type actorCache struct {
+	fed   *federation
+	fetch *fetcher
+	now   func() time.Time // the clock of expiry, the 10 minute rule and the failures; a test sets its own
+	built time.Time        // builtAt(): nothing is signed before it (clockTrusted)
+	wait  time.Duration    // actorWait
+	max   int              // remoteActorsMax
+	// refused is the domain policy's list of refused hosts, each with its subdomains (fetchReq.refused).
+	// FMD's domain policies fill it; until they exist it is nil, and nothing is refused by domain.
+	refused func() []string
+	slots   chan struct{} // actorFetchers turns
+
+	mu       sync.Mutex
+	flights  map[string]*actorFlight
+	fails    map[[16]byte]actorFail // by the first 16 bytes of the SHA-256 of the id, so an id costs 16 bytes here
+	count    int                    // remote actors cached, -1 until counted
+	evicting bool
+	// joined, when set (by a test), hears of every caller of join: whether it started the fetch or waits
+	// for one in flight.
+	joined func(id string, lead bool)
+}
+
+func newActorCache(f *federation, ft *fetcher) *actorCache {
+	return &actorCache{fed: f, fetch: ft, now: time.Now, built: builtAt(), wait: actorWait, max: remoteActorsMax,
+		slots: make(chan struct{}, actorFetchers), flights: map[string]*actorFlight{}, fails: map[[16]byte]actorFail{}, count: -1}
+}
+
+// remoteActor returns the actor with this id, from the cache while it is younger than 24 hours, fetched
+// otherwise. It is the one way in of this version (FRD 8's search by handle calls it). An error means
+// there is no row: a row whose fetch failed is returned marked Stale, a gone one with State "gone".
+func (f *federation) remoteActor(ctx context.Context, id string) (*remoteActor, error) {
+	if f.actors == nil {
+		return nil, &actorError{Reason: actorFedRefused}
+	}
+	return f.actors.lookup(ctx, id, lookupOpts{})
+}
+
+// remoteKey returns the actor whose key has this id (7.3, 7.4): the cached actor that keeps it, or else
+// the document at the key id without its fragment, an actor naming the key or a key document naming its
+// owner, whose actor must name the key back. The actor returned keeps exactly this key.
+func (f *federation) remoteKey(ctx context.Context, keyID string) (*remoteActor, error) {
+	if f.actors == nil {
+		return nil, &actorError{Reason: actorFedRefused}
+	}
+	return f.actors.byKey(ctx, keyID, false)
+}
+
+// remoteKeyFailed is remoteKey after a signature did not verify with the key it returned: the actor is
+// fetched again, unless it was fetched in the last 10 minutes (7.4), so a key that changed is taken (a
+// rotation, which the document itself vouches for: fetched from the actor's origin by its id) and a
+// stranger's bad signatures cost at most one fetch per actor in 10 minutes.
+func (f *federation) remoteKeyFailed(ctx context.Context, keyID string) (*remoteActor, error) {
+	if f.actors == nil {
+		return nil, &actorError{Reason: actorFedRefused}
+	}
+	return f.actors.byKey(ctx, keyID, true)
+}
+
+// allowed checks an id before anything else: an https id the fetcher may ask, and not on this instance's
+// own origin, which is never fetched (the fetcher refuses it too, by name: 7.8).
+func (c *actorCache) allowed(id string) error {
+	if !apIDOK(id) {
+		return &actorError{Reason: actorBadID, Host: actorHost(id)}
+	}
+	if u, err := url.Parse(id); err == nil && c.fed.origin.url != "" {
+		if o, err := url.Parse(c.fed.origin.url); err == nil && originOf(u) == originOf(o) {
+			return &actorError{Reason: actorLocal, Host: actorHost(id)}
+		}
+	}
+	return nil
+}
+
+// read reads one cached actor; nil when there is none. The row is scanned and its connection given back
+// before it returns.
+func (c *actorCache) read(ctx context.Context, q string, arg string) (*remoteActor, error) {
+	r, err := scanActor(c.fed.db.QueryRowContext(ctx, q, arg))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return r, err
+}
+
+func failKey(id string) [16]byte {
+	sum := sha256.Sum256([]byte(id))
+	return [16]byte(sum[:16])
+}
+
+// failed says whether id failed within its time, and why.
+func (c *actorCache) failed(id string, now time.Time) (actorReason, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f, ok := c.fails[failKey(id)]
+	if !ok || !now.Before(f.until) {
+		return 0, false
+	}
+	return f.reason, true
+}
+
+// remember keeps a failure for its time. When actorFailsMax are kept, the expired go first, then about a
+// tenth of the rest, any of them (map order): a flood of failing ids costs a few refetches, never memory.
+func (c *actorCache) remember(id string, r actorReason, now time.Time) {
+	if !r.cached() {
+		return
+	}
+	d := actorFailFor
+	if r == actorGone {
+		d = actorGoneFor
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.fails) >= actorFailsMax {
+		for k, f := range c.fails {
+			if !now.Before(f.until) {
+				delete(c.fails, k)
+			}
+		}
+		for k := range c.fails {
+			if len(c.fails) < actorFailsMax*9/10 {
+				break
+			}
+			delete(c.fails, k)
+		}
+	}
+	c.fails[failKey(id)] = actorFail{reason: r, until: now.Add(d)}
+}
+
+// cached says whether a lookup is answered without a fetch, and with what.
+// A row that keeps another key than the one asked for is fetched again as after a failed verification,
+// within the same 10 minute rule: the actor may name several keys, or have changed its key. The owner of
+// a key document just fetched is always fetched again (unless gone): its stored row keeps no list of the
+// keys it names, and only its document can say whether it names this one; the key document's own fetch
+// already went through the flight and the memory of failures.
+func (c *actorCache) cached(prev *remoteActor, id string, o lookupOpts) (*remoteActor, bool, error) {
+	now := c.now()
+	if prev != nil {
+		force := o.force || o.want != "" && prev.KeyID != o.want
+		switch {
+		case prev.State == "gone":
+			return prev, true, nil
+		case o.keyDoc != nil:
+		case force && now.Sub(prev.FetchedAt) < actorRecheck:
+			return prev, true, nil
+		case !force && now.Before(prev.ExpiresAt):
+			return prev, true, nil
+		}
+	}
+	if r, ok := c.failed(id, now); ok {
+		if prev != nil {
+			prev.Stale = true
+			return prev, true, nil
+		}
+		return nil, true, &actorError{Reason: r, Host: actorHost(id), Cached: true}
+	}
+	return nil, false, nil
+}
+
+// lookup is remoteActor's work, and each step of remoteKey's.
+func (c *actorCache) lookup(ctx context.Context, id string, o lookupOpts) (*remoteActor, error) {
+	if err := c.allowed(id); err != nil {
+		return nil, err
+	}
+	prev, err := c.read(ctx, actorByIDSQL, id)
+	if err != nil {
+		return nil, err
+	}
+	if r, done, err := c.cached(prev, id, o); done {
+		return r, err
+	}
+	return c.join(ctx, id, o)
+}
+
+// join waits for the fetch of id in flight, or starts it. The fetch runs on its own context, under the
+// federation's (so a stop ends it) with actorFlightMax, not under the first caller's: a caller that gives
+// up does not fail the others waiting for the same actor. Each caller waits as long as its own context
+// allows.
+func (c *actorCache) join(ctx context.Context, id string, o lookupOpts) (*remoteActor, error) {
+	c.mu.Lock()
+	fl := c.flights[id]
+	lead := fl == nil
+	if lead {
+		fl = &actorFlight{done: make(chan struct{})}
+		c.flights[id] = fl
+		go func() {
+			fctx, cancel := context.WithTimeout(c.fed.ctx, actorFlightMax)
+			defer cancel()
+			row, err := c.lead(fctx, id, o)
+			c.mu.Lock()
+			fl.row, fl.err = row, err
+			delete(c.flights, id)
+			c.mu.Unlock()
+			close(fl.done)
+		}()
+	}
+	c.mu.Unlock()
+	if c.joined != nil {
+		c.joined(id, lead)
+	}
+	select {
+	case <-fl.done:
+		if fl.row == nil {
+			return nil, fl.err
+		}
+		r := *fl.row // each caller its own copy
+		return &r, fl.err
+	case <-ctx.Done():
+		return nil, &actorError{Reason: actorCanceled, Host: actorHost(id), err: ctx.Err()}
+	}
+}
+
+// lead is the one fetch of id: the row read again (a fetch that ended just now may have stored it), the
+// document fetched, decoded and checked, and the result stored.
+func (c *actorCache) lead(ctx context.Context, id string, o lookupOpts) (*remoteActor, error) {
+	prev, err := c.read(ctx, actorByIDSQL, id)
+	if err != nil {
+		return nil, err
+	}
+	if r, done, err := c.cached(prev, id, o); done {
+		return r, err
+	}
+	res, err := c.get(ctx, id)
+	if err != nil {
+		var ae *actorError
+		var fe *fetchError
+		switch {
+		case errors.As(err, &ae):
+			return c.failure(ctx, id, prev, ae.Reason, ae.err)
+		case errors.As(err, &fe):
+			return c.failure(ctx, id, prev, fetchReason(err), err)
+		}
+		return nil, err // the database
+	}
+	doc, err := decodeActor(res.Body, actorDocMax)
+	if err != nil {
+		var ae *apError
+		if o.want != "" && o.depth == 0 && errors.As(err, &ae) && ae.Reason == apWrongKind {
+			return c.keyDocument(ctx, id, res, o)
+		}
+		return c.failure(ctx, id, prev, actorUndecodable, err)
+	}
+	if !sameID(doc.ID, res.URL) {
+		return c.failure(ctx, id, prev, actorWrongID, nil)
+	}
+	return c.store(ctx, doc, o)
+}
+
+// keyDocument reads a document that is a key of its own (federation.md 7.3: "some servers keep the key
+// at a path of its own"): its id must be where it came from and the key id asked for, its owner on the
+// same origin; then the owner is fetched, and must name the key back.
+func (c *actorCache) keyDocument(ctx context.Context, id string, res *fetchResult, o lookupOpts) (*remoteActor, error) {
+	fields, err := apParse(res.Body, actorDocMax)
+	if err != nil {
+		return c.failure(ctx, id, nil, actorUndecodable, err)
+	}
+	keyID, err := fields.id("id")
+	if err != nil || keyID == "" || !sameID(keyID, res.URL) || keyID != o.want {
+		return c.failure(ctx, id, nil, actorWrongID, err)
+	}
+	k, ok := apKeyOf(idOrObject{ID: keyID, Obj: fields})
+	if !ok || k.Owner == "" || k.PEM == "" || !sameOrigin(k.ID, k.Owner) {
+		return c.failure(ctx, id, nil, actorNoKey, nil)
+	}
+	return c.lookup(ctx, k.Owner, lookupOpts{want: o.want, keyDoc: &k, depth: 1})
+}
+
+// failure records a failed fetch. A 410 marks a stored actor gone for good (7.4); every failure the remote
+// server is the cause of is remembered for its time. A stored row is still the answer, marked stale (or
+// gone): a key that verified yesterday is better than none while its server is down, and FWR's handling
+// of an actor's own Delete relies on the cached key (6.3, 7.4).
+func (c *actorCache) failure(ctx context.Context, id string, prev *remoteActor, r actorReason, cause error) (*remoteActor, error) {
+	now := c.now()
+	c.remember(id, r, now)
+	if prev == nil {
+		return nil, &actorError{Reason: r, Host: actorHost(id), err: cause}
+	}
+	if r == actorGone {
+		if _, err := c.fed.db.ExecContext(ctx, `UPDATE ap_actors SET state = 'gone', fetched_at = $2 WHERE user_id = $1`, prev.UserID, now); err != nil {
+			return nil, err
+		}
+		prev.State, prev.FetchedAt = "gone", now
+		return prev, nil
+	}
+	prev.Stale = true
+	return prev, nil
+}
+
+// get fetches an actor's document, signed by the instance actor. The origin is frozen first: a signed
+// request names the instance actor's key id under it (4.3). The instance actor's key is read before a
+// turn is taken, so no connection is held while waiting for one or for the network.
+func (c *actorCache) get(ctx context.Context, id string) (*fetchResult, error) {
+	host := actorHost(id)
+	if c.fed.refusal() != "" {
+		return nil, &actorError{Reason: actorFedRefused, Host: host}
+	}
+	if !clockTrusted(c.now(), c.built) {
+		return nil, &actorError{Reason: actorClock, Host: host}
+	}
+	if err := c.fed.ensureOrigin(ctx); err != nil {
+		var moved originMoved
+		if errors.As(err, &moved) {
+			return nil, &actorError{Reason: actorFedRefused, Host: host, err: err}
+		}
+		return nil, err
+	}
+	key, keyID, err := c.fed.privateKey(ctx, instanceActor)
+	if errors.Is(err, errNoKey) {
+		return nil, &actorError{Reason: actorNotReady, Host: host}
+	}
+	if err != nil {
+		return nil, err
+	}
+	sign := httpSigner(key, c.fed.origin.url+keyID, sigCavage, c.now, c.built)
+	var refused []string
+	if c.refused != nil {
+		refused = c.refused()
+	}
+	wait, stop := context.WithTimeout(ctx, c.wait)
+	defer stop()
+	select {
+	case c.slots <- struct{}{}:
+	case <-wait.Done():
+		if ctx.Err() != nil {
+			return nil, &actorError{Reason: actorCanceled, Host: host, err: ctx.Err()}
+		}
+		return nil, &actorError{Reason: actorBusy, Host: host}
+	}
+	defer func() { <-c.slots }()
+	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: id, sign: sign, refused: refused})
+}
+
+// actorKey chooses the key a row keeps: the one asked for, else the one kept before, else the first the
+// actor names that Flowa can use. A key is usable when the actor names it, its owner is the actor, its id
+// is on the actor's origin (7.3: whole origins), and its PEM is an RSA key of 2048 to 8192 bits. A key the
+// actor names by id only takes its PEM from the key document already fetched (keyDoc), whose owner must be
+// the actor too.
+func actorKey(doc *apActor, keys []string, keyDoc *apKey) apKey {
+	usable := func(k apKey) (apKey, bool) {
+		if keyDoc != nil && k.ID == keyDoc.ID && (k.ByID || k.PEM == "") {
+			k.PEM, k.Owner = keyDoc.PEM, keyDoc.Owner
+		}
+		if k.PEM == "" || k.Owner != doc.ID || !sameOrigin(k.ID, doc.ID) {
+			return k, false
+		}
+		_, err := parsePublicKeyPEM(k.PEM, sigKeyMin)
+		return k, err == nil
+	}
+	for _, want := range keys {
+		if want == "" {
+			continue
+		}
+		if k, err := doc.key(want); err == nil {
+			if k, ok := usable(k); ok {
+				return k
+			}
+		}
+	}
+	for _, k := range doc.Keys {
+		if k, ok := usable(k); ok {
+			return k
+		}
+	}
+	return apKey{}
+}
+
+// plainRemoteName says whether a preferredUsername can be written into a username as it is: 1 to 64
+// bytes of the characters RFC 3986 leaves unreserved (2.3), which hold every name Mastodon allows (the
+// SWICG WebFinger report, "Current implementation rules"). Case is kept: the same report says not to
+// assume that remote names ignore it.
+func plainRemoteName(s string) bool {
+	if s == "" || len(s) > remotePlainMax {
+		return false
+	}
+	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~") == ""
+}
+
+// remoteUsername is the users.username of a remote actor: its preferredUsername and its host, as
+// "name@host". A name that is not plain, or that another actor of the host holds already (a name is not
+// an identity, the SWICG WebFinger report says: "SHOULD use the actor id"), gets "+" and twelve hex
+// digits of the SHA-256 of the actor id, which no plain name has. Every such name holds an "@", which
+// usernameRE never allows, so it can never be a Flowa name, at sign-up or anywhere a name is looked up.
+func remoteUsername(pref, host, id string, taken bool) string {
+	base := pref
+	if !plainRemoteName(pref) {
+		base = ""
+	}
+	if base == "" || taken {
+		sum := sha256.Sum256([]byte(id))
+		base += "+" + hex.EncodeToString(sum[:6])
+	}
+	return base + "@" + host
+}
+
+// remoteDisplay is a remote name as plain text for users.display_name: AS2's name holds no markup (Core
+// 4.7), so only what visibleText takes out of a local name is taken out (control and invisible
+// characters; a name that turns the text's direction is dropped whole), runs of space become one, and it
+// is cut at remoteDisplayMax characters. With no name, the plain preferredUsername stands in.
+func remoteDisplay(name, pref string) string {
+	v, ok := visibleText(name)
+	if !ok {
+		v = ""
+	}
+	v = strings.Join(strings.FieldsFunc(v, unicode.IsSpace), " ")
+	if v == "" && plainRemoteName(pref) {
+		v = pref
+	}
+	if r := []rune(v); len(r) > remoteDisplayMax {
+		v = string(r[:remoteDisplayMax])
+	}
+	return v
+}
+
+// remoteText is a remote string as it is kept: NUL removed (Postgres text cannot hold it, and JSON's \u0000
+// can), cut at max bytes on the start of a character.
+func remoteText(s string, max int) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	if len(s) <= max {
+		return s
+	}
+	i := max
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i]
+}
+
+func firstLink(l []apLink) string {
+	if len(l) == 0 {
+		return ""
+	}
+	return l[0].Href
+}
+
+// store writes a fetched actor in one transaction: its row found by id and locked, updated, or made with
+// its users row. A suspended actor keeps what was stored before and gets only its state and times (6.3:
+// "stores nothing new from it"); one never seen is stored with its id, kind, name and key, so that an
+// Update that lifts the suspension can be verified. A row made by another server at the same moment
+// (the unique ap_id) wins, and this one reads it.
+func (c *actorCache) store(ctx context.Context, doc *apActor, o lookupOpts) (*remoteActor, error) {
+	now := c.now()
+	host := actorHost(doc.ID)
+	pref := doc.PreferredUsername
+	if len(pref) > remoteNameMax || strings.ContainsRune(pref, 0) {
+		pref = ""
+	}
+	state := "ok"
+	if doc.Suspended {
+		state = "suspended"
+	}
+	tx, err := c.fed.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var uid int64
+	var keptKey string
+	err = tx.QueryRowContext(ctx, `SELECT user_id, key_id FROM ap_actors WHERE ap_id = $1 FOR UPDATE`, doc.ID).Scan(&uid, &keptKey)
+	known := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	key := actorKey(doc, []string{o.want, keptKey}, o.keyDoc)
+	display, summary, link, icon := remoteDisplay(doc.Name, pref), remoteText(doc.Summary, remoteSummaryMax), firstLink(doc.URL), firstLink(doc.Icon)
+	if doc.Suspended {
+		display, summary, link, icon = "", "", "", ""
+	}
+	inserted := false
+	switch {
+	case known && doc.Suspended:
+		_, err = tx.ExecContext(ctx, `UPDATE ap_actors SET state = 'suspended', fetched_at = $2, expires_at = $3 WHERE user_id = $1`, uid, now, now.Add(actorTTL))
+	case known:
+		if _, err = tx.ExecContext(ctx, `UPDATE users SET display_name = $2 WHERE id = $1 AND domain <> ''`, uid, display); err == nil {
+			_, err = tx.ExecContext(ctx, `UPDATE ap_actors SET kind = $2, preferred_username = $3, summary = $4, url = $5, icon = $6, inbox = $7, shared_inbox = $8,
+				followers_url = $9, moved_to = $10, locked = $11, key_id = $12, public_key = $13, state = 'ok', fetched_at = $14, expires_at = $15 WHERE user_id = $1`,
+				uid, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, now, now.Add(actorTTL))
+		}
+	default:
+		for _, taken := range []bool{false, true} {
+			err = tx.QueryRowContext(ctx, `INSERT INTO users (username, display_name, pw_hash, domain) VALUES ($1, $2, '!', $3) ON CONFLICT (username) DO NOTHING RETURNING id`,
+				remoteUsername(pref, host, doc.ID, taken), display, host).Scan(&uid)
+			if !errors.Is(err, sql.ErrNoRows) {
+				break
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		var n int64
+		res, err2 := tx.ExecContext(ctx, `INSERT INTO ap_actors (user_id, ap_id, kind, preferred_username, summary, url, icon, inbox, shared_inbox, followers_url, moved_to, locked,
+			key_id, public_key, state, fetched_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) ON CONFLICT (ap_id) DO NOTHING`,
+			uid, doc.ID, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, state, now, now.Add(actorTTL))
+		if err = err2; err == nil {
+			n, _ = res.RowsAffected()
+		}
+		if err == nil && n == 0 {
+			tx.Rollback()
+			return c.read(ctx, actorByIDSQL, doc.ID)
+		}
+		inserted = true
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	if inserted {
+		c.added(ctx)
+	}
+	return c.read(ctx, actorByIDSQL, doc.ID)
+}
+
+// byKey is remoteKey's work. force is a failed verification (remoteKeyFailed).
+func (c *actorCache) byKey(ctx context.Context, keyID string, force bool) (*remoteActor, error) {
+	if !httpsURL(keyID) {
+		return nil, &actorError{Reason: actorBadID, Host: actorHost(keyID)}
+	}
+	if err := c.allowed(keyID); err != nil {
+		return nil, err
+	}
+	kept, err := c.read(ctx, actorByKeySQL, keyID)
+	if err != nil {
+		return nil, err
+	}
+	id := keyID
+	if kept != nil {
+		id = kept.ID
+	} else if i := strings.IndexByte(id, '#'); i >= 0 {
+		id = id[:i]
+	}
+	r, err := c.lookup(ctx, id, lookupOpts{want: keyID, force: force})
+	if err != nil {
+		return nil, err
+	}
+	if r.KeyID != keyID {
+		return nil, &actorError{Reason: actorNoKey, Host: actorHost(keyID)}
+	}
+	return r, nil
+}
+
+// evictActorsSQL removes the $1 remote accounts fetched longest ago, through ap_actors_fetched, leaving
+// any account something of this server points at (a post, a like, a follow or a block, each asked through
+// its index, one row at a time). Nothing can point at a remote account in this version: every statement
+// that writes such a row writes the session's own account, or one looked up local only. FWR, which writes
+// the first, adds the tables it writes to (comments, notifications, reports) here with their indexes.
+const evictActorsSQL = `DELETE FROM users u WHERE u.domain <> '' AND u.id IN (SELECT a.user_id FROM ap_actors a
+	WHERE NOT EXISTS (SELECT 1 FROM posts p WHERE p.user_id = a.user_id OFFSET 0)
+	AND NOT EXISTS (SELECT 1 FROM likes l WHERE l.user_id = a.user_id OFFSET 0)
+	AND NOT EXISTS (SELECT 1 FROM comment_likes l WHERE l.user_id = a.user_id OFFSET 0)
+	AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = a.user_id OFFSET 0)
+	AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.followee_id = a.user_id OFFSET 0)
+	AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = a.user_id OFFSET 0)
+	AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.target_id = a.user_id OFFSET 0)
+	ORDER BY a.fetched_at, a.user_id LIMIT $1)`
+
+// added counts a new remote actor, and when the cache holds more than max, removes the least recently
+// fetched, a hundredth of max beyond it at once, so a full cache counts and removes once per that many
+// new actors rather than at each. The count is read from the table at the first insert and after each
+// removal, so a -purge-remote run beside a running server is caught up with then. Only one removal runs
+// at a time, and no lock is held across its statements.
+func (c *actorCache) added(ctx context.Context) {
+	c.mu.Lock()
+	if c.count >= 0 {
+		c.count++
+	}
+	run := (c.count < 0 || c.count > c.max) && !c.evicting
+	if run {
+		c.evicting = true
+	}
+	c.mu.Unlock()
+	if !run {
+		return
+	}
+	n := -1
+	defer func() {
+		c.mu.Lock()
+		c.count, c.evicting = n, false
+		c.mu.Unlock()
+	}()
+	var have int
+	if err := c.fed.db.QueryRowContext(ctx, `SELECT count(*) FROM ap_actors`).Scan(&have); err != nil {
+		log.Printf("actors: counting the cache: %v", err)
+		return
+	}
+	if have > c.max {
+		res, err := c.fed.db.ExecContext(ctx, evictActorsSQL, have-c.max+max(c.max/100, 1))
+		if err != nil {
+			log.Printf("actors: removing the least recently fetched: %v", err)
+			return
+		}
+		gone, _ := res.RowsAffected()
+		have -= int(gone)
+	}
+	n = have
+}
+
+/* ---------- federation: removing every remote row ---------- */
+
+// purgeCounts are the rows that point at remote accounts, counted before they go with them: each
+// table and column that references users with ON DELETE CASCADE and can hold a remote account's id.
+var purgeCounts = []struct{ what, sql string }{
+	{"cached actor documents", `SELECT count(*) FROM ap_actors`},
+	{"posts", `SELECT count(*) FROM posts p JOIN users u ON u.id = p.user_id WHERE u.domain <> ''`},
+	{"comments", `SELECT count(*) FROM comments c JOIN users u ON u.id = c.user_id WHERE u.domain <> ''`},
+	{"likes", `SELECT count(*) FROM likes l JOIN users u ON u.id = l.user_id WHERE u.domain <> ''`},
+	{"comment likes", `SELECT count(*) FROM comment_likes l JOIN users u ON u.id = l.user_id WHERE u.domain <> ''`},
+	{"follows", `SELECT count(*) FROM follows f WHERE EXISTS (SELECT 1 FROM users u WHERE u.id IN (f.follower_id, f.followee_id) AND u.domain <> '')`},
+	{"blocks", `SELECT count(*) FROM blocks b WHERE EXISTS (SELECT 1 FROM users u WHERE u.id IN (b.user_id, b.target_id) AND u.domain <> '')`},
+	{"notifications", `SELECT count(*) FROM notifications n WHERE EXISTS (SELECT 1 FROM users u WHERE u.id IN (n.user_id, n.actor_id) AND u.domain <> '')`},
+	{"reports", `SELECT count(*) FROM reports r JOIN users u ON u.id = r.reporter_id WHERE u.domain <> ''`},
+}
+
+// purgeRemote removes every remote account and everything that hangs off it (docs/federation.md 14.4), in
+// one transaction: the cached documents, and whatever later items let point at a remote account (posts,
+// comments, likes, follows, blocks, notifications, reports, all ON DELETE CASCADE). Local rows that only
+// named one keep their own meaning: an audit line keeps its action with the account left empty (ON
+// DELETE SET NULL). It returns the counts in purgeCounts' order, with the accounts last. Run twice, the
+// second removes nothing.
+func purgeRemote(ctx context.Context, db *sql.DB) ([]int64, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	// The remote rows are locked before they are counted, so what is printed is what goes.
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM users WHERE domain <> '' FOR UPDATE`); err != nil {
+		return nil, err
+	}
+	out := make([]int64, 0, len(purgeCounts)+1)
+	for _, p := range purgeCounts {
+		var n int64
+		if err := tx.QueryRowContext(ctx, p.sql).Scan(&n); err != nil {
+			return nil, fmt.Errorf("counting %s: %w", p.what, err)
+		}
+		out = append(out, n)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM users WHERE domain <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	out = append(out, n)
+	return out, tx.Commit()
+}
+
+// purgeCommand is /nunchaku -purge-remote: the step before ./deploy.sh --rollback to a build older than
+// remote accounts, which would list them as members (docs/federation.md 14.4). It needs only
+// DATABASE_URL and works in every mode, since a database that federated once may be started in local
+// mode later. Like -rotate-keys it does not ask whether the server runs: the image has no shell, so it
+// runs beside the server (docker exec), and a server of this version fetches no actor by itself.
+func purgeCommand(getenv func(string) string, out io.Writer) error {
+	dsn := getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("-purge-remote: DATABASE_URL is not set")
+	}
+	db, err := openDB(dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return purgeWith(db, out)
+}
+
+// purgeWith removes the remote rows in db and says what it removed.
+func purgeWith(db *sql.DB, out io.Writer) error {
+	n, err := purgeRemote(context.Background(), db)
+	if err != nil {
+		return fmt.Errorf("-purge-remote: nothing removed: %w", err)
+	}
+	parts := make([]string, len(purgeCounts))
+	for i, p := range purgeCounts {
+		parts[i] = fmt.Sprintf("%d %s", n[i], p.what)
+	}
+	fmt.Fprintf(out, "removed %d remote accounts, and with them %s. Local accounts and their posts are as they were.\n", n[len(n)-1], strings.Join(parts, ", "))
+	return nil
+}
+
 /* ---------- start-up ---------- */
 
 func openDB(dsn string) (*sql.DB, error) {
@@ -13094,6 +14023,44 @@ var migrations = []string{schema, schemaSocial,
 		username TEXT PRIMARY KEY,
 		retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`,
+	// 15: remote accounts (docs/federation.md, F5, 9.1 and 9.2), the first rows about other servers. A remote
+	// account is a users row whose domain is the host of its actor id; '' is local, and every row there is
+	// keeps '', so every existing account stays local. Its username is "name@host", which usernameRE can never
+	// make, so the one unique index on username keeps holding local and remote names apart and no local name
+	// can meet a remote one; the actor id, not the name, is what identifies it (ap_actors.ap_id). The check
+	// keeps a remote row inert whatever writes it, this build or an older one after a rollback: no password
+	// hash checkPassword can match ('!'), no role above user, never the owner, never opted in, and a name that
+	// ends in "@" and its domain. users_local is the index the people list and the counts read local members
+	// through. ap_actors holds what Flowa reads of a remote actor (6.3) and its one key, kept for 24 hours
+	// (7.4); state is ok, suspended (Mastodon's flag, 6.3) or gone (410). Adding the column and the check reads
+	// users once (a row or a few per member); the rest are new. Additive: an older build ignores the column and
+	// the table, but would list remote rows as members, which is why -purge-remote exists (14.4).
+	`ALTER TABLE users ADD COLUMN IF NOT EXISTS domain TEXT NOT NULL DEFAULT '';
+	ALTER TABLE users DROP CONSTRAINT IF EXISTS users_remote_inert;
+	ALTER TABLE users ADD CONSTRAINT users_remote_inert CHECK (domain = '' OR (pw_hash = '!' AND role = 'user' AND NOT owner AND NOT federates
+		AND length(username) > length(domain) + 1 AND right(username, length(domain) + 1) = '@' || domain));
+	CREATE INDEX IF NOT EXISTS users_local ON users (id) WHERE domain = '';
+	CREATE TABLE IF NOT EXISTS ap_actors (
+		user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		ap_id TEXT NOT NULL UNIQUE,
+		kind TEXT NOT NULL CHECK (kind IN ('Application', 'Group', 'Organization', 'Person', 'Service')),
+		preferred_username TEXT NOT NULL DEFAULT '',
+		summary TEXT NOT NULL DEFAULT '',
+		url TEXT NOT NULL DEFAULT '',
+		icon TEXT NOT NULL DEFAULT '',
+		inbox TEXT NOT NULL DEFAULT '',
+		shared_inbox TEXT NOT NULL DEFAULT '',
+		followers_url TEXT NOT NULL DEFAULT '',
+		moved_to TEXT NOT NULL DEFAULT '',
+		locked BOOLEAN NOT NULL DEFAULT false,
+		key_id TEXT NOT NULL DEFAULT '',
+		public_key TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL DEFAULT 'ok' CHECK (state IN ('ok', 'suspended', 'gone')),
+		fetched_at TIMESTAMPTZ NOT NULL,
+		expires_at TIMESTAMPTZ NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS ap_actors_key ON ap_actors (key_id) WHERE key_id <> '';
+	CREATE INDEX IF NOT EXISTS ap_actors_fetched ON ap_actors (fetched_at, user_id)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -13194,7 +14161,7 @@ func (a *app) seedAdmin(name, pw string) (int64, error) {
 		return 0, nil
 	}
 	var id int64
-	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id)
+	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1 AND domain = ''`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a.makeAdmin(name, hashPassword(pw))
 	}
@@ -13216,7 +14183,7 @@ func (a *app) makeAdmin(name, hash string) (int64, error) {
 	// without the account (a deleted admin used to come back at every start, and a server that will not
 	// start for it would be worse) unless no account exists at all, when there would be nobody to run it.
 	var retired, someone bool
-	if err := tx.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users)`, name).Scan(&retired, &someone); err != nil {
+	if err := tx.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users WHERE domain = '')`, name).Scan(&retired, &someone); err != nil {
 		return 0, err
 	}
 	if retired || a.reservedName(name) {
@@ -13874,7 +14841,7 @@ const singleOnly = "This Flowa holds one person's profile, so it takes no new ac
 // the data as it was.
 func (a *app) checkSingle(adminUser, adminPW string) error {
 	var n int
-	if err := a.db.QueryRow(`SELECT count(*) FROM users`).Scan(&n); err != nil {
+	if err := a.db.QueryRow(`SELECT count(*) FROM users WHERE domain = ''`).Scan(&n); err != nil {
 		return err
 	}
 	name := strings.ToLower(strings.TrimSpace(adminUser))
@@ -13899,7 +14866,7 @@ func (a *app) checkSingle(adminUser, adminPW string) error {
 	}
 	var who string
 	var suspended, muted sql.NullTime
-	if err := a.db.QueryRow(`SELECT username, suspended_until, muted_until FROM users`).Scan(&who, &suspended, &muted); err != nil {
+	if err := a.db.QueryRow(`SELECT username, suspended_until, muted_until FROM users WHERE domain = ''`).Scan(&who, &suspended, &muted); err != nil {
 		return err
 	}
 	if seeds && name != who {
@@ -13921,7 +14888,7 @@ func (a *app) checkSingle(adminUser, adminPW string) error {
 // not an admin yet (a database that ran in local mode with one member and no admin).
 func (a *app) soleAdmin() error {
 	var name string
-	err := a.db.QueryRow(`UPDATE users SET role = 'admin' WHERE role <> 'admin' AND (SELECT count(*) FROM users) = 1 RETURNING username`).Scan(&name)
+	err := a.db.QueryRow(`UPDATE users SET role = 'admin' WHERE domain = '' AND role <> 'admin' AND (SELECT count(*) FROM users WHERE domain = '') = 1 RETURNING username`).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -14036,7 +15003,7 @@ var visitorLinkNames = map[string]string{"instagram": "Instagram", "tiktok": "Ti
 
 // makeVisitorPage reads the owner's profile and the instance information (two reads) and writes the page.
 func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
-	u, err := scanUser(a.db.QueryRow(`SELECT ` + userCols + ` FROM users u ORDER BY u.owner DESC, u.id LIMIT 1`))
+	u, err := scanUser(a.db.QueryRow(`SELECT ` + userCols + ` FROM users u WHERE u.domain = '' ORDER BY u.owner DESC, u.id LIMIT 1`))
 	if err != nil {
 		return nil, err
 	}
@@ -14577,6 +15544,7 @@ func main() {
 	dataDir := flag.String("data", "/data", "directory for backups and for the page files kept for the build after this one")
 	probe := flag.Bool("healthcheck", false, "ask the local server's /healthz, print the answer, and exit 0 if it is healthy")
 	rotate := flag.Bool("rotate-keys", false, "make a new key pair for every account that has one (a mode that federates only), print how many, and exit")
+	purge := flag.Bool("purge-remote", false, "remove every remote account and what hangs off it, in one transaction, print what went, and exit (before ./deploy.sh --rollback to a build without remote accounts)")
 	showVersion := flag.Bool("version", false, "print the version this binary was built as, and exit")
 	flag.Parse()
 
@@ -14600,6 +15568,12 @@ func main() {
 	}
 	if *rotate {
 		if err := rotateCommand(os.Getenv, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *purge {
+		if err := purgeCommand(os.Getenv, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -15122,7 +16096,7 @@ func (u *user) avatarURL() string {
 func (a *app) handleAvatar(w http.ResponseWriter, r *http.Request, _ *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var v string
-	err := a.db.QueryRow(`SELECT avatar FROM users WHERE id = $1`, id).Scan(&v)
+	err := a.db.QueryRow(`SELECT avatar FROM users WHERE id = $1 AND domain = ''`, id).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && v == "") {
 		http.NotFound(w, r)
 		return
@@ -15173,7 +16147,7 @@ func statNum(raw json.RawMessage, key string) float64 {
 // and sorts it, on purpose: the table has one row per member, and for the few hundred a household
 // server holds that is the cheapest plan there is (TestDBQueryPlans keeps count of the rows). $1 is
 // the viewer and $2 whether they may hide posts: a member across a block is not listed (blockFree).
-var peopleSQL = `SELECT ` + userCols + ` FROM users u WHERE ` + blockFree("$1", "u.id", "$2") + `
+var peopleSQL = `SELECT ` + userCols + ` FROM users u WHERE u.domain = '' AND ` + blockFree("$1", "u.id", "$2") + `
 	ORDER BY CASE WHEN NOT u.stats_hidden AND jsonb_typeof(u.stats->'xp') = 'number' THEN (u.stats->>'xp')::numeric ELSE 0 END DESC, u.id LIMIT 100`
 
 // handleUserList is the people list: the 100 members with the most XP (hidden stats count as none).
@@ -15199,7 +16173,7 @@ func (a *app) handleUserList(w http.ResponseWriter, _ *http.Request, viewer *use
 
 func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *user) {
 	name := strings.ToLower(r.PathValue("username"))
-	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.username = $1`, name))
+	u, err := scanUser(a.db.QueryRow(`SELECT `+userCols+` FROM users u WHERE u.username = $1 AND u.domain = ''`, name))
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return
@@ -15796,7 +16770,7 @@ func queryID(r *http.Request, key string) int64 {
 func (a *app) handleGetPosts(w http.ResponseWriter, r *http.Request, u *user) {
 	var byUser int64
 	if name := strings.ToLower(r.URL.Query().Get("user")); name != "" {
-		err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&byUser)
+		err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1 AND domain = ''`, name).Scan(&byUser)
 		if errors.Is(err, sql.ErrNoRows) {
 			fail(w, http.StatusNotFound, "No such user.")
 			return
@@ -15845,7 +16819,7 @@ func (a *app) notifyNames(names []string, actor, postID, commentID int64, skip .
 	// The ids are read whole and the rows closed before anyone is told: telling writes a row, and a
 	// request that held this query's connection while it waited for another could, with a few others
 	// doing the same, take the whole pool and stop every request.
-	rows, err := a.db.Query(`SELECT id FROM users WHERE username = ANY($1)`, pq.Array(names))
+	rows, err := a.db.Query(`SELECT id FROM users WHERE username = ANY($1) AND domain = ''`, pq.Array(names))
 	if err != nil {
 		log.Printf("mentions: %v", err)
 		return
@@ -16926,7 +17900,7 @@ func (a *app) memberNamed(w http.ResponseWriter, r *http.Request, u *user, self 
 		return 0, false
 	}
 	var id int64
-	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1`, name).Scan(&id)
+	err := a.db.QueryRow(`SELECT id FROM users WHERE username = $1 AND domain = ''`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such user.")
 		return 0, false
@@ -16959,7 +17933,7 @@ func (a *app) handleBlock(w http.ResponseWriter, r *http.Request, u *user) {
 	// So do the follows between the two, both ways, as Mastodon removes them: neither stays in the
 	// other's Home, lists or counts, and following again is refused while the block holds (handleFollow).
 	var found bool
-	err := a.db.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2),
+	err := a.db.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2 AND domain = ''),
 		ins AS (INSERT INTO blocks (user_id, target_id) SELECT $1, id FROM t ON CONFLICT DO NOTHING),
 		gone AS (DELETE FROM notifications WHERE kind <> ALL($3) AND ((user_id = $1 AND actor_id = $2) OR (user_id = $2 AND actor_id = $1))),
 		unfollowed AS (DELETE FROM follows WHERE (follower_id = $1 AND followee_id = $2) OR (follower_id = $2 AND followee_id = $1))
@@ -17098,7 +18072,7 @@ func (a *app) handleFollow(w http.ResponseWriter, r *http.Request, u *user) {
 	// Statements in a READ COMMITTED transaction each see what was committed before they began, so
 	// after the lock this one sees every follow the member made before. had is whether this one was there.
 	var found, free, made, had bool
-	err = tx.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2),
+	err = tx.QueryRow(`WITH t AS (SELECT id FROM users WHERE id = $2 AND domain = ''),
 		ok AS (SELECT id FROM t WHERE `+blockFree("$1::bigint", "t.id", "false")+`),
 		ins AS (INSERT INTO follows (follower_id, followee_id) SELECT $1, id FROM ok
 			WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $3 ON CONFLICT DO NOTHING RETURNING 1)
