@@ -522,6 +522,7 @@ type limits struct {
 	public                                      *limiter // reads of actor documents, public pages and their pictures, per address, in a mode that federates
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 	lookups                                     *limiter // searches by handle of people on other servers, per member, in a mode that federates
+	domains                                     *limiter // changes to domain policies, per admin, in a mode that federates
 }
 
 func newLimits() limits {
@@ -544,6 +545,9 @@ func newLimits() limits {
 		// A search by handle sends up to lookupFetches requests to other servers; 30 an hour is a person
 		// looking for the people they know, and at most 210 requests an hour from one member.
 		lookups: newLimiter(30, time.Hour),
+		// An admin pasting a list of servers to allow or suspend, one at a time; more than that in an hour
+		// is a script, and a stolen session is held to it too.
+		domains: newLimiter(300, time.Hour),
 	}
 }
 
@@ -984,14 +988,36 @@ var rolePerms = map[string][]string{
 		permCatalogEdit, permCatalogPublish, permFlagsEdit, permUserRole, permUserManage},
 }
 
-func can(u *user, perm string) bool { return u != nil && slices.Contains(rolePerms[u.Role], perm) }
+// fedPerms are the permissions of a mode that federates (docs/federation.md, section 10): reading the
+// federation page (the domain policies and the inbox's numbers), and changing the policies. They are a table
+// of their own so that an instance that does not federate lists exactly the permissions it always did
+// (permsOf); can asks both, which is harmless outside such a mode, since only its routes ask for these.
+const (
+	permFedRead   = "federation.read"   // the federation page: domain policies, the inbox's numbers
+	permFedManage = "federation.manage" // allow and suspend domains, and choose allowlist or open
+)
 
-// permsOf lists what a user may do, for the interface to show only what the server allows.
-func permsOf(u *user) []string {
+var fedPerms = map[string][]string{
+	"user":      {},
+	"moderator": {permFedRead},
+	"admin":     {permFedRead, permFedManage},
+}
+
+func can(u *user, perm string) bool {
+	return u != nil && (slices.Contains(rolePerms[u.Role], perm) || slices.Contains(fedPerms[u.Role], perm))
+}
+
+// permsOf lists what a user may do, for the interface to show only what the server allows: the permissions of
+// a mode that federates only in such a mode.
+func (a *app) permsOf(u *user) []string {
 	if u == nil {
 		return []string{}
 	}
-	return append([]string{}, rolePerms[u.Role]...)
+	out := append([]string{}, rolePerms[u.Role]...)
+	if a.fed != nil {
+		out = append(out, fedPerms[u.Role]...)
+	}
+	return out
 }
 
 // outranks reports whether someone with role a may act on someone with role b.
@@ -1517,7 +1543,7 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out := map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": permsOf(u)}
+	out := map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": a.permsOf(u)}
 	// What an admin has said about this Flowa, only once something is saved, so an instance that has
 	// saved nothing answers as it always has. about says whether this reader may open the about page (a
 	// visitor only once there is a description); a visitor is also given the rules, for the sign-up form.
@@ -6188,6 +6214,9 @@ type federation struct {
 	lookupNow   func() time.Time
 	lookupPause func(ctx context.Context, d time.Duration)
 
+	// policy is the domain policy as last read (loadPolicy): the allowlist or open, and the rows by domain.
+	policy atomic.Pointer[fedPolicy]
+
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
 
@@ -6553,7 +6582,11 @@ func recordOrigin(ctx context.Context, tx *sql.Tx, o publicOrigin) error {
 func (a *app) startFederation(s fedSettings) error {
 	f := newFederation(a.db, s)
 	f.actors = newActorCache(f, a.fetch)
+	f.actors.refused = f.refusedByPolicy
 	a.fed = f
+	if err := f.loadPolicy(context.Background()); err != nil {
+		return err
+	}
 	was, err := recordedOrigin(a.db)
 	if err != nil {
 		return err
@@ -14374,7 +14407,7 @@ func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use ke
 var userRefs = []struct{ table, column string }{
 	{"achievements", "user_id"}, {"ap_keys", "user_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
 	{"blocks", "user_id"}, {"bookmarks", "user_id"}, {"catalog_revisions", "author_id"}, {"comment_likes", "user_id"},
-	{"comments", "user_id"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
+	{"comments", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
 	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"}, {"notifications", "actor_id"},
 	{"notifications", "user_id"}, {"posts", "user_id"}, {"progress", "user_id"}, {"reports", "reporter_id"},
 	{"reports", "resolver_id"}, {"sessions", "user_id"},
@@ -15187,6 +15220,322 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"result": p})
 }
 
+/* ---------- federation: domain policies and the allowlist ----------
+
+What an admin decides about other servers (docs/federation.md, F8, section 10 and 7.7; FMD item 1, as far as
+the inbox needs it). One row of domain_policies per domain, matched with its subdomains: allow or suspend
+(Mastodon's domain allow and Suspend; the table also takes limit, whose effect on follows comes with FWR 3),
+with a note for staff saying why. The instance setting federation_policy says whether the instance takes
+deliveries from every server not suspended ("open") or only from those an admin allowed ("allowlist"); with
+nothing saved it is the allowlist, F8's recommendation while federated mode is marked experimental, so a
+federating instance accepts no delivery until an admin names a server.
+
+Where each is applied in this version:
+
+  - The inbox refuses, with 403 and before the body is read or any key fetched, a delivery signed by a key on
+    a suspended domain, and in allowlist mode one on a domain no row allows (or limits).
+  - The fetcher refuses every suspended domain (fetchReq.refused, through the actor cache's refused hook),
+    so no actor of it is fetched, for a key, a search by handle or anything else.
+  - Not yet (FMD's todo says so): the allowlist applied to the fetcher (a search by handle still reaches an
+    unlisted server; deliveries out do not exist yet), limit's effect, reject media and reject reports, and
+    the public comment on the about page.
+
+The rows are read once at start and again after each change, into memory (fedPolicy), so a refusal costs no
+query. Only a mode that federates has the routes, the permissions and the memory; local mode has none. */
+
+const (
+	domainPoliciesMax = 10000 // rows an instance keeps; an admin past it is refused, so the memory and every check stay bounded
+	domainNoteMax     = 500   // characters of the staff note on a row
+	policyAllowlist   = "allowlist"
+	policyOpen        = "open"
+)
+
+// domainPolicy is one row of domain_policies, as the admin page reads it.
+type domainPolicy struct {
+	Domain    string    `json:"domain"`
+	Policy    string    `json:"policy"` // allow, limit or suspend
+	Note      string    `json:"note"`   // private_note: why, for staff
+	CreatedBy string    `json:"createdBy"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// fedPolicy is the domain policy as last read: the mode and the rows by domain. Each change replaces the whole
+// (federation.policy is atomic), so a reader never sees half of one.
+type fedPolicy struct {
+	mode string                  // policyAllowlist or policyOpen
+	rows map[string]domainPolicy // by domain
+	// suspended is every suspended domain, for the fetcher's refused list (refusedHosts' form: lower case,
+	// matched with its subdomains).
+	suspended []string
+}
+
+// policyVerdict is what the policy says of a host: in, or why not.
+type policyVerdict uint8
+
+const (
+	policyIn         policyVerdict = iota
+	policySuspended                // the host or a domain above it is suspended
+	policyNotListed                // allowlist mode, and no row allows the host or a domain above it
+	policyUnreadable               // not a host the fetcher would ask (fedHost), so never in
+)
+
+// decide is the verdict for a host, compared lower case and without a trailing dot, with each of its parent
+// domains: a.b.example.com is held to the rows for itself, b.example.com and example.com. A suspension anywhere
+// above wins over an allow, so suspending a subdomain of an allowed domain works and allowing a subdomain of a
+// suspended one does not.
+func (p *fedPolicy) decide(host string) policyVerdict {
+	h, why := fedHost(host)
+	if why != "" {
+		return policyUnreadable
+	}
+	listed := false
+	for d := h; ; {
+		if r, ok := p.rows[d]; ok {
+			if r.Policy == "suspend" {
+				return policySuspended
+			}
+			listed = true
+		}
+		i := strings.IndexByte(d, '.')
+		if i < 0 {
+			break
+		}
+		d = d[i+1:]
+	}
+	if p.mode == policyAllowlist && !listed {
+		return policyNotListed
+	}
+	return policyIn
+}
+
+// policyNow is the policy in memory; before the first read, the allowlist with no row, so nothing is let in
+// that an admin has not allowed.
+func (f *federation) policyNow() *fedPolicy {
+	if p := f.policy.Load(); p != nil {
+		return p
+	}
+	return &fedPolicy{mode: policyAllowlist}
+}
+
+// loadPolicy reads the mode and the rows into memory. It runs at start and after each change an admin makes;
+// the rows are read and their connection given back before the new policy is put in place.
+func (f *federation) loadPolicy(ctx context.Context) error {
+	p := &fedPolicy{mode: policyAllowlist, rows: map[string]domainPolicy{}}
+	var mode string
+	err := f.db.QueryRowContext(ctx, `SELECT value #>> '{}' FROM instance_settings WHERE key = 'federation_policy'`).Scan(&mode)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if mode == policyOpen {
+		p.mode = policyOpen
+	}
+	rows, err := f.db.QueryContext(ctx, `SELECT d.domain, d.policy, d.private_note, COALESCE(u.username, ''), d.created_at FROM domain_policies d
+		LEFT JOIN users u ON u.id = d.created_by ORDER BY d.domain LIMIT $1`, domainPoliciesMax)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r domainPolicy
+		if err := rows.Scan(&r.Domain, &r.Policy, &r.Note, &r.CreatedBy, &r.CreatedAt); err != nil {
+			return err
+		}
+		p.rows[r.Domain] = r
+		if r.Policy == "suspend" {
+			p.suspended = append(p.suspended, r.Domain)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	f.policy.Store(p)
+	return nil
+}
+
+// refusedByPolicy is the actor cache's refused hook: every suspended domain, each with its subdomains.
+func (f *federation) refusedByPolicy() []string { return f.policyNow().suspended }
+
+// cleanDomain reads a domain an admin typed: trimmed, lower case, one trailing dot dropped, a plain ASCII DNS
+// name the fetcher could ask (fedHost: at least two labels, no address, no private name). A name in another
+// script must be written in its xn-- form, since the standard library cannot make that form and the fetcher
+// compares what a URL carries (refusedHosts, 7.8). This instance's own domain, or one above it, is refused. It
+// returns the name, or a sentence saying what is wrong.
+func cleanDomain(v, own string) (string, string) {
+	d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(v)), ".")
+	switch {
+	case d == "":
+		return "", "Write the server's domain, such as social.example."
+	case strings.ContainsAny(d, "/@: "):
+		return "", "Write the domain alone, such as social.example: no https://, path, port or handle."
+	case strings.Trim(d, "abcdefghijklmnopqrstuvwxyz0123456789.-") != "":
+		return "", "Use only letters, digits, dots and dashes; write a name in another script in its xn-- form, as the server's addresses carry it."
+	}
+	if _, why := fedHost(d); why != "" {
+		return "", "That is not a domain another server can have: it is " + why + "."
+	}
+	if d == own || strings.HasSuffix(own, "."+d) {
+		return "", "That is this server's own domain."
+	}
+	return d, ""
+}
+
+// handleFedAdmin answers GET /api/admin/federation: the policy and the rows.
+func (a *app) handleFedAdmin(w http.ResponseWriter, _ *http.Request, _ *user) {
+	p := a.fed.policyNow()
+	list := make([]domainPolicy, 0, len(p.rows))
+	for _, d := range slices.Sorted(maps.Keys(p.rows)) {
+		list = append(list, p.rows[d])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policy": p.mode, "domains": list, "max": domainPoliciesMax, "noteMax": domainNoteMax})
+}
+
+// handlePutDomain answers PUT /api/admin/federation/domains/{domain}: allow or suspend a domain, with a note for
+// staff, audited in the same transaction. A row there already is replaced.
+func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
+	if !ok {
+		return
+	}
+	d, why := cleanDomain(r.PathValue("domain"), a.fed.origin.host)
+	if why != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": why, "field": "domain"})
+		return
+	}
+	var in struct {
+		Policy string `json:"policy"`
+		Note   string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if in.Policy != "allow" && in.Policy != "suspend" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose allow or suspend.", "field": "policy"})
+		return
+	}
+	note := strings.TrimSpace(in.Note)
+	if v, ok := visibleText(note); !ok || utf8.RuneCountInString(note) > domainNoteMax {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("The note is plain text of at most %d characters.", domainNoteMax), "field": "note"})
+		return
+	} else {
+		note = v
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM domain_policies WHERE domain <> $1`, d).Scan(&n); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if n >= domainPoliciesMax {
+		fail(w, http.StatusConflict, fmt.Sprintf("This server keeps at most %d domain policies. Remove one first.", domainPoliciesMax))
+		return
+	}
+	var was string
+	err = tx.QueryRow(`SELECT policy FROM domain_policies WHERE domain = $1`, d).Scan(&was)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
+	if _, err := tx.Exec(`INSERT INTO domain_policies (domain, policy, private_note, created_by) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (domain) DO UPDATE SET policy = EXCLUDED.policy, private_note = EXCLUDED.private_note, created_by = EXCLUDED.created_by, created_at = now()`,
+		d, in.Policy, note, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, map[string]any{"domain": d, "policy": in.Policy, "was": was}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.fedPolicyChanged(w, r, u)
+}
+
+// handleDeleteDomain answers DELETE /api/admin/federation/domains/{domain}: the row goes, audited.
+func (a *app) handleDeleteDomain(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
+	if !ok {
+		return
+	}
+	d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.PathValue("domain"))), ".")
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var was string
+	if err := tx.QueryRow(`DELETE FROM domain_policies WHERE domain = $1 RETURNING policy`, d).Scan(&was); errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No policy for that domain.")
+		return
+	} else if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "domain_policy_remove", "domain", 0, 0, "", map[string]any{"domain": d, "was": was}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.fedPolicyChanged(w, r, u)
+}
+
+// handlePutFedPolicy answers PUT /api/admin/federation/policy: allowlist or open, audited.
+func (a *app) handlePutFedPolicy(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
+	if !ok {
+		return
+	}
+	var in struct {
+		Policy string `json:"policy"`
+	}
+	if !readJSON(w, r, 1024, &in) {
+		return
+	}
+	if in.Policy != policyAllowlist && in.Policy != policyOpen {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose allowlist or open.", "field": "policy"})
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO instance_settings (key, value, updated_at, updated_by) VALUES ('federation_policy', to_jsonb($1::text), now(), $2)
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by`, in.Policy, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "federation_policy", "", 0, 0, "", map[string]any{"policy": in.Policy}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.fedPolicyChanged(w, r, u)
+}
+
+// fedPolicyChanged reads the policy into memory again after a change, and answers with the admin page's data.
+func (a *app) fedPolicyChanged(w http.ResponseWriter, r *http.Request, u *user) {
+	if err := a.fed.loadPolicy(r.Context()); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.handleFedAdmin(w, r, u)
+}
+
 /* ---------- federation: removing every remote row ---------- */
 
 // purgeCounts are the rows that point at remote accounts, counted before they go with them: each
@@ -15470,6 +15819,22 @@ var migrations = []string{schema, schemaSocial,
 	// fetch, at most 24 hours later. One column with a constant default: no row is rewritten, and an older
 	// build ignores it.
 	`ALTER TABLE ap_actors ADD COLUMN IF NOT EXISTS outbox TEXT NOT NULL DEFAULT ''`,
+	// 17: domain policies (docs/federation.md 9.1 and section 10; FMD 1): one row per domain an admin allowed,
+	// limited or suspended, matched with its subdomains, with the note for staff and the public comment of
+	// Mastodon's domain blocks, and the two switches FMD's later items read. The domain is stored as the fetcher
+	// compares it: lower case ASCII, a name in another script in its xn-- form. created_by is indexed for the
+	// actor cache's bound (userRefs). A new table: nothing is rewritten, and an older build ignores it.
+	`CREATE TABLE IF NOT EXISTS domain_policies (
+		domain TEXT PRIMARY KEY CHECK (domain <> '' AND domain = lower(domain)),
+		policy TEXT NOT NULL CHECK (policy IN ('allow', 'limit', 'suspend')),
+		reject_media BOOLEAN NOT NULL DEFAULT false,
+		reject_reports BOOLEAN NOT NULL DEFAULT false,
+		public_comment TEXT NOT NULL DEFAULT '',
+		private_note TEXT NOT NULL DEFAULT '',
+		created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	);
+	CREATE INDEX IF NOT EXISTS domain_policies_by ON domain_policies (created_by)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -16219,6 +16584,10 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st, false))
 		mux.HandleFunc("GET /users/{name}/posts/{id}/activity", a.handlePublicPost(st, true))
 		mux.HandleFunc("POST /api/fed/lookup", a.flagged("community", a.authed("", a.handleLookup)))
+		mux.HandleFunc("GET /api/admin/federation", a.authed(permFedRead, a.handleFedAdmin))
+		mux.HandleFunc("PUT /api/admin/federation/policy", a.authed(permFedManage, a.handlePutFedPolicy))
+		mux.HandleFunc("PUT /api/admin/federation/domains/{domain}", a.authed(permFedManage, a.handlePutDomain))
+		mux.HandleFunc("DELETE /api/admin/federation/domains/{domain}", a.authed(permFedManage, a.handleDeleteDomain))
 		mux.HandleFunc("GET /actor/outbox", a.handleInstanceOutbox(st))
 		for _, kind := range memberCollections {
 			mux.HandleFunc("GET /users/{name}/"+kind, a.handleCollection(st, kind))

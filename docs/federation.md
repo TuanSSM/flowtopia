@@ -2507,6 +2507,26 @@ keyword filters.
 | IP blocks, email domain blocks | never | no email; IP blocks belong to the operator's proxy (Mastodon has both: "IP Rules" and e-mail domain blocks on its moderation page) |
 | Single-user mode | adopt | `FLOWA_MODE=single` (INS). Mastodon's `SINGLE_USER_MODE` redirects the front page to the first profile and turns registrations off (configuration page), as section 4.2 has it |
 
+As built (FMD 1, the part the inbox cannot be safe without; shipped with FWR 1, as 14.3 row 14 pairs them):
+`domain_policies` as in 9.1 (migration 17, with `flowa-schema16.dump`), with `created_by` indexed and in
+`userRefs`; the policy `allowlist` or `open` in `instance_settings` under the key `federation_policy` (not `policy`:
+the table holds every runtime setting, and a bare `policy` would not say whose), where nothing saved means the
+allowlist (F8); the permissions `federation.read` (moderators and admins) and `federation.manage` (admins) in a table
+of their own, `fedPerms`, listed in `/api/me` only in a mode that federates, so a local instance lists the
+permissions it always did; `GET /api/admin/federation`, `PUT /api/admin/federation/policy`, `PUT` and `DELETE
+/api/admin/federation/domains/{domain}` (in `testdata/routes-federated.txt`), each change audited in its own
+transaction (`domain_policy`, `domain_policy_remove`, `federation_policy`) and held to `limits.domains` (300 an hour
+per admin); and the Admin page's Federation tab. A domain is matched with its subdomains, and a suspension anywhere
+above a host wins over an allow (`fedPolicy.decide`). The domain is written as the fetcher compares it: lower case
+ASCII, a name in another script in its `xn--` form (7.8), at least two labels, never this instance's own. The rows are
+read into memory at start and after each change, so a check costs no query; at most 10,000 rows. Applied: the inbox
+refuses a suspended domain, and in allowlist mode an unlisted one, with 403 before the body is read or a key fetched
+(7.7); the fetcher refuses a suspended domain through the actor cache's `refused` hook. **Not built yet** (FMD's todo):
+the allowlist applied to the fetcher (a search by handle still reaches an unlisted server; nothing is delivered yet),
+the effect of `limit` (follows across servers are FWR 3; the API takes allow and suspend only), reject media and
+reject reports (no remote media or Flag is taken yet), the public comment on the about page, and the sentence the
+page owes on authorized fetch (7.6) beyond the one it says now (that any server can still read public pages).
+
 ## 11. The member's side
 
 - **As built (FRD 4):** `users.federates` (migration 13, off for everyone) and the switch in Settings, in a

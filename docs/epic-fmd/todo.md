@@ -19,6 +19,17 @@ Every setting, table, route and test named below is new unless the design note s
   (federation.md 7.6). DoD: `TestDBDomainPolicies` (each policy in and out; the allowlist refuses an
   unlisted host both ways; a Follow from a limited domain waits for approval),
   `TestPermissionTable` updated; a screenshot of the page.
+  Built so far (with FWR's inbox, federation.md section 10, "As built (FMD 1, ...)"): `domain_policies`
+  (migration 17), the `federation_policy` setting (allowlist by default), `federation.read` and
+  `federation.manage` (`fedPerms`, listed only in a mode that federates), the admin API and the Federation tab
+  of the Admin page (allow and suspend with a reason, every change audited), the inbox's 403 for a suspended or
+  unlisted domain before any work, the fetcher refusing a suspended domain; `TestPolicyDecide`,
+  `TestDBDomainPolicies`, `TestDBPolicyRefusesFetch`, `TestPermissionTable` updated, the inbox's cases in
+  `TestInboxRefusals`, and the page in the `federated` browser suite with its screenshot.
+  **Open:** the allowlist in the fetcher (both ways: a search by handle still reaches an unlisted server, and
+  the fan-out, FWR 4, must be held to it); `limit` (the API refuses it until follows cross servers, FWR 3, so
+  a Follow from a limited domain waiting for approval is not testable yet); reject media and reject reports;
+  the public comment on the about page; the Admin page's sentence on authorized fetch (7.6).
 - [ ] **Actions on remote accounts.** `mute` and `suspend` in `handleModAction` act as limit and
   suspend on a remote account (limit: hidden from all but its followers, its follows become
   requests; suspend: its follows removed and not restored on unsuspend, as in Mastodon); a new
