@@ -14443,9 +14443,11 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	if doc.Suspended {
 		state = "suspended"
 	}
-	// Whatever is written, a key the inbox kept for this actor is not used again before it is read anew. This
-	// write is the one a lookup waits for and then reads, so it does not move the memo's generation (forget).
-	defer c.keys.forget(doc.ID)
+	// Whatever is written, a key the inbox kept for this actor is not used again, and one read from the row before
+	// this write is not kept after it (rewritten, by the row's fetched_at). The time is cut to microseconds, as
+	// Postgres keeps it, so the lookup that reads this row back compares equal.
+	now = now.Truncate(time.Microsecond)
+	defer c.keys.rewritten(doc.ID, now)
 	done, err := c.fed.dbTurn(ctx)
 	if err != nil {
 		return nil, err
@@ -15435,8 +15437,9 @@ anyone but the address it came from (TestInboxStageOrder pins this order):
      that does not parse (401), the key id's domain suspended or, in allowlist mode, not allowed (403, 7.7 and
      section 10), the Federation switch off (503, the pause of F1), a Content-Length over 256 KB (413), and no
      read turn (503 at once): inboxReadsAtOnce in all, at most inboxReadsPerAddr for one address.
-  2. The body, within 256 KB (413) and inboxReadFor (408), the connection's read deadline set; on a failure the
-     read turn goes back before anything else.
+  2. The body, within 256 KB (413) and inboxReadFor (408), the connection's read deadline set. The read turn goes
+     back as soon as the body is read, or failed (before anything else then): it bounds bodies being read, and
+     what follows has its own turns.
   3. The signature (verifyRequest: both forms, the digest, the window, replay), with the key from inboxKeyFor:
      the parsed keys verified with lately (keyMemo, at most 1,000, kept no longer than their row is fresh), else,
      under one of inboxKeyAtOnce key turns (503 at once beyond), remoteKey, whose fetches the address pays for and
@@ -15483,7 +15486,7 @@ const (
 	inboxBodyMax      = 256 << 10          // a delivery's body (7.5)
 	inboxAtOnce       = 4                  // deliveries handled at once (7.5), and so at most 4 bodies decoded at once: 16 MB at worst (TestDecodeMemory)
 	inboxWaitMax      = 8                  // deliveries that may wait for one of those turns (7.5)
-	inboxReadsAtOnce  = 8                  // bodies read and checked at once, before their decode: 2 MB at most; one more is 503 at once
+	inboxReadsAtOnce  = 8                  // bodies being read at once: 2 MB at most; one more is 503 at once
 	inboxKeyAtOnce    = actorFetchers      // deliveries whose key is not kept, looked up at once (the cache fetches 2 at once anyway); one more is 503 at once
 	inboxWaitFor      = 2 * time.Second    // how long they wait, then 503
 	inboxQueueMax     = 5000               // rows waiting in ap_inbox, then 503 (7.5, section 12)
@@ -15725,10 +15728,15 @@ type keyMemo struct {
 	max int
 	m   map[string]*list.Element // by key id
 	l   *list.List               // of *keyHeld, the most recently used first
-	// gen moves at every drop: a key read from a row before a drop (the worker marking its actor gone, a refetch,
-	// an eviction) is not kept after it (putAt), so a lookup that raced a drop cannot keep a key the drop meant to
+	// gen moves at every drop: a key read from a row before a drop (the worker marking its actor gone, a 410, an
+	// eviction) is not kept after it (putAt), so a lookup that raced a drop cannot keep a key the drop meant to
 	// forget.
 	gen uint64
+	// written is, per actor, the fetched_at of the last row the cache wrote for it (rewritten, from store): a key
+	// read from an older row is not kept (putAt). The cache's own write is versioned by the row rather than by gen,
+	// because the lookup that waited for that very write reads it back and must keep its key. At most max*10
+	// actors are remembered; beyond that the memory is emptied and gen moved, so no older read is kept either.
+	written map[string]time.Time
 }
 
 // generation is the memo's generation now, read before a key is looked up, for putAt.
@@ -15738,14 +15746,34 @@ func (k *keyMemo) generation() uint64 {
 	return k.gen
 }
 
-// putAt keeps a key looked up at generation gen, unless something was dropped since.
+// putAt keeps a key looked up at generation gen from a row fetched at h.fetched, unless something was dropped
+// since, or the cache wrote the actor's row anew after that one. The checks and the put are under one lock, so a
+// drop either comes before (and the key is not kept) or after (and forgets it).
 func (k *keyMemo) putAt(h *keyHeld, gen uint64) {
 	k.mu.Lock()
-	stale := k.gen != gen
-	k.mu.Unlock()
-	if !stale {
-		k.put(h)
+	defer k.mu.Unlock()
+	if k.gen != gen {
+		return
 	}
+	if w, ok := k.written[h.actor]; ok && h.fetched.Before(w) {
+		return
+	}
+	k.putLocked(h)
+}
+
+// rewritten records that the cache wrote an actor's row, fetched at at, and forgets its kept keys.
+func (k *keyMemo) rewritten(actor string, at time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.written == nil {
+		k.written = map[string]time.Time{}
+	}
+	if len(k.written) >= k.max*10 {
+		clear(k.written)
+		k.gen++
+	}
+	k.written[actor] = at
+	k.forgetLocked(actor)
 }
 
 // clear forgets every key: the cache removed actors it no longer keeps (added's bound), whose ids it does not list.
@@ -15763,6 +15791,7 @@ type keyHeld struct {
 	user                 int64
 	key                  *rsa.PublicKey
 	until                time.Time
+	fetched              time.Time // the row's fetched_at: what putAt compares with a later write of the row
 }
 
 func (k *keyMemo) get(keyID string, now time.Time) (*keyHeld, bool) {
@@ -15785,6 +15814,10 @@ func (k *keyMemo) get(keyID string, now time.Time) (*keyHeld, bool) {
 func (k *keyMemo) put(h *keyHeld) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.putLocked(h)
+}
+
+func (k *keyMemo) putLocked(h *keyHeld) {
 	if e, ok := k.m[h.keyID]; ok {
 		e.Value = h
 		k.l.MoveToFront(e)
@@ -15803,14 +15836,6 @@ func (k *keyMemo) drop(actor string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.gen++
-	k.forgetLocked(actor)
-}
-
-// forget is drop without moving the generation: for the cache's own write of the actor, which the lookup that
-// will put the key reads after it.
-func (k *keyMemo) forget(actor string) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
 	k.forgetLocked(actor)
 }
 
@@ -15848,6 +15873,12 @@ func (k *keyMemo) dropKey(keyID string) {
 // request at a time per host and actorFetchers at once in all, each within its 5 s, and every key id that leads to
 // no key remembered for 10 minutes; so the peer receives at most one of these requests at a time, and this server
 // spends at most its two fetch turns, which an inbox delivery takes only under one of its two key turns.
+//
+// The group looked at is that of the address fetched, which for a key's own fetch is the key id's, and for the
+// owner of a key document on the same origin the same group again: so the group checked is the group the inbox
+// charges once the key verifies. A fetch two deliveries share (one waits for the other's) is charged to the one
+// that started it: when that was a forged request and the waiting one verifies, the domain is charged nothing for
+// it, which only ever undercounts verified traffic.
 func (c *actorCache) spend(addr string, o lookupOpts) bool {
 	g := senderGroup(addr)
 	if g == "" || c.keyFetches.over(g) || !c.addrFetches.add(o.payer) {
@@ -15945,11 +15976,33 @@ func (f *federation) inboxKeyFor(ctx context.Context, keyID string) (*rsa.Public
 	if err != nil {
 		return nil, err
 	}
-	call.held = &keyHeld{keyID: keyID, actor: r.ID, domain: r.Domain, user: r.UserID, key: key, until: r.ExpiresAt}
+	call.held = &keyHeld{keyID: keyID, actor: r.ID, domain: r.Domain, user: r.UserID, key: key, until: r.ExpiresAt, fetched: r.FetchedAt}
 	if r.keyUsable(keyToVerify) == nil {
 		c.keys.putAt(call.held, gen)
 	}
 	return key, nil
+}
+
+// ownFailure says whether a signature check failed for a reason of this server's own that any sender of an own
+// Delete can meet, cached actor or not, which keeps its 503 so the sender retries: the clock not set, the replay
+// memory full (both checked before any key), every key turn taken (taken before the peek, for any key not kept),
+// and the database (actorKnown's lookup runs for both). The failures of a key fetch (a busy fetch turn, the
+// address's allowance of fetches used up, a canceled or not yet possible fetch) are left out on purpose: an own
+// Delete of an actor never seen is dropped before any fetch, so only a cached actor can meet them, and answering
+// them 503 would tell a sender that the actor is cached, the oracle the 202 closes (TestInboxPeekOracle).
+func ownFailure(err error) bool {
+	var se *sigError
+	if !errors.As(err, &se) {
+		return true // not a signature check's answer: the database
+	}
+	switch se.Reason {
+	case sigClock, sigFull:
+		return true
+	case sigKeyUnavailable:
+		var ae *actorError
+		return errors.Is(err, errKeyTurns) || se.err != nil && !errors.As(err, &ae)
+	}
+	return false
 }
 
 // ownShaped says whether a delivery whose signature failed is shaped as its actor's own Delete, on the key id's
@@ -16061,6 +16114,8 @@ type inboxQueue struct {
 	stepped atomic.Bool
 	// heard, when set (by a test), hears how each delivery was answered.
 	heard func(r inboxReason)
+	// unforwarded logs once that deliveries come from a trusted proxy that passes no sender's address.
+	unforwarded sync.Once
 }
 
 func newInboxQueue(f *federation, paused func() bool) *inboxQueue {
@@ -16079,6 +16134,18 @@ func (q *inboxQueue) take(turns chan struct{}) (func(), bool) {
 	default:
 		return nil, false
 	}
+}
+
+// forwardMissing says whether a request came straight from a trusted proxy that named no sender (no
+// X-Forwarded-For, no X-Real-IP): the case in which clientIP can only answer the proxy's own address, so every
+// sender behind it shares one address's allowances. clientIP is not changed; this only lets the inbox say so.
+func forwardMissing(a *app, r *http.Request) bool {
+	remote, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remote = r.RemoteAddr
+	}
+	ip := net.ParseIP(remote)
+	return ip != nil && a.trustedProxy(ip) && len(r.Header.Values("X-Forwarded-For")) == 0 && r.Header.Get("X-Real-IP") == ""
 }
 
 // takeRead takes a read turn for an address: one of inboxReadsAtOnce, and at most inboxReadsPerAddr for one
@@ -16198,6 +16265,11 @@ func (a *app) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	addr := limitKey(a.clientIP(r))
 	from = addr
+	if forwardMissing(a, r) {
+		q.unforwarded.Do(func() {
+			log.Printf("inbox: a delivery came from %s, a trusted proxy, with no X-Forwarded-For or X-Real-IP, so every server that delivers through it shares that one address's allowances (3,600 deliveries and 60 key fetches an hour, 2 bodies read at once); make the proxy pass the sender's address (README, Behind a reverse proxy). Said once.", addr)
+		})
+	}
 	if !a.lim.inboxAddr.add(addr) {
 		answer(inAddrLimit, "")
 		return
@@ -16271,6 +16343,9 @@ func (a *app) handleInbox(w http.ResponseWriter, r *http.Request) {
 		wait()
 		return
 	}
+	// The body is here: its read turn goes back now. What follows has turns of its own (the key turns, the decode
+	// turns), so a delivery waiting for a key or a decode does not keep its address's read turns.
+	release()
 	why2, kind := a.takeDelivery(r, body, addr, host, senderGroup(keyID), keyID)
 	answer(why2, kind)
 }
@@ -16299,7 +16374,7 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyI
 	// nothing done. Otherwise the answer (202 or 401) would tell anyone who sends a garbage signature whether this
 	// instance has cached that actor, that is whether a member here looked the person up (7.10). Only this
 	// server's unset clock, which is the same for every sender, keeps its 503.
-	if err != nil && (!errors.As(err, &se) || se.Reason != sigClock) && f.ownShaped(ctx, call, keyID) {
+	if err != nil && !ownFailure(err) && f.ownShaped(ctx, call, keyID) {
 		return inUnverifiedDelete, "Delete"
 	}
 	if err != nil {

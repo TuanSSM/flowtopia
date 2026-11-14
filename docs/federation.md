@@ -252,6 +252,17 @@ These change the design and are not obvious from the brief.
 15. **The people list reads `users` whole** (`peopleSQL`, held by `TestDBQueryPlans`). With remote
     accounts in the same table (F5) it must filter to local accounts, and the plan test must hold with
     thousands of remote rows.
+16. **Behind Docker's userland proxy a client chooses its own address** (found in the second review of #111; older
+    than federation, and the same for every allowance; not changed here, for the owner to decide). The condition:
+    `FLOWA_TRUSTED_PROXIES` is unset, so its default trusts `172.16.0.0/12`, and the connection reaches the
+    container through Docker's userland proxy (`docker-proxy`, which handles a published port when Docker does not
+    rewrite the address with iptables: with `"userland-proxy": true` and iptables off, or for connections the host
+    makes to its own published port). The connection then comes from the bridge's gateway (`172.17.0.1` or the
+    like), which is trusted, and `docker-proxy` passes the client's bytes unchanged, so `clientIP` believes the
+    `X-Forwarded-For` the client wrote itself: a client can name any address per request and step around every
+    per-address allowance (sign-in and sign-up limits, discovery, public pages, the inbox). With Docker's usual
+    iptables forwarding the container sees the client's own address and this does not happen; behind a reverse
+    proxy that sets `X-Forwarded-For` itself, the proxy's entry is the one read.
 
 ## 1. The community side as it is
 
@@ -2045,8 +2056,10 @@ the note was silent or is corrected:
      forwarded address), 429; the type, 415; no signature or one that does not parse, 401; the key id's domain
      suspended, or not allowed in allowlist mode, 403 (7.7, section 10); the `federation` flag off, 503 with
      `Retry-After` (F1's pause switch, off by default, a flag only in a mode that federates); a `Content-Length`
-     over 256 KB, 413; no read turn, 503 at once: 8 at once, at most 2 for one address, so no address can hold
-     them all.
+     over 256 KB, 413; no read turn, 503 at once: 8 bodies being read at once, at most 2 for one address, so no
+     address can hold them all. A read turn ends when the body has arrived (after the second review of #111: it
+     was held through the whole delivery, so one address had 2 deliveries in flight in all;
+     `TestInboxReadTurnFreed`).
   2. The body within 256 KB (413) and 10 s (408): 256 KB at about 200 kbit/s, a slow mobile link. The
      connection's read deadline is set, and the read runs beside a timer as well; on any failure the read turn is
      given back before the answer (`TestInboxSlowBodies`: two from one address, the rest of it 503 at once and a
@@ -2078,21 +2091,36 @@ the note was silent or is corrected:
   replay within 12 hours of one rests on the activity ids stored.
 - **Keys not kept have turns of their own.** A key not in `keyMemo` is looked up (and perhaps fetched) under one of
   2 key turns (`inboxKeyAtOnce`, the cache's own 2 fetches at once), taken at once or not at all (503): a flood of
-  deliveries naming keys nobody has holds at most 2 of the 8 read turns, and no decode turn, so deliveries whose
-  keys are kept go on (`TestDBInboxFlood`).
+  deliveries naming keys nobody has holds at most these 2, and no read or decode turn, so deliveries whose keys
+  are kept go on (`TestDBInboxFlood`).
+- **Behind a proxy, "per address" is per what the proxy says.** The address the allowances count is `clientIP`'s:
+  the forwarded address only when the connection comes from `FLOWA_TRUSTED_PROXIES` (default loopback and Docker's
+  `172.16.0.0/12`). When the proxy passes none, or is not trusted, every sender shares that one address's
+  allowances (3,600 deliveries and 60 key fetches an hour, 2 bodies being read), for the whole fediverse. Decided:
+  the inbox logs this once per process when a delivery comes straight from a trusted proxy with no
+  `X-Forwarded-For` or `X-Real-IP` (`forwardMissing`, `TestInboxUnforwardedSaidOnce`), because that state is a
+  misconfiguration an operator cannot see otherwise and one line costs nothing; an untrusted proxy cannot be told
+  from a sender, so it is not logged. `clientIP` and its defaults are unchanged.
 - **An own Delete nobody can verify is answered 202** (after the review of #111). Before, a garbage signature on a
   body shaped as an actor's own Delete was answered 202 when Flowa had never seen the actor and 401 when it had it
   cached, so a stranger could learn whether a member here had looked a given person up. Now the peek takes only an
   actor on the key id's origin (any other cannot pass the origin rule anyway), and every such Delete whose
   signature fails, whatever the reason but this server's unset clock (the same for every sender), is answered 202
-  with an empty body and nothing done, as one from an actor never seen is (`TestInboxPeekOracle`). **The cost:** a
+  with an empty body and nothing done, as one from an actor never seen is (`TestInboxPeekOracle`). **Except this
+  server's own failures** that any sender can meet, cached actor or not: the replay memory full, every key turn
+  taken, the database (each checked before the peek or by the one lookup both kinds run): those keep their 503 and
+  the sender retries. A key fetch that cannot be made (no fetch turn in 5 s, the address's allowance of fetches
+  used up, a canceled fetch) is answered 202 too, since only a cached actor's Delete reaches a fetch (an unknown
+  actor's is dropped before), and a 503 there would bring the question back (`ownFailure`). **The cost:** a
   real own Delete from a cached actor whose signature fails for another reason (its clock, a proxy that changed the
   body) is answered 202, so its sender does not retry, and the Delete is lost. That is accepted: the actor is still
   marked gone at its next fetch, which answers 410 (7.4), and Mastodon's own pages on disk do not say what it
   answers a Delete it cannot verify; the SWICG report says only "discard the Delete and do not process it". **What
-  stays distinguishable:** the time. A cached actor's Delete costs a row read and an RSA check that an unknown
-  actor's does not (about 1 ms on the runner), so a sender who measures answers closely can still tell the two
-  apart; an own Delete signed by another actor is that actor's forward (`TestInboxOwnDeleteByAnother`).
+  stays distinguishable:** the time. An unknown actor's Delete costs one indexed lookup. A cached actor's costs a
+  row read and an RSA check besides (about 1 ms on the runner), and, the first time in each 10 minutes that a key id
+  it does not keep is named for it, a refetch of the actor: a request to its server, bounded by the fetch's 5 s and
+  the address's 60 fetches an hour. So a sender who measures can tell a cached actor apart, sharply once per actor
+  in 10 minutes, faintly otherwise; an own Delete signed by another actor is that actor's forward (`TestInboxOwnDeleteByAnother`).
 - **The one reading before the signature.** `peekOwnDelete` tells an actor's own Delete before the signature, which
   7.4 needs (a Delete from an actor never seen costs no fetch) and 6.3 too (a gone actor's own Delete verifies with
   its cached key). Its bounds, written as its comment: only for a key not kept, so only after every check before the
@@ -2140,7 +2168,10 @@ the note was silent or is corrected:
   forgotten whenever its actor's row changes in this process: the cache writing the actor (a refetch, a changed
   key, a suspension), a 410, the worker marking it gone, and the cache's bound removing actors (which forgets every
   kept key, since it does not list the ids it removed); a lookup that read the row before such a drop does not keep
-  its key after it (the memo's generation). A row removed by `-purge-remote` beside the server is met as a foreign
+  its key after it (the memo's generation, compared and the key put under one lock), and a key read from an older
+  row than the one the cache last wrote for that actor is not kept either (the row's `fetched_at`, recorded by the
+  write: the write itself does not move the generation, since the lookup that waited for it reads that very row
+  back; after the second review of #111, `TestKeyMemoRaces`). A row removed by `-purge-remote` beside the server is met as a foreign
   key refusal when the delivery is stored: the key is forgotten and the sender told 503, to try again
   (`TestDBInboxKeyFollowsRow`). A row claimed more often than its attempts allow (its handling kept ending its
   worker or outlasting its lease) is failed at the claim, not handled again; a row whose actor's domain was

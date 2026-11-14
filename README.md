@@ -649,8 +649,8 @@ the name exists, makes no difference to the answer.
 - **What a delivery must pass**, in this order, cheapest first, and nothing a sender has not proven is charged
   to anyone but the address it came from:
   1. before the body is read: at most 3,600 deliveries an hour per address, an Activity Streams content type, a
-     signature header that parses, a domain the policy lets in, the switch on, at most 256 KB announced, and one
-     of 8 bodies read at once (at most 2 for one address);
+     signature header that parses, a domain the policy lets in, the switch on, at most 256 KB announced, and room
+     among the 8 bodies being read at once (at most 2 for one address; a body's turn ends when it has arrived);
   2. the body itself, within 256 KB and 10 seconds (256 KB at about 200 kbit/s);
   3. the signature (both forms above, the digest, the 12 hours, never twice). Its key is fetched from its server
      when it is not kept (signed, at most 2 such lookups at once); the address pays for that fetch (at most 60 an
@@ -669,6 +669,15 @@ the name exists, makes no difference to the answer.
   answered 202, counted by type, and dropped: they come with later versions. At most 5,000 rows wait (then
   503), 500 from one server's domain (then 429); a handled row loses its body at once and is removed after 7
   days.
+- **Behind a reverse proxy, these per-address numbers need the sender's address.** Flowa takes a request's
+  address from `X-Forwarded-For` (or `X-Real-IP`) only when the connection comes from a trusted proxy,
+  `FLOWA_TRUSTED_PROXIES`, whose default trusts loopback and Docker's networks (`127.0.0.0/8`, `::1`,
+  `172.16.0.0/12`). If the proxy passes no sender's address (a same-host nginx without
+  `proxy_set_header X-Forwarded-For`, or Docker's own userland proxy in front of the container), or the proxy is not
+  trusted (on another machine, with the setting unset), every server that delivers here arrives from one address
+  and shares its allowances: 3,600 deliveries and 60 key fetches an hour and 2 bodies being read at once, for the
+  whole fediverse. The log then says so once ("a trusted proxy, with no X-Forwarded-For"). See "Behind a reverse
+  proxy" for the settings.
 - **Upgrading an instance that already federates:** after this version, nothing is taken from another server
   until an admin turns "Federation: take deliveries" on under Features, and, with the allowlist that nothing saved
   means, **members' searches by handle stop reaching other servers** (they are told the server is not one this

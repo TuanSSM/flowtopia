@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1088,6 +1090,38 @@ func TestInboxPeekOracle(t *testing.T) {
 	if c, r, _ := probe("https://elsewhere.example/users/z", "https://social.example/probe3#k"); c != 401 {
 		t.Errorf("an actor on another origin than the key id: %d %v", c, r)
 	}
+	// This server's own failures keep their 503, and answer alike for both: every key turn taken, the replay
+	// memory full. A key fetch that cannot be made (the address's allowance used up) is met only by a cached
+	// actor, so it is answered 202 like the never-seen one, not 503 (ownFailure's comment).
+	same := func(what string, want int) {
+		t.Helper()
+		e.clock.add(time.Second)
+		c1, r1, b1 := probe("https://social.example/users/ghost", "https://social.example/probe4#k")
+		e.clock.add(time.Second)
+		c2, r2, b2 := probe(boID, "https://social.example/probe5#k")
+		e.clock.add(time.Second)
+		c3, r3, b3 := probe(boID, boKeyID)
+		if c1 != want || (answer{c1, b1}) != (answer{c2, b2}) || (answer{c2, b2}) != (answer{c3, b3}) {
+			t.Errorf("%s: never seen %d %v; cached bo %d %v; cached bo, its own key %d %v; want %d for all", what, c1, r1, c2, r2, c3, r3, want)
+		}
+	}
+	for range inboxKeyAtOnce {
+		e.q.keyTurns <- struct{}{}
+	}
+	same("every key turn taken", 503)
+	for range inboxKeyAtOnce {
+		<-e.q.keyTurns
+	}
+	was := e.a.fed.verifier.seen
+	full := newReplaySet(sigSeenMax, sigPast)
+	full.maxGroups = 0
+	e.a.fed.verifier.seen = full
+	same("the replay memory full", 503)
+	e.a.fed.verifier.seen = was
+	e.clock.add(actorTTL) // bo is due to be fetched again, and the address may fetch nothing more
+	e.a.fed.actors.addrFetches = newLimiter(1, time.Hour)
+	e.a.fed.actors.addrFetches.add(limitKey("198.51.100.7"))
+	same("the address's key fetches used up", 202)
 }
 
 // An own-Delete-shaped body signed by another actor is that actor's forward, never the named actor's Delete (the
@@ -1189,6 +1223,116 @@ func TestDBInboxWorkerLimits(t *testing.T) {
 	}
 	if e.count(`SELECT count(*) FROM ap_inbox WHERE state = 'done' AND outcome LIKE '%suspended%'`) != 1 || e.w.total() != before {
 		t.Errorf("a row of a suspended domain: %d done, %d fetches", e.count(`SELECT count(*) FROM ap_inbox WHERE state = 'done'`), e.w.total()-before)
+	}
+}
+
+// A read turn is held only while the body is read (the second review's 1): a delivery waiting for its key to be
+// fetched, or for a decode turn, holds none, so its address's later deliveries are read and taken meanwhile.
+func TestInboxReadTurnFreed(t *testing.T) {
+	e := newInboxEnv(t)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo's key kept
+	slow := "https://social.example/users/slow"
+	release := e.w.holdAt(slow)
+	done := make(chan int, 1)
+	go func() {
+		done <- e.post("/inbox", activity(slow, "Follow", "x", nil), e.signer(e.other, slow+"#main-key", sigCavage), nil).Code
+	}()
+	<-e.w.arrived
+	if len(e.q.reads) != 0 {
+		t.Errorf("%d read turns held while a key is fetched", len(e.q.reads))
+	}
+	for range inboxReadsPerAddr + 1 {
+		if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+			t.Errorf("the same address while its key fetch waits: %d (%v)", w.Code, e.last())
+		}
+	}
+	release()
+	<-done
+	// Waiting for a decode turn holds no read turn either.
+	for range inboxAtOnce {
+		e.q.slots <- struct{}{}
+	}
+	e.q.waitFor = time.Hour
+	go func() {
+		done <- e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil).Code
+	}()
+	for end := time.Now().Add(10 * time.Second); e.q.waiting.Load() != 1; runtime.Gosched() {
+		if time.Now().After(end) {
+			t.Fatal("the delivery never waited for a decode turn")
+		}
+	}
+	if len(e.q.reads) != 0 {
+		t.Errorf("%d read turns held while waiting for a decode turn", len(e.q.reads))
+	}
+	for range inboxAtOnce {
+		<-e.q.slots
+	}
+	if code := <-done; code != 202 {
+		t.Errorf("after the decode turns came back: %d", code)
+	}
+}
+
+// A delivery straight from a trusted proxy that names no sender is said once in the log: every server behind it
+// then shares one address's allowances (the second review's 1).
+func TestInboxUnforwardedSaidOnce(t *testing.T) {
+	e := newInboxEnv(t)
+	logs := logged(t)
+	for _, c := range []struct {
+		from string
+		xff  string
+		want bool
+	}{{"127.0.0.1:1", "", true}, {"172.17.0.1:1", "", true}, {"127.0.0.1:1", "203.0.113.5", false}, {"203.0.113.5:1", "", false}} {
+		r := httptest.NewRequest("POST", "/inbox", nil)
+		r.RemoteAddr = c.from
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := forwardMissing(e.a, r); got != c.want {
+			t.Errorf("%s with X-Forwarded-For %q: %v", c.from, c.xff, got)
+		}
+	}
+	for range 3 {
+		e.postFrom("127.0.0.1:1", "/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+		e.clock.add(time.Second)
+	}
+	if n := strings.Count(logs.String(), "a trusted proxy, with no X-Forwarded-For"); n != 1 {
+		t.Errorf("said %d times", n)
+	}
+}
+
+// The kept-key memo (the second review's 2): a drop that races a put is never missed, and a key read from a row
+// before the cache wrote the actor anew is not kept after that write, while the key of the row it wrote is.
+func TestKeyMemoRaces(t *testing.T) {
+	missed := 0
+	for range 20000 {
+		k := &keyMemo{max: 10, m: map[string]*list.Element{}, l: list.New()}
+		h := &keyHeld{keyID: "https://x.example/a#k", actor: "https://x.example/a", until: time.Now().Add(time.Hour)}
+		gen := k.generation()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); k.putAt(h, gen) }()
+		go func() { defer wg.Done(); k.drop(h.actor) }()
+		wg.Wait()
+		if _, ok := k.get(h.keyID, time.Now()); ok {
+			missed++
+		}
+	}
+	if missed > 0 {
+		t.Errorf("a key kept after its drop in %d of 20000 races", missed)
+	}
+	k := &keyMemo{max: 10, m: map[string]*list.Element{}, l: list.New()}
+	t0 := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	old := &keyHeld{keyID: "https://x.example/a#k", actor: "https://x.example/a", until: t0.Add(time.Hour), fetched: t0}
+	gen := k.generation()                       // a lookup reads the cached row
+	k.rewritten(old.actor, t0.Add(time.Minute)) // another's fetch writes the actor anew (suspended, a new key)
+	k.putAt(old, gen)
+	if _, ok := k.get(old.keyID, t0); ok {
+		t.Error("the key read before the actor's row was rewritten is kept after it")
+	}
+	fresh := &keyHeld{keyID: old.keyID, actor: old.actor, until: t0.Add(time.Hour), fetched: t0.Add(time.Minute)}
+	k.putAt(fresh, k.generation())
+	if _, ok := k.get(old.keyID, t0); !ok {
+		t.Error("the key of the row the write wrote was not kept")
 	}
 }
 
