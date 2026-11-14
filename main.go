@@ -5822,7 +5822,7 @@ and public pages, further down; there is no inbox and nothing is delivered yet. 
 // servers can find the handle and read the profile and the Public posts, and nobody can follow yet.
 const (
 	fedSwitch      = "Share my profile and Public posts beyond this server"
-	fedMemberBuilt = "Other servers can find you by your handle, and anyone, there or in a browser, can read your profile and the posts you mark Public, without signing in. Nobody there can follow you yet, and nothing is sent to them. Practice, progress, notes, stats and badges never leave this server."
+	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. Nobody there can follow you yet, and nothing is sent to them. Practice, progress, notes, stats and badges never leave this server."
 	fedUnavailable = "Sharing beyond this server is not available at the moment. Other servers cannot find anyone here."
 )
 
