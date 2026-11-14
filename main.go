@@ -18339,9 +18339,11 @@ func (f *federation) activityID(name string) string {
 func (f *federation) memberActor(name string) string { return f.origin.url + "/users/" + name }
 
 // sendFollow enqueues one activity of from (a member, or instanceActor) for the remote actor to's own inbox,
-// never its shared inbox (6.4). It is the one call of enqueue in this section. The inbox must be on the actor's
-// own origin (inboxOwn), so that what a delivery there meets (a redirect, a 5xx, a time out, which count towards
-// a host's circuit, 8.4) is the actor's own server's, never a server an actor document merely names.
+// never its shared inbox (6.4). It is the one call of enqueue in this section, and names the recipient by the
+// verified id of its cached row (ap_actors.ap_id), never an id an activity named, as enqueue requires. The inbox must
+// be on the actor's own origin (inboxOwn, at least as strict as enqueue's own rule of the actor's host), so that what
+// a delivery there meets (a redirect, a 5xx, a time out, which count towards a host's circuit, 8.4) is the actor's own
+// server's, never a server an actor document merely names.
 func (f *federation) sendFollow(ctx context.Context, from keyOwner, act outFollow, to *remoteActor) error {
 	switch {
 	case f.out == nil || to.Inbox == "":
@@ -18770,10 +18772,13 @@ func (f *federation) undoByID(ctx context.Context, s *remoteActor, id string) (s
 
 // goneFollower is the delivery queue's goneInbox (8.3: "410 for an inbox removes that follower"): the remote
 // accounts whose own inbox that was stop following local members, and their requests go with them. Only a
-// personal inbox: a shared one answering 410 names no one account. It reads ap_actors by inbox, at most
-// remoteActorsMax rows, on a 410 alone.
+// personal inbox: a shared one answering 410 names no one account. The queue writes an address in one spelling
+// (its scheme and host in lower case, no :443), so a stored inbox is compared in that spelling too. It reads
+// ap_actors by inbox, at most remoteActorsMax rows, on a 410 alone.
 func (f *federation) goneFollower(ctx context.Context, inbox string) {
-	if _, err := f.fedExec(ctx, `WITH a AS (SELECT user_id FROM ap_actors WHERE inbox = $1),
+	if _, err := f.fedExec(ctx, `WITH a AS (SELECT user_id FROM ap_actors WHERE inbox = $1
+			OR regexp_replace(inbox, '^https://([^/]+?)(:443)?(/|$)', '') = regexp_replace($1, '^https://([^/]+?)(:443)?(/|$)', '')
+				AND lower(substring(inbox from '^https://([^/:]+)')) = lower(substring($1 from '^https://([^/:]+)'))),
 		g AS (DELETE FROM follows WHERE follower_id IN (SELECT user_id FROM a) AND followee_id IN (SELECT id FROM users WHERE domain = '') RETURNING 1)
 		DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id IN (SELECT user_id FROM a)`, inbox); err != nil {
 		log.Printf("deliveries: removing the followers whose inbox is gone: %v", err)

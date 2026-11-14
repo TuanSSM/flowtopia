@@ -1352,10 +1352,12 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   says so in `lookupNotAllowed`'s words); and not an account whose inbox is not on its own origin.
 - **Where it is sent.** Every Follow, Undo, Accept and Reject goes to the other actor's own inbox (6.4), never its
   shared inbox, through `enqueue` (the only call is `sendFollow`), which applies the domain policy and the caps, and is
-  signed at the send with the member's key (the instance actor's for its own Reject). The inbox must be on the actor's
+  signed at the send with the member's key (the instance actor's for its own Reject), each recipient named by its cached
+  row's verified id (`ap_actors.ap_id`), as `enqueue` requires since FWR 2's review. The inbox must be on the actor's
   own origin (`inboxOwn`: `sameOrigin`, scheme, host and port whole, the rule the cache holds a key to, 7.3), so that
   what a delivery meets there (a redirect, a 5xx, a time out, which count towards a host's circuit, 8.4) is the actor's
-  own server's; an actor naming an inbox elsewhere cannot be followed, and its Follow is not taken.
+  own server's; an actor naming an inbox elsewhere cannot be followed, and its Follow is not taken. That is at least as
+  strict as `enqueue`'s own rule (the inbox on the actor's host, 8.8), which would refuse such a recipient anyway.
 - **Bounds against a hostile server** (section 12): at most 200 requests wait for one member (`followRequestsMax`), 100
   from the accounts of one host (`followRequestsPerHost`), and 2,000 follows of local members come from one host's
   accounts in any state (`followsPerHost`); past each a Follow is dropped unanswered and counted in the row's outcome.

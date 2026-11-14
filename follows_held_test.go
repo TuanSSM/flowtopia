@@ -223,6 +223,17 @@ func TestDBFollowsHeld(t *testing.T) {
 		t.Errorf("after bo's inbox answered 410: %q, %d requests made", e.state(bo, anaID), len(stub.requests()))
 	}
 
+	// The queue names an inbox in one spelling (host in lower case, no :443); a stored inbox in another spelling is
+	// still that account's.
+	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
+	e.mustExec(`UPDATE ap_actors SET inbox = 'https://SOCIAL.example:443/users/bo/inbox' WHERE user_id = $1`, bo)
+	e.a.fed.goneFollower(context.Background(), "https://social.example/users/bo/inbox")
+	if e.state(bo, anaID) != "" {
+		t.Error("a 410 for bo's inbox in the queue's spelling left bo's follow")
+	}
+	e.mustExec(`UPDATE ap_actors SET inbox = 'https://social.example/users/bo/inbox' WHERE user_id = $1`, bo)
+	e.clock.add(followAnswerEvery)
+
 	// Suspending a domain ends the follows with its accounts both ways, and their notifications, and sends nothing.
 	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
 	e.mustExec(`INSERT INTO follows (follower_id, followee_id, state) VALUES ($1, $2, 'accepted') ON CONFLICT DO NOTHING`, anaID, bo)
