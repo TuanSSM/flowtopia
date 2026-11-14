@@ -678,6 +678,20 @@ select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
 .person b { font-size: 13px; font-weight: 580; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .person .rank { width: 16px; text-align: right; font-size: 11.5px; color: var(--ink-3); font-weight: 650; }
 .person .avatar { width: 30px; height: 30px; font-size: 11px; }
+/* People elsewhere: the search by handle and what it found, all of it text from another server. */
+.look-form { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-bottom: 6px; }
+.look-form .field { min-width: 0; flex: 1 1 180px; }
+.look-form input { width: 100%; }
+.look-out:not(:empty) { margin-top: 10px; }
+.look-prof { display: grid; gap: 8px; }
+.look-name { display: grid; gap: 1px; margin: 0; }
+.look-name b, .look-name .tiny, .look-text, .look-post summary { overflow-wrap: anywhere; }
+.look-handle, .look-user { unicode-bidi: isolate; }
+.look-text { white-space: pre-line; margin: 0; unicode-bidi: isolate; }
+.look-sub { font-size: 12.5px; font-weight: 620; margin: 4px 0 0; }
+.look-post { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line); }
+.look-post p { margin: 0; }
+.look-post summary { cursor: pointer; font-size: 13px; }
 .risk-card { display: flex; align-items: center; gap: 12px; border-color: color-mix(in srgb, #ff7a3d 45%, var(--line)); }
 .prof-head h1 { font-size: 26px; }
 .prof-bio { margin-top: 10px; max-width: 620px; white-space: pre-wrap; overflow-wrap: anywhere; }

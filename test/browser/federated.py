@@ -13,6 +13,13 @@
 #     first page, the post's Create at its own id, followers, following and featured over HTTP, and a browser
 #     at the outbox sent to the profile page; the post's page and
 #     the profile page in the browser, held to the a11y, contrast and keys walks, at desktop and 420 px;
+#   - People elsewhere, the search by handle (FRD 8): over HTTP, a handle on this instance (answered from the
+#     database), and queries refused or failed with their fixed reasons (not a handle, http, a private address,
+#     localhost, another port, a name that does not resolve), a visitor, another page's write and a GET
+#     refused; in the browser, the box in the timeline reached with Tab, a member found and an address refused,
+#     each said to a screen reader, held to the a11y, contrast and keys walks and to 420 px. This server can
+#     reach no other server (private addresses are refused and no setting changes that), so a remote account,
+#     the reverse check and the outbox are covered in Go only (TestDBResolveHandle, TestDBLookupRoute);
 #   - the admin dashboard's mode line, and the start log, say what this version serves (no inbox, nothing
 #     delivered), and
 #     the dashboard that the origin is not announced until an answer first names a member, then since when;
@@ -26,7 +33,8 @@
 # start of the server with another FLOWA_ORIGIN, and run.sh starts one; TestDBOriginFrozen (db_test.go) checks
 # what /api/me tells a member and an admin then, and fedCard in web/app.js shows that text with no switch.
 # federated.py [<out dir>]: with an out dir, the Settings card at desktop and at 420 px, the dashboard's mode
-# line, the composer, and the public post page and profile page at desktop and 420 px are also written there
+# line, the composer, the public post page and profile page, and People elsewhere with a member found and with a
+# failure, at desktop and 420 px, are also written there
 # (federated-*.png) and added to the index.json the screenshots job publishes.
 import sys,os,io,ast,json,base64,urllib.request,urllib.error,urllib.parse,http.cookiejar
 os.environ['FLOWA_POINTER']='coarse'  # phone() zooms from the browser's side, which a touch run is allowed to do
@@ -56,7 +64,10 @@ for(const e of document.querySelectorAll('#main *')){const r=e.getBoundingClient
 WIDE_PUB=WIDE.replace("'#main *'","'main *'")
 made=[]
 def picture(name,title):
-    if not out: return
+    if not out:
+        # The integration job runs the suite without a directory for pictures (the screenshots job passes one):
+        # each picture is then a check that cannot run here, counted as skipped, so both runs count the same.
+        print(f'SKIP {name}: no directory for pictures was given',flush=True);return
     from PIL import Image
     img=Image.open(io.BytesIO(base64.b64decode(cmd('WebDriver:TakeScreenshot',full=True)['value']))).convert('RGB')
     img.save(f'{out}/{name}.png',optimize=True);made.append({'file':name+'.png','title':title});check(f'{name} ({img.width}x{img.height})',True)
@@ -250,6 +261,98 @@ try:
     H.zoom=1.0
     load(BASE)
 
+    # People elsewhere (FRD 8): the search by handle. This suite's server refuses private addresses and has no
+    # other server to ask (no setting lets a running Flowa reach a private address, by design), so it covers
+    # what needs no remote server: a handle on this instance (answered from the database, no connection), and
+    # queries that fail before or at their first connection, each in its fixed words. The whole remote path
+    # (WebFinger, the actor, the reverse check, redirects, the outbox) is TestDBResolveHandle's, in Go.
+    def lookup(opener,q,headers=None):
+        r=urllib.request.Request(BASE+'api/fed/lookup',data=json.dumps({'q':q}).encode(),headers={'Content-Type':'application/json',**(headers or {})},method='POST')
+        try:
+            with opener.open(r,timeout=30) as a: return a.status,json.loads(a.read())
+        except urllib.error.HTTPError as e: return e.code,json.loads(e.read() or b'{}')
+    s,j=lookup(op,'@Admin@FLOWA.test')
+    check('a handle on this instance is a member of it, answered from the database',s==200 and j.get('result',{}).get('kind')=='local' and j['result'].get('handle')=='admin',lambda: (s,j))
+    for q,code,reason in (('@nobody@flowa.test',404,'notFound'),('https://flowa.test/actor',404,'notFound'),('bo',400,'badInput'),('http://social.example/@bo',400,'badInput'),
+                          ('bo@10.0.0.1',422,'refused'),('bo@localhost',422,'refused'),('https://social.example:8443/@bo',422,'refused'),('bo@nowhere.invalid',404,'notFound')):
+        s,j=lookup(op,q)
+        check(f'{q!r}: {code} {reason}, in fixed words',s==code and j.get('reason')==reason and j.get('error') and '10.0.0.1' not in j.get('error',''),lambda: (s,j))
+    s,j=lookup(urllib.request.build_opener(),'@admin@flowa.test')
+    check('a visitor cannot look anyone up',s==401,lambda: (s,j))
+    s,j=lookup(op,'@admin@flowa.test',{'Origin':'https://evil.example'})
+    check('nor can another page, by a form or a script of its own',s==403,lambda: (s,j))
+    # A GET (a link or a picture could send one) is not the route: the address takes POST alone, so a GET is
+    # answered as an API address nobody has, the same status, Allow and body.
+    s,gh,gb=ask('api/fed/lookup?q=%40admin%40flowa.test');s0,gh0,gb0=ask('api/nobody-has-this-address')
+    check('a GET looks nobody up: answered as an API address nobody has',s==s0==404 and gh.get('Allow')==gh0.get('Allow') and gb==gb0,lambda: (s,gh.get('Allow'),gb[:100],s0,gb0[:100]))
+    check('/api/me offers the search in a mode that federates',get_json(op,'me').get('federation',{}).get('lookup') is True,lambda: get_json(op,'me').get('federation'))
+    nav('#/timeline')
+    check('the timeline has "People elsewhere", with a box named for what it takes',lambda: js("const c=document.querySelector('.look-card');const i=document.querySelector('#look-q');return !!c&&c.querySelector('h2').textContent==='People elsewhere'&&!!i&&i.labels[0].innerText.startsWith('Handle or profile address')"),lambda: txt('main')[:300])
+    def look_rules(who):
+        for t in ('dark','light'):
+            themed(t)
+            n,f,d=js(A['NAMES'],'.look-card'),js(A['FIELDS'],'.look-card'),js(A['IDS'])
+            check(f'{who}, {t}: every control and field has a name, and no id repeats (a11y.py)',n['n']>0 and f['n']>0 and not n['bad'] and not f['bad'] and not d['bad'],lambda: (n,f,d))
+            r=js(C['CHECK'],'.look-card',False,C['KNOWN'],'')
+            check(f'{who}, {t}: text and the edges of controls stand out (contrast.py)',r['n']>0 and not r['bad'] and not r['unknown'],lambda: (r['n'],r['bad'][:4],r['unknown'][:4]))
+        themed('dark')
+    if tab_to('#look-q','the box of People elsewhere'):
+        check('the box shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
+        type_text('@admin@flowa.test');key(ENTER)
+        check('Enter looks the handle up: a member of this Flowa, linked to their profile',lambda: js("const a=document.querySelector('.look-out a.person');return !!a&&a.getAttribute('href')==='#/u/admin'&&a.innerText.includes('a member of this Flowa')"),lambda: txt('#look-out'))
+        check('a screen reader is told what was found',lambda: 'a member of this Flowa' in (txt('#say') or ''),lambda: txt('#say'))
+        check('the focus stays in the search',lambda: on('#look-q') or on('.look-form button'),active)
+        look_rules('People elsewhere, a local member')
+        js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top
+        picture('federated-lookup','Federated mode: People elsewhere, a handle on this instance found')
+        tab_to('#look-q','the box again',back=True)
+        key('a',hold=(CTRL,));type_text('bo@10.0.0.1');key(ENTER)
+        check('an address Flowa does not connect to is told so, in plain words',lambda: txt('.look-err')=='Flowa does not connect to that address.',lambda: txt('#look-out'))
+        check('and a screen reader hears the same',lambda: txt('#say')=='Flowa does not connect to that address.',lambda: txt('#say'))
+        look_rules('People elsewhere, a failure')
+        js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top
+        picture('federated-lookup-failure','Federated mode: People elsewhere, an address Flowa does not connect to')
+        got=phone(420)
+        if got!=420: got=phone(420)
+        for t in ('dark','light'):
+            themed(t)
+            bad=js(WIDE)
+            check(f'People elsewhere at {got} px wide, {t}: nothing is off the screen',got<=420 and not bad,lambda: (got,bad[:5]))
+        themed('dark');js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top
+        picture('federated-lookup-failure-phone','Federated mode: People elsewhere, a failure, phone')
+        # The page's drawing of a remote profile, given an answer as hostile as another server's words can make
+        # one (the server sends them as plain text; the page must keep them so): no element made of them, the
+        # text shown as written, no link that is not https. No other server is asked: the page's own fetch of
+        # this one address is answered by the suite for one lookup, and given back after.
+        js("""const real=window.fetch;window.fetch=(u,o)=>{if(!String(u).endsWith('api/fed/lookup'))return real(u,o);window.fetch=real;
+            return Promise.resolve(new Response(JSON.stringify({result:{kind:'remote',handle:'x\\u202eelpmaxe.doog@other.example',name:'<img src=x id=pwn1>\\u202e',bio:'<b id=pwn2>bio</b>',link:'https://other.example/@x',notice:'<i id=pwn3>n</i>',
+            posts:[{text:'<script id=pwn4>x</script> '+'averyveryverylongwordwithnospace'.repeat(8),summary:'<u id=pwn5>cw</u>',link:'javascript:alert(2)',more:true,published:'2026-11-12T18:04:05Z',pictures:2}]}}),{status:200,headers:{'Content-Type':'application/json'}}))}""")
+        tab_to('#look-q','the box again',back=True)
+        key('a',hold=(CTRL,));type_text('x@remote.example');key(ENTER)
+        made_of=lambda: js("""const o=document.querySelector('#look-out');return [!!o.querySelector('[id^=pwn]'),[...o.querySelectorAll('a')].map(a=>a.getAttribute('href')),o.innerText.includes('<img src=x id=pwn1>')&&o.innerText.includes('<b id=pwn2>bio</b>'),o.innerText.includes('2 pictures, not shown here')]""")
+        check('a remote profile is drawn as text: no element of its words, no link that is not https, its pictures counted, not shown',lambda: made_of()==[False,['https://other.example/@x'],True,True],made_of)
+        # A handle whose name turns the text's direction (the server refuses one; the page must not trust that):
+        # the host stands in a place of its own, exactly the host, after an isolated name, and every link shows
+        # the host it leads to.
+        parts=lambda: js("""const o=document.querySelector('#look-out'),u=o.querySelector('.look-user'),h=o.querySelector('.look-host'),n=o.querySelector('.look-name b bdi');
+            return [!!u&&u.tagName==='BDI',h&&h.textContent,!!n,getComputedStyle(o.querySelector('.look-handle')).unicodeBidi,o.innerText.includes('(other.example)')]""")
+        check('the handle\'s host is shown apart, exactly as proven, after an isolated name; each link shows its host',lambda: parts()==[True,'other.example',True,'isolate',True],parts)
+        bad=js(WIDE)
+        check('a remote profile with a long word at 420 px: nothing is off the screen',not bad,lambda: bad[:5])
+        js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top
+        picture('federated-lookup-hostile-phone','Federated mode: People elsewhere drawing an answer the suite supplies with a name that turns the text\'s direction (no server asked), phone')
+        tab_to('#look-q','the box again',back=True)
+        key('a',hold=(CTRL,));type_text('@admin@flowa.test');key(ENTER)
+        check('at 420 px the member found is shown too',lambda: js("return !!document.querySelector('.look-out a.person')"),lambda: txt('#look-out'))
+        js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top
+        picture('federated-lookup-phone','Federated mode: People elsewhere, a handle on this instance found, phone')
+        cmd('WebDriver:SetWindowRect',width=1440,height=1100)
+        cmd('Marionette:SetContext',value='chrome')
+        try: js("return FullZoom.reset(gBrowser.selectedBrowser)")
+        finally: cmd('Marionette:SetContext',value='content')
+        H.zoom=1.0
+        load(BASE)
+
     # A member whose name ends with a dot is warned when they opt in.
     jar=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     api(jar,'signup',{'username':'spin.','password':'flowa-test-only'})
@@ -277,7 +380,8 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==8)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==13)
+    else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.
     try: log=open('/tmp/flowa-test/dev.log').read()

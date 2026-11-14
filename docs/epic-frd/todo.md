@@ -13,9 +13,10 @@ outbox item their outboxes and collections; no inbox, so nobody can follow yet, 
 first item waits for its Pi measurement; the guarded fetcher is done, and nothing calls its federation part yet;
 HTTP signatures are built, with no caller yet, and wait for their Pi measurements; WebFinger and NodeInfo are
 done; actor documents and public pages are done, with the post audience and retired names; the outbox and
-collections are done; remote accounts and the cache of remote actors are built, with one way in that nothing
-calls yet, and wait for the recorded fixtures; the owner's review of the design is still asked for. 4 of 8
-items done. The design note was checked against the specifications and
+collections are done; remote accounts and the cache of remote actors are built and wait for the recorded
+fixtures; the search by handle is built, the cache's one caller, and waits for the same fixtures and a browser
+check against a remote server; the owner's review of the design is still asked for. 4 of 8 items done, and
+the code of all eight is written (what is left is listed under "What of FRD is still open" at the end). The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -338,3 +339,70 @@ design note says it exists.
   first page of its outbox; no full-text search; an allowance per member. DoD: `TestDBResolveHandle`
   against a stub serving the recorded fixtures (including a WebFinger redirect to another host and
   an actor whose reverse lookup does not match); a browser check with the stub.
+  Built (federation.md 5.3, 6.3, 6.6, 9.1, 9.4, 11, 12, 13 and 14.4 say what and why, each in an "As built (FRD 8)"
+  paragraph, with the corrections the code settled), in three commits besides the restore drill's
+  `flowa-schema15.dump`. The outbox address of a remote actor: the decoder reads `outbox` and leaves out one it
+  cannot use, and `ap_actors.outbox` (migration 16) keeps it; a commit of its own because it touches FRD 7's
+  cache. Remote HTML as text: `htmlToText` as 6.6 specifies (planned with FWR 5, needed here for the bio and
+  the posts), including the `Cut` rule (whatever is left open at the end is dropped, and for a cut text an
+  entity without its semicolon), with the correction that a mention link is matched to its Mention by href or
+  by its short `@name` on the Mention's host (Mastodon links the profile page and names the actor id);
+  `TestRemoteHTMLToText`, `TestRemoteHTMLFixtures`, `FuzzHTMLToText` (30 s, no failure) and
+  `BenchmarkHTMLToText` (64 KB of each kind of markup in 0.04 to 1.8 ms). The search: `POST /api/fed/lookup`
+  (only in a mode that federates, behind `guard` and a session, `testdata/routes-federated.txt`), `parseLookup`
+  (strict, a table test), `localTarget` (this instance's own host answered from the database, never fetched),
+  `lookupHostOK` (the fetcher's host rules before any connection), forward WebFinger through the fetcher's
+  WebFinger kind, `parseJRD`, the actor through `remoteActor`, the reverse check with the canonical account
+  of Mastodon's page and the rule written in 5.3 for a handle's host apart from the actor's (the query's own
+  subject must be the proven account), a profile address asked as an actor and else of its host's WebFinger by
+  URL, the first page of the outbox (only Public and unlisted Notes by the actor on its origin, at most 20,
+  nothing stored), eight fixed reasons (`lookupReason`), `limits.lookups` (30 an hour per member, counted first),
+  one lookup at a time per member and 4 at once, at most 8 requests through the fetcher and 15 s (when the
+  member's request ends the lookup stops; an actor fetch already started runs on in the cache, as 7.4 says);
+  the card "People elsewhere" in the timeline (`lookupCard` in `web/social.js`, offered by `/api/me`'s
+  `federation.lookup`), with no remote picture and no Follow, and the server's notice saying why; `fedBuilt`
+  and NodeInfo's parts (`lookup`). `TestParseLookup`, `TestAcct`, `TestParseJRD`, `TestLookupReasons`,
+  `TestDBResolveHandle` (against stubs serving documents written from Mastodon's WebFinger page and the SWICG
+  report, through the test-only `dialOverride`: a plain handle in 4 requests, another case, a WebFinger redirect
+  to another host for a handle domain apart from its server, a self link to someone else's actor, an actor
+  whose reverse lookup names another actor, finds nothing, or names a canonical account that leads elsewhere or
+  is on this instance, a profile page, a profile address that redirects to its actor (5 requests, 3 when asked again), an actor whose server stops answering (shown with the date it was kept) and one now gone, every failure, the outbox's cases, a lookup that takes every step in 13
+  requests, and a member who leaves), `TestDBLookupRoute` (the allowance before any connection, a refused
+  address costing its count, the turns, a visitor, a suspended member, another page, a GET, staff answered byte
+  for byte as members, another server's words never shown, nothing remote as HTML), `TestDBLookupOffered`,
+  `TestDBOneConnection` (a lookup held at its WebFinger and at its outbox on a pool of one),
+  `TestDBDefaultsUnchanged` (the new address in local and plain single mode, every method, signed in or not, as
+  an API address nobody has), `TestDBFederatedRoutes`, `TestNodeInfo`, `TestDBRemoteActorCache` and
+  `TestDecodeActorOutbox` pass, the new ones with `-race -count=3` on two cores; `routes-local.txt`,
+  `routes-single.txt`, `headers-local.txt` and `fetch_test.go` are unedited, and `TestDBLocalModeUnchanged`
+  passes. The `federated` browser suite asks the address over HTTP for a handle on its own host and for every
+  failure that needs no other server (not a handle, http, a private address, localhost, another port, a name
+  that does not resolve), a visitor, another page's write and a GET, then works the card with the keyboard (a
+  member found, an address refused, each said to a screen reader) held to the a11y, contrast and keys walks and
+  to 420 px, and writes `federated-lookup`, `federated-lookup-failure` and their `-phone` pictures.
+  After its review (#110): a handle's name part only as `handleNameOK` takes it, shown isolated and apart from its host; the name fallback through the proven handle; links only to the account's own origin, with the host shown; one reason, "not found", for every failure after the resolver, answered no sooner than 1 s (`lookupFloor`); the request bound corrected to 8 (the key document the cache fetches inside `remoteActor`); outboxes read without the actor cache's turns, and one lookup at a time per member. `TestHandleNameOK`, `FuzzHandleName` (30 s), `TestDBLookupReviewProbes`, `TestDBLookupTimingFloor` and `TestDBLookupKeepsKeyTurns` hold them.
+  Open: the DoD's "recorded fixtures" (none is recorded: the stub serves documents written from documentation,
+  as FRD 7's do) and "a browser check with the stub" (the browser suite's server refuses private addresses and
+  must not be given a way round that, so a remote account, the reverse check and the outbox are checked in Go
+  only; a browser sees a remote profile first with FWR 8's two instances); remote pictures, with FWR 5's cache
+  (F6, 9.4); Follow, with FWR 3.
+
+## What of FRD is still open
+
+With this item every item's code is written; what keeps four boxes open is not code:
+
+- **Measurements on the Pi** (FRD 1, FRD 3): the key generation time, and the two budgets of section 12 (10 ms
+  to verify a signature, 15 ms to sign a delivery), by the commands written in those items.
+- **Recorded fixtures** (FRD 7, FRD 8, and the details the note's Sources section leaves to a recording: the
+  alt text property, the nesting of a mention, an actor beside `TestActorDocument`'s golden file, and whether
+  Mastodon answers a profile page's address with its actor): `test/federation-record.sh` is not written, and
+  no session here can reach a fediverse server; the owner, or a session that can, records them.
+- **A browser check of the search against a remote server** (FRD 8): with FWR 8's two instances, the first
+  place where a running Flowa may reach another one.
+- **The owner's decisions**: the review of the design note (F1 to F16 proceed on their recommendations), the
+  instance setting `nodeinfo_version` and the `federation` pause flag left from FRD 4, the answers of local
+  mode after federating (410 and a Tombstone, 4.3) and the indexing setting left from FRD 5, the public count
+  of followers under F10 and the `posts_public` condition left from FRD 6, and whether the search by handle
+  should show unlisted posts as Mastodon does (it does) or only those addressed to the public in `to`, and
+  whether it should be offered to every member (it is: looking someone up shares nothing of the member) or
+  only to members who opted in.

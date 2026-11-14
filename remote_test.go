@@ -664,6 +664,7 @@ func TestDBRemoteActorCache(t *testing.T) {
 	r.w.put(gid, worldDoc{body: actorDoc(gid, "Gargron", "Eugen \u202e", &a.PublicKey, map[string]any{
 		"summary": "<p>Founder</p>\u0000", "url": "https://mastodon.social/@Gargron", "manuallyApprovesFollowers": true,
 		"icon": map[string]any{"type": "Image", "url": "https://mastodon.social/avatar.png"}, "endpoints": map[string]any{"sharedInbox": "https://mastodon.social/inbox"},
+		"outbox": gid + "/outbox",
 	})})
 
 	// The first lookup fetches, signed by the instance actor, after freezing the origin (4.3).
@@ -682,7 +683,7 @@ func TestDBRemoteActorCache(t *testing.T) {
 	}
 	want := remoteActor{UserID: got.UserID, ID: gid, Kind: "Person", Username: "Gargron@mastodon.social", Domain: "mastodon.social", Name: "Gargron",
 		PreferredUsername: "Gargron", Summary: "<p>Founder</p>", URL: "https://mastodon.social/@Gargron", Icon: "https://mastodon.social/avatar.png",
-		Inbox: gid + "/inbox", SharedInbox: "https://mastodon.social/inbox", Followers: gid + "/followers", Locked: true, KeyID: gid + "#main-key",
+		Inbox: gid + "/inbox", SharedInbox: "https://mastodon.social/inbox", Outbox: gid + "/outbox", Followers: gid + "/followers", Locked: true, KeyID: gid + "#main-key",
 		State: "ok", FetchedAt: r.clock.now(), ExpiresAt: r.clock.now().Add(actorTTL), keyPEM: pemOf(&a.PublicKey)}
 	got.FetchedAt, got.ExpiresAt = got.FetchedAt.UTC(), got.ExpiresAt.UTC()
 	if *got != want {

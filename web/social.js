@@ -4,7 +4,7 @@
 
 // sending: the forms whose answer is still on its way; keys: the Idempotency-Key each unsent form
 // last used, so trying the very same thing again cannot make it twice.
-const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], draftAud: '', linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {} });
+const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], draftAud: '', linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {}, lookQ: '', look: null });
 // owner: the account all of this belongs to (0 for a visitor); gen goes up each time it is thrown
 // away, so an answer that was asked for by the previous account is not shown to the next.
 const social = Object.assign(socialBlank(), { owner: 0, gen: 0 });
@@ -476,6 +476,64 @@ function peopleCard() {
   return `<div class="card people" data-tour="people"><div class="card-h"><h2 class="grow">People</h2><span class="sub">Most XP first</span></div>
     ${list.map((u, i) => { const s = u.stats || {}; return `<a class="person ${u.id === me.id ? 'me' : ''}" href="#/u/${esc(u.username)}"><span class="rank num">${i + 1}</span>${avatarHTML(u)}<span class="grow" style="display:grid"><b>${esc(u.displayName || u.username)}</b><span class="tiny">Level ${s.level || 1}${s.streak ? ` · ${s.streak}-day streak` : ''}</span></span><span class="tiny num">${(s.xp || 0).toLocaleString()} XP</span></a>`; }).join('')}</div>`;
 }
+// People elsewhere: a member of a Flowa that federates looks someone up on another server by handle or by
+// the address of their profile (fed.lookup, from the server, only where it federates and federation is not
+// refused). The server asks the other server and answers with the profile and latest public posts as plain
+// text, or one of a few fixed reasons; the page escapes everything it shows, links only https addresses, and
+// says the outcome to a screen reader. No picture from another server is shown, and there is no Follow:
+// the server's notice says why.
+let lookSeq = 0;
+const httpsOnly = u => /^https:\/\//i.test(String(u || '')) ? String(u) : '';
+// The host a link leads to, shown beside it.
+const hostOf = u => { try { return new URL(u).host; } catch { return ''; } };
+// A handle as the server proved it, name@host: the name and the host each in a place of its own, the name
+// isolated so that no direction mark or right-to-left letter in it can move the host or the @ around it.
+function handleHTML(h) {
+  const s = String(h || ''), i = s.lastIndexOf('@');
+  if (i <= 0) return `<span class="look-handle" dir="ltr">@<bdi class="look-user">${esc(s)}</bdi></span>`;
+  return `<span class="look-handle" dir="ltr">@<bdi class="look-user">${esc(s.slice(0, i))}</bdi>@<span class="look-host">${esc(s.slice(i + 1))}</span></span>`;
+}
+const outLink = (u, words) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer nofollow">${words}</a> <span class="tiny">(${esc(hostOf(u))})</span>`;
+function lookupCard() {
+  if (!fed || !fed.lookup) return '';
+  return `<div class="card look-card"><div class="card-h"><h2 id="look-h">People elsewhere</h2></div>
+    <form id="look-form" class="look-form" role="search" aria-labelledby="look-h">
+      <label class="field grow" for="look-q">Handle or profile address<input id="look-q" name="q" type="text" maxlength="2048" autocomplete="off" autocapitalize="none" spellcheck="false" value="${esc(social.lookQ)}" placeholder="@name@server.example" aria-describedby="look-hint"></label>
+      <button class="btn">Look up</button></form>
+    <p class="tiny" id="look-hint">Find someone on another server by their handle or the address of their profile. Flowa asks their server for you, without saying who asked.</p>
+    <div id="look-out" class="look-out" aria-busy="${social.look?.busy ? 'true' : 'false'}">${lookResult()}</div></div>`;
+}
+// The answer is drawn into its own place, not by render(): the page is not drawn again while the cursor rests
+// in a text box, and the cursor stays in the search box for the next query.
+function drawLook() {
+  const o = $('#look-out');
+  if (!o) return;
+  o.innerHTML = lookResult(); o.setAttribute('aria-busy', social.look?.busy ? 'true' : 'false');
+}
+function lookResult() {
+  const L = social.look;
+  if (!L) return '';
+  if (L.busy) return `<p class="small muted">Looking up ${esc(L.q)}…</p>`;
+  if (L.error) return `<p class="notice warn look-err">${esc(L.error)}</p>`;
+  const p = L.result;
+  if (p.kind === 'local') return `<a class="person" href="#/u/${esc(p.handle)}"><span class="grow" style="display:grid"><b>${esc(p.name || p.handle)}</b><span class="tiny">@${esc(p.handle)}, a member of this Flowa</span></span></a>`;
+  const link = httpsOnly(p.link);
+  const posts = (p.posts || []).map(x => {
+    const text = `<p class="look-text" dir="auto">${esc(x.text)}</p>${x.more && httpsOnly(x.link) ? `<p class="tiny">${outLink(x.link, 'Read the rest on its server')}</p>` : ''}`;
+    const when = x.published ? (httpsOnly(x.link) ? outLink(x.link, esc(fmtWhen(x.published))) : esc(fmtWhen(x.published))) : '';
+    return `<article class="look-post">${x.summary ? `<details><summary dir="auto">${esc(x.summary)}</summary>${text}</details>` : text}
+      <p class="tiny">${when}${x.pictures ? `${when ? ' · ' : ''}${x.pictures === 1 ? '1 picture' : x.pictures + ' pictures'}, not shown here` : ''}</p></article>`;
+  }).join('');
+  return `<div class="look-prof">
+    <p class="look-name"><b><bdi>${esc(p.name || p.handle)}</bdi></b><span class="tiny">${handleHTML(p.handle)}</span></p>
+    ${p.stale ? `<p class="notice warn">Its server did not answer just now. This is the profile as Flowa last saw it, ${esc(fmtWhen(p.stale))}.</p>` : ''}
+    ${p.locked ? '<p class="tiny">This account approves its followers by hand.</p>' : ''}
+    ${p.bio ? `<p class="small look-text" dir="auto">${esc(p.bio)}</p>` : ''}
+    ${link ? `<p class="small">${outLink(link, `See the profile on its server ${icon('ext')}`)}</p>` : ''}
+    <p class="notice">${esc(p.notice)}</p>
+    <h3 class="look-sub">Latest public posts</h3>
+    ${posts || `<p class="small muted">${esc(p.postsNote || 'No public posts.')}</p>`}</div>`;
+}
 // Which timeline the page shows, Community or Home (with the follows flag on); remembered on this browser.
 const tlTab = () => flags.follows && localStorage.getItem('fl-tl') === 'home' ? 'home' : 'all';
 function pageTimeline(single, focus) {
@@ -487,7 +545,7 @@ function pageTimeline(single, focus) {
   const empty = single ? 'That post is gone.' : tab === 'home' ? 'Your Home is empty. Follow someone from the People list or from their profile, and their posts show here with yours.' : 'Nothing here yet. Share what you worked on today.';
   return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${lead}</p></div>${tabs}</div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, empty)}</div>
-    <div class="stack tl-side">${!flags.game ? '' : st.atRisk ? `<div class="card risk-card"><span class="flame lit sm">${icon('flame')}</span><span class="grow small"><b>${st.current}-day streak at risk.</b> Log today’s practice to keep it.</span><a class="btn sm" href="#/practice">Log</a></div>` : levelCard(true)}${peopleCard()}</div></div>`;
+    <div class="stack tl-side">${!flags.game ? '' : st.atRisk ? `<div class="card risk-card"><span class="flame lit sm">${icon('flame')}</span><span class="grow small"><b>${st.current}-day streak at risk.</b> Log today’s practice to keep it.</span><a class="btn sm" href="#/practice">Log</a></div>` : levelCard(true)}${peopleCard()}${lookupCard()}</div></div>`;
 }
 
 /* ---------- public profile ---------- */
@@ -717,6 +775,7 @@ document.addEventListener('input', e => {
     if (offer !== social.linkOffer && row) { social.linkOffer = offer; row.hidden = !offer; row.querySelector('.tiny').textContent = offer ? `${SITE_NAMES[siteOf(offer)]} link found` : ''; }
   }
   if (e.target.id === 'pick-q') { social.pickQ = e.target.value; social.pickIdx = 0; refreshPicker(); }
+  if (e.target.id === 'look-q') social.lookQ = e.target.value;
 });
 document.addEventListener('keydown', e => {
   // Escape closes the notifications and hands the focus back to the bell, unless a dialog over them took the key.
@@ -749,6 +808,22 @@ document.addEventListener('change', async e => {
 });
 document.addEventListener('submit', async e => {
   const f = e.target;
+  if (f.id === 'look-form') {
+    e.preventDefault();
+    const q = f.q.value.trim();
+    social.lookQ = f.q.value;
+    if (social.look?.busy && social.look.q === q) return;
+    if (!q) { social.look = { error: 'Enter a handle such as @name@server.example, or the address of a profile starting with https://.' }; drawLook(); say(social.look.error); return; }
+    const gen = social.gen, n = ++lookSeq;
+    social.look = { busy: true, q }; drawLook(); say(`Looking up ${q}.`);
+    const r = await api('fed/lookup', 'POST', { q });
+    if (social.gen !== gen || n !== lookSeq) return; // signed out, or another lookup started meanwhile
+    social.look = r.ok && r.data?.result ? { result: r.data.result } : { error: r.error, reason: r.data?.reason || '' };
+    drawLook();
+    const p = social.look.result;
+    say(!p ? social.look.error : p.kind === 'local' ? `Found ${p.name || p.handle}, a member of this Flowa.` : `Found ${p.name || p.handle}, @${p.handle}, with ${p.posts?.length ? `${p.posts.length} public ${p.posts.length === 1 ? 'post' : 'posts'}` : 'no public posts shown'}.`);
+    return;
+  }
   if (f.id === 'compose-form') {
     e.preventDefault();
     if (social.sending.has('post')) return;

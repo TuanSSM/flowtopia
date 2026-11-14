@@ -1362,3 +1362,23 @@ func FuzzDecodeIDs(f *testing.F) {
 		}
 	})
 }
+
+// The outbox an actor names is read for the search by handle (FRD 8), in each spelling of its name; one Flowa
+// cannot use leaves it out and keeps the actor (6.3: refuse only what would be acted on wrongly).
+func TestDecodeActorOutbox(t *testing.T) {
+	for _, c := range []struct{ outbox, want string }{
+		{`"outbox": "https://r.example/users/bo/outbox"`, "https://r.example/users/bo/outbox"},
+		{`"as:outbox": "https://r.example/users/bo/outbox"`, "https://r.example/users/bo/outbox"},
+		{`"https://www.w3.org/ns/activitystreams#outbox": {"id": "https://r.example/o", "type": "OrderedCollection"}`, "https://r.example/o"},
+		{`"outbox": "http://r.example/users/bo/outbox"`, ""},
+		{`"outbox": ["https://r.example/a", "https://r.example/b"]`, ""},
+		{`"outbox": 7`, ""},
+		{`"outbox": null`, ""},
+	} {
+		doc := `{"id": "https://r.example/users/bo", "type": "Person", "inbox": "https://r.example/users/bo/inbox", ` + c.outbox + `}`
+		a, err := decodeActor([]byte(doc), apMax)
+		if err != nil || a.Outbox != c.want {
+			t.Errorf("%s: %+v %v, want the outbox %q", c.outbox, a, err, c.want)
+		}
+	}
+}
