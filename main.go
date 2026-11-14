@@ -18330,10 +18330,7 @@ var (
 // host, the host is unavailable (8.4), or it is no address another server can have.
 var errInboxRefused = errors.New("the inbox is refused here, or its host unavailable")
 
-// follows says whether follows are on (followsOn): off, nothing that would add or accept a follow is acted on.
-func (f *federation) follows() bool { on, _ := f.followsState(); return on }
-
-// followsState is follows and whether the flags could be read: unread, nothing is dropped as "off" (the inbox answers
+// followsState is whether follows are on (followsOn), and whether the flags could be read: unread, nothing is dropped as "off" (the inbox answers
 // 503, the worker tries again, an actor document is not kept), since "off" drops a Follow for good.
 func (f *federation) followsState() (on, known bool) {
 	if f.followsOn == nil {
