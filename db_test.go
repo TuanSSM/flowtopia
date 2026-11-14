@@ -5801,14 +5801,26 @@ func TestDBKeysGenerated(t *testing.T) {
 		}
 		return generateKey()
 	}
+	// The worker says when it is done with each request (handled): the test waits for that, not by asking
+	// the database, because a question of its own on the one connection while a key is being made would be
+	// counted above as a connection the worker holds.
+	finished := make(chan keyOwner, 3)
+	w.handled = func(o keyOwner, _ bool, _ error) { finished <- o }
 	for _, id := range []int64{cyID, cy2, cy3} {
 		if !w.requestKey(keyOwner(id)) {
 			t.Fatal("a request for a key was dropped with the queue nearly empty")
 		}
 	}
-	waitFor(t, "three keys", func() bool {
-		return e.count(`SELECT count(*) FROM ap_keys WHERE user_id IN ($1, $2, $3)`, cyID, cy2, cy3) == 3
-	})
+	for range 3 {
+		select {
+		case <-finished:
+		case <-time.After(30 * time.Second):
+			t.Fatal("waited 30 s for the worker to finish three requests")
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM ap_keys WHERE user_id IN ($1, $2, $3)`, cyID, cy2, cy3); n != 3 {
+		t.Fatalf("%d of the three keys were made", n)
+	}
 	if most.Load() != 1 {
 		t.Errorf("%d keys were made at once, want one at a time", most.Load())
 	}
