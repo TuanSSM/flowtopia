@@ -368,6 +368,7 @@ function adminFederation() {
         : `<p class="small">${open ? 'Every server not suspended below.' : 'Only the domains allowed below.'} An admin changes this.</p>`}
       <p class="tiny" style="margin-top:8px">Neither choice stops a server that is not listed from reading the profiles and Public posts of the members who share them: anyone can read those pages, as a person in a browser can. A suspended domain is refused both ways: nothing it sends is taken, and Flowa fetches nothing from it.</p></section>
 ${fedInboxHTML(D.inbox)}
+${fedOutHTML(D.deliveries)}
     <section class="card" aria-labelledby="fed-dom-h"><div class="card-h"><h2 class="grow" id="fed-dom-h">Domains</h2><span class="sub">${D.domains.length} of at most ${D.max.toLocaleString()}</span></div>
       ${manage ? `<form class="stack fed-add" id="fed-domain-form" style="gap:8px;margin-bottom:12px">
         <div class="row wrap" style="gap:8px;align-items:flex-end"><label class="field grow" style="min-width:180px">Domain<input type="text" name="domain" placeholder="social.example" autocapitalize="none" spellcheck="false" required></label>
@@ -392,6 +393,21 @@ function fedInboxHTML(n) {
     <div class="grid g2 fed-lists" style="margin-top:8px"><div><h3 class="small">Taken</h3>${list(n.answers, 'None yet.')}<h3 class="small">Handled, by type</h3>${list(n.handled, 'None yet.')}</div>
       <div><h3 class="small">Dropped, by type (not acted on in this version)</h3>${list(n.dropped, 'None yet.')}<h3 class="small">Refused, by reason</h3>${list(n.refused, 'None yet.')}</div></div></section>`;
 }
+// The delivery queue's numbers (docs/federation.md 8 and 14.2): what waits to be sent to other servers, what was
+// sent and given up, and the servers that do not answer. Nothing in this version sends an activity yet (follows
+// come next), so on a running instance these stay at none until then.
+function fedOutHTML(n) {
+  if (!n) return '';
+  const age = s => s < 120 ? `${s} seconds` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
+  const since = n.since ? `since the last start, ${esc(fmtWhen(n.since))}` : 'in the last 24 hours';
+  const c = n.counts || {}, num = v => `<span class="num">${(v || 0).toLocaleString()}</span>`;
+  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Nothing is sent yet in this version</span></div>
+    ${n.clockJumped ? '<p class="notice warn">Waiting for the clock: deliveries older than 4 days wait, which the retries cannot leave, so this server\'s clock may have jumped forward. They are held for an hour, and nothing is cleared meanwhile; if the clock is right (the server was off that long), they are then given up.</p>'
+    : n.clockWaiting ? '<p class="notice warn">Waiting for the clock: this server\'s clock is earlier than its build or than the newest time its database holds, so nothing is signed or sent until it is set.</p>' : ''}
+    ${n.paused ? `<p class="notice warn">Sending is off under Features: what waits stays queued${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
+    <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'post waits' : 'posts wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
+    <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p></section>`;
+}
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).
 const MODES = { local: 'a community that lives on this server only, which is what FLOWA_MODE means when it is not set', federated: 'a community on this server whose members can let other servers find them' };
@@ -399,10 +415,13 @@ const MODES = { local: 'a community that lives on this server only, which is wha
 // what this version of federation does (built, the sentence the start log writes), or why federation is
 // refused (a moved origin, a key secret that does not open the keys).
 const fedLine = f => !f ? '' : f.refused ? ` Federation is refused: ${f.refused.replace(/^federation refused: /, '')}.`
-  : ` Federating as ${f.origin}, ${f.announced ? `first announced ${fmtWhen(f.announced)}, so this origin cannot change` : 'not announced yet, so the origin can still change until an answer first names a member'}. ${f.built ? f.built[0].toUpperCase() + f.built.slice(1) : ''}.${inboxLine(f.inbox)}`;
+  : ` Federating as ${f.origin}, ${f.announced ? `first announced ${fmtWhen(f.announced)}, so this origin cannot change` : 'not announced yet, so the origin can still change until an answer first names a member'}. ${f.built ? f.built[0].toUpperCase() + f.built.slice(1) : ''}.${inboxLine(f.inbox)}${outLine(f.deliveries)}`;
 // The inbox's part of the mode line: paused, or what waits.
 const inboxLine = n => !n ? '' : n.paused ? ' Taking deliveries is off under Features.'
   : ` Deliveries waiting: ${n.queued}${n.queued ? `, the oldest for ${Math.round(n.oldestSeconds / 60)} minutes` : ''}; given up in 7 days: ${n.failed}; the counts on the Federation tab are since the last start, ${fmtWhen(n.started)}.`;
+// The delivery queue's part: waiting for the clock, or what waits to be sent.
+const outLine = n => !n ? '' : n.clockWaiting ? ' Sending waits for the clock to be set.'
+  : ` To send: ${n.queued}${n.queued ? `, the oldest for ${Math.round(n.oldestSeconds / 60)} minutes` : ''}; given up in 7 days: ${n.failed}; servers unavailable: ${n.unavailable}.`;
 let adminDashboard = () => {
   if (!mod.dash) { loadDash(); return '<div class="card"><div class="empty small">Loading…</div></div>'; }
   const t = mod.dash.totals, W = mod.dash.weeks;
