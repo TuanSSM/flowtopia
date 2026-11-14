@@ -618,6 +618,7 @@ func remoteOn(t *testing.T, e *tenv) *remoteEnv {
 	if _, err := f.ensureKey(context.Background(), instanceActor); err != nil {
 		t.Fatal(err)
 	}
+	settleKeys(t, f)
 	var p string
 	if err := e.a.db.QueryRow(`SELECT public_key FROM ap_keys WHERE user_id IS NULL`).Scan(&p); err != nil {
 		t.Fatal(err)
@@ -647,6 +648,33 @@ func remoteOn(t *testing.T, e *tenv) *remoteEnv {
 		t.Fatal(err)
 	}
 	return &remoteEnv{tenv: e, c: c, w: w, ft: ft, clock: clock, pub: pub}
+}
+
+// settleKeys waits until the key worker has finished what the start asked of it (the instance actor's key, made
+// in the background), so that a test measuring the database pool or federation's turns measures its own request:
+// the worker takes one request at a time in order, so once a marker asked after them is handled, they are too.
+func settleKeys(t testing.TB, f *federation) {
+	t.Helper()
+	const marker = keyOwner(-1) // no account has it: the worker answers it with an error and makes nothing
+	seen := make(chan struct{})
+	f.mu.Lock()
+	f.handled = func(o keyOwner, _ bool, _ error) {
+		if o == marker {
+			close(seen)
+		}
+	}
+	f.mu.Unlock()
+	if !f.requestKey(marker) {
+		t.Fatal("the key worker took no request")
+	}
+	select {
+	case <-seen:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the key worker did not finish what the start asked of it in 30 s")
+	}
+	f.mu.Lock()
+	f.handled = nil
+	f.mu.Unlock()
 }
 
 func (r *remoteEnv) actor(id string) (*remoteActor, error) {

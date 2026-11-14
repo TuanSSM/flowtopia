@@ -6242,7 +6242,8 @@ type federation struct {
 	origin publicOrigin
 	secret keySecret
 	gen    func() (*rsa.PrivateKey, error) // makes a key pair; a test counts or holds it
-	// handled, when set (by a test), hears of each request the worker has finished with.
+	// handled, when set (by a test, under mu once the worker may run), hears of each request the worker has
+	// finished with.
 	handled func(o keyOwner, made bool, err error)
 
 	mu      sync.Mutex
@@ -6577,8 +6578,11 @@ func (f *federation) startWorker() {
 					log.Printf("keys: made the key of %s in %d ms", o, time.Since(began).Milliseconds())
 					f.dropActor(o) // a document is not kept without a key, but one may be on its way
 				}
-				if f.handled != nil {
-					f.handled(o, made, err)
+				f.mu.Lock()
+				handled := f.handled
+				f.mu.Unlock()
+				if handled != nil {
+					handled(o, made, err)
 				}
 			}
 		}
