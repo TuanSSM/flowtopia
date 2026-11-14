@@ -17479,6 +17479,16 @@ func (q *deliveryQueue) exec(ctx context.Context, stmt string, args ...any) (int
 	return res.RowsAffected()
 }
 
+// row reads one row under one of the federation's turns.
+func (q *deliveryQueue) row(ctx context.Context, dest []any, stmt string, args ...any) error {
+	done, err := q.f.dbTurn(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return q.f.db.QueryRowContext(ctx, stmt, args...).Scan(dest...)
+}
+
 // own is a context for writing down what happened to a row: not the workers', which a stop ends, so the answer
 // to a request sent is written even while stopping.
 func own() (context.Context, context.CancelFunc) {
@@ -17553,6 +17563,13 @@ func (q *deliveryQueue) enqueue(ctx context.Context, actor keyOwner, apID string
 // sent it commits with the rows, or neither does (FWR 4's record of a post's way out, ap_post_out). An error from
 // then rolls everything back and is returned.
 func (q *deliveryQueue) enqueueThen(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, then func(*sql.Tx) error) (enqueued, error) {
+	return q.enqueueUndo(ctx, actor, apID, body, to, "", then)
+}
+
+// enqueueUndo is enqueueThen for an activity that takes back the activity of id undoes, which this server enqueued
+// before ("" for none): a post's Delete takes back its Create, an Undo its Follow. At each inbox the first is never
+// overtaken (takeBack, and deliver at the send).
+func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, undoes string, then func(*sql.Tx) error) (enqueued, error) {
 	var out enqueued
 	f := q.f
 	switch {
@@ -17601,8 +17618,10 @@ func (q *deliveryQueue) enqueueThen(ctx context.Context, actor keyOwner, apID st
 	}
 	now := q.now()
 	var id int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (ap_id) DO NOTHING RETURNING id`,
-		apID, actor.arg(), string(body), pq.Array(inboxes), now).Scan(&id)
+	var undo sql.NullInt64
+	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at, undoes)
+		VALUES ($1, $2, $3, $4, $5, (SELECT u.id FROM ap_outbox u WHERE u.ap_id = $6 AND $6 <> '')) ON CONFLICT (ap_id) DO NOTHING RETURNING id, undoes`,
+		apID, actor.arg(), string(body), pq.Array(inboxes), now, undoes).Scan(&id, &undo)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.Duplicate = true
 		if then == nil {
@@ -17616,9 +17635,29 @@ func (q *deliveryQueue) enqueueThen(ctx context.Context, actor keyOwner, apID st
 	if err != nil {
 		return out, err
 	}
+	// The activity taken back still waits for its own fan-out (the queue was full): it never goes anywhere, so neither
+	// does this one (8.8, "Taking back").
+	if undo.Valid {
+		var never bool
+		if err := tx.QueryRowContext(ctx, `WITH c AS (UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1 AND NOT fanned_out RETURNING id)
+			SELECT EXISTS (SELECT 1 FROM c)`, undo.Int64).Scan(&never); err != nil {
+			return out, err
+		}
+		if never {
+			if _, err := tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id); err != nil {
+				return out, err
+			}
+			if then != nil {
+				if err := then(tx); err != nil {
+					return out, err
+				}
+			}
+			return out, tx.Commit()
+		}
+	}
 	if waiting > 0 || queued+len(inboxes) > deliveryQueueMax {
 		out.Waiting = true
-	} else if out.Queued, out.Dropped, out.Unavailable, err = q.fanOut(ctx, tx, id, inboxes, hosts, now); err != nil {
+	} else if out.Queued, out.Dropped, out.Unavailable, err = q.fanOut(ctx, tx, id, undo, inboxes, hosts, now); err != nil {
 		return out, err
 	}
 	if then != nil {
@@ -17656,7 +17695,7 @@ const deliveryFanOutSQL = `WITH t AS (SELECT * FROM unnest($2::text[], $3::text[
 
 // fanOut writes one activity's rows in tx: not for a host marked unavailable, not past a host's cap (those are
 // counted on the host's row as dropped). Every host gets its row in ap_hosts, whose created_at starts its 7 days.
-func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, inboxes, hosts []string, now time.Time) (queued, dropped, unavailable int, err error) {
+func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo sql.NullInt64, inboxes, hosts []string, now time.Time) (queued, dropped, unavailable int, err error) {
 	un := map[string]bool{}
 	rows, err := tx.QueryContext(ctx, `SELECT host FROM ap_hosts WHERE host = ANY($1) AND state = 'unavailable'`, pq.Array(hosts))
 	if err != nil {
@@ -17713,9 +17752,41 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, inboxe
 			return 0, 0, 0, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id)
-	return queued, dropped, unavailable, err
+	if _, err = tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id); err != nil || !undo.Valid {
+		return queued, dropped, unavailable, err
+	}
+	var gone int
+	if err = tx.QueryRowContext(ctx, takeBackSQL, id, undo.Int64, now).Scan(&gone); err != nil {
+		return queued, dropped, unavailable, err
+	}
+	return queued - gone, dropped, unavailable, nil
 }
+
+// takeBackSQL is what the fan-out of activity $1, which takes back activity $2 ($3 the queue's clock), does to the
+// rows of both, so that at no inbox the second overtakes the first (8.8, "Taking back"; one still waiting for its own
+// fan-out was dropped with the second by enqueueUndo):
+//   - at an inbox where the first is queued and not claimed, nothing of it was sent: its row is given up ("taken back
+//     before it was sent") and the second's row for that inbox goes too, since there is nothing to take back there;
+//   - at an inbox where the first is claimed (a request may be in flight), the second is due no earlier than the end of
+//     the first's lease; deliver asks again at the send.
+//
+// It says how many rows of the second went.
+const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = 'taken back before it was sent'
+		WHERE d.outbox_id = $2 AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)
+			AND EXISTS (SELECT 1 FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox = d.inbox) RETURNING d.inbox),
+	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM g) RETURNING n.id),
+	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, d.locked_until) FROM ap_deliveries d
+		WHERE n.outbox_id = $1 AND d.outbox_id = $2 AND d.inbox = n.inbox AND d.state = 'queued' AND d.locked_until >= $3 RETURNING n.id)
+	SELECT (SELECT count(*) FROM x) + 0 * (SELECT count(*) FROM h)`
+
+// heldBackSQL is deliver's question, at the send of a row of an activity that takes back activity $1 to inbox $2 ($3
+// the queue's clock): is the first still queued for that inbox? Claimed: the end of its lease, until which the second
+// waits. Not claimed (it failed in flight and waits for another attempt): it is given up, and the second is sent, since
+// the first may have arrived before its answer was lost.
+const heldBackSQL = `WITH x AS (SELECT id, locked_until FROM ap_deliveries WHERE outbox_id = $1 AND inbox = $2 AND state = 'queued'),
+	g AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $3, last_error = 'taken back before it was sent again'
+		FROM x WHERE d.id = x.id AND (x.locked_until IS NULL OR x.locked_until < $3) RETURNING d.id)
+	SELECT (SELECT max(locked_until) FROM x WHERE locked_until >= $3), (SELECT count(*) FROM g)`
 
 // fanOutDue fans out the oldest waiting activity once the queue is under deliveryQueueResume (8.5). Workers call it
 // before a claim, at most once every deliveryPoll, and only while activities may wait.
@@ -17745,8 +17816,9 @@ func (q *deliveryQueue) fanOutDue(ctx context.Context) error {
 		return err
 	}
 	var id int64
+	var undo sql.NullInt64
 	var inboxes []string
-	err = tx.QueryRowContext(ctx, `SELECT id, COALESCE(targets, '{}') FROM ap_outbox WHERE NOT fanned_out ORDER BY id LIMIT 1`).Scan(&id, pq.Array(&inboxes))
+	err = tx.QueryRowContext(ctx, `SELECT id, COALESCE(targets, '{}'), undoes FROM ap_outbox WHERE NOT fanned_out ORDER BY id LIMIT 1`).Scan(&id, pq.Array(&inboxes), &undo)
 	if errors.Is(err, sql.ErrNoRows) {
 		q.waiting.Store(false)
 		return nil
@@ -17772,7 +17844,7 @@ func (q *deliveryQueue) fanOutDue(ctx context.Context) error {
 			ins, hs = append(ins, in), append(hs, h)
 		}
 	}
-	if _, _, _, err := q.fanOut(ctx, tx, id, ins, hs, now); err != nil {
+	if _, _, _, err := q.fanOut(ctx, tx, id, undo, ins, hs, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -17860,7 +17932,7 @@ const deliveryClaimSQL = `UPDATE ap_deliveries d SET locked_until = $1::timestam
 		WHERE q.state = 'queued' AND q.next_at <= $1 AND (q.locked_until IS NULL OR q.locked_until < $1) AND q.host <> ALL($3::text[])
 			AND NOT EXISTS (SELECT 1 FROM ap_hosts h WHERE h.host = q.host AND h.state <> 'ok' AND (h.until > $1 OR h.state = 'unavailable'))
 		ORDER BY q.next_at, q.id LIMIT 1 FOR UPDATE OF q SKIP LOCKED)
-	RETURNING d.id, d.inbox, d.host, d.attempts, d.created_at, d.locked_until, o.actor_id, o.body, COALESCE((SELECT h.sig FROM ap_hosts h WHERE h.host = d.host), 'cavage')`
+	RETURNING d.id, d.inbox, d.host, d.attempts, d.created_at, d.locked_until, o.actor_id, o.body, COALESCE((SELECT h.sig FROM ap_hosts h WHERE h.host = d.host), 'cavage'), o.undoes`
 
 // claimedRow is a row a worker holds: lease is its locked_until, which every later statement about it names, so a
 // worker that lost its lease changes nothing.
@@ -17874,6 +17946,7 @@ type claimedRow struct {
 	actor    sql.NullInt64
 	body     []byte
 	sig      string
+	undoes   sql.NullInt64 // the activity this one takes back (8.8, "Taking back"), if any
 }
 
 func (q *deliveryQueue) busyHosts() []string {
@@ -17925,7 +17998,7 @@ func (q *deliveryQueue) claim(ctx context.Context, busy []string) (*claimedRow, 
 		}
 	}
 	c := &claimedRow{}
-	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig)
+	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig, &c.undoes)
 	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -17992,6 +18065,17 @@ func (q *deliveryQueue) deliver(ctx context.Context, c *claimedRow) error {
 		// The domain policy is asked at the send, not only when the row was written: a host suspended, or no
 		// longer allowed, since then gets nothing (section 10).
 		return q.fail(c, "the domain policy refuses the host")
+	}
+	// An activity that takes back another is never sent to an inbox before the first's outcome there (8.8).
+	if c.undoes.Valid {
+		var until sql.NullTime
+		var gaveUp int
+		if err := q.row(ctx, []any{&until, &gaveUp}, heldBackSQL, c.undoes.Int64, c.inbox, q.now()); err != nil {
+			return q.giveBack(c, q.ownWait(ctx))
+		}
+		if until.Valid {
+			return q.giveBack(c, until.Time.Sub(q.now())+time.Second)
+		}
 	}
 	owner := instanceActor
 	if c.actor.Valid {
@@ -20316,7 +20400,7 @@ func (a *app) postOut(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		_, err = f.out.enqueueThen(ctx, keyOwner(uid), postID+"#delete", body, to, func(tx *sql.Tx) error {
+		_, err = f.out.enqueueUndo(ctx, keyOwner(uid), postID+"#delete", body, to, postID+"/activity", func(tx *sql.Tx) error {
 			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'delete'`, p.id))
 		})
 		return a.outDone(err, p.id)
@@ -20897,7 +20981,9 @@ var migrations = []string{schema, schemaSocial,
 	// went to in targets), and marked delete by a deletion or a moderator's hide in their own statement, so the
 	// Delete goes to the same inboxes; it has no foreign key to posts, since it outlives the post until that Delete
 	// is enqueued. ap_person_out coalesces Update(Person): one row per member, due_at when one waits (NULL when
-	// none), sent_at the last sent, gen counting the changes. Additive: an older build ignores all of it.
+	// none), sent_at the last sent, gen counting the changes. ap_outbox.undoes names the activity an activity takes
+	// back (a post's Delete its Create, an Undo its Follow), so the queue never lets the second overtake the first at
+	// one inbox (federation.md 8.8, "Taking back"). Additive: an older build ignores all of it.
 	`ALTER TABLE posts ADD COLUMN IF NOT EXISTS alt TEXT NOT NULL DEFAULT '';
 	ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_mentions TEXT NOT NULL DEFAULT '';
 	ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_alt_len;
@@ -20917,7 +21003,9 @@ var migrations = []string{schema, schemaSocial,
 		sent_at TIMESTAMPTZ,
 		gen BIGINT NOT NULL DEFAULT 0
 	);
-	CREATE INDEX IF NOT EXISTS ap_person_out_due ON ap_person_out (due_at) WHERE due_at IS NOT NULL`,
+	CREATE INDEX IF NOT EXISTS ap_person_out_due ON ap_person_out (due_at) WHERE due_at IS NOT NULL;
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS undoes BIGINT REFERENCES ap_outbox(id) ON DELETE SET NULL;
+	CREATE INDEX IF NOT EXISTS ap_outbox_undoes ON ap_outbox (undoes) WHERE undoes IS NOT NULL`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting

@@ -491,6 +491,7 @@ func TestDBPostDeleteAndHide(t *testing.T) {
 	p1 := e.postAs(e.ana, map[string]any{"body": "to be deleted", "audience": "public"})
 	p2 := e.postAs(e.ana, map[string]any{"body": "to be hidden", "audience": "public"})
 	e.produce()
+	e.mustExec(`DELETE FROM ap_deliveries`) // the Creates were taken: a Delete has something to take back (8.8)
 	// Followers change: two.example's account leaves, three.example's arrives.
 	e.mustExec(`DELETE FROM follows WHERE follower_id = $1`, a2)
 	a3, _ := e.remote("c", "three.example", true)

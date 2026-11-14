@@ -2774,6 +2774,20 @@ corrected:
   (to send, the oldest, given up, unavailable, or waiting for the clock), and `/healthz` for a local probe (14.2). The
   numbers are asked only for a local probe, and kept 5 seconds: a remote probe, which sees only `{"ok": true}`, runs
   no statement of the queue's.
+- **Taking back** (as built in FWR 4, after its review): an activity can name one it takes back (`ap_outbox.undoes`: a
+  post's Delete names its Create; FWR 3's Undo names its Follow), and at no inbox does the second reach the server before
+  the first's outcome there. The claim orders rows by when they are due, so without a rule a Create that met one 5xx (due
+  again in minutes) would be overtaken by its Delete, and the post would stay on that server. The rule, inbox by inbox,
+  when the second is fanned out (`takeBackSQL`): where the first is queued and not claimed, nothing of it was sent, so it
+  is given up ("taken back before it was sent") and the second goes nowhere there; where the first is claimed (a request
+  may be in flight), the second is due no earlier than the end of the first's lease; where the first is gone (taken, or
+  given up), the second goes as any row. A first that still waits for its own fan-out (the queue was full) is dropped
+  with the second, which then goes nowhere at all. And at the second's send (`heldBackSQL`, in `deliver`): if the first
+  is still queued for that inbox and claimed, the second is given back until that lease ends (no attempt counted); if it
+  is queued and not claimed (its request failed meanwhile and waits for another attempt), the first is given up and the
+  second is sent, since the first may have arrived before its answer was lost. A second sent to a server that never got
+  the first is harmless (a Delete or an Undo of something unknown is ignored). `TestDBDeleteNeverOvertakesCreate` (failed
+  once, in flight, taken, and the hold at the send), `TestDBDeleteOfWaitingCreate`, `TestDBUndoNeverOvertakesFollow`.
 - **Measured** (2.1 GHz Xeon, 4 cores, local Postgres in Docker): `BenchmarkClaimDelivery`, one claim with 50,000
   rows queued on 300 hosts, 4 being sent to and 25 with an open circuit, 0.75 to 0.85 ms, 1.8 KB and 41 allocations
   (budget 2 ms; 0.62 ms with no circuit open; 1.6 to 1.7 ms before the statement was prepared). `TestFederationMemory`:
