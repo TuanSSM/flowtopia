@@ -1061,6 +1061,59 @@ func TestInboxIDSquat(t *testing.T) {
 	}
 }
 
+// The answer to an own Delete nobody can verify does not tell whether its actor is cached here (the review's R2;
+// 7.10): a garbage signature on an own-Delete-shaped body is 202 for an actor never seen, for a cached one (under
+// a key id nobody keeps, and under its own kept key), and nothing is done for either. An actor on another origin
+// than the key id is not an own Delete at all, and goes on as any delivery (401 here).
+func TestInboxPeekOracle(t *testing.T) {
+	e := newInboxEnv(t)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo cached now
+	probe := func(x, keyID string) (int, inboxReason, string) {
+		w := e.post("/inbox", activity(x, "Delete", x, nil), e.signer(e.other, keyID, sigCavage), nil)
+		return w.Code, e.last(), w.Body.String()
+	}
+	type answer struct {
+		code int
+		body string
+	}
+	c1, r1, b1 := probe("https://social.example/users/ghost", "https://social.example/probe1#k")
+	c2, r2, b2 := probe(boID, "https://social.example/probe2#k")
+	c3, r3, b3 := probe(boID, boKeyID)
+	if (answer{c1, b1}) != (answer{c2, b2}) || (answer{c2, b2}) != (answer{c3, b3}) || c1 != 202 {
+		t.Errorf("never seen: %d %v; cached bo, another key id: %d %v; cached bo, its own key id: %d %v", c1, r1, c2, r2, c3, r3)
+	}
+	if e.queued() != 0 || e.count(`SELECT count(*) FROM ap_actors WHERE state = 'gone'`) != 0 {
+		t.Error("an unverified Delete was acted on")
+	}
+	if c, r, _ := probe("https://elsewhere.example/users/z", "https://social.example/probe3#k"); c != 401 {
+		t.Errorf("an actor on another origin than the key id: %d %v", c, r)
+	}
+}
+
+// An own-Delete-shaped body signed by another actor is that actor's forward, never the named actor's Delete (the
+// review's m1: the origin rule on the keyForOwnDelete path). mal, on bo's server, signs "bo deletes bo": mal's key
+// verifies, so the actor is mal's, not bo's: 202, nothing stored, bo untouched. A key of another origin naming bo
+// is not an own Delete at all, and is a forward too.
+func TestInboxOwnDeleteByAnother(t *testing.T) {
+	e := newInboxEnv(t)
+	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo known
+	mal := "https://social.example/users/mal"
+	e.w.put(mal, worldDoc{body: actorDoc(mal, "mal", "Mal", &e.other.PublicKey, nil)})
+	if w := e.post("/inbox", activity(boID, "Delete", boID, map[string]any{"id": boID + "#delete"}), e.signer(e.other, mal+"#main-key", sigCavage), nil); w.Code != 202 || e.last() != inForward {
+		t.Errorf("bo's Delete signed by mal, same origin: %d (%v)", w.Code, e.last())
+	}
+	e.allow("other.example")
+	x := "https://other.example/users/x"
+	e.w.put(x, worldDoc{body: actorDoc(x, "x", "", &e.other.PublicKey, nil)})
+	e.clock.add(time.Second)
+	if w := e.post("/inbox", activity(boID, "Delete", boID, map[string]any{"id": boID + "#delete"}), e.signer(e.other, x+"#main-key", sigCavage), nil); w.Code != 202 || e.last() != inForward {
+		t.Errorf("bo's Delete signed on another origin: %d (%v)", w.Code, e.last())
+	}
+	if e.queued() != 0 || e.count(`SELECT count(*) FROM ap_actors WHERE ap_id = $1 AND state = 'gone'`, boID) != 0 {
+		t.Error("an own Delete signed by another actor was taken as bo's")
+	}
+}
+
 // limiterCount is what a limiter has counted for a key, in whole events.
 func limiterCount(l *limiter, key string) int {
 	l.mu.Lock()
@@ -1162,7 +1215,11 @@ func TestInboxStageOrder(t *testing.T) {
 		read.Store(0)
 		before := measure()
 		e.clock.add(time.Second) // a fresh signature each time
-		w := e.post("/inbox", own(), s.sign, s.more)
+		b := own()
+		if s.stage == "the signature" { // not an own Delete, whose failure is a 202 (TestInboxPeekOracle)
+			b = activity(boID, "Follow", "https://here.example/users/ana", nil)
+		}
+		w := e.post("/inbox", b, s.sign, s.more)
 		after := measure()
 		undo()
 		if w.Code != s.code || e.last() != s.why {

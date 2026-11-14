@@ -15508,32 +15508,33 @@ var inboxRetries = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minut
 type inboxReason uint8
 
 const (
-	inAccepted      inboxReason = iota // stored, 202
-	inDropped                          // a type this version does not act on: counted and dropped, 202
-	inDuplicate                        // an activity id stored before, 202
-	inForward                          // signed by another actor than its own (7.3), 202, dropped
-	inUnknownDelete                    // a Delete from an actor never seen, 202, dropped with no fetch (7.4)
-	inRefused                          // federation is refused here, 404
-	inAddrLimit                        // the address's allowance, 429
-	inType                             // not an Activity Streams type, 415
-	inUnsigned                         // no signature, 401
-	inSignature                        // a signature that does not parse or verify, 401
-	inBlocked                          // a suspended domain, 403
-	inNotListed                        // allowlist mode and a domain not allowed, 403
-	inPaused                           // the Federation switch is off, 503
-	inGroupLimit                       // the sender group's allowance, 429
-	inTooLarge                         // over 256 KB, 413
-	inBusy                             // no turn within 2 s, 503
-	inKeyBusy                          // the key lookup was busy or its allowance used up, 503
-	inClock                            // this server's clock is earlier than its build, 503 (8.3)
-	inReplayFull                       // the replay memory holds its most sender groups, 503 (7.2)
-	inUndecodable                      // the decoder refused the body, 400
-	inForeignID                        // the activity's id is not on its actor's origin, 400 (7.2)
-	inStaleKey                         // a key only an actor's own Delete may use, on something else, 401 (6.3)
-	inQueueFull                        // the queue holds inboxQueueMax rows, 503 (7.5)
-	inGroupQueued                      // the sender group has inboxGroupQueued rows waiting, 429 (8.5)
-	inServer                           // this server failed, 500
-	inSlowBody                         // the body did not arrive within inboxReadFor, 408
+	inAccepted         inboxReason = iota // stored, 202
+	inDropped                             // a type this version does not act on: counted and dropped, 202
+	inDuplicate                           // an activity id stored before, 202
+	inForward                             // signed by another actor than its own (7.3), 202, dropped
+	inUnknownDelete                       // a Delete from an actor never seen, 202, dropped with no fetch (7.4)
+	inUnverifiedDelete                    // an actor's own Delete whose signature did not verify, 202, dropped (7.10)
+	inRefused                             // federation is refused here, 404
+	inAddrLimit                           // the address's allowance, 429
+	inType                                // not an Activity Streams type, 415
+	inUnsigned                            // no signature, 401
+	inSignature                           // a signature that does not parse or verify, 401
+	inBlocked                             // a suspended domain, 403
+	inNotListed                           // allowlist mode and a domain not allowed, 403
+	inPaused                              // the Federation switch is off, 503
+	inGroupLimit                          // the sender group's allowance, 429
+	inTooLarge                            // over 256 KB, 413
+	inBusy                                // no turn within 2 s, 503
+	inKeyBusy                             // the key lookup was busy or its allowance used up, 503
+	inClock                               // this server's clock is earlier than its build, 503 (8.3)
+	inReplayFull                          // the replay memory holds its most sender groups, 503 (7.2)
+	inUndecodable                         // the decoder refused the body, 400
+	inForeignID                           // the activity's id is not on its actor's origin, 400 (7.2)
+	inStaleKey                            // a key only an actor's own Delete may use, on something else, 401 (6.3)
+	inQueueFull                           // the queue holds inboxQueueMax rows, 503 (7.5)
+	inGroupQueued                         // the sender group has inboxGroupQueued rows waiting, 429 (8.5)
+	inServer                              // this server failed, 500
+	inSlowBody                            // the body did not arrive within inboxReadFor, 408
 	inboxReasonCount
 )
 
@@ -15542,32 +15543,33 @@ var inboxReasons = [inboxReasonCount]struct {
 	retry int
 	words string
 }{
-	inAccepted:      {202, 0, "accepted"},
-	inDropped:       {202, 0, "accepted, not acted on in this version"},
-	inDuplicate:     {202, 0, "accepted before"},
-	inForward:       {202, 0, "signed by another actor than its own, not acted on"},
-	inUnknownDelete: {202, 0, "a deletion of an actor never seen, not acted on"},
-	inRefused:       {404, 0, "Not found."},
-	inAddrLimit:     {429, 3600, "too many deliveries from this address"},
-	inType:          {415, 0, "not an Activity Streams type"},
-	inUnsigned:      {401, 0, "not signed"},
-	inSignature:     {401, 0, "the signature is refused"},
-	inBlocked:       {403, 0, "this server's domain is suspended here"},
-	inNotListed:     {403, 0, "this server's domain is not on the allowlist here"},
-	inPaused:        {503, 3600, "deliveries are paused here"},
-	inGroupLimit:    {429, 300, "too many deliveries from this server or its domain"},
-	inTooLarge:      {413, 0, "the body is over 256 KB"},
-	inBusy:          {503, 30, "too many deliveries at once"},
-	inKeyBusy:       {503, 60, "the key could not be fetched just now"},
-	inClock:         {503, 600, "this server's clock is not set yet"},
-	inReplayFull:    {503, 600, "too many senders at once"},
-	inUndecodable:   {400, 0, "the activity cannot be read"},
-	inForeignID:     {400, 0, "the activity's id is not on its actor's origin"},
-	inStaleKey:      {401, 0, "the key is not fresh"},
-	inQueueFull:     {503, 120, "too many activities wait here"},
-	inGroupQueued:   {429, 120, "too many activities from this server wait here"},
-	inServer:        {500, 0, "Something went wrong on the server."},
-	inSlowBody:      {408, 0, "the body did not arrive in time"},
+	inAccepted:         {202, 0, "accepted"},
+	inDropped:          {202, 0, "accepted, not acted on in this version"},
+	inDuplicate:        {202, 0, "accepted before"},
+	inForward:          {202, 0, "signed by another actor than its own, not acted on"},
+	inUnknownDelete:    {202, 0, "a deletion of an actor never seen, not acted on"},
+	inUnverifiedDelete: {202, 0, "a deletion whose signature did not verify, not acted on"},
+	inRefused:          {404, 0, "Not found."},
+	inAddrLimit:        {429, 3600, "too many deliveries from this address"},
+	inType:             {415, 0, "not an Activity Streams type"},
+	inUnsigned:         {401, 0, "not signed"},
+	inSignature:        {401, 0, "the signature is refused"},
+	inBlocked:          {403, 0, "this server's domain is suspended here"},
+	inNotListed:        {403, 0, "this server's domain is not on the allowlist here"},
+	inPaused:           {503, 3600, "deliveries are paused here"},
+	inGroupLimit:       {429, 300, "too many deliveries from this server or its domain"},
+	inTooLarge:         {413, 0, "the body is over 256 KB"},
+	inBusy:             {503, 30, "too many deliveries at once"},
+	inKeyBusy:          {503, 60, "the key could not be fetched just now"},
+	inClock:            {503, 600, "this server's clock is not set yet"},
+	inReplayFull:       {503, 600, "too many senders at once"},
+	inUndecodable:      {400, 0, "the activity cannot be read"},
+	inForeignID:        {400, 0, "the activity's id is not on its actor's origin"},
+	inStaleKey:         {401, 0, "the key is not fresh"},
+	inQueueFull:        {503, 120, "too many activities wait here"},
+	inGroupQueued:      {429, 120, "too many activities from this server wait here"},
+	inServer:           {500, 0, "Something went wrong on the server."},
+	inSlowBody:         {408, 0, "the body did not arrive in time"},
 }
 
 func (r inboxReason) String() string { return inboxReasons[r].words }
@@ -15829,6 +15831,8 @@ type inboxCall struct {
 	force         bool         // the signature did not verify with the key first given: ask after remoteKeyFailed
 	held          *keyHeld     // the key verified with, and its actor
 	ownDelete     bool         // the key was given for the actor's own Delete only (keyForOwnDelete)
+	peeked        bool         // peekOwnDelete has run on the body
+	ownShaped     bool         // and found an own Delete on the key id's origin
 	unknownDelete bool         // a Delete from an actor never seen: nothing was fetched
 }
 
@@ -15867,7 +15871,9 @@ func (f *federation) inboxKeyFor(ctx context.Context, keyID string) (*rsa.Public
 	}
 	defer release()
 	use := keyToVerify
-	if actor, ok := peekOwnDelete(call.body); ok && !call.force {
+	actor, ok := peekOwnDelete(call.body, keyID)
+	call.peeked, call.ownShaped = true, ok
+	if ok && !call.force {
 		known, err := f.actorKnown(ctx, keyID, actor)
 		if err != nil {
 			return nil, err
@@ -15893,6 +15899,22 @@ func (f *federation) inboxKeyFor(ctx context.Context, keyID string) (*rsa.Public
 	return key, nil
 }
 
+// ownShaped says whether a delivery whose signature failed is shaped as its actor's own Delete, on the key id's
+// origin: from the peek inboxKeyFor made, or from one made now, under a key turn as every peek is. With no key turn
+// free it says no, and the delivery is answered as any other failure.
+func (f *federation) ownShaped(ctx context.Context, call *inboxCall, keyID string) bool {
+	if call.peeked {
+		return call.ownShaped
+	}
+	release, ok := f.inbox.take(f.inbox.keyTurns)
+	if !ok {
+		return false
+	}
+	defer release()
+	_, own := peekOwnDelete(call.body, keyID)
+	return own
+}
+
 // actorKnown is the one indexed lookup of 7.4 before a Delete is verified: is the key or the actor in ap_actors?
 func (f *federation) actorKnown(ctx context.Context, keyID, actor string) (bool, error) {
 	done, err := f.dbTurn(ctx)
@@ -15909,8 +15931,9 @@ func (f *federation) actorKnown(ctx context.Context, keyID, actor string) (bool,
 // one reading of a body before its signature verifies, needed so that an unknown actor's Delete costs no fetch
 // (7.4) and a gone actor's own Delete can be verified with its cached key (6.3). Its bounds:
 //
-//   - it runs only for a key not kept in keyMemo, and so only after everything before the body (the address's
-//     and the sender group's allowances, the domain policy, the switch, one of the read turns);
+//   - it runs only for a key not kept in keyMemo, or once a signature failed to verify, and so only after
+//     everything before the body (the address's allowance, the domain policy, the switch, one of the read turns);
+//   - only for an actor on the key id's origin: any other could not pass the origin rule anyway;
 //   - on at most inboxBodyMax bytes, already read within that cap;
 //   - through the decoder's scan (apScan: linear, no recursion, the limits of 7.5) and then the top level's
 //     members only (apFieldsOf: one map of slices of the body), reading type, actor and object.id and nothing
@@ -15918,10 +15941,11 @@ func (f *federation) actorKnown(ctx context.Context, keyID, actor string) (bool,
 //   - under one of the inboxKeyAtOnce turns for keys not kept, which no verified delivery needs: beyond them a
 //     delivery is answered 503 at once; never under a decode turn;
 //   - with no database work but the one indexed lookup of actorKnown, and only when it says "own Delete";
-//   - and its answer chooses only between dropping with 202 (an actor never seen), verifying with the cached
-//     key (keyForOwnDelete, and then the decoded activity must be that own Delete, or 401), and going on as for
-//     any delivery. Nothing it reads is stored, logged or acted on.
-func peekOwnDelete(body []byte) (string, bool) {
+//   - and its answer chooses only between dropping with 202 (an actor never seen, or a signature that does not
+//     verify: inUnverifiedDelete), verifying with the cached key (keyForOwnDelete, and then the decoded activity
+//     must be that own Delete, or 401), and going on as for any delivery. Nothing it reads is stored, logged or
+//     acted on.
+func peekOwnDelete(body []byte, keyID string) (string, bool) {
 	f, err := apParse(body, inboxBodyMax)
 	if err != nil {
 		return "", false
@@ -15934,7 +15958,7 @@ func peekOwnDelete(body []byte) (string, bool) {
 		return "", false
 	}
 	obj, err := f.ref("object")
-	if err != nil || obj.ID != actor {
+	if err != nil || obj.ID != actor || !sameOrigin(keyID, actor) {
 		return "", false
 	}
 	return actor, true
@@ -16194,12 +16218,12 @@ func (a *app) handleInbox(w http.ResponseWriter, r *http.Request) {
 		wait()
 		return
 	}
-	why2, kind := a.takeDelivery(r, body, addr, host, senderGroup(keyID))
+	why2, kind := a.takeDelivery(r, body, addr, host, senderGroup(keyID), keyID)
 	answer(why2, kind)
 }
 
 // takeDelivery verifies, decodes, checks and stores a delivery whose body was read (steps 3 to 5 above).
-func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group string) (inboxReason, string) {
+func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyID string) (inboxReason, string) {
 	f, q := a.fed, a.fed.inbox
 	call := &inboxCall{body: body, payer: addr}
 	ctx := context.WithValue(r.Context(), inboxCallKey{}, call)
@@ -16217,6 +16241,13 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group strin
 	}
 	if call.unknownDelete {
 		return inUnknownDelete, "Delete"
+	}
+	// An actor's own Delete whose signature does not verify is answered as one from an actor never seen: 202, and
+	// nothing done. Otherwise the answer (202 or 401) would tell anyone who sends a garbage signature whether this
+	// instance has cached that actor, that is whether a member here looked the person up (7.10). Only this
+	// server's unset clock, which is the same for every sender, keeps its 503.
+	if err != nil && (!errors.As(err, &se) || se.Reason != sigClock) && f.ownShaped(ctx, call, keyID) {
+		return inUnverifiedDelete, "Delete"
 	}
 	if err != nil {
 		se = nil

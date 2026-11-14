@@ -669,6 +669,11 @@ the name exists, makes no difference to the answer.
   answered 202, counted by type, and dropped: they come with later versions. At most 5,000 rows wait (then
   503), 500 from one server's domain (then 429); a handled row loses its body at once and is removed after 7
   days.
+- **Upgrading an instance that already federates:** after this version, nothing is taken from another server
+  until an admin turns "Federation: take deliveries" on under Features, and, with the allowlist that nothing saved
+  means, **members' searches by handle stop reaching other servers** (they are told the server is not one this
+  Flowa talks to) until an admin allows those servers' domains under Admin, Federation, or chooses "Every server
+  not suspended" there. Profiles and Public posts stay readable by anyone, as before.
 - **Where to see it.** Admin, Federation shows what waits and how deliveries were answered over the last day
   (taken, dropped by type, refused by reason, handled); Admin, Overview's mode line says whether deliveries are
   paused and what waits. The counts live in memory and start again at each restart.

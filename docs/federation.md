@@ -2080,6 +2080,19 @@ the note was silent or is corrected:
   2 key turns (`inboxKeyAtOnce`, the cache's own 2 fetches at once), taken at once or not at all (503): a flood of
   deliveries naming keys nobody has holds at most 2 of the 8 read turns, and no decode turn, so deliveries whose
   keys are kept go on (`TestDBInboxFlood`).
+- **An own Delete nobody can verify is answered 202** (after the review of #111). Before, a garbage signature on a
+  body shaped as an actor's own Delete was answered 202 when Flowa had never seen the actor and 401 when it had it
+  cached, so a stranger could learn whether a member here had looked a given person up. Now the peek takes only an
+  actor on the key id's origin (any other cannot pass the origin rule anyway), and every such Delete whose
+  signature fails, whatever the reason but this server's unset clock (the same for every sender), is answered 202
+  with an empty body and nothing done, as one from an actor never seen is (`TestInboxPeekOracle`). **The cost:** a
+  real own Delete from a cached actor whose signature fails for another reason (its clock, a proxy that changed the
+  body) is answered 202, so its sender does not retry, and the Delete is lost. That is accepted: the actor is still
+  marked gone at its next fetch, which answers 410 (7.4), and Mastodon's own pages on disk do not say what it
+  answers a Delete it cannot verify; the SWICG report says only "discard the Delete and do not process it". **What
+  stays distinguishable:** the time. A cached actor's Delete costs a row read and an RSA check that an unknown
+  actor's does not (about 1 ms on the runner), so a sender who measures answers closely can still tell the two
+  apart; an own Delete signed by another actor is that actor's forward (`TestInboxOwnDeleteByAnother`).
 - **The one reading before the signature.** `peekOwnDelete` tells an actor's own Delete before the signature, which
   7.4 needs (a Delete from an actor never seen costs no fetch) and 6.3 too (a gone actor's own Delete verifies with
   its cached key). Its bounds, written as its comment: only for a key not kept, so only after every check before the
