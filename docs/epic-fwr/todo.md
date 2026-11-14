@@ -50,13 +50,19 @@ route and test named below is new unless the design note says it exists.
   The first inbox request that fetches a key freezes the origin through `ensureOrigin`, by design: a signed
   fetch names the instance actor's key id under it (federation.md 4.3).
   Built (federation.md 7.10 says what and why; with FMD 1's domain policies, which the inbox needs, in their own
-  commit): the three inboxes past `guard`, every refusal in the order and with the status of 7.10, the
-  `federation` flag (only in a mode that federates) as the pause, `ap_inbox` (migration 18), two workers with
-  claim, lease, retries, dead rows, retention and a shutdown that gives a claimed row back, `fedConnsMax`
-  turns at the database, `keyMemo` and the allowance of key fetches per sender group, the origin rule, the stale,
-  gone and suspended rules with `keyForOwnDelete`, the unknown actor's Delete dropped with no fetch, the replay
-  memory's `sweep` in housekeeping and its `stepped` logged once, the readers' drop counts logged, the README's
-  proxy sentence and the inbox section, `fedBuilt` and NodeInfo's `inbox`, `endpoints.sharedInbox` in the actor.
+  commit): the three inboxes past `guard`, every refusal in the order and with the status of 7.10 (pinned by
+  `TestInboxStageOrder`), the `federation` flag (only in a mode that federates) as the pause, `ap_inbox`
+  (migration 18, unique by the signer's actor and the activity id), two workers with claim, lease, retries, dead
+  rows, retention and a shutdown that gives a claimed row back, `fedConnsMax` turns at the database. Who pays:
+  before the signature verifies only the request's address (3,600 deliveries and 60 key fetches an hour, at most 2
+  of the 8 bodies being read, each turn ending when its body has arrived within 10 s, else 408); once verified, the
+  key id's host (300 in 5 minutes) and domain (3,000) and, for a fetched key that verified, the domain's 120 key
+  fetches an hour. `keyMemo` tied to its actor's row, the origin rule, the stale, gone and suspended rules with
+  `keyForOwnDelete`, the unknown actor's Delete dropped with no fetch and an unverified own Delete answered alike
+  (202; this server's own failures keep their 503), the replay memory's `sweep` in housekeeping and its `stepped`
+  logged once, the readers' drop counts logged, the README's sentences on the root of the origin and on the
+  sender's address behind a proxy (logged once when a trusted proxy passes none), the inbox section, `fedBuilt`
+  and NodeInfo's `inbox`, `endpoints.sharedInbox` in the actor.
   What each type does in this version: an actor's own Delete marks it gone, an Update of the actor's own document
   fetches it again; everything else (Follow included) is counted per type and dropped with 202, and nothing is
   answered back. Tests: `TestInboxRefusals` (every case above, each with its status and reason),
@@ -71,7 +77,10 @@ route and test named below is new unless the design note says it exists.
   decodes at once, 8 waiting), `TestDBInboxFlood` (unsigned 256 KB bodies refused unread with no fetch or row; keys
   nobody keeps limited to their 2 turns while a kept key's delivery is accepted), `TestDBInboxForwardPays` (a
   forward spends the signer's allowances, never the named actor's domain's), `TestDBPolicyBothWays` (the allowlist
-  outbound too), `TestDBPurgeRemote` and `TestDBQueryPlans` updated, all with `-race -count=3` on two cores;
+  outbound too), `TestInboxStageOrder`, `TestInboxSlowBodies`, `TestInboxReadTurnFreed`, `TestInboxForgedSpendsGroup`,
+  `TestInboxIDSquat`, `TestInboxPeekOracle`, `TestInboxOwnDeleteByAnother`, `TestInboxUnforwardedSaidOnce`,
+  `TestKeyMemoRaces`, `TestDBInboxKeyFollowsRow`, `TestDBInboxWorkerLimits`, `TestDBPurgeRemote` and
+  `TestDBQueryPlans` updated, all with `-race -count=3` on two cores;
   `BenchmarkInboxRequest` (with the key kept: 66 to 75 µs and 173 allocations dropped, 1.4 to 2.1 ms wall and 219
   allocations stored with its commit; an unsigned 256 KB request 6.2 to 6.6 µs and 41 allocations; a 256 KB Delete
   of an actor never seen 1.7 to 1.8 ms and 640 KB, on a 2.1 GHz Xeon) and `BenchmarkInboxVerify` under budget. The `federated` browser suite covers the inbox's answers
