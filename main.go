@@ -1862,8 +1862,16 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 		return
 	}
 	defer tx.Rollback()
+	// The name's lock is taken before the request's row, in the order makeAdmin takes them (the name, then
+	// the requests under it), so the two cannot wait for each other; the name of a request never changes.
 	var name, display, hash string
-	err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username, display_name, pw_hash`, id).Scan(&name, &display, &hash)
+	err = tx.QueryRow(`SELECT username FROM join_requests WHERE id = $1`, id).Scan(&name)
+	if err == nil {
+		_, err = tx.Exec(nameLockSQL, name)
+	}
+	if err == nil {
+		err = tx.QueryRow(`DELETE FROM join_requests WHERE id = $1 RETURNING username, display_name, pw_hash`, id).Scan(&name, &display, &hash)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, noRequest)
 		return
@@ -1874,12 +1882,7 @@ func (a *app) handleApproveRequest(w http.ResponseWriter, r *http.Request, u *us
 	}
 	var uid int64
 	// A retired name, or the instance's own host, cannot become an account either; the admin is told it
-	// is taken, in the words of a name an account holds, and nothing of an account that once had it. The
-	// name's lock comes first, so a delete retiring it meanwhile is seen (nameLockSQL).
-	if _, err := tx.Exec(nameLockSQL, name); err != nil {
-		a.serverError(w, err)
-		return
-	}
+	// is taken, in the words of a name an account holds, and nothing of an account that once had it.
 	err = tx.QueryRow(`INSERT INTO users (username, display_name, pw_hash) SELECT $1, $2, $3 WHERE NOT `+retiredSQL+` AND NOT $4 RETURNING id`, name, display, hash, a.reservedName(name)).Scan(&uid)
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == "23505" || errors.Is(err, sql.ErrNoRows) {
@@ -2338,7 +2341,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	a.fed.dropActor(keyOwner(u.ID))
 	// What the visitor's page of a single-profile instance shows changed: it is made again when next
 	// asked. The stats and the other parts the page writes by itself are not on it.
-	if in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil {
+	if in.DisplayName != nil || in.Avatar != nil || in.Bio != nil || in.Links != nil || federates != nil {
 		a.dropVisitorPage()
 	}
 	out := map[string]any{"user": cur}
@@ -3210,6 +3213,9 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
+	// A hide, a restore or a suspension changes what a single-profile instance's page at / lists
+	// (federation.md 4.2): it is made again when next asked.
+	a.dropVisitorPage()
 	a.notify(owner, u.ID, "moderation", 0, msg)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -6927,8 +6933,26 @@ func discoveryWrite(w http.ResponseWriter, ctype string, v any) {
 // guard would answer it as a write with 403 or 415: discovery with the CORS header, the public addresses
 // counted against their allowance first, as a GET is. It passes everything else on, and is not in the
 // chain at all in a mode that does not federate (routes).
+//
+// The inboxes the actor documents name (/users/{name}/inbox and /actor/inbox) are not built yet (FWR 1),
+// and answer every method with 405 and an empty Allow, counted against the public allowance: RFC 9110
+// 15.5.6 makes 405 the answer for a method the target does not support, and 10.2.1 an empty Allow the way
+// a resource temporarily disabled by configuration says it takes none. A 4xx tells a sender not to keep
+// trying, so a Follow pressed on Mastodon now is not retried for days and stays requested there. 404
+// would say the address does not exist, which the actor contradicts, and 501 is for a method the server
+// supports nowhere (15.6.2), while it takes POST elsewhere.
 func (a *app) fedMethods(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inboxPath(r.URL.Path) {
+			if !a.publicAllowed(w, r) {
+				return
+			}
+			h := w.Header()
+			h.Set("Allow", "")
+			h.Set("Cache-Control", "no-store")
+			http.Error(w, "This server does not take deliveries yet.", http.StatusMethodNotAllowed)
+			return
+		}
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			next.ServeHTTP(w, r)
 			return
@@ -7807,6 +7831,16 @@ func (a *app) publicAllowed(w http.ResponseWriter, r *http.Request) bool {
 	h.Set("Cache-Control", "no-store")
 	http.Error(w, "Too many requests from this address. Try again in an hour.", http.StatusTooManyRequests)
 	return false
+}
+
+// inboxPath says whether a path is an inbox an actor document names: /actor/inbox, or /users/{name}/inbox
+// for any name, so the answer says nothing of who exists.
+func inboxPath(p string) bool {
+	if p == "/actor/inbox" {
+		return true
+	}
+	name, ok := strings.CutSuffix(strings.TrimPrefix(p, "/users/"), "/inbox")
+	return ok && strings.HasPrefix(p, "/users/") && name != "" && !strings.Contains(name, "/")
 }
 
 // publicPaths says whether a path is one of the addresses above, for publicMethods.

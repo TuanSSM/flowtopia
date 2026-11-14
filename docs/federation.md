@@ -420,7 +420,8 @@ of FRD 4 and its two constants are gone, so there is one copy.
 shows no post without `FLOWA_FEDERATE=on`. As built (FRD 5): with it on, the page also lists the owner's newest
 20 Public posts (the post's text with its links, its chips and combo as text, its picture at the public
 picture address) and links the profile page `/users/{name}` for the rest; the page is made again when the owner
-posts or deletes a post. Without it the page is byte for byte as before, and the owner's posts are seen by the
+posts or deletes a post, after any moderator's action, and when the opt-in changes (`TestDBVisitorPageFollows`;
+nobody can moderate the owner, who is the one account and an admin, but the page would follow if anyone could). Without it the page is byte for byte as before, and the owner's posts are seen by the
 owner alone, signed in. It shows no number
 (14.6). The People list is hidden, and Follows and Home stay behind their flag with nobody to follow until
 FWR. `FLOWA_FEDERATE` is read since FRD 4: with it on, the instance answers WebFinger for the owner (whose
@@ -542,7 +543,9 @@ that makes an account (sign-up, approving a request, `ADMIN_USER`) first take a 
 unique index for a delete went ahead, once the delete committed, with a snapshot from before the
 retirement. Under READ COMMITTED each statement takes a new snapshot when it starts, so an insert sent after
 the lock is granted sees the retirement (`TestDBRetireRace`). The password is hashed before the lock is
-taken, so sign-up waits only for another transaction on the same name. No endpoint renames an account, so a
+taken, so sign-up waits only for another transaction on the same name. The actor of a retired name answers
+410 with a Tombstone, an accepted disclosure that an account under it once shared its profile (5.5, "As built
+(FRD 5)", says why). No endpoint renames an account, so a
 name that has federated cannot move (4.3); `TestDBRetiredNames` holds that `PUT /api/me` takes no name. The
 instance's own host is taken the same way in a mode that federates (5.3 found that a member so named is
 shadowed by the instance actor in WebFinger): it is refused at every door above, and a member who already has
@@ -797,6 +800,15 @@ As built (FRD 5), checked against `TestActorDocument`'s golden files (`testdata/
   them) refuses an actor without an inbox; a delivery there fails, which is true: nobody can follow yet.
   `followers`, `following`, `featured` and `endpoints.sharedInbox` are left out until they answer (FRD 6, FWR
   1): ActivityPub makes them SHOULD and MAY, and naming an address that answers 404 says more than is built.
+- **The inboxes the actors name** (`/users/{name}/inbox`, `/actor/inbox`) answer every method with 405 and an
+  empty `Allow`, whatever the name, before the write guard (which said 415 or 403), counted against the public
+  allowance. RFC 9110 15.5.6 makes 405 the answer for a method the target does not support, and 10.2.1 an
+  empty `Allow` the way a resource temporarily disabled by configuration says it takes none; a 4xx tells a
+  sender not to keep trying. 404 would say the address does not exist, which the actor contradicts, and 501
+  is for a method the server supports nowhere (15.6.2). Mastodon's pages on disk do not say how it treats
+  each status. So someone on Mastodon can press Follow on a Flowa account now; the Follow is refused, and it
+  stays "requested" there until FWR builds the inbox. Local and plain single mode answer these paths as any
+  unknown address (`TestDBDefaultsUnchanged`); `TestDBInboxNotYet`.
 - **An opted-in member whose key is still being made** (opting in asks for it; it takes a moment, 5.7) gets
   503 with `Retry-After: 60`, never a document without a key. The instance actor likewise until its key exists.
 - **Kept in memory.** A member's document is made once and kept (at most 1,000, all dropped when full, each
@@ -810,7 +822,13 @@ As built (FRD 5), checked against `TestActorDocument`'s golden files (`testdata/
   `{"@context": "https://www.w3.org/ns/activitystreams", "id": ..., "type": "Tombstone", "formerType":
   "Person"}` (ActivityPub 6.4), and a browser a page that says the account was deleted, so other servers stop
   asking. Any other name nobody shows (never opted in, opted out, suspended, deleted without having opted in)
-  is the one 404.
+  is the one 404. **This tells something, on purpose:** that an account under the name once shared its
+  profile beyond the server (opted in, or had a key: also one that opted out before it was deleted), where
+  WebFinger's one 404 (5.3) tells nothing. It is accepted because the actor id was public already (other
+  servers may have stored it, which is why the name is retired), and other servers that hold it must learn it
+  is gone, or they keep showing and asking for an account that no longer exists; ActivityPub 6.4 gives 410 and
+  a Tombstone for that, and the SWICG report on HTTP signatures reads a 410 on a key fetch as the actor
+  deleted. An account that never opted in had no public id, and its deletion stays the one 404.
 
 ### 5.6 Content negotiation on the same URL
 

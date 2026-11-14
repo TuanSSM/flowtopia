@@ -1205,9 +1205,9 @@ func BenchmarkWebFinger(b *testing.B) {
 }
 
 // publicAddresses are the actors, the public pages and their pictures of a mode that federates (FRD 5), as
-// a visitor would ask for them.
+// a visitor would ask for them, and the inboxes the actors name, which answer 405 there.
 var publicAddresses = []string{"/actor", "/users/ana", "/users/ana?before=5", "/users/ana/posts/1", "/users/ana/avatar.jpg", "/users/ana/avatar.png?v=1",
-	"/users/ana/posts/1/picture.jpg", "/users/ana/posts/1/picture.png"}
+	"/users/ana/posts/1/picture.jpg", "/users/ana/posts/1/picture.png", "/users/ana/inbox", "/actor/inbox"}
 
 // What a deployment that federates nothing sees is what it saw before discovery existed, headers
 // included: a few answers of a local instance (signed in and not, /api/me read and saved with a federates

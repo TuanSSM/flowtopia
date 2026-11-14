@@ -352,37 +352,91 @@ func TestDBRetireRace(t *testing.T) {
 		t.Errorf("ADMIN_USER during a retirement: %d %v", m.id, m.err)
 	}
 
-	// The real handlers against each other, many times: a delete of an opted-in member and a sign-up and
-	// an approval under the same name, started together. However they interleave, nobody gets the name.
-	for i := range 40 {
+	// ADMIN_USER and an approval take the name's lock and the request's row in the same order, so they cannot
+	// wait for each other: with makeAdmin's transaction holding the name's lock, an approval waits for the
+	// name before it touches the request, and makeAdmin's delete of the request goes ahead. In the other order
+	// the two would deadlock and Postgres would abort one of them, which at start would stop the server.
+	var lockReq int64
+	if err := e.a.db.QueryRow(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ('lia', 'lia', 'x') RETURNING id`).Scan(&lockReq); err != nil {
+		t.Fatal(err)
+	}
+	hold, err := e.a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holdPID int
+	if err := hold.QueryRow(`SELECT pg_backend_pid()`).Scan(&holdPID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(nameLockSQL, "lia"); err != nil {
+		t.Fatal(err)
+	}
+	approved := answer(func() int {
+		code, _ := e.do(rootTok, "POST", fmt.Sprintf("/api/admin/requests/%d/approve", lockReq), nil)
+		return code
+	})
+	blockedBy(t, e, holdPID)
+	if _, err := hold.Exec(`DELETE FROM join_requests WHERE username = 'lia'`); err != nil {
+		t.Fatalf("makeAdmin's delete of the request, with an approval waiting: %v", err)
+	}
+	if err := hold.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-approved; code != 404 {
+		t.Errorf("the approval of a request ADMIN_USER took: %d", code)
+	}
+
+	// The real handlers against each other, many times: a delete of an opted-in member started together
+	// with one door under the same name, each door in turn (a sign-up with no request in its way, an approval
+	// of a request that waits under the name, and ADMIN_USER), so every door reaches its insert. However they
+	// interleave, nobody gets the name. What these rounds prove: that the real handlers, in the orders a race
+	// gives, never give the name away and never deadlock. They catch a missing lock on the delete through the
+	// approval rounds (an approval's insert has no earlier look at the name). The sign-up and ADMIN_USER
+	// rounds would pass without the lock too, because their first look sees the account or its retirement in
+	// one snapshot; the interleaving only the lock closes for them is the held-open case above.
+	for i := range 45 {
 		name := fmt.Sprintf("race%d", i)
 		uid, _ := e.user(name, "user")
 		e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, uid)
-		var rq int64
-		if err := e.a.db.QueryRow(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ($1, $1, 'x') RETURNING id`, name).Scan(&rq); err != nil {
-			t.Fatal(err)
+		door, what := func() bool { return false }, ""
+		switch i % 3 {
+		case 0:
+			what = "sign-up"
+			door = func() bool {
+				c, _ := e.do("", "POST", "/api/signup", map[string]any{"username": name, "password": "flowa-test-only"})
+				return c == 200
+			}
+		case 1:
+			what = "approval"
+			var rq int64
+			if err := e.a.db.QueryRow(`INSERT INTO join_requests (username, display_name, pw_hash) VALUES ($1, $1, 'x') RETURNING id`, name).Scan(&rq); err != nil {
+				t.Fatal(err)
+			}
+			door = func() bool {
+				c, _ := e.do(rootTok, "POST", fmt.Sprintf("/api/admin/requests/%d/approve", rq), nil)
+				return c == 200
+			}
+		case 2:
+			what = "ADMIN_USER"
+			door = func() bool {
+				id, err := e.a.seedAdmin(name, "flowa-test-only")
+				return err == nil && id != 0 && id != uid
+			}
 		}
 		start := make(chan struct{})
 		var wg sync.WaitGroup
-		codes := make([]int, 3)
-		for j, f := range []func() int{
-			func() int { c, _ := e.do(rootTok, "DELETE", fmt.Sprintf("/api/admin/users/%d", uid), nil); return c },
-			func() int {
-				c, _ := e.do("", "POST", "/api/signup", map[string]any{"username": name, "password": "flowa-test-only"})
-				return c
-			},
-			func() int {
-				c, _ := e.do(rootTok, "POST", fmt.Sprintf("/api/admin/requests/%d/approve", rq), nil)
-				return c
-			},
-		} {
-			wg.Go(func() { <-start; codes[j] = f() })
-		}
+		var deleted int
+		var gave bool
+		wg.Go(func() {
+			<-start
+			deleted, _ = e.do(rootTok, "DELETE", fmt.Sprintf("/api/admin/users/%d", uid), nil)
+		})
+		wg.Go(func() { <-start; gave = door() })
 		close(start)
 		wg.Wait()
-		if codes[0] != 200 || codes[1] == 200 || codes[2] == 200 || e.count(`SELECT count(*) FROM users WHERE username = $1`, name) != 0 ||
+		if deleted != 200 || gave || e.count(`SELECT count(*) FROM users WHERE username = $1`, name) != 0 ||
 			e.count(`SELECT count(*) FROM retired_usernames WHERE username = $1`, name) != 1 {
-			t.Fatalf("round %d: delete %d, sign-up %d, approval %d", i, codes[0], codes[1], codes[2])
+			t.Fatalf("round %d (%s): delete %d, the name given %v", i, what, deleted, gave)
 		}
 	}
 }

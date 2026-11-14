@@ -510,9 +510,14 @@ cannot be edited, so the choice is made once; deleting the post takes it back.
 A This server post, a hidden one, the post or profile of a member who has not opted in, opted out since or is
 suspended, and an id or a name nobody has all get one and the same 404 (in each representation, byte for
 byte), so nothing here tells whether something private exists. The actor of a member who opted in and was then
-deleted answers 410 with a `Tombstone`, so other servers stop asking; their name is never given to anyone else
+deleted answers 410 with a `Tombstone`, so other servers stop asking (this tells that an account under the
+name once shared its profile, which its public id had told already); their name is never given to anyone else
 (it is refused at sign-up, at a request to join and for `ADMIN_USER`, in the words of a taken name). The
 server's own host name is refused as a username in a mode that federates.
+
+There is no inbox yet: the inbox addresses the actors name answer 405 to everything, so **someone on Mastodon
+can press Follow on a Flowa account now, and the follow will stay "requested" there** until a later version
+builds the inbox.
 
 The pages are written by the server with no script at all, under a policy that allows only this server's
 pictures and style sheet, carry `noindex` for search engines, link out with `rel="nofollow noopener ugc"`,

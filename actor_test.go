@@ -901,3 +901,91 @@ func TestDBPublicPagesHidden(t *testing.T) {
 	}
 	check("single mode's profile page, walked by its cursor", walk(s, "/users/"+name), sm)
 }
+
+// The inboxes the actors name are not built yet: in a mode that federates every method there answers 405
+// with an empty Allow (RFC 9110 15.5.6 and 10.2.1), whatever the name, the content type or an Origin, before
+// the write guard would say 415 or 403, counted against the public allowance. Local and plain single mode
+// answer them as any unknown address (TestDBDefaultsUnchanged).
+func TestDBInboxNotYet(t *testing.T) {
+	f := newPubFixture(t)
+	e := f.e
+	var want *httptest.ResponseRecorder
+	for _, p := range []string{"/users/ana/inbox", "/users/nobody/inbox", "/users/eve/inbox", "/actor/inbox"} {
+		for _, m := range []string{"POST", "GET", "HEAD", "PUT", "DELETE", "OPTIONS"} {
+			for _, hdr := range []map[string]string{
+				{"Content-Type": `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`},
+				{"Content-Type": "application/activity+json", "Origin": "https://social.example"},
+				{"Content-Type": "application/json"}, nil,
+			} {
+				w := ask(e.h, m, p, "198.51.100.20:4000", hdr)
+				allow, has := w.Result().Header["Allow"]
+				if w.Code != 405 || !has || len(allow) != 1 || allow[0] != "" || w.Result().Header.Get("Cache-Control") != "no-store" {
+					t.Errorf("%s %s %v: %d %v", m, p, hdr, w.Code, w.Result().Header)
+				}
+				if want == nil {
+					want = w
+				} else if m != "HEAD" && w.Body.String() != want.Body.String() {
+					t.Errorf("%s %s: another body: %q", m, p, w.Body)
+				}
+			}
+		}
+	}
+	if !strings.Contains(want.Body.String(), "does not take deliveries yet") {
+		t.Errorf("the inbox's words: %q", want.Body)
+	}
+	e.a.lim.public = newLimiter(1, time.Hour)
+	ask(e.h, "POST", "/users/ana/inbox", "203.0.113.9:1", nil)
+	if w := ask(e.h, "POST", "/users/ana/inbox", "203.0.113.9:1", nil); w.Code != 429 {
+		t.Errorf("the inbox past the allowance: %d", w.Code)
+	}
+}
+
+// A single-profile instance's page at / is made again whenever a post leaves or rejoins public view: the
+// owner deletes it, a moderator hides it or restores it. On a real instance the owner is the one account and
+// an admin, whom nobody outranks, so only the delete can happen there; the moderator is put in by hand to show
+// that the page follows a moderator's action too, should one ever reach the owner's posts.
+func TestDBVisitorPageFollows(t *testing.T) {
+	s := newEnv(t)
+	if err := s.fedSingleStart(nil); err != nil {
+		t.Fatal(err)
+	}
+	s.h = s.a.routes(staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"}))
+	var owner int64
+	if err := s.a.db.QueryRow(`SELECT id FROM users WHERE owner`).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	tok := s.session(owner)
+	var keep, gone int64
+	for body, id := range map[string]*int64{"kept words": &keep, "deleted words": &gone} {
+		out := s.must(200, tok, "POST", "/api/posts", map[string]any{"body": body, "audience": "public"})
+		*id = num(out["posts"].([]any)[0].(map[string]any)["id"])
+	}
+	root := func() string { return ask(s.h, "GET", "/", "", nil).Body.String() }
+	if r := root(); !strings.Contains(r, "kept words") || !strings.Contains(r, "deleted words") {
+		t.Fatalf("the page at / before: %s", r)
+	}
+	s.must(200, tok, "DELETE", fmt.Sprintf("/api/posts/%d", gone), nil)
+	if strings.Contains(root(), "deleted words") {
+		t.Error("a deleted post is still on the page at /")
+	}
+	s.mustExec(`INSERT INTO users (username, display_name, pw_hash, role) VALUES ('mod', 'Mod', 'x', 'moderator')`)
+	var mod int64
+	if err := s.a.db.QueryRow(`SELECT id FROM users WHERE username = 'mod'`).Scan(&mod); err != nil {
+		t.Fatal(err)
+	}
+	// users_owner_is_admin keeps the owner an admin, whom nobody outranks; this test's own schema drops it so
+	// that a moderator can act on the owner's post and the handler's drop of the page can be seen.
+	s.mustExec(`ALTER TABLE users DROP CONSTRAINT users_owner_is_admin`)
+	s.mustExec(`UPDATE users SET role = 'user' WHERE id = $1`, owner)
+	s.mustExec(`UPDATE users SET role = 'admin' WHERE id = $1`, mod)
+	s.setFlag("moderation", true)
+	mtok := s.session(mod)
+	s.must(200, mtok, "POST", "/api/mod/actions", map[string]any{"action": "hide", "kind": "post", "id": keep, "reason": "test"})
+	if strings.Contains(root(), "kept words") {
+		t.Error("a hidden post is still on the page at /")
+	}
+	s.must(200, mtok, "POST", "/api/mod/actions", map[string]any{"action": "restore", "kind": "post", "id": keep, "reason": "test"})
+	if !strings.Contains(root(), "kept words") {
+		t.Error("a restored post is not back on the page at /")
+	}
+}
