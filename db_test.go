@@ -6176,7 +6176,9 @@ func TestDBOriginFrozen(t *testing.T) {
 	if err := r.fedStart(nil); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys`) == 1 })
+	// The start also asks for ana's key (she opted in), right after the instance actor's, so the number of
+	// keys passes 1 on its way to 2: the wait is for the instance actor's own key, which stays once made.
+	waitFor(t, "the instance actor's key", func() bool { return e.count(`SELECT count(*) FROM ap_keys WHERE user_id IS NULL`) == 1 })
 	if n := recorded(); n != 0 {
 		t.Fatalf("making the key recorded %d rows of the origin", n)
 	}
