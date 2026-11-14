@@ -302,6 +302,7 @@ func TestFixturesParse(t *testing.T) {
 	gargron := `"https://mastodon.social/users/Gargron#main-key"`
 	want := map[string]string{
 		"actor-ana.json":                    `actor ok as ana@flowa.example.org, key "", shown as "Ana"`, // the golden key is 1024 bits, under the minimum
+		"actor-ana-follows-off.json":        `actor ok as ana@flowa.example.org, key "", shown as "Ana"`, // the same with follows off (FWR 3)
 		"actor-instance.json":               `actor ok as flowa.example.org@flowa.example.org, key "", shown as "flowa.example.org"`,
 		"note-ana.json":                     "post read",
 		"ap-ex1-actor.json":                 `actor ok as alyssa@social.example, key "", shown as "Alyssa P. Hacker"`,
