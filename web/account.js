@@ -392,7 +392,7 @@ function pageAbout() {
 }
 // What a visitor is told on a page that needs an account: one sentence, about that page.
 const WALLS = { practice: 'Sign in to log your practice.', combos: 'Sign in to build combos.', plan: 'Sign in to follow the plan.', profile: 'Sign in to see your profile.', timeline: 'Sign in to use the timeline.',
-  post: 'Sign in to read this post.', u: 'Sign in to see this profile.', achievements: 'Sign in to see your achievements.', avatar: 'Sign in to make your avatar.', bookmarks: 'Sign in to keep bookmarks.' };
+  post: 'Sign in to read this post.', u: 'Sign in to see this profile.', fed: 'Sign in to see this profile.', achievements: 'Sign in to see your achievements.', avatar: 'Sign in to make your avatar.', bookmarks: 'Sign in to keep bookmarks.' };
 function pageNeedAccount(title, page) {
   return `<div class="auth card"><h1>${esc(title)}</h1><p class="muted" style="margin:8px 0 14px">${WALLS[page] || 'Sign in to use this page.'}</p>
     <div class="row wrap"><a class="btn primary" href="#/signin">Sign in</a>${joinable() ? '<a class="btn" href="#/signup">Create an account</a>' : ''}</div></div>`;

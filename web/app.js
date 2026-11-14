@@ -88,7 +88,7 @@ const FLAGS = [
 // The flags only a server that federates has (fedFlagDefaults in main.go), shown under Features only when the
 // server lists them, so a server that does not federate shows exactly the switches it always did.
 const FED_FLAGS = [
-  ['federation', 'Federation: take deliveries', 'Other servers can deliver to this Flowa\'s inboxes, from the domains the Federation tab lets in. It acts only on an account deleting itself or changing its profile; follows, posts and likes are counted and dropped for now. When off, deliveries are answered "try again later" and nothing waiting is handled.'],
+  ['federation', 'Federation: take deliveries', 'Other servers can deliver to this Flowa\'s inboxes, from the domains the Federation tab lets in. It acts on follows and their answers, and on an account deleting itself or changing its profile; posts and likes are counted and dropped for now. When off, deliveries are answered "try again later", nothing waiting is handled, and nothing is sent.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
 const ui = { graphView: localStorage.getItem('nf-view') || 'graph', draftFocus: [], palIdx: 0, prop: localStorage.getItem('fl-prop') || 'nunchaku', open: (localStorage.getItem('fl-groups') ?? localStorage.getItem('fl-prop') ?? 'nunchaku').split(',').filter(Boolean), users: null };
@@ -652,7 +652,9 @@ function fedCard() {
     : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>${esc(fed.label)}</span></label>`}
     <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. ${esc(fed.built)}</p>
     ${on && fed.profile ? `<p class="small"><a href="${esc(fed.profile)}" target="_blank" rel="noopener">See your public page ${icon('ext')}</a></p>` : ''}
-    ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}</div></div>`;
+    ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}
+    ${on && flags.follows && flags.community ? `<label class="check"><input type="checkbox" data-change="locked" ${fed.locked ? 'checked' : ''} aria-describedby="locked-hint"><span>Approve followers from other servers by hand</span></label>
+    <p class="tiny" id="locked-hint">${fed.locked ? 'Someone on another server who follows you waits until you approve them from your notifications.' : 'When it is on, someone on another server who follows you waits until you approve them from your notifications.'} Members of this Flowa follow you as before.</p>` : ''}</div></div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
 const pageOff = what => `<div class="empty">${what} is turned off on this Flowa. An admin can turn it on under Admin, Features. <a href="#/">Go to the dashboard</a>.</div>`;
@@ -689,7 +691,7 @@ function renderSide(route) {
   $('#menu').innerHTML = `<div class="brand"><img src="icon.svg" alt=""><div><b>Flowa</b><span class="tiny">Flow arts tracker</span></div></div>
     ${profile}
     ${a('#/', 'home', me ? 'Dashboard' : 'Welcome', curId === 'dashboard')}
-    ${me && flags.community ? a('#/timeline', 'feed', 'Timeline', curId === 'timeline' || curId === 'post' || curId === 'u') : ''}
+    ${me && flags.community ? a('#/timeline', 'feed', 'Timeline', curId === 'timeline' || curId === 'post' || curId === 'u' || curId === 'fed') : ''}
     ${a('#/maps', 'map', 'Skill maps', curId === 'maps')}
     ${me ? a('#/practice', 'log', 'Practice', curId === 'practice') + a('#/combos', 'link', 'Combos', curId === 'combos') + a('#/plan', 'flag', 'Plan', curId === 'plan') : ''}
     ${me && flags.bookmarks ? a('#/bookmarks', 'bookmark', 'Bookmarks', curId === 'bookmarks') : ''}
@@ -713,7 +715,7 @@ function parseRoute() {
   if (r[0] === 'map') return ['maps'];
   return r;
 }
-const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', achievements: 'Achievements', mod: 'Moderation', avatar: 'Avatar', bookmarks: 'Bookmarks', about: 'About this Flowa' };
+const TITLES = { maps: 'Skill maps', prop: 'Skill maps', practice: 'Practice', combos: 'Combos', plan: 'Plan', settings: 'Settings', profile: 'Profile', signin: 'Sign in', signup: 'Create an account', admin: 'Admin', timeline: 'Timeline', post: 'Post', u: 'Profile', fed: 'Profile elsewhere', achievements: 'Achievements', mod: 'Moderation', avatar: 'Avatar', bookmarks: 'Bookmarks', about: 'About this Flowa' };
 function pageFor(p, a, b, title) {
   if (!p) return me ? pageDashboard() : pageWelcome();
   if (p === 'maps' || p === 'prop') return pageMaps();
@@ -721,14 +723,15 @@ function pageFor(p, a, b, title) {
   if (p === 'signin' || p === 'signup') return pageAuth(p);
   if (p === 'settings') return pageSettings();
   if (p === 'about') return pageAbout();
-  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'achievements', 'avatar', 'bookmarks'].includes(p) && !me) return pageNeedAccount(title, p);
+  if (['practice', 'combos', 'plan', 'profile', 'timeline', 'post', 'u', 'fed', 'achievements', 'avatar', 'bookmarks'].includes(p) && !me) return pageNeedAccount(title, p);
   if (p === 'avatar') return pageAvatar(a);
   if (p === 'bookmarks') return flags.bookmarks ? pageBookmarks() : pageOff('Bookmarks');
   if (p === 'practice') return pagePractice();
-  if (['timeline', 'post', 'u'].includes(p) && !flags.community) return pageOff('Community');
+  if (['timeline', 'post', 'u', 'fed'].includes(p) && !flags.community) return pageOff('Community');
   if (p === 'achievements' && !flags.game) return pageOff('Gamification');
   if (p === 'timeline' || p === 'post') return pageTimeline(p === 'post' ? a : '', p === 'post' ? b : '');
   if (p === 'u') return pageUser(a);
+  if (p === 'fed' && fed) return pageFedAccount(a);
   if (p === 'achievements') return pageAchievements();
   if (p === 'combos') { if (a) ui.comboOpen = a; return pageCombos(); }
   if (p === 'plan') return pagePlan();
@@ -1100,6 +1103,13 @@ document.addEventListener('change', async e => {
       if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'Your profile and Public posts are now shared beyond this server.' : 'Your profile and posts are no longer shared beyond this server.'); }
       else toast(r.error);
       render(); document.querySelector('[data-change="federates"]')?.focus();
+      break;
+    }
+    case 'locked': {
+      const want = t.checked, r = await api('me', 'PUT', { locked: want });
+      if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'You now approve followers from other servers by hand.' : 'Followers from other servers no longer wait for your approval.'); }
+      else toast(r.error);
+      render(); document.querySelector('[data-change="locked"]')?.focus();
       break;
     }
     case 'note': { const r = { ...rec(d.id), notes: t.value }; state.skills[d.id] = r; commit(); break; }

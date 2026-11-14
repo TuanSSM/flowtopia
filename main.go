@@ -24,6 +24,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"embed"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -530,6 +531,7 @@ type limits struct {
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 	lookups                                     *limiter // searches by handle of people on other servers, per member, in a mode that federates
 	domains                                     *limiter // changes to domain policies, per admin, in a mode that federates
+	fedFollows                                  *limiter // follows, unfollows, approvals and declines across servers, per member, in a mode that federates
 	inbox                                       *limiter // verified deliveries per sender group (the last two labels of the key id's host), in a mode that federates
 	inboxHost                                   *limiter // verified deliveries per host of the key id, in a mode that federates
 	inboxAddr                                   *limiter // deliveries per address, before a signature is read, in a mode that federates
@@ -558,6 +560,9 @@ func newLimits() limits {
 		// An admin pasting a list of servers to allow or suspend, one at a time; more than that in an hour
 		// is a script, and a stolen session is held to it too.
 		domains: newLimiter(300, time.Hour),
+		// Each of these sends an activity to another server: 100 an hour is a member going through their
+		// requests or following the people they know, and a stolen session sends no more.
+		fedFollows: newLimiter(100, time.Hour),
 		// 7.5: 300 deliveries in 5 minutes from one server; and per address a bound a server's own traffic stays
 		// under, so a flood of requests that are not even signed is turned away for the cost of a counter.
 		inbox:     newLimiter(inboxGroupRate, inboxGroupWindow),
@@ -1106,6 +1111,11 @@ func (a *app) setFlags(in map[string]bool) error {
 	a.flagMu.Lock()
 	a.flagCache = nil
 	a.flagMu.Unlock()
+	// An actor document says manuallyApprovesFollowers, which the follows flag decides too (actorDoc): the kept ones
+	// are made again.
+	if a.fed != nil {
+		a.fed.dropActors()
+	}
 	return nil
 }
 
@@ -1625,12 +1635,12 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 	// In a mode that federates, the member's handle and whether they share it (fedView); in any other
 	// mode the answer is as before, with no word of it.
 	if a.fed != nil && u != nil {
-		var on bool
-		if err := a.db.QueryRow(`SELECT federates FROM users WHERE id = $1`, u.ID).Scan(&on); err != nil {
+		var on, locked bool
+		if err := a.db.QueryRow(`SELECT federates, locked FROM users WHERE id = $1`, u.ID).Scan(&on, &locked); err != nil {
 			a.serverError(w, err)
 			return
 		}
-		out["federation"] = a.fedView(u, on)
+		out["federation"] = a.fedView(u, on, locked)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2198,6 +2208,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 		// and not in single mode, where FLOWA_FEDERATE=on is the owner's choice. Kept raw and read below
 		// only in such a mode, so that elsewhere no value of it, of any type, can change the answer.
 		Federates json.RawMessage `json:"federates"`
+		// Approve followers from other servers by hand (FWR 3): read like federates, only in a mode that
+		// federates; elsewhere ignored as any unknown field.
+		Locked json.RawMessage `json:"locked"`
 	}
 	if !readJSON(w, r, 200<<10, &in) {
 		return
@@ -2213,6 +2226,15 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 			return
 		}
 		federates = &on
+	}
+	var locked *bool
+	if a.fed != nil && len(in.Locked) > 0 && string(in.Locked) != "null" {
+		var on bool
+		if json.Unmarshal(in.Locked, &on) != nil {
+			fail(w, http.StatusBadRequest, "The field locked must be true or false.")
+			return
+		}
+		locked = &on
 	}
 	// Everything is checked before the account is read, so the row is locked only briefly.
 	var cols []string
@@ -2382,11 +2404,18 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	// The opt-in is its own column, outside userCols: it is read only in a mode that federates, so no
 	// other answer about a member carries it. It is not part of profileRev either: it is a switch saved
 	// on its own, not text edited against an older copy. was is what it was before, for the key below.
-	var fedOn, fedWas bool
+	var fedOn, fedWas, lockedNow bool
 	if a.fed != nil {
-		if err := tx.QueryRow(`SELECT federates FROM users WHERE id = $1`, u.ID).Scan(&fedWas); err != nil {
+		if err := tx.QueryRow(`SELECT federates, locked FROM users WHERE id = $1`, u.ID).Scan(&fedWas, &lockedNow); err != nil {
 			a.serverError(w, err)
 			return
+		}
+		if locked != nil && *locked != lockedNow {
+			if _, err := tx.Exec(`UPDATE users SET locked = $2 WHERE id = $1`, u.ID, *locked); err != nil {
+				a.serverError(w, err)
+				return
+			}
+			lockedNow = *locked
 		}
 		fedOn = fedWas
 		if federates != nil && *federates != fedWas {
@@ -2417,7 +2446,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	out := map[string]any{"user": cur}
 	if a.fed != nil {
-		out["federation"] = a.fedView(cur, fedOn)
+		out["federation"] = a.fedView(cur, fedOn, lockedNow)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -5449,6 +5478,29 @@ func (a *app) flagsCached() map[string]bool {
 	return f
 }
 
+// flagsKnown is flagsCached that also says whether the flags could be read: a failed read gives no flags, which most
+// callers may take as every flag off (a page simply shows less), but what drops something for good on "off" must tell
+// "off" from "could not read" (follows across servers, FWR 3: followsKnown).
+func (a *app) flagsKnown() (map[string]bool, bool) {
+	a.flagMu.Lock()
+	defer a.flagMu.Unlock()
+	if time.Since(a.flagsAt) < 2*time.Second && a.flagCache != nil {
+		return a.flagCache, true
+	}
+	f, err := a.flags()
+	if err != nil {
+		return map[string]bool{}, false
+	}
+	a.flagCache, a.flagsAt = f, time.Now()
+	return f, true
+}
+
+// followsKnown is followCountsShown and whether the flags could be read (flagsKnown).
+func (a *app) followsKnown() (on, known bool) {
+	f, ok := a.flagsKnown()
+	return f["community"] && f["follows"], ok
+}
+
 // csp is the Content-Security-Policy. The one exception to "self", a YouTube frame, exists only
 // while the videoEmbeds flag is on.
 func csp(embeds bool) string {
@@ -5904,7 +5956,7 @@ actor documents and public pages, and the inbox, further down; nothing is delive
 // servers can find the handle and read the profile and the Public posts, and nobody can follow yet.
 const (
 	fedSwitch      = "Share my profile and Public posts beyond this server"
-	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. Nobody there can follow you yet, and nothing is sent to them. Practice, progress, notes, stats and badges never leave this server."
+	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. People there can follow you, and you can follow them; your posts are not sent to them yet. Practice, progress, notes, stats and badges never leave this server."
 	fedUnavailable = "Sharing beyond this server is not available at the moment. Other servers cannot find anyone here."
 )
 
@@ -6295,6 +6347,16 @@ type federation struct {
 	// out is the delivery queue (deliveryQueue), set by startFederation: its workers have a context and a wait group
 	// of their own, which stop ends and waits for (8.6).
 	out *deliveryQueue
+
+	// single says the mode is single, for the gate's condition (publicMember's $2) in what federation asks itself.
+	single bool
+	// followsOn says whether follows are on (the community and follows flags, followCountsShown): with them off the
+	// inbox takes no Follow or Accept, and nothing that adds a follow is acted on (FWR 3). Set by startFederation.
+	followsOn func() (on, known bool)
+	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
+	// once in followAnswerEvery (followAnswerDue).
+	answersMu sync.Mutex
+	answers   map[[2]int64]answeredAs
 
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
@@ -6700,6 +6762,8 @@ func recordOrigin(ctx context.Context, tx *sql.Tx, o publicOrigin) error {
 // (federation.refused). Otherwise the instance actor's key is asked for when there is none yet.
 func (a *app) startFederation(s fedSettings) error {
 	f := newFederation(a.db, s)
+	f.single = a.mode == modeSingle
+	f.followsOn = a.followsKnown
 	f.actors = newActorCache(f, a.fetch)
 	f.actors.refused, f.actors.admits = f.refusedByPolicy, f.admits
 	a.fed = f
@@ -6713,6 +6777,7 @@ func (a *app) startFederation(s fedSettings) error {
 	f.verifier = v
 	f.inbox = newInboxQueue(f, func() bool { return !a.flagsCached()["federation"] })
 	f.out = newDeliveryQueue(f, a.fetch, max(s.workers, 1), func() bool { return !a.flagsCached()["federation"] })
+	f.out.goneInbox = f.goneFollower
 	was, err := recordedOrigin(a.db)
 	if err != nil {
 		return err
@@ -7397,7 +7462,7 @@ const hostNameRefusal = "Your username is this server's own name, which other se
 // mode the owner's opt-in is FLOWA_FEDERATE=on (implied), and there is no switch. The words the card
 // shows about what is built come from here (label, built), so they change with the server. While
 // federation is refused the member is told it is unavailable (unavailable), and staff why (refused).
-func (a *app) fedView(u *user, optedIn bool) map[string]any {
+func (a *app) fedView(u *user, optedIn, locked bool) map[string]any {
 	if a.fed == nil || u == nil {
 		return nil
 	}
@@ -7426,6 +7491,10 @@ func (a *app) fedView(u *user, optedIn bool) map[string]any {
 		v["audiences"] = audienceChoices
 		v["profile"] = "/users/" + u.Username // the public page people read (handleActor)
 	}
+	// Approving followers from other servers by hand (users.locked, FWR 3): the member's choice, said in a mode
+	// that federates only, so /api/me elsewhere has no such key; the switch shows while the member can be
+	// followed from other servers (opted in, federation not refused).
+	v["locked"] = locked
 	return v
 }
 
@@ -7486,11 +7555,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) but acts only on an account deleting itself or changing its profile: follows, posts, replies and likes sent to it are counted and dropped, so nobody can follow anyone yet, and nothing is delivered"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows; posts, replies and likes sent to it are counted and dropped, and no post is sent yet"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -8063,7 +8132,7 @@ const actorGateSQL = `SELECT (SELECT u.id FROM users u WHERE u.username = $1 AND
 // actorDocSQL reads what an actor document says of the member $1 (the gate has let them through): the
 // profile, the first bytes of the picture and a hash of it for its address, and the public key.
 const actorDocSQL = `SELECT u.username, u.display_name, u.bio, u.links, u.props, u.created_at, left(u.avatar, 64),
-	CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END, COALESCE(k.public_key, '')
+	CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END, COALESCE(k.public_key, ''), u.locked
 	FROM users u LEFT JOIN ap_keys k ON k.user_id = u.id WHERE u.id = $1`
 
 // profilePageSQL is a member's public page in one statement: the member, if they may be shown, with a page
@@ -8338,6 +8407,14 @@ func (f *federation) dropActor(o keyOwner) {
 	delete(f.docs, o)
 }
 
+// dropActors forgets every kept document (a flag they depend on changed).
+func (f *federation) dropActors() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.docsGen++
+	f.docs = map[keyOwner]keptDoc{}
+}
+
 // docGen is the generation of the kept documents, read before one is made.
 func (f *federation) docGen() uint64 {
 	f.mu.Lock()
@@ -8356,7 +8433,8 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 	var name, display, bio, head, tag, pubPEM string
 	var links, props []byte
 	var created time.Time
-	if err := a.db.QueryRowContext(ctx, actorDocSQL, uid).Scan(&name, &display, &bio, &links, &props, &created, &head, &tag, &pubPEM); err != nil {
+	var locked bool
+	if err := a.db.QueryRowContext(ctx, actorDocSQL, uid).Scan(&name, &display, &bio, &links, &props, &created, &head, &tag, &pubPEM, &locked); err != nil {
 		return pubAnswer{}, err
 	}
 	if pubPEM == "" {
@@ -8364,10 +8442,15 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 	}
 	id := f.origin.url + "/users/" + name
 	no := false
+	// manuallyApprovesFollowers: the member approves by hand, or follows are off here, when a Follow is not taken at
+	// all and stays "requested" on the sender's server, which is what a locked account shows there (FWR 3). Saying
+	// false would promise an Accept that never comes.
+	on, known := f.followsState()
+	approves := locked || !on
 	doc := outActor{Context: actorContext, ID: id, Type: "Person", PreferredUsername: name, Name: display, Summary: summaryHTML(bio),
 		URL: id, Inbox: id + "/inbox", Outbox: id + "/outbox", Followers: id + "/followers", Following: id + "/following", Featured: id + "/featured",
 		Endpoints:                 &outEndpoints{SharedInbox: a.fed.origin.url + "/inbox"},
-		ManuallyApprovesFollowers: &no, Discoverable: &no, Indexable: &no, Published: created.UTC().Format(time.RFC3339),
+		ManuallyApprovesFollowers: &approves, Discoverable: &no, Indexable: &no, Published: created.UTC().Format(time.RFC3339),
 		PublicKey: outKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}}
 	if ext, mt, _, _, ok := pictureOf(head); ok && tag != "" {
 		doc.Icon = &outImage{Type: "Image", MediaType: mt, URL: id + "/avatar." + ext + "?v=" + tag}
@@ -8398,7 +8481,9 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 		return pubAnswer{}, err
 	}
 	p := newAnswer(b, activityType)
-	f.keepActor(keyOwner(uid), gen, p)
+	if known { // a document made while the flags could not be read is answered, and not kept
+		f.keepActor(keyOwner(uid), gen, p)
+	}
 	return p, nil
 }
 
@@ -8957,15 +9042,21 @@ func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubS
 	serveDoc(w, r, "an outbox page", p)
 }
 
-// publicFollowCountsSQL is how many follow member $1 and how many they follow, counting only the other
-// sides who may be shown beyond this server themselves (publicMember, $2 as in the gate) and no follow
-// across a block (followShown): followCountsSQL's two counts, narrowed to what is already public. The other
-// side is looked up by its primary key once per follow (OFFSET 0 keeps the planner from joining users
-// whole), so the cost is the member's follows, as for followCountsSQL.
-var publicFollowCountsSQL = `SELECT (SELECT count(*) FROM follows f WHERE f.followee_id = $1 AND ` + followShown("f.follower_id") + `
-		AND EXISTS (SELECT 1 FROM users u WHERE u.id = f.follower_id AND ` + publicMember + ` OFFSET 0)),
-	(SELECT count(*) FROM follows f WHERE f.follower_id = $1 AND ` + followShown("f.followee_id") + `
-		AND EXISTS (SELECT 1 FROM users u WHERE u.id = f.followee_id AND ` + publicMember + ` OFFSET 0))`
+// publicFollowCountsSQL is how many follow member $1 and how many they follow, counting only accepted follows
+// whose other side is itself public beyond this server (publicSide: a member who may be shown, publicMember with
+// $2 as in the gate, or an account on another server, whose follows its own server already shows) and no follow
+// across a block (followShown): followCountsSQL's two counts, narrowed to what is already public. A request that
+// waits (state pending) is in neither count, here or in the app. The other side is looked up by its primary key
+// once per follow (OFFSET 0 keeps the planner from joining users whole), so the cost is the member's follows, as
+// for followCountsSQL.
+var publicFollowCountsSQL = `SELECT (SELECT count(*) FROM follows f WHERE f.followee_id = $1 AND f.state = 'accepted' AND ` + followShown("f.follower_id") + `
+		AND EXISTS (SELECT 1 FROM users u WHERE u.id = f.follower_id AND ` + publicSide + ` OFFSET 0)),
+	(SELECT count(*) FROM follows f WHERE f.follower_id = $1 AND f.state = 'accepted' AND ` + followShown("f.followee_id") + `
+		AND EXISTS (SELECT 1 FROM users u WHERE u.id = f.followee_id AND ` + publicSide + ` OFFSET 0))`
+
+// publicSide is the other side of a follow that a public count may include (F10, FWR 3): a local member who may
+// be shown beyond this server (publicMember's condition), or a remote account that no moderator suspended here.
+const publicSide = `(u.domain <> '' OR u.federates OR ($2 AND u.owner)) AND (u.suspended_until IS NULL OR u.suspended_until <= now())`
 
 // serveFollows sends a member's followers or following collection, or their featured one.
 //
@@ -8976,10 +9067,10 @@ var publicFollowCountsSQL = `SELECT (SELECT count(*) FROM follows f WHERE f.foll
 // their own lists in the app (GET /api/followers and /api/following), a different surface. So there is no
 // first and no page, for anyone. The count says no more than the app does, and less: it is given only while
 // the app shows counts at all (followCountsShown: the community and follows flags both on), and it counts
-// only the follows whose other side is itself a member who may be shown beyond this server
-// (publicFollowCountsSQL), since a follow by a member who never chose to federate is theirs to keep inside
-// the app. Without it the collection has no totalItems, which says nothing. Remote followers do not exist
-// yet (FWR 3). Whether a public count should include every local follower is F10's open question.
+// only the accepted follows whose other side is itself public: a member who may be shown beyond this server,
+// or an account on another server (publicFollowCountsSQL), since a follow by a member who never chose to
+// federate is theirs to keep inside the app. Without it the collection has no totalItems, which says nothing.
+// Whether a public count should include every local follower is F10's open question.
 //
 // Featured (Mastodon's pinned posts, 5.2): empty, since posts cannot be pinned; it is there because
 // Mastodon fetches it for a profile, and an empty list is the true answer.
@@ -12739,8 +12830,12 @@ func activityFrom(f apFields) (*apActivity, error) {
 		default:
 			return nil, &apError{Reason: apMoreThanOne, Field: "object"}
 		}
-		if err := apCheckID(a.Object[0].ID); err != nil {
-			return nil, apIn("object", err)
+		// An Accept or a Reject may embed the Follow it answers with no id (Flowa matches it by its actor and
+		// object, FWR 3), and nothing else may.
+		if o := a.Object[0]; !(o.ID == "" && o.Obj != nil && (a.Kind == "Accept" || a.Kind == "Reject")) {
+			if err := apCheckID(o.ID); err != nil {
+				return nil, apIn("object", err)
+			}
 		}
 	} else {
 		// A Flag's objects that cannot be ours, and those of a type the inbox drops, are dropped.
@@ -14610,10 +14705,16 @@ var userRefs = []struct{ table, column string }{
 	{"achievements", "user_id"}, {"ap_inbox", "actor_id"}, {"ap_keys", "user_id"}, {"ap_outbox", "actor_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
 	{"blocks", "user_id"}, {"bookmarks", "user_id"}, {"catalog_revisions", "author_id"}, {"comment_likes", "user_id"},
 	{"comments", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
-	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"}, {"notifications", "actor_id"},
+	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"},
 	{"notifications", "user_id"}, {"posts", "user_id"}, {"progress", "user_id"}, {"reports", "reporter_id"},
 	{"reports", "resolver_id"}, {"sessions", "user_id"},
 }
+
+// userRefsGoing are the columns that reference users and do not keep a remote account from the cache's bound: the
+// rows go with it (ON DELETE CASCADE). A notification from a remote account (a follow, a request, an answer) is news
+// about an account the cache may drop once nothing else points at it; were it to keep the account, a server cycling
+// Follow and Undo through new accounts could hold the cache above remoteActorsMax for good (FWR 3).
+var userRefsGoing = []struct{ table, column string }{{"notifications", "actor_id"}}
 
 // evictActorsSQL removes the $1 remote accounts fetched longest ago, through ap_actors_fetched, leaving any
 // account a row of userRefs points at (each asked through its index, one candidate at a time), and any
@@ -14712,8 +14813,8 @@ thing a member can do that makes Flowa connect to another server, so it is bound
     one of a few fixed reasons (lookupReason), never a remote server's words, a status or an address.
   - Nothing is stored but the actor, by the cache, as any actor it fetches; the posts are read, shown and
     forgotten. No remote picture is shown: the cache of pictures of F6 and 9.4 is FWR's, and hot-linking
-    would tell other servers the member's address and need the CSP opened. Following is not built (no
-    inbox), and the page says so.
+    would tell other servers the member's address and need the CSP opened. The answer names the account's id
+    here, for its profile page and Follow (FWR 3); its posts do not reach Home yet, and the page says so.
   - No database connection or lock is held while the network is waited on (TestDBOneConnection). */
 
 const (
@@ -14795,7 +14896,7 @@ func (e *lookupError) Error() string {
 func (e *lookupError) Unwrap() error { return e.err }
 
 // lookupNotice is what the page says under a remote profile: what this version cannot do with it.
-const lookupNotice = "Following people on other servers is not built yet: this server does not act on what other servers send it yet, so nothing they post would show here. Pictures from other servers are not shown yet."
+const lookupNotice = "These posts are read from their server just now and are not kept. Posts of people you follow on other servers do not show in Home yet. Pictures from other servers are not shown yet."
 
 // lookupNoPosts and lookupPostsFailed say why a remote profile shows no posts.
 const (
@@ -15046,6 +15147,10 @@ type lookupProfile struct {
 	Posts     []lookupPost `json:"posts,omitempty"`
 	PostsNote string       `json:"postsNote,omitempty"` // why no posts are shown, when they could not be
 	Notice    string       `json:"notice,omitempty"`    // what this version cannot do with the account (lookupNotice)
+	// Account is the remote account's id here, for its profile page and Follow (FWR 3), and View where the member
+	// stands with it (followViewOf).
+	Account int64       `json:"account,omitempty"`
+	View    *followView `json:"view,omitempty"`
 	// Stale is when the profile was last fetched, set when fetching it again failed just now and the cache
 	// answered with what it kept (7.4: at most 30 days old); the page says so beside it.
 	Stale string `json:"stale,omitempty"`
@@ -15184,7 +15289,7 @@ func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupPro
 		link = a.ID
 	}
 	p := &lookupProfile{Kind: "remote", Handle: handle, Name: name, Bio: htmlToText(a.Summary, nil, nil, len(a.Summary) > remoteSummaryMax-utf8.UTFMax),
-		Locked: a.Locked, Link: link, Notice: lookupNotice}
+		Locked: a.Locked, Link: link, Notice: lookupNotice, Account: a.UserID}
 	if a.Stale {
 		p.Stale = a.FetchedAt.UTC().Format(time.RFC3339)
 	}
@@ -15452,6 +15557,19 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 		answer(w, reason, "")
 		return
 	}
+	// Where the member stands with the account: read from the cache's row once the lookup is over, so no
+	// connection was held while the other server was asked (FWR 3).
+	if ra, err := scanActor(a.db.QueryRowContext(r.Context(), `SELECT `+actorCols+` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.user_id = $1`, p.Account)); err == nil {
+		v, err := a.followViewOf(r.Context(), u, ra)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		p.View = &v
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": p})
 }
 
@@ -15513,10 +15631,11 @@ the actor cache takes one of the federation's turns at the database (dbTurn), at
 
 What a worker does with each type (6.3; the rest belongs to FWR's later items): an actor's own Delete marks it
 gone (FWR 7 purges its content), and an Update of a Person by itself fetches the actor again (within the 10
-minute rule), which takes a new key and lifts a suspension. Every other type is counted per type and dropped
-at the inbox, with 202 and no row: Follow (so a Follow pressed on Mastodon stays "requested", and nothing is
-answered: there is no delivery yet, FWR 2 and 3), Create, Update of anything else, Delete of anything else,
-Like, Announce, Undo, Accept, Reject, Block, Flag, Move, Add, Remove and the types no vocabulary has. */
+minute rule), which takes a new key and lifts a suspension. Follow, Accept, Reject, Undo and Block are stored
+when they can be about a follow of this instance (followShaped) and handled by followIn ("federation: follows
+across servers", FWR 3). Every other type is counted per type and dropped at the inbox, with 202 and no row:
+Create, Update of anything else, Delete of anything else, Like, Announce, Flag, Move, Add, Remove, the follow
+types that cannot be ours, and the types no vocabulary has. */
 
 const (
 	inboxBodyMax      = 256 << 10          // a delivery's body (7.5)
@@ -15582,6 +15701,7 @@ const (
 	inGroupQueued                         // the sender group has inboxGroupQueued rows waiting, 429 (8.5)
 	inServer                              // this server failed, 500
 	inSlowBody                            // the body did not arrive within inboxReadFor, 408
+	inFlags                               // the switches could not be read, so a Follow is not dropped as if follows were off: 503
 	inboxReasonCount
 )
 
@@ -15617,6 +15737,7 @@ var inboxReasons = [inboxReasonCount]struct {
 	inGroupQueued:      {429, 120, "too many activities from this server wait here"},
 	inServer:           {500, 0, "Something went wrong on the server."},
 	inSlowBody:         {408, 0, "the body did not arrive in time"},
+	inFlags:            {503, 60, "this server's switches could not be read just now"},
 }
 
 func (r inboxReason) String() string { return inboxReasons[r].words }
@@ -16481,6 +16602,16 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyI
 		if _, k, err := act.Object[0].Obj.types(); err != nil || !apActorKinds[k] {
 			return inDropped, kind
 		}
+	case followKinds[act.Kind]:
+		// A Follow, Accept, Reject, Undo or Block is stored only when it can be about a follow of this instance
+		// (followShaped, read from the activity alone); the worker matches it with the rows (FWR 3).
+		on, known := f.followsState()
+		if !f.followShaped(act) || known && !on && followAdds(act) {
+			return inDropped, kind
+		}
+		if !known && followAdds(act) {
+			return inFlags, kind
+		}
 	default:
 		return inDropped, kind
 	}
@@ -16604,20 +16735,30 @@ func (q *inboxQueue) step(ctx context.Context) (bool, error) {
 	if q.paused() {
 		return false, nil
 	}
-	done, err := f.dbTurn(ctx)
+	// The claim runs on a context a stop does not cancel, as the delivery queue's does (its step says why), and a row
+	// claimed as the stop came is given back at once.
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	cctx, cancel := own()
+	defer cancel()
+	done, err := f.dbTurn(cctx)
 	if err != nil {
 		return false, err
 	}
 	var id, actor int64
 	var kind string
 	var attempts int
-	err = f.db.QueryRowContext(ctx, inboxClaimSQL, q.now(), inboxLease.Seconds()).Scan(&id, &actor, &kind, &attempts)
+	err = f.db.QueryRowContext(cctx, inboxClaimSQL, q.now(), inboxLease.Seconds()).Scan(&id, &actor, &kind, &attempts)
 	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if ctx.Err() != nil {
+		return true, q.finish(cctx, `UPDATE ap_inbox SET locked_until = NULL, attempts = attempts - 1 WHERE id = $1 AND state = 'queued'`, id)
 	}
 	// A row claimed more often than its attempts allow is one whose handling kept ending its worker (a crash, a
 	// stop at the worst moment) or kept outlasting its lease: it is failed now, not handled again.
@@ -16626,7 +16767,7 @@ func (q *inboxQueue) step(ctx context.Context) (bool, error) {
 		return true, q.finish(ctx, `UPDATE ap_inbox SET state = 'failed', body = NULL, locked_until = NULL, handled_at = $2, outcome = $3 WHERE id = $1`,
 			id, q.now(), "claimed more often than its attempts allow")
 	}
-	outcome, herr := q.handle(ctx, actor, kind)
+	outcome, herr := q.handle(ctx, id, actor, kind)
 	if ctx.Err() != nil {
 		// Stopping: the row goes back as it was, on a context of its own, since the federation's has ended.
 		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -16660,14 +16801,13 @@ func (q *inboxQueue) finish(ctx context.Context, stmt string, args ...any) error
 
 // handle acts on one row (the section's comment says what for each type). outcome is "" when it did what the
 // type asks, or a short fixed note; an *errRetry is this server's own failure, tried again later.
-func (q *inboxQueue) handle(ctx context.Context, actor int64, kind string) (string, error) {
+func (q *inboxQueue) handle(ctx context.Context, row, actor int64, kind string) (string, error) {
 	f := q.f
-	var apID string
 	done, err := f.dbTurn(ctx)
 	if err != nil {
 		return "", &errRetry{"no turn at the database"}
 	}
-	err = f.db.QueryRowContext(ctx, `SELECT ap_id FROM ap_actors WHERE user_id = $1`, actor).Scan(&apID)
+	signer, err := scanActor(f.db.QueryRowContext(ctx, `SELECT `+actorCols+` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.user_id = $1`, actor))
 	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return " of an actor no longer kept", nil
@@ -16675,6 +16815,7 @@ func (q *inboxQueue) handle(ctx context.Context, actor int64, kind string) (stri
 	if err != nil {
 		return "", &errRetry{"the database"}
 	}
+	apID := signer.ID
 	// A domain suspended since the row was taken: what an admin means by suspending is that nothing more from
 	// it is acted on (section 10), so the row is dropped and counted, not handled nor retried.
 	if f.policyNow().decide(actorHost(apID)) == policySuspended {
@@ -16707,6 +16848,17 @@ func (q *inboxQueue) handle(ctx context.Context, actor int64, kind string) (stri
 			return " (its server did not answer)", nil
 		}
 		return "", nil
+	case "Follow", "Accept", "Reject", "Undo", "Block":
+		// Follows (FWR 3): the stored body, decoded again as the inbox decoded it, acted on for the signer.
+		var body sql.NullString
+		if err := f.fedRow(ctx, []any{&body}, `SELECT body FROM ap_inbox WHERE id = $1`, row); err != nil {
+			return "", &errRetry{"the database"}
+		}
+		act, err := decodeActivity([]byte(body.String), inboxBodyMax)
+		if err != nil || act.Actor != apID || len(act.Object) != 1 {
+			return " not acted on (the stored activity does not read)", nil
+		}
+		return f.followIn(ctx, signer, act)
 	}
 	return " of a type no worker handles", nil
 }
@@ -16766,8 +16918,8 @@ func (a *app) inboxHousekeep() (int64, error) {
 /* ---------- federation: the delivery queue ----------
 
 The outbound queue of docs/federation.md section 8 (FWR item 2; "As built (FWR 2)" under 8 says what and why).
-Nothing in this version sends an activity: follows (FWR 3) are the first caller of enqueue. Until then the queue
-is exercised by the tests alone, and a federated instance starts no worker unless rows wait.
+Follows (FWR 3) are the first caller of enqueue: a Follow, its Undo, and the Accept or Reject that answers one.
+A federated instance starts no worker until the first activity is enqueued, unless rows wait.
 
   - enqueue writes an activity once to ap_outbox and one row per inbox to ap_deliveries, in one transaction:
     each recipient's shared inbox in place of its own when it names one (ActivityPub 7.1.3), so followers on one
@@ -16784,8 +16936,8 @@ is exercised by the tests alone, and a federated instance starts no worker unles
     through the guarded fetcher (fetchDelivery), signed by httpSigner in the form the host takes.
   - The answers (8.3): 2xx sent (the row deleted, the host's counters kept); 400 or 401 sent again at once in the
     other form, which is recorded for the host when it is taken; a 400 refused in both forms is given up, a 401
-    retried; 410 gives up every row for that inbox and tells goneInbox (FWR 3 removes the followers whose inbox it
-    is); any other 4xx but 408 and 429 is given up; a 429 waits its Retry-After when that is between 1 minute and
+    retried; 410 gives up every row for that inbox and tells goneInbox (goneFollower: the remote accounts whose
+    own inbox it is stop following local members); any other 4xx but 408 and 429 is given up; a 429 waits its Retry-After when that is between 1 minute and
     12 hours; a redirect is retried without counting against the host; the rest (5xx, 408, a refused connection,
     a time out) is retried on deliveryRetries with 20% jitter, and given up after the last or past deliveryHorizon
     from the row's start. Every inbox is on its recipient actor's host (enqueue refuses others), so this server's
@@ -16937,9 +17089,8 @@ type deliveryQueue struct {
 	// claimStmt is deliveryClaimSQL prepared once (claim): planning it took longer than running it (1.7 ms against
 	// 0.6 ms with 50,000 rows), and a prepared statement is planned once per connection.
 	claimStmt atomic.Pointer[sql.Stmt]
-	// goneInbox is told of an inbox that answered 410 (8.3: "410 for an inbox removes that follower"). There is no
-	// table of remote followers until FWR 3, which sets it; until then the rows for that inbox are given up and
-	// that is all.
+	// goneInbox is told of an inbox that answered 410 (8.3: "410 for an inbox removes that follower"):
+	// startFederation sets goneFollower (FWR 3).
 	goneInbox func(ctx context.Context, inbox string)
 	// claimed, when set (by a test), hears of each row claimed, before anything else is done with it.
 	claimed func(id int64)
@@ -17080,6 +17231,25 @@ func own() (context.Context, context.CancelFunc) {
 
 /* Enqueue */
 
+// inboxAddress is an inbox in the queue's one spelling, and its host: https on port 443 only, the scheme and host in
+// lower case, no :443, the path and query as given, so https://A.EXAMPLE:443/inbox and https://a.example/inbox are one
+// row. Anything else (another scheme or port, a host another server cannot have) is not an inbox (ok false).
+func inboxAddress(in string) (addr, host string, ok bool) {
+	u, err := url.Parse(in)
+	if !httpsURL(in) || err != nil || (u.Port() != "" && u.Port() != "443") {
+		return "", "", false
+	}
+	h, why := fedHost(u.Hostname())
+	if why != "" {
+		return "", "", false
+	}
+	addr = "https://" + h + u.EscapedPath()
+	if u.RawQuery != "" {
+		addr += "?" + u.RawQuery
+	}
+	return addr, h, true
+}
+
 // collect turns recipients into the inboxes to write, one per address, each with its host, and counts those refused.
 func (q *deliveryQueue) collect(to []deliveryTarget) (inboxes, hosts []string, refused int) {
 	seen := map[string]bool{}
@@ -17098,22 +17268,12 @@ func (q *deliveryQueue) collect(to []deliveryTarget) (inboxes, hosts []string, r
 			refused++
 			continue
 		}
-		u, err := url.Parse(in)
-		if !httpsURL(in) || err != nil || (u.Port() != "" && u.Port() != "443") {
+		addr, h, ok := inboxAddress(in)
+		if !ok || h == q.f.origin.host || !q.f.admits(h) {
 			refused++
 			continue
 		}
-		h, why := fedHost(u.Hostname())
-		if why != "" || h == q.f.origin.host || !q.f.admits(h) {
-			refused++
-			continue
-		}
-		// One spelling per address: the scheme and host in lower case, no :443, the path and query as given, so
-		// https://A.EXAMPLE:443/inbox and https://a.example/inbox are one row.
-		in = "https://" + h + u.EscapedPath()
-		if u.RawQuery != "" {
-			in += "?" + u.RawQuery
-		}
+		in = addr
 		if seen[in] {
 			continue
 		}
@@ -17503,9 +17663,20 @@ func (q *deliveryQueue) step(ctx context.Context) (bool, error) {
 	if err := q.fanOutDue(ctx); err != nil {
 		return false, err
 	}
-	c, err := q.claim(ctx, q.busyHosts())
+	// The claim runs on a context a stop does not cancel: canceled in the middle, its UPDATE could commit while its
+	// answer is lost, leaving the row leased for deliveryLease with an attempt counted that was never tried. A stop is
+	// asked before and after it instead, and a row claimed as the stop came is given back at once.
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	cctx, cancel := own()
+	c, err := q.claim(cctx, q.busyHosts())
+	cancel()
 	if err != nil || c == nil {
 		return false, err
+	}
+	if ctx.Err() != nil {
+		return true, q.giveBack(c, 0)
 	}
 	if q.claimed != nil {
 		q.claimed(c.id)
@@ -17723,7 +17894,7 @@ func (q *deliveryQueue) record(c *claimedRow, form sigForm, err error) error {
 		if err := q.fail(c, why); err != nil {
 			return err
 		}
-		// Every other row for that inbox would be answered the same. FWR 3 removes the followers whose inbox it was.
+		// Every other row for that inbox would be answered the same, and the followers whose inbox it was go (goneInbox).
 		ctx, cancel := own()
 		defer cancel()
 		if _, err := q.exec(ctx, `UPDATE ap_deliveries SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = $4
@@ -18101,6 +18272,1108 @@ func (q *deliveryQueue) probe(ctx context.Context) error {
 	return nil
 }
 
+/* ---------- federation: follows across servers ----------
+
+A member follows an account on another server, and is followed from one (docs/federation.md 6.3, 6.4, 9.1, 9.2,
+11, and "As built (FWR 3)" under 6.4; FWR item 3). A remote account is a users row (F5), so a follow across
+servers is a row of follows like a local one, with state and ap_id (migration 20): pending until the other side
+accepts, and the Follow activity's id for the answers that name it.
+
+  - Out. Follow when a member presses Follow on a remote profile (the account was found by its handle, so the
+    actor cache holds it), Undo of that Follow when they unfollow, and Accept or Reject as the answer to a Follow
+    in: each to the other actor's own inbox (6.4: "that actor's inbox", "the follower's inbox"), never a shared
+    one, through the delivery queue (enqueue: the domain policy, the caps, the retries), signed with the member's
+    own key at the send. Our Follow stays pending, and the page says "Requested", until the Accept arrives. Only a
+    member who shares their profile beyond this server may follow out: the other server reads the member's actor
+    to check the signature, and the actor answers only for those members (publicMember).
+  - In. Follow, Accept, Reject, Undo (of a Follow, or of an Accept, read as a Reject, as Mastodon lists "Accept
+    Follow" among what it undoes) and Block, each taken by the inbox only after its origin rule (the activity's
+    actor is the signer) and only when its object can be ours (followShaped); the worker then matches it by
+    actor and object, never by an id another server chose alone. An Accept or a Reject is of our Follow when the
+    embedded Follow's actor is our member and its object the signer, whatever id it carries (Mastodon may send
+    an id of its own, or none), or, given by id only, when that id is the ap_id we sent to the signer. An Undo
+    is acted on only when the inner activity's actor is the signer (ActivityPub 6.10). Every handler is
+    idempotent: a repeat finds the row already as it should be and changes nothing.
+  - A Follow of a member is taken when the member may be shown beyond this server (publicMember) and no block
+    stands between the two: accepted at once and answered with Accept, or, when the member approves followers by
+    hand (users.locked), held as a request, with a follow request notification the member answers with Approve
+    or Decline. A Follow of a member who does not federate (any more) is answered with Reject when the member
+    has a key to sign it with, and nothing otherwise; a Follow of the instance actor with Reject; a Follow across
+    a block with Reject, the same answer as the others, so it says no more than "refused"; a Follow of a name
+    nobody here has, or had, is not answered at all. A repeat Follow while accepted is answered with Accept again
+    (6.3: the other server may have lost it).
+  - Bounds against a hostile server: at most followRequestsMax requests wait for one member and
+    followRequestsPerHost from the accounts of one host, and at most followsPerHost follows of local members
+    come from one host in any state; past them a Follow is dropped unanswered (its sender's follow stays
+    requested there) and counted. A member follows at most maxFollows accounts, local and remote together.
+  - Blocks: a member's block of a remote account removes the follows both ways in its own statement and answers
+    them as the design says (6.4): Reject for the follow it had of the member, Undo for the member's follow of
+    it; no Block is sent. Its later Follows are refused (above). A Block in removes the follows both ways and
+    tells the member nothing.
+  - 410: a delivery whose personal inbox answered 410 Gone removes that remote account's follows of local members
+    (goneFollower, the delivery queue's goneInbox, 8.3).
+  - Nothing here fetches: the inbox's worker acts on the actor row the signature found, under the federation's
+    turns at the database (dbTurn), one statement at a time, and enqueue takes its own turn after the last one is
+    given back. */
+
+const (
+	followAnswerEvery     = time.Hour // a repeat Follow is answered at most once in this per follower and followee
+	followAnswersMax      = 10000     // pairs remembered for that; past it the memory starts again
+	remoteNotesPerHost    = 50        // notifications one member keeps from the accounts of one other server, the newest
+	remoteNotesMax        = 500       // notifications one member keeps from accounts on other servers in all, the newest
+	followRequestsMax     = 200       // requests that wait for one member's answer; a Follow past it is dropped unanswered
+	followRequestsPerHost = 100       // requests that wait from the accounts of one host, for all members together
+	followsPerHost        = 2000      // follows of local members by the accounts of one host, in any state
+)
+
+// The words a member reads about following across servers. Fixed phrases, from the server, so the page cannot
+// say more than is built.
+const (
+	fedFollowOptIn   = "To follow people on other servers, first turn on sharing your profile beyond this server in Settings: their server reads your profile here to check who is asking."
+	fedFollowBlocked = "You cannot follow this account."
+	fedFollowNoInbox = "That account cannot be followed: its server names no inbox to send the follow to."
+	fedFollowForeign = "That account cannot be followed: its server names an inbox on another server, which Flowa does not send to."
+	fedFollowFull    = "Flowa could not send this just now: too much waits to be sent to other servers. Try again later."
+	fedAccountNotice = "Their posts do not show in Flowa yet, in Home or here: only their profile does. Open the profile on their server to read their posts. Pictures from other servers are not shown yet."
+)
+
+// inboxOwn says whether a remote actor's inbox is on the actor's own origin (sameOrigin: scheme, host and port
+// whole, the rule the cache holds a key to, 7.3). An actor whose inbox is elsewhere cannot be followed from here.
+func inboxOwn(ra *remoteActor) bool { return ra.Inbox != "" && sameOrigin(ra.Inbox, ra.ID) }
+
+// errNoInbox and errInboxElsewhere are sendFollow's answers for an actor with no inbox, or one on another origin.
+var (
+	errNoInbox        = errors.New("the actor names no inbox")
+	errInboxElsewhere = errors.New("the actor's inbox is not on its own origin")
+)
+
+// errInboxRefused is sendFollow's answer when enqueue wrote nothing for the inbox: the domain policy refuses its
+// host, the host is unavailable (8.4), or it is no address another server can have.
+var errInboxRefused = errors.New("the inbox is refused here, or its host unavailable")
+
+// followsState is whether follows are on (followsOn), and whether the flags could be read: unread, nothing is dropped as "off" (the inbox answers
+// 503, the worker tries again, an actor document is not kept), since "off" drops a Follow for good.
+func (f *federation) followsState() (on, known bool) {
+	if f.followsOn == nil {
+		return false, true
+	}
+	return f.followsOn()
+}
+
+// followAdds says whether an activity would add a follow or accept one: a Follow, or an Accept. With follows off
+// these are dropped at the inbox and by the worker; what only removes a follow (a Reject, an Undo, a Block) is still
+// acted on, since removing is always safe and keeps this server in step with the other.
+func followAdds(act *apActivity) bool { return act.Kind == "Follow" || act.Kind == "Accept" }
+
+// followKinds are the activity types this section takes from the inbox.
+var followKinds = map[string]bool{"Follow": true, "Accept": true, "Reject": true, "Undo": true, "Block": true}
+
+// outFollow is a Follow, an Accept, a Reject or an Undo as Flowa sends it: @context at the top only, the object
+// an id or the activity it answers or takes back, embedded.
+type outFollow struct {
+	Context string `json:"@context,omitempty"`
+	ID      string `json:"id,omitempty"`
+	Type    string `json:"type"`
+	Actor   string `json:"actor"`
+	Object  any    `json:"object"`
+}
+
+// memberOfID reads an actor id of this instance, compared as written (AS2 Core 2.2): a member's
+// (origin/users/name), or the instance actor's (origin/actor).
+func (f *federation) memberOfID(id string) (name string, instance, ok bool) {
+	if id == f.origin.url+"/actor" {
+		return "", true, true
+	}
+	name, found := strings.CutPrefix(id, f.origin.url+"/users/")
+	if !found || !usernameRE.MatchString(name) {
+		return "", false, false
+	}
+	return name, false, true
+}
+
+// activityID is a new id for an activity of a member ("" the instance actor): their address, then
+// /activities/ and 16 random bytes in base32 (5.2).
+func (f *federation) activityID(name string) string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	who := "/actor"
+	if name != "" {
+		who = "/users/" + name
+	}
+	return f.origin.url + who + "/activities/" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b))
+}
+
+// memberActor is a member's actor id.
+func (f *federation) memberActor(name string) string { return f.origin.url + "/users/" + name }
+
+// sendFollow enqueues one activity of from (a member, or instanceActor) for the remote actor to's own inbox,
+// never its shared inbox (6.4). It is the one call of enqueue in this section, and names the recipient by the
+// verified id of its cached row (ap_actors.ap_id), never an id an activity named, as enqueue requires. The inbox must
+// be on the actor's own origin (inboxOwn, at least as strict as enqueue's own rule of the actor's host), so that what
+// a delivery there meets (a redirect, a 5xx, a time out, which count towards a host's circuit, 8.4) is the actor's own
+// server's, never a server an actor document merely names.
+func (f *federation) sendFollow(ctx context.Context, from keyOwner, act outFollow, to *remoteActor) error {
+	switch {
+	case f.out == nil || to.Inbox == "":
+		return errNoInbox
+	case !inboxOwn(to):
+		return errInboxElsewhere
+	}
+	act.Context = asContext
+	b, err := apJSON(act)
+	if err != nil {
+		return err
+	}
+	out, err := f.out.enqueue(ctx, from, act.ID, b, []deliveryTarget{{Actor: to.ID, Inbox: to.Inbox}})
+	if err == nil && out.Queued == 0 && !out.Duplicate {
+		return errInboxRefused
+	}
+	return err
+}
+
+// apInner is an activity named as the object of another: its id, its type, its actor and its object, read
+// leniently, since an Accept may carry a Follow with no id or one Flowa never gave (Mastodon's ActivityPub page:
+// Accept and Reject approve or deny a Follow; which id they carry is the other server's). Only an embedded
+// object has Kind, Actor and Object.
+type apInner struct {
+	ID, Kind, Actor string
+	Object          idOrObject
+	Embedded        bool
+}
+
+func innerOf(o idOrObject) (apInner, bool) {
+	in := apInner{ID: o.ID, Kind: o.Kind}
+	if o.Obj == nil {
+		return in, o.ID != ""
+	}
+	in.Embedded = true
+	var err error
+	if in.Actor, err = o.Obj.id("actor"); err != nil || in.Actor == "" {
+		return in, false
+	}
+	if in.Object, err = o.Obj.ref("object"); err != nil {
+		return in, false
+	}
+	return in, true
+}
+
+// followShaped says whether an activity of followKinds can be about a follow of this instance, read from the
+// activity alone, so that the inbox stores only those (7.10's rule for what is stored): a Follow or a Block of an
+// account here, an Accept or a Reject of a Follow by one of our members (embedded) or of an id on our origin,
+// and an Undo of the signer's own Follow of an account here (embedded or by id) or of its own Accept.
+func (f *federation) followShaped(act *apActivity) bool {
+	o := act.Object[0]
+	switch act.Kind {
+	case "Follow", "Block":
+		_, _, ok := f.memberOfID(o.ID)
+		return ok && o.Obj == nil || ok && apActorKinds[o.Kind]
+	case "Accept", "Reject":
+		in, ok := innerOf(o)
+		if !ok {
+			return false
+		}
+		if !in.Embedded {
+			return sameOrigin(in.ID, f.origin.url)
+		}
+		name, inst, mine := f.memberOfID(in.Actor)
+		return in.Kind == "Follow" && mine && !inst && name != "" && (in.Object.ID == "" || in.Object.ID == act.Actor)
+	case "Undo":
+		in, ok := innerOf(o)
+		switch {
+		case !ok:
+			return false
+		case !in.Embedded:
+			return true // by id only: matched against the signer's own Follows' ids
+		case in.Actor != act.Actor:
+			return false // ActivityPub 6.10: the Undo and what it undoes have the same actor
+		case in.Kind == "Follow":
+			_, _, mine := f.memberOfID(in.Object.ID)
+			return mine
+		case in.Kind == "Accept":
+			return true
+		}
+	}
+	return false
+}
+
+// fedExec runs one statement under one of the federation's turns, and fedRow reads one row under one.
+func (f *federation) fedExec(ctx context.Context, stmt string, args ...any) (int64, error) {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer done()
+	res, err := f.db.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (f *federation) fedRow(ctx context.Context, dest []any, stmt string, args ...any) error {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return f.db.QueryRowContext(ctx, stmt, args...).Scan(dest...)
+}
+
+// followIn acts on a Follow, Accept, Reject, Undo or Block from the signer s, as the inbox's worker. outcome is
+// "" when it did what the activity asks, or a short fixed note; an *errRetry is this server's own failure.
+func (f *federation) followIn(ctx context.Context, s *remoteActor, act *apActivity) (string, error) {
+	o := act.Object[0]
+	if on, known := f.followsState(); !known && followAdds(act) {
+		return "", &errRetry{"the switches could not be read"}
+	} else if !on && followAdds(act) {
+		return " dropped (follows are off here)", nil
+	}
+	switch act.Kind {
+	case "Follow":
+		return f.followedBy(ctx, s, act.ID, o.ID)
+	case "Accept", "Reject":
+		return f.followAnswered(ctx, s, o, act.Kind == "Accept")
+	case "Block":
+		name, inst, ok := f.memberOfID(o.ID)
+		if !ok || inst {
+			return " not acted on (its object is not a member here)", nil
+		}
+		return f.unfollowedBy(ctx, s, name, true)
+	case "Undo":
+		in, ok := innerOf(o)
+		switch {
+		case !ok:
+			return " not acted on (its object cannot be read)", nil
+		case !in.Embedded:
+			return f.undoByID(ctx, s, in.ID)
+		case in.Actor != s.ID:
+			return " not acted on (what it undoes is another actor's)", nil
+		case in.Kind == "Follow":
+			name, inst, ok := f.memberOfID(in.Object.ID)
+			if !ok || inst {
+				return " not acted on (its object is not a member here)", nil
+			}
+			return f.unfollowedBy(ctx, s, name, false)
+		case in.Kind == "Accept":
+			// The signer takes back its Accept of our Follow: read as a Reject (6.3).
+			inner, err := o.Obj.ref("object")
+			if err != nil {
+				return " not acted on (its object cannot be read)", nil
+			}
+			return f.followAnswered(ctx, s, inner, false)
+		}
+		return " not acted on in this version", nil
+	}
+	return " of a type no worker handles", nil
+}
+
+// followedBy acts on a Follow of object by s (followID is the Follow's id): the rules of the section's comment.
+func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, object string) (string, error) {
+	name, inst, ok := f.memberOfID(object)
+	if !ok {
+		return " not acted on (its object is not an account here)", nil
+	}
+	follow := outFollow{ID: followID, Type: "Follow", Actor: s.ID, Object: object}
+	if !inboxOwn(s) {
+		// No answer could reach it (sendFollow), so nothing is written that would wait for one.
+		return " not acted on (its inbox is missing or not on its own origin)", nil
+	}
+	if inst {
+		return f.answerOnce(ctx, s.UserID, 0, instanceActor, "", s, follow, false, " refused (the instance actor is followed by nobody)")
+	}
+	var uid int64
+	var locked, shown, keyed, blocked bool
+	err := f.fedRow(ctx, []any{&uid, &locked, &shown, &keyed, &blocked}, `SELECT u.id, u.locked, `+publicMember+`,
+		EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id),
+		EXISTS (SELECT 1 FROM blocks b WHERE (b.user_id = u.id AND b.target_id = $3) OR (b.user_id = $3 AND b.target_id = u.id))
+		FROM users u WHERE u.username = $1 AND u.domain = ''`, name, f.single, s.UserID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return " not acted on (no such account here)", nil
+	case err != nil:
+		return "", &errRetry{"the database"}
+	case !shown && !keyed:
+		return " not acted on (the account does not federate and has no key to answer with)", nil
+	case !shown:
+		return f.answerOnce(ctx, s.UserID, uid, keyOwner(uid), name, s, follow, false, " refused (the account does not federate)")
+	case blocked:
+		return f.answerOnce(ctx, s.UserID, uid, keyOwner(uid), name, s, follow, false, " refused (a block)")
+	}
+	var was, made sql.NullString
+	var mine, hostPending, hostAll int
+	err = f.fedRow(ctx, []any{&was, &made, &mine, &hostPending, &hostAll}, followInSQL, s.UserID, uid, followID, s.Domain,
+		followRequestsMax, followRequestsPerHost, followsPerHost, locked)
+	var pqe *pq.Error
+	switch {
+	case errors.As(err, &pqe) && pqe.Code == "23503":
+		return " not acted on (the account went meanwhile)", nil
+	case err != nil:
+		return "", &errRetry{"the database"}
+	case was.String == "accepted":
+		// A repeat while accepted: the other server may have lost the Accept, so it is sent again (6.3).
+		return f.answerOnce(ctx, s.UserID, uid, keyOwner(uid), name, s, follow, true, " (a repeat, answered again)")
+	case was.String == "pending":
+		return " (a repeat of a request that waits)", nil
+	case made.String == "accepted":
+		if err := f.notifyFed(ctx, uid, s, "follow", true); err != nil {
+			return "", &errRetry{"the database"}
+		}
+		out, err := f.answerFollow(ctx, keyOwner(uid), name, s, follow, true, "")
+		if err == nil {
+			f.answered(s.UserID, uid, " (a repeat, answered again)") // what a repeat of this follow would be answered
+		}
+		return out, err
+	case made.String == "pending":
+		if err := f.notifyFed(ctx, uid, s, "follow_request", false); err != nil {
+			return "", &errRetry{"the database"}
+		}
+		return " (a request, waiting for the member)", nil
+	case hostAll >= followsPerHost:
+		return " dropped (its server has the most follows here there can be)", nil
+	case mine >= followRequestsMax:
+		return " dropped (the member has the most requests waiting there can be)", nil
+	case hostPending >= followRequestsPerHost:
+		return " dropped (its server has the most requests waiting there can be)", nil
+	}
+	return " (a repeat sent at the same moment)", nil
+}
+
+// followInSQL writes a Follow in: $1 the follower (remote), $2 the member, $3 the Follow's id, $4 the follower's
+// host, $5 to $7 the caps (requests for the member, requests from the host, follows from the host), $8 whether
+// the member approves by hand. A follow already there keeps its state and takes the new id (was); otherwise one is
+// written, accepted or pending, when the caps allow (made). Each count stops at its cap, so it reads at most that
+// many index entries: follows_pending for the member's; for the host's, users_remote_domain and the primary key of
+// follows, each account of the host asked once (OFFSET 0 holds the planner to that rather than reading follows whole,
+// TestDBQueryPlans), its follows and requests counted among the first $7 rows: once those are $7 the Follow is
+// dropped whatever the requests are.
+const followInSQL = `WITH cur AS (SELECT state FROM follows WHERE follower_id = $1 AND followee_id = $2),
+	h AS (SELECT count(*) AS total, count(*) FILTER (WHERE x.state = 'pending') AS pend FROM (SELECT f.state FROM users u
+		CROSS JOIN LATERAL (SELECT state FROM follows f WHERE f.follower_id = u.id OFFSET 0) f WHERE u.domain = $4 LIMIT $7) x),
+	c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM follows f WHERE f.followee_id = $2 AND f.state = 'pending' LIMIT $5) x) AS mine, h.pend, h.total FROM h),
+	up AS (UPDATE follows SET ap_id = $3 WHERE follower_id = $1 AND followee_id = $2 RETURNING state),
+	ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
+		SELECT $1, $2, CASE WHEN $8 THEN 'pending' ELSE 'accepted' END, $3 FROM c
+		WHERE NOT EXISTS (SELECT 1 FROM cur) AND c.total < $7 AND (NOT $8 OR (c.mine < $5 AND c.pend < $6))
+		ON CONFLICT DO NOTHING RETURNING state)
+	SELECT (SELECT state FROM up), (SELECT state FROM ins), c.mine, c.pend, c.total FROM c`
+
+// answerFollow sends Accept (accept) or Reject of follow from a member (name; "" with instanceActor) to the
+// follower s, and returns outcome. A failure to queue it is this server's: the row is tried again, and a repeat
+// finds the follow as it was left and answers again.
+func (f *federation) answerFollow(ctx context.Context, from keyOwner, name string, s *remoteActor, follow outFollow, accept bool, outcome string) (string, error) {
+	kind := "Reject"
+	if accept {
+		kind = "Accept"
+	}
+	me := f.origin.url + "/actor"
+	if from != instanceActor {
+		me = f.memberActor(name)
+	}
+	err := f.sendFollow(ctx, from, outFollow{ID: f.activityID(name), Type: kind, Actor: me, Object: follow}, s)
+	switch {
+	case err == nil:
+		return outcome, nil
+	case errors.Is(err, errNoInbox):
+		return outcome + " (no inbox to answer)", nil
+	case errors.Is(err, errInboxElsewhere):
+		return outcome + " (its inbox is not on its own origin)", nil
+	case errors.Is(err, errDeliveryFull), errors.Is(err, errRefused):
+		return "", &errRetry{"the answer could not be queued: " + err.Error()}
+	case errors.Is(err, errInboxRefused):
+		return outcome + " (its inbox is refused here)", nil
+	}
+	return "", &errRetry{"the database"}
+}
+
+// answerOnce answers a repeat (a Follow while accepted, refused again) unless the pair was answered within
+// followAnswerEvery: each answer is a row to send, so a server repeating a Follow costs one an hour at most. The time
+// is recorded only once the answer is queued, so a row tried again after a failure still answers.
+//
+// Only a true repeat is silenced: the same answer for the same reason (outcome) to the same pair. Another answer (a
+// Reject after an Accept, after a block) goes out at once, and an Undo or a Block forgets the pair (forgetAnswer).
+func (f *federation) answerOnce(ctx context.Context, follower, followee int64, from keyOwner, name string, s *remoteActor, follow outFollow, accept bool, outcome string) (string, error) {
+	if !f.followAnswerDue(follower, followee, outcome) {
+		return outcome + " (answered within the hour: not again)", nil
+	}
+	out, err := f.answerFollow(ctx, from, name, s, follow, accept, outcome)
+	if err == nil {
+		f.answered(follower, followee, outcome)
+	}
+	return out, err
+}
+
+// answeredAs is when a pair was last answered, and with what (answerOnce's outcome).
+type answeredAs struct {
+	at   time.Time
+	what string
+}
+
+// followNow is the clock of the answers' memory: the delivery queue's, which a test sets.
+func (f *federation) followNow() time.Time {
+	if f.out != nil {
+		return f.out.now()
+	}
+	return time.Now()
+}
+
+func (f *federation) followAnswerDue(follower, followee int64, what string) bool {
+	f.answersMu.Lock()
+	defer f.answersMu.Unlock()
+	a, ok := f.answers[[2]int64{follower, followee}]
+	return !ok || a.what != what || f.followNow().Sub(a.at) >= followAnswerEvery
+}
+
+func (f *federation) answered(follower, followee int64, what string) {
+	f.answersMu.Lock()
+	defer f.answersMu.Unlock()
+	if f.answers == nil || len(f.answers) >= followAnswersMax {
+		f.answers = map[[2]int64]answeredAs{}
+	}
+	f.answers[[2]int64{follower, followee}] = answeredAs{f.followNow(), what}
+}
+
+// forgetAnswer forgets what a pair was answered (an Undo, a Block, a state the member changed), so the next Follow is
+// answered whatever came before.
+func (f *federation) forgetAnswer(follower, followee int64) {
+	f.answersMu.Lock()
+	defer f.answersMu.Unlock()
+	delete(f.answers, [2]int64{follower, followee})
+}
+
+// notifyFed tells member uid of a follow by, or an answer from, the remote account actor, under a turn: never
+// across a block, and for "follow" not again within a day of the last (as handleFollow does locally).
+//
+// What accounts of other servers leave in one member's notifications is bounded: the newest remoteNotesPerHost from one
+// server and remoteNotesMax from all of them are kept, older ones dropped (the newest are what a member reads, and a
+// server that floods pushes out only its own and other servers' notifications, never a local member's). The trim reads
+// the member's follow notifications through notifications_follows, each one's account by its primary key.
+func (f *federation) notifyFed(ctx context.Context, uid int64, s *remoteActor, kind string, oncePerDay bool) error {
+	n, err := f.fedExec(ctx, `INSERT INTO notifications (user_id, actor_id, kind) SELECT $1::bigint, $2::bigint, $3::text
+		WHERE `+blockFree("$1::bigint", "$2::bigint", "false")+` AND NOT ($4 AND EXISTS (SELECT 1 FROM notifications
+			WHERE user_id = $1 AND actor_id = $2 AND kind = $3 AND created_at > now() - interval '1 day'))`, uid, s.UserID, kind, oncePerDay)
+	if err != nil || n == 0 {
+		return err
+	}
+	_, err = f.fedExec(ctx, remoteNotesTrimSQL, uid, s.Domain, remoteNotesPerHost, remoteNotesMax)
+	return err
+}
+
+// remoteNotesTrimSQL drops member $1's notifications from accounts of host $2 past the newest $3, and from accounts of
+// other servers past the newest $4.
+//
+// Only the kinds an account of another server can leave (remoteNoteKinds) are read, through notifications_follows, so
+// the cost is the member's follow notifications, not every notification they have. A follow_request whose request
+// still waits is spared: it is bounded by followRequestsMax already, and dropping it would hide a request a member
+// should answer behind a server that floods.
+const remoteNotesTrimSQL = `WITH m AS (SELECT n.id, a.domain FROM notifications n
+		CROSS JOIN LATERAL (SELECT domain FROM users a WHERE a.id = n.actor_id AND a.domain <> '' OFFSET 0) a
+		WHERE n.user_id = $1 AND n.kind IN ('follow', 'follow_request', 'follow_rejected')
+			AND NOT (n.kind = 'follow_request' AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = n.actor_id AND f.followee_id = $1 AND f.state = 'pending'))),
+	h AS (SELECT id FROM m WHERE domain = $2 ORDER BY id DESC OFFSET $3),
+	r AS (SELECT id FROM m ORDER BY id DESC OFFSET $4)
+	DELETE FROM notifications WHERE id IN (SELECT id FROM h UNION SELECT id FROM r)`
+
+// followAnswered acts on an Accept (accept) or a Reject by s of o, which should be our Follow of s: embedded,
+// its actor our member and its object s, whatever its id; or by id only, the id we sent to s. An Accept makes the
+// follow accepted (one already accepted, or none, is left as it is); a Reject, or an Undo of an Accept, removes
+// it, pending or accepted ("removed you as a follower"), and tells the member once.
+func (f *federation) followAnswered(ctx context.Context, s *remoteActor, o idOrObject, accept bool) (string, error) {
+	in, ok := innerOf(o)
+	if !ok {
+		return " not acted on (its object cannot be read)", nil
+	}
+	var where string
+	var key any
+	if in.Embedded {
+		name, inst, mine := f.memberOfID(in.Actor)
+		switch {
+		case in.Kind != "Follow":
+			return " not acted on (its object is not a Follow)", nil
+		case !mine || inst:
+			return " refused (the Follow is not by a member here)", nil
+		case in.Object.ID != "" && in.Object.ID != s.ID:
+			return " refused (the Follow names another account)", nil
+		}
+		where, key = `f.follower_id = (SELECT id FROM users WHERE username = $1 AND domain = '')`, name
+	} else {
+		if !sameOrigin(in.ID, f.origin.url) {
+			return " not acted on (not our Follow)", nil
+		}
+		where, key = `f.ap_id = $1 AND f.ap_id <> ''`, in.ID
+	}
+	if accept {
+		n, err := f.fedExec(ctx, `UPDATE follows f SET state = 'accepted' WHERE `+where+` AND f.followee_id = $2 AND f.state = 'pending'`, key, s.UserID)
+		switch {
+		case err != nil:
+			return "", &errRetry{"the database"}
+		case n == 0:
+			return " not acted on (no follow of ours waits for it)", nil
+		}
+		return "", nil
+	}
+	var member int64
+	err := f.fedRow(ctx, []any{&member}, `DELETE FROM follows f WHERE `+where+` AND f.followee_id = $2 RETURNING f.follower_id`, key, s.UserID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return " not acted on (no follow of ours to end)", nil
+	case err != nil:
+		return "", &errRetry{"the database"}
+	}
+	if err := f.notifyFed(ctx, member, s, "follow_rejected", false); err != nil {
+		return "", &errRetry{"the database"}
+	}
+	return "", nil
+}
+
+// unfollowedBy ends s's follow of member name (an Undo of its Follow, pending or accepted), or with both the
+// follows between the two (a Block from s), and takes back the notification of that follow or request, so a Follow
+// and its Undo leave nothing behind.
+func (f *federation) unfollowedBy(ctx context.Context, s *remoteActor, name string, both bool) (string, error) {
+	var uid int64
+	if err := f.fedRow(ctx, []any{&uid}, `SELECT id FROM users WHERE username = $1 AND domain = ''`, name); errors.Is(err, sql.ErrNoRows) {
+		return " not acted on (no such account here)", nil
+	} else if err != nil {
+		return "", &errRetry{"the database"}
+	}
+	f.forgetAnswer(s.UserID, uid)
+	stmt := `WITH g AS (DELETE FROM follows WHERE follower_id = $2 AND followee_id = $1 RETURNING 1)`
+	if both {
+		stmt = `WITH g AS (DELETE FROM follows WHERE (follower_id = $2 AND followee_id = $1) OR (follower_id = $1 AND followee_id = $2) RETURNING 1)`
+	}
+	if _, err := f.fedExec(ctx, stmt+`, n AS (DELETE FROM notifications WHERE user_id = $1 AND actor_id = $2 AND kind IN ('follow', 'follow_request'))
+		SELECT count(*) FROM g`, uid, s.UserID); err != nil {
+		return "", &errRetry{"the database"}
+	}
+	return "", nil
+}
+
+// undoByID ends the follow s made with the Follow of that id, when it names one by id only (6.3: matched as
+// what it made).
+func (f *federation) undoByID(ctx context.Context, s *remoteActor, id string) (string, error) {
+	var uid int64
+	err := f.fedRow(ctx, []any{&uid}, `DELETE FROM follows WHERE follower_id = $1 AND ap_id = $2 AND ap_id <> '' RETURNING followee_id`, s.UserID, id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return " not acted on (nothing it undoes is known here)", nil
+	case err != nil:
+		return "", &errRetry{"the database"}
+	}
+	f.forgetAnswer(s.UserID, uid)
+	if _, err := f.fedExec(ctx, `DELETE FROM notifications WHERE user_id = $1 AND actor_id = $2 AND kind IN ('follow', 'follow_request')`, uid, s.UserID); err != nil {
+		return "", &errRetry{"the database"}
+	}
+	return "", nil
+}
+
+// goneFollower is the delivery queue's goneInbox (8.3: "410 for an inbox removes that follower"): the remote
+// accounts whose own inbox that was stop following local members, and their requests go with them. Only a
+// personal inbox: a shared one answering 410 names no one account. The queue writes an address in one spelling
+// (inboxAddress), so a stored inbox is compared in that spelling too. It reads the accounts of the inbox's host, on a
+// 410 alone.
+func (f *federation) goneFollower(ctx context.Context, inbox string) {
+	gone, host, ok := inboxAddress(inbox)
+	if !ok {
+		return
+	}
+	// The accounts of that host (users_remote_domain), their inboxes put in the queue's spelling here: scheme, host
+	// and port compared whole, so an inbox on another port of the host is another address.
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return
+	}
+	rows, err := f.db.QueryContext(ctx, `SELECT a.user_id, a.inbox FROM users u JOIN ap_actors a ON a.user_id = u.id WHERE u.domain = $1`, host)
+	if err != nil {
+		done()
+		log.Printf("deliveries: reading the followers whose inbox is gone: %v", err)
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		var in string
+		if rows.Scan(&id, &in) == nil {
+			if addr, _, ok := inboxAddress(in); ok && addr == gone {
+				ids = append(ids, id)
+			}
+		}
+	}
+	rows.Close()
+	done()
+	if len(ids) == 0 {
+		return
+	}
+	if _, err := f.fedExec(ctx, `WITH g AS (DELETE FROM follows WHERE follower_id = ANY($1) AND followee_id IN (SELECT id FROM users WHERE domain = '') RETURNING 1)
+		DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id = ANY($1)`, pq.Array(ids)); err != nil {
+		log.Printf("deliveries: removing the followers whose inbox is gone: %v", err)
+	}
+}
+
+/* The member's side: a remote profile, Follow and Unfollow, requests, and blocks of remote accounts. */
+
+// remoteRef is how a remote account is shown among members (in lists, notifications and its profile): its id
+// for its profile page here (#/fed/{id}), its handle when its name may be shown as one (handleNameOK: no control,
+// format or direction character, 6.3 and 11), and its host. Its display name is users.display_name, which the
+// cache wrote as plain text (remoteDisplay).
+type remoteRef struct {
+	ID     int64  `json:"id"`
+	Handle string `json:"handle,omitempty"`
+	Host   string `json:"host"`
+}
+
+// remoteHandle is name@host for a preferredUsername that handleNameOK passes, else "".
+func remoteHandle(pref, host string) string {
+	if pref == "" || host == "" || !handleNameOK(pref) {
+		return ""
+	}
+	return pref + "@" + host
+}
+
+// markRemote gives each remote account among users its remoteRef: one statement, only when there is one (a
+// remote username holds an "@", which no local one can), so a page with no remote account costs what it did.
+func (a *app) markRemote(users []*pubUser) error {
+	var ids []int64
+	for _, u := range users {
+		if strings.Contains(u.Username, "@") {
+			ids = append(ids, u.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := a.db.Query(`SELECT a.user_id, a.preferred_username, u.domain FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.user_id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	refs := map[int64]*remoteRef{}
+	for rows.Next() {
+		var id int64
+		var pref, host string
+		if err := rows.Scan(&id, &pref, &host); err != nil {
+			return err
+		}
+		refs[id] = &remoteRef{ID: id, Handle: remoteHandle(pref, host), Host: host}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range users {
+		if r := refs[u.ID]; r != nil {
+			u.Remote = r
+		}
+	}
+	return nil
+}
+
+// fedAccountRead reads the remote account a route names by its users id, from the cache alone (nothing is
+// fetched: it was fetched when it was found by its handle, or when it signed a delivery). A local id, or one
+// nobody has, is the one 404.
+func (a *app) fedAccountRead(w http.ResponseWriter, r *http.Request) (*remoteActor, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		fail(w, http.StatusNotFound, "No such account.")
+		return nil, false
+	}
+	ra, err := scanActor(a.db.QueryRowContext(r.Context(), `SELECT `+actorCols+` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.user_id = $1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such account.")
+		return nil, false
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return nil, false
+	}
+	return ra, true
+}
+
+// followView is where a member stands with a remote account: the member's follow of it (none, requested,
+// following), its follow of the member (followsYou) or its request that waits (asks), whether the member blocked
+// it, and, when the member cannot follow it now, why (cannot, in fixed words).
+type followView struct {
+	Follow     string `json:"follow"`
+	FollowsYou bool   `json:"followsYou,omitempty"`
+	Asks       bool   `json:"asks,omitempty"`
+	Blocked    bool   `json:"blocked,omitempty"`
+	Cannot     string `json:"cannot,omitempty"`
+}
+
+func (a *app) followViewOf(ctx context.Context, u *user, ra *remoteActor) (followView, error) {
+	v := followView{Follow: "none"}
+	var mine, theirs sql.NullString
+	var optedIn, blocked, blockedBy bool
+	err := a.db.QueryRowContext(ctx, `SELECT (SELECT state FROM follows WHERE follower_id = $1 AND followee_id = $3),
+		(SELECT state FROM follows WHERE follower_id = $3 AND followee_id = $1),
+		(SELECT `+publicMember+` FROM users u WHERE u.id = $1),
+		EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = $3), EXISTS (SELECT 1 FROM blocks WHERE user_id = $3 AND target_id = $1)`,
+		u.ID, a.mode == modeSingle, ra.UserID).Scan(&mine, &theirs, &optedIn, &blocked, &blockedBy)
+	if err != nil {
+		return v, err
+	}
+	switch mine.String {
+	case "pending":
+		v.Follow = "requested"
+	case "accepted":
+		v.Follow = "following"
+	}
+	v.FollowsYou, v.Asks, v.Blocked = theirs.String == "accepted", theirs.String == "pending", blocked
+	v.Cannot = a.cannotFollow(optedIn, blocked || blockedBy, ra)
+	return v, nil
+}
+
+// cannotFollow is why a member cannot follow ra now, in the words the page shows, or "".
+func (a *app) cannotFollow(optedIn, blocked bool, ra *remoteActor) string {
+	switch {
+	case !a.federating():
+		return lookupReasons[lookupUnavailable].words
+	case ra.State == "gone":
+		return lookupReasons[lookupGone].words
+	case ra.State == "suspended":
+		return lookupReasons[lookupSuspended].words
+	case !a.fed.admits(ra.Domain):
+		return lookupReasons[lookupNotAllowed].words
+	case blocked:
+		return fedFollowBlocked
+	case !optedIn:
+		return fedFollowOptIn
+	case ra.Inbox == "":
+		return fedFollowNoInbox
+	case !inboxOwn(ra):
+		return fedFollowForeign
+	}
+	return ""
+}
+
+// fedProfile is a remote account as its profile page here shows it: what the cache keeps, as text.
+type fedProfile struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Handle string `json:"handle,omitempty"` // name@host when the name may be shown (remoteHandle)
+	Host   string `json:"host"`
+	Bio    string `json:"bio,omitempty"`
+	Link   string `json:"link,omitempty"` // the profile on its own server
+	Locked bool   `json:"locked,omitempty"`
+	State  string `json:"state"`           // ok, gone or suspended
+	Stale  string `json:"stale,omitempty"` // when it was last fetched, once that is past its 24 hours
+}
+
+func profileOfActor(ra *remoteActor) fedProfile {
+	h := remoteHandle(ra.PreferredUsername, ra.Domain)
+	link := ra.URL
+	if !ownLink(link, ra.ID, h) {
+		link = ra.ID
+	}
+	p := fedProfile{ID: ra.UserID, Name: ra.Name, Handle: h, Host: ra.Domain, Link: link, Locked: ra.Locked, State: ra.State}
+	if ra.State == "ok" {
+		p.Bio = htmlToText(ra.Summary, nil, nil, len(ra.Summary) > remoteSummaryMax-utf8.UTFMax)
+	}
+	if p.Name == "" {
+		p.Name, _, _ = strings.Cut(h, "@")
+	}
+	if !ra.ExpiresAt.IsZero() && time.Now().After(ra.ExpiresAt) {
+		p.Stale = ra.FetchedAt.UTC().Format(time.RFC3339)
+	}
+	return p
+}
+
+// handleFedAccount is GET /api/fed/accounts/{id}: a remote account's profile here, and where the member stands
+// with it. No post: those are item 5's, and the page says so (fedAccountNotice).
+func (a *app) handleFedAccount(w http.ResponseWriter, r *http.Request, u *user) {
+	ra, ok := a.fedAccountRead(w, r)
+	if !ok {
+		return
+	}
+	v, err := a.followViewOf(r.Context(), u, ra)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": profileOfActor(ra), "view": v, "notice": fedAccountNotice})
+}
+
+// handleFedFollow is PUT /api/fed/accounts/{id}/follow: the member follows a remote account. The row is written
+// pending with the Follow's id, in a short transaction that locks the member's row as handleFollow does (so
+// maxFollows holds), and the Follow is enqueued after the commit; if it cannot be, the row goes again and the
+// member is told to try later. A follow already there is answered as it stands, nothing sent again.
+func (a *app) handleFedFollow(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.fedFollows, u, "follows of people on other servers")
+	if !ok {
+		return
+	}
+	ra, ok := a.fedAccountRead(w, r)
+	if !ok {
+		return
+	}
+	v, err := a.followViewOf(r.Context(), u, ra)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if v.Follow != "none" {
+		writeJSON(w, http.StatusOK, map[string]any{"view": v, "changed": false})
+		return
+	}
+	if v.Cannot != "" {
+		fail(w, http.StatusForbidden, v.Cannot)
+		return
+	}
+	f := a.fed
+	followID := f.activityID(u.Username)
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE`, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var made, full bool
+	err = tx.QueryRow(`WITH ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
+			SELECT $1, $2, 'pending', $3 WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $4 AND `+blockFree("$1::bigint", "$2::bigint", "false")+`
+			ON CONFLICT DO NOTHING RETURNING 1)
+		SELECT EXISTS (SELECT 1 FROM ins), (SELECT count(*) FROM follows WHERE follower_id = $1) >= $4`, u.ID, ra.UserID, followID, maxFollows).Scan(&made, &full)
+	var pqe *pq.Error
+	if errors.As(err, &pqe) && pqe.Code == "23503" {
+		fail(w, http.StatusNotFound, "No such account.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if !made {
+		if full {
+			fail(w, http.StatusBadRequest, fmt.Sprintf("You follow %d accounts, the most there can be. Unfollow someone first.", maxFollows))
+			return
+		}
+		if v, err = a.followViewOf(r.Context(), u, ra); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"view": v, "changed": false})
+		return
+	}
+	me := f.memberActor(u.Username)
+	if err := f.sendFollow(r.Context(), keyOwner(u.ID), outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}, ra); err != nil {
+		if _, err2 := a.db.Exec(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2 AND ap_id = $3`, u.ID, ra.UserID, followID); err2 != nil {
+			a.serverError(w, err2)
+			return
+		}
+		log.Printf("follows: a Follow for %s could not be queued: %v", ra.Domain, err)
+		fail(w, http.StatusServiceUnavailable, fedFollowFull)
+		return
+	}
+	v.Follow = "requested"
+	writeJSON(w, http.StatusOK, map[string]any{"view": v, "changed": true})
+}
+
+// handleFedUnfollow is DELETE /api/fed/accounts/{id}/follow: the member's follow, or their request, goes, and an
+// Undo of the Follow is sent to the account's inbox (6.4). No follow is not an error.
+func (a *app) handleFedUnfollow(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.fedFollows, u, "follows of people on other servers")
+	if !ok {
+		return
+	}
+	ra, ok := a.fedAccountRead(w, r)
+	if !ok {
+		return
+	}
+	var followID string
+	err := a.db.QueryRowContext(r.Context(), `DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2 RETURNING ap_id`, u.ID, ra.UserID).Scan(&followID)
+	changed := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
+	sent := true
+	if changed {
+		sent = a.sendUndoFollow(r.Context(), u, ra, followID)
+	}
+	v, err := a.followViewOf(r.Context(), u, ra)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"view": v, "changed": changed, "sent": sent})
+}
+
+// sendUndoFollow enqueues the Undo of the member's Follow of ra (its id, or a new one for a follow that kept
+// none), and says whether it could be.
+func (a *app) sendUndoFollow(ctx context.Context, u *user, ra *remoteActor, followID string) bool {
+	f := a.fed
+	me := f.memberActor(u.Username)
+	if followID == "" {
+		followID = f.activityID(u.Username)
+	}
+	err := f.sendFollow(ctx, keyOwner(u.ID), outFollow{ID: f.activityID(u.Username), Type: "Undo", Actor: me,
+		Object: outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}}, ra)
+	if err != nil {
+		log.Printf("follows: an Undo for %s could not be queued: %v", ra.Domain, err)
+	}
+	return err == nil
+}
+
+// sendAnswer enqueues the member's Accept or Reject of ra's Follow (its id as it came), and says whether it could be.
+func (a *app) sendAnswer(ctx context.Context, u *user, ra *remoteActor, followID string, accept bool) bool {
+	f := a.fed
+	me := f.memberActor(u.Username)
+	kind := "Reject"
+	if accept {
+		kind = "Accept"
+	}
+	follow := outFollow{ID: followID, Type: "Follow", Actor: ra.ID, Object: me}
+	err := f.sendFollow(ctx, keyOwner(u.ID), outFollow{ID: f.activityID(u.Username), Type: kind, Actor: me, Object: follow}, ra)
+	if err != nil {
+		log.Printf("follows: a%s %s for %s could not be queued: %v", map[bool]string{true: "n", false: ""}[accept], kind, ra.Domain, err)
+	}
+	return err == nil
+}
+
+// requestListSQL is the remote accounts whose requests wait for member $1, the latest first, $2 at most, through
+// follows_pending.
+const requestListSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT follower_id, created_at FROM follows WHERE followee_id = $1 AND state = 'pending'
+	ORDER BY created_at DESC, follower_id LIMIT $2) f JOIN users u ON u.id = f.follower_id ORDER BY f.created_at DESC, f.follower_id`
+
+// handleFollowRequests is GET /api/fed/requests: the requests that wait for the member, and how many.
+func (a *app) handleFollowRequests(w http.ResponseWriter, r *http.Request, u *user) {
+	rows, err := a.db.QueryContext(r.Context(), requestListSQL, u.ID, followRequestsMax)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	type request struct {
+		User  *pubUser  `json:"user"`
+		Since time.Time `json:"since"`
+	}
+	out := []request{}
+	var users []*pubUser
+	for rows.Next() {
+		var since time.Time
+		m, err := scanUser(rows, &since)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		p := m.public()
+		out = append(out, request{&p, since})
+		users = append(users, &p)
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	rows.Close()
+	if err := a.markRemote(users); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": out, "total": len(out)})
+}
+
+// handleAnswerRequest is PUT (approve) and DELETE (decline) /api/fed/requests/{id}: the member answers the
+// request of the remote account id. Approving makes the follow accepted and sends Accept; declining removes it
+// and sends Reject; either way the request notification goes. A request that no longer waits is a 404.
+func (a *app) handleAnswerRequest(approve bool) func(http.ResponseWriter, *http.Request, *user) {
+	return func(w http.ResponseWriter, r *http.Request, u *user) {
+		w, ok := allowed(w, a.lim.fedFollows, u, "follows of people on other servers")
+		if !ok {
+			return
+		}
+		ra, ok := a.fedAccountRead(w, r)
+		if !ok {
+			return
+		}
+		stmt := `UPDATE follows SET state = 'accepted' WHERE follower_id = $1 AND followee_id = $2 AND state = 'pending' RETURNING ap_id`
+		if !approve {
+			stmt = `DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2 AND state = 'pending' RETURNING ap_id`
+		}
+		var followID string
+		err := a.db.QueryRowContext(r.Context(), stmt, ra.UserID, u.ID).Scan(&followID)
+		if errors.Is(err, sql.ErrNoRows) {
+			fail(w, http.StatusNotFound, "That request no longer waits.")
+			return
+		}
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if _, err := a.db.ExecContext(r.Context(), `DELETE FROM notifications WHERE user_id = $1 AND actor_id = $2 AND kind = 'follow_request'`, u.ID, ra.UserID); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		sent := a.sendAnswer(r.Context(), u, ra, followID, approve)
+		writeJSON(w, http.StatusOK, map[string]any{"approved": approve, "sent": sent})
+	}
+}
+
+// handleFedBlock is PUT (block) and DELETE (unblock) /api/fed/accounts/{id}/block. A block, in one statement,
+// writes the row, removes the follows between the two both ways and the notifications between them (as
+// handleBlock does locally), and then answers what it ended (6.4): Reject of the account's follow of the member,
+// Undo of the member's follow of it. No Block is sent.
+func (a *app) handleFedBlock(block bool) func(http.ResponseWriter, *http.Request, *user) {
+	return func(w http.ResponseWriter, r *http.Request, u *user) {
+		w, ok := allowed(w, a.lim.blocks, u, "blocks")
+		if !ok {
+			return
+		}
+		ra, ok := a.fedAccountRead(w, r)
+		if !ok {
+			return
+		}
+		if !block {
+			if _, err := a.db.ExecContext(r.Context(), `DELETE FROM blocks WHERE user_id = $1 AND target_id = $2`, u.ID, ra.UserID); err != nil {
+				a.serverError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]bool{"blocked": false})
+			return
+		}
+		rows, err := a.db.QueryContext(r.Context(), `WITH ins AS (INSERT INTO blocks (user_id, target_id) VALUES ($1, $2) ON CONFLICT DO NOTHING),
+			gone AS (DELETE FROM notifications WHERE kind <> ALL($3) AND ((user_id = $1 AND actor_id = $2) OR (user_id = $2 AND actor_id = $1)))
+			DELETE FROM follows WHERE (follower_id = $1 AND followee_id = $2) OR (follower_id = $2 AND followee_id = $1) RETURNING follower_id, ap_id`,
+			u.ID, ra.UserID, pq.Array(slices.Sorted(maps.Keys(quietKinds))))
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		type ended struct {
+			mine bool
+			id   string
+		}
+		var gone []ended
+		for rows.Next() {
+			var follower int64
+			var id string
+			if err := rows.Scan(&follower, &id); err != nil {
+				rows.Close()
+				a.serverError(w, err)
+				return
+			}
+			gone = append(gone, ended{follower == u.ID, id})
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		for _, g := range gone {
+			if g.mine {
+				a.sendUndoFollow(r.Context(), u, ra, g.id)
+			} else {
+				a.sendAnswer(r.Context(), u, ra, g.id, false)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"blocked": true})
+	}
+}
+
 /* ---------- federation: domain policies and the allowlist ----------
 
 What an admin decides about other servers (docs/federation.md, F8, section 10 and 7.7; FMD item 1, as far as
@@ -18375,7 +19648,25 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
-	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, map[string]any{"domain": d, "policy": in.Policy, "was": was}); err != nil {
+	// Suspending a domain ends the follows between members here and its accounts and their requests, both ways, as
+	// Mastodon's suspension removes them and does not restore them (section 10); nothing is sent, since nothing goes to
+	// a suspended domain. Its accounts are found by users_remote_domain for the domain itself, and by reading the remote
+	// accounts for its subdomains (at most remoteActorsMax and those something points at), once, on this admin action.
+	ended := 0
+	if in.Policy == "suspend" {
+		if err := tx.QueryRow(`WITH s AS (SELECT id FROM users WHERE domain <> '' AND (domain = $1 OR right(domain, length($1) + 1) = '.' || $1)),
+			n AS (DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id IN (SELECT id FROM s)),
+			g AS (DELETE FROM follows WHERE follower_id IN (SELECT id FROM s) OR followee_id IN (SELECT id FROM s) RETURNING 1)
+			SELECT count(*) FROM g`, d).Scan(&ended); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	detail := map[string]any{"domain": d, "policy": in.Policy, "was": was}
+	if in.Policy == "suspend" {
+		detail["followsEnded"] = ended // the audit says what the suspension ended (FWR 3)
+	}
+	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, detail); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -18864,6 +20155,24 @@ var migrations = []string{schema, schemaSocial,
 		created_at TIMESTAMPTZ NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS ap_hosts_held ON ap_hosts (host) WHERE state <> 'ok'`,
+	// 20: follows across servers (docs/federation.md 6.3, 6.4, 9.1 and 11; FWR 3). users.locked is a member's
+	// choice to approve followers from other servers by hand (manuallyApprovesFollowers in the actor). follows
+	// gains state, pending until the other side accepts (a request to a member who approves by hand, or our
+	// Follow until its Accept arrives), and ap_id, the Follow activity's id, for Accept, Reject and Undo. Every
+	// row there is was made between two local members and is accepted, which the constant default says without
+	// a rewrite; the check is added NOT VALID, so no row is read to add it. follows_pending lists a member's
+	// requests and counts them for the cap; users_remote_domain counts a sending host's requests and follows for
+	// theirs; notifications_follows the notifications of follows of one member, which the trim of what other servers
+	// leave reads (remoteNotesTrimSQL). Columns with constant defaults and new indexes: an older build ignores them,
+	// and reads a pending remote follow as a follow (14.4).
+	`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT false;
+	ALTER TABLE follows ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'accepted';
+	ALTER TABLE follows ADD COLUMN IF NOT EXISTS ap_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE follows DROP CONSTRAINT IF EXISTS follows_state;
+	ALTER TABLE follows ADD CONSTRAINT follows_state CHECK (state IN ('pending', 'accepted')) NOT VALID;
+	CREATE INDEX IF NOT EXISTS follows_pending ON follows (followee_id, created_at) WHERE state = 'pending';
+	CREATE INDEX IF NOT EXISTS users_remote_domain ON users (domain) WHERE domain <> '';
+	CREATE INDEX IF NOT EXISTS notifications_follows ON notifications (user_id, id DESC) WHERE kind IN ('follow', 'follow_request', 'follow_rejected')`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -19631,6 +20940,22 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st, false))
 		mux.HandleFunc("GET /users/{name}/posts/{id}/activity", a.handlePublicPost(st, true))
 		mux.HandleFunc("POST /api/fed/lookup", a.flagged("community", a.authed("", a.handleLookup)))
+		// Follows across servers (FWR 3): a remote profile and blocks behind the community flag, as the local ones
+		// are; following and the requests behind the follows flag too, as local follows are.
+		fedSocial := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+			return a.flagged("community", a.authed("", h))
+		}
+		fedFollows := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+			return a.flagged("community", a.flagged("follows", a.authed("", h)))
+		}
+		mux.HandleFunc("GET /api/fed/accounts/{id}", fedSocial(a.handleFedAccount))
+		mux.HandleFunc("PUT /api/fed/accounts/{id}/block", fedSocial(a.handleFedBlock(true)))
+		mux.HandleFunc("DELETE /api/fed/accounts/{id}/block", fedSocial(a.handleFedBlock(false)))
+		mux.HandleFunc("PUT /api/fed/accounts/{id}/follow", fedFollows(a.handleFedFollow))
+		mux.HandleFunc("DELETE /api/fed/accounts/{id}/follow", fedFollows(a.handleFedUnfollow))
+		mux.HandleFunc("GET /api/fed/requests", fedFollows(a.handleFollowRequests))
+		mux.HandleFunc("PUT /api/fed/requests/{id}", fedFollows(a.handleAnswerRequest(true)))
+		mux.HandleFunc("DELETE /api/fed/requests/{id}", fedFollows(a.handleAnswerRequest(false)))
 		mux.HandleFunc("POST /inbox", a.handleInbox)
 		mux.HandleFunc("POST /actor/inbox", a.handleInbox)
 		mux.HandleFunc("POST /users/{name}/inbox", a.handleInbox)
@@ -20955,6 +22280,8 @@ type pubUser struct {
 	Stats       json.RawMessage `json:"stats"`
 	Created     time.Time       `json:"created"`
 	AvatarCfg   json.RawMessage `json:"avatarCfg"`
+	// Remote is set for an account on another server (markRemote), which only a mode that federates has.
+	Remote *remoteRef `json:"remote,omitempty"`
 }
 
 func (u *user) public() pubUser {
@@ -20963,7 +22290,7 @@ func (u *user) public() pubUser {
 		v.Stats = json.RawMessage("{}")
 		u = &v
 	}
-	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.avatarURL(), u.Bio, u.Links, u.Props, u.Stats, u.Created, u.AvatarCfg}
+	return pubUser{u.ID, u.Username, u.DisplayName, u.Role, u.avatarURL(), u.Bio, u.Links, u.Props, u.Stats, u.Created, u.AvatarCfg, nil}
 }
 
 // avatarURL is where someone else's profile picture is fetched from, with a version that changes
@@ -21010,14 +22337,29 @@ func (a *app) usersByID(ids []int64) (map[int64]pubUser, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	var remote []*pubUser
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {
 			return nil, err
 		}
-		out[u.ID] = u.public()
+		p := u.public()
+		if strings.Contains(p.Username, "@") {
+			remote = append(remote, &p)
+		}
+		out[u.ID] = p
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := a.markRemote(remote); err != nil {
+		return nil, err
+	}
+	for _, p := range remote {
+		out[p.ID] = *p
+	}
+	return out, nil
 }
 
 func statNum(raw json.RawMessage, key string) float64 {
@@ -21560,7 +22902,7 @@ func postCols(staff string) string {
 // table and however long ago an account last posted; maxFollows bounds the accounts (TestDBQueryPlans).
 // The counts and the viewer's like are read after the LIMIT, for the posts shown only.
 var homeSQL = `SELECT ` + postCols("$4") + ` FROM (SELECT h.id FROM
-		(SELECT x.id FROM (SELECT $1::bigint AS id UNION ALL SELECT f.followee_id FROM follows f WHERE f.follower_id = $1) x
+		(SELECT x.id FROM (SELECT $1::bigint AS id UNION ALL SELECT f.followee_id FROM follows f WHERE f.follower_id = $1 AND f.state = 'accepted') x
 			WHERE ` + blockFree("$1", "x.id", "$4") + `) a
 		CROSS JOIN LATERAL (SELECT p.id FROM posts p WHERE p.user_id = a.id AND ($2 = 0 OR p.id < $2)
 			AND (p.hidden_at IS NULL OR p.user_id = $1 OR $4) ORDER BY p.id DESC LIMIT $3) h
@@ -22876,10 +24218,11 @@ func (a *app) handleBlocks(w http.ResponseWriter, _ *http.Request, u *user) {
 	}
 	defer rows.Close()
 	type blocked struct {
-		User  pubUser   `json:"user"`
+		User  *pubUser  `json:"user"`
 		Since time.Time `json:"since"`
 	}
 	out := []blocked{}
+	var users []*pubUser
 	for rows.Next() {
 		var since time.Time
 		b, err := scanUser(rows, &since)
@@ -22887,9 +24230,16 @@ func (a *app) handleBlocks(w http.ResponseWriter, _ *http.Request, u *user) {
 			a.serverError(w, err)
 			return
 		}
-		out = append(out, blocked{b.public(), since})
+		p := b.public()
+		out = append(out, blocked{&p, since})
+		users = append(users, &p)
 	}
 	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	rows.Close()
+	if err := a.markRemote(users); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -23042,15 +24392,15 @@ func followShown(other string) string { return blockFree("$1", other, "false") }
 // first ($1 the member, $2 how many). Like blockListSQL, the rows of follows are chosen first through
 // the primary key or follows_followee, and only the accounts shown are read.
 var followingSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT f.followee_id AS id, f.created_at FROM follows f WHERE f.follower_id = $1
-	AND ` + followShown("f.followee_id") + ` ORDER BY f.created_at DESC, f.followee_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
+	AND f.state = 'accepted' AND ` + followShown("f.followee_id") + ` ORDER BY f.created_at DESC, f.followee_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
 
 var followersSQL = `SELECT ` + userCols + `, f.created_at FROM (SELECT f.follower_id AS id, f.created_at FROM follows f WHERE f.followee_id = $1
-	AND ` + followShown("f.follower_id") + ` ORDER BY f.created_at DESC, f.follower_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
+	AND f.state = 'accepted' AND ` + followShown("f.follower_id") + ` ORDER BY f.created_at DESC, f.follower_id LIMIT $2) f JOIN users u ON u.id = f.id ORDER BY f.created_at DESC, f.id`
 
 // followCountsSQL is how many follow member $1 and how many they follow: the rows of one index each,
 // with followShown asked of each.
-var followCountsSQL = `SELECT (SELECT count(*) FROM follows f WHERE f.followee_id = $1 AND ` + followShown("f.follower_id") + `),
-	(SELECT count(*) FROM follows f WHERE f.follower_id = $1 AND ` + followShown("f.followee_id") + `)`
+var followCountsSQL = `SELECT (SELECT count(*) FROM follows f WHERE f.followee_id = $1 AND f.state = 'accepted' AND ` + followShown("f.follower_id") + `),
+	(SELECT count(*) FROM follows f WHERE f.follower_id = $1 AND f.state = 'accepted' AND ` + followShown("f.followee_id") + `)`
 
 // maxFollowList is how many accounts each list shows, the latest; the counts say how many there are.
 const maxFollowList = 500
@@ -23075,10 +24425,11 @@ func (a *app) followList(w http.ResponseWriter, u *user, q, key string) {
 	}
 	defer rows.Close()
 	type member struct {
-		User  pubUser   `json:"user"`
+		User  *pubUser  `json:"user"`
 		Since time.Time `json:"since"`
 	}
 	out := []member{}
+	var users []*pubUser
 	for rows.Next() {
 		var since time.Time
 		m, err := scanUser(rows, &since)
@@ -23086,9 +24437,18 @@ func (a *app) followList(w http.ResponseWriter, u *user, q, key string) {
 			a.serverError(w, err)
 			return
 		}
-		out = append(out, member{m.public(), since})
+		p := m.public()
+		out = append(out, member{&p, since})
+		users = append(users, &p)
 	}
 	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	rows.Close()
+	// Accounts on other servers among them say so, with their handle and host (FWR 3); none exist outside a
+	// mode that federates, and then this asks nothing.
+	if err := a.markRemote(users); err != nil {
 		a.serverError(w, err)
 		return
 	}

@@ -1,0 +1,1 @@
+{"@context":"https://www.w3.org/ns/activitystreams","id":"https://social.example/users/bo#accepts/follows/4","type":"Accept","actor":"https://social.example/users/bo","object":"https://here.example/users/ana/activities/follow1"}

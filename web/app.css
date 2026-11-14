@@ -599,7 +599,7 @@ button:disabled { opacity: .6; cursor: default; }
 .ntf { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 9px; color: var(--ink); }
 .ntf:hover { background: var(--card-2); text-decoration: none; }
 .ntf.unread { background: var(--accent-soft); } .ntf.unread:hover { background: var(--hover); }
-.ntf .grow { display: grid; }
+.ntf .grow { display: grid; min-width: 0; overflow-wrap: anywhere; } /* a long handle from another server wraps rather than scroll the panel */
 .avatar.sm { width: 26px; height: 26px; font-size: 10px; }
 .icon-btn.xs { width: 22px; height: 22px; } .icon-btn.xs svg.i { width: 12px; height: 12px; }
 select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
@@ -622,6 +622,7 @@ select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
 .bm-row + .bm-row { margin-top: 6px; }
 .bm-row a { color: var(--ink); } .bm-row a:hover { text-decoration: none; } .bm-row a:hover b { text-decoration: underline; }
 .bm-row b { display: block; font-weight: 560; font-size: 13px; } .bm-row .tiny { display: block; }
+.bm-row .grow { min-width: 0; overflow-wrap: anywhere; }
 .bm-row .tag { display: inline-flex; align-items: center; } .bm-row .cb-mini { flex: none; max-width: 40%; }
 .node .bm-mark { display: inline-flex; color: var(--accent-ink); } .node .bm-mark svg.i { width: 11px; height: 11px; fill: currentColor; }
 .cmts { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }

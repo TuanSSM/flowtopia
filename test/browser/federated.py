@@ -126,7 +126,7 @@ try:
 
     check('nothing is announced yet: NodeInfo names the origin but no member, and the dashboard says so',get_json(op,'admin/dashboard').get('federation',{}).get('announced')=='',lambda: get_json(op,'admin/dashboard').get('federation'))
     me=get_json(op,'me')
-    check('the admin is told the handle, and has not opted in',{k:(me.get('federation') or {}).get(k) for k in ('handle','optedIn','label')}=={'handle':'@admin@'+HOST,'optedIn':False,'label':LABEL} and 'nothing is sent to them' in (me.get('federation') or {}).get('built',''),lambda: me.get('federation'))
+    check('the admin is told the handle, and has not opted in',{k:(me.get('federation') or {}).get(k) for k in ('handle','optedIn','label')}=={'handle':'@admin@'+HOST,'optedIn':False,'label':LABEL} and 'your posts are not sent to them yet' in (me.get('federation') or {}).get('built',''),lambda: me.get('federation'))
     s,h,b=wf('acct:admin@'+HOST)
     check('WebFinger: 404 for a member who has not opted in, with the CORS header',s==404 and h.get('Access-Control-Allow-Origin')=='*',lambda: (s,dict(h)))
     nobody=wf('acct:nobody@'+HOST)
@@ -141,7 +141,7 @@ try:
     check('Settings has "Beyond this server", with the switch off and the handle',lambda: js("const c=[...document.querySelectorAll('.card h2')].find(h=>h.textContent==='Beyond this server');const b=document.querySelector('[data-change=federates]');return !!c&&!!b&&!b.checked&&c.closest('.card').innerText.includes('@admin@flowa.test')"),
           lambda: js("return document.querySelector('main').innerText.slice(0,400)"))
     check('the switch has a name a screen reader reads',lambda: js("const b=document.querySelector('[data-change=federates]');return b&&b.closest('label').innerText.trim()")==LABEL)
-    check('the card says what this version does, in the server\'s words: read, not followed, nothing sent',lambda: (lambda t: 'read your profile and the posts you mark Public' in t and 'Nobody there can follow you yet' in t and 'nothing is sent to them' in t)(js("return document.querySelector('.fed-card').innerText")),lambda: js("return document.querySelector('.fed-card').innerText"))
+    check('the card says what this version does, in the server\'s words: read, not followed, nothing sent',lambda: (lambda t: 'read your profile and the posts you mark Public' in t and 'People there can follow you' in t and 'your posts are not sent to them yet' in t)(js("return document.querySelector('.fed-card').innerText")),lambda: js("return document.querySelector('.fed-card').innerText"))
     if tab_to('[data-change=federates]','the switch'):
         check('the switch shows a ring of 2 px or more at 3:1 in both themes, and nothing covers it (keys.py)',not ring_ok(),ring_ok)
         key(SPACE)
@@ -164,7 +164,7 @@ try:
 
     # The dashboard's mode line says what this version of federation does.
     nav('#/admin')
-    check('the dashboard: federated mode, the origin, announced since the first answer, and what is served',lambda: (lambda t: bool(t) and t.startswith('Instance mode federated') and 'Federating as https://flowa.test, first announced' in t and 'serves the profiles and Public posts' in t and 'nobody can follow anyone yet' in t and 'nothing is delivered' in t)(txt('.dash-mode')),lambda: (location_of(),txt('#main')[:300]))
+    check('the dashboard: federated mode, the origin, announced since the first answer, and what is served',lambda: (lambda t: bool(t) and t.startswith('Instance mode federated') and 'Federating as https://flowa.test, first announced' in t and 'serves the profiles and Public posts' in t and 'members can follow people on other servers' in t and 'no post is sent yet' in t)(txt('.dash-mode')),lambda: (location_of(),txt('#main')[:300]))
     js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top, or the sticky bar lands in its middle
     picture('federated-dashboard','Federated mode: the dashboard says the origin and what this version serves')
     check('the mode line says deliveries are not taken while the Federation switch is off (its default)',lambda: 'Taking deliveries is off under Features' in (txt('.dash-mode') or ''),lambda: txt('.dash-mode'))
@@ -187,7 +187,7 @@ try:
     check('the Federation tab: allowed servers only, no domain yet, and the deliveries refused counted',lambda: (lambda t: 'Allowed servers only' in t and 'No domain is allowed yet' in t and 'not signed' in t)(txt('#main') or ''),lambda: txt('#main')[:600])
     # The delivery queue (FWR 2): built and empty, since nothing in this version sends; its numbers come from the server.
     j=get_json(op,'admin/federation').get('deliveries') or {}
-    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Nothing is sent yet in this version' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
+    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Follows and their answers in this version' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
     if tab_to('#fed-domain-form [name=domain]','the domain field'):
         check('the field shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
         type_text('Social.Example')
@@ -411,6 +411,86 @@ try:
         H.zoom=1.0
         load(BASE)
 
+    # Follows across servers (FWR 3). The switch for approving followers by hand is real: reached with Tab, turned
+    # with Space, read back through the API. A remote account needs another server, which this one cannot reach, so
+    # the server's side (the Follow out and in, the Accept, the requests) is Go's (TestDBFollowsAcross,
+    # TestDBTwoFlowaFollow); here the page's own fetch of the few addresses of one remote account is answered by
+    # the suite, as the hostile lookup above is, to check how the page draws the profile, the Follow button's three
+    # states and a follow request with Approve and Decline. Over HTTP, an account nobody has is the one 404.
+    api(op,'me',{'federates':True},'PUT')
+    load(BASE);nav('#/settings')
+    check('with Follows off (the default), Settings offers no switch for approving followers by hand',lambda: js("return !!document.querySelector('[data-change=federates]')&&!document.querySelector('[data-change=locked]')"),lambda: txt('.fed-card'))
+    api(op,'flags',{'flags':{'follows':True}},'PUT')
+    s,_,b=ask('api/fed/accounts/999999')
+    check('a remote account nobody has: the API wants a session first',s==401,lambda: (s,b[:100]))
+    try: op.open(BASE+'api/fed/accounts/999999',timeout=20);fa=200
+    except urllib.error.HTTPError as x: fa=x.code
+    check('and for a member, an account nobody has is the 404',fa==404,lambda: fa)
+    check('the requests list is there, and empty',get_json(op,'fed/requests')=={'requests':[],'total':0},lambda: get_json(op,'fed/requests'))
+    load(BASE);nav('#/settings')
+    check('Settings offers approving followers from other servers by hand, off, once the member shares their profile',lambda: js("const b=document.querySelector('[data-change=locked]');return !!b&&!b.checked&&b.closest('label').innerText.trim()"),lambda: txt('.fed-card'))
+    check('the card says what this version does: people elsewhere can follow, posts are not sent',lambda: (lambda t: 'People there can follow you, and you can follow them' in t and 'your posts are not sent to them yet' in t)(txt('.fed-card') or ''),lambda: txt('.fed-card'))
+    if tab_to('[data-change=locked]','the switch for approving by hand'):
+        check('the switch shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
+        key(SPACE)
+        check('Space turns it on, and the server has it',lambda: get_json(op,'me').get('federation',{}).get('locked') is True,lambda: get_json(op,'me').get('federation'))
+        check('the focus stays on it, now on',lambda: on('[data-change=locked]') and js("return document.querySelector('[data-change=locked]').checked"),active)
+        s,_,b=ask('users/admin',headers=AS)
+        check('the actor now says manuallyApprovesFollowers',s==200 and json.loads(b).get('manuallyApprovesFollowers') is True,lambda: (s,b[:200]))
+        key(SPACE)
+        check('Space again turns it off',lambda: get_json(op,'me').get('federation',{}).get('locked') is False)
+    card_rules('the card, with the switch for approving by hand')
+    STUB="""window.__calls=[];window.__fed={follow:arguments[0],items:[{id:901,kind:'follow_request',actorId:7,postId:0,commentId:0,rootId:0,text:'',read:false,created:new Date().toISOString()}]};
+      const bo={id:7,username:'bo@social.example',displayName:'Bo \u202eexe',role:'user',avatar:'',remote:{id:7,handle:'bo@social.example',host:'social.example'}};
+      const json=(d,st=200)=>Promise.resolve(new Response(JSON.stringify(d),{status:st,headers:{'Content-Type':'application/json'}}));
+      window.__realFetch=window.__realFetch||window.fetch;const real=window.__realFetch;
+      window.fetch=(u,o)=>{const m=(o&&o.method)||'GET',p=String(u).replace(/^.*?api[/]/,'');
+        if(p==='fed/accounts/7')return json({account:{id:7,name:'Bo \u202eexe',handle:'bo@social.example',host:'social.example',bio:'Poi in the park. <b id=pwn6>x</b>',link:'https://social.example/@bo',locked:true,state:'ok'},view:{follow:window.__fed.follow,asks:!!window.__fed.items.length},notice:'Their posts do not show in Flowa yet, in Home or here: only their profile does. Open the profile on their server to read their posts. Pictures from other servers are not shown yet.'});
+        if(p==='fed/accounts/7/follow'){window.__calls.push(m+' '+p);window.__fed.follow=m==='PUT'?'requested':'none';return json({view:{follow:window.__fed.follow},changed:true,sent:true})}
+        if(p==='fed/requests/7'){window.__calls.push(m+' '+p);window.__fed.items=[];return json({approved:m==='PUT',sent:true})}
+        if(p==='fed/requests')return json({requests:window.__fed.items.length?[{user:bo,since:new Date().toISOString()}]:[],total:window.__fed.items.length});
+        const long={id:8,username:'+0123456789ab@long.example',displayName:'',role:'user',avatar:'',remote:{id:8,handle:'x'.repeat(200)+'@long.example',host:'long.example'}};
+        if(p==='notifications')return json({items:window.__fed.items,users:{7:bo,8:long},unread:window.__fed.items.length});
+        return real(u,o)};"""
+    js(STUB,'none')
+    nav('#/fed/7')
+    prof=lambda: js("""const m=document.querySelector('#main');return [m.querySelector('h1 bdi')&&m.querySelector('h1 bdi').textContent,(m.querySelector('.look-host')||{}).textContent,!!m.querySelector('[id^=pwn]'),
+      (m.querySelector('[data-act=fed-follow]')||{}).innerText,m.innerText.includes('Their posts do not show in Flowa yet'),m.innerText.includes('approves its followers by hand')]""")
+    check('a remote profile: its name isolated, its host apart, its words as text, Follow, and where its posts would be, why they are not',lambda: prof()==['Bo \u202eexe','social.example',False,'Follow',True,True],prof)
+    check('the request it made waits on its profile with Approve and Decline, each named for whom',lambda: js("return [...document.querySelectorAll('.fed-asks button')].map(b=>b.getAttribute('aria-label'))")==['Approve bo@social.example','Decline bo@social.example'])
+    for t in ('dark','light'):
+        themed(t)
+        n,f,d=js(A['NAMES'],'#main'),js(A['FIELDS'],'#main'),js(A['IDS'])
+        check(f'the remote profile, {t}: every control has a name, and no id repeats (a11y.py)',n['n']>0 and not n['bad'] and not d['bad'],lambda: (n,d))
+        r=js(C['CHECK'],'#main',False,C['KNOWN'],'')
+        check(f'the remote profile, {t}: text and the edges of controls stand out (contrast.py)',r['n']>0 and not r['bad'] and not r['unknown'],lambda: (r['n'],r['bad'][:4],r['unknown'][:4]))
+    themed('dark')
+    if tab_to('[data-act=fed-follow]','Follow'):
+        check('Follow shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
+        key(ENTER)
+        check('Enter sends the follow; the button says Requested until their server accepts, and takes the focus',lambda: js("const b=document.querySelector('[data-act=fed-unfollow]');return !!b&&b.innerText.trim()==='Requested'&&b.getAttribute('aria-label').includes('Take the follow request back')&&document.activeElement===b") and 'PUT fed/accounts/7/follow' in js('return window.__calls'),lambda: (js('return window.__calls'),txt('#main')[:300]))
+    load(BASE);js(STUB,'following');nav('#/fed/7')  # their server accepted: the profile read again
+    check('once their server accepted: Unfollow',lambda: js("const b=document.querySelector('[data-act=fed-unfollow]');return b&&b.innerText.trim()")=='Unfollow')
+    js("scrollTo(0,0)");frames()
+    picture('federated-remote-profile','Federated mode: a remote account\'s profile drawn from an answer the suite supplies (no server asked): followed, its request waiting')
+    click('[data-act=bell]')
+    who=lambda: js("const r=document.querySelector('.ntf-panel .ntf');return r&&[(r.querySelector('bdi')||{}).textContent,(r.querySelector('.look-host')||{}).textContent,r.innerText.includes('@bo@social.example')]")
+    check('the bell names an account of another server by its handle with its host, its name isolated (never a bare name beside members\' names)',lambda: who()==['Bo \u202eexe','social.example',True],who)
+    check('the bell lists the follow request with Approve and Decline beside it, not inside a link',lambda: js("const r=document.querySelector('.ntf-panel .ntf');return !!r&&r.tagName==='DIV'&&r.innerText.includes('asked to follow you')&&r.querySelectorAll('button[data-act=req-approve],button[data-act=req-decline]').length===2"),lambda: txt('.ntf-panel'))
+    js("scrollTo(0,0)");frames()
+    picture('federated-follow-request','Federated mode: a follow request from another server in the notifications, with Approve and Decline (the answer supplied by the suite)')
+    click('.ntf-panel [data-act=req-approve]')
+    check('Approve answers the request, and it leaves the list',lambda: 'PUT fed/requests/7' in js('return window.__calls') and not js("return document.querySelector('[data-act=req-approve]')"),lambda: js('return window.__calls'))
+    # A handle of 200 characters with no break in it wraps inside the 380 px panel rather than scroll it sideways.
+    js("window.__fed.items=[{id:902,kind:'follow',actorId:8,postId:0,commentId:0,rootId:0,text:'',read:false,created:new Date().toISOString()}]")
+    if js("return !!document.querySelector('.ntf-panel')"): click('[data-act=bell]')  # closed first, so the next press opens it and reads the bell again
+    click('[data-act=bell]')
+    wide=lambda: js("const p=document.querySelector('.ntf-panel');return p&&p.innerText.includes('@long.example')?[p.scrollWidth,p.clientWidth]:null")
+    check('a handle of 200 characters wraps in the bell: the panel does not scroll sideways',lambda: (lambda v: bool(v) and v[0]<=v[1])(wide()),wide)
+    load(BASE)
+    api(op,'me',{'federates':False},'PUT');api(op,'flags',{'flags':{'follows':False}},'PUT')
+    load(BASE)
+
     # A member whose name ends with a dot is warned when they opt in.
     jar=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     api(jar,'signup',{'username':'spin.','password':'flowa-test-only'})
@@ -438,7 +518,7 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==14)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==16)
     else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.

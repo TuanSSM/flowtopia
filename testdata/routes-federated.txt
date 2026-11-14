@@ -3,14 +3,19 @@
 # 5.4; the actors, the public pages and their pictures, 5.5, 5.6, 6.5 and 9.4; a post's Create, the
 # outboxes and the collections, 6.2 and 6.4; the search by handle a member makes, 5.3 and 11; the
 # federation page of the admin area with the domain policies, section 10 and FMD 1; the inboxes, section 7
-# and FWR 1.
+# and FWR 1; a remote account's profile, following it, blocking it and the follow requests, 6.4 and 11, FWR 3.
 # TestDBFederatedRoutes holds the table to it.
 DELETE /api/admin/federation/domains/{domain}
+DELETE /api/fed/accounts/{id}/block
+DELETE /api/fed/accounts/{id}/follow
+DELETE /api/fed/requests/{id}
 GET /.well-known/nodeinfo
 GET /.well-known/webfinger
 GET /actor
 GET /actor/outbox
 GET /api/admin/federation
+GET /api/fed/accounts/{id}
+GET /api/fed/requests
 GET /nodeinfo/2.1
 GET /users/{name}
 GET /users/{name}/avatar.jpg
@@ -29,3 +34,6 @@ POST /inbox
 POST /users/{name}/inbox
 PUT /api/admin/federation/domains/{domain}
 PUT /api/admin/federation/policy
+PUT /api/fed/accounts/{id}/block
+PUT /api/fed/accounts/{id}/follow
+PUT /api/fed/requests/{id}

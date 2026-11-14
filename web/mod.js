@@ -394,18 +394,18 @@ function fedInboxHTML(n) {
       <div><h3 class="small">Dropped, by type (not acted on in this version)</h3>${list(n.dropped, 'None yet.')}<h3 class="small">Refused, by reason</h3>${list(n.refused, 'None yet.')}</div></div></section>`;
 }
 // The delivery queue's numbers (docs/federation.md 8 and 14.2): what waits to be sent to other servers, what was
-// sent and given up, and the servers that do not answer. Nothing in this version sends an activity yet (follows
-// come next), so on a running instance these stay at none until then.
+// sent and given up, and the servers that do not answer. In this version what is sent is follows and their answers
+// (FWR 3); posts come later.
 function fedOutHTML(n) {
   if (!n) return '';
   const age = s => s < 120 ? `${s} seconds` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
   const since = n.since ? `since the last start, ${esc(fmtWhen(n.since))}` : 'in the last 24 hours';
   const c = n.counts || {}, num = v => `<span class="num">${(v || 0).toLocaleString()}</span>`;
-  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Nothing is sent yet in this version</span></div>
+  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Follows and their answers in this version</span></div>
     ${n.clockJumped ? '<p class="notice warn">Waiting for the clock: deliveries older than 4 days wait, which the retries cannot leave, so this server\'s clock may have jumped forward. They are held for an hour, and nothing is cleared meanwhile; if the clock is right (the server was off that long), they are then given up.</p>'
     : n.clockWaiting ? '<p class="notice warn">Waiting for the clock: this server\'s clock is earlier than its build or than the newest time its database holds, so nothing is signed or sent until it is set.</p>' : ''}
     ${n.paused ? `<p class="notice warn">Sending is off under Features: what waits stays queued${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
-    <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'post waits' : 'posts wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
+    <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'activity waits' : 'activities wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
     <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p></section>`;
 }
 // Filled in by the dashboard and skill map editor further down.

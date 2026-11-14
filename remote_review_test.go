@@ -355,6 +355,19 @@ func TestDBEvictionCoversReferences(t *testing.T) {
 	for _, ref := range userRefs {
 		listed[ref.table+"."+ref.column] = true
 	}
+	// The references whose rows go with a remote account (userRefsGoing, FWR 3) are listed apart: the bound need not
+	// keep the account for them, and they must cascade.
+	for _, ref := range userRefsGoing {
+		if listed[ref.table+"."+ref.column] {
+			t.Errorf("%s.%s is in both userRefs and userRefsGoing", ref.table, ref.column)
+		}
+		listed[ref.table+"."+ref.column] = true
+		var rule string
+		if err := r.a.db.QueryRow(`SELECT c.confdeltype FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+			WHERE c.contype = 'f' AND c.confrelid = 'users'::regclass AND c.conrelid = $1::regclass AND a.attname = $2`, ref.table, ref.column).Scan(&rule); err != nil || rule != "c" {
+			t.Errorf("%s.%s does not go with its account (ON DELETE %q, %v)", ref.table, ref.column, rule, err)
+		}
+	}
 	seen := map[string]bool{}
 	for rows.Next() {
 		var table, column string
