@@ -12717,7 +12717,7 @@ var migrations = []string{schema, schemaSocial,
 	`ALTER TABLE posts ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'local';
 	ALTER TABLE posts DROP CONSTRAINT IF EXISTS posts_audience;
 	ALTER TABLE posts ADD CONSTRAINT posts_audience CHECK (audience IN ('local', 'public', 'unlisted', 'followers')) NOT VALID;
-	CREATE INDEX IF NOT EXISTS posts_public ON posts (user_id, id DESC) WHERE audience = 'public' AND hidden_at IS NULL;
+	CREATE INDEX IF NOT EXISTS posts_public ON posts (user_id, id DESC) WHERE audience = 'public' AND hidden_at IS NULL AND kind = 'post';
 	CREATE TABLE IF NOT EXISTS retired_usernames (
 		username TEXT PRIMARY KEY,
 		retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
