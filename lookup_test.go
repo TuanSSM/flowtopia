@@ -520,14 +520,33 @@ func TestDBResolveHandle(t *testing.T) {
 	if n := w.total() - before; n > lookupFetches*(1+maxRedirects) || n != 13 {
 		t.Errorf("every step: %d requests, want 13 (at most %d)", n, lookupFetches*(1+maxRedirects))
 	}
+	// The longest way of all (the review's M1): the same, with the actor's key at an address of its own, which
+	// the cache fetches inside remoteActor. lookupFetches requests through the fetcher, and no more.
+	keyA, _ := sigTestKeys()
+	k := "https://remote.example/users/kay"
+	person(w, k, "kay", map[string]any{"publicKey": k + "/key#main"})
+	kb, _ := json.Marshal(map[string]any{"id": k + "/key#main", "owner": k, "publicKeyPem": pemOf(&keyA.PublicKey)})
+	w.put(k+"/key", worldDoc{body: kb})
+	putWF(w, "remote.example", "acct:kay@remote.example", "acct:kay@moved.example", k)
+	putWF(w, "moved.example", "acct:kay@moved.example", "acct:kay@moved.example", k)
+	w.put("https://remote.example/@kay", worldDoc{body: actorDoc(k, "kay", "", nil, nil)}) // the actor under another id
+	putWF(w, "remote.example", "https://remote.example/@kay", "acct:kay@moved.example", k)
+	outbox(w, k, noteItem(k, k+"/s/1", "kay", pub, nil, nil))
+	before = w.total()
+	if p, err := lookupOf(t, r, "https://remote.example/@kay"); err != nil || p.Handle != "kay@moved.example" || len(p.Posts) != 1 || w.hit(k+"/key") != 1 {
+		t.Errorf("the longest way: %+v %v, the key asked %d times", p, err, w.hit(k+"/key"))
+	}
+	if n := w.total() - before; n != lookupFetches {
+		t.Errorf("the longest way: %d requests, want %d", n, lookupFetches)
+	}
 	// spend stops a lookup past lookupFetches requests, whatever asks.
 	run := &lookupRun{f: r.a.fed, jrds: map[string]wfAnswer{}}
 	for i := 0; i < lookupFetches; i++ {
-		if run.spend("x") != nil {
+		if run.spend("x", 1) != nil {
 			t.Fatalf("request %d refused", i+1)
 		}
 	}
-	if err := run.spend("x"); lookupCode(err) != "notAccount" {
+	if err := run.spend("x", 1); lookupCode(err) != "notAccount" {
 		t.Errorf("request %d: %v", lookupFetches+1, err)
 	}
 

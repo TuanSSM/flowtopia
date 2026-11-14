@@ -14464,10 +14464,13 @@ const (
 	lookupsAtOnce = 4                // lookups running at once on the server; a fifth is told to try again
 	lookupPosts   = 20               // posts shown, as many as a page of Flowa's own outbox
 	// lookupFetches is the most requests one lookup sends through the fetcher, each with at most
-	// maxRedirects redirects (so at most 28 requests in all): a profile address asked as an actor, the
-	// WebFinger of the handle or of that address, the actor, the reverse WebFinger, the canonical account's
-	// WebFinger, the outbox and its first page.
-	lookupFetches = 7
+	// maxRedirects redirects (so at most 32 requests in all). The longest way: a profile address asked as an
+	// actor, which answers none (1); the WebFinger of that address (1); the actor (1) and the document of its
+	// key when the actor names its key by id at an address of its own (1: the cache's followKey, which runs
+	// inside remoteActor so that the inbox always finds the key kept); the reverse WebFinger (1); the
+	// canonical account's WebFinger (1); the outbox (1) and its first page (1). A handle saves the first; an
+	// address that is the actor saves the first, the WebFinger and the second actor fetch.
+	lookupFetches = 8
 )
 
 // lookupReason is what a member is told when a lookup finds nobody. Each has fixed words, safe to show and
@@ -14790,11 +14793,11 @@ type lookupRun struct {
 }
 
 // spend counts a request against lookupFetches; past it the lookup stops.
-func (r *lookupRun) spend(step string) error {
-	if r.fetches >= lookupFetches {
+func (r *lookupRun) spend(step string, n int) error {
+	if r.fetches+n > lookupFetches {
 		return &lookupError{Reason: lookupNotAccount, Step: step + ": too many requests"}
 	}
-	r.fetches++
+	r.fetches += n
 	return nil
 }
 
@@ -14811,7 +14814,7 @@ func (r *lookupRun) webfinger(ctx context.Context, step, resource, host string) 
 	if j, ok := r.jrds[key]; ok {
 		return j, nil
 	}
-	if err := r.spend(step); err != nil {
+	if err := r.spend(step, 1); err != nil {
 		return wfAnswer{}, err
 	}
 	res, err := r.f.actors.fetch.do(ctx, fetchReq{kind: fetchWebFinger, url: "https://" + host + "/.well-known/webfinger?resource=" + url.QueryEscape(resource), refused: r.refused()})
@@ -14827,12 +14830,15 @@ func (r *lookupRun) webfinger(ctx context.Context, step, resource, host string) 
 }
 
 // actor fetches an actor through the cache of remote actors.
+// It counts two requests: the actor's document and, at most, its key's (followKey). When there is no actor to
+// answer with, the cache never reached the key, and one is given back.
 func (r *lookupRun) actor(ctx context.Context, step, id string) (*remoteActor, error) {
-	if err := r.spend(step); err != nil {
+	if err := r.spend(step, 2); err != nil {
 		return nil, err
 	}
 	a, err := r.f.remoteActor(ctx, id)
 	if err != nil {
+		r.fetches--
 		return nil, &lookupError{Reason: lookupReasonOf(err), Step: step, err: err}
 	}
 	return a, nil
@@ -15034,7 +15040,7 @@ func ownLink(link, actorID, handle string) bool {
 // collection fetches one collection or page of the actor's, signed, and checks that its id is where it came
 // from (7.3).
 func (r *lookupRun) collection(ctx context.Context, step, id string) (*apCollection, string) {
-	if r.spend(step) != nil {
+	if r.spend(step, 1) != nil {
 		return nil, lookupPostsFailed
 	}
 	res, err := r.f.actors.get(ctx, id)
