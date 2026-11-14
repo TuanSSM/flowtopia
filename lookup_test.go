@@ -298,6 +298,12 @@ func TestDBResolveHandle(t *testing.T) {
 		noteItem(bo, "https://social.example/users/bo/statuses/2", "<p>unlisted</p>", followers, pub, map[string]any{"summary": "spoiler", "sensitive": true}),
 		noteItem(bo, "https://social.example/users/bo/statuses/3", "<p>followers only</p>", followers, nil, nil),
 		noteItem(bo, "https://other.example/statuses/4", "<p>a Note of another origin</p>", pub, nil, nil),
+		// A Create on the actor's origin wrapping a Note of another origin, and a Create of another origin
+		// wrapping a Note on the actor's origin (the review's LOW 2): each origin check on its own.
+		map[string]any{"id": "https://social.example/users/bo/statuses/11/activity", "type": "Create", "actor": bo, "to": pub,
+			"object": map[string]any{"id": "https://other.example/statuses/11", "type": "Note", "attributedTo": bo, "content": "a Note of another origin in our Create", "to": pub}},
+		map[string]any{"id": "https://other.example/statuses/12/activity", "type": "Create", "actor": bo, "to": pub,
+			"object": map[string]any{"id": "https://social.example/users/bo/statuses/12", "type": "Note", "attributedTo": bo, "content": "our Note in a Create of another origin", "to": pub}},
 		noteItem(bo, "https://social.example/users/bo/statuses/5", "<p>by someone else</p>", pub, nil, map[string]any{"attributedTo": "https://social.example/users/eve"}),
 		map[string]any{"id": "https://social.example/users/bo/statuses/6/activity", "type": "Announce", "actor": bo, "to": pub, "object": "https://else.example/1"},
 		"https://social.example/users/bo/statuses/7/activity",
@@ -1005,7 +1011,10 @@ func TestDBLookupKeepsKeyTurns(t *testing.T) {
 	rel := w.holdAt(id + "/outbox")
 	defer rel()
 	first := make(chan int, 1)
-	go func() { code, _ := r.do(ana, "POST", "/api/fed/lookup", map[string]any{"q": "held@remote.example"}); first <- code }()
+	go func() {
+		code, _ := r.do(ana, "POST", "/api/fed/lookup", map[string]any{"q": "held@remote.example"})
+		first <- code
+	}()
 	for k := ""; k != worldKey(id+"/outbox"); {
 		select {
 		case k = <-w.arrived:
