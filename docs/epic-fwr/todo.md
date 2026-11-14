@@ -188,6 +188,14 @@ route and test named below is new unless the design note says it exists.
   `TestDBQueryPlans`, `TestDBPurgeRemote`, `TestDBInboxHandlers` updated, with `-race -count=3` on two cores; the
   `federated` browser suite (the switch, the remote profile, the button's three states, a request with Approve and
   Decline; pictures `federated-remote-profile` and `federated-follow-request`).
+  After the review (federation.md 6.4, "Behind the follows switch" and the parts after it): with the `follows` flag off
+  nothing adds or accepts a follow (Follow and Accept counted and dropped, no follow out, the lock switch hidden, the actor
+  saying `manuallyApprovesFollowers`), what only removes one still acted on, the rows there were kept and nothing replayed;
+  an Undo, a Block and a 410 take the follow's notifications with it, a member keeps the newest 50 notifications from one
+  other server and 500 from all, and a notification no longer keeps a remote account in the cache (`userRefsGoing`); a
+  repeat answered at most once an hour per pair; suspending a domain ends its follows both ways; the bell names a remote
+  account by its handle and host. Tests `TestDBFollowsFlagOff`, `TestDBFollowUndoLeavesNothing`, `TestDBFollowsHeld`
+  (the review's four mutations, a real 410 through the queue, a suspension), `TestDBQueryPlans` (the trim, 81 rows).
   **Open:** the DoD's recorded Mastodon Follow and Accept fixtures (the fixtures are written from documentation, as their
   README says, since no session can reach a Mastodon server: the owner's trial, item 9, records them); `TestTwoInstances`
   is item 8's container suite (here `TestDBTwoFlowaFollow` covers the same steps in Go); the box stays unchecked until

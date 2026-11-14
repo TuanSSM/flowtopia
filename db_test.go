@@ -3882,6 +3882,9 @@ func TestDBQueryPlans(t *testing.T) {
 	plans([]planCase{
 		{"follows: a Follow in, to a member who approves by hand", followInSQL, []any{1000003, 7, "https://h3.example/f/new", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, true}, 2000, ""},
 		{"follows: a Follow in, accepted at once", followInSQL, []any{1000003, 9, "https://h3.example/f/new2", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, ""},
+		// The trim after a notification from a remote account, once per one written:
+		// the member's own notifications through notifications_user, each one's account by its primary key.
+		{"follows: trimming a member's notifications from other servers", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 2000, ""},
 	})
 	on = db
 	ftx.Rollback()

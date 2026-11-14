@@ -1377,9 +1377,41 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   among them, so a page with none costs what it did), the request notification with Approve and Decline beside it (not
   inside its link), the requests in "Following and followers", and in Home the sentence that posts of people followed on
   other servers do not show yet.
+- **Behind the follows switch** (after the review of FWR 3; 14.1 puts follows behind `federation` and `follows`). With
+  the `follows` flag off (its default, or `community` off) nothing adds or accepts a follow: the inbox counts and drops
+  Follow and Accept (202, no row, nothing sent, nobody told), and the worker drops one stored before the flag went off;
+  the member's routes answer 404 as the local ones do, so no Follow goes out; Settings hides the switch for approving by
+  hand. **What only removes a follow is still acted on** (a Reject, an Undo of a Follow or of an Accept, a Block):
+  removing is always safe, sends nothing, and keeps this server in step with the other, which has already ended it. The
+  actor says `manuallyApprovesFollowers: true` while follows are off: a Follow is then not taken at all and stays
+  "requested" on the sender's server, which is what a locked account shows there, and `false` would promise an Accept
+  that never comes; the kept actor documents are dropped when a flag changes. The rows there were stay as they were
+  (accepted follows hidden from counts and lists as local follows are while the flag is off; requests wait, and can be
+  answered when it is on again), and turning the flag on replays nothing (`TestDBFollowsFlagOff`).
+- **What a Follow and its Undo leave behind** (after the review): nothing. An Undo of a Follow, a Block and a 410 take
+  the `follow` and `follow_request` notifications of that account with the follow. What accounts of other servers leave
+  in one member's notifications is bounded, the oldest dropped: the newest 50 from one server (`remoteNotesPerHost`) and
+  500 from all of them (`remoteNotesMax`), so a server that floods pushes out only remote notifications, never a local
+  member's (`remoteNotesTrimSQL`, the member's own notifications through `notifications_user`, 81 rows read in
+  `TestDBQueryPlans`). A notification does not keep a remote account in the cache (`userRefsGoing`, apart from
+  `userRefs`): it goes with the account when the bound removes one nothing else points at, so a server cycling Follow and
+  Undo through new accounts cannot hold the cache above `remoteActorsMax` once the inbox's 7 days of de-duplication are
+  over (`TestDBFollowUndoLeavesNothing`: 50 cycles leave no follow, no notification and no account the bound cannot remove).
+- **A repeat is answered at most once an hour** per follower and followee (`followAnswerEvery`, in memory, 10,000 pairs,
+  on the delivery queue's clock): a Follow repeated while accepted, and a Follow refused again (across a block, of a
+  member who stopped federating, of the instance actor). Inside the hour it is taken with 202 and not answered; each
+  answer is a row to send. A new follow is always answered.
+- **Suspending a domain** (Admin, Federation) now ends the follows between members here and its accounts and its
+  subdomains', both ways, with their notifications, in the policy's own transaction; nothing is sent (section 10:
+  Mastodon removes them and does not restore them). Lifting the suspension does not bring them back.
+- **A member who stops sharing** their profile beyond this server keeps their remote followers' rows, and sends nothing
+  (11: turning it off sends nothing). Their actor then answers 404, so remote followers' servers see the account as not
+  found when they next fetch it, and new Follows of them are answered with Reject. Deleting an account goes out as
+  Delete(Person) with FWR 7; until then the rows go with the account and nothing is sent.
 - **Not built** (later items, or the owner's): posts from followed accounts (FWR 5), the domain policy `limit` turning
-  follows into requests (FMD), Move (PRT), removing a follower without blocking it, and approving pending requests when a
-  member turns approval by hand off (they stay requests until answered). Recorded Mastodon fixtures: the ones in
+  follows into requests (FMD), Move (PRT), Delete(Person) out on account deletion (FWR 7), removing a follower without
+  blocking it, and approving pending requests when a member turns approval by hand off (they stay requests until
+  answered). Recorded Mastodon fixtures: the ones in
   `testdata/federation/follows` are written from documentation (its README); recorded ones wait for the owner's trial.
 - Tests: `TestDBFollowsAcross`, `TestDBTwoFlowaFollow` (two instances over the real fetcher, signer, inbox and delivery
   queue: follow, accept and unfollow both ways, and approval by hand; FWR 8's container suite is the DoD's
@@ -2252,8 +2284,8 @@ the note was silent or is corrected:
   again within the 10 minute rule, which takes a new key or lifts a suspension (the embedded document is not
   stored as received: 7.3). As built (FWR 3): Follow, Accept, Reject, Undo and Block are stored too when they can be
   about a follow here (6.4, "Follows across servers, as built"). Everything else is answered 202, counted per type (the vocabulary's
-  types and Mastodon's extensions by name, any other as `other`) and dropped with no row. Nothing is answered
-  back: no Accept or Reject goes out (no delivery exists yet), so a Follow pressed on Mastodon stays requested.
+  types and Mastodon's extensions by name, any other as `other`) and dropped with no row. (Before FWR 3 nothing was
+  answered back; since, a Follow is answered with Accept or Reject as 6.4's "as built" says.)
 - **`ap_inbox`** (migration 18, with `flowa-schema17.dump`): as 9.1 with these **corrections**: unique by the
   verified signer's actor and the activity id together, not by the id alone (7.2 holds an id only to the actor's
   origin, so another account of the same server could send its own activity under the first one's id, Mastodon's

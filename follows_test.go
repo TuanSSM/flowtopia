@@ -187,11 +187,17 @@ func TestDBFollowsAcross(t *testing.T) {
 	if why := e.deliver(fixture(t, "follow.json"), e.bo()); why != inDuplicate || len(e.sent()) != 0 {
 		t.Errorf("the same Follow again: %v", why)
 	}
-	// Another Follow while accepted: one row still, the Accept sent again (6.3: the remote may have lost it), no
-	// second notification.
+	// Another Follow while accepted, within the hour: one row still, taken and not answered again (each answer is a
+	// row to send: at most one an hour for a pair, followAnswerEvery). An hour later the Accept is sent again (6.3:
+	// the remote may have lost it), with no second notification.
+	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
+	if e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, bo) != 1 || len(e.sent()) != 0 || !strings.Contains(e.outcome(), "within the hour") {
+		t.Errorf("a repeat Follow within the hour: %d rows (%s)", e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, bo), e.outcome())
+	}
+	e.clock.add(followAnswerEvery)
 	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
 	if e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, bo) != 1 || len(e.sent()) != 1 || len(e.kinds(anaID)) != 1 {
-		t.Errorf("a repeat Follow: %d rows, notifications %v (%s)", e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, bo), e.kinds(anaID), e.outcome())
+		t.Errorf("a repeat Follow an hour later: %d rows, notifications %v (%s)", e.count(`SELECT count(*) FROM follows WHERE follower_id = $1`, bo), e.kinds(anaID), e.outcome())
 	}
 
 	// The wrong actor: eve takes back bo's Follow, embedded under bo's name (dropped at the inbox: the Undo and
@@ -374,9 +380,15 @@ func TestDBFollowsAcross(t *testing.T) {
 	if e.state(bo, anaID) != "" || e.state(anaID, bo) != "" || types["Reject"] != 1 || types["Undo"] != 1 || types["Block"] != 0 || len(types) != 2 {
 		t.Errorf("the block: %q %q %v", e.state(bo, anaID), e.state(anaID, bo), types)
 	}
+	e.clock.add(followAnswerEvery) // the Accept just above answered this pair within the hour
 	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
 	if s = e.sent(); e.state(bo, anaID) != "" || len(s) != 1 || s[0].Type != "Reject" {
 		t.Errorf("a blocked account's Follow: %q %+v", e.state(bo, anaID), s)
+	}
+	// Again within the hour: refused, and not answered again.
+	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
+	if s = e.sent(); e.state(bo, anaID) != "" || len(s) != 0 {
+		t.Errorf("a blocked account's Follow again within the hour: %+v", s)
 	}
 	if code, out := e.do(ana, "PUT", fmt.Sprintf("/api/fed/accounts/%d/follow", bo), nil); code != 403 || !strings.Contains(fmt.Sprint(out["error"]), fedFollowBlocked) {
 		t.Errorf("following an account one blocked: %d %v", code, out["_raw"])
@@ -387,7 +399,7 @@ func TestDBFollowsAcross(t *testing.T) {
 	e.must(200, ana, "PUT", fmt.Sprintf("/api/fed/accounts/%d/follow", bo), nil)
 	before := len(e.kinds(anaID))
 	e.deliver(activity(boID, "Block", "https://here.example/users/ana", nil), e.bo())
-	if e.state(bo, anaID) != "" || e.state(anaID, bo) != "" || len(e.kinds(anaID)) != before {
+	if e.state(bo, anaID) != "" || e.state(anaID, bo) != "" || len(e.kinds(anaID)) > before {
 		t.Errorf("bo's Block: %q %q", e.state(bo, anaID), e.state(anaID, bo))
 	}
 	e.sent()

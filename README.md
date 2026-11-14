@@ -778,10 +778,19 @@ members), a member follows people on other servers and is followed from them ([d
 - **What is sent, and where.** Follow, Undo, Accept and Reject, each to the other account's own inbox (never a
   server's shared one), through the delivery queue (above), signed with the member's own key. An account whose
   inbox is not on its own server cannot be followed (the page says so), so a delivery meets only that server.
+- **With Follows off** (the default), nothing from another server adds or accepts a follow: a Follow or an Accept
+  is counted and dropped, no follow goes out, and Settings hides the switch for approving by hand. What only ends a
+  follow (a Reject, an Undo, a Block) is still acted on. Follows already there stay, hidden as local follows are, and
+  turning Follows on replays nothing.
 - **Bounds against a server that floods.** At most 200 requests wait for one member and 100 from the accounts
   of one server, and at most 2,000 follows of members here come from one server's accounts; past those a follow
-  is not taken and not answered. Each member may follow, unfollow, approve and decline 100 times an hour across
-  servers, and follows at most 1,000 accounts in all.
+  is not taken and not answered. A repeated Follow is answered at most once an hour. A member keeps the newest 50
+  notifications from one other server and 500 from all of them; a follow taken back takes its notification with it.
+  Each member may follow, unfollow, approve and decline 100 times an hour across servers, and follows at most 1,000
+  accounts in all.
+- **Suspending a server** under Admin, Federation ends every follow between members here and its accounts, both
+  ways, and nothing is sent to it; lifting the suspension does not bring them back.
+- **Stopping sharing** keeps remote followers but sends them nothing; their servers then find the profile gone.
 - **What the admin sees.** Admin, Federation counts follows taken by type, and "Sending to other servers" what
   was sent. `-purge-remote` removes the remote accounts' follows and requests with them.
 - **Not yet:** posts from followed accounts in Home (a later version), and the domain policy "limit" turning
