@@ -787,6 +787,77 @@ func TestDBOwnDocumentsDecode(t *testing.T) {
 	if ts, err := decodeTombstone(tb, max); err != nil || ts.ID != origin+"/users/eve" || len(ts.FormerType) != 1 || ts.FormerType[0] != "Person" || ts.BadDate {
 		t.Errorf("the Tombstone: %+v %v", ts, err)
 	}
+
+	// FRD 6: the outbox, its pages and the Creates in them, a Create at its own id, and the collections, read
+	// by decodeCollection and decodeActivity as the strict reader reads another server's.
+	collection := func(what string, b []byte, id, kind string) *apCollection {
+		t.Helper()
+		if r := apScan(b); r != 0 {
+			t.Fatalf("%s: apScan: %v", what, r)
+		}
+		c, err := decodeCollection(b, max)
+		if err != nil {
+			t.Fatalf("%s: decodeCollection: %v\n%s", what, err, b)
+		}
+		if c.ID != id || c.Kind != kind {
+			t.Errorf("%s: %+v", what, c)
+		}
+		return c
+	}
+	create := func(what string, a *apActivity, post, by string) {
+		t.Helper()
+		if a.Kind != "Create" || a.ID != post+"/activity" || a.Actor != by || !a.Audience.public() || a.Published.IsZero() || a.BadDate || len(a.Object) != 1 {
+			t.Fatalf("%s: %+v", what, a)
+		}
+		n, err := a.Object[0].note()
+		if err != nil || n.ID != post || !n.isNote() || !n.by(by) || !n.Audience.public() || n.Content == "" || !n.Published.Equal(a.Published) {
+			t.Errorf("%s: its Note %+v %v", what, n, err)
+		}
+	}
+	e.mustExec(`UPDATE posts SET audience = 'public' WHERE user_id = $1`, odd)
+	for range pubPage {
+		e.mustExec(`INSERT INTO posts (user_id, body, audience) VALUES ($1, $2, 'public')`, odd, body)
+	}
+	box := oddID + "/outbox"
+	c := collection("an outbox", get("/users/a.b-c_d.e/outbox", 200), box, "OrderedCollection")
+	if !c.HasTotal || c.TotalItems != pubPage+1 || c.First.ID != box+"?page=true" {
+		t.Errorf("an outbox: %+v", c)
+	}
+	var read []string
+	for next := c.First.ID; next != ""; {
+		p := collection("an outbox page", get(strings.TrimPrefix(next, origin), 200), next, "OrderedCollectionPage")
+		for _, it := range p.Items {
+			a, err := it.activity()
+			if err != nil {
+				t.Fatalf("an item of %s: %v", next, err)
+			}
+			create("an item of "+next, a, a.ID[:len(a.ID)-len("/activity")], oddID)
+			read = append(read, a.ID)
+		}
+		next = p.Next.ID
+	}
+	if len(read) != pubPage+1 || read[pubPage] != postID+"/activity" {
+		t.Errorf("the pages read %d Creates, the last %v", len(read), read[len(read)-1:])
+	}
+	cb := get(fmt.Sprintf("/users/a.b-c_d.e/posts/%d/activity", pid), 200)
+	if r := apScan(cb); r != 0 {
+		t.Fatalf("a Create: apScan: %v", r)
+	}
+	ca, err := decodeActivity(cb, max)
+	if err != nil {
+		t.Fatalf("a Create: decodeActivity: %v\n%s", err, cb)
+	}
+	create("a Create at its id", ca, postID, oddID)
+	e.setFlag("follows", true)
+	for _, k := range []string{"followers", "following", "featured"} {
+		c := collection(k, get("/users/a.b-c_d.e/"+k, 200), oddID+"/"+k, "OrderedCollection")
+		if !c.HasTotal || c.TotalItems != 0 || c.First.ID != "" || len(c.Items) != 0 {
+			t.Errorf("%s: %+v", k, c)
+		}
+	}
+	if c := collection("the instance actor's outbox", get("/actor/outbox", 200), origin+"/actor/outbox", "OrderedCollection"); !c.HasTotal || c.TotalItems != 0 {
+		t.Errorf("the instance actor's outbox: %+v", c)
+	}
 }
 
 // A reason reads as what it is: zero is apScan's answer for a document it accepts, never a refusal, and a

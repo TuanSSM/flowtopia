@@ -349,7 +349,7 @@ func TestNodeInfo(t *testing.T) {
 	if hd := w.Result().Header; w.Code != 200 || hd.Get("Content-Type") != `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"` || hd.Get("Access-Control-Allow-Origin") != "*" || hd.Get("Cache-Control") != discoveryKeep {
 		t.Fatalf("the document: %d %v", w.Code, hd)
 	}
-	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo","actors","notes"]}}`
+	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo","actors","notes","outbox","collections"]}}`
 	if w.Body.String() != want {
 		t.Errorf("the document:\n%s\nwant\n%s", w.Body, want)
 	}
@@ -1205,9 +1205,12 @@ func BenchmarkWebFinger(b *testing.B) {
 }
 
 // publicAddresses are the actors, the public pages and their pictures of a mode that federates (FRD 5), as
-// a visitor would ask for them, and the inboxes the actors name, which answer 405 there.
+// a visitor would ask for them, and the inboxes the actors name, which answer 405 there; and a post's
+// Create, the outboxes and the collections (FRD 6).
 var publicAddresses = []string{"/actor", "/users/ana", "/users/ana?before=5", "/users/ana/posts/1", "/users/ana/avatar.jpg", "/users/ana/avatar.png?v=1",
-	"/users/ana/posts/1/picture.jpg", "/users/ana/posts/1/picture.png", "/users/ana/inbox", "/actor/inbox"}
+	"/users/ana/posts/1/picture.jpg", "/users/ana/posts/1/picture.png", "/users/ana/inbox", "/actor/inbox",
+	"/actor/outbox", "/users/ana/outbox", "/users/ana/outbox?page=true", "/users/ana/outbox?page=true&before=5", "/users/ana/followers",
+	"/users/ana/following", "/users/ana/featured", "/users/ana/posts/1/activity"}
 
 // What a deployment that federates nothing sees is what it saw before discovery existed, headers
 // included: a few answers of a local instance (signed in and not, /api/me read and saved with a federates

@@ -2880,6 +2880,20 @@ func TestDBOneConnection(t *testing.T) {
 	}
 	asked(f.e, "/users/ana/avatar.png", "", 200)
 	asked(f.e, fmt.Sprintf("/users/ana/posts/%d/picture.jpg", f.pub), "", 200)
+	// The outbox and the collections (FRD 6), with 25 more Public posts with chips and a combo, so its first
+	// page makes 20 Creates and a second page follows; the counts with both their flags on.
+	f.e.a.db.SetMaxOpenConns(8)
+	f.e.setFlag("follows", true)
+	f.e.mustExec(`INSERT INTO posts (user_id, body, audience, data) SELECT $1, 'chips ' || g, 'public',
+		'{"tags":[{"prop":"poi","skill":"F1"},{"prop":"staff","skill":"F1"}],"combo":{"id":"c","name":"C","role":"","prop":"nunchaku","seq":["F7","F5"],"reps":[1,1]}}'
+		FROM generate_series(1, 25) g`, f.ana)
+	var older int64
+	f.e.a.db.QueryRow(`SELECT id FROM posts WHERE user_id = $1 AND audience = 'public' AND hidden_at IS NULL AND kind = 'post' ORDER BY id DESC OFFSET 19 LIMIT 1`, f.ana).Scan(&older)
+	f.e.a.db.SetMaxOpenConns(1)
+	for _, p := range []string{"/users/ana/outbox", "/users/ana/outbox?page=true", fmt.Sprintf("/users/ana/outbox?page=true&before=%d", older),
+		fmt.Sprintf("/users/ana/posts/%d/activity", f.pub), "/users/ana/followers", "/users/ana/following", "/users/ana/featured", "/actor/outbox"} {
+		asked(f.e, p, apAccept, 200)
+	}
 	f.e.a.db.SetMaxOpenConns(8)
 	// Single mode with FLOWA_FEDERATE=on: the page at / lists the owner's Public posts.
 	sf := newEnv(t)
@@ -2895,7 +2909,8 @@ func TestDBOneConnection(t *testing.T) {
 }
 
 // The public pages under load at the real pool size: 40 requests at once, at a cold names cache, for a
-// profile whose post has a chip and a combo, as pages and as documents. Every one is answered, within a
+// profile whose posts have chips and a combo, as pages and as documents, and its outbox, two of its pages,
+// a Create and its collections (FRD 6). Every one is answered, within a
 // bound the requests carry as their context, so a pool held up would show as failed answers, not a hang.
 func TestDBPublicPool(t *testing.T) {
 	f := newPubFixture(t)
@@ -2903,18 +2918,30 @@ func TestDBPublicPool(t *testing.T) {
 	e.a.db.SetMaxOpenConns(8) // as openDB sets it
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	e.setFlag("follows", true)
+	e.mustExec(`INSERT INTO posts (user_id, body, audience, data) SELECT $1, 'chips ' || g, 'public',
+		'{"tags":[{"prop":"poi","skill":"F1"},{"prop":"staff","skill":"F1"}],"combo":{"id":"c","name":"C","role":"","prop":"nunchaku","seq":["F7","F5"],"reps":[1,1]}}'
+		FROM generate_series(1, 25) g`, f.ana)
 	e.a.namesMu.Lock()
 	e.a.names = nil
 	e.a.namesMu.Unlock()
-	paths := []string{"/users/ana", fmt.Sprintf("/users/ana/posts/%d", f.pub)}
+	// The pages and documents of FRD 5, and the outbox, its pages, a Create and the collections of FRD 6.
+	paths := []string{"/users/ana", fmt.Sprintf("/users/ana/posts/%d", f.pub), "/users/ana/outbox?page=true", "/users/ana/outbox",
+		fmt.Sprintf("/users/ana/outbox?page=true&before=%d", f.pub+1), fmt.Sprintf("/users/ana/posts/%d/activity", f.pub),
+		"/users/ana/followers", "/users/ana/following", "/users/ana/featured", "/actor/outbox"}
 	codes := make([]int, 40)
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := range codes {
 		wg.Go(func() {
-			r := httptest.NewRequest("GET", paths[i%2], nil).WithContext(ctx)
+			p := paths[i%len(paths)]
+			r := httptest.NewRequest("GET", p, nil).WithContext(ctx)
 			r.RemoteAddr = "198.51.100.20:4000"
-			r.Header.Set("Accept", []string{browser, apAccept}[(i/2)%2])
+			accept := apAccept // the documents of FRD 6 send a browser on with 303
+			if i%len(paths) < 2 && (i/len(paths))%2 == 0 {
+				accept = browser
+			}
+			r.Header.Set("Accept", accept)
 			w := httptest.NewRecorder()
 			<-start
 			e.h.ServeHTTP(w, r)
@@ -2931,7 +2958,7 @@ func TestDBPublicPool(t *testing.T) {
 	}
 	for i, c := range codes {
 		if c != 200 {
-			t.Errorf("request %d (%s): %d", i, paths[i%2], c)
+			t.Errorf("request %d (%s): %d", i, paths[i%len(paths)], c)
 		}
 	}
 }
@@ -3677,6 +3704,10 @@ func TestDBQueryPlans(t *testing.T) {
 		{"the followers of a member", followersSQL, []any{followed, maxFollowList}, 600, ""},
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
 		{"the counts of a member who follows 500", followCountsSQL, []any{viewer}, 1500, ""},
+		// The public counts of a followers collection (FRD 6): the same rows of follows, and each other side's
+		// row of users by its primary key, to ask whether it may be shown.
+		{"the public counts of a member", publicFollowCountsSQL, []any{followed, false}, 600, ""},
+		{"the public counts of a member who follows 500", publicFollowCountsSQL, []any{viewer, false}, 2000, ""},
 	})
 	// The public face (migration 14, FRD 5): two members opted in, a third of 600 more posts of one of them
 	// Public, some hidden, 70,000 posts in all, 2,000 retired names and 500 keys. Each answer is one statement on an index: the gate on the unique username, the actor's
@@ -3709,6 +3740,16 @@ func TestDBQueryPlans(t *testing.T) {
 		{"public: a post", publicPostSQL, []any{"m7", false, pubPost}, 10, ""},
 		{"public: a post's picture", postPictureSQL, []any{"m7", false, pubPost}, 10, ""},
 		{"public: a profile picture", avatarSQL, []any{"m7", false}, 10, ""},
+	})
+	// The outbox and the collections (FRD 6). A page of the outbox is the profile page's statement, held
+	// above. Its count reads posts_public for the one member, so it reads the member's Public posts and none
+	// of the 400 others they wrote or anyone else's 70,000: a bound of their Public posts and a few rows for
+	// the gate. The collections' gate is the actor's, and their counts followCountsSQL, both held above.
+	pubCount := e.count(`SELECT count(*) FROM posts WHERE user_id = 7 AND audience = 'public' AND hidden_at IS NULL`)
+	plans([]planCase{
+		{"public: an outbox and its count", outboxSQL, []any{"m7", false}, float64(pubCount) + 10, ""},
+		{"public: the outbox of a member not shown", outboxSQL, []any{"m8", false}, 10, ""},
+		{"public: the outbox of a name nobody has", outboxSQL, []any{"nobody", false}, 10, ""},
 	})
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {

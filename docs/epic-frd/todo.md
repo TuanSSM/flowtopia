@@ -8,11 +8,12 @@ Commits title of the category's type. An item is checked only when its DoD holds
 
 **Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): federated mode, and
 single mode with `FLOWA_FEDERATE=on`, start since the WebFinger and NodeInfo item, and can be read since the
-actor documents item (discovery, the actors, and the profiles and Public posts of members who opted in; no
-inbox, so nobody can follow yet, and nothing is delivered); the first item waits for its Pi measurement; the guarded
-fetcher is done, and nothing calls its federation part yet; HTTP signatures are built, with no caller yet, and
-wait for their Pi measurements; WebFinger and NodeInfo are done; actor documents and public pages are done, with the post
-audience and retired names; the owner's review of the design is still asked for. 3 of 8 items done. The design note was checked against the specifications and
+actor documents item (discovery, the actors, the profiles and Public posts of members who opted in, and since the
+outbox item their outboxes and collections; no inbox, so nobody can follow yet, and nothing is delivered); the
+first item waits for its Pi measurement; the guarded fetcher is done, and nothing calls its federation part yet;
+HTTP signatures are built, with no caller yet, and wait for their Pi measurements; WebFinger and NodeInfo are
+done; actor documents and public pages are done, with the post audience and retired names; the outbox and
+collections are done; the owner's review of the design is still asked for. 4 of 8 items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -190,9 +191,50 @@ design note says it exists.
   name, 5.2). Open: the answers local mode gives after federating (410 and a
   Tombstone, 4.3), which the note does not place in this item; the instance setting to let a member be indexed
   by search engines (the pages say `noindex` until then).
-- [ ] **Outbox and collections.** A paged outbox of Create activities for Public posts; followers and
+- [x] **Outbox and collections.** A paged outbox of Create activities for Public posts; followers and
   following with public counts and pages only for the account itself; an empty featured collection.
   DoD: `TestOutboxPaging` (empty, one page, many pages, a deleted post, a This server post absent).
+  Built (federation.md 5.2, 5.5, 6.2, 6.4, 6.5, 7.6 and 11 say what and why, each in an "As built (FRD 6)"
+  paragraph): `GET /users/{name}/outbox` (an `OrderedCollection` with `totalItems` and `first`; pages of 20
+  Creates newest first, `OrderedCollectionPage` with `partOf` and `next`, no `prev`, by the profile page's cursor
+  `?page=true&before=<id>` through the same statement; every other query the 404, read whole from the raw query
+  by `docQuery`, which also holds every other new address to no query at all), `GET
+  /users/{name}/posts/{id}/activity` (the Create at its own id, the post's full address with `/activity` after it,
+  as in `https://flowa.example.org/users/ana/posts/812/activity`: `createOf`, the one function the outbox and FWR 4
+  use, to the public and cc the followers as the Note now is), `GET /users/{name}/followers` and `/following`
+  (a count only while the app shows counts, the `community` and `follows` flags both on, through the
+  predicate the app's profile asks, `followCountsShown`; counting only follows whose other side also federates,
+  opted in and not suspended, and none across a block, `publicFollowCountsSQL`; never `first`, a page or an item:
+  nobody who asks there can be the account itself, which reads its lists in the app; whether a public count
+  should include every local follower is left to the owner under F10), `GET /users/{name}/featured` and `GET
+  /actor/outbox` (empty); the
+  actor names `followers`, `following` and `featured`; `fedBuilt` and NodeInfo's parts (`outbox`, `collections`)
+  say so; a browser at any of these is sent with 303 to the page that shows the same thing; a retired name is the
+  404 there, as at its posts. Every rule of the public addresses holds through item 5's code (the gate, one 404,
+  the allowance first, HEAD, 405, `Vary: Accept`, three minutes in caches, `ensureOrigin`, no CORS). This item
+  found that a profile page cursor past 2^31 answered 500; the fix (a bigint) merged with FRD 5 (#107). When the
+  published skill names cannot be read, the shipped ones stand in for 10 s (`namesRetry`), so a failing read
+  costs one statement per prop, not one per chip and combo step of every Create on a page (80 measured without
+  it, `TestDBNamesFailingRead`). The test is `TestDBOutboxPaging` (the DB prefix
+  CI's database job selects with `-run DB`): empty, one page, many pages (20, 20, 6), a deleted and a hidden
+  post, This server posts and a milestone absent and uncounted, cursors naming other members' posts, This server
+  posts, missing posts and ids past 32 bits, every query that names no page, the browser's redirect; with
+  `TestDBCreateActivity`, `TestDBCollections` (the counts with the community flag off, followers who never
+  opted in, are suspended or opt out later, a blocked follow), `TestDBCollectionSurfaces` (each new address,
+  every case and every query that names nothing, byte for byte in both representations, HEAD, 405, the
+  allowance, refused federation), `TestDBOwnDocumentsDecode` (the outbox, its pages, the Creates and the
+  collections through `decodeCollection` and `decodeActivity`), `TestDBOneConnection` and `TestDBPublicPool`
+  (every new address on a pool of one and 40 at once on the real pool, at a cold names cache, with 25 posts with
+  chips and a combo), `TestDBQueryPlans` (`outboxSQL`: the count reads the member's Public posts through
+  `posts_public` and nothing else; `publicFollowCountsSQL`: the member's follows and each other side by its
+  key), `TestDBDefaultsUnchanged` (the new addresses in local and plain single mode) and `TestDBFederatedRoutes`
+  pass; `routes-local.txt`, `routes-single.txt`, `headers-local.txt` and `fetch_test.go` are unedited. The
+  `federated` browser suite reads the outbox, its first page, the Create, the collections and the redirect over
+  HTTP. On a 2.1 GHz Xeon through the whole server chain, `BenchmarkOutboxPage` (a full page of 20 Creates, one
+  query to a local Postgres) is about 1.7 ms, 137 KB and 1,326 allocations a request (`go test -run xxx -bench
+  OutboxPage -benchmem .`). Left for the owner: the count walks the member's Public posts (about 6 ms for 22,000
+  on that machine) because `posts_public` does not hold `kind`; adding `AND kind = 'post'` to its condition
+  would make it an index-only count.
 - [ ] **Remote actors by signed fetch.** Remote accounts as `users` rows with `domain`, and
   `ap_actors` (F5); fetches signed by the instance actor; expiry after 24 hours; a key refetched on a
   failed verification at most once in 10 minutes; negative caching; every surface that lists members
