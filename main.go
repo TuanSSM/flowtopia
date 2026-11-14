@@ -18785,6 +18785,12 @@ func (f *federation) memberActor(name string) string { return f.origin.url + "/u
 // a delivery there meets (a redirect, a 5xx, a time out, which count towards a host's circuit, 8.4) is the actor's own
 // server's, never a server an actor document merely names.
 func (f *federation) sendFollow(ctx context.Context, from keyOwner, act outFollow, to *remoteActor) error {
+	return f.sendTakingBack(ctx, from, act, to, "")
+}
+
+// sendTakingBack is sendFollow for an activity that takes back the one of id undoes (an Undo its Follow): the queue
+// never lets it reach the inbox before that one's outcome there (8.8, "Taking back").
+func (f *federation) sendTakingBack(ctx context.Context, from keyOwner, act outFollow, to *remoteActor, undoes string) error {
 	switch {
 	case f.out == nil || to.Inbox == "":
 		return errNoInbox
@@ -18796,8 +18802,8 @@ func (f *federation) sendFollow(ctx context.Context, from keyOwner, act outFollo
 	if err != nil {
 		return err
 	}
-	out, err := f.out.enqueue(ctx, from, act.ID, b, []deliveryTarget{{Actor: to.ID, Inbox: to.Inbox}})
-	if err == nil && out.Queued == 0 && !out.Duplicate {
+	out, err := f.out.enqueueUndo(ctx, from, act.ID, b, []deliveryTarget{{Actor: to.ID, Inbox: to.Inbox}}, undoes, nil)
+	if err == nil && out.Queued == 0 && !out.Duplicate && undoes == "" {
 		return errInboxRefused
 	}
 	return err
@@ -19582,8 +19588,8 @@ func (a *app) sendUndoFollow(ctx context.Context, u *user, ra *remoteActor, foll
 	if followID == "" {
 		followID = f.activityID(u.Username)
 	}
-	err := f.sendFollow(ctx, keyOwner(u.ID), outFollow{ID: f.activityID(u.Username), Type: "Undo", Actor: me,
-		Object: outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}}, ra)
+	err := f.sendTakingBack(ctx, keyOwner(u.ID), outFollow{ID: f.activityID(u.Username), Type: "Undo", Actor: me,
+		Object: outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}}, ra, followID)
 	if err != nil {
 		log.Printf("follows: an Undo for %s could not be queued: %v", ra.Domain, err)
 	}

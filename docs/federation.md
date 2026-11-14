@@ -1348,7 +1348,11 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   returns as `account`, with `view`: none, requested or following, `followsYou`, `asks`, `blocked` and `cannot`) writes
   the follow `pending` with a new activity id (`/users/{name}/activities/<16 random bytes in base32>`, 5.2; these ids
   are not served, as Mastodon's Follow ids need not be) and enqueues the Follow; it stays "Requested" until the Accept.
-  `DELETE` sends the Undo of that Follow, embedded with its id. `PUT` and `DELETE /api/fed/requests/{id}` approve and
+  `DELETE` sends the Undo of that Follow, embedded with its id. (Found in FWR 4's review: the Undo could reach the other
+  server before a Follow that met one error and waited for its next attempt, leaving a follow there that is gone here.
+  The Undo now takes back its Follow, 8.8 "Taking back": a Follow not yet sent is given up and no Undo goes, one in flight
+  holds the Undo until its lease ends. An Accept and a later Reject of the same Follow, after a block, can overtake each
+  other the same way; the Accept's id is not kept with the follow, so this is left open.) `PUT` and `DELETE /api/fed/requests/{id}` approve and
   decline a request (Accept or Reject, embedding the Follow as it came), `GET /api/fed/requests` lists them (200 at
   most), and `PUT`/`DELETE /api/fed/accounts/{id}/block` block a remote account: the follows go both ways in the
   block's statement, then a Reject for its follow of the member and an Undo for the member's follow of it; no Block is
