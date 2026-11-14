@@ -249,7 +249,21 @@ route and test named below is new unless the design note says it exists.
   `TestDBEvictionCoversReferences`, `TestDBLocalModeUnchanged` extended, with `-race -count=3` on two cores; the `social`,
   `keys` and `a11y` browser suites (the field's name, its keyboard path, the post's alt) and `federated` (the new
   sentences).
-  **Open:** a recorded Mastodon post confirming the h-card nesting and which of `name` and `summary` it writes for alt
+  After the review (federation.md 8.8 "Taking back", and 6.5's "as built" notes marked after the review): a Delete never
+  reaches an inbox before its Create's outcome there (`ap_outbox.undoes`; a Create not yet sent is given up and no Delete
+  goes, one in flight holds the Delete until its lease ends, and is given up at the Delete's send if it failed
+  meanwhile), and the same for FWR 3's Undo of a Follow; mentions read only where the content shows them (one reading,
+  `bodyMentions`, for the content, the mentions resolved and local notifications: a name inside a link is no mention, in
+  local mode too), anything shaped `@name@...` never the local name (a bad host is plain text, a host in another script
+  too), `@name@own-host` the member on both sides; a Delete the full queue refuses kept and tried again on the delivery
+  schedule; the switches asked again at the send, and turning one off drops the Creates and Updates that wait; a post
+  deleted or hidden in local mode sends its Delete at the next start that federates; the alt text counted as the server
+  counts, with a counter, and shown in the moderation queue; the Federation tab counts activities cut at 10,000
+  addresses. Tests `TestDBDeleteNeverOvertakesCreate`, `TestDBDeleteOfWaitingCreate`, `TestDBUndoNeverOvertakesFollow`,
+  `TestDBMentionInsideLinkNotAddressed`, `TestDBOutWhenQueueFull`, `TestDBOutSwitchesRechecked`,
+  `TestDBDeleteAfterLocalMode`, `TestDBNotesForStaff`, `TestMentions` and its fixtures extended.
+  **Open:** an Accept and a later Reject of the same Follow (after a block) can overtake each other at one inbox, since the
+  Accept's id is not kept; a recorded Mastodon post confirming the h-card nesting and which of `name` and `summary` it writes for alt
   text (the owner's trial, item 9); Update(Person) after `-rotate-keys`; nothing is sent when a member is suspended; the
   box stays unchecked until the owner's review merges it. For the owner (defaults built): whether a post made while a
   switch was off should go out when it comes back on (built: never), whether the alt text field belongs in local mode
