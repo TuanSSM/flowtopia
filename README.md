@@ -329,12 +329,12 @@ a value that is not such an address stops the server at start with a message tha
 `FLOWA_MODE` in `.env` says how the instance runs. Unset, empty or `local` is what Flowa has always
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
 changes. `single` is one person's own instance (below). `federated` is a community whose members can share
-their profiles with other servers; **this version of it can be read, and takes deliveries it barely acts
-on**: discovery (WebFinger and NodeInfo, under "Federation: discovery" below) and the profiles, Public posts
+their profiles with other servers; **this version of it can be read, and members can follow and be followed
+across servers**: discovery (WebFinger and NodeInfo, under "Federation: discovery" below) and the profiles, Public posts
 and outboxes of the members who opted in ("Federation: profiles and Public posts"), members can look up people
 on other servers by their handle ("Federation: people elsewhere"), and other servers can deliver to its
-inboxes ("Federation: the inbox and domain policies"), where only an account deleting itself or changing its
-profile is acted on, so nobody can follow anyone yet, and nothing is delivered. Federated mode is
+inboxes ("Federation: the inbox and domain policies"), where follows and an account deleting itself or changing
+its profile are acted on ("Federation: follows across servers"); posts are neither sent nor taken yet. Federated mode is
 experimental. Any other word stops the server at start with a message that says so, before the database is
 opened. The admin dashboard shows the mode under the version, and in a mode that federates the origin and the
 same sentence about what is served.
@@ -495,10 +495,11 @@ the original) and up to 20 of its latest public posts from its outbox, as plain 
 kept; the actor is kept in the cache of remote accounts (above). A handle on this server's own name is a
 member here, found in the database with no connection.
 
-What it does not do yet, and says so: there is no Follow (the inbox does not act on follows or posts yet, so
-nothing the account posts would show here), and no picture from another server is shown (that needs the picture cache of a
-later version; showing them straight from the other server would tell it the member's address). There is no
-full-text search of anything.
+The profile found has a Follow button and a link to its profile page here (next sections but one: "Federation:
+follows across servers"). What it does not do yet, and says so: the account's posts do not reach Home (the inbox does
+not take posts yet), and no picture from another server is shown (that needs the picture cache of a later version;
+showing them straight from the other server would tell it the member's address). There is no full-text search of
+anything.
 
 Limits: 30 lookups an hour per member (a mistyped query costs almost nothing; one that asked another server,
 or named an address Flowa refuses, costs its whole count), one at a time per member and at most 4 at once on
@@ -516,8 +517,8 @@ In local mode, and in single mode without `FLOWA_FEDERATE=on`, none of this exis
 ### Federation: discovery (WebFinger and NodeInfo)
 
 **What this version of federation does: it can be read.** Another server can ask who a member is and what
-this server is, and read the profiles and Public posts of the members who opted in (next section); the inbox
-acts on no follow yet, so nobody can follow anyone yet, and nothing is delivered. A
+this server is, and read the profiles and Public posts of the members who opted in (next section), and follow
+them ("Federation: follows across servers"); no post is sent yet. A
 member's handle is `@name@host`, where host is the name in `FLOWA_ORIGIN`. Three addresses answer, only in a
 mode that federates (in local mode they are unknown addresses, as before):
 
@@ -546,8 +547,9 @@ every server shares the proxy's allowance.
 **The member's switch.** In a mode that federates, Settings has "Beyond this server" with "Share my profile
 and Public posts beyond this server", off for everyone until they turn it on (members who were there before
 too), and the server's own sentence on what that does in this version (the handle can be found, the profile
-and the posts marked Public can be read by anyone, nobody can follow yet, nothing is sent), with a link to
-their public page. On, WebFinger finds them, and the server makes their signing key in the background (a key that could not be made
+and the posts marked Public can be read by anyone, people there can follow them and they can follow people there,
+their posts are not sent yet), with a link to their public page, and, once on, the switch "Approve followers from
+other servers by hand" ("Federation: follows across servers"). On, WebFinger finds them, and the server makes their signing key in the background (a key that could not be made
 then, because many were waiting, is made after the next start); off, WebFinger answers 404 again (another
 server may keep the earlier answer for up to five minutes). While federation is refused the card says
 sharing is unavailable, with the reason for staff, and has no switch. A name that ends with
@@ -679,8 +681,9 @@ the name exists, makes no difference to the answer.
   429, 503 with `Retry-After` when this server is busy or its clock is not set) and is counted.
 - **What is done with it.** An activity is stored once by its account and id (a repeat is answered 202 and not stored
   again) in the `ap_inbox` table and handled in the background: **only an account deleting itself** (marked
-  gone) **or changing its profile** (fetched again) is acted on. Follows, posts, replies, likes and the rest are
-  answered 202, counted by type, and dropped: they come with later versions. At most 5,000 rows wait (then
+  gone) **or changing its profile** (fetched again), and **follows** (a Follow, its Undo, an Accept or a Reject of
+  a member's follow, a Block: next section but one) are acted on. Posts, replies, likes and the rest are answered
+  202, counted by type, and dropped: they come with later versions. At most 5,000 rows wait (then
   503), 500 from one server's domain (then 429); a handled row loses its body at once and is removed after 7
   days.
 - **Behind a reverse proxy, these per-address numbers need the sender's address.** Flowa takes a request's
@@ -705,9 +708,9 @@ the name exists, makes no difference to the answer.
 
 ### Federation: sending to other servers (the delivery queue)
 
-**Built, and not used yet: nothing in this version sends an activity.** Follows, the first thing that sends, come
-next; until then the queue stays empty and its workers do not start. What is ready (the design is
-[docs/federation.md](docs/federation.md), 8.8):
+**What it sends in this version: follows.** A member's Follow and Unfollow and the answers to Follows (Accept and
+Reject) go through it ("Federation: follows across servers"); posts come later. Its workers start with the first
+activity. How it works (the design is [docs/federation.md](docs/federation.md), 8.8):
 
 - **One setting, `FLOWA_FEDERATION_WORKERS`**: how many requests to other servers may be in flight at once, a
   whole number from 1 to 8; unset is 4. It is read only in a mode that federates, and a wrong value stops the start
@@ -719,7 +722,8 @@ next; until then the queue stays empty and its workers do not start. What is rea
   A row that fails is tried again after 1, 5, 15 and 30 minutes, then 1, 2, 4, 8, 12 and 12 hours (each a fifth
   earlier or later at random), and given up after 11 attempts or 48 hours. A server that refuses the signature
   (400 or 401) is asked again at once in the other signature form, and the one it takes is remembered. A server
-  that says the inbox is gone (410) gets nothing more for it; one that refuses for another reason (any other 4xx
+  that says the inbox is gone (410) gets nothing more for it, and the account whose inbox it was stops following
+  members here; one that refuses for another reason (any other 4xx
   but 408 and 429) is not asked again; an inbox that redirects is tried again later without counting against its
   server. A server that fails 5 times within 10 minutes is left alone for 10 minutes, and one that answers 429 with
   `Retry-After` for that long (at most an hour). One that has failed for 7 days with no sign of life between (any
@@ -747,6 +751,41 @@ next; until then the queue stays empty and its workers do not start. What is rea
   within the 5 seconds a stop waits, and anything still running then is sent again after the restart (receivers
   ignore a repeat).
 - `-purge-remote` removes these rows too.
+
+### Federation: follows across servers
+
+In a mode that federates, with Follows on under Admin, Features (off by default, as for follows between
+members), a member follows people on other servers and is followed from them ([docs/federation.md](docs/federation.md),
+6.3, 6.4 and "As built (FWR 3)"). Follows between members of this Flowa work exactly as before, in every mode.
+
+- **Following someone elsewhere.** Look them up by their handle in "People elsewhere" on the timeline, then press
+  Follow there or on their profile page here ("Open the profile here"). Only a member who shares their profile
+  beyond this server can follow out (the other server reads that profile to check who asks; the page says so
+  otherwise). The button says **Requested** until their server accepts, then **Unfollow**; pressing Requested
+  takes the request back. Their profile page here shows their name, handle, bio and a link to their own server,
+  and says that their posts do not show in Flowa yet. A server the admin's policy does not let in cannot be
+  followed, and the page says why in plain words; with the allowlist a fresh instance starts with, that is every
+  server until an admin allows one.
+- **Being followed from elsewhere.** A follow is accepted at once and the member is told, as for a local follow;
+  remote followers appear in the member's followers list and in the counts, with their handle and their server.
+  With **"Approve followers from other servers by hand"** on (Settings, "Beyond this server"; the actor says
+  `manuallyApprovesFollowers`), a follow from another server waits as a request: the member is told in the bell
+  with **Approve** and **Decline**, and the requests are listed with the same buttons in "Following and
+  followers" on their profile. It applies to people on other servers only: members here follow as before.
+- **Blocks.** A member blocks an account from another server on its profile page here: the follows between the
+  two end both ways (its server is sent a Reject and an Undo, never a Block, so it is not told of the block), and
+  a later follow from it is refused. A Block from another server ends the follows both ways and tells nobody.
+- **What is sent, and where.** Follow, Undo, Accept and Reject, each to the other account's own inbox (never a
+  server's shared one), through the delivery queue (above), signed with the member's own key. An account whose
+  inbox is not on its own server cannot be followed (the page says so), so a delivery meets only that server.
+- **Bounds against a server that floods.** At most 200 requests wait for one member and 100 from the accounts
+  of one server, and at most 2,000 follows of members here come from one server's accounts; past those a follow
+  is not taken and not answered. Each member may follow, unfollow, approve and decline 100 times an hour across
+  servers, and follows at most 1,000 accounts in all.
+- **What the admin sees.** Admin, Federation counts follows taken by type, and "Sending to other servers" what
+  was sent. `-purge-remote` removes the remote accounts' follows and requests with them.
+- **Not yet:** posts from followed accounts in Home (a later version), and the domain policy "limit" turning
+  follows into requests.
 
 ### What the server will connect to
 

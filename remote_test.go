@@ -1459,6 +1459,9 @@ func TestDBPurgeRemote(t *testing.T) {
 		`INSERT INTO likes (post_id, user_id) VALUES (%[3]d, %[1]d)`,
 		`INSERT INTO follows (follower_id, followee_id) VALUES (%[2]d, %[1]d)`,
 		`INSERT INTO follows (follower_id, followee_id) VALUES (%[1]d, %[2]d)`,
+		// Follows across servers (FWR 3): a request that waits, with its Follow's id, and its notification.
+		`INSERT INTO follows (follower_id, followee_id, state, ap_id) VALUES (%[4]d, %[2]d, 'pending', 'https://remote.example/f/1')`,
+		`INSERT INTO notifications (user_id, actor_id, kind) VALUES (%[2]d, %[4]d, 'follow_request')`,
 		`INSERT INTO blocks (user_id, target_id) VALUES (%[2]d, %[4]d)`,
 		`INSERT INTO notifications (user_id, actor_id, kind, post_id) VALUES (%[2]d, %[1]d, 'like', %[3]d)`,
 		`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES (%[1]d, 'post', %[3]d, 'spam')`,
@@ -1487,7 +1490,7 @@ func TestDBPurgeRemote(t *testing.T) {
 	if err := purgeWith(e.a.db, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 2 follows, 1 blocks, 1 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records. Local accounts and their posts are as they were.\n"
+	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 3 follows, 1 blocks, 2 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records. Local accounts and their posts are as they were.\n"
 	if out.String() != want {
 		t.Errorf("printed %q\nwant    %q", out.String(), want)
 	}

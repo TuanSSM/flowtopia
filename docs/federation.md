@@ -15,7 +15,8 @@ the origin, the keys, the guarded fetcher, HTTP signatures, discovery, the actor
 pages with the post audience and retired names, the outboxes and collections, remote accounts with the
 cache of remote actors, and the search by handle that calls it; a federating instance can be read, its members
 can look up people elsewhere; and as of FWR 1 with FMD 1's domain policies, an inbox that takes deliveries and
-acts only on an account deleting itself or changing its profile, 7.10). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
+acts only on an account deleting itself or changing its profile, 7.10; as of FWR 2 a delivery queue; and as of FWR 3
+follows across servers, in and out, with approval by hand, 6.4). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
 proceeds on its recommendation, and each decision says what the plan assumes meanwhile.
 
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
@@ -425,6 +426,13 @@ As built (FWR 1): the sentence now ends "..., and takes deliveries from other se
 servers the admin's domain policy lets in, and only while the Federation switch is on) but acts only on an account
 deleting itself or changing its profile: follows, posts, replies and likes sent to it are counted and dropped, so
 nobody can follow anyone yet, and nothing is delivered", and the parts add `inbox` (7.10).
+
+As built (FWR 3): the sentence now ends "..., and takes deliveries from other servers at its inboxes (only from the
+servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their
+answers and on an account deleting itself or changing its profile, so members can follow people on other servers and
+be followed from them (approving each follower by hand when they choose), and sends those follows, answers and
+unfollows; posts, replies and likes sent to it are counted and dropped, and no post is sent yet", and the parts add
+`follows` (6.4, "Follows across servers, as built").
 
 ### 4.2 What each mode means for every surface
 
@@ -1281,6 +1289,103 @@ As built (FRD 6): nothing is sent yet, but the Create(Note) of the first row is 
 the outbox and at its id (`/users/{name}/posts/{id}/activity`, 5.2's correction): to the public collection, cc
 the author's followers, as 6.7 says; FWR 4 adds the mentioned actors to `cc` of the Create and its Note
 together, in that one function.
+
+#### Follows across servers, as built (FWR 3)
+
+"federation: follows across servers" in `main.go`, migration 20 (with `flowa-schema19.dump` for the restore drill).
+What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
+
+- **The data** (9.1, 9.2, F5): a remote account is a `users` row, so a follow across servers is a row of `follows`
+  as a local one is, with `state` (`pending` or `accepted`, default `accepted`, so every local row there was is
+  accepted with no rewrite; the check `follows_state` is added `NOT VALID`) and `ap_id`, the Follow's id.
+  `users.locked` is a member's choice to approve followers from other servers by hand. Indexes: `follows_pending
+  (followee_id, created_at) WHERE state = 'pending'` (a member's requests) and `users_remote_domain (domain) WHERE
+  domain <> ''` (a sending host's accounts, for its caps). An older build after `./deploy.sh --rollback` reads a
+  pending remote follow as a follow (14.4); nothing is rewritten, so the rollback is not blocked.
+- **One rule for counts and lists** (F10, as built in FRD 6): every count and list of follows (`followCountsSQL`,
+  `followersSQL`, `followingSQL`, `homeSQL`, `publicFollowCountsSQL`) counts accepted follows only; a request that
+  waits is in none of them. The public count of the followers and following collections counts the follows whose
+  other side is itself public beyond this server (`publicSide`): a member who may be shown (`publicMember`'s
+  condition), or a remote account no moderator suspended here, since its own server already shows its follows.
+  The app's counts are unchanged for local follows.
+- **Approval by hand applies to followers from other servers only.** The design does not say whether a local
+  member's follow becomes a request; follows between members are kept exactly as they were in every mode (FWR 3's
+  rule), so `users.locked` holds back remote Follows alone, and Settings says so beside the switch ("Members of this
+  Flowa follow you as before"). It is shown, and `PUT /api/me` takes `locked`, only in a mode that federates; `/api/me`
+  says it inside `federation`, so local mode's key set is unchanged and the field is ignored there
+  (`TestDBLockedOnlyFederating`). The actor's `manuallyApprovesFollowers` says it.
+- **In.** The inbox (7.10) stores Follow, Accept, Reject, Undo and Block only after the origin rule and only when the
+  activity alone shows it can be about a follow here (`followShaped`): a Follow or Block of an actor id of this
+  instance, compared as written; an Accept or Reject whose embedded Follow's actor is our member and whose object (when
+  given) is the signer, or given by an id on our origin; an Undo by id, or embedding the signer's own Follow of an actor
+  here or its own Accept (ActivityPub 6.10). Everything else of those types is dropped and counted, as before. The
+  decoder now lets an Accept or a Reject embed a Follow with no id (Mastodon's id may be its own or missing; 6.3), and
+  nothing else. The worker (no fetch, one statement per turn, `followIn`):
+  - **Follow** of a member who may be shown and with no block either way: accepted and answered with Accept, or, with
+    `locked`, held `pending` with a `follow_request` notification. Answers otherwise, so the sender learns no more than
+    "refused": a member who does not federate (any more) and has a key, Reject; one with no key, nothing (no key could
+    sign the answer); a Follow across a block, Reject; of the instance actor, Reject signed by the instance actor; of a
+    name nobody has or had, nothing. A repeat while accepted is answered with Accept again and keeps one row (the row
+    takes the newest id); a repeat while pending changes nothing. A follower whose inbox is missing or not on its own
+    origin is not taken (no answer could reach it, below).
+  - **Accept** of our pending Follow: accepted. Matched by actor and object, the embedded Follow's id ignored, or by the
+    id we sent alone; an Accept by anyone but the account followed, of a Follow by someone not ours, or of a follow
+    already accepted or unknown changes nothing.
+  - **Reject**, and **Undo of an Accept** (read as a Reject, as Mastodon lists "Accept Follow" among what it undoes):
+    our follow, pending or accepted, is removed and the member told once (`follow_rejected`).
+  - **Undo of a Follow**: the signer's follow of that member goes, with its request notification; by id, only the
+    signer's own Follow of that id. **Block**: the follows between the two go both ways, nobody is told.
+- **Out.** `PUT /api/fed/accounts/{id}/follow` (the remote account by its id here, which the search by handle now
+  returns as `account`, with `view`: none, requested or following, `followsYou`, `asks`, `blocked` and `cannot`) writes
+  the follow `pending` with a new activity id (`/users/{name}/activities/<16 random bytes in base32>`, 5.2; these ids
+  are not served, as Mastodon's Follow ids need not be) and enqueues the Follow; it stays "Requested" until the Accept.
+  `DELETE` sends the Undo of that Follow, embedded with its id. `PUT` and `DELETE /api/fed/requests/{id}` approve and
+  decline a request (Accept or Reject, embedding the Follow as it came), `GET /api/fed/requests` lists them (200 at
+  most), and `PUT`/`DELETE /api/fed/accounts/{id}/block` block a remote account: the follows go both ways in the
+  block's statement, then a Reject for its follow of the member and an Undo for the member's follow of it; no Block is
+  sent (6.4). `GET /api/fed/accounts/{id}` is the remote profile page's data, from the cache alone (no fetch). The
+  profile, blocks and requests behind the `community` flag, following and requests behind `follows` too, as local
+  follows are; all only in a mode that federates (`testdata/routes-federated.txt`).
+- **Who may follow out**: a member who shares their profile beyond this server (`publicMember`), since the other server
+  verifies the member's signature against their actor, which answers only for them; not across a block; not an account
+  gone or suspended; not on a server the domain policy refuses (in allowlist mode, every server not allowed: the page
+  says so in `lookupNotAllowed`'s words); and not an account whose inbox is not on its own origin.
+- **Where it is sent.** Every Follow, Undo, Accept and Reject goes to the other actor's own inbox (6.4), never its
+  shared inbox, through `enqueue` (the only call is `sendFollow`), which applies the domain policy and the caps, and is
+  signed at the send with the member's key (the instance actor's for its own Reject). The inbox must be on the actor's
+  own origin (`inboxOwn`: `sameOrigin`, scheme, host and port whole, the rule the cache holds a key to, 7.3), so that
+  what a delivery meets there (a redirect, a 5xx, a time out, which count towards a host's circuit, 8.4) is the actor's
+  own server's; an actor naming an inbox elsewhere cannot be followed, and its Follow is not taken.
+- **Bounds against a hostile server** (section 12): at most 200 requests wait for one member (`followRequestsMax`), 100
+  from the accounts of one host (`followRequestsPerHost`), and 2,000 follows of local members come from one host's
+  accounts in any state (`followsPerHost`); past each a Follow is dropped unanswered and counted in the row's outcome.
+  The counts are in the statement that writes, each stopping at its cap (`followInSQL`), so two workers may pass one by
+  at most one row each. Per host, not per sender group: the inbox's per-group rate (3,000 deliveries in 5 minutes) bounds
+  how fast a wildcard name's hosts can add more. A member follows at most `maxFollows` (1,000) accounts, local and remote
+  together, and may follow, unfollow, approve and decline across servers 100 times an hour (`limits.fedFollows`); blocks
+  count against `limits.blocks`.
+- **410** (8.3): `goneFollower`, the delivery queue's `goneInbox`, removes the follows of local members by the remote
+  accounts whose own inbox answered 410, and their requests; a shared inbox answering 410 names no one account and removes
+  nothing. It reads `ap_actors` by inbox (at most 20,000 rows, on a 410 only).
+- **The actor cache's bound** never removes an account a follow points at either way (`follows` is in `userRefs`, both
+  columns; `TestDBEvictionCoversReferences` and `TestDBFollowsAcross`).
+- **The pages** (11): the remote profile page `#/fed/{id}` (its name in a `bdi`, its handle only when `handleNameOK`
+  passes its `preferredUsername` and otherwise its host alone, its bio as text, a link to its own server, Follow with its
+  three states, a request it made with Approve and Decline, Block, and, where its posts would be, the sentence that they
+  do not show in Flowa yet), the Follow button in "People elsewhere", remote accounts in the followers, following and
+  blocks lists and in the bell (`remote` in the user object, `markRemote`, only when an account of another server is
+  among them, so a page with none costs what it did), the request notification with Approve and Decline beside it (not
+  inside its link), the requests in "Following and followers", and in Home the sentence that posts of people followed on
+  other servers do not show yet.
+- **Not built** (later items, or the owner's): posts from followed accounts (FWR 5), the domain policy `limit` turning
+  follows into requests (FMD), Move (PRT), removing a follower without blocking it, and approving pending requests when a
+  member turns approval by hand off (they stay requests until answered). Recorded Mastodon fixtures: the ones in
+  `testdata/federation/follows` are written from documentation (its README); recorded ones wait for the owner's trial.
+- Tests: `TestDBFollowsAcross`, `TestDBTwoFlowaFollow` (two instances over the real fetcher, signer, inbox and delivery
+  queue: follow, accept and unfollow both ways, and approval by hand; FWR 8's container suite is the DoD's
+  `TestTwoInstances`), `TestDBLockedOnlyFederating`, `TestDBFollowsOneConnection`, `TestDBQueryPlans` (a Follow in at
+  845 and 258 rows read, a member's requests at 1,400), `TestDBPurgeRemote` and `TestDBInboxHandlers` updated; the
+  `federated` browser suite (the switch, the remote profile, the button's states, a request with Approve and Decline).
 
 ### 6.5 A Flowa post as a Note
 
@@ -2145,7 +2250,8 @@ the note was silent or is corrected:
   object the actor) and an Update whose object is the actor's own document, embedded and of an actor type, are
   stored; a worker marks the first's actor `gone` (FWR 7 purges what it left) and fetches the second's actor
   again within the 10 minute rule, which takes a new key or lifts a suspension (the embedded document is not
-  stored as received: 7.3). Everything else, Follow included, is answered 202, counted per type (the vocabulary's
+  stored as received: 7.3). As built (FWR 3): Follow, Accept, Reject, Undo and Block are stored too when they can be
+  about a follow here (6.4, "Follows across servers, as built"). Everything else is answered 202, counted per type (the vocabulary's
   types and Mastodon's extensions by name, any other as `other`) and dropped with no row. Nothing is answered
   back: no Accept or Reject goes out (no delivery exists yet), so a Follow pressed on Mastodon stays requested.
 - **`ap_inbox`** (migration 18, with `flowa-schema17.dump`): as 9.1 with these **corrections**: unique by the
@@ -2392,8 +2498,8 @@ corrected:
   400 in both forms is given up; a 401 in both is tried again on the schedule and does not count towards the host's
   circuit, since the host answered (any answer that does not count is a sign of life, below). 410: the row and every
   other row queued for that inbox are given up, and
-  `goneInbox` is told the inbox. **What waits for FWR 3:** "410 removes that follower" needs a table of remote
-  followers, which FWR 3 brings with the hook's body; until then the hook is empty and the rows are all that goes.
+  `goneInbox` is told the inbox. As built (FWR 3): the hook is `goneFollower`, which removes the follows of local
+  members by the accounts whose own inbox it was (6.4, "Follows across servers, as built").
   404 and any other 4xx but 408 and 429: given up. 429: tried again after its `Retry-After` when that is between 1
   minute and 12 hours, else on the schedule, not counting towards the circuit. A redirect (a delivery is never
   redirected, 7.8), with or without a `Location`: tried again on the schedule and **not** counted towards the circuit,

@@ -4,7 +4,7 @@
 
 // sending: the forms whose answer is still on its way; keys: the Idempotency-Key each unsent form
 // last used, so trying the very same thing again cannot make it twice.
-const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], draftAud: '', linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {}, lookQ: '', look: null });
+const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], draftAud: '', linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {}, lookQ: '', look: null, fedAcc: {}, requests: null });
 // owner: the account all of this belongs to (0 for a visitor); gen goes up each time it is thrown
 // away, so an answer that was asked for by the previous account is not shown to the next.
 const social = Object.assign(socialBlank(), { owner: 0, gen: 0 });
@@ -127,7 +127,8 @@ function blocksCard() {
   if (!b) loadBlocks();
   const rows = !b || b.loading ? '<div class="empty small">Loading…</div>'
     : b.error ? `<p class="small muted">${esc(b.error)}</p>`
-    : b.blocks.length ? b.blocks.map(({ user: u }) => `<div class="bm-row"><a class="grow row" href="#/u/${esc(u.username)}">${avatarHTML(u, 'sm')}<span class="grow"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a><button class="btn sm" data-act="unblock" data-id="${u.id}" data-name="${esc(u.username)}" aria-label="Unblock @${esc(u.username)}">Unblock</button></div>`).join('')
+    : b.blocks.length ? b.blocks.map(({ user: u }) => u.remote ? `<div class="bm-row">${memberLink(u, 'grow row')}<button class="btn sm" data-act="fed-unblock" data-id="${u.remote.id}" aria-label="Unblock ${esc(whoName(u))}">Unblock</button></div>`
+      : `<div class="bm-row"><a class="grow row" href="#/u/${esc(u.username)}">${avatarHTML(u, 'sm')}<span class="grow"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a><button class="btn sm" data-act="unblock" data-id="${u.id}" data-name="${esc(u.username)}" aria-label="Unblock @${esc(u.username)}">Unblock</button></div>`).join('')
       + (b.total > b.blocks.length ? `<p class="tiny" style="margin-top:8px">The ${b.blocks.length} latest of ${b.total.toLocaleString()} blocks are shown. The others hold too.</p>` : '')
     : '<p class="small muted">You have not blocked anyone.</p>';
   return `<div class="card span-2" id="blocks-card"><div class="card-h"><h2 class="grow" tabindex="-1">Blocked accounts</h2>${b?.blocks ? `<span class="sub num">${b.total}</span>` : ''}</div>
@@ -161,14 +162,102 @@ function followsCard() {
   const f = social.follows;
   if (!f) loadFollows();
   const list = (d, key, none) => !d ? '<div class="empty small">Loading…</div>' : d[key].length
-    ? d[key].map(({ user: u }) => `<a class="bm-row" href="#/u/${esc(u.username)}">${avatarHTML(u, 'sm')}<span class="grow"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a>`).join('')
+    ? d[key].map(({ user: u }) => memberLink(u, 'bm-row')).join('')
       + (d.total > d[key].length ? `<p class="tiny" style="margin-top:8px">The ${d[key].length} latest of ${d.total.toLocaleString()} are shown.</p>` : '')
     : `<p class="small muted">${none}</p>`;
   const body = f?.error ? `<p class="small muted">${esc(f.error)}</p>`
     : `<h3 class="small">Following</h3>${list(f?.following, 'following', 'You do not follow anyone yet. Follow someone from their profile.')}
       <h3 class="small" style="margin-top:12px">Followers</h3>${list(f?.followers, 'followers', 'Nobody follows you yet.')}`;
   return `<div class="card" id="follows-card"><div class="card-h"><h2 class="grow">Following and followers</h2></div>
-    <p class="tiny" style="margin-bottom:10px">Only you see these lists. Others see how many.</p>${body}</div>`;
+    <p class="tiny" style="margin-bottom:10px">Only you see these lists. Others see how many.</p>${requestsHTML()}${body}</div>`;
+}
+// A member as a link to their profile: a local one at #/u/name, an account on another server at #/fed/id with its
+// handle as the server proved it could be shown (remote.handle) and its host apart, never its raw name.
+const whoName = u => u.remote ? (u.displayName || u.remote.handle || u.remote.host) : (u.displayName || u.username);
+function memberLink(u, cls) {
+  if (!u.remote) return `<a class="${cls}" href="#/u/${esc(u.username)}">${avatarHTML(u, 'sm')}<span class="grow"><b>${esc(u.displayName || u.username)}</b><span class="tiny">@${esc(u.username)}</span></span></a>`;
+  return `<a class="${cls}" href="#/fed/${u.remote.id}">${avatarHTML(u, 'sm')}<span class="grow"><b><bdi>${esc(whoName(u))}</bdi></b><span class="tiny">${u.remote.handle ? handleHTML(u.remote.handle) : `on ${esc(u.remote.host)}`}</span></span></a>`;
+}
+// Follow requests from other servers (fed.requests), for a member who approves followers by hand: each with
+// Approve and Decline. Shown in the follows card, and in the notification each request came with.
+async function loadRequests() {
+  social.requests = { loading: true };
+  const r = await api('fed/requests');
+  social.requests = r.ok ? r.data : { error: r.error, requests: [] };
+  render();
+}
+const reqButtons = (id, label) => `<span class="row" style="gap:6px"><button class="btn sm primary" data-act="req-approve" data-id="${id}" aria-label="Approve ${esc(label)}">Approve</button><button class="btn sm" data-act="req-decline" data-id="${id}" aria-label="Decline ${esc(label)}">Decline</button></span>`;
+function requestsHTML() {
+  if (!fed || !flags.follows) return '';
+  const q = social.requests;
+  if (!q) { loadRequests(); return ''; }
+  if (q.loading || !q.requests?.length) return '';
+  return `<h3 class="small" id="req-h">Follow requests</h3><p class="tiny">People on other servers who asked to follow you. They follow you once you approve.</p>
+    <div class="req-list" aria-labelledby="req-h">${q.requests.map(({ user: u }) => `<div class="bm-row">${memberLink(u, 'grow row')}${reqButtons(u.remote?.id || u.id, whoName(u))}</div>`).join('')}</div>`;
+}
+async function answerRequest(id, approve) {
+  const r = await api('fed/requests/' + id, approve ? 'PUT' : 'DELETE');
+  if (!r.ok && r.status !== 404) { toast(r.error); return; }
+  social.requests = null; social.follows = null;
+  for (const k in social.fedAcc) if (social.fedAcc[k]?.account?.id === id) delete social.fedAcc[k];
+  toast(!r.ok ? r.error : approve ? 'Approved. They follow you now.' : 'Declined. They do not follow you.');
+  await loadNotifs(); render();
+  ($('[data-act=req-approve]') || $('#follows-card h2') || $('#fed-h'))?.focus();
+}
+// Follows of accounts on other servers (fed): the button has three states, Follow, Requested (until their
+// server's Accept arrives; pressing it takes the request back) and Unfollow.
+function fedFollowBtn(id, view) {
+  if (!flags.follows || !view) return '';
+  if (view.follow === 'following') return `<button class="btn sm" data-act="fed-unfollow" data-id="${id}">${icon('check')}Unfollow</button>`;
+  if (view.follow === 'requested') return `<button class="btn sm" data-act="fed-unfollow" data-id="${id}" aria-label="Requested. Take the follow request back">${icon('send')}Requested</button>`;
+  if (view.cannot) return `<p class="tiny fed-cannot">${esc(view.cannot)}</p>`;
+  return `<button class="btn sm primary" data-act="fed-follow" data-id="${id}">${icon('plus')}Follow</button>`;
+}
+async function setFedFollow(id, on) {
+  const r = await api(`fed/accounts/${id}/follow`, on ? 'PUT' : 'DELETE');
+  if (!r.ok) { toast(r.error); return; }
+  const a = social.fedAcc[id];
+  if (a?.view) a.view = r.data.view;
+  if (social.look?.result?.account === id) social.look.result.view = r.data.view;
+  social.follows = null;
+  render(); drawLook();
+  toast(on ? 'Follow request sent. It shows as requested until their server accepts it.' : r.data.sent === false ? 'You no longer follow them here; their server could not be told yet.' : 'You no longer follow them.');
+  $(`[data-act=${r.data.view.follow === 'none' ? 'fed-follow' : 'fed-unfollow'}][data-id="${id}"]`)?.focus();
+}
+async function setFedBlock(id, on) {
+  if (on && !confirm('Block this account?\n\nIt can no longer follow you, and you stop following each other. Its server is told that the follows ended, not that you blocked it.')) return;
+  const r = await api(`fed/accounts/${id}/block`, on ? 'PUT' : 'DELETE');
+  if (!r.ok) { toast(r.error); return; }
+  delete social.fedAcc[id]; Object.assign(social, { blocks: null, follows: null, requests: null });
+  render(); loadNotifs(); toast(on ? 'Blocked.' : 'Unblocked.');
+}
+async function loadFedAccount(id) {
+  social.fedAcc[id] = { loading: true };
+  const r = await api('fed/accounts/' + id);
+  social.fedAcc[id] = r.ok ? r.data : { error: r.error };
+  render();
+}
+// A remote account's profile here (#/fed/id): what the cache keeps of it, as text, with Follow, its requests
+// and Block. Its posts do not show in Flowa yet, and the page says so where they would be.
+function pageFedAccount(id) {
+  id = Number(id);
+  const d = social.fedAcc[id];
+  if (!d) { loadFedAccount(id); return '<div class="empty small">Loading…</div>'; }
+  if (d.loading) return '<div class="empty small">Loading…</div>';
+  if (d.error) return `<div class="empty">${esc(d.error)} <a href="#/timeline">Back to the timeline</a>.</div>`;
+  const p = d.account, v = d.view || {}, link = httpsOnly(p.link);
+  const state = p.state === 'gone' ? 'This account was deleted on its server.' : p.state === 'suspended' ? 'This account is suspended on its server.' : '';
+  return `<div class="card prof-head fed-prof"><div class="row wrap" style="gap:18px;align-items:flex-start">${avatarHTML({ displayName: p.name }, 'big')}
+      <div class="grow" style="min-width:220px"><h1 id="fed-h" tabindex="-1"><bdi>${esc(p.name || p.handle || p.host)}</bdi></h1>
+        <p class="muted">${p.handle ? handleHTML(p.handle) : `An account on <span class="look-host">${esc(p.host)}</span>`}${v.followsYou ? ' · follows you' : ''}</p>
+        ${state ? `<p class="notice warn">${state}</p>` : ''}
+        ${p.stale ? `<p class="notice warn">Its server did not answer lately. This is the profile as Flowa last saw it, ${esc(fmtWhen(p.stale))}.</p>` : ''}
+        ${p.locked ? '<p class="tiny">This account approves its followers by hand.</p>' : ''}
+        ${p.bio ? `<p class="prof-bio look-text" dir="auto">${esc(p.bio)}</p>` : ''}
+        ${link ? `<p class="small">${outLink(link, `See the profile on its server ${icon('ext')}`)}</p>` : ''}
+        ${v.asks ? `<div class="notice fed-asks"><p class="small">This account asked to follow you.</p>${reqButtons(p.id, p.handle || p.name)}</div>` : ''}</div>
+      <div class="row wrap" style="gap:6px">${v.blocked ? '' : fedFollowBtn(p.id, v)}<button class="btn sm" data-act="${v.blocked ? 'fed-unblock' : 'fed-block'}" data-id="${p.id}">${icon('block')}${v.blocked ? 'Unblock' : 'Block'}</button></div></div></div>
+  <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2></div><div class="empty">${esc(d.notice)}</div></div></div>`;
 }
 // A profile as the page keeps it, with whether follows were on when it was read: one read with the
 // flag in another state is read again, so turning follows on or off shows or hides its parts at once.
@@ -530,6 +619,7 @@ function lookResult() {
     ${p.locked ? '<p class="tiny">This account approves its followers by hand.</p>' : ''}
     ${p.bio ? `<p class="small look-text" dir="auto">${esc(p.bio)}</p>` : ''}
     ${link ? `<p class="small">${outLink(link, `See the profile on its server ${icon('ext')}`)}</p>` : ''}
+    ${p.account ? `<div class="row wrap" style="gap:6px">${p.view?.blocked ? '' : fedFollowBtn(p.account, p.view)}<a class="btn sm" href="#/fed/${Number(p.account)}">Open the profile here</a></div>` : ''}
     <p class="notice">${esc(p.notice)}</p>
     <h3 class="look-sub">Latest public posts</h3>
     ${posts || `<p class="small muted">${esc(p.postsNote || 'No public posts.')}</p>`}</div>`;
@@ -541,7 +631,7 @@ function pageTimeline(single, focus) {
   if (single && focus && social.focus !== Number(focus)) loadThread(Number(single), Number(focus));
   if (!focus) social.focus = 0;
   const tabs = single || !flags.follows ? '' : `<div class="seg tl-tabs" role="group" aria-label="Timeline">${[['all', 'Community'], ['home', 'Home']].map(([k, n]) => `<button class="${tab === k ? 'on' : ''}" data-act="tl-tab" data-v="${k}" aria-pressed="${tab === k}">${n}</button>`).join('')}</div>`;
-  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? 'Posts from the people you follow, and your own.' : oneProfile ? 'Your posts. Only you see them, signed in: this Flowa holds your profile alone. Your milestones post themselves; turn that off in your profile.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
+  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? `Posts from the people you follow, and your own.${fed ? ' Posts of people you follow on other servers do not show here yet.' : ''}` : oneProfile ? 'Your posts. Only you see them, signed in: this Flowa holds your profile alone. Your milestones post themselves; turn that off in your profile.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
   const empty = single ? 'That post is gone.' : tab === 'home' ? 'Your Home is empty. Follow someone from the People list or from their profile, and their posts show here with yours.' : 'Nothing here yet. Share what you worked on today.';
   return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${lead}</p></div>${tabs}</div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, empty)}</div>
@@ -587,7 +677,7 @@ async function loadNotifs() {
   renderBell();
 }
 function notifText(n) {
-  const a = social.nUsers[n.actorId], who = a ? esc(a.displayName || a.username) : 'Someone';
+  const a = social.nUsers[n.actorId], who = a ? (a.remote ? `<bdi>${esc(whoName(a))}</bdi>` : esc(a.displayName || a.username)) : 'Someone';
   switch (n.kind) {
     case 'like': return `<b>${who}</b> liked your post`;
     case 'comment': return `<b>${who}</b> commented on your post`;
@@ -595,6 +685,8 @@ function notifText(n) {
     case 'reply': return `<b>${who}</b> replied to your comment`;
     case 'comment_like': return `<b>${who}</b> liked your comment`;
     case 'follow': return `<b>${who}</b> followed you`;
+    case 'follow_request': return `<b>${who}</b> asked to follow you`;
+    case 'follow_rejected': return `<b>${who}</b> did not accept your follow, or ended it`;
     case 'achievement': { const b = badgeByKey(n.text); return `Achievement unlocked: <b>${esc(b?.name || n.text)}</b>`; }
     default: return esc(localTimes(n.text)); // a mute or suspension carries its end time
   }
@@ -602,7 +694,10 @@ function notifText(n) {
 function bellHTML() {
   if (!me || !me.onboarded || !flags.community) return '';
   const st = loaded && flags.game ? streakInfo() : { atRisk: false }, n = social.unread + (st.atRisk ? 1 : 0);
-  const items = social.notifs.map(n => `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : n.kind === 'follow' ? '#/u/' + esc(social.nUsers[n.actorId]?.username || '') : n.kind === 'moderation' ? '#/profile' : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : n.kind === 'moderation' ? `<span class="badge-ic sm">${icon('shield')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
+  // A request from another server is not a link but a row with Approve and Decline (buttons cannot sit in a link).
+  const actorRef = n => { const u = social.nUsers[n.actorId]; return u?.remote ? '#/fed/' + u.remote.id : '#/u/' + esc(u?.username || ''); };
+  const items = social.notifs.map(n => n.kind === 'follow_request' && social.nUsers[n.actorId]?.remote ? `<div class="ntf ${n.read ? '' : 'unread'}">${avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small"><a href="${actorRef(n)}" data-act="ntf-go" data-id="${n.id}">${notifText(n)}</a></span><span class="tiny">${ago(n.created)}</span>${flags.follows ? reqButtons(social.nUsers[n.actorId].remote.id, whoName(social.nUsers[n.actorId])) : ''}</span></div>`
+    : `<a class="ntf ${n.read ? '' : 'unread'}" href="${n.postId ? '#/post/' + n.postId + (n.commentId ? '/' + n.commentId : '') : ['follow', 'follow_request', 'follow_rejected'].includes(n.kind) ? actorRef(n) : n.kind === 'moderation' ? '#/profile' : '#/achievements'}" data-act="ntf-go" data-id="${n.id}">${n.kind === 'achievement' ? `<span class="badge-ic on sm">${icon(badgeByKey(n.text)?.icon || 'medal')}</span>` : n.kind === 'moderation' ? `<span class="badge-ic sm">${icon('shield')}</span>` : avatarHTML(social.nUsers[n.actorId], 'sm')}<span class="grow"><span class="small">${notifText(n)}</span><span class="tiny">${ago(n.created)}</span></span></a>`).join('');
   const panel = !social.nOpen ? '' : `<div class="ntf-panel" role="dialog" aria-label="Notifications" tabindex="-1"><div class="row" style="padding:10px 12px 6px"><b class="grow">Notifications</b>${social.unread ? `<button class="btn sm" data-act="ntf-read-all">Mark all read</button>` : ''}</div>
     ${st.atRisk ? `<a class="ntf unread" href="#/practice" data-act="ntf-go"><span class="flame lit sm">${icon('flame')}</span><span class="grow"><span class="small"><b>Your ${st.current}-day streak ends tonight.</b> Log today’s practice to keep it.</span></span></a>` : ''}
     ${items || '<div class="empty small" style="margin:8px">Nothing yet. Likes, comments, replies, mentions and achievements show up here.</div>'}</div>`;
@@ -676,6 +771,12 @@ document.addEventListener('click', async e => {
     case 'block': setBlock(id, d.name, true); break;
     case 'unblock': setBlock(id, d.name, false); break;
     case 'follow': setFollow(id, d.name, true); break;
+    case 'fed-follow': setFedFollow(id, true); break;
+    case 'fed-unfollow': setFedFollow(id, false); break;
+    case 'fed-block': setFedBlock(id, true); break;
+    case 'fed-unblock': setFedBlock(id, false); break;
+    case 'req-approve': answerRequest(id, true); break;
+    case 'req-decline': answerRequest(id, false); break;
     case 'unfollow': setFollow(id, d.name, false); break;
     case 'tl-tab': {
       // The page is drawn again when the posts arrive, so the button pressed takes the focus after that.

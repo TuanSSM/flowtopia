@@ -6,7 +6,7 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), and the delivery queue is built with no caller yet (item 2, its fan-out on the Pi left to the owner). 0 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), the delivery queue is built (item 2, its fan-out on the Pi left to the owner), and follows across servers are built (item 3, the recorded Mastodon fixtures left to the owner's trial). 0 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -159,6 +159,41 @@ route and test named below is new unless the design note says it exists.
   approval by hand (`users.locked`, `manuallyApprovesFollowers`); follow request notifications with
   Approve and Decline. DoD: `TestDBFollowsAcross` with the recorded Mastodon Follow and Accept fixtures;
   `TestTwoInstances` covers follow, accept and unfollow.
+  Built (federation.md 6.4, "Follows across servers, as built (FWR 3)", says what and why; migration 20 with
+  `flowa-schema19.dump`): `follows.state` and `follows.ap_id`, `users.locked`, `follows_pending` and
+  `users_remote_domain`; Follow, Accept, Reject, Undo (of a Follow, and of an Accept read as a Reject) and Block in, each
+  stored only after the origin rule and when it can be about a follow here (`followShaped`), matched by actor and object
+  (an Accept's embedded Follow by any id or none, as Mastodon may send it; by id alone only the id we sent), idempotent on
+  repeats; a Follow of a member who may be shown accepted at once with Accept, or held as a request with a
+  `follow_request` notification when the member approves by hand; Reject for a member who does not federate and has a
+  key, for a Follow across a block and for the instance actor, nothing for a name nobody has; Follow, Undo, Accept and
+  Reject out through `enqueue` alone (`sendFollow`), to the actor's own inbox, signed with the member's key, and only to an
+  inbox on the actor's own origin; "Requested" until the Accept; the routes `GET /api/fed/accounts/{id}`, `PUT` and `DELETE`
+  of its `follow` and `block`, `GET /api/fed/requests`, `PUT` and `DELETE /api/fed/requests/{id}` (`limits.fedFollows`, 100
+  an hour); the Settings switch "Approve followers from other servers by hand" only in a mode that federates (local
+  follows unchanged: the design is silent, so the lock holds back remote followers alone), `manuallyApprovesFollowers` in
+  the actor; the remote profile page `#/fed/{id}`, the Follow button in People elsewhere and on that page with its three
+  states, remote accounts in the followers, following and blocks lists and the bell with their handle shown only when
+  `handleNameOK` passes it, the requests list and the request notification with Approve and Decline, the sentence in Home
+  and on the remote profile that remote posts do not show yet; a block of a remote account ending both follows with Reject
+  and Undo (no Block sent), a Block in ending both; `goneInbox` (`goneFollower`) removing the follows of the account whose
+  own inbox answered 410; caps of 200 requests per member, 100 per sending host and 2,000 follows per sending host; one rule
+  for counts (accepted only; the public count's other side a member who may be shown or a remote account, `publicSide`);
+  `follows` in `userRefs`, so a followed or following actor is never evicted; `fedBuilt` and NodeInfo's `follows`.
+  Tests: `TestDBFollowsAcross` (every path above with the documentation-derived fixtures of
+  `testdata/federation/follows`: repeats, the wrong actor, an object not ours, request, approve, decline, Undo of Accept,
+  block both ways, members not federating, the caps, an inbox on another host, 410, eviction, the lists and a hostile
+  name), `TestDBTwoFlowaFollow` (two Flowa instances over the real fetcher, signer, inbox and delivery queue: follow,
+  accept and unfollow both ways, and approval by hand), `TestDBLockedOnlyFederating`, `TestDBFollowsOneConnection`,
+  `TestDBQueryPlans`, `TestDBPurgeRemote`, `TestDBInboxHandlers` updated, with `-race -count=3` on two cores; the
+  `federated` browser suite (the switch, the remote profile, the button's three states, a request with Approve and
+  Decline; pictures `federated-remote-profile` and `federated-follow-request`).
+  **Open:** the DoD's recorded Mastodon Follow and Accept fixtures (the fixtures are written from documentation, as their
+  README says, since no session can reach a Mastodon server: the owner's trial, item 9, records them); `TestTwoInstances`
+  is item 8's container suite (here `TestDBTwoFlowaFollow` covers the same steps in Go); the box stays unchecked until
+  both hold and the owner's review merges it. For the owner (defaults built): whether approval by hand should hold back
+  local followers too (the design is silent; built: remote only), whether a public follower count should count every local follower
+  (F10, unchanged), and the caps' numbers.
 - [ ] **Public posts go out as notes.** Create(Note) for Public posts of members who opted in, the
   HTML of federation.md 6.5, mentions, one hashtag per prop, `flowa:tricks` and `flowa:combo` with
   the text fallback, the picture with alt text (a new field in the composer; written as both `name`

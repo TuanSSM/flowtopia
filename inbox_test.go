@@ -150,7 +150,7 @@ func (e *inboxEnv) queued() int {
 func TestInboxRefusals(t *testing.T) {
 	e := newInboxEnv(t)
 	now := func() string { return e.clock.now().UTC().Format(http.TimeFormat) }
-	body := activity(boID, "Follow", "https://here.example/users/ana", nil)
+	body := activity(boID, "Like", "https://here.example/users/ana", nil)
 	// The first delivery fetches bo's key, signed by the instance actor; the rest find it kept.
 	if w := e.post("/inbox", body, e.bo(), nil); w.Code != 202 || e.last() != inDropped {
 		t.Fatalf("a Follow from bo: %d %s (%v)", w.Code, w.Body, e.last())
@@ -224,25 +224,25 @@ func TestInboxRefusals(t *testing.T) {
 			return nil
 		}, nil, 401, inSignature, false},
 		{"an alg that is not rsa-v1_5-sha256", "/inbox", body, rfc(`sig1=("@method" "@target-uri" "content-digest");created=` + created() + `;keyid="` + boKeyID + `";alg="rsa-pss-sha512"`), nil, 401, inSignature, false},
-		{"an activity id of another origin", "/inbox", activity(boID, "Follow", "https://here.example/users/ana", map[string]any{"id": "https://other.example/activities/1"}), e.bo(), nil, 400, inForeignID, false},
+		{"an activity id of another origin", "/inbox", activity(boID, "Like", "https://here.example/users/ana", map[string]any{"id": "https://other.example/activities/1"}), e.bo(), nil, 400, inForeignID, false},
 		{"too large", "/inbox", append(append([]byte(`{"x":"`), bytes.Repeat([]byte("x"), inboxBodyMax)...), `"}`...), e.bo(), nil, 413, inTooLarge, false},
 		{"too deep", "/inbox", []byte(deep), e.bo(), nil, 400, inUndecodable, false},
-		{"too many array elements", "/inbox", activity(boID, "Follow", "https://here.example/users/ana", map[string]any{"to": json.RawMessage(wide)}), e.bo(), nil, 400, inUndecodable, false},
+		{"too many array elements", "/inbox", activity(boID, "Like", "https://here.example/users/ana", map[string]any{"to": json.RawMessage(wide)}), e.bo(), nil, 400, inUndecodable, false},
 		{"not an Activity Streams type", "/inbox", body, e.bo(), func(r *http.Request) { r.Header.Set("Content-Type", "application/json") }, 415, inType, false},
 		{"ld+json of another profile", "/inbox", body, e.bo(), func(r *http.Request) {
 			r.Header.Set("Content-Type", `application/ld+json; profile="https://example.com/other"`)
 		}, 415, inType, false},
-		{"a key of another domain that is not allowed", "/inbox", activity("https://unlisted.example/users/x", "Follow", "https://here.example/users/ana", nil), e.signer(e.key, "https://unlisted.example/users/x#main-key", sigCavage), nil, 403, inNotListed, false},
+		{"a key of another domain that is not allowed", "/inbox", activity("https://unlisted.example/users/x", "Like", "https://here.example/users/ana", nil), e.signer(e.key, "https://unlisted.example/users/x#main-key", sigCavage), nil, 403, inNotListed, false},
 		{"a key on an address", "/inbox", body, e.signer(e.key, "https://10.0.0.1/users/x#main-key", sigCavage), nil, 403, inNotListed, false},
 		// The key is bo's, and the body names someone else on bo's server: not bo's activity (7.3).
-		{"key owner not the actor", "/inbox", activity("https://social.example/users/eve", "Follow", "https://here.example/users/ana", nil), e.bo(), nil, 202, inForward, false},
+		{"key owner not the actor", "/inbox", activity("https://social.example/users/eve", "Like", "https://here.example/users/ana", nil), e.bo(), nil, 202, inForward, false},
 		// A key on another port of bo's host is never fetched (port 443 only) and so never vouches for bo.
 		{"a key on another port of the actor's host", "/inbox", body, e.signer(e.key, "https://social.example:8443/users/bo#main-key", sigCavage), nil, 401, inSignature, false},
-		{"the personal inbox of a name nobody has", "/users/nobody/inbox", activity(boID, "Follow", "https://here.example/users/nobody", nil), e.bo(), nil, 202, inDropped, false},
-		{"the instance actor's inbox", "/actor/inbox", activity(boID, "Follow", "https://here.example/actor", nil), e.bo(), nil, 202, inDropped, false},
+		{"the personal inbox of a name nobody has", "/users/nobody/inbox", activity(boID, "Like", "https://here.example/users/nobody", nil), e.bo(), nil, 202, inDropped, false},
+		{"the instance actor's inbox", "/actor/inbox", activity(boID, "Like", "https://here.example/actor", nil), e.bo(), nil, 202, inDropped, false},
 		{"replayed, first", "/inbox", replayed, e.bo(), func(r *http.Request) { replayReq = r.Clone(context.Background()) }, 202, inDropped, false},
 		// Unsigned, from an actor nobody has seen: nothing is fetched for it (the count below).
-		{"unsigned, naming an actor never seen", "/inbox", activity("https://social.example/users/zed", "Follow", "https://here.example/users/ana", nil), nil, nil, 401, inUnsigned, false},
+		{"unsigned, naming an actor never seen", "/inbox", activity("https://social.example/users/zed", "Like", "https://here.example/users/ana", nil), nil, nil, 401, inUnsigned, false},
 	} {
 		w := e.post(c.path, c.body, c.sign, c.more)
 		if w.Code != c.code || e.last() != c.why {
@@ -262,7 +262,7 @@ func TestInboxRefusals(t *testing.T) {
 	// origin rule refuses it (7.2, TestReplayAcrossDomains).
 	e.allow("other.example")
 	e.w.put("https://other.example/users/bo", worldDoc{body: actorDoc("https://other.example/users/bo", "bo", "", &e.key.PublicKey, nil)})
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.signer(e.key, "https://other.example/users/bo#main-key", sigCavage), nil); w.Code != 202 || e.last() != inForward {
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.signer(e.key, "https://other.example/users/bo#main-key", sigCavage), nil); w.Code != 202 || e.last() != inForward {
 		t.Errorf("bo's activity under a copy of bo's key on another origin: %d (%v)", w.Code, e.last())
 	}
 	if n := e.queued(); n != 0 {
@@ -282,7 +282,7 @@ func TestInboxRefusals(t *testing.T) {
 	}{{"an old date", -13 * time.Hour}, {"a future date", 2 * time.Hour}} {
 		at := e.clock.now().Add(c.by)
 		s := httpSigner(e.key, boKeyID, sigCavage, func() time.Time { return at }, time.Time{})
-		if w := e.post("/inbox", activity(boID, "Follow", "x", nil), s, nil); w.Code != 401 || e.last() != inSignature {
+		if w := e.post("/inbox", activity(boID, "Like", "x", nil), s, nil); w.Code != 401 || e.last() != inSignature {
 			t.Errorf("%s: %d (%v)", c.name, w.Code, e.last())
 		}
 	}
@@ -322,14 +322,14 @@ func TestInboxRefusals(t *testing.T) {
 
 	// Allowances: per host and per sender group once the signature verified, and per address before.
 	e.a.lim.inbox = newLimiter(1, time.Hour)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 429 || e.last() != inGroupLimit {
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil)
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 429 || e.last() != inGroupLimit {
 		t.Errorf("past the sender group's allowance: %d (%v)", w.Code, e.last())
 	}
 	e.a.lim.inbox = newLimiter(inboxGroupRate, inboxGroupWindow)
 	e.a.lim.inboxHost = newLimiter(1, time.Hour)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 429 || e.last() != inGroupLimit {
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil)
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 429 || e.last() != inGroupLimit {
 		t.Errorf("past the host's allowance: %d (%v)", w.Code, e.last())
 	}
 	e.a.lim.inboxHost = newLimiter(inboxHostRate, inboxGroupWindow)
@@ -354,7 +354,7 @@ func TestInboxRefusals(t *testing.T) {
 			t.Errorf("%q is not counted: %v", why, n.Refused)
 		}
 	}
-	if n.Dropped["Follow"] == 0 || n.Answers[inForward.String()] == 0 {
+	if n.Dropped["Like"] == 0 || n.Answers[inForward.String()] == 0 {
 		t.Errorf("the 202s are not counted: %v %v", n.Dropped, n.Answers)
 	}
 }
@@ -364,7 +364,7 @@ func TestInboxRefusals(t *testing.T) {
 // refetch; a Delete from an actor never seen dropped with no fetch.
 func TestInboxKeys(t *testing.T) {
 	e := newInboxEnv(t)
-	follow := func() []byte { return activity(boID, "Follow", "https://here.example/users/ana", nil) }
+	follow := func() []byte { return activity(boID, "Like", "https://here.example/users/ana", nil) }
 	if w := e.post("/inbox", follow(), e.bo(), nil); w.Code != 202 {
 		t.Fatalf("bo's first delivery: %d %s", w.Code, w.Body)
 	}
@@ -414,7 +414,7 @@ func TestInboxKeys(t *testing.T) {
 	// A suspended actor: no key to verify with.
 	ev := "https://social.example/users/eve"
 	e.w.put(ev, worldDoc{body: actorDoc(ev, "eve", "", &e.other.PublicKey, map[string]any{"suspended": true})})
-	if w := e.post("/inbox", activity(ev, "Follow", "x", nil), e.signer(e.other, ev+"#main-key", sigCavage), nil); w.Code != 401 {
+	if w := e.post("/inbox", activity(ev, "Like", "x", nil), e.signer(e.other, ev+"#main-key", sigCavage), nil); w.Code != 401 {
 		t.Errorf("signed with the key of a suspended actor: %d (%v)", w.Code, e.last())
 	}
 
@@ -444,7 +444,7 @@ func TestInboxKeyFetchBound(t *testing.T) {
 	c.addrFetches = newLimiter(3, time.Hour)
 	for i := range 10 {
 		id := fmt.Sprintf("https://big.example/users/x%d", i)
-		e.post("/inbox", activity(id, "Follow", "x", nil), e.signer(e.key, id+"#main-key", sigCavage), nil)
+		e.post("/inbox", activity(id, "Like", "x", nil), e.signer(e.key, id+"#main-key", sigCavage), nil)
 	}
 	if n := e.w.total(); n != 3 {
 		t.Errorf("10 distinct key ids from one address cost %d fetches, want its allowance of 3", n)
@@ -457,13 +457,13 @@ func TestInboxKeyFetchBound(t *testing.T) {
 		t.Error("forged requests spent the sender group's allowance of key fetches")
 	}
 	e.from = "198.51.100.8:4000"
-	if w := e.post("/inbox", activity("https://big.example/users/y", "Follow", "x", nil), e.signer(e.key, "https://big.example/users/y#main-key", sigCavage), nil); e.w.total() != 4 {
+	if w := e.post("/inbox", activity("https://big.example/users/y", "Like", "x", nil), e.signer(e.key, "https://big.example/users/y#main-key", sigCavage), nil); e.w.total() != 4 {
 		t.Errorf("another address, after the first ran out: %d (%v), %d fetches", w.Code, e.last(), e.w.total())
 	}
 	// The same failing key id again within 10 minutes: remembered, no fetch.
 	e.from = "198.51.100.9:4000"
 	id := "https://big.example/users/x0"
-	e.post("/inbox", activity(id, "Follow", "x", nil), e.signer(e.key, id+"#main-key", sigCavage), nil)
+	e.post("/inbox", activity(id, "Like", "x", nil), e.signer(e.key, id+"#main-key", sigCavage), nil)
 	if n := e.w.total(); n != 4 {
 		t.Errorf("a remembered failure was fetched again: %d", n)
 	}
@@ -472,12 +472,12 @@ func TestInboxKeyFetchBound(t *testing.T) {
 	c.keyFetches = newLimiter(1, time.Hour)
 	ev := "https://social.example/users/eve"
 	e.w.put(ev, worldDoc{body: actorDoc(ev, "eve", "", &e.other.PublicKey, nil)})
-	if w := e.post("/inbox", activity(ev, "Follow", "https://here.example/users/ana", nil), e.signer(e.other, ev+"#main-key", sigCavage), nil); w.Code != 202 || !c.keyFetches.over("social.example") {
+	if w := e.post("/inbox", activity(ev, "Like", "https://here.example/users/ana", nil), e.signer(e.other, ev+"#main-key", sigCavage), nil); w.Code != 202 || !c.keyFetches.over("social.example") {
 		t.Fatalf("eve's first delivery: %d (%v); the group charged %v", w.Code, e.last(), c.keyFetches.over("social.example"))
 	}
 	zed := "https://social.example/users/zed"
 	e.w.put(zed, worldDoc{body: actorDoc(zed, "zed", "", &e.other.PublicKey, nil)})
-	if w := e.post("/inbox", activity(zed, "Follow", "x", nil), e.signer(e.other, zed+"#main-key", sigCavage), nil); w.Code != 503 || e.w.hit(zed) != 0 {
+	if w := e.post("/inbox", activity(zed, "Like", "x", nil), e.signer(e.other, zed+"#main-key", sigCavage), nil); w.Code != 503 || e.w.hit(zed) != 0 {
 		t.Errorf("a new key of a group past its allowance: %d, %d fetches", w.Code, e.w.hit(zed))
 	}
 	// The unit: the address pays every request; the group is only looked at.
@@ -502,7 +502,7 @@ func TestDBInboxSlowKey(t *testing.T) {
 	release := e.w.holdAt(boID)
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		done <- e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+		done <- e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil)
 	}()
 	<-e.w.arrived
 	if n := e.a.db.Stats().InUse; n != 0 {
@@ -690,10 +690,10 @@ func TestDBInboxHandlers(t *testing.T) {
 		body []byte
 		why  inboxReason
 	}{
-		{"Follow", activity(boID, "Follow", "https://here.example/users/ana", nil), inDropped},
+		{"a Follow of an account on another server", activity(boID, "Follow", "https://elsewhere.example/users/z", nil), inDropped},
 		{"Create", activity(boID, "Create", map[string]any{"id": boID + "/notes/1", "type": "Note", "attributedTo": boID, "content": "hi"}, nil), inDropped},
 		{"Like", activity(boID, "Like", "https://here.example/users/ana/posts/1", nil), inDropped},
-		{"Undo", activity(boID, "Undo", boID+"/activities/x", nil), inDropped},
+		{"an Undo of a Like", activity(boID, "Undo", map[string]any{"id": boID + "/likes/1", "type": "Like", "actor": boID, "object": "https://here.example/users/ana/posts/1"}, nil), inDropped},
 		{"an extension type", activity(boID, "EmojiReact", "https://here.example/users/ana/posts/1", nil), inDropped},
 		{"an Update of a Person by another actor", activity(boID, "Update", map[string]any{"id": ev, "type": "Person", "inbox": ev + "/inbox"}, nil), inDropped},
 		{"an Update of a Note", activity(boID, "Update", map[string]any{"id": boID, "type": "Note"}, nil), inDropped},
@@ -829,11 +829,11 @@ func TestDBTwoFlowaInbox(t *testing.T) {
 	if err := e.a.db.QueryRow(`SELECT u.display_name FROM users u JOIN ap_actors a ON a.user_id = u.id WHERE a.ap_id = $1`, anaURL).Scan(&name); err != nil || name != "Ana B" {
 		t.Errorf("ana as here.example keeps her: %q %v", name, err)
 	}
-	// A Follow from b.example is taken and dropped: nothing is answered (no Accept or Reject goes out).
-	body := activity(anaURL, "Follow", "https://here.example/users/cyd", nil)
+	// A Like of an actor from b.example is taken and dropped: nothing is answered.
+	body := activity(anaURL, "Like", "https://here.example/users/cyd", nil)
 	sign := httpSigner(key, be.a.fed.origin.url+keyID, sigCavage, e.clock.now, time.Time{})
 	if _, err := out.do(context.Background(), fetchReq{kind: fetchDelivery, url: "https://here.example/inbox", body: body, sign: sign}); err != nil || e.last() != inDropped {
-		t.Errorf("a Follow: %v (%v)", err, e.last())
+		t.Errorf("a Like: %v (%v)", err, e.last())
 	}
 }
 
@@ -898,7 +898,7 @@ func TestDBFedConnsBound(t *testing.T) {
 func TestDBInboxTurns(t *testing.T) {
 	e := newInboxEnv(t)
 	e.q.waitFor = 20 * time.Millisecond
-	follow := func() []byte { return activity(boID, "Follow", "https://here.example/users/ana", nil) }
+	follow := func() []byte { return activity(boID, "Like", "https://here.example/users/ana", nil) }
 	for range inboxAtOnce - 1 {
 		e.q.slots <- struct{}{}
 	}
@@ -945,7 +945,7 @@ func (c countingBody) Close() error { return nil }
 func TestDBInboxFlood(t *testing.T) {
 	e := newInboxEnv(t)
 	follow := func(actor string, more map[string]any) []byte {
-		return activity(actor, "Follow", "https://here.example/users/ana", more)
+		return activity(actor, "Like", "https://here.example/users/ana", more)
 	}
 	if w := e.post("/inbox", follow(boID, nil), e.bo(), nil); w.Code != 202 {
 		t.Fatalf("bo's first delivery: %d", w.Code)
@@ -1030,7 +1030,7 @@ func TestInboxIDSquat(t *testing.T) {
 	e := newInboxEnv(t)
 	mal := "https://social.example/users/mal"
 	e.w.put(mal, worldDoc{body: actorDoc(mal, "mal", "Mal", &e.other.PublicKey, nil)})
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil)
 	upd := activity(mal, "Update", map[string]any{"id": mal, "type": "Person", "inbox": mal + "/inbox"}, map[string]any{"id": boID + "#delete"})
 	if w := e.post("/inbox", upd, e.signer(e.other, mal+"#main-key", sigCavage), nil); w.Code != 202 {
 		t.Fatalf("mal's update: %d %s %v", w.Code, w.Body, e.last())
@@ -1069,7 +1069,7 @@ func TestInboxIDSquat(t *testing.T) {
 // than the key id is not an own Delete at all, and goes on as any delivery (401 here).
 func TestInboxPeekOracle(t *testing.T) {
 	e := newInboxEnv(t)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo cached now
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil) // bo cached now
 	probe := func(x, keyID string) (int, inboxReason, string) {
 		w := e.post("/inbox", activity(x, "Delete", x, nil), e.signer(e.other, keyID, sigCavage), nil)
 		return w.Code, e.last(), w.Body.String()
@@ -1130,7 +1130,7 @@ func TestInboxPeekOracle(t *testing.T) {
 // is not an own Delete at all, and is a forward too.
 func TestInboxOwnDeleteByAnother(t *testing.T) {
 	e := newInboxEnv(t)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo known
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil) // bo known
 	mal := "https://social.example/users/mal"
 	e.w.put(mal, worldDoc{body: actorDoc(mal, "mal", "Mal", &e.other.PublicKey, nil)})
 	if w := e.post("/inbox", activity(boID, "Delete", boID, map[string]any{"id": boID + "#delete"}), e.signer(e.other, mal+"#main-key", sigCavage), nil); w.Code != 202 || e.last() != inForward {
@@ -1197,7 +1197,7 @@ func TestDBInboxKeyFollowsRow(t *testing.T) {
 // not handled again; a row of a domain suspended since it was taken is dropped, not handled or retried.
 func TestDBInboxWorkerLimits(t *testing.T) {
 	e := newInboxEnv(t)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil)
 	var bo int64
 	if err := e.a.db.QueryRow(`SELECT user_id FROM ap_actors WHERE ap_id = $1`, boID).Scan(&bo); err != nil {
 		t.Fatal(err)
@@ -1230,19 +1230,19 @@ func TestDBInboxWorkerLimits(t *testing.T) {
 // fetched, or for a decode turn, holds none, so its address's later deliveries are read and taken meanwhile.
 func TestInboxReadTurnFreed(t *testing.T) {
 	e := newInboxEnv(t)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo's key kept
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil) // bo's key kept
 	slow := "https://social.example/users/slow"
 	release := e.w.holdAt(slow)
 	done := make(chan int, 1)
 	go func() {
-		done <- e.post("/inbox", activity(slow, "Follow", "x", nil), e.signer(e.other, slow+"#main-key", sigCavage), nil).Code
+		done <- e.post("/inbox", activity(slow, "Like", "x", nil), e.signer(e.other, slow+"#main-key", sigCavage), nil).Code
 	}()
 	<-e.w.arrived
 	if len(e.q.reads) != 0 {
 		t.Errorf("%d read turns held while a key is fetched", len(e.q.reads))
 	}
 	for range inboxReadsPerAddr + 1 {
-		if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+		if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
 			t.Errorf("the same address while its key fetch waits: %d (%v)", w.Code, e.last())
 		}
 	}
@@ -1254,7 +1254,7 @@ func TestInboxReadTurnFreed(t *testing.T) {
 	}
 	e.q.waitFor = time.Hour
 	go func() {
-		done <- e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil).Code
+		done <- e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil).Code
 	}()
 	for end := time.Now().Add(10 * time.Second); e.q.waiting.Load() != 1; runtime.Gosched() {
 		if time.Now().After(end) {
@@ -1292,7 +1292,7 @@ func TestInboxUnforwardedSaidOnce(t *testing.T) {
 		}
 	}
 	for range 3 {
-		e.postFrom("127.0.0.1:1", "/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+		e.postFrom("127.0.0.1:1", "/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil)
 		e.clock.add(time.Second)
 	}
 	if n := strings.Count(logs.String(), "a trusted proxy, with no X-Forwarded-For"); n != 1 {
@@ -1352,7 +1352,7 @@ func limiterCount(l *limiter, key string) int {
 // or stored before those stages.
 func TestInboxStageOrder(t *testing.T) {
 	e := newInboxEnv(t)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil) // bo's key kept
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil) // bo's key kept
 	e.a.lim.inboxHost = newLimiter(1000, time.Hour)
 	own := func() []byte { return activity(boID, "Delete", boID, nil) } // stored when it passes everything
 	type work struct{ read, fetched, charged, rows int }
@@ -1439,7 +1439,7 @@ func TestInboxStageOrder(t *testing.T) {
 		e.clock.add(time.Second) // a fresh signature each time
 		b := own()
 		if s.stage == "the signature" { // not an own Delete, whose failure is a 202 (TestInboxPeekOracle)
-			b = activity(boID, "Follow", "https://here.example/users/ana", nil)
+			b = activity(boID, "Like", "https://here.example/users/ana", nil)
 		}
 		w := e.post("/inbox", b, s.sign, s.more)
 		after := measure()
@@ -1466,7 +1466,7 @@ func closedCh() chan struct{} { c := make(chan struct{}); close(c); return c }
 // address's allowance of key fetches and never the domain's, so bo's rotated key is still fetched after them.
 func TestInboxForgedSpendsGroup(t *testing.T) {
 	e := newInboxEnv(t)
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
 		t.Fatalf("bo first: %d", w.Code)
 	}
 	codes := map[int]int{}
@@ -1476,21 +1476,21 @@ func TestInboxForgedSpendsGroup(t *testing.T) {
 		})
 		codes[w.Code]++
 	}
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
 		t.Errorf("after %v forged requests, bo's server: %d %s", codes, w.Code, w.Body)
 	}
 	// Made-up key ids on bo's host, with signatures that parse: each costs the sending address a fetch, at most
 	// keyFetchesPerAddr, and none is charged to social.example.
 	for i := range keyFetchesPerAddr + 10 {
 		id := fmt.Sprintf("https://social.example/made-up/%d", i)
-		e.postFrom("203.0.113.10:1", "/inbox", activity(id, "Follow", "x", nil), e.signer(e.other, id+"#k", sigCavage), nil)
+		e.postFrom("203.0.113.10:1", "/inbox", activity(id, "Like", "x", nil), e.signer(e.other, id+"#k", sigCavage), nil)
 	}
 	if e.a.fed.actors.keyFetches.over("social.example") {
 		t.Error("forged requests spent social.example's allowance of key fetches")
 	}
 	e.clock.add(actorRecheck)
 	e.w.put(boID, worldDoc{body: actorDoc(boID, "bo", "Bo", &e.other.PublicKey, nil)})
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.signer(e.other, boKeyID, sigCavage), nil); w.Code != 202 {
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.signer(e.other, boKeyID, sigCavage), nil); w.Code != 202 {
 		t.Errorf("bo's rotated key after the made-up ones: %d (%v)", w.Code, e.last())
 	}
 }
@@ -1507,7 +1507,7 @@ func (b blockBody) Close() error               { return nil }
 // 408 and its turn given back. The deadline is the test's (q.readDeadline), so nothing waits on the clock.
 func TestInboxSlowBodies(t *testing.T) {
 	e := newInboxEnv(t)
-	e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil)
+	e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil)
 	expire := make(chan time.Time)
 	e.q.readDeadline = func() <-chan time.Time { return expire }
 	started := make(chan struct{}, 2*inboxReadsAtOnce)
@@ -1544,7 +1544,7 @@ func TestInboxSlowBodies(t *testing.T) {
 			refused++
 		}
 	}
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 || refused != inboxReadsAtOnce-inboxReadsPerAddr {
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 || refused != inboxReadsAtOnce-inboxReadsPerAddr {
 		t.Errorf("bo while one address trickles: %d (%v); %d of that address's requests refused at once", w.Code, e.last(), refused)
 	}
 	<-started // bo's own read
@@ -1573,7 +1573,7 @@ func TestInboxSlowBodies(t *testing.T) {
 	for range inboxReadsAtOnce {
 		<-started
 	}
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 503 || e.last() != inBusy {
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 503 || e.last() != inBusy {
 		t.Errorf("bo while eight addresses hold every read turn: %d (%v)", w.Code, e.last())
 	}
 	for range inboxReadsAtOnce {
@@ -1582,7 +1582,7 @@ func TestInboxSlowBodies(t *testing.T) {
 	for range inboxReadsAtOnce {
 		<-given
 	}
-	if w := e.post("/inbox", activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
+	if w := e.post("/inbox", activity(boID, "Like", "https://here.example/users/ana", nil), e.bo(), nil); w.Code != 202 {
 		t.Errorf("bo once the time ran out: %d (%v)", w.Code, e.last())
 	}
 	close(ch)
@@ -1600,10 +1600,10 @@ func TestInboxSlowBodies(t *testing.T) {
 func TestDBInboxClockStep(t *testing.T) {
 	e := newInboxEnv(t)
 	logs := logged(t)
-	e.post("/inbox", activity(boID, "Follow", "x", nil), e.bo(), nil)
+	e.post("/inbox", activity(boID, "Like", "x", nil), e.bo(), nil)
 	e.clock.add(-3 * time.Hour)
 	for range 2 {
-		e.post("/inbox", activity(boID, "Follow", "x", nil), e.bo(), nil)
+		e.post("/inbox", activity(boID, "Like", "x", nil), e.bo(), nil)
 	}
 	if n := strings.Count(logs.String(), "the clock stepped back"); n != 1 {
 		t.Errorf("the clock step was logged %d times", n)
@@ -1672,9 +1672,9 @@ func BenchmarkInboxRequest(b *testing.B) {
 				sign, keyID := true, boKeyID
 				switch kind {
 				case "dropped":
-					body = activity(boID, "Follow", "https://here.example/users/ana", map[string]any{"id": id, "padding": strings.Repeat("x", 1500)})
+					body = activity(boID, "Like", "https://here.example/users/ana", map[string]any{"id": id, "padding": strings.Repeat("x", 1500)})
 				case "unsigned-256KB":
-					body, sign = activity(ghost, "Follow", "https://here.example/users/ana", map[string]any{"id": id, "padding": pad}), false
+					body, sign = activity(ghost, "Like", "https://here.example/users/ana", map[string]any{"id": id, "padding": pad}), false
 				case "unknown-delete-256KB":
 					body, keyID = activity(ghost, "Delete", ghost, map[string]any{"id": ghost + "/" + id[len(boID):], "padding": pad}), ghost+"#main-key"
 				}

@@ -1,0 +1,1 @@
+{"@context":"https://www.w3.org/ns/activitystreams","id":"https://social.example/users/bo#follows/1/undo","type":"Undo","actor":"https://social.example/users/bo","object":{"id":"https://social.example/0b5b2a4e-6c3f-4d2a-9b1e-7d8c1f2a3b4c","type":"Follow","actor":"https://social.example/users/bo","object":"https://here.example/users/ana"}}
