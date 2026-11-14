@@ -1565,7 +1565,14 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   start finds and sends; a crash inside the worker rolls back both the activity and the record's change. Two workers
   (two processes during a deploy) may make it at once: `ap_outbox` is unique by the activity's id, so one writes and
   the other's update of the record finds no row in state `create` and rolls back. A full queue (`errDeliveryFull`)
-  lets the post go unsent, as an outage would (8.8), said in the log.
+  lets a Create go unsent, as an outage would (8.8), said in the log; nothing left, so its Delete is not needed later.
+  **A Delete the full queue refuses is kept** (after FWR 4's review: it was dropped too, and the post stayed on the
+  servers it went to): its record is held for the delivery schedule's next wait (8.3: 1 minute, then 5, 15, ...;
+  `ap_post_out.tries` and `due_at`) and tried again then, and given up, said in the log, after the schedule's last
+  wait (about 40 hours). A worker's step asks nothing meanwhile (the producer knows when the first held record is due).
+  **The switches are asked again at the send**: a Create or an Update(Person) found with the `federation`, `follows`
+  or `community` flag off is dropped, and turning one of them off drops what waits at once, rather than sending it when
+  the switch comes back on; a Delete stays, since it only takes back what already left.
 - **Recipients** (`postRecipientsSQL`, one statement, at most 10,001 rows): the accepted followers whose cached actor is
   well, has an inbox, and whose account no moderator suspended here, and the remote accounts the post mentions (none
   across a block either way), **one row per delivery address**: the shared inbox when it is on the actor's own host,
@@ -1587,7 +1594,10 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
 - **Delete(Tombstone)** on a deletion by the author or a moderator, and on a moderator's hide (6.5): id the post's
   address with `#delete` (as Mastodon names a status's Delete), `object` `{"id": <post>, "type": "Tombstone"}`, to the
   public collection and cc the followers. A restore sends nothing (6.5), and a deletion after a hide sends nothing
-  more. A post deleted or hidden before its Create was made sends nothing at all. **A Delete is sent even when the
+  more. A post deleted or hidden before its Create was made sends nothing at all. **A post deleted or hidden while the
+  server ran in local mode** (where nothing marks its record, since no federation runs) is still on the servers it went
+  to: every start that federates marks such records for a Delete, which then goes (after FWR 4's review;
+  `TestDBDeleteAfterLocalMode`). **A Delete is sent even when the
   member has stopped sharing** (decided here: 11 says turning sharing off sends nothing, but a Delete only takes back
   what already left, and a moderator's hide must reach other servers whatever the member did since). The Note's
   address then answers 404, as FRD 5 decided (nothing keeps a deleted post's id for a Tombstone; ActivityPub 6.4 makes
@@ -1696,7 +1706,10 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   `summary` it writes for alt text (the owner's trial, FWR 9); Update(Person) after `-rotate-keys` (5.7 asks for it;
   the rotation is a command run beside the server and does not mark the rows yet); a Delete when a member is suspended
   (the public addresses hide their posts at once, nothing is sent); a remote handle that is not in the cache is not
-  fetched while posting (a lookup first fills it); the Federation tab has no count of the records waiting for their
+  fetched while posting (a lookup first fills it); a moderator's hide of a suspended member's post sends a Delete
+signed with a key whose actor document then answers 404: Mastodon checks such a Delete against the key it already holds
+(its security page, on a server shutting down, and 6.3), and how other software answers is not checked; the Federation
+tab has no count of the records waiting for their
   worker (they wait for a step, seconds at most); the fan-out time on the Pi (FWR 2's benchmark covers it).
 
 `TestNoteFromPost` (**new**) holds the Note for a fixture post byte for byte against a golden file, and

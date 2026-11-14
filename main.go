@@ -1147,6 +1147,17 @@ func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, u *user) {
 	// The pause lifted: rows that waited are handled now, not at the workers' next look.
 	if on := in.Flags[fedFlag]; on && a.fed != nil && a.fed.inbox != nil && a.fed.refusal() == "" {
 		a.fed.inbox.kick()
+		a.fed.outWaits() // and a post's Delete that waited behind the pause (FWR 4)
+	}
+	// A switch turned off drops the posts and profiles that wait to go out, rather than sending them when it comes back
+	// on (FWR 4: nothing made or waiting while a switch is off goes out later); a post's Delete stays, since it only
+	// takes back what already left.
+	off := func(k string) bool { on, ok := in.Flags[k]; return ok && !on }
+	if a.fed != nil && (off(fedFlag) || off("follows") || off("community")) {
+		if _, err := a.db.Exec(`WITH c AS (DELETE FROM ap_post_out WHERE state = 'create') UPDATE ap_person_out SET due_at = NULL WHERE due_at IS NOT NULL`); err != nil {
+			a.serverError(w, err)
+			return
+		}
 	}
 	f, err := a.flags()
 	if err != nil {
@@ -6384,6 +6395,7 @@ type federation struct {
 	// delivery queue's clock (Unix nanoseconds; 0: look now, the largest: none waits), and outBusy that a pass of
 	// sendOut runs in this process: so a worker's step asks the database about them only when one may be due (FWR 4).
 	postsDue atomic.Bool
+	postsAt  atomic.Int64 // when the first record held back (a Delete the full queue refused) is due; 0: none
 	personAt atomic.Int64
 	outBusy  atomic.Bool
 	// personMade, when set (by a test), hears that an Update(Person) was made, before it is enqueued.
@@ -6887,6 +6899,12 @@ func (a *app) startFederation(s fedSettings) error {
 		}
 		// A Public post's Create or Delete, or an Update of a profile, that waited for its worker at the stop (FWR 4):
 		// the workers start for it too.
+		// A post that went out and was deleted or hidden while the server ran in local mode (where nothing marks it)
+		// is still on the servers it went to: its Delete goes now.
+		if _, err := a.db.Exec(`UPDATE ap_post_out o SET state = 'delete' WHERE o.state = 'sent'
+			AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.id = o.post_id AND p.hidden_at IS NULL)`); err != nil {
+			return err
+		}
 		var out bool
 		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_post_out WHERE state <> 'sent') OR EXISTS (SELECT 1 FROM ap_person_out WHERE due_at IS NOT NULL)`).Scan(&out); err != nil {
 			return err
@@ -20370,30 +20388,41 @@ func (a *app) sendOut(ctx context.Context) (bool, error) {
 
 // postOutSQL reads the oldest record that waits, with what its Create or Delete needs: the post (none when it is
 // gone), whether it may still be shown beyond this server (publicPost, and publicMember with the gate's $2 as $1),
-// and the author. One look in ap_post_out_due.
+// and the author: the records that wait read through ap_post_out_due and sorted, the first joined alone.
 var postOutSQL = `SELECT o.post_id, o.user_id, o.state, o.targets, u.username, COALESCE(p.id IS NOT NULL AND ` + publicPost + ` AND ` + personShown + `, false),
-		COALESCE(p.body, ''), COALESCE(left(p.image, ` + pictureHead + `), ''), COALESCE(p.alt, ''), COALESCE(p.ap_mentions, ''), COALESCE(p.data, '{}'), COALESCE(p.created_at, now())
-	FROM ap_post_out o JOIN users u ON u.id = o.user_id LEFT JOIN posts p ON p.id = o.post_id
-	WHERE o.state <> 'sent' ORDER BY o.post_id LIMIT 1`
+		COALESCE(p.body, ''), COALESCE(left(p.image, ` + pictureHead + `), ''), COALESCE(p.alt, ''), COALESCE(p.ap_mentions, ''), COALESCE(p.data, '{}'), COALESCE(p.created_at, now()),
+		o.tries, o.due_at
+	FROM (SELECT * FROM ap_post_out WHERE state <> 'sent' ORDER BY COALESCE(due_at, '-infinity'), post_id LIMIT 1) o
+		JOIN users u ON u.id = o.user_id LEFT JOIN posts p ON p.id = o.post_id`
 
 // postOut handles the oldest record of ap_post_out that waits: a Create, or a Delete.
 func (a *app) postOut(ctx context.Context) (bool, error) {
-	f := a.fed
-	if !f.postsDue.Swap(false) {
+	f, now := a.fed, a.fed.out.now()
+	at := f.postsAt.Load()
+	if !f.postsDue.Swap(false) && (at == 0 || now.UnixNano() < at) {
 		return false, nil
 	}
+	f.postsAt.Store(0)
 	var state, targets string
 	var shown bool
 	var uid int64
+	var tries int
+	var due sql.NullTime
 	p := notePost{}
-	err := f.fedRow(ctx, []any{&p.id, &uid, &state, &targets, &p.name, &shown, &p.body, &p.image, &p.alt, &p.mentions, &p.data, &p.created}, postOutSQL, a.mode == modeSingle)
+	err := f.fedRow(ctx, []any{&p.id, &uid, &state, &targets, &p.name, &shown, &p.body, &p.image, &p.alt, &p.mentions, &p.data, &p.created, &tries, &due}, postOutSQL, a.mode == modeSingle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	f.postsDue.Store(true) // another may wait behind it
 	if err != nil {
+		f.postsDue.Store(true)
 		return false, err
 	}
+	// The first that waits is held back until later (a Delete the full queue refused): nothing is due before then.
+	if due.Valid && due.Time.After(now) {
+		f.postsAt.Store(due.Time.UnixNano())
+		return false, nil
+	}
+	f.postsDue.Store(true) // another may wait behind it
 	actor := f.memberActor(p.name)
 	postID := actor + "/posts/" + strconv.FormatInt(p.id, 10)
 	if state == "delete" {
@@ -20409,11 +20438,24 @@ func (a *app) postOut(ctx context.Context) (bool, error) {
 		_, err = f.out.enqueueUndo(ctx, keyOwner(uid), postID+"#delete", body, to, postID+"/activity", func(tx *sql.Tx) error {
 			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'delete'`, p.id))
 		})
+		if errors.Is(err, errDeliveryFull) {
+			// The post is still on the servers it went to: the Delete stays recorded and is tried again on the
+			// delivery schedule (8.3), each wait one more step, until the schedule's end (about 40 hours).
+			if tries >= len(deliveryRetries) {
+				log.Printf("federation: the Delete of post %d is not sent: %v, %d times over the schedule", p.id, err, tries+1)
+				_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'delete'`, p.id)
+				return true, err
+			}
+			log.Printf("federation: the Delete of post %d waits: %v; tried again in %s", p.id, err, deliveryRetries[tries])
+			_, err := f.fedExec(ctx, `UPDATE ap_post_out SET tries = tries + 1, due_at = $2 WHERE post_id = $1 AND state = 'delete'`, p.id, now.Add(deliveryRetries[tries]))
+			return true, err
+		}
 		return a.outDone(err, p.id)
 	}
-	// A Create that waits for a post no longer shown (hidden, the member stopped sharing or was suspended) goes with
-	// nothing sent: nothing went out, so there is nothing to take back.
-	if !shown {
+	// A Create that waits for a post no longer shown (hidden, the member stopped sharing or was suspended), or made
+	// while the switches were on and found with one off now, goes with nothing sent: nothing went out, so there is
+	// nothing to take back.
+	if !shown || !a.postsGoOut(audPublic) {
 		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id)
 		return true, err
 	}
@@ -20446,9 +20488,9 @@ func (a *app) postOut(ctx context.Context) (bool, error) {
 	return a.outDone(err, p.id)
 }
 
-// outDone reads enqueueThen's answer for a post's record. A record changed meanwhile is read again on the next pass.
-// A full queue (errDeliveryFull) lets the activity go, as an outage would (8.8): the record is removed, and said
-// in the log.
+// outDone reads enqueueThen's answer for a post's Create. A record changed meanwhile is read again on the next pass.
+// A full queue (errDeliveryFull) lets the Create go, as an outage would (8.8): the record is removed, and said in the
+// log; nothing went out, so no Delete is needed later. (A Delete the full queue refused is held, in postOut.)
 func (a *app) outDone(err error, post int64) (bool, error) {
 	switch {
 	case err == nil, errors.Is(err, errOutChanged):
@@ -20506,7 +20548,9 @@ func (a *app) personOut(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	f.personAt.Store(0)
-	if !shown { // stopped sharing (or was suspended) since: turning sharing off sends nothing (11)
+	// Stopped sharing (or was suspended) since, or a switch is off now: turning sharing off sends nothing (11), and
+	// what a switch held back is dropped, not kept for later.
+	if !shown || !a.postsGoOut(audPublic) {
 		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen)
 		return true, err
 	}
@@ -20986,7 +21030,7 @@ var migrations = []string{schema, schemaSocial,
 	// the Create and its deliveries by a worker in the transaction that enqueues it (state sent, with the inboxes it
 	// went to in targets), and marked delete by a deletion or a moderator's hide in their own statement, so the
 	// Delete goes to the same inboxes; it has no foreign key to posts, since it outlives the post until that Delete
-	// is enqueued. ap_person_out coalesces Update(Person): one row per member, due_at when one waits (NULL when
+	// is enqueued (tries and due_at hold a Delete back while the queue is full). ap_person_out coalesces Update(Person): one row per member, due_at when one waits (NULL when
 	// none), sent_at the last sent, gen counting the changes. ap_outbox.undoes names the activity an activity takes
 	// back (a post's Delete its Create, an Undo its Follow), so the queue never lets the second overtake the first at
 	// one inbox (federation.md 8.8, "Taking back"). Additive: an older build ignores all of it.
@@ -20999,7 +21043,9 @@ var migrations = []string{schema, schemaSocial,
 		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		state TEXT NOT NULL CHECK (state IN ('create', 'sent', 'delete')),
 		targets TEXT NOT NULL DEFAULT '',
-		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		tries INT NOT NULL DEFAULT 0,
+		due_at TIMESTAMPTZ
 	);
 	CREATE INDEX IF NOT EXISTS ap_post_out_due ON ap_post_out (post_id) WHERE state <> 'sent';
 	CREATE INDEX IF NOT EXISTS ap_post_out_user ON ap_post_out (user_id);
