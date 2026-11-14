@@ -826,7 +826,9 @@ member who shares their profile goes to their followers on other servers ([docs/
   milestones, and anything of a member who does not share their profile (federation.md 14.5).
 - **What the admin sees.** Each post, Delete and profile change is a row of "Sending to other servers" on the
   Federation tab, one per server's shared inbox; a server the domain policy refuses gets nothing. Each post goes to
-  at most 10,000 addresses; the server says in its log when a member has more. `-purge-remote` also removes the
+  at most 10,000 addresses; the server says in its log when a member has more, and the Federation tab counts how many
+  posts and profile changes since the last start reached only the first 10,000. The moderation queue shows a reported
+  post's picture with its description. `-purge-remote` also removes the
   records of where each post went, after which a deletion is sent nowhere.
 - **Not yet:** posts from followed accounts in Home (a later version), and an Update of the profile after
   `-rotate-keys`.

@@ -547,7 +547,7 @@ function composer() {
   return `<form class="card compose" id="compose-form" data-k="post"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
     <textarea name="body" ${countAttrs('compose-count', social.draftBody, 2000)} rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
     ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt="The picture you attached"><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>${social.draftStill ? '<p class="tiny still-note">Animated pictures are kept as a still.</p>' : ''}
-    <label class="field compose-alt" for="compose-alt">Describe the picture (optional)<input id="compose-alt" name="alt" type="text" maxlength="${MAX_ALT}" autocomplete="off" value="${esc(social.draftAlt)}" aria-describedby="compose-alt-hint"></label><p class="tiny" id="compose-alt-hint">Read out to people who cannot see it, here and on other servers.</p>` : ''}
+    <div class="stack" style="gap:4px"><label class="field compose-alt" for="compose-alt">Describe the picture (optional)<input id="compose-alt" name="alt" type="text" ${countAttrs('compose-alt-count', social.draftAlt, MAX_ALT, true).replace('aria-describedby="compose-alt-count"', 'aria-describedby="compose-alt-hint compose-alt-count"')} autocomplete="off" value="${esc(social.draftAlt)}"></label><p class="tiny" id="compose-alt-hint">Read out to people who cannot see it, here and on other servers.</p>${countHTML('compose-alt-count', social.draftAlt, MAX_ALT, true)}</div>` : ''}
     <div class="row wrap link-offer" ${social.linkOffer ? '' : 'hidden'}><span class="tiny grow">${social.linkOffer ? `${esc(SITE_NAMES[siteOf(social.linkOffer)])} link found` : ''}</span><button type="button" class="btn sm" data-act="link-attach">${icon('link')}Attach as a card</button></div>
     <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}" aria-label="Tag a trick or combo">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
     ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}" aria-label="Tag ${esc(t.skill)}, ${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
@@ -956,6 +956,8 @@ document.addEventListener('submit', async e => {
     if (audNow()) send.audience = audNow().value;
     // The picture's description goes only with a picture, and only when one was written, so a post without one is sent as before.
     if (social.draftImg && social.draftAlt.trim()) send.alt = social.draftAlt.trim();
+    const altLen = textLen(send.alt, true);
+    if (altLen > MAX_ALT) { const a = f.querySelector('#compose-alt'); showErr('compose-err', `The description of the picture holds ${MAX_ALT} characters. This one has ${altLen}.`, [a]); a.focus(); return; }
     setSending('post', true);
     const r = await api('posts', 'POST', send, { 'Idempotency-Key': onceKey('post', send) });
     if (social.gen !== gen) return; // signed out meanwhile: the draft and its answer are no longer this tab's

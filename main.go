@@ -3149,10 +3149,10 @@ func (a *app) fillQueueItem(it *queueItem) error {
 	var author int64
 	switch it.Kind {
 	case "post":
-		var body, image, reason string
+		var body, image, reason, alt string
 		var data []byte
 		var hidden bool
-		err := a.db.QueryRow(`SELECT user_id, body, image, data, hidden_at IS NOT NULL, hidden_reason FROM posts WHERE id = $1`, it.ID).Scan(&author, &body, &image, &data, &hidden, &reason)
+		err := a.db.QueryRow(`SELECT user_id, body, image, data, hidden_at IS NOT NULL, hidden_reason, alt FROM posts WHERE id = $1`, it.ID).Scan(&author, &body, &image, &data, &hidden, &reason, &alt)
 		if errors.Is(err, sql.ErrNoRows) {
 			it.Target = map[string]any{"gone": true}
 			return nil
@@ -3161,6 +3161,9 @@ func (a *app) fillQueueItem(it *queueItem) error {
 			return err
 		}
 		it.Target = map[string]any{"body": body, "image": image, "data": json.RawMessage(data), "hidden": hidden, "hiddenReason": reason}
+		if alt != "" { // the picture's description, which a moderator must see as written (FWR 4)
+			it.Target["alt"] = alt
+		}
 	case "comment":
 		var body, reason string
 		var post int64
@@ -6396,6 +6399,7 @@ type federation struct {
 	// sendOut runs in this process: so a worker's step asks the database about them only when one may be due (FWR 4).
 	postsDue atomic.Bool
 	postsAt  atomic.Int64 // when the first record held back (a Delete the full queue refused) is due; 0: none
+	cut      atomic.Int64 // activities that went only to the first deliveryTargetsMax addresses since the start
 	personAt atomic.Int64
 	outBusy  atomic.Bool
 	// personMade, when set (by a test), hears that an Update(Person) was made, before it is enqueued.
@@ -18518,7 +18522,8 @@ type deliveryNumbers struct {
 	ClockWaiting bool             `json:"clockWaiting"` // nothing is sent until the clock is set (8.3)
 	ClockJumped  bool             `json:"clockJumped"`  // rows too old for the schedule are held: the clock may have jumped forward (8.3)
 	QueueMax     int              `json:"queueMax"`
-	FailedMax    int              `json:"failedMax"` // Failed stops counting here: the page says "or more"
+	FailedMax    int              `json:"failedMax"`     // Failed stops counting here: the page says "or more"
+	Cut          int64            `json:"cut,omitempty"` // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
 }
 
 // deliveryNumbersSQL reads the queue's state for the Federation tab, the dashboard and a local probe of /healthz
@@ -18534,7 +18539,7 @@ const deliveryNumbersSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_deliv
 // numbers reads the queue's numbers, under one of the federation's turns.
 func (q *deliveryQueue) numbers(ctx context.Context) (*deliveryNumbers, error) {
 	s := q.stats.numbers(time.Now())
-	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep}
+	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep, Cut: q.f.cut.Load()}
 	now := q.now()
 	q.numbersRun.Add(1)
 	done, err := q.f.dbTurn(ctx)
@@ -20318,6 +20323,7 @@ func (f *federation) recipients(ctx context.Context, uid int64, mentioned []stri
 	}
 	if len(out) > deliveryTargetsMax {
 		log.Printf("federation: member %d has followers at more than %d addresses; an activity goes to the first %d of them", uid, deliveryTargetsMax, deliveryTargetsMax)
+		f.cut.Add(1) // and the Federation tab says how many since the start
 		out = out[:deliveryTargetsMax]
 	}
 	return out, nil

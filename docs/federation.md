@@ -1581,7 +1581,8 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   subquery per follow, never by joining `ap_actors` whole (`TestDBQueryPlans`: 1,000 followers on 300 servers, about 12
   rows counted over the plan's steps per follower, none for other members' follows). **A member followed at more than
   10,000 addresses** (the queue's bound for one activity, 8.8, after the shared inboxes) has an activity sent to the
-  first 10,000 in the order of their addresses, and one line in the log says so; batching beyond it would need a
+  first 10,000 in the order of their addresses, one line in the log says so, and the Federation tab counts such
+  activities since the last start ("reached only the first 10,000 addresses", after FWR 4's review); batching beyond it would need a
   second activity id for one post, which receivers would read as a second post. Section 12's instance (1,000 followers
   on 300 servers) is far below it. The Create is sent with `application/ld+json; profile=...` (ActivityPub 7, the
   delivery kind of 7.8), signed with the member's key at the send.
@@ -1619,7 +1620,8 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   `data:` stay text); a mention or a `#word` inside a link stays part of the link; control characters (but a line break)
   and the marks that embed, override or isolate a direction are dropped (`noteText`; the app's own page still shows the
   text as stored); a mention's address is a link only when it is https with nothing that could end an attribute
-  (`linkable`), else the actor's id is, else the mention stays text. `TestNoteContentEscaping` and `FuzzNoteContent`
+  (`linkable`), else the actor's id is, else the mention stays text. (So a mention's link is always https; a link in the
+  text may be http or https, as 6.5 says and Mastodon's sanitiser keeps both.) `TestNoteContentEscaping` and `FuzzNoteContent`
   (30 s, about 214,000 runs, no failure) hold every output to that subset with no `<` of the input left unescaped.
 - **Mentions** (`parseMentions`, finding 9). `@name` is a member here as before (up to 24 characters, the first a letter
   or digit); `@name@host`, the host an ASCII DNS name of two labels or more whose last label holds a letter (a full stop
@@ -1663,8 +1665,11 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   most 1,500 characters (`maxAlt`), with what `visibleText` takes out of a bio taken out, line breaks joined into
   spaces, and a direction override refused with the reason; a description sent without a picture is dropped. It is the
   picture's `alt` on the post in the app and on the public pages (else the words there were), and `name` and `summary`
-  in the Note. Posts are not edited (1.2), so it is written once, with the post. `a11y.py`, `keys.py` and `social.py`
-  hold the field's name, its keyboard path and the post's alt.
+  in the Note. Posts are not edited (1.2), so it is written once, with the post. The field has a counter as the post's
+  text has, counting characters as the server does (an emoji is one; a browser's `maxlength` counts UTF-16 units, so the
+  field has none, and a description that is too long is refused before it is sent, with the count). The moderation
+  queue shows a reported post's picture with its description as written (after FWR 4's review). `a11y.py`, `keys.py`
+  and `social.py` hold the field's name, its counter, its keyboard path and the post's alt.
 - **Update(Person)** (6.4): a profile saved with a change the actor shows (the name, the bio, the picture, the props, the
   links, approving by hand), by a member who shares, with both flags on, marks the member's row of `ap_person_out` due
   in the profile's own transaction: now when none went in the last 5 minutes (`personUpdateEvery`), else 5 minutes
@@ -1687,8 +1692,9 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   statement when its text holds a mention; a deletion is one statement as before; a hide adds one statement to its
   transaction; a profile save that changes what the actor shows adds one. The worker's statements take the federation's
   turns (8.8), one at a time, and none is held across another wait.
-- **What the admin sees**: the Federation tab's counts are the queue's, unchanged (a post's deliveries are rows like a
-  follow's); its subtitle now says what is sent. The dashboard's sentence and `fedBuilt` say posts go out; NodeInfo's
+- **What the admin sees**: the Federation tab's counts are the queue's (a post's deliveries are rows like a follow's),
+  with one more when it is not zero: the activities that reached only the first 10,000 addresses since the last start;
+  its subtitle now says what is sent. The dashboard's sentence and `fedBuilt` say posts go out; NodeInfo's
   parts add `posts`.
 - Tests: `TestNoteFromPost`, `TestNoteContentEscaping`, `FuzzNoteContent`, `TestMentions` (and `node test/mentions.js`),
   `TestDBPostFanOut` (600 followers on 300 servers give 300 deliveries, a server with no shared inbox one per follower,

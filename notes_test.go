@@ -95,6 +95,7 @@ var hostileMentions = map[string]noteMention{
 	"cyd":               {Key: "cyd", ID: "https://here.example/users/cyd", URL: "https://here.example/users/cyd", Name: "@cyd@here.example"},
 	"ev@evil.example":   {Key: "ev@evil.example", ID: `https://evil.example/u/"><script>`, URL: `https://evil.example/@ev" onclick="x`, Name: `@<b>ev</b>@evil.example`},
 	"mal@evil.example":  {Key: "mal@evil.example", ID: "https://evil.example/u/mal", URL: "javascript:alert(1)", Name: `@<b>"mal'</b>@evil.example`},
+	"pl@plain.example":  {Key: "pl@plain.example", ID: "https://plain.example/u/pl", URL: "http://plain.example/@pl", Name: "@pl@plain.example"},
 }
 
 // Hostile text through the HTML of 6.5: every character of the member's text escaped, links only for http and
@@ -114,6 +115,9 @@ func TestNoteContentEscaping(t *testing.T) {
 		{"@cyd and @cyd@here.example", `<p><span class="h-card"><a href="https://here.example/users/cyd" class="u-url mention">@<span>cyd</span></a></span> and <span class="h-card"><a href="https://here.example/users/cyd" class="u-url mention">@<span>cyd</span></a></span></p>`},
 		// A mention whose stored addresses could end an attribute is not made a link at all.
 		{"@ev@evil.example", `<p>@ev@evil.example</p>`},
+		// A mention links only an https address (ids are https, apIDOK): one whose page is http is linked by its id. A
+		// link in the text may be http, as 6.5 and Mastodon's sanitiser allow.
+		{"@pl@plain.example http://x.example/", `<p><span class="h-card"><a href="https://plain.example/u/pl" class="u-url mention">@<span>pl</span></a></span> <a href="http://x.example/" rel="nofollow noopener">http://x.example/</a></p>`},
 		// One whose page is not https is linked by its id, and its stored name is escaped.
 		{"@mal@evil.example", `<p><span class="h-card"><a href="https://evil.example/u/mal" class="u-url mention">@<span>&lt;b&gt;&#34;mal&#39;&lt;/b&gt;</span></a></span></p>`},
 		// Not resolved: an unknown handle, a local name nobody resolved, and the same names inside a link.

@@ -356,9 +356,16 @@ try:
     # picture's alt text on the post; removing the picture takes the description with it.
     pick('[data-change=compose-img]',clear_png,'clear.png','image/png')
     wait_for("return !!document.querySelector('#compose-alt')",'the description field under the picture')
-    alt_field=js("const i=document.querySelector('#compose-alt');return [i.labels[0].textContent.trim(),i.getAttribute('aria-describedby'),i.maxLength,document.getElementById('compose-alt-hint').textContent]")
-    check('the description field is named by its label, says what it is for and takes 1500 characters',alt_field==['Describe the picture (optional)','compose-alt-hint',1500,'Read out to people who cannot see it, here and on other servers.'],alt_field)
+    alt_field=js("const i=document.querySelector('#compose-alt');return [i.labels[0].textContent.trim(),i.getAttribute('aria-describedby'),i.dataset.max,document.getElementById('compose-alt-hint').textContent]")
+    check('the description field is named by its label, says what it is for and takes 1500 characters',alt_field==['Describe the picture (optional)','compose-alt-hint compose-alt-count','1500','Read out to people who cannot see it, here and on other servers.'],alt_field)
     putalt="const i=document.querySelector('#compose-alt');i.value=arguments[0];i.dispatchEvent(new Event('input',{bubbles:true}))"
+    # Counted as the server counts, in characters: two emoji are two, though the browser's own length says four.
+    js(putalt,'a'*1498+'\U0001F938\U0001F938')
+    check('the description counts characters as the server does: 1,500 with two emoji is full, not over',lambda: txt('#compose-alt-count')=='No characters left' and js("return document.querySelector('#compose-alt').getAttribute('aria-invalid')") is None,lambda: txt('#compose-alt-count'))
+    js(putalt,'a'*1499+'\U0001F938\U0001F938')
+    check('one character over is said, and marks the field',lambda: txt('#compose-alt-count')=='1 character too many' and js("return document.querySelector('#compose-alt').getAttribute('aria-invalid')")=='true',lambda: txt('#compose-alt-count'))
+    js("document.querySelector('#compose-form').requestSubmit()")
+    check('a description that is too long is refused before it is sent, with the count',lambda: txt('#compose-err')=='The description of the picture holds 1500 characters. This one has 1501.',lambda: txt('#compose-err'))
     js(putalt,'Forgotten with the picture')
     click('[data-act=compose-img-rm]');idle()
     pick('[data-change=compose-img]',clear_png,'clear.png','image/png')
