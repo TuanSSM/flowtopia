@@ -166,7 +166,8 @@ customisable avatars. Each epic is described in [docs/epics.md](docs/epics.md) a
 under `docs/epic-<code>/todo.md`. A proposed third cycle would let Flowa run as a single-profile,
 federated or local-only instance over ActivityPub, off by default. Single-profile mode is built, and federation
 as far as reading (discovery, the profiles, Public posts and outboxes of the members who opt in, and a search
-by handle of people on other servers; no inbox, and nothing is delivered yet); the design and plan are in [docs/federation.md](docs/federation.md).
+by handle of people on other servers) and taking deliveries (an inbox that acts only on an account deleting
+itself or changing its profile, with domain policies; nothing is delivered yet); the design and plan are in [docs/federation.md](docs/federation.md).
 
 ## Run
 
@@ -314,11 +315,13 @@ a value that is not such an address stops the server at start with a message tha
 `FLOWA_MODE` in `.env` says how the instance runs. Unset, empty or `local` is what Flowa has always
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
 changes. `single` is one person's own instance (below). `federated` is a community whose members can share
-their profiles with other servers; **this version of it can be read, and nothing more**: discovery (WebFinger
-and NodeInfo, under "Federation: discovery" below) and the profiles, Public posts and outboxes of the members who opted
-in ("Federation: profiles and Public posts"), and members can look up people on other servers by their
-handle ("Federation: people elsewhere"), but no inbox, so nobody can follow anyone yet, and nothing is
-delivered. Any other word stops the server at start with a message that says so, before the database is
+their profiles with other servers; **this version of it can be read, and takes deliveries it barely acts
+on**: discovery (WebFinger and NodeInfo, under "Federation: discovery" below) and the profiles, Public posts
+and outboxes of the members who opted in ("Federation: profiles and Public posts"), members can look up people
+on other servers by their handle ("Federation: people elsewhere"), and other servers can deliver to its
+inboxes ("Federation: the inbox and domain policies"), where only an account deleting itself or changing its
+profile is acted on, so nobody can follow anyone yet, and nothing is delivered. Federated mode is
+experimental. Any other word stops the server at start with a message that says so, before the database is
 opened. The admin dashboard shows the mode under the version, and in a mode that federates the origin and the
 same sentence about what is served.
 
@@ -439,9 +442,10 @@ pick the new keys up when a signature next fails to verify.
 
 This version can keep accounts of other servers (docs/federation.md, F5 and 9.2): each is an account row with
 the other server's name beside it and a cached copy of its actor (name, inbox, key), fetched with a request
-the instance's own actor signs and kept for 24 hours. The one thing that fetches one is a member's search by
-handle (below, "Federation: people elsewhere"), so an instance has remote accounts once a member has looked
-someone up. Such
+the instance's own actor signs and kept for 24 hours. Two things fetch one: a member's search by handle
+(below, "Federation: people elsewhere"), and a delivery to the inbox whose key is not kept yet ("Federation:
+the inbox and domain policies"), so an instance has remote accounts once a member has looked someone up or a
+server it lets in has delivered to it. The inbox's own rows (`ap_inbox`) go with a purge too. Such
 an account can never sign in, hold a session, a role, a password or a key, and no list or count of members
 shows it (people, Accounts, the dashboard, NodeInfo, mentions, follows and blocks all count local members
 only). Its name is the other server's name for it and that server's host, such as `Gargron@mastodon.social`,
@@ -477,8 +481,8 @@ the original) and up to 20 of its latest public posts from its outbox, as plain 
 kept; the actor is kept in the cache of remote accounts (above). A handle on this server's own name is a
 member here, found in the database with no connection.
 
-What it does not do yet, and says so: there is no Follow (there is no inbox, so nothing the account posts
-could reach this server), and no picture from another server is shown (that needs the picture cache of a
+What it does not do yet, and says so: there is no Follow (the inbox does not act on follows or posts yet, so
+nothing the account posts would show here), and no picture from another server is shown (that needs the picture cache of a
 later version; showing them straight from the other server would tell it the member's address). There is no
 full-text search of anything.
 
@@ -498,8 +502,8 @@ In local mode, and in single mode without `FLOWA_FEDERATE=on`, none of this exis
 ### Federation: discovery (WebFinger and NodeInfo)
 
 **What this version of federation does: it can be read.** Another server can ask who a member is and what
-this server is, and read the profiles and Public posts of the members who opted in (next section); there is
-no inbox, so nobody can follow anyone yet, and nothing is delivered. A
+this server is, and read the profiles and Public posts of the members who opted in (next section); the inbox
+acts on no follow yet, so nobody can follow anyone yet, and nothing is delivered. A
 member's handle is `@name@host`, where host is the name in `FLOWA_ORIGIN`. Three addresses answer, only in a
 mode that federates (in local mode they are unknown addresses, as before):
 
@@ -591,9 +595,9 @@ name once shared its profile, which its public id had told already); their name 
 (it is refused at sign-up, at a request to join and for `ADMIN_USER`, in the words of a taken name). The
 server's own host name is refused as a username in a mode that federates.
 
-There is no inbox yet: the inbox addresses the actors name answer 405 to everything, so **someone on Mastodon
-can press Follow on a Flowa account now, and the follow will stay "requested" there** until a later version
-builds the inbox.
+The inbox takes a Follow and does not act on it (next sections), and answers nothing back, so **someone on
+Mastodon can press Follow on a Flowa account now, and the follow will stay "requested" there** until a later
+version builds follows across servers.
 
 The pages are written by the server with no script at all, under a policy that allows only this server's
 pictures and style sheet, carry `noindex` for search engines, link out with `rel="nofollow noopener ugc"`,
@@ -604,9 +608,10 @@ the origin; the instance actor's does not. While federation is refused every add
 
 ### Federation: HTTP signatures
 
-Servers say who sent a request by signing it. Flowa can sign and check the two forms the fediverse uses
-([docs/federation.md](docs/federation.md), 7.1 to 7.3), but **nothing uses them yet**: no route checks a
-signature (the inbox comes later) and no request is signed (Flowa sends none to another server yet).
+Servers say who sent a request by signing it. Flowa signs and checks the two forms the fediverse uses
+([docs/federation.md](docs/federation.md), 7.1 to 7.3): the inbox checks every delivery (next section), and
+the fetches of remote actors are signed by the instance actor; nothing else is signed, since Flowa delivers
+nothing yet.
 
 - **Sent:** the older form most servers read (draft-cavage-http-signatures-12): `algorithm="rsa-sha256"`,
   covering the method and path, `host` and `date`, and on a delivery also a `Digest: SHA-256=` of the body.
@@ -622,7 +627,44 @@ signature (the inbox comes later) and no request is signed (Flowa sends none to 
   form servers publish.
 - The host and the address checked are those of `FLOWA_ORIGIN`, never the `Host` header a proxy passes on,
   and the path is taken exactly as it arrives. So a reverse proxy in front of Flowa must serve it at the root
-  of that origin and must not rewrite the path.
+  of that origin and must not rewrite the path, or every delivery is refused as badly signed.
+
+### Federation: the inbox and domain policies
+
+**Experimental, and off until an admin turns it on.** Other servers deliver to three addresses, only in a mode
+that federates: `/users/{name}/inbox` (named in each member's actor), the shared `/inbox` (named there too, as
+`endpoints.sharedInbox`) and `/actor/inbox`. They are the same inbox: which one a delivery came to, and whether
+the name exists, makes no difference to the answer.
+
+- **Two switches, both off by default.** The `federation` flag under Admin, Features ("Federation: take
+  deliveries"; it exists only in a mode that federates) pauses the inbox: while off, every delivery is answered
+  503 "try again later" and nothing waiting is handled. Admin, Federation chooses **whom** to take deliveries
+  from: "Allowed servers only" (what nothing saved means) takes them only from the domains allowed there, and
+  "Every server not suspended" from any server but those suspended. The same choice holds the other way:
+  in allowlist mode Flowa connects to no server that is not allowed (no key, no profile, no member's search by
+  handle, which says so), so **on a fresh federating instance nothing reaches another server, and nothing is
+  taken from one, until an admin allows a domain or chooses open**. A domain covers its subdomains; a
+  suspended domain is never fetched from in either mode. Moderators read the page; admins change it, and every change is
+  in the audit log. Neither choice stops anyone reading the public profiles and posts, as a browser can.
+- **What a delivery must pass**, cheapest first: an Activity Streams content type, a signature (both forms
+  above, the digest, the 12 hours, never twice), a domain the policy lets in, the allowances (300 deliveries in
+  5 minutes from one server's domain, more per address before anything is read), at most 256 KB, at most 4
+  handled at once. Its key is fetched from its server (signed, counted against at most 120 key fetches an hour
+  per domain) and kept; a key whose server stopped answering, of an account that is gone or suspended,
+  verifies nothing, except that account's own deletion. The activity must be by the account whose key signed
+  it, and its id on that account's server. Each refusal has its status (401 for a signature, 403 for the
+  policy, 413, 429, 503 with `Retry-After` when this server is busy or its clock is not set) and is counted.
+- **What is done with it.** An activity is stored once by its id (a repeat is answered 202 and not stored
+  again) in the `ap_inbox` table and handled in the background: **only an account deleting itself** (marked
+  gone) **or changing its profile** (fetched again) is acted on. Follows, posts, replies, likes and the rest are
+  answered 202, counted by type, and dropped: they come with later versions. At most 5,000 rows wait (then
+  503), 500 from one server's domain (then 429); a handled row loses its body at once and is removed after 7
+  days.
+- **Where to see it.** Admin, Federation shows what waits and how deliveries were answered over the last day
+  (taken, dropped by type, refused by reason, handled); Admin, Overview's mode line says whether deliveries are
+  paused and what waits. The counts live in memory and start again at each restart.
+- The first delivery whose key must be fetched freezes the origin (the fetch is signed with the instance
+  actor's key under it), as the first answer that names a member does.
 
 ### What the server will connect to
 
@@ -762,7 +804,8 @@ is [docs/hardening-plan.md](docs/hardening-plan.md).
 ## Feature flags
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
-on the Admin page. No restart is needed. Every flag but `follows` is on by default; an admin turns off what
+on the Admin page. No restart is needed. Every flag but `follows` and `federation` is on by default
+(`federation` exists only in a mode that federates: it pauses the inbox, [above](#federation-the-inbox-and-domain-policies)); an admin turns off what
 gets in the way, and a flag an admin has set keeps that setting. `follows` is off by default, on an instance
 that ran before it as on a new one, so that adding it changes nothing until an admin turns it on. A flag that is off turns off the feature's API as
 well as its pages: with `community` off the timeline, comments, likes, people and notifications answer

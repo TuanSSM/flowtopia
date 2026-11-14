@@ -6,7 +6,7 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)). The first item ships together with FWR's inbox, because the allowlist is how
+**Status:** in progress (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)); part of item 1 is built with FWR's inbox. The first item ships together with FWR's inbox, because the allowlist is how
 the experimental mode starts (F8). 0 of 8 items done. Every admin action below goes through `audit`.
 Every setting, table, route and test named below is new unless the design note says it exists.
 
@@ -23,11 +23,12 @@ Every setting, table, route and test named below is new unless the design note s
   (migration 17), the `federation_policy` setting (allowlist by default), `federation.read` and
   `federation.manage` (`fedPerms`, listed only in a mode that federates), the admin API and the Federation tab
   of the Admin page (allow and suspend with a reason, every change audited), the inbox's 403 for a suspended or
-  unlisted domain before any work, the fetcher refusing a suspended domain; `TestPolicyDecide`,
-  `TestDBDomainPolicies`, `TestDBPolicyRefusesFetch`, `TestPermissionTable` updated, the inbox's cases in
-  `TestInboxRefusals`, and the page in the `federated` browser suite with its screenshot.
-  **Open:** the allowlist in the fetcher (both ways: a search by handle still reaches an unlisted server, and
-  the fan-out, FWR 4, must be held to it); `limit` (the API refuses it until follows cross servers, FWR 3, so
+  unlisted domain before any work, the fetcher refusing every host the policy does not let in (both ways: no
+  key, actor or search by handle reaches an unlisted server in allowlist mode); `TestPolicyDecide`,
+  `TestDBDomainPolicies`, `TestDBPolicyRefusesFetch`, `TestDBPolicyBothWays`, `TestPermissionTable` updated, the
+  inbox's cases in `TestInboxRefusals`, and the page in the `federated` browser suite with its screenshot.
+  **Open:** the fan-out (FWR 4) must pass `admits` when it builds its requests, as every federation request
+  does now; `limit` (the API refuses it until follows cross servers, FWR 3, so
   a Follow from a limited domain waiting for approval is not testable yet); reject media and reject reports;
   the public comment on the about page; the Admin page's sentence on authorized fetch (7.6).
 - [ ] **Actions on remote accounts.** `mute` and `suspend` in `handleModAction` act as limit and

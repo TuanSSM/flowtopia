@@ -14,7 +14,8 @@ been built since is marked "As built" in its section and listed in the epics' to
 the origin, the keys, the guarded fetcher, HTTP signatures, discovery, the actor documents and public
 pages with the post audience and retired names, the outboxes and collections, remote accounts with the
 cache of remote actors, and the search by handle that calls it; a federating instance can be read, its members
-can look up people elsewhere, and it has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
+can look up people elsewhere; and as of FWR 1 with FMD 1's domain policies, an inbox that takes deliveries and
+acts only on an account deleting itself or changing its profile, 7.10). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
 proceeds on its recommendation, and each decision says what the plan assumes meanwhile.
 
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
@@ -408,6 +409,11 @@ inbox, so nobody can follow anyone yet, and nothing is delivered"), and the part
 As built (FRD 8): the sentence adds the search by handle ("..., and lets members look up people on other servers
 by their handle and read their profiles and latest public posts; it has no inbox, ..."), and the parts add
 `lookup`.
+
+As built (FWR 1): the sentence now ends "..., and takes deliveries from other servers at its inboxes (only from the
+servers the admin's domain policy lets in, and only while the Federation switch is on) but acts only on an account
+deleting itself or changing its profile: follows, posts, replies and likes sent to it are counted and dropped, so
+nobody can follow anyone yet, and nothing is delivered", and the parts add `inbox` (7.10).
 
 ### 4.2 What each mode means for every surface
 
@@ -868,6 +874,10 @@ As built (FRD 5), checked against `TestActorDocument`'s golden files (`testdata/
   As built (FRD 6): the outbox answers, and a member's actor names `followers`, `following` and `featured`,
   which answer too (6.2); `endpoints.sharedInbox` is still left out, and the inbox still takes nothing (405,
   below). The instance actor names its inbox and its outbox (`/actor/outbox`, empty) and nothing else.
+- **As built (FWR 1), replacing the next paragraph:** the inboxes take deliveries (7.10), a member's actor names
+  `endpoints.sharedInbox` (`/inbox`, ActivityPub 4.1 and 7.1.3; `actor-ana.json` changed), and any method but POST
+  at an inbox is 405 with `Allow: POST` (`TestDBInboxMethods` replaces `TestDBInboxNotYet`). The instance actor
+  still names its inbox and outbox and nothing else.
 - **The inboxes the actors name** (`/users/{name}/inbox`, `/actor/inbox`) answer every method with 405 and an
   empty `Allow`, whatever the name, before the write guard (which said 415 or 403), counted against the public
   allowance. RFC 9110 15.5.6 makes 405 the answer for a method the target does not support, and 10.2.1 an
@@ -876,7 +886,7 @@ As built (FRD 5), checked against `TestActorDocument`'s golden files (`testdata/
   is for a method the server supports nowhere (15.6.2). Mastodon's pages on disk do not say how it treats
   each status. So someone on Mastodon can press Follow on a Flowa account now; the Follow is refused, and it
   stays "requested" there until FWR builds the inbox. Local and plain single mode answer these paths as any
-  unknown address (`TestDBDefaultsUnchanged`); `TestDBInboxNotYet`.
+  unknown address (`TestDBDefaultsUnchanged`); `TestDBInboxNotYet` (replaced in FWR 1, above).
 - **An opted-in member whose key is still being made** (opting in asks for it; it takes a moment, 5.7) gets
   503 with `Retry-After: 60`, never a document without a key. The instance actor likewise until its key exists.
 - **Kept in memory.** A member's document is made once and kept (at most 1,000, all dropped when full, each
@@ -1211,7 +1221,8 @@ stored with its id, kind, name and key, and no display name, summary, `url` or `
 longer says so is read in full again (the document is the actor's own word, as an Update would be).
 
 The inbox verifies (section 7), stores the activity in `ap_inbox` and answers 202; a worker handles
-it. "Actor" below is the verified signer's actor.
+it. "Actor" below is the verified signer's actor. What FWR 1 does with each row of this table, until the items
+that own them, is in 7.10.
 
 | Activity | Accepted when | Effect | Edge cases |
 | --- | --- | --- | --- |
@@ -1876,6 +1887,8 @@ taken. An owner is never followed further than one key document.
   sessions). So a later item that adds a table referencing `users` cannot forget it. The bound is soft only if
   more than 20,000 remote accounts are each kept by something.
 - **An actor that moved host** is a new id, so a new actor; the old row keeps `moved_to`, which PRT reads.
+- **As built (FWR 1):** the cache of parsed keys and the limit of key fetches per sender group, as the next
+  paragraph asks (7.10).
 - **Not built here:** the in-memory cache of parsed public keys (1,000, least recently used out) is the
   verifier's, and comes with FWR's inbox, which is the first to verify; so does the limit of key fetches per
   host the paragraph above asks for, which the inbox needs because the verifier fetches for any key id. The
@@ -2008,6 +2021,114 @@ Every outbound request goes through one fetcher (`fetcher.do`, **new**, generali
 The request log as today (route pattern, status, time). Refusals name the host and the reason
 ("signature: date too old", "digest mismatch", "domain blocked"). Never a body, a key, a signature, a
 digest, a cookie or a member's content. Delivery failures name the host, the status and the attempt.
+
+### 7.10 The inbox, as built (FWR 1)
+
+`POST /users/{name}/inbox`, `POST /inbox` and `POST /actor/inbox` (`handleInbox`, "federation: the inbox and its
+queue" in `main.go`), only in a mode that federates (`testdata/routes-federated.txt`), with these decisions where
+the note was silent or is corrected:
+
+- **One inbox.** The three addresses are one handler, and no name is looked up: the activity's own fields say
+  what it is about. So no answer can tell whether a local name exists, is opted in, suspended or retired (a
+  delivery to `/users/nobody/inbox` is answered as one to `/inbox`). Mastodon's pages on disk say nothing of how
+  it answers a personal inbox of an unknown name; answering alike is the careful choice 5.3 made for WebFinger.
+- **The one exemption from `guard`.** `fedMethods` sends a POST to an inbox address to the mux past `guard`;
+  `handleInbox` checks the type itself (`application/activity+json`, or `application/ld+json` with no profile or
+  the Activity Streams one, as the fetcher takes them: 7.5), so plain JSON and anything else is 415. Every other
+  address keeps `guard` unchanged (`TestDBInboxMethods`).
+- **Order and statuses.** Before the body is read: federation refused, 404 (as every federation address then);
+  3,600 deliveries an hour per address, 429; the type, 415; no signature or one that does not parse, 401; the
+  key id's domain suspended, or not allowed in allowlist mode, 403 (7.7, section 10); the `federation` flag off,
+  503 with `Retry-After` (F1's pause switch, off by default, a flag only in a mode that federates); 300 deliveries
+  in 5 minutes per sender group, 429 (7.5: "per remote host" is held per sender group, the last two labels of the
+  key id's host, as the replay memory groups them, so a wildcard name's subdomains share one allowance); a
+  `Content-Length` over 256 KB, 413; no free turn among 8 bodies read at once, 503 at once. Then the body (256 KB,
+  `http.MaxBytesReader`, 413), the signature (401; 503 for `sigClock`, `sigFull`, and a key lookup that was busy,
+  past its allowance, or found both key turns taken), the decode under one of 4 decode turns (7.5's "handling at
+  once": 8 more wait 2 s, then 503) with what follows, so at most 4 bodies are decoded at once, each verified first
+  (400 when it does not decode), the origin rule, the queue (503 at 5,000 rows waiting, 429 at 500 of
+  one sender group: 8.5's per-host share, decided here as a tenth of the queue). Every refusal has a fixed phrase,
+  logged through `logRefusal` with the host or the address and nothing the sender wrote, and counted.
+- **Keys (7.4).** `inboxKeyFor` gives the verifier the key: from `keyMemo` (at most 1,000 parsed keys, least
+  recently used out, each kept no longer than its row is fresh and dropped whenever the cache writes the actor,
+  so it is always a key `remoteKey` would give to verify with), else `remoteKey`, whose fetches are counted
+  against 120 an hour per sender group (`actorCache.keyFetches`; past it `actorHostLimit`, 503, not remembered)
+  on top of the cache's 2 at once and one per host, and the 10 minute memory of failures. A signature that does
+  not verify is tried once more after `remoteKeyFailed`. A stale, gone or suspended actor's key verifies nothing;
+  an actor's own Delete asks with `keyForOwnDelete`. A restart empties the replay memory and `keyMemo`; a replay
+  within 12 hours of one rests on the activity ids stored.
+- **Keys not kept have turns of their own.** A key not in `keyMemo` is looked up (and perhaps fetched) under one of
+  2 key turns (`inboxKeyAtOnce`, the cache's own 2 fetches at once), taken at once or not at all (503): a flood of
+  deliveries naming keys nobody has holds at most 2 of the 8 read turns, and no decode turn, so deliveries whose
+  keys are kept go on (`TestDBInboxFlood`).
+- **The one reading before the signature.** `peekOwnDelete` tells an actor's own Delete before the signature, which
+  7.4 needs (a Delete from an actor never seen costs no fetch) and 6.3 too (a gone actor's own Delete verifies with
+  its cached key). Its bounds, written as its comment: only for a key not kept, so only after every check before the
+  body; on at most the 256 KB already read; through the decoder's linear scan (no recursion, the limits of 7.5) and
+  then the top-level members alone (`type`, `actor`, `object`'s id); under a key turn, never a decode turn; with no
+  database work but one indexed lookup, and only for an own Delete; and its answer chooses only between dropping
+  with 202, verifying with the cached key (`keyForOwnDelete`, after which the decoded activity must be that own
+  Delete, or 401) and going on as usual. Nothing it reads is stored, logged or acted on. An unsigned request is
+  refused before its body is read at all (`TestDBInboxFlood` counts the bytes read: none).
+- **The origin rule (7.3).** The activity's actor must be the actor whose key signed it (the cache keeps only a
+  key its actor names, owns and has on its own origin, so the key id is on the actor's origin too). A delivery
+  signed by anyone else is a forward: 202, not stored, not acted on, as 7.3 says ("answered 202 and its object
+  fetched from its origin by id"; ActivityPub 7.1.2 makes forwarding the forwarder's duty and leaves the receiver to
+  check it; fetching the object is FWR 5's and 6's). Its sender group's allowances are the signer's: the domain
+  policy, the delivery allowance and the key fetches are all decided by the key id that signed it, and the named
+  actor's domain is never counted or fetched from (`TestDBInboxForwardPays`). This is what refuses a cavage signature
+  replayed under another domain's key id (7.2). The activity's id must be on the actor's origin before it is
+  written (7.2): 400. **Correction (7.2):** an activity with no id is refused (400), not "processed and not
+  deduplicated": the decoder requires `id` (6.3), and accepting one would leave it to the replay memory alone,
+  which a restart empties.
+- **What is stored and handled** (6.3's table until the items that own each row): an actor's own Delete (its
+  object the actor) and an Update whose object is the actor's own document, embedded and of an actor type, are
+  stored; a worker marks the first's actor `gone` (FWR 7 purges what it left) and fetches the second's actor
+  again within the 10 minute rule, which takes a new key or lifts a suspension (the embedded document is not
+  stored as received: 7.3). Everything else, Follow included, is answered 202, counted per type (the vocabulary's
+  types and Mastodon's extensions by name, any other as `other`) and dropped with no row. Nothing is answered
+  back: no Accept or Reject goes out (no delivery exists yet), so a Follow pressed on Mastodon stays requested.
+- **`ap_inbox`** (migration 18, with `flowa-schema17.dump`): as 9.1 with these **corrections**: `body` is `TEXT`,
+  not `JSONB`, so the bytes the signature covered are kept as received (the worker decodes them again; a forward,
+  7.1.2, sends them as received); `host` (the sender group) for the per-group share; `kind`, `next_at`,
+  `locked_until`, `outcome` and `handled_at` for the claim, the retries and the retention; `actor_id` indexed and in
+  `userRefs`; and indexes for the claim (`ap_inbox_due`), the share (`ap_inbox_host`) and the retention
+  (`ap_inbox_handled`). Rows are claimed with `FOR UPDATE SKIP LOCKED` and a 60 s lease on the queue's clock (8.1);
+  a failure of this server's own (a busy fetch, the database) is retried after 1 min, 5 min, 30 min, 2 h and 6 h,
+  then the row is failed (the note gives no schedule for inbound rows); a handled or failed row loses its body
+  at once and is removed by housekeeping after 7 days (9.3). Two workers (`inboxWorkers`) start with the first
+  row stored, or at start when rows wait; they wait on a signal or 5 s, stop with the federation's context and
+  wait group (8.6), and a row claimed when they stop is given back at once (its lease cleared, the attempt not
+  counted); a row whose process died is claimed again when its lease ends.
+- **Connections (section 12).** Every statement federation makes for its own work takes one of `fedConnsMax` (3)
+  turns (`dbTurn`), never across a fetch and never while taking another: the inbox (the indexed lookup, the row),
+  the workers (claim, handling, finishing, giving a row back), the actor cache (reads, the write of an actor, a 410,
+  the bound), the keys (`keyIDOf`, `ensureKey`, `privateKey`), `ensureOrigin`, the policy's load, the housekeeping
+  step, and the search by handle's one statement (a local member), whose remote reads go through the actor cache's
+  turns per statement and whose outbox and pages through the fetcher with no turn and no connection. So federation
+  holds at most 3 of the pool's 8 (`TestDBInboxOneConnection`, `TestDBFedConnsBound`). Outside the turns, on
+  purpose: the answers to readers (WebFinger, NodeInfo, the actors, the public pages and the outboxes), which are
+  page requests held to `limits.public` and `limits.discovery` like any page, and the admin pages' reads; and the
+  start (`startFederation`) and `-rotate-keys`, which run before or apart from any of it.
+- **Housekeeping** (only in a mode that federates): the rows above, the replay memory's `sweep`, and one line with
+  the readers' drop counts of the last pass (recipients and objects dropped, dates that were not dates). The
+  replay memory's clock step is logged once (`stepped`). `ReplyToUnknown` and the note readers' counts come with
+  the first item that decodes a post (FWR 5).
+- **The numbers (14.2).** The Federation tab of the Admin page shows what waits (and how old the oldest is), what
+  was given up in 7 days, and over the last 24 hours the deliveries taken, dropped per type, refused per reason and
+  handled. Those counts are in memory: the tab says "kept in memory since the last start, <time>: a restart begins
+  them again", and the dashboard's mode line, which says whether deliveries are paused and what waits, names the
+  same time, so a restart is not read as a quiet day.
+- **Not built:** the `/healthz` fields (FWR 2's DoD), `TestFederationMemory` (it needs deliveries out: 50,000
+  queued deliveries and 4 workers sending, FWR 2; the inbox's own share, 4 decodes of 4 MB at most, is held by
+  `TestDecodeMemory` and the 4 turns), the flood block of 7.7 (FMD 7), the forward of 7.1.2 (FWR 6).
+- **Measured** (2.1 GHz Xeon, 4 cores, local Postgres in Docker): `BenchmarkInboxRequest` (the whole server chain)
+  with the key kept, 66 to 75 µs, 17.7 KB and 173 allocations for a delivery that is dropped, and 1.4 to 2.1 ms wall,
+  26 KB and 219 allocations for one that is stored, the commit of its row included (the wall time is the commit's
+  wait; the CPU is the dropped case's); an unsigned request with a 256 KB body, 6.2 to 6.6 µs, 3.1 KB and 41
+  allocations (refused before the body is read); a 256 KB Delete from an actor never seen under a key nobody keeps,
+  1.7 to 1.8 ms, 640 KB and 173 allocations (the body read and digested, `peekOwnDelete`, one indexed lookup, no
+  fetch); `BenchmarkInboxVerify` (the signature alone) 43 to 48 µs and 59 to 64 allocations, as before.
 
 ## 8. Delivery and work queues
 
@@ -2521,9 +2642,14 @@ above a host wins over an allow (`fedPolicy.decide`). The domain is written as t
 ASCII, a name in another script in its `xn--` form (7.8), at least two labels, never this instance's own. The rows are
 read into memory at start and after each change, so a check costs no query; at most 10,000 rows. Applied: the inbox
 refuses a suspended domain, and in allowlist mode an unlisted one, with 403 before the body is read or a key fetched
-(7.7); the fetcher refuses a suspended domain through the actor cache's `refused` hook. **Not built yet** (FMD's todo):
-the allowlist applied to the fetcher (a search by handle still reaches an unlisted server; nothing is delivered yet),
-the effect of `limit` (follows across servers are FWR 3; the API takes allow and suspend only), reject media and
+(7.7); and the fetcher refuses, on the first URL and every redirect, every host the policy does not let in
+(`fetchReq.admits`, the actor cache's `admits` hook): F8 defines the allowlist as "talk only to servers an admin
+listed", and 7.6 reads it as "sends to and accepts from only the listed servers", so in allowlist mode no key, actor or
+WebFinger request leaves for an unlisted host, and a member's search by handle for one is told so before any connection
+(`lookupNotAllowed`, 403, most of its allowance given back; a redirect to an unlisted host mid-lookup is the one "not
+found" of FRD 8's review). A fresh federating instance therefore reaches no other server until an admin allows a domain
+or chooses open, which the README and the Admin page say; a change of policy forgets the cache's remembered refusals at
+once. As 7.6 says, neither mode makes the public pages private. **Not built yet** (FMD's todo): the effect of `limit` (follows across servers are FWR 3; the API takes allow and suspend only), reject media and
 reject reports (no remote media or Flag is taken yet), the public comment on the about page, and the sentence the
 page owes on authorized fetch (7.6) beyond the one it says now (that any server can still read public pages).
 

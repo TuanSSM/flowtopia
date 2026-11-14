@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPolicyDecide(t *testing.T) {
@@ -172,5 +173,47 @@ func TestDBPolicyRefusesFetch(t *testing.T) {
 	}
 	if n := r.w.total(); n != 0 {
 		t.Errorf("%d requests reached a suspended domain", n)
+	}
+}
+
+// The allowlist both ways (F8, section 10, 7.6; FMD 1's DoD): on an instance in allowlist mode no request leaves
+// for a host no row allows, whatever asks for it. A member's search by handle is told so in its own words and
+// costs no connection; a key or an actor is not fetched; a WebFinger redirect to an unlisted host is refused by
+// the fetcher itself. Allowing the domain lets each through.
+func TestDBPolicyBothWays(t *testing.T) {
+	r := newRemoteEnv(t)
+	r.mustExec(`UPDATE instance_settings SET value = '"allowlist"' WHERE key = 'federation_policy'`)
+	if err := r.a.fed.loadPolicy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.a.fed.lookupPause = func(context.Context, time.Duration) {}
+	r.setFlag("community", true)
+	_, ana := r.user("ana", "user")
+	bo := "https://social.example/users/bo"
+	person(r.w, bo, "bo", nil)
+	outbox(r.w, bo)
+	code, out, _ := r.doH(ana, "POST", "/api/fed/lookup", map[string]any{"q": "@bo@social.example"}, nil)
+	if code != 403 || out["reason"] != "notAllowed" || r.w.total() != 0 {
+		t.Fatalf("a search for an unlisted server: %d %v, %d requests", code, out["_raw"], r.w.total())
+	}
+	if _, err := r.a.fed.remoteKey(context.Background(), bo+"#main-key", keyToVerify); reason(err) != actorRefused || r.w.total() != 0 {
+		t.Errorf("a key on an unlisted server: %v, %d requests", err, r.w.total())
+	}
+	if _, err := r.actor(bo); reason(err) != actorRefused || r.w.total() != 0 {
+		t.Errorf("an actor on an unlisted server: %v, %d requests", err, r.w.total())
+	}
+	// Allowed: the search goes through. A handle whose WebFinger redirects to an unlisted host stops there.
+	r.mustExec(`INSERT INTO domain_policies (domain, policy) VALUES ('social.example', 'allow')`)
+	if err := r.a.fed.loadPolicy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := r.doH(ana, "POST", "/api/fed/lookup", map[string]any{"q": "@bo@social.example"}, nil); code != 200 {
+		t.Errorf("a search for an allowed server: %d %v", code, out["_raw"])
+	}
+	moved := wfURL("other.example", "acct:moved@social.example")
+	r.w.put(wfURL("social.example", "acct:moved@social.example"), worldDoc{status: 301, location: moved})
+	putWF(r.w, "other.example", "acct:moved@social.example", "acct:moved@social.example", "https://other.example/users/moved")
+	if code, out, _ := r.doH(ana, "POST", "/api/fed/lookup", map[string]any{"q": "@moved@social.example"}, nil); code != 404 || r.w.hit(moved) != 0 {
+		t.Errorf("a WebFinger redirect to an unlisted host: %d %v, %d requests there", code, out["_raw"], r.w.hit(moved))
 	}
 }

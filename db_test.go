@@ -3864,10 +3864,10 @@ func TestDBQueryPlans(t *testing.T) {
 	}
 	on = tx
 	// It asks every table that references users (userRefs), each through its index for a table the size it
-	// is meant for; a table this small (the 200 reports, the empty achievements and domain_policies) the planner reads whole for
+	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox and domain_policies) the planner reads whole for
 	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
 	// all for 200 removed, a few milliseconds, once for every 200 new actors.
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_inbox badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
 	on = db
 	tx.Rollback()
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.

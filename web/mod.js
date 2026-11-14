@@ -119,7 +119,7 @@ function pageAdmin(tab) {
 }
 function adminFeatures() {
   return `<div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every member, straight away</span></div>
-    <div class="stack" style="gap:8px">${FLAGS.map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
+    <div class="stack" style="gap:8px">${FLAGS.filter(([k]) => k in flags).map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
 }
 // The instance information: a description, a contact and the rules, which people see at sign-up and on the
 // about page (docs/federation.md, section 10). The whole document is saved at once, against the version it
@@ -364,9 +364,10 @@ function adminFederation() {
       <td class="small" style="white-space:nowrap">${esc(fmtWhen(x.createdAt))}${x.createdBy ? `<br><span class="tiny">by @${esc(x.createdBy)}</span>` : ''}</td>
       <td>${manage ? `<button class="btn sm" data-act="fed-domain-rm" data-domain="${esc(x.domain)}" aria-label="Remove the policy for ${esc(x.domain)}">Remove</button>` : ''}</td></tr>`).join('');
   return `<section class="card fed-policy" aria-labelledby="fed-pol-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-pol-h">Whom this Flowa federates with</h2><span class="sub">Experimental</span></div>
-      ${manage ? `<div class="stack" style="gap:6px" role="radiogroup" aria-labelledby="fed-pol-h">${[['allowlist', 'Allowed servers only', 'Deliveries are taken only from the domains allowed below. A new instance starts here, and nothing comes in until a domain is allowed.'], ['open', 'Every server not suspended', 'Deliveries are taken from any server, except the domains suspended below.']].map(([k, n, h]) => `<label class="check"><input type="radio" name="fed-policy" data-change="fed-policy" value="${k}" ${D.policy === k ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${h}</span></span></label>`).join('')}</div>`
+      ${manage ? `<div class="stack" style="gap:6px" role="radiogroup" aria-labelledby="fed-pol-h">${[['allowlist', 'Allowed servers only', 'Flowa takes deliveries only from the domains allowed below, and connects only to them: no key, profile or search by handle reaches any other server. A new instance starts here, so nothing comes in or goes out until a domain is allowed.'], ['open', 'Every server not suspended', 'Flowa takes deliveries from, and connects to, any server except the domains suspended below.']].map(([k, n, h]) => `<label class="check"><input type="radio" name="fed-policy" data-change="fed-policy" value="${k}" ${D.policy === k ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${h}</span></span></label>`).join('')}</div>`
         : `<p class="small">${open ? 'Every server not suspended below.' : 'Only the domains allowed below.'} An admin changes this.</p>`}
       <p class="tiny" style="margin-top:8px">Neither choice stops a server that is not listed from reading the profiles and Public posts of the members who share them: anyone can read those pages, as a person in a browser can. A suspended domain is refused both ways: nothing it sends is taken, and Flowa fetches nothing from it.</p></section>
+${fedInboxHTML(D.inbox)}
     <section class="card" aria-labelledby="fed-dom-h"><div class="card-h"><h2 class="grow" id="fed-dom-h">Domains</h2><span class="sub">${D.domains.length} of at most ${D.max.toLocaleString()}</span></div>
       ${manage ? `<form class="stack fed-add" id="fed-domain-form" style="gap:8px;margin-bottom:12px">
         <div class="row wrap" style="gap:8px;align-items:flex-end"><label class="field grow" style="min-width:180px">Domain<input type="text" name="domain" placeholder="social.example" autocapitalize="none" spellcheck="false" required></label>
@@ -377,6 +378,20 @@ function adminFederation() {
         <div><button class="btn primary" type="submit">Save the policy</button></div></form>` : ''}
       <div class="table-wrap"><table class="table"><thead><tr><th>Domain</th><th>Policy</th><th>Reason</th><th>Since</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty small">${open ? 'No domain is suspended.' : 'No domain is allowed yet, so no delivery is taken.'}</td></tr>`}</tbody></table></div></section>`;
 }
+// The inbox's numbers (docs/federation.md 14.2): what waits, and how deliveries were answered over the last day
+// (or since the start, when that is sooner), each list as a small table with its counts.
+function fedInboxHTML(n) {
+  if (!n) return '';
+  const age = s => s < 120 ? `${s} seconds` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
+  const since = n.since ? `since the last start, ${esc(fmtWhen(n.since))}` : 'in the last 24 hours';
+  const list = (o, empty) => { const e = Object.entries(o || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])); return e.length ? `<ul class="fed-counts">${e.map(([k, v]) => `<li><span>${esc(k)}</span> <span class="num">${v.toLocaleString()}</span></li>`).join('')}</ul>` : `<p class="tiny">${empty}</p>`; };
+  return `<section class="card fed-inbox" aria-labelledby="fed-in-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-in-h">Deliveries</h2><span class="sub">${since}</span></div>
+    ${n.paused ? `<p class="notice warn">Taking deliveries is off under Features, so other servers are told to try again later${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
+    <p class="small"><span class="num">${n.queued.toLocaleString()}</span> waiting to be handled, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}. <span class="num">${n.failed.toLocaleString()}</span> given up in the last 7 days.</p>
+    <p class="tiny fed-since">The counts below are kept in memory since the last start, ${esc(fmtWhen(n.started))}: a restart begins them again, so a low count just after one is not a quiet day.</p>
+    <div class="grid g2 fed-lists" style="margin-top:8px"><div><h3 class="small">Taken</h3>${list(n.answers, 'None yet.')}<h3 class="small">Handled, by type</h3>${list(n.handled, 'None yet.')}</div>
+      <div><h3 class="small">Dropped, by type (not acted on in this version)</h3>${list(n.dropped, 'None yet.')}<h3 class="small">Refused, by reason</h3>${list(n.refused, 'None yet.')}</div></div></section>`;
+}
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).
 const MODES = { local: 'a community that lives on this server only, which is what FLOWA_MODE means when it is not set', federated: 'a community on this server whose members can let other servers find them' };
@@ -384,7 +399,10 @@ const MODES = { local: 'a community that lives on this server only, which is wha
 // what this version of federation does (built, the sentence the start log writes), or why federation is
 // refused (a moved origin, a key secret that does not open the keys).
 const fedLine = f => !f ? '' : f.refused ? ` Federation is refused: ${f.refused.replace(/^federation refused: /, '')}.`
-  : ` Federating as ${f.origin}, ${f.announced ? `first announced ${fmtWhen(f.announced)}, so this origin cannot change` : 'not announced yet, so the origin can still change until an answer first names a member'}. ${f.built ? f.built[0].toUpperCase() + f.built.slice(1) : ''}.`;
+  : ` Federating as ${f.origin}, ${f.announced ? `first announced ${fmtWhen(f.announced)}, so this origin cannot change` : 'not announced yet, so the origin can still change until an answer first names a member'}. ${f.built ? f.built[0].toUpperCase() + f.built.slice(1) : ''}.${inboxLine(f.inbox)}`;
+// The inbox's part of the mode line: paused, or what waits.
+const inboxLine = n => !n ? '' : n.paused ? ' Taking deliveries is off under Features.'
+  : ` Deliveries waiting: ${n.queued}${n.queued ? `, the oldest for ${Math.round(n.oldestSeconds / 60)} minutes` : ''}; given up in 7 days: ${n.failed}; the counts on the Federation tab are since the last start, ${fmtWhen(n.started)}.`;
 let adminDashboard = () => {
   if (!mod.dash) { loadDash(); return '<div class="card"><div class="empty small">Loading…</div></div>'; }
   const t = mod.dash.totals, W = mod.dash.weeks;
@@ -573,6 +591,9 @@ document.addEventListener('submit', async e => {
     const domain = f.domain.value.trim(), policy = f.policy.value;
     const r = await api('admin/federation/domains/' + encodeURIComponent(domain), 'PUT', { policy, note: f.note.value });
     if (!r.ok) { const el = f.elements[r.data?.field] || f.domain; showErr('fed-err', r.error, [el]); el.focus(); return; }
+    // The page is not drawn again under a text box that has the cursor (render), so the box lets go first; the
+    // new form is empty, and the keyboard goes back to its first field for the next domain.
+    document.activeElement?.blur();
     fedAdm.data = r.data; render(); toast(`${domain.toLowerCase()}: ${DOMAIN_POLICY[policy].toLowerCase()}.`);
     $('#fed-domain-form [name=domain]')?.focus();
   } else if (f.id === 'audit-form') {

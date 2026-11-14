@@ -973,44 +973,6 @@ func TestDBPublicPagesHidden(t *testing.T) {
 	check("single mode's profile page, walked by its cursor", walk(s, "/users/"+name), sm)
 }
 
-// The inboxes the actors name are not built yet: in a mode that federates every method there answers 405
-// with an empty Allow (RFC 9110 15.5.6 and 10.2.1), whatever the name, the content type or an Origin, before
-// the write guard would say 415 or 403, counted against the public allowance. Local and plain single mode
-// answer them as any unknown address (TestDBDefaultsUnchanged).
-func TestDBInboxNotYet(t *testing.T) {
-	f := newPubFixture(t)
-	e := f.e
-	var want *httptest.ResponseRecorder
-	for _, p := range []string{"/users/ana/inbox", "/users/nobody/inbox", "/users/eve/inbox", "/actor/inbox"} {
-		for _, m := range []string{"POST", "GET", "HEAD", "PUT", "DELETE", "OPTIONS"} {
-			for _, hdr := range []map[string]string{
-				{"Content-Type": `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`},
-				{"Content-Type": "application/activity+json", "Origin": "https://social.example"},
-				{"Content-Type": "application/json"}, nil,
-			} {
-				w := ask(e.h, m, p, "198.51.100.20:4000", hdr)
-				allow, has := w.Result().Header["Allow"]
-				if w.Code != 405 || !has || len(allow) != 1 || allow[0] != "" || w.Result().Header.Get("Cache-Control") != "no-store" {
-					t.Errorf("%s %s %v: %d %v", m, p, hdr, w.Code, w.Result().Header)
-				}
-				if want == nil {
-					want = w
-				} else if m != "HEAD" && w.Body.String() != want.Body.String() {
-					t.Errorf("%s %s: another body: %q", m, p, w.Body)
-				}
-			}
-		}
-	}
-	if !strings.Contains(want.Body.String(), "does not take deliveries yet") {
-		t.Errorf("the inbox's words: %q", want.Body)
-	}
-	e.a.lim.public = newLimiter(1, time.Hour)
-	ask(e.h, "POST", "/users/ana/inbox", "203.0.113.9:1", nil)
-	if w := ask(e.h, "POST", "/users/ana/inbox", "203.0.113.9:1", nil); w.Code != 429 {
-		t.Errorf("the inbox past the allowance: %d", w.Code)
-	}
-}
-
 // A single-profile instance's page at / is made again whenever a post leaves or rejoins public view: the
 // owner deletes it, a moderator hides it or restores it. On a real instance the owner is the one account and
 // an admin, whom nobody outranks, so only the delete can happen there; the moderator is put in by hand to show

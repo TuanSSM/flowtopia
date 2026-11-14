@@ -348,8 +348,12 @@ func TestDBCollections(t *testing.T) {
 		}
 		docOf(t, e, strings.TrimPrefix(actor[k].(string), "https://flowa.example.org"))
 	}
-	if _, ok := actor["endpoints"]; ok {
-		t.Error("the actor names a shared inbox, which does not answer")
+	// The shared inbox it names since the inbox was built (FWR 1) takes deliveries: a POST without a signature is
+	// refused as unsigned, not as an unknown address.
+	if ep, _ := actor["endpoints"].(map[string]any); ep["sharedInbox"] != "https://flowa.example.org/inbox" {
+		t.Errorf("the actor's shared inbox: %v", actor["endpoints"])
+	} else if w := ask(e.h, "POST", "/inbox", "", map[string]string{"Content-Type": "application/activity+json"}); w.Code != 401 {
+		t.Errorf("the shared inbox answers %d to an unsigned delivery", w.Code)
 	}
 	inst = docOf(t, e, "/actor")
 	if _, ok := inst["followers"]; ok || inst["outbox"] != "https://flowa.example.org/actor/outbox" {

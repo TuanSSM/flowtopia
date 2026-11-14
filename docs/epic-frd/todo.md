@@ -332,7 +332,7 @@ design note says it exists.
   recorded fixtures (none can be recorded here; `test/federation-record.sh` is not written), and with them the
   details federation.md's Sources section leaves to a recording (the alt text property, the nesting of a
   mention, an actor beside `TestActorDocument`'s golden file); the in-memory cache of parsed keys and the limit
-  of key fetches per host, which come with FWR's inbox, the first to verify.
+  of key fetches per host, which come with FWR's inbox, the first to verify (built there: federation.md 7.10).
 - [ ] **People elsewhere: search by handle.** A box that takes `@name@host` or a profile URL,
   resolves it by WebFinger (HTTPS only, the `self` link, the reverse lookup from the actor's
   `preferredUsername` and host: federation.md section 11), and shows the remote profile and the
