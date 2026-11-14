@@ -284,6 +284,9 @@ func strictShape(t *testing.T, what string, b []byte) {
 func TestActorDocument(t *testing.T) {
 	f := newPubFixture(t)
 	e := f.e
+	// With follows on, as a federating instance runs them: with them off the actor says manuallyApprovesFollowers
+	// true, since a Follow is then not taken at all (FWR 3; TestDBFollowsFlagOff).
+	e.setFlag("follows", true)
 	e.mustExec(`UPDATE ap_keys SET public_key = $1 WHERE user_id IS NULL`, cavageKeyPEM)
 	e.a.fed.dropActor(instanceActor)
 	for _, accept := range []string{apAccept, ldAccept} {
