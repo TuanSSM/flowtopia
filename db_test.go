@@ -3864,10 +3864,52 @@ func TestDBQueryPlans(t *testing.T) {
 	}
 	on = tx
 	// It asks every table that references users (userRefs), each through its index for a table the size it
-	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox and domain_policies) the planner reads whole for
+	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox and domain_policies) the planner reads whole for
 	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
 	// all for 200 removed, a few milliseconds, once for every 200 new actors.
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_inbox badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_inbox ap_outbox badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	on = db
+	tx.Rollback()
+	// The delivery queue (FWR 2) at its cap: 50,000 rows queued on 300 hosts, 50 activities, a host whose circuit is
+	// open and one unavailable, and 20,000 failed rows kept for the Federation tab. The claim, the hot path, reads the
+	// first due row and the hosts that are not ok, and the activity by its key: a few dozen rows. The counts before an
+	// enqueue and the numbers count to the cap, and near it the planner reads ap_deliveries whole: they run once per
+	// activity and once per page or probe, not per row. The fan-out of an activity to 300 hosts counts those hosts'
+	// rows through ap_deliveries_host (the queue at most). The statements that write are asked in a transaction that
+	// is rolled back.
+	for _, q := range []string{
+		`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at) SELECT 'https://here.example/a/' || g, '{}', true, now() FROM generate_series(1, 50) g`,
+		`INSERT INTO ap_deliveries (outbox_id, inbox, host, next_at, created_at) SELECT (SELECT min(id) FROM ap_outbox) + g % 50, 'https://h' || (g % 300) || '.fan.example/u/' || g, 'h' || (g % 300) || '.fan.example', now() - interval '1 minute', now() FROM generate_series(1, 50000) g`,
+		`INSERT INTO ap_deliveries (outbox_id, inbox, host, state, next_at, created_at, failed_at) SELECT (SELECT min(id) FROM ap_outbox) + g % 50, 'https://f' || (g % 1000) || '.fan.example/u/' || g, 'f' || (g % 1000) || '.fan.example', 'failed', now() - interval '3 days', now() - interval '3 days', now() - interval '1 day' FROM generate_series(1, 20000) g`,
+		`INSERT INTO ap_hosts (host, created_at) SELECT 'h' || g || '.fan.example', now() FROM generate_series(0, 299) g`,
+		`INSERT INTO ap_hosts (host, created_at) SELECT 'f' || g || '.fan.example', now() FROM generate_series(0, 4699) g`,
+		`UPDATE ap_hosts SET state = 'open', until = now() + interval '5 minutes' WHERE host = 'h0.fan.example'`,
+		`UPDATE ap_hosts SET state = 'unavailable' WHERE host = 'h1.fan.example'`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	fanIn, fanHosts := make([]string, 300), make([]string, 300)
+	for i := range fanIn {
+		fanHosts[i] = fmt.Sprintf("h%d.fan.example", i)
+		fanIn[i] = "https://" + fanHosts[i] + "/inbox"
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	on = tx
+	plans([]planCase{
+		{"deliveries: the claim", deliveryClaimSQL, []any{time.Now(), 60.0, pq.Array([]string{"h2.fan.example", "h3.fan.example"})}, 100, "ap_outbox"},
+		// A count to its cap: near the cap the planner reads ap_deliveries whole (the queue and 7 days of failed rows),
+		// each row counted by the scan and again by the limit above it. Once per activity enqueued.
+		{"deliveries: the counts before an enqueue", deliveryCountsSQL, []any{deliveryQueueMax, deliveryWaitingMax}, 2*(deliveryQueueMax+20000) + 200, "ap_deliveries ap_outbox"},
+		{"deliveries: an activity to 300 hosts", deliveryFanOutSQL, []any{1, pq.Array(fanIn), pq.Array(fanHosts), time.Now(), deliveryHostMax}, 2*deliveryQueueMax + 5000, ""},
+		{"deliveries: a host's failure", hostFailedSQL, []any{"h5.fan.example", time.Now(), "answered 503", 600.0}, 10, ""},
+		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedShown, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_outbox ap_hosts"},
+	})
 	on = db
 	tx.Rollback()
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
@@ -4015,6 +4057,10 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	if e.a.fetch == nil || e.a.fetch.off || e.a.fetch.base != "" {
 		t.Fatalf("the link preview fetcher is not as it was: %+v", e.a.fetch)
 	}
+	// No federation, so no delivery queue and no worker of it (FWR 2).
+	if e.a.fed != nil {
+		t.Fatal("local mode made a federation")
+	}
 
 	// The routes, as a set: what is new and what is gone are both failures.
 	st := staticOf(t, map[string]string{"index.html": "<!doctype html><title>Flowa</title>"})
@@ -4150,7 +4196,7 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	// The settings federation will read are nothing to a local instance: no name is added to the
 	// ones it answers to.
 	env := map[string]string{"FLOWA_MODE": " Local ", "ADMIN_USER": "owner", "ADMIN_PASSWORD": "flowa-test-only", "FLOWA_HOSTS": "flowa.example.org", "FLOWA_PREVIEW_FETCH": "off",
-		"FLOWA_ORIGIN": "https://public.example.net", "FLOWA_KEY_SECRET": "flowa-test-only", "FLOWA_FEDERATE": "on"}
+		"FLOWA_ORIGIN": "https://public.example.net", "FLOWA_KEY_SECRET": "flowa-test-only", "FLOWA_FEDERATE": "on", "FLOWA_FEDERATION_WORKERS": "lots"}
 	g.a.hosts = nil
 	if err := g.a.start(func(k string) string { return env[k] }); err != nil || g.a.mode != modeLocal || !g.a.fetch.off {
 		t.Errorf("a start with the settings of a deployment: %v, mode %q", err, g.a.mode)

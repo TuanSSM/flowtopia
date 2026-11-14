@@ -275,6 +275,19 @@ docker exec nunchaku /nunchaku -healthcheck
 That is the probe the image's health check runs and the one `deploy.sh` waits on. The database is asked
 at most once a second, however many probes arrive.
 
+In a mode that federates the local probe's answer also has `federation`: the mode, the deliveries queued to
+other servers, how old the oldest is in seconds, and how many servers are failing (their circuit is open, they
+are unavailable, or their last request failed), plus `"paused":true` while the Federation switch is off and
+`"clockWaiting":true` while nothing can be signed because the clock is not set:
+
+```sh
+# {"ok":true,...,"federation":{"mode":"federated","queued":0,"oldestQueuedSeconds":0,"failingHosts":0}}
+```
+
+A full or failing queue never makes the instance unhealthy, so it never makes `deploy.sh` roll back. The public
+answer stays `{"ok":true}`, and in local mode and single mode without `FLOWA_FEDERATE=on` the answer is exactly as
+above.
+
 Two containers (`compose.yml`): `nunchaku` (the app) and `nunchaku-db` (Postgres 16, data in the
 `pgdata` Docker volume, not exposed outside Docker). Secrets are in `.env` (mode 600):
 the database password, and the admin name and password used to create the admin on first start.
@@ -688,6 +701,43 @@ the name exists, makes no difference to the answer.
   paused and what waits. The counts live in memory and start again at each restart.
 - The first delivery whose key must be fetched freezes the origin (the fetch is signed with the instance
   actor's key under it), as the first answer that names a member does.
+
+### Federation: sending to other servers (the delivery queue)
+
+**Built, and not used yet: nothing in this version sends an activity.** Follows, the first thing that sends, come
+next; until then the queue stays empty and its workers do not start. What is ready (the design is
+[docs/federation.md](docs/federation.md), 8.8):
+
+- **One setting, `FLOWA_FEDERATION_WORKERS`**: how many requests to other servers may be in flight at once, a
+  whole number from 1 to 8; unset is 4. It is read only in a mode that federates, and a wrong value stops the start
+  with a message naming it, as `FLOWA_ORIGIN` does. Whatever it says, at most 10 requests a second leave in all, one
+  at a time to any one server, and the queue's database work shares the 3 of the 8 connections federation may hold,
+  none of them held while a request is in flight.
+- **What happens to a delivery.** Each activity is written once, with one row per inbox (followers on one server
+  share its shared inbox, so they cost one request), in the tables `ap_outbox`, `ap_deliveries` and `ap_hosts`.
+  A row that fails is tried again after 1, 5, 15 and 30 minutes, then 1, 2, 4, 8, 12 and 12 hours (each a fifth
+  earlier or later at random), and given up after 11 attempts or 48 hours. A server that refuses the signature
+  (400 or 401) is asked again at once in the other signature form, and the one it takes is remembered. A server
+  that says the inbox is gone (410) gets nothing more for it; one that refuses for another reason (any other 4xx
+  but 408 and 429) is not asked again. A server that fails 5 times within 10 minutes is left alone for 10 minutes;
+  one with no sign of life for 7 days is marked unavailable, gets nothing until it answers the daily check of its
+  NodeInfo or sends a valid delivery itself, and its waiting rows are given up.
+- **What it holds back.** The domain policy (Admin, Federation) is asked again just before each request, so a
+  server suspended, or no longer allowed, after a delivery was queued gets nothing. The Federation switch under
+  Features pauses sending as it pauses taking: nothing is lost, rows wait. Nothing is signed while the clock is
+  earlier than the build or than the newest time the database holds (a Raspberry Pi starts on its last shutdown's
+  time until the network sets it): the Federation tab, Admin, Overview and `/healthz` say "waiting for the clock".
+- **Bounds.** At most 50,000 rows queued, 2,000 for one server (more are dropped and counted on that server's
+  record); above 50,000 a new activity waits whole, as one row, until fewer than 40,000 are queued; at most 1,000
+  activities wait, after which a new one is not written. Failed rows are kept 7 days for the numbers, then removed.
+- **Where to see it.** Admin, Federation, "Sending to other servers": what is queued and how old the oldest is, what
+  waits for room, what was sent and given up over the last day (kept in memory since the last start), what was given
+  up in 7 days, and the servers left alone after failures or marked unavailable. Admin, Overview's mode line says
+  what waits to be sent. The log names each failure with the server, the status and the attempt, never what was sent.
+- **Stopping:** a stop gives back what a worker had taken and not yet sent, lets a request already sent finish
+  within the 5 seconds a stop waits, and anything still running then is sent again after the restart (receivers
+  ignore a repeat).
+- `-purge-remote` removes these rows too.
 
 ### What the server will connect to
 

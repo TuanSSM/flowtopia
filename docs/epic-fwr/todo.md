@@ -6,7 +6,7 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review). 0 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), and the delivery queue is built with no caller yet (item 2, its fan-out on the Pi left to the owner). 0 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -100,6 +100,44 @@ route and test named below is new unless the design note says it exists.
   `TestClockGuard`, `TestDBDeliveryBackPressure`, `TestDeliveryShutdown`,
   `BenchmarkClaimDelivery`, `TestFederationMemory`; the fan-out time for 300 hosts measured on the
   Pi written here.
+  Built (federation.md 8.8 says what and why; migration 19 with `flowa-schema18.dump`): `ap_outbox`, `ap_deliveries`
+  and `ap_hosts`; `enqueue`, one transaction per activity, shared inboxes and one row per inbox, the policy and the
+  unavailable hosts left out, 2,000 rows per host and 50,000 in all held exactly (an activity past the cap waits
+  whole and is fanned out under 40,000; 1,000 waiting, then `errDeliveryFull`); `FLOWA_FEDERATION_WORKERS` (4, 1 to 8,
+  checked at the start in a mode that federates; the `compose.yml` line and `test/release.sh`'s list); workers that
+  claim with `FOR UPDATE SKIP LOCKED` and a 60 s lease renewed past half, one request per host, 10 a second in all
+  (the pacer), the policy asked again at the send, `httpSigner` through the guarded fetcher, no turn, connection or
+  lock held across a request; 8.3's schedule with 20% jitter and the 48-hour horizon; 400 and 401 sent again in the
+  other form, the form recorded for the host, a 400 in both given up and a 401 retried; 410 gives up every row for
+  that inbox and calls `goneInbox`; 429's `Retry-After`; the circuit (5 in 10 minutes, 10 minutes open, reopened by
+  the one row tried after) and unavailable hosts (7 days without a sign of life, a daily NodeInfo probe, a valid
+  delivery from it, the RFC 9421 mark from the inbox); the clock guard (the build and the newest time the database
+  held); the `federation` flag as the pause; a stop that gives back what was claimed and lets a request in flight
+  finish within `serve`'s 5 s; retention of failed rows and finished activities after 7 days; `-purge-remote`; the
+  `/healthz` fields for a local probe (`mode`, `queued`, `oldestQueuedSeconds`, `failingHosts`, and `paused` and
+  `clockWaiting`), unchanged in local and plain single mode; "Sending to other servers" on the Federation tab and a
+  part of the dashboard's mode line. Nothing sends yet: FWR 3 is the first caller, and fills `goneInbox` with the
+  removal of the followers whose inbox answered 410 (until then a 410 gives up the rows and nothing more). Tests:
+  `TestDBDeliveryQueue` (the schedule and the jitter on the test's clock, the horizon, four workers on 40 rows each
+  sent once and one at a time per host, a lease renewed and a lease lost, both forms with the form recorded, 400 and
+  401 refused in both, 410 with the hook, 404, 403, 429, the circuit, unavailable hosts and the probe),
+  `TestDeliveryClassify`, `TestDBDeliveryPacing` (one request per host with requests the stub holds; the pacer's
+  places a tenth of a second apart on the test's clock), `TestDBDeliveryPolicyAndPause`, `TestDBDeliveryNoConnectionHeld`,
+  `TestClockGuard`, `TestDBDeliveryBackPressure`, `TestDeliveryShutdown` (claimed and given back, in flight through
+  `serve`, outlasting the stop), `TestDBTwoFlowaDelivery` (one Flowa sends, the other's real inbox verifies and
+  queues, in both forms), `TestDBHealthzFederation`, `TestDBDeliveryRetention`, `TestFederationMemory`,
+  `TestDBQueryPlans` (the claim, the counts, the fan-out, a host's failure, the numbers), `TestDBPurgeRemote`,
+  `TestDBLocalModeUnchanged` and `TestDBDefaultsUnchanged` extended, all with `-race -count=3` on two cores;
+  `BenchmarkClaimDelivery` 0.62 to 0.63 ms with 50,000 rows queued (budget 2 ms) and `TestFederationMemory` 16.5 MB
+  of the 32 MB budget (1.6 MB measured for the queue with 4 requests in flight, the inbox's 14.9 MB added as a
+  bound), on a 2.1 GHz Xeon. 23 deliberate breakages each failed a test.
+  **Open:** the fan-out time on the Pi, which is the owner's to measure, so the box stays unchecked: on the Pi, with a
+  throwaway database (`docker run -d --name fanout-db -e POSTGRES_PASSWORD=flowa-test-only -p 127.0.0.1:55433:5432
+  "$(test/db-image.sh)"`, the image `compose.yml` pins), run `TEST_DATABASE_URL='postgres://postgres:flowa-test-only@127.0.0.1:55433/postgres?sslmode=disable'
+  go test -run '^$' -bench BenchmarkDeliveryFanOut -benchtime 3x .` in the checkout, write the ns/op shown (one post
+  to 1,000 followers on 300 hosts; 29.9 s on the 2.1 GHz Xeon, bound by the 10 a second) here, and remove the container (`docker rm -f fanout-db`). Also open:
+  the Pi's figures for section 12's memory and the container's (`docker stats`, FWR 8), the page per host with a
+  retry button (14.2), and the owner's review.
 - [ ] **Follows across servers.** Follow, Accept, Reject and Undo(Follow) in and out, and Undo of an
   Accept of our Follow read as a Reject (Mastodon lists "Accept Follow" among what it undoes);
   approval by hand (`users.locked`, `manuallyApprovesFollowers`); follow request notifications with

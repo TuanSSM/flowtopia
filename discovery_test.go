@@ -1250,6 +1250,19 @@ func TestDBDefaultsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.h = f.a.routes(staticOf(t, page))
+	// Neither local nor plain single mode has a delivery queue or its workers, and /healthz tells neither's local
+	// probe anything of federation (FWR 2); a federated instance tells it the queue's numbers.
+	for name, e := range map[string]*tenv{"local": l, "single without FLOWA_FEDERATE": s} {
+		if e.a.fed != nil {
+			t.Errorf("%s: a federation (and with it a delivery queue) was made", name)
+		}
+		if _, out := probe(t, e.h, "127.0.0.1:4000", nil); out["federation"] != nil || len(out) != 6 {
+			t.Errorf("%s: /healthz to a local probe: %v", name, out)
+		}
+	}
+	if _, out := probe(t, f.h, "127.0.0.1:4000", nil); out["federation"] == nil {
+		t.Errorf("federated: /healthz to a local probe has no federation part: %v", out)
+	}
 	type answer struct {
 		code                     int
 		body, cors, allow, ctype string

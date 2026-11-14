@@ -1464,6 +1464,10 @@ func TestDBPurgeRemote(t *testing.T) {
 		`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES (%[1]d, 'post', %[3]d, 'spam')`,
 		`INSERT INTO ap_inbox (activity_id, actor_id, host, kind, received_at, next_at) VALUES ('https://remote.example/a/1', %[1]d, 'remote.example', 'Delete', now(), now())`,
 		`INSERT INTO mod_actions (actor_id, action, target_kind, target_id, target_user_id, reason) VALUES (%[5]d, 'mute', 'user', %[1]d, %[1]d, 'test')`,
+		// The delivery queue (FWR 2): a local member's activity, its row for a remote inbox, and that host's record.
+		`INSERT INTO ap_outbox (ap_id, actor_id, body, fanned_out, created_at) VALUES ('https://here.example/a/1', %[2]d, '{}', true, now())`,
+		`INSERT INTO ap_deliveries (outbox_id, inbox, host, next_at, created_at) SELECT id, 'https://remote.example/inbox', 'remote.example', now(), now() FROM ap_outbox WHERE actor_id = %[2]d`,
+		`INSERT INTO ap_hosts (host, created_at) SELECT 'remote.example', now() FROM users WHERE id = %[2]d`,
 	} {
 		q = fmt.Sprintf(q, r0, anaID, p, r1, bossID)
 		if _, err := e.a.db.Exec(q); err != nil {
@@ -1483,12 +1487,13 @@ func TestDBPurgeRemote(t *testing.T) {
 	if err := purgeWith(e.a.db, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 2 follows, 1 blocks, 1 notifications, 1 reports, 1 inbox rows. Local accounts and their posts are as they were.\n"
+	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 2 follows, 1 blocks, 1 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records. Local accounts and their posts are as they were.\n"
 	if out.String() != want {
 		t.Errorf("printed %q\nwant    %q", out.String(), want)
 	}
 	if n := e.count(`SELECT count(*) FROM users WHERE domain <> ''`) + e.count(`SELECT count(*) FROM ap_actors`) + e.count(`SELECT count(*) FROM follows`) +
-		e.count(`SELECT count(*) FROM likes`) + e.count(`SELECT count(*) FROM comments`) + e.count(`SELECT count(*) FROM notifications`) + e.count(`SELECT count(*) FROM reports`) + e.count(`SELECT count(*) FROM blocks`) + e.count(`SELECT count(*) FROM ap_inbox`); n != 0 {
+		e.count(`SELECT count(*) FROM likes`) + e.count(`SELECT count(*) FROM comments`) + e.count(`SELECT count(*) FROM notifications`) + e.count(`SELECT count(*) FROM reports`) + e.count(`SELECT count(*) FROM blocks`) + e.count(`SELECT count(*) FROM ap_inbox`) +
+		e.count(`SELECT count(*) FROM ap_outbox`) + e.count(`SELECT count(*) FROM ap_deliveries`) + e.count(`SELECT count(*) FROM ap_hosts`); n != 0 {
 		t.Errorf("%d rows left behind", n)
 	}
 	if got := local(); got != before {

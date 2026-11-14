@@ -168,6 +168,7 @@ try:
     js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top, or the sticky bar lands in its middle
     picture('federated-dashboard','Federated mode: the dashboard says the origin and what this version serves')
     check('the mode line says deliveries are not taken while the Federation switch is off (its default)',lambda: 'Taking deliveries is off under Features' in (txt('.dash-mode') or ''),lambda: txt('.dash-mode'))
+    check('the mode line says what waits to be sent to other servers: nothing',lambda: 'To send: 0; given up in 7 days: 0; servers unavailable: 0.' in (txt('.dash-mode') or ''),lambda: txt('.dash-mode'))
 
     # The inbox over HTTP (FWR 1): it takes a POST from another server past the write guard, and checks the
     # type and the signature itself; any other method is 405 with Allow: POST. A signed delivery cannot be
@@ -184,6 +185,9 @@ try:
     # numbers of the inbox show the refusals above.
     nav('#/admin/federation')
     check('the Federation tab: allowed servers only, no domain yet, and the deliveries refused counted',lambda: (lambda t: 'Allowed servers only' in t and 'No domain is allowed yet' in t and 'not signed' in t)(txt('#main') or ''),lambda: txt('#main')[:600])
+    # The delivery queue (FWR 2): built and empty, since nothing in this version sends; its numbers come from the server.
+    j=get_json(op,'admin/federation').get('deliveries') or {}
+    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Nothing is sent yet in this version' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
     if tab_to('#fed-domain-form [name=domain]','the domain field'):
         check('the field shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
         type_text('Social.Example')
