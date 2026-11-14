@@ -284,7 +284,8 @@ are unavailable, or their last request failed), plus `"paused":true` while the F
 # {"ok":true,...,"federation":{"mode":"federated","queued":0,"oldestQueuedSeconds":0,"failingHosts":0}}
 ```
 
-A full or failing queue never makes the instance unhealthy, so it never makes `deploy.sh` roll back. The public
+A full or failing queue never makes the instance unhealthy, so it never makes `deploy.sh` roll back. These numbers
+are asked only for a local probe and kept 5 seconds, so probes from outside cost no query of them. The public
 answer stays `{"ok":true}`, and in local mode and single mode without `FLOWA_FEDERATE=on` the answer is exactly as
 above.
 
@@ -719,17 +720,22 @@ next; until then the queue stays empty and its workers do not start. What is rea
   earlier or later at random), and given up after 11 attempts or 48 hours. A server that refuses the signature
   (400 or 401) is asked again at once in the other signature form, and the one it takes is remembered. A server
   that says the inbox is gone (410) gets nothing more for it; one that refuses for another reason (any other 4xx
-  but 408 and 429) is not asked again. A server that fails 5 times within 10 minutes is left alone for 10 minutes;
-  one with no sign of life for 7 days is marked unavailable, gets nothing until it answers the daily check of its
-  NodeInfo or sends a valid delivery itself, and its waiting rows are given up.
+  but 408 and 429) is not asked again; an inbox that redirects is tried again later without counting against its
+  server. A server that fails 5 times within 10 minutes is left alone for 10 minutes; one that has failed for 7 days
+  with no sign of life between (no answer, no valid delivery from it, and no two failures more than 48 hours apart)
+  is marked unavailable, gets nothing until it answers the daily check of its NodeInfo or sends a valid delivery
+  itself, and its waiting rows are given up. An inbox is only ever one on its actor's own server.
 - **What it holds back.** The domain policy (Admin, Federation) is asked again just before each request, so a
   server suspended, or no longer allowed, after a delivery was queued gets nothing. The Federation switch under
   Features pauses sending as it pauses taking: nothing is lost, rows wait. Nothing is signed while the clock is
   earlier than the build or than the newest time the database holds (a Raspberry Pi starts on its last shutdown's
   time until the network sets it): the Federation tab, Admin, Overview and `/healthz` say "waiting for the clock".
+  That newest time is believed for the first hour after a start only: if the clock is still before it then, the log
+  says it is not believed and deliveries go on.
 - **Bounds.** At most 50,000 rows queued, 2,000 for one server (more are dropped and counted on that server's
   record); above 50,000 a new activity waits whole, as one row, until fewer than 40,000 are queued; at most 1,000
-  activities wait, after which a new one is not written. Failed rows are kept 7 days for the numbers, then removed.
+  activities wait, after which a new one is not written. Failed rows are kept 7 days for the numbers, at most the
+  newest 20,000, and removed by housekeeping 1,000 at a time.
 - **Where to see it.** Admin, Federation, "Sending to other servers": what is queued and how old the oldest is, what
   waits for room, what was sent and given up over the last day (kept in memory since the last start), what was given
   up in 7 days, and the servers left alone after failures or marked unavailable. Admin, Overview's mode line says

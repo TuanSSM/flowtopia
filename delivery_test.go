@@ -237,13 +237,28 @@ func (e *delivEnv) send(inboxes ...string) (string, enqueued) {
 	id, body := e.activityBody()
 	to := make([]deliveryTarget, len(inboxes))
 	for i, in := range inboxes {
-		to[i] = deliveryTarget{Inbox: "https://" + in}
+		host, _, _ := strings.Cut(in, "/")
+		to[i] = deliveryTarget{Actor: "https://" + host + "/users/someone", Inbox: "https://" + in}
 	}
 	out, err := e.q.enqueue(context.Background(), instanceActor, id, body, to)
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	return id, out
+}
+
+// drain steps until nothing is claimed, and fails rather than hangs when that takes more than most steps: a
+// regression that keeps a sent row (or claims one forever) must fail the test, not stall it.
+func (e *delivEnv) drain(most int) int {
+	e.t.Helper()
+	for n := 0; ; n++ {
+		if !e.step() {
+			return n
+		}
+		if n >= most {
+			e.t.Fatalf("still claiming rows after %d steps", most)
+		}
+	}
 }
 
 func (e *delivEnv) step() bool {
@@ -369,7 +384,11 @@ func TestDBDeliveryQueue(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for {
+				for n := 0; ; n++ {
+					if n > 200 { // a regression that keeps a sent row must fail, not hang
+						t.Error("still claiming rows after 200 steps")
+						return
+					}
 					worked, err := e.q.step(context.Background())
 					if err != nil {
 						t.Error(err)
@@ -453,6 +472,27 @@ func TestDBDeliveryQueue(t *testing.T) {
 		}
 		if n := len(e.hits(id)); n != 1 || e.count(`SELECT count(*) FROM ap_deliveries`) != 0 {
 			t.Errorf("the row was sent %d times", n)
+		}
+		// A lease that runs out during the request itself: another worker claims the row meanwhile. The first, when
+		// its answer comes, writes nothing about a row that is no longer its own; the second sends it again, which
+		// the receiver's de-duplication by id makes harmless (8.6).
+		id, _ = e.send("social.example/inbox")
+		release = e.s.holdAt("social.example")
+		done = make(chan bool)
+		go func() { worked, _ := e.q.step(context.Background()); done <- worked }()
+		<-e.s.arrived
+		e.clock.add(deliveryLease + time.Second)
+		third, err := e.q.claim(context.Background(), nil)
+		if err != nil || third == nil {
+			t.Fatalf("the row could not be claimed after its lease ran out: %v", err)
+		}
+		release()
+		<-done
+		if e.count(`SELECT count(*) FROM ap_deliveries WHERE locked_until = $1`, third.lease) != 1 {
+			t.Error("the worker whose lease ran out during its request changed the row another worker holds")
+		}
+		if err := e.q.deliver(context.Background(), third); err != nil || e.count(`SELECT count(*) FROM ap_deliveries`) != 0 {
+			t.Errorf("the second worker's send: %v", err)
 		}
 	})
 
@@ -581,7 +621,12 @@ func TestDBDeliveryQueue(t *testing.T) {
 		if err := e.a.db.QueryRow(`SELECT state, until FROM ap_hosts WHERE host = 'a.example'`).Scan(&state, &until); err != nil || state != "open" || !until.Equal(e.clock.now().Add(hostOpenFor)) {
 			t.Fatalf("after %d failures: %s until %v (now %v) %v", hostFailuresOpen, state, until, e.clock.now(), err)
 		}
-		e.clock.add(2 * time.Minute) // every row is due again; the circuit is open
+		// The host's rows are moved to the circuit's end, so the claim does not pass over them while it is open.
+		e.send("a.example/inbox") // written while the circuit is open: due when it ends
+		if n := e.count(`SELECT count(*) FROM ap_deliveries WHERE host = 'a.example' AND state = 'queued' AND next_at < $1`, until); n != 0 {
+			t.Errorf("%d rows of the open host are due before its circuit closes", n)
+		}
+		e.clock.add(2 * time.Minute) // the circuit is open
 		if e.step() {
 			t.Error("a row was claimed while its host's circuit is open")
 		}
@@ -594,24 +639,95 @@ func TestDBDeliveryQueue(t *testing.T) {
 		}
 		code.Store(202)
 		e.clock.add(hostOpenFor + time.Second)
-		for e.step() {
-		}
+		e.drain(20)
 		if err := e.a.db.QueryRow(`SELECT state FROM ap_hosts WHERE host = 'a.example'`).Scan(&state); err != nil || state != "ok" || e.count(`SELECT count(*) FROM ap_deliveries`) != 0 {
 			t.Errorf("after a success: %s, %d rows", state, e.count(`SELECT count(*) FROM ap_deliveries`))
 		}
 	})
 
+	t.Run("half-open", func(t *testing.T) {
+		// A circuit whose time is up is half-open: the first answer decides. A 401 (or 429, a redirect, a refusal) is
+		// an answer, so it closes the circuit, and the next 5xx counts one failure, not a reopening.
+		e := newDelivEnv(t)
+		code := atomic.Int32{}
+		code.Store(401)
+		e.answer(func(string, string, string) (int, string) { return int(code.Load()), "" })
+		e.send("a.example/inbox")
+		e.send("a.example/inbox")
+		e.mustExec(`INSERT INTO ap_hosts (host, created_at, state, until) VALUES ('a.example', $1, 'open', $1) ON CONFLICT (host) DO UPDATE SET state = 'open', until = $1`, e.clock.now())
+		e.step()
+		var state string
+		var failures int
+		if e.a.db.QueryRow(`SELECT state, failures FROM ap_hosts WHERE host = 'a.example'`).Scan(&state, &failures); state != "ok" {
+			t.Fatalf("after a 401 on a half-open circuit: %s", state)
+		}
+		code.Store(503)
+		e.step()
+		if e.a.db.QueryRow(`SELECT state, failures FROM ap_hosts WHERE host = 'a.example'`).Scan(&state, &failures); state != "ok" || failures != 1 {
+			t.Errorf("a 503 after the circuit closed: %s with %d failures, want one failure counted", state, failures)
+		}
+	})
+
+	t.Run("a redirect", func(t *testing.T) {
+		// A redirect is the inbox address's fault, not its host's: tried again later, and the circuit untouched, so
+		// rows to /redirects never keep the host's other rows from being sent.
+		e := newDelivEnv(t)
+		e.answer(func(_, p, _ string) (int, string) {
+			if p == "/redirects" {
+				return 302, ""
+			}
+			return 202, ""
+		})
+		var bad []string
+		for range hostFailuresOpen + 1 {
+			id, _ := e.send("a.example/redirects")
+			bad = append(bad, id)
+			e.step()
+		}
+		if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND state = 'ok' AND failures = 0`) != 1 {
+			t.Error("redirects counted against the host's circuit")
+		}
+		if st, at, next, why := e.row(bad[0], "a.example/redirects"); st != "queued" || at != 1 || !next.After(e.clock.now()) || !strings.Contains(why, "302") {
+			t.Errorf("a redirected row: %s %d %v %q", st, at, next, why)
+		}
+		id, _ := e.send("a.example/inbox")
+		if !e.step() || len(e.hits(id)) != 1 {
+			t.Error("a row to the host's real inbox was not sent")
+		}
+	})
+
 	t.Run("unavailable", func(t *testing.T) {
 		e := newDelivEnv(t)
+		code := atomic.Int32{}
+		code.Store(202)
 		e.answer(func(_, path, _ string) (int, string) {
 			if path == "/.well-known/nodeinfo" {
 				return 200, ""
 			}
-			return 503, ""
+			return int(code.Load()), ""
 		})
+		// A host that took our last delivery 8 days ago and answers one 503 now: one failure, still available.
+		e.send("a.example/inbox")
+		e.step()
+		e.clock.add(8 * 24 * time.Hour)
+		code.Store(503)
+		blip, _ := e.send("a.example/inbox")
+		e.step()
+		if st, _, _, _ := e.row(blip, "a.example/inbox"); st != "queued" || e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND state = 'ok' AND failures = 1`) != 1 {
+			t.Fatalf("one 503 after 8 quiet days: the row is %s and the host not ok with one failure", st)
+		}
+		// Failures with a gap longer than the horizon between them are not one streak: the week starts again.
+		e.mustExec(`UPDATE ap_hosts SET down_since = $1, last_failure = $2 WHERE host = 'a.example'`, e.clock.now().Add(-8*24*time.Hour), e.clock.now().Add(-hostStreakGap-time.Hour))
+		e.clock.add(time.Minute)
+		e.step()
+		if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND state = 'ok' AND down_since = $1`, e.clock.now()) != 1 {
+			t.Fatal("a failure after a long silence did not start a new streak")
+		}
+		// Failures spanning 7 days, none further apart than the horizon, with no sign of life between: unavailable.
+		e.mustExec(`DELETE FROM ap_deliveries`)
 		a, _ := e.send("a.example/inbox")
 		b, _ := e.send("a.example/users/x/inbox")
-		e.mustExec(`UPDATE ap_hosts SET created_at = created_at - interval '8 days'`)
+		e.mustExec(`UPDATE ap_hosts SET down_since = $1, last_failure = $2 WHERE host = 'a.example'`, e.clock.now().Add(-hostUnavailableAfter), e.clock.now().Add(-time.Hour))
 		e.step()
 		for _, c := range [][2]string{{a, "a.example/inbox"}, {b, "a.example/users/x/inbox"}} {
 			if st, _, _, _ := e.row(c[0], c[1]); st != "failed" {
@@ -626,7 +742,7 @@ func TestDBDeliveryQueue(t *testing.T) {
 		}
 		// A valid delivery from it marks it available (8.4), and so does an answer to the daily probe.
 		e.q.heardFrom(context.Background(), "A.example", sigCavage)
-		if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND state = 'ok'`) != 1 {
+		if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND state = 'ok' AND down_since IS NULL`) != 1 {
 			t.Error("a delivery from the host did not mark it available")
 		}
 		e.mustExec(`UPDATE ap_hosts SET state = 'unavailable' WHERE host = 'a.example'`)
@@ -659,6 +775,48 @@ func TestDBDeliveryQueue(t *testing.T) {
 			t.Error("a host that signs with RFC 9421 is not marked")
 		}
 	})
+
+	t.Run("signs of life", func(t *testing.T) {
+		// A verified delivery from a host, in either form, is a sign of life: its streak towards "unavailable" ends.
+		// It is written at most once an hour per host, so a busy sender costs no write per delivery.
+		e := newDelivEnv(t)
+		e.mustExec(`INSERT INTO ap_hosts (host, created_at, alive_at, down_since, last_failure) VALUES ('a.example', $1, $1, $1, $2)`, e.clock.now().Add(-6*24*time.Hour), e.clock.now().Add(-time.Hour))
+		e.q.heardFrom(context.Background(), "a.example", sigCavage)
+		var alive time.Time
+		if err := e.a.db.QueryRow(`SELECT alive_at FROM ap_hosts WHERE host = 'a.example' AND down_since IS NULL`).Scan(&alive); err != nil || !alive.Equal(e.clock.now()) {
+			t.Fatalf("a verified draft-signed delivery did not refresh the host's sign of life: %v %v", alive, err)
+		}
+		e.mustExec(`UPDATE ap_hosts SET alive_at = $1 WHERE host = 'a.example'`, e.clock.now().Add(-time.Minute))
+		e.clock.add(hostAliveEvery - time.Second)
+		e.q.heardFrom(context.Background(), "a.example", sigCavage)
+		if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND alive_at < $1`, e.clock.now().Add(-time.Hour)) != 1 {
+			t.Error("a second delivery within the hour wrote again")
+		}
+		e.clock.add(2 * time.Second)
+		e.q.heardFrom(context.Background(), "a.example", sigCavage)
+		if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND alive_at = $1`, e.clock.now()) != 1 {
+			t.Error("a delivery after the hour did not write the sign of life")
+		}
+		// What a send learned wins over what an inbound signature suggests: a host that signs with RFC 9421 but took
+		// only the draft keeps the draft.
+		e.answer(func(_, _, form string) (int, string) {
+			if form == "rfc9421" {
+				return 401, ""
+			}
+			return 202, ""
+		})
+		e.mustExec(`INSERT INTO ap_hosts (host, created_at, sig) VALUES ('b.example', $1, 'rfc9421')`, e.clock.now())
+		id, _ := e.send("b.example/inbox")
+		e.step()
+		if got := e.hits(id); !slices.Equal(got, []string{"rfc9421", "cavage"}) {
+			t.Fatalf("requests %v", got)
+		}
+		e.clock.add(2 * hostAliveEvery)
+		e.q.heardFrom(context.Background(), "b.example", sigRFC9421)
+		if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'b.example' AND sig = 'cavage' AND sig_learned`) != 1 {
+			t.Error("an inbound RFC 9421 signature overwrote the form a send learned")
+		}
+	})
 }
 
 // classify reads every status of 8.3 as it says, and this server's own failures as its own.
@@ -681,7 +839,8 @@ func TestDeliveryClassify(t *testing.T) {
 		"429 with 2 min":    {st(429, 2*time.Minute), outRefused, 2 * time.Minute},
 		"429 with 30 s":     {st(429, 30*time.Second), outRefused, 0},
 		"500":               {st(500, 0), outRetry, 0},
-		"a redirect":        {&fetchError{Fail: failRedirect}, outRetry, 0},
+		"302, no Location":  {st(302, 0), outRefused, 0},
+		"a redirect":        {&fetchError{Fail: failRedirect}, outRefused, 0},
 		"no connection":     {&fetchError{Fail: failConnect}, outRetry, 0},
 		"timed out":         {&fetchError{Fail: failTimeout}, outRetry, 0},
 		"our own turn":      {&fetchError{Fail: failBusy}, outOwn, 0},
@@ -732,7 +891,11 @@ func TestDBDeliveryPacing(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for {
+			for n := 0; ; n++ {
+				if n > 200 { // a regression that keeps a sent row must fail, not hang
+					t.Error("still claiming rows after 200 steps")
+					return
+				}
 				if worked, err := e.q.step(context.Background()); err != nil || !worked {
 					return
 				}
@@ -779,7 +942,11 @@ func TestDBDeliveryPacing(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for {
+			for n := 0; ; n++ {
+				if n > 200 { // a regression that keeps a sent row must fail, not hang
+					t.Error("still claiming rows after 200 steps")
+					return
+				}
 				worked, err := e2.q.step(context.Background())
 				if err != nil || !worked {
 					return
@@ -938,6 +1105,26 @@ func TestClockGuard(t *testing.T) {
 	if got := e.hits(id); len(got) != 1 {
 		t.Errorf("after the clock was set: %v", got)
 	}
+	// A floor that was written while some clock was ahead: believed for the first hour after the start, then dropped,
+	// said in the log, and the deliveries go on.
+	logs := logged(t)
+	id, _ = e.send("a.example/inbox")
+	e.mustExec(`UPDATE instance_settings SET updated_at = $1 WHERE key = 'federation_policy'`, e.clock.now().Add(30*24*time.Hour))
+	if err := e.q.readStart(e.a.db); err != nil {
+		t.Fatal(err)
+	}
+	up := floorTrust - time.Minute
+	e.q.since = func() time.Duration { return up }
+	if e.step() {
+		t.Error("a row was claimed before the clock's floor, within the first hour")
+	}
+	up = floorTrust + time.Minute
+	if !e.step() || len(e.hits(id)) != 1 {
+		t.Error("a floor still ahead an hour after the start held the deliveries")
+	}
+	if !strings.Contains(logs.String(), "is not believed") {
+		t.Error("the dropped floor was not logged")
+	}
 }
 
 // TestDBDeliveryBackPressure: shared inboxes and the de-duplication of 8.1; 2,000 rows per host and 50,000 in all,
@@ -948,31 +1135,39 @@ func TestDBDeliveryBackPressure(t *testing.T) {
 	// Three followers on social.example with its shared inbox are one row; one with no shared inbox gets its own;
 	// the same inbox twice is one; this instance is never a recipient; a bad address is refused.
 	id, body := e.activityBody()
+	// An inbox must be on its actor's host: one naming another server is refused, and a shared inbox on another host
+	// is passed over for the actor's own inbox.
 	out, err := e.q.enqueue(context.Background(), instanceActor, id, body, []deliveryTarget{
-		{Inbox: "https://social.example/users/a/inbox", SharedInbox: "https://social.example/inbox"},
-		{Inbox: "https://social.example/users/b/inbox", SharedInbox: "https://social.example/inbox"},
-		{Inbox: "https://social.example/users/c/inbox", SharedInbox: "https://social.example/inbox"},
-		{Inbox: "https://social.example/users/d/inbox"},
-		{Inbox: "https://b.example/inbox"}, {Inbox: "https://b.example/inbox"},
-		{Inbox: "https://here.example/users/ana/inbox"}, {Inbox: "http://c.example/inbox"}, {Inbox: "https://10.0.0.1/inbox"}, {Inbox: "https://c.example:8443/inbox"},
+		{Actor: "https://social.example/users/a", Inbox: "https://social.example/users/a/inbox", SharedInbox: "https://social.example/inbox"},
+		{Actor: "https://social.example/users/b", Inbox: "https://social.example/users/b/inbox", SharedInbox: "https://social.example/inbox"},
+		{Actor: "https://social.example/users/c", Inbox: "https://social.example/users/c/inbox", SharedInbox: "https://social.example/inbox"},
+		{Actor: "https://social.example/users/d", Inbox: "https://social.example/users/d/inbox"},
+		{Actor: "https://b.example/users/b", Inbox: "https://b.example/inbox"}, {Actor: "https://b.example/users/b", Inbox: "https://b.example/inbox"},
+		{Actor: "https://other.example/users/o", Inbox: "https://other.example/users/o/inbox", SharedInbox: "https://b.example/inbox"},
+		{Actor: "https://here.example/users/ana", Inbox: "https://here.example/users/ana/inbox"}, {Actor: "https://c.example/u", Inbox: "http://c.example/inbox"},
+		{Actor: "https://10.0.0.1/u", Inbox: "https://10.0.0.1/inbox"}, {Actor: "https://c.example/u", Inbox: "https://c.example:8443/inbox"},
+		{Actor: "https://evil.example/users/x", Inbox: "https://a.example/inbox"}, {Inbox: "https://a.example/inbox"},
 	})
-	if err != nil || out.Queued != 3 || out.Refused != 4 {
+	if err != nil || out.Queued != 4 || out.Refused != 6 {
 		t.Errorf("recipients: %+v %v", out, err)
 	}
-	if again, err := e.q.enqueue(context.Background(), instanceActor, id, body, []deliveryTarget{{Inbox: "https://a.example/inbox"}}); err != nil || !again.Duplicate || e.count(`SELECT count(*) FROM ap_deliveries`) != 3 {
+	if e.count(`SELECT count(*) FROM ap_deliveries WHERE inbox = 'https://other.example/users/o/inbox'`) != 1 || e.count(`SELECT count(*) FROM ap_deliveries WHERE host = 'a.example'`) != 0 {
+		t.Error("the actor's own inbox was not used for a shared inbox on another host, or an inbox off its actor's host was written")
+	}
+	if again, err := e.q.enqueue(context.Background(), instanceActor, id, body, []deliveryTarget{{Actor: "https://a.example/u", Inbox: "https://a.example/inbox"}}); err != nil || !again.Duplicate || e.count(`SELECT count(*) FROM ap_deliveries`) != 4 {
 		t.Errorf("the same activity again: %+v %v", again, err)
 	}
 	for _, bad := range []struct {
 		id   string
 		body []byte
 	}{{"https://elsewhere.example/a/1", body}, {"https://here.example/a/2", []byte("not json")}, {"https://here.example/a/3", bytes.Repeat([]byte(" "), inboxBodyMax+1)}} {
-		if _, err := e.q.enqueue(context.Background(), instanceActor, bad.id, bad.body, []deliveryTarget{{Inbox: "https://a.example/inbox"}}); err == nil {
+		if _, err := e.q.enqueue(context.Background(), instanceActor, bad.id, bad.body, []deliveryTarget{{Actor: "https://a.example/u", Inbox: "https://a.example/inbox"}}); err == nil {
 			t.Errorf("enqueue took %s", bad.id)
 		}
 	}
 	many := make([]deliveryTarget, deliveryTargetsMax+1)
 	for i := range many {
-		many[i] = deliveryTarget{Inbox: fmt.Sprintf("https://h%d.fan.example/inbox", i)}
+		many[i] = deliveryTarget{Actor: fmt.Sprintf("https://h%d.fan.example/u", i), Inbox: fmt.Sprintf("https://h%d.fan.example/inbox", i)}
 	}
 	if _, err := e.q.enqueue(context.Background(), instanceActor, "https://here.example/a/4", body, many); err == nil {
 		t.Error("enqueue took more inboxes than one activity may have")
@@ -1006,12 +1201,21 @@ func TestDBDeliveryBackPressure(t *testing.T) {
 	if !out.Waiting {
 		t.Errorf("behind a waiting activity: %+v", out)
 	}
+	// A third waits for moved.example, which is suspended before its turn comes: its fan-out writes no row there.
+	waitC, out := e.send("moved.example/inbox", "big.example/inbox")
+	if !out.Waiting {
+		t.Errorf("a third waiting activity: %+v", out)
+	}
+	e.mustExec(`INSERT INTO domain_policies (domain, policy) VALUES ('moved.example', 'suspend')`)
+	if err := e.a.fed.loadPolicy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued'`) != deliveryQueueMax {
 		t.Errorf("%d rows queued, want the cap of %d", e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued'`), deliveryQueueMax)
 	}
 	// Under 40,000 rows, a step fans out the oldest that waits, then the next.
 	e.mustExec(`DELETE FROM ap_deliveries WHERE host LIKE '%.fan.example' AND id IN (SELECT id FROM ap_deliveries WHERE host LIKE '%.fan.example' ORDER BY id LIMIT $1)`,
-		e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued'`)-deliveryQueueResume+2)
+		e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued'`)-deliveryQueueResume+3)
 	e.step()
 	if st, _, _, _ := e.row(waitA, "other.example/inbox"); st != "gone" || len(e.hits(waitB)) != 0 {
 		t.Errorf("the first waiting activity: its row is %s, want sent, and only it", st)
@@ -1020,13 +1224,17 @@ func TestDBDeliveryBackPressure(t *testing.T) {
 	if st, _, _, _ := e.row(waitB, "social.example/inbox"); st != "gone" {
 		t.Errorf("the second waiting activity: %s", st)
 	}
+	e.step()
+	if st, _, _, _ := e.row(waitC, "big.example/inbox"); st != "gone" || e.count(`SELECT count(*) FROM ap_deliveries WHERE host = 'moved.example'`) != 0 {
+		t.Errorf("the third waiting activity: big.example's row is %s, moved.example has %d rows (the domain policy at the fan-out)", st, e.count(`SELECT count(*) FROM ap_deliveries WHERE host = 'moved.example'`))
+	}
 	if len(e.hits(waitA)) != 1 || len(e.hits(waitB)) != 1 || e.count(`SELECT count(*) FROM ap_outbox WHERE NOT fanned_out`) != 0 {
 		t.Errorf("after the fan-out: %v %v", e.hits(waitA), e.hits(waitB))
 	}
 	// Past deliveryWaitingMax activities waiting, enqueue refuses, and writes nothing.
 	e.mustExec(`INSERT INTO ap_outbox (ap_id, body, targets, created_at) SELECT 'https://here.example/w/' || g, '{}', '{https://a.example/inbox}', now() FROM generate_series(1, $1) g`, deliveryWaitingMax)
 	before := e.count(`SELECT count(*) FROM ap_outbox`)
-	if _, err := e.q.enqueue(context.Background(), instanceActor, "https://here.example/a/full", body, []deliveryTarget{{Inbox: "https://b.example/inbox"}}); !errors.Is(err, errDeliveryFull) || e.count(`SELECT count(*) FROM ap_outbox`) != before {
+	if _, err := e.q.enqueue(context.Background(), instanceActor, "https://here.example/a/full", body, []deliveryTarget{{Actor: "https://b.example/u", Inbox: "https://b.example/inbox"}}); !errors.Is(err, errDeliveryFull) || e.count(`SELECT count(*) FROM ap_outbox`) != before {
 		t.Errorf("with %d activities waiting: %v", deliveryWaitingMax, err)
 	}
 }
@@ -1112,8 +1320,8 @@ func TestDeliveryShutdown(t *testing.T) {
 	})
 }
 
-// BenchmarkClaimDelivery: one claim with 50,000 rows queued on 300 hosts, four of them being sent to. Budget: under
-// 2 ms (section 12).
+// BenchmarkClaimDelivery: one claim with 50,000 rows queued on 300 hosts, four of them being sent to and 25 with an
+// open circuit. Budget: under 2 ms (section 12).
 func BenchmarkClaimDelivery(b *testing.B) {
 	db := testDB(b)
 	o, _ := parseOrigin("https://here.example")
@@ -1131,6 +1339,16 @@ func BenchmarkClaimDelivery(b *testing.B) {
 		}
 	}
 	busy := []string{"h0.fan.example", "h1.fan.example", "h2.fan.example", "h3.fan.example"}
+	// 25 hosts with an open circuit, their rows moved past its end as hostFailed does: the claim passes over none.
+	for _, stmt := range []string{
+		`UPDATE ap_hosts SET state = 'open', until = now() + interval '10 minutes' WHERE host IN (SELECT 'h' || g || '.fan.example' FROM generate_series(10, 34) g)`,
+		`UPDATE ap_deliveries SET next_at = now() + interval '10 minutes' WHERE host IN (SELECT host FROM ap_hosts WHERE state = 'open')`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			b.Fatal(err)
+		}
+	}
 	ctx := context.Background()
 	// Each row claimed is given back, untimed, so the rows ahead of the next claim are as a running queue has
 	// them: a lease held only by the rows in flight.
@@ -1168,7 +1386,7 @@ func BenchmarkDeliveryFanOut(b *testing.B) {
 	q.fetch.origin = o
 	to := make([]deliveryTarget, 1000)
 	for i := range to {
-		to[i] = deliveryTarget{Inbox: fmt.Sprintf("https://h%d.fan.example/users/u%d/inbox", i%300, i), SharedInbox: fmt.Sprintf("https://h%d.fan.example/inbox", i%300)}
+		to[i] = deliveryTarget{Actor: fmt.Sprintf("https://h%d.fan.example/users/u%d", i%300, i), Inbox: fmt.Sprintf("https://h%d.fan.example/users/u%d/inbox", i%300, i), SharedInbox: fmt.Sprintf("https://h%d.fan.example/inbox", i%300)}
 	}
 	body := bytes.Repeat([]byte(" "), 2000)
 	copy(body, `{"type":"Create"}`)
@@ -1199,11 +1417,13 @@ func BenchmarkDeliveryFanOut(b *testing.B) {
 }
 
 // TestFederationMemory: section 12's budget, 32 MB of Go heap with 50,000 rows queued, 4 workers sending and the
-// inbox at its concurrency. What is measured: the heap in use (after a collection) with 50,000 rows queued and four
-// workers each holding a 256 KB activity in a request the stub holds, against the heap before; to it are added the
-// inbox's share as bounds, not as a simultaneous measurement: its 8 bodies of 256 KB being read, and 4 decodes, each
-// the most one decode of a 256 KB body was measured to allocate here (TestDecodeMemory's inputs). The Pi's figure
-// and the container's (docker stats, FWR 8) are not measured here.
+// inbox at its concurrency. The rows live in Postgres, not in the Go heap: the queue holds in memory only the rows
+// its workers claimed. So what is measured is the heap in use (after a collection) while four workers each hold a
+// claimed 256 KB activity in a request the stub holds (the claims made with 50,000 rows queued, so whatever the
+// claim costs at that size is in it), against the heap before the workers started; the Postgres server's memory is
+// not Go heap and not counted. To it are added the inbox's share as bounds, not as a simultaneous measurement: its 8
+// bodies of 256 KB being read, and 4 decodes, each the most one decode of a 256 KB body was measured to allocate here
+// (TestDecodeMemory's inputs). The Pi's figure and the container's (docker stats, FWR 8) are not measured here.
 func TestFederationMemory(t *testing.T) {
 	e := newDelivEnv(t)
 	big := map[string]any{"@context": "https://www.w3.org/ns/activitystreams", "type": "Create", "actor": "https://here.example/actor", "content": strings.Repeat("x", 250<<10)}
@@ -1243,7 +1463,7 @@ func TestFederationMemory(t *testing.T) {
 		decode = max(decode, b.TotalAlloc-a.TotalAlloc)
 	}
 	inbox := int64(inboxAtOnce)*int64(decode) + int64(inboxReadsAtOnce)*inboxBodyMax
-	t.Logf("the queue with 50,000 rows and %d requests in flight: %.1f MB of heap; the inbox's bound: %d decodes of %.1f MB and %d bodies of 256 KB, %.1f MB; in all %.1f MB of the 32 MB budget",
+	t.Logf("the queue's workers, %d requests in flight with 50,000 rows queued in Postgres: %.1f MB of heap; the inbox's bound: %d decodes of %.1f MB and %d bodies of 256 KB, %.1f MB; in all %.1f MB of the 32 MB budget",
 		deliveryWorkersDefault, float64(queue)/(1<<20), inboxAtOnce, float64(decode)/(1<<20), inboxReadsAtOnce, float64(inbox)/(1<<20), float64(queue+inbox)/(1<<20))
 	if queue+inbox > 32<<20 {
 		t.Errorf("federation's heap at peak: %.1f MB, over the budget of 32 MB", float64(queue+inbox)/(1<<20))
@@ -1291,7 +1511,7 @@ func TestDBTwoFlowaDelivery(t *testing.T) {
 		body := activity(anaURL, "Update", map[string]any{"id": anaURL, "type": "Person", "inbox": anaURL + "/inbox"}, nil)
 		var act struct{ ID string }
 		json.Unmarshal(body, &act)
-		out, err := q.enqueue(context.Background(), keyOwner(anaID), act.ID, body, []deliveryTarget{{Inbox: "https://here.example/users/cyd/inbox", SharedInbox: "https://here.example/inbox"}})
+		out, err := q.enqueue(context.Background(), keyOwner(anaID), act.ID, body, []deliveryTarget{{Actor: "https://here.example/users/cyd", Inbox: "https://here.example/users/cyd/inbox", SharedInbox: "https://here.example/inbox"}})
 		if err != nil || out.Queued != 1 {
 			t.Fatalf("%s: enqueue %+v %v", form, out, err)
 		}
@@ -1319,7 +1539,7 @@ func TestDBHealthzFederation(t *testing.T) {
 	e.step()
 	e.clock.add(90 * time.Second)
 	e.a.healthMu.Lock()
-	e.a.healthAt = time.Time{}
+	e.a.healthAt, e.a.fedHealthAt = time.Time{}, time.Time{}
 	e.a.healthMu.Unlock()
 	code, out := probe(t, e.h, "127.0.0.1:4000", nil)
 	fd, _ := out["federation"].(map[string]any)
@@ -1329,10 +1549,34 @@ func TestDBHealthzFederation(t *testing.T) {
 	if code, out := probe(t, e.h, "203.0.113.9:5000", nil); code != 200 || len(out) != 1 || out["ok"] != true {
 		t.Errorf("a visitor: %d %v", code, out)
 	}
+	// A remote probe runs no statement of the queue's, however many come; local probes within fedHealthEvery share
+	// one answer.
+	ran := e.q.numbersRun.Load()
+	for range 5 {
+		e.a.healthMu.Lock()
+		e.a.healthAt, e.a.fedHealthAt = time.Time{}, time.Time{}
+		e.a.healthMu.Unlock()
+		probe(t, e.h, "203.0.113.9:5000", nil)
+		probe(t, e.h, "127.0.0.1:4000", map[string]string{"X-Forwarded-For": "198.51.100.1"})
+	}
+	if n := e.q.numbersRun.Load() - ran; n != 0 {
+		t.Errorf("remote probes asked the queue's numbers %d times", n)
+	}
+	probe(t, e.h, "127.0.0.1:4000", nil)
+	if n := e.q.numbersRun.Load() - ran; n != 0 {
+		t.Errorf("a local probe within %v of the last asked again (%d)", fedHealthEvery, n)
+	}
+	e.a.healthMu.Lock()
+	e.a.fedHealthAt = time.Time{}
+	e.a.healthMu.Unlock()
+	probe(t, e.h, "127.0.0.1:4000", nil)
+	if n := e.q.numbersRun.Load() - ran; n != 1 {
+		t.Errorf("a local probe after the cache asked %d times, want once", n)
+	}
 	// The Federation tab shows the queue's numbers to staff.
 	_, mod := e.user("mo", "moderator")
 	d, _ := e.must(200, mod, "GET", "/api/admin/federation", nil)["deliveries"].(map[string]any)
-	if d == nil || d["queued"] != 2.0 || d["queueMax"] != float64(deliveryQueueMax) || d["failing"] != 1.0 {
+	if d == nil || d["queued"] != 2.0 || d["queueMax"] != float64(deliveryQueueMax) || d["failing"] != 1.0 || d["failedMax"] != float64(deliveryFailedShown) {
 		t.Errorf("the Federation tab: %v", d)
 	}
 }
@@ -1362,5 +1606,20 @@ func TestDBDeliveryRetention(t *testing.T) {
 	}
 	if e.count(`SELECT count(*) FROM ap_outbox WHERE ap_id = $1`, waits) != 1 || e.count(`SELECT count(*) FROM ap_outbox WHERE ap_id IN ($1, $2)`, failed, sent) != 0 {
 		t.Error("the activity with a row queued went, or a finished one stayed")
+	}
+	// More failed rows than deliveryFailedKeep, all younger than 7 days: the oldest past the cap go, in batches of
+	// deliveryBatch, each a statement of its own with the turn given back between them.
+	extra := deliveryFailedKeep + 2*deliveryBatch + 17
+	e.mustExec(`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at) VALUES ('https://here.example/a/old', '{}', true, $1)`, e.clock.now())
+	e.mustExec(`INSERT INTO ap_deliveries (outbox_id, inbox, host, state, next_at, created_at, failed_at) SELECT (SELECT id FROM ap_outbox WHERE ap_id = 'https://here.example/a/old'), 'https://h' || (g % 50) || '.fan.example/u/' || g, 'h' || (g % 50) || '.fan.example', 'failed', $1, $1, $1::timestamptz - g * interval '1 second' FROM generate_series(1, $2) g`, e.clock.now(), extra)
+	n, err = e.a.housekeep()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'failed'`); got != deliveryFailedKeep || n["deliveries"] != int64(extra-deliveryFailedKeep) {
+		t.Errorf("after the cap: %d failed rows kept (want %d), %d removed", got, deliveryFailedKeep, n["deliveries"])
+	}
+	if e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'failed' AND failed_at < $1::timestamptz - make_interval(secs => $2)`, e.clock.now(), deliveryFailedKeep) != 0 {
+		t.Error("the rows kept are not the newest")
 	}
 }

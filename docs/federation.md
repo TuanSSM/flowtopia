@@ -2324,7 +2324,17 @@ corrected:
   `ap_outbox` and one row per inbox to `ap_deliveries`. A recipient's shared inbox replaces its own when its actor
   names one (ActivityPub 7.1.3), so followers on one server get one row; the same inbox is written once (7.1);
   an inbox on this instance's own host, an address that is not `https` on port 443 or not a name another server can
-  have (`fedHost`), and a host the domain policy refuses are left out and counted as refused. The activity's id
+  have (`fedHost`), and a host the domain policy refuses are left out and counted as refused. **Every recipient names
+  its actor's id, and its inbox must be on that actor's host** (after the review of #112): otherwise an actor on one
+  server could name an address on another (an inbox that redirects, or fails), and this server's failures there
+  would open the other server's circuit and count towards its week. `enqueue` checks it itself and refuses a
+  mismatch; a shared inbox on another host than the actor's is passed over for the actor's own inbox (ActivityPub
+  7.1.3 makes the shared inbox an optimisation, and 7.1 lets a server filter its targets by its own rules). What it
+  costs: a server whose actors name a shared inbox on another host gets one request per follower there instead of
+  one per post. None of the pages on disk shows such a server: ActivityPub's examples and Mastodon's ActivityPub page
+  name no shared inbox on another host, and Mastodon's `WEB_DOMAIN` puts the actor and its inboxes on the same host.
+  **For FWR 3:** its callers pass each follower's actor id beside its inbox and shared inbox, as they come from the
+  cached actor (`ap_actors.ap_id`, `inbox`, `shared_inbox`). The activity's id
   must be on this origin and its body JSON of at most 256 KB, sent as it was given (`body` is `TEXT`, not `JSONB`,
   which would reorder it: a correction to 9.1), and signed at each send. One enqueue or fan-out runs at a time
   (`pg_advisory_xact_lock` on `ap_outbox`), so the caps below are exact, not soft as the inbox's are.
@@ -2340,7 +2350,10 @@ corrected:
   federates, beside `FLOWA_ORIGIN` (a stray value in local or plain single mode is ignored, as theirs are). A worker
   claims one row at a time (`deliveryClaimSQL`, prepared once: planning it took 1.7 ms, running it 0.6 ms), never a
   row of a host this process is sending to (one request at a time per host, kept in memory, so per process: two
-  processes during a deploy may each send one), nor of a host whose circuit is open or that is unavailable. A row
+  processes during a deploy may each send one), nor of a host whose circuit is open or that is unavailable. When a
+  circuit opens the host's rows are moved to its end, and a row written for an open host is due then, so the claim
+  never passes over them (with 25 hosts open and their 4,000 rows at the head of the index a claim took 6.5 ms;
+  moved, it takes 0.8 ms). A row
   claimed for a host another worker took between the list and the claim is given back at once. Before the send:
   the row is given up past 48 hours from when it was written (the first attempt is due then: F9's "first attempt");
   the domain policy is asked again (`admits`), so a host suspended, or no longer allowed, since the row was written
@@ -2356,34 +2369,48 @@ corrected:
   the form that worked, and that it is well. 400 or 401: sent again at once in the other form, with another place
   but no attempt counted; the form that is taken is recorded in `ap_hosts.sig` and sent first from then on (7.1). A
   400 in both forms is given up; a 401 in both is tried again on the schedule and does not count towards the host's
-  circuit, since the host answered. 410: the row and every other row queued for that inbox are given up, and
+  circuit, since the host answered (any answer that does not count is a sign of life, below). 410: the row and every
+  other row queued for that inbox are given up, and
   `goneInbox` is told the inbox. **What waits for FWR 3:** "410 removes that follower" needs a table of remote
   followers, which FWR 3 brings with the hook's body; until then the hook is empty and the rows are all that goes.
   404 and any other 4xx but 408 and 429: given up. 429: tried again after its `Retry-After` when that is between 1
-  minute and 12 hours, else on the schedule, not counting towards the circuit. 5xx, 408, a refused or failed
-  connection, a time out, a redirect (a delivery is never redirected, 7.8): tried again on the schedule and counted
-  towards the circuit. This server's own hold-ups (its own request to that host holding the fetcher's turn, the
+  minute and 12 hours, else on the schedule, not counting towards the circuit. A redirect (a delivery is never
+  redirected, 7.8), with or without a `Location`: tried again on the schedule and **not** counted towards the circuit,
+  since it is the address's fault, not the host's. 5xx, 408, a refused or failed connection, a time out: tried again
+  on the schedule and counted towards the circuit. This server's own hold-ups (its own request to that host holding the fetcher's turn, the
   clock refused by the signer) give the row back for a minute with no attempt counted. The schedule is 8.3's, each
   wait moved by up to 20% either way; after the 11th attempt, or when the next would fall past 48 hours, the row is
   given up. Failed rows keep the reason (`last_error`, the fetcher's fixed phrase: a host and a status, never a body)
   and every failure is logged with the host, the status and the attempt (7.9).
 - **Hosts** (8.4): `ap_hosts` as 9.1 with these **corrections**: `failing_since` (when the failures in a row began,
-  for "5 within 10 minutes"), `last_error`, `alive_at` (the last sign of life: a delivery taken, a valid delivery
-  from it, an answer to a probe; the 7 days count from it, or from the row's `created_at` before any), `probed_at`,
-  `created_at`, and the partial index `ap_hosts_held` of the hosts not `ok`, which is all the claim reads of the
-  table; `software` and the flood block's use of `until` wait for the items that need them (FMD 7). 5 failures
-  within 10 minutes open the circuit for 10 minutes; when it closes one row is tried (one request per host does
-  that by itself), and its failure opens it again at once. A host with no sign of life for 7 days is unavailable:
-  its queued rows are given up and new ones are not written (counted as unavailable). Once a day housekeeping asks
+  for "5 within 10 minutes"), `down_since` (when the host's streak of failures with no sign of life began, for
+  "unavailable"), `last_error`, `alive_at` (the last sign of life), `probed_at`, `sig_learned` (a send of ours
+  learned the form), `created_at`, and the partial index `ap_hosts_held` of the hosts not `ok`, which is all the
+  claim reads of the table; `software` and the flood block's use of `until` wait for the items that need them (FMD
+  7). 5 failures within 10 minutes open the circuit for 10 minutes. When its time is up the circuit is half-open: one
+  row is tried (one request per host does that by itself), a failure that counts opens it again at once, and any
+  other answer (taken, or a 4xx, 429 or redirect: the host answered) closes it. **Unavailable** (corrected after the
+  review of #112: it counted the 7 days from the last success, so one 503 after a quiet week marked a host
+  unavailable): a host that has failed for 7 days with no sign of life between, and no two failures further apart than
+  48 hours (a longer silence says nothing, since every row of the first failure was long given up, so the streak
+  starts again). A sign of life is any answer from the host but a failure that counts, a valid delivery from it, or
+  an answer to the probe; each ends the streak (`down_since` back to NULL). An unavailable host's queued rows are given
+  up and new ones are not written (counted as unavailable). Once a day housekeeping asks
   the NodeInfo discovery document of up to 20 unavailable hosts, one after the other, and an answer marks a host
   available. **Correction:** the probe is an unsigned GET, as the fetcher's NodeInfo kind always is (7.8): NodeInfo is
-  public, and a signature would only freeze the origin earlier. A verified delivery from an unavailable host marks it
-  available, and one signed with RFC 9421 marks the host for that form (7.1), each written only when memory says it
-  changes something (`heardFrom`).
+  public, and a signature would only freeze the origin earlier. A verified delivery from a host, in either form, is a
+  sign of life (`heardFrom`), written at most once an hour per host (memory says when it was last written, for at most
+  10,000 hosts), and at once when the host is unavailable (it is available again) or first seen signing with RFC 9421,
+  which marks it for that form (7.1) unless a send of ours learned the form it takes: what a send learned wins, so a
+  server that signs with RFC 9421 and takes only the draft is not flipped back and forth.
 - **Nothing signed before the clock is set** (8.3): no row is claimed while the clock is earlier than the build
   (`builtAt`) or than the newest time the database held at the start (the newest of `instance_settings.updated_at`,
   `ap_outbox.created_at` and the hosts' last success and failure, read once at the start); the signer refuses on its
-  own as well. The Federation tab, the dashboard's mode line and `/healthz` say "waiting for the clock".
+  own as well. The Federation tab, the dashboard's mode line and `/healthz` say "waiting for the clock". The floor is
+  believed for the first hour after the start only: a Raspberry Pi's clock is set by the network within minutes, so
+  a clock still before the floor an hour later means the floor is wrong (something was written while a clock was
+  ahead). It is then dropped, with one line in the log ("... is not believed and deliveries go on"), rather than
+  holding every delivery until that time comes. Until then the operator sees "waiting for the clock".
 - **The pause and refusal:** with the `federation` flag off, or federation refused, nothing is claimed and every row
   stays as it was; `enqueue` still writes while paused (the pause holds sending, not the members), and refuses while
   federation is refused.
@@ -2397,16 +2424,23 @@ corrected:
   outlasts the stop keeps its lease and is sent again after it ends, which receivers' de-duplication by id makes
   harmless.
 - **Retention** (8.5, 9.3): sent rows go at once; failed rows (`failed_at`, a new column) are removed by housekeeping
-  after 7 days, and an activity with no row left 7 days after it was written. `-purge-remote` removes every row of
+  after 7 days, and past the newest 20,000 failed rows the oldest go too, so a run of give-ups (an unavailable host
+  alone gives up to 2,000) cannot grow the table without bound; an activity with no row left goes 7 days after it was
+  written. Each delete removes at most 1,000 rows and gives its turn back before the next, on the workers' context, so
+  a stop ends it between two statements. `-purge-remote` removes every row of
   the three tables (each names another server), and says how many.
 - **What it shows** (14.2): the Federation tab's "Sending to other servers" (queued and the oldest, waiting
   activities, sent and given up over the last day from memory, given up in 7 days, hosts paused after failures and
-  unavailable), the dashboard's mode line (to send, the oldest, given up, unavailable, or waiting for the clock), and
-  `/healthz` for a local probe (14.2).
+  unavailable; "100,000 or more" when the count of rows given up reaches the most it counts), the dashboard's mode line
+  (to send, the oldest, given up, unavailable, or waiting for the clock), and `/healthz` for a local probe (14.2). The
+  numbers are asked only for a local probe, and kept 5 seconds: a remote probe, which sees only `{"ok": true}`, runs
+  no statement of the queue's.
 - **Measured** (2.1 GHz Xeon, 4 cores, local Postgres in Docker): `BenchmarkClaimDelivery`, one claim with 50,000
-  rows queued on 300 hosts and 4 being sent to, 0.62 to 0.63 ms, 1.8 KB and 41 allocations (budget 2 ms); 1.6 to 1.7
-  ms before the statement was prepared. `TestFederationMemory`: the heap in use grew by 1.6 MB with 50,000 rows
-  queued and 4 workers each holding a 256 KB activity in a request the stub held; with the inbox's bound added (4
+  rows queued on 300 hosts, 4 being sent to and 25 with an open circuit, 0.75 to 0.85 ms, 1.8 KB and 41 allocations
+  (budget 2 ms; 0.62 ms with no circuit open; 1.6 to 1.7 ms before the statement was prepared). `TestFederationMemory`:
+  the rows live in Postgres, not in the Go heap, so what it measures is the heap of the workers holding what they
+  claimed: it grew by 1.6 MB while 4 workers each held a 256 KB activity in a request the stub held, claimed with
+  50,000 rows queued; with the inbox's bound added (4
   decodes of at most 3.2 MB measured here, and 8 bodies of 256 KB being read: 14.9 MB) that is 16.5 MB of the 32 MB
   budget. The inbox's share is a bound added, not a measurement taken at the same moment; the Pi's figure and the
   container's (FWR 8's `docker stats`) are not measured. The fan-out of section 12 (1,000 followers on 300 hosts) is
@@ -2633,8 +2667,8 @@ As built (FWR 2, migration 19, with `flowa-schema18.dump` for the restore drill)
 writes it), and `actor_id` is indexed for the actor cache's bound (`userRefs`); `ap_deliveries` gains `failed_at`, its
 `created_at` has no default, and its indexes are `ap_deliveries_due (next_at, id)`, `ap_deliveries_host (host)`,
 `ap_deliveries_age (created_at)`, all `WHERE state = 'queued'`, and `ap_deliveries_failed (failed_at) WHERE state =
-'failed'`; `ap_hosts` gains `failing_since`, `last_error`, `alive_at`, `probed_at` and `created_at`, checks `host` lower
-case and `sig`, leaves `software` to a later item, and has `ap_hosts_held (host) WHERE state <> 'ok'`.
+'failed'`; `ap_hosts` gains `failing_since`, `down_since`, `last_error`, `alive_at`, `probed_at`, `sig_learned` and `created_at`,
+checks `host` lower case and `sig`, leaves `software` to a later item, and has `ap_hosts_held (host) WHERE state <> 'ok'`.
 
 ### 9.2 Why remote content joins the existing tables (F5)
 
@@ -3077,7 +3111,7 @@ changes no running instance.
 - As built (FWR 2): a local probe of `/healthz` in a mode that federates gets `federation` with `mode`, `queued`,
   `oldestQueuedSeconds` and `failingHosts` (hosts whose circuit is open, that are unavailable, or whose last request
   failed), and `paused` and `clockWaiting` when true; the numbers are left out when the database did not answer
-  them, and none of it makes the instance unhealthy. The public answer is still `{"ok": true}`, and in local and
+  them, are asked only for a local probe and kept 5 seconds, and none of it makes the instance unhealthy. The public answer is still `{"ok": true}`, and in local and
   plain single mode the answer is byte for byte as before (`TestDBHealthz`, `TestDBDefaultsUnchanged`). The tile
   of the second point is the Federation tab's "Sending to other servers"; the page per host with a retry button is
   not built.

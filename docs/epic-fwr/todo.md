@@ -109,15 +109,22 @@ route and test named below is new unless the design note says it exists.
   (the pacer), the policy asked again at the send, `httpSigner` through the guarded fetcher, no turn, connection or
   lock held across a request; 8.3's schedule with 20% jitter and the 48-hour horizon; 400 and 401 sent again in the
   other form, the form recorded for the host, a 400 in both given up and a 401 retried; 410 gives up every row for
-  that inbox and calls `goneInbox`; 429's `Retry-After`; the circuit (5 in 10 minutes, 10 minutes open, reopened by
-  the one row tried after) and unavailable hosts (7 days without a sign of life, a daily NodeInfo probe, a valid
-  delivery from it, the RFC 9421 mark from the inbox); the clock guard (the build and the newest time the database
-  held); the `federation` flag as the pause; a stop that gives back what was claimed and lets a request in flight
-  finish within `serve`'s 5 s; retention of failed rows and finished activities after 7 days; `-purge-remote`; the
+  that inbox and calls `goneInbox`; 429's `Retry-After`; a redirect retried without counting against the host; the
+  circuit (5 in 10 minutes, 10 minutes open, the host's rows moved to its end, half-open: the one row tried after
+  reopens it on a failure and closes it on any other answer) and unavailable hosts (failing for 7 days with no sign of
+  life between and no gap over 48 hours, a daily NodeInfo probe, a valid delivery from it written at most hourly as a
+  sign of life, the RFC 9421 mark from the inbox unless a send learned the form); every inbox on its actor's host,
+  checked by `enqueue`; the clock guard (the build and the newest time the database
+  held, believed for the first hour after a start); the `federation` flag as the pause; a stop that gives back what was claimed and lets a request in flight
+  finish within `serve`'s 5 s; retention of failed rows (7 days, at most 20,000) and finished activities after 7
+  days, 1,000 rows a statement; `-purge-remote`; the
   `/healthz` fields for a local probe (`mode`, `queued`, `oldestQueuedSeconds`, `failingHosts`, and `paused` and
-  `clockWaiting`), unchanged in local and plain single mode; "Sending to other servers" on the Federation tab and a
+  `clockWaiting`), asked only for a local probe and kept 5 s, unchanged in local and plain single mode; "Sending to other servers" on the Federation tab and a
   part of the dashboard's mode line. Nothing sends yet: FWR 3 is the first caller, and fills `goneInbox` with the
-  removal of the followers whose inbox answered 410 (until then a 410 gives up the rows and nothing more). Tests:
+  removal of the followers whose inbox answered 410 (until then a 410 gives up the rows and nothing more). **For FWR 3:**
+  each recipient passed to `enqueue` names its actor's id beside its inbox and shared inbox (from `ap_actors`), and
+  an inbox not on the actor's host is refused, a shared inbox on another host passed over for the actor's own inbox
+  (federation.md 8.8 says why and what it costs). Tests:
   `TestDBDeliveryQueue` (the schedule and the jitter on the test's clock, the horizon, four workers on 40 rows each
   sent once and one at a time per host, a lease renewed and a lease lost, both forms with the form recorded, 400 and
   401 refused in both, 410 with the hook, 404, 403, 429, the circuit, unavailable hosts and the probe),
@@ -128,9 +135,12 @@ route and test named below is new unless the design note says it exists.
   queues, in both forms), `TestDBHealthzFederation`, `TestDBDeliveryRetention`, `TestFederationMemory`,
   `TestDBQueryPlans` (the claim, the counts, the fan-out, a host's failure, the numbers), `TestDBPurgeRemote`,
   `TestDBLocalModeUnchanged` and `TestDBDefaultsUnchanged` extended, all with `-race -count=3` on two cores;
-  `BenchmarkClaimDelivery` 0.62 to 0.63 ms with 50,000 rows queued (budget 2 ms) and `TestFederationMemory` 16.5 MB
-  of the 32 MB budget (1.6 MB measured for the queue with 4 requests in flight, the inbox's 14.9 MB added as a
-  bound), on a 2.1 GHz Xeon. 23 deliberate breakages each failed a test.
+  `BenchmarkClaimDelivery` 0.75 to 0.85 ms with 50,000 rows queued and 25 hosts open (budget 2 ms) and
+  `TestFederationMemory` 16.5 MB of the 32 MB budget: the rows are in Postgres, so it measures the Go heap of 4
+  workers each holding a claimed 256 KB activity in flight (1.6 MB), with the inbox's 14.9 MB added as a bound, on a
+  2.1 GHz Xeon. 23 deliberate breakages each failed a test; the review of #112 added the week of failures for
+  "unavailable", signs of life from the inbox, inboxes held to their actor's host, the local-only health numbers,
+  batched and capped retention, and the half-open circuit, each with its test.
   **Open:** the fan-out time on the Pi, which is the owner's to measure, so the box stays unchecked: on the Pi, with a
   throwaway database (`docker run -d --name fanout-db -e POSTGRES_PASSWORD=flowa-test-only -p 127.0.0.1:55433:5432
   "$(test/db-image.sh)"`, the image `compose.yml` pins), run `TEST_DATABASE_URL='postgres://postgres:flowa-test-only@127.0.0.1:55433/postgres?sslmode=disable'

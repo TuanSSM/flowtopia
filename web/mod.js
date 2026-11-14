@@ -404,7 +404,7 @@ function fedOutHTML(n) {
   return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Nothing is sent yet in this version</span></div>
     ${n.clockWaiting ? '<p class="notice warn">Waiting for the clock: this server\'s clock is earlier than its build or than the newest time its database holds, so nothing is signed or sent until it is set.</p>' : ''}
     ${n.paused ? `<p class="notice warn">Sending is off under Features: what waits stays queued${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
-    <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'post waits' : 'posts wait'} for room` : ''}. ${num(n.failed)} given up in the last 7 days.</p>
+    <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'post waits' : 'posts wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
     <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p></section>`;
 }
 // Filled in by the dashboard and skill map editor further down.

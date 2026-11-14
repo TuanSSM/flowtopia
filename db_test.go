@@ -3907,7 +3907,7 @@ func TestDBQueryPlans(t *testing.T) {
 		// each row counted by the scan and again by the limit above it. Once per activity enqueued.
 		{"deliveries: the counts before an enqueue", deliveryCountsSQL, []any{deliveryQueueMax, deliveryWaitingMax}, 2*(deliveryQueueMax+20000) + 200, "ap_deliveries ap_outbox"},
 		{"deliveries: an activity to 300 hosts", deliveryFanOutSQL, []any{1, pq.Array(fanIn), pq.Array(fanHosts), time.Now(), deliveryHostMax}, 2*deliveryQueueMax + 5000, ""},
-		{"deliveries: a host's failure", hostFailedSQL, []any{"h5.fan.example", time.Now(), "answered 503", 600.0}, 10, ""},
+		{"deliveries: a host's failure", hostFailedSQL, []any{"h5.fan.example", time.Now(), "answered 503", 600.0, hostStreakGap.Seconds()}, 10, ""},
 		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedShown, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_outbox ap_hosts"},
 	})
 	on = db
