@@ -1396,12 +1396,18 @@ func TestInboxStageOrder(t *testing.T) {
 			}
 		}, e.bo(), body, 503, inBusy, work{}},
 		{"the body's time", func() func() {
+			// The deadline has passed and the body has not arrived: it arrives (ends) only once the inbox has given
+			// its read turn back, after the deadline won. A body that ended at once would race the deadline in the
+			// read's select, and either answer would be right for a body that arrived as its time ran out.
 			gone := make(chan time.Time)
 			close(gone)
+			arrive := make(chan struct{})
 			e.q.readDeadline = func() <-chan time.Time { return gone }
-			e.onServer = func(r *http.Request) { r.Body = blockBody{ch: closedCh()} }
+			e.q.readGiven = sync.OnceFunc(func() { close(arrive) })
+			e.onServer = func(r *http.Request) { r.Body = blockBody{ch: arrive} }
 			return func() {
 				e.q.readDeadline = func() <-chan time.Time { return time.After(inboxReadFor) }
+				e.q.readGiven = nil
 				e.onServer = func(r *http.Request) { r.Body = countingBody{r: r.Body, n: &read} }
 			}
 		}, e.bo(), body, 408, inSlowBody, work{}},
