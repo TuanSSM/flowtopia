@@ -11611,7 +11611,7 @@ var apTerms = func() map[string]string {
 	}
 	add("as", asNS, "actor", "alsoKnownAs", "attachment", "attributedTo", "audience", "bcc", "bto", "cc",
 		"content", "deleted", "endpoints", "first", "followers", "formerType", "href", "icon", "inReplyTo",
-		"items", "manuallyApprovesFollowers", "mediaType", "movedTo", "name", "next", "object",
+		"items", "manuallyApprovesFollowers", "mediaType", "movedTo", "name", "next", "object", "outbox",
 		"preferredUsername", "published", "sensitive", "sharedInbox", "summary", "tag", "target", "to",
 		"totalItems", "updated", "url")
 	add("ldp", "http://www.w3.org/ns/ldp#", "inbox")
@@ -12307,6 +12307,7 @@ type apActor struct {
 	URL                       []apLink
 	Icon                      []apLink
 	Inbox, SharedInbox        string
+	Outbox                    string // "" when absent or unusable: no posts are shown from it (FRD 8)
 	Followers                 string
 	Keys                      []apKey
 	KeysSkipped               int // publicKey entries that could not be read
@@ -12357,6 +12358,12 @@ func actorFrom(f apFields) (*apActor, error) {
 	}
 	if a.Followers, err = f.id("followers"); err != nil {
 		return nil, err
+	}
+	// outbox is only read, to show an actor's latest public posts to a member who looked it up (FRD 8):
+	// one Flowa cannot use is left out on the careful side (no posts shown), never a reason to refuse the
+	// actor, whose key the inbox may need.
+	if o, err := f.id("outbox"); err == nil {
+		a.Outbox = o
 	}
 	// endpoints is "a json object" or "a link to a JSON-LD document with these properties"
 	// (ActivityPub 4.1). Flowa does not fetch the latter: without a shared inbox it uses the inbox.
@@ -13015,6 +13022,7 @@ type remoteActor struct {
 	URL, Icon         string // the first usable of each (6.3); the picture is fetched through F6's cache, later
 	Inbox             string
 	SharedInbox       string
+	Outbox            string // the actor's outbox, read by the search by handle (FRD 8); "" when it names none Flowa can use
 	Followers         string
 	MovedTo           string
 	Locked            bool   // manuallyApprovesFollowers: a Follow shows as requested until Accept (6.3)
@@ -13066,7 +13074,7 @@ func (r *remoteActor) keyUsable(use keyUse) error {
 }
 
 const actorCols = `a.user_id, a.ap_id, a.kind, u.username, u.domain, u.display_name, a.preferred_username, a.summary, a.url, a.icon,
-	a.inbox, a.shared_inbox, a.followers_url, a.moved_to, a.locked, a.key_id, a.public_key, a.state, a.fetched_at, a.expires_at`
+	a.inbox, a.shared_inbox, a.outbox, a.followers_url, a.moved_to, a.locked, a.key_id, a.public_key, a.state, a.fetched_at, a.expires_at`
 
 // actorByIDSQL reads a cached actor by its id, through ap_actors' unique index.
 const actorByIDSQL = `SELECT ` + actorCols + ` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.ap_id = $1`
@@ -13079,7 +13087,7 @@ const actorByKeySQL = `SELECT ` + actorCols + ` FROM ap_actors a JOIN users u ON
 func scanActor(row scanner) (*remoteActor, error) {
 	var r remoteActor
 	err := row.Scan(&r.UserID, &r.ID, &r.Kind, &r.Username, &r.Domain, &r.Name, &r.PreferredUsername, &r.Summary, &r.URL, &r.Icon,
-		&r.Inbox, &r.SharedInbox, &r.Followers, &r.MovedTo, &r.Locked, &r.KeyID, &r.keyPEM, &r.State, &r.FetchedAt, &r.ExpiresAt)
+		&r.Inbox, &r.SharedInbox, &r.Outbox, &r.Followers, &r.MovedTo, &r.Locked, &r.KeyID, &r.keyPEM, &r.State, &r.FetchedAt, &r.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -13911,8 +13919,9 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	}
 	key := actorKey(doc, []string{want, keptKey}, keyDoc)
 	display, summary, link, icon := remoteDisplay(doc.Name, pref), remoteText(doc.Summary, remoteSummaryMax), firstLink(doc.URL), firstLink(doc.Icon)
+	outbox := doc.Outbox
 	if doc.Suspended {
-		display, summary, link, icon = "", "", "", ""
+		display, summary, link, icon, outbox = "", "", "", "", ""
 	}
 	inserted := false
 	switch {
@@ -13921,8 +13930,8 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	case known:
 		if _, err = tx.ExecContext(ctx, `UPDATE users SET display_name = $2 WHERE id = $1 AND domain <> ''`, uid, display); err == nil {
 			_, err = tx.ExecContext(ctx, `UPDATE ap_actors SET kind = $2, preferred_username = $3, summary = $4, url = $5, icon = $6, inbox = $7, shared_inbox = $8,
-				followers_url = $9, moved_to = $10, locked = $11, key_id = $12, public_key = $13, state = 'ok', fetched_at = $14, expires_at = $15 WHERE user_id = $1`,
-				uid, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, now, now.Add(actorTTL))
+				followers_url = $9, moved_to = $10, locked = $11, key_id = $12, public_key = $13, state = 'ok', fetched_at = $14, expires_at = $15, outbox = $16 WHERE user_id = $1`,
+				uid, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, now, now.Add(actorTTL), outbox)
 		}
 	default:
 		for _, taken := range []bool{false, true} {
@@ -13937,8 +13946,8 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 		}
 		var n int64
 		res, err2 := tx.ExecContext(ctx, `INSERT INTO ap_actors (user_id, ap_id, kind, preferred_username, summary, url, icon, inbox, shared_inbox, followers_url, moved_to, locked,
-			key_id, public_key, state, fetched_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) ON CONFLICT (ap_id) DO NOTHING`,
-			uid, doc.ID, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, state, now, now.Add(actorTTL))
+			key_id, public_key, state, fetched_at, expires_at, outbox) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT (ap_id) DO NOTHING`,
+			uid, doc.ID, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, state, now, now.Add(actorTTL), outbox)
 		if err = err2; err == nil {
 			n, _ = res.RowsAffected()
 		}
@@ -14350,6 +14359,11 @@ var migrations = []string{schema, schemaSocial,
 	CREATE INDEX IF NOT EXISTS catalog_revisions_author ON catalog_revisions (author_id);
 	CREATE INDEX IF NOT EXISTS instance_settings_by ON instance_settings (updated_by);
 	CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id)`,
+	// 16: the outbox a remote actor names (docs/federation.md 6.3 and 11), which the search by handle reads to
+	// show the actor's latest public posts (FRD 8). '' for a row stored before, which is filled at its next
+	// fetch, at most 24 hours later. One column with a constant default: no row is rewritten, and an older
+	// build ignores it.
+	`ALTER TABLE ap_actors ADD COLUMN IF NOT EXISTS outbox TEXT NOT NULL DEFAULT ''`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
