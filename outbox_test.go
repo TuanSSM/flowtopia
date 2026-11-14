@@ -13,6 +13,40 @@ import (
 
 // The outbox, its pages, the Creates and the collections (docs/federation.md 5.2, 6.2, 6.4, 6.7, F10).
 
+// When the published skill names cannot be read, a page of the outbox (20 Creates, each with two chips and
+// a combo of two steps: 80 names to look up) asks the database once per prop and then uses the shipped
+// names for namesRetry, instead of asking again for every name; the next page in that time asks nothing.
+// The catalog's table is replaced, in this test's own schema, by a view that counts each read and fails it.
+func TestDBNamesFailingRead(t *testing.T) {
+	f := newPubFixture(t)
+	e := f.e
+	e.mustExec(`INSERT INTO posts (user_id, body, audience, data) SELECT $1, 'chips ' || g, 'public',
+		'{"tags":[{"prop":"poi","skill":"F1"},{"prop":"staff","skill":"F1"}],"combo":{"id":"c","name":"C","role":"","prop":"nunchaku","seq":["F7","F5"],"reps":[1,1]}}'
+		FROM generate_series(1, 25) g`, f.ana)
+	e.mustExec(`ALTER TABLE catalog_revisions RENAME TO catalog_revisions_kept`)
+	e.mustExec(`CREATE SEQUENCE names_asked`)
+	e.mustExec(`CREATE VIEW catalog_revisions AS SELECT p AS prop, 'published'::text AS status, 1 AS rev,
+		(1 / (nextval('names_asked') * 0))::text::jsonb AS body FROM unnest(ARRAY['nunchaku', 'poi', 'staff', 'doublestaff', 'buugeng']) p`)
+	asked := func() int { return e.count(`SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM names_asked`) }
+	e.a.namesMu.Lock()
+	e.a.names = nil
+	e.a.namesMu.Unlock()
+	p := docOf(t, e, "/users/ana/outbox?page=true")
+	first := asked()
+	// Three props are named; each failed read evaluates the view's five rows at most once each.
+	if first == 0 || first > 3*5 {
+		t.Errorf("a page with a failing catalog read asked %d times", first)
+	}
+	if b, _ := json.Marshal(p); !strings.Contains(string(b), "Six basic figure-8s") {
+		t.Errorf("the shipped names were not used: %s", b)
+	}
+	next, _ := p["next"].(string)
+	docOf(t, e, strings.TrimPrefix(next, "https://flowa.example.org"))
+	if n := asked(); n != first {
+		t.Errorf("the next page asked again within namesRetry: %d, then %d", first, n)
+	}
+}
+
 // docOf asks for an address as another server would, wants 200 and the headers of 5.6, and decodes it.
 func docOf(t *testing.T, e *tenv, path string) map[string]any {
 	t.Helper()
@@ -139,7 +173,9 @@ func TestDBOutboxPaging(t *testing.T) {
 	// Every query that names no page is the one 404, before the database is asked.
 	nobody := pubAsk(e, "GET", "/users/nobody/outbox", apAccept)
 	for _, q := range []string{"?page=false", "?page=1", "?page=true&page=true", "?before=5", "?page=true&before=x", "?page=true&before=0",
-		"?page=true&before=-3", "?page=true&before=1&before=2", "?page=true&max_id=5", "?min_id=1", "?page=true&limit=500", "?x"} {
+		"?page=true&before=-3", "?page=true&before=1&before=2", "?page=true&max_id=5", "?min_id=1", "?page=true&limit=500", "?x",
+		"?page=true&before=007", "?page=true&before=%2B7", "?page=true&before=+7", "?before=7&page=true", "?page=true;x", "?x;y", "?page=TRUE", "?page=%74rue",
+		"?page=true&before=7%00", "?page=true&before=99999999999999999999", "?page=true&", "?&page=true", "?page=true&before="} {
 		w := pubAsk(e, "GET", "/users/ana/outbox"+q, apAccept)
 		if w.Code != 404 || w.Body.String() != nobody.Body.String() || !headersEqual(w.Result().Header, nobody.Result().Header) {
 			t.Errorf("GET /users/ana/outbox%s: %d %s", q, w.Code, w.Body)
@@ -206,9 +242,11 @@ func jsonEqual(a, b any) bool {
 }
 
 // Followers and following answer their counts and never who (F10): no first, no page, no item, no name, for
-// anyone who asks here; the count is the app's (a follow across a block is not counted), and while the
-// follows flag is off, as the app shows none, there is no count either. Featured and the instance actor's
-// outbox are empty. A member's collection freezes the origin; the instance actor's outbox does not.
+// anyone who asks here. A count says no more than the app does, and less: only while the app shows counts
+// (the community and follows flags both on), and only of follows whose other side may itself be shown
+// beyond this server (opted in, not suspended), never across a block; a member who opts out leaves the
+// count at once (other servers' copies within the three minutes of the cache). Featured and the instance
+// actor's outbox are empty. A member's collection freezes the origin; the instance actor's outbox does not.
 func TestDBCollections(t *testing.T) {
 	f := newPubFixture(t)
 	e := f.e
@@ -222,7 +260,7 @@ func TestDBCollections(t *testing.T) {
 	if e.count(`SELECT count(*) FROM instance_settings WHERE key = 'origin'`) != 0 {
 		t.Error("the instance actor's outbox froze the origin")
 	}
-	fol := docOf(t, e, "/users/ana/followers")
+	docOf(t, e, "/users/ana/followers")
 	if e.count(`SELECT count(*) FROM instance_settings WHERE key = 'origin'`) != 1 {
 		t.Error("a member's followers collection went out without freezing the origin")
 	}
@@ -234,38 +272,70 @@ func TestDBCollections(t *testing.T) {
 		}
 		return len(m) == len(keys)
 	}
-	// The flag off: the collection, nothing counted.
-	fing := docOf(t, e, "/users/ana/following")
-	if fol["id"] != "https://flowa.example.org/users/ana/followers" || !only(fol, "@context", "id", "type") || fol["type"] != "OrderedCollection" ||
-		fing["id"] != "https://flowa.example.org/users/ana/following" || !only(fing, "@context", "id", "type") {
-		t.Errorf("with the follows flag off: %v %v", fol, fing)
-	}
-	// The flag on: bob and dee follow ana, cyd follows her across a block, ana follows bob.
-	e.setFlag("follows", true)
-	e.mustExec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $4), ($2, $4), ($3, $4), ($4, $1)`, f.bob, f.cyd, f.dee, f.ana)
-	e.mustExec(`INSERT INTO blocks (user_id, target_id) VALUES ($1, $2)`, f.ana, f.cyd)
-	for path, n := range map[string]float64{"/users/ana/followers": 2, "/users/ana/following": 1} {
-		w := pubAsk(e, "GET", path, apAccept)
-		d := docOf(t, e, path)
-		if !only(d, "@context", "id", "type", "totalItems") || d["totalItems"] != n {
-			t.Errorf("%s: %v", path, d)
-		}
-		for _, who := range []string{"bob", "cyd", "dee", "orderedItems", "first", `"items"`} {
-			if strings.Contains(w.Body.String(), who) {
-				t.Errorf("%s names %s: %s", path, who, w.Body)
+	// Following ana: bob (never opted in), cyd (opted in, suspended), dee (opted out), gus and ivy (opted
+	// in), and hal (opted in) across a block ana made. Ana follows bob and gus.
+	gus, _ := e.user("gus", "user")
+	hal, _ := e.user("hal", "user")
+	ivy, _ := e.user("ivy", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id IN ($1, $2, $3)`, gus, hal, ivy)
+	e.mustExec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $6), ($2, $6), ($3, $6), ($4, $6), ($5, $6), ($6, $1), ($6, $4)`,
+		f.bob, f.cyd, f.dee, gus, ivy, f.ana)
+	e.mustExec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2)`, hal, f.ana)
+	e.mustExec(`INSERT INTO blocks (user_id, target_id) VALUES ($1, $2)`, f.ana, hal)
+	counts := func(what string, followers, following any) {
+		t.Helper()
+		for path, n := range map[string]any{"/users/ana/followers": followers, "/users/ana/following": following} {
+			w := pubAsk(e, "GET", path, apAccept)
+			d := docOf(t, e, path)
+			if n == nil && !only(d, "@context", "id", "type") || n != nil && (!only(d, "@context", "id", "type", "totalItems") || d["totalItems"] != n) ||
+				d["type"] != "OrderedCollection" || d["id"] != "https://flowa.example.org"+path {
+				t.Errorf("%s: %s: %v, want totalItems %v", what, path, d, n)
+			}
+			for _, who := range []string{"bob", "cyd", "dee", "gus", "hal", "ivy", "orderedItems", "first", `"items"`} {
+				if strings.Contains(w.Body.String(), who) {
+					t.Errorf("%s: %s names %s: %s", what, path, who, w.Body)
+				}
+			}
+			// Nothing a request carries opens the list: a member's session changes nothing, and a page
+			// parameter names no page.
+			r := httptest.NewRequest("GET", path, nil)
+			r.Header.Set("Accept", apAccept)
+			r.RemoteAddr = "198.51.100.20:4000"
+			r.AddCookie(&http.Cookie{Name: cookieName, Value: f.anaTok})
+			w2 := httptest.NewRecorder()
+			e.h.ServeHTTP(w2, r)
+			if w2.Code != 200 || w2.Body.String() != w.Body.String() {
+				t.Errorf("%s: %s signed in as ana: %d %s", what, path, w2.Code, w2.Body)
+			}
+			if w3 := pubAsk(e, "GET", path+"?page=true", apAccept); w3.Code != 404 {
+				t.Errorf("%s: %s?page=true: %d", what, path, w3.Code)
 			}
 		}
-		// Nothing a request carries opens the list: not a member's session, not a page parameter.
-		r := httptest.NewRequest("GET", path+"?page=true", nil)
-		r.Header.Set("Accept", apAccept)
-		r.RemoteAddr = "198.51.100.20:4000"
-		r.AddCookie(&http.Cookie{Name: cookieName, Value: f.anaTok})
-		w2 := httptest.NewRecorder()
-		e.h.ServeHTTP(w2, r)
-		if w2.Code != 200 || w2.Body.String() != w.Body.String() {
-			t.Errorf("%s signed in as ana, with ?page=true: %d %s", path, w2.Code, w2.Body)
-		}
 	}
+	// The follows flag off (the default): no count, as the app shows none.
+	counts("follows off", nil, nil)
+	// Both flags on: only gus and ivy follow ana publicly, and ana publicly follows gus alone, while the app
+	// shows its members every follow but the blocked one.
+	e.setFlag("follows", true)
+	counts("both flags on", 2.0, 1.0)
+	if _, out := e.do(f.anaTok, "GET", "/api/users/ana", nil); num(out["followers"]) != 5 || num(out["following"]) != 2 {
+		t.Errorf("the app's own counts: %v", out["_raw"])
+	}
+	// Ivy opts out: she leaves the count at the next request.
+	e.mustExec(`UPDATE users SET federates = false WHERE id = $1`, ivy)
+	counts("ivy opted out", 1.0, 1.0)
+	// Gus is suspended: he leaves both counts.
+	e.mustExec(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, gus)
+	counts("gus suspended", 0.0, 0.0)
+	e.mustExec(`UPDATE users SET suspended_until = NULL WHERE id = $1`, gus)
+	// The community flag off with follows on: the app shows no profile at all, so no count here either.
+	e.setFlag("community", false)
+	if code, _ := e.do(f.anaTok, "GET", "/api/users/ana", nil); code != 404 {
+		t.Errorf("the app's profile with the community flag off: %d", code)
+	}
+	counts("community off", nil, nil)
+	e.setFlag("community", true)
+	counts("community on again", 1.0, 1.0)
 	feat := docOf(t, e, "/users/ana/featured")
 	if !only(feat, "@context", "id", "type", "totalItems", "orderedItems") || feat["id"] != "https://flowa.example.org/users/ana/featured" || feat["totalItems"] != 0.0 || !jsonEqual(feat["orderedItems"], []any{}) {
 		t.Errorf("featured: %v", feat)
@@ -311,6 +381,16 @@ func TestDBCollectionSurfaces(t *testing.T) {
 		hidden = append(hidden, fmt.Sprintf("/users/ana/posts/%d/activity", p))
 	}
 	spelled = append(spelled, fmt.Sprintf("/users/ana/posts/0%d/activity", f.pub), "/users/ana/posts/x/activity", "/actor/%6futbox")
+	// A query names nothing at an address that takes none, and only its own forms at the outbox (docQuery),
+	// read whole, so a pair url.ParseQuery would drop (one with a semicolon) is not passed over.
+	for _, p := range []string{"/users/ana/followers", "/users/ana/following", "/users/ana/featured", fmt.Sprintf("/users/ana/posts/%d/activity", f.pub), "/actor/outbox", "/users/ana/outbox"} {
+		for _, q := range []string{"?x", "?x;y", "?page=true;x", "?before=1", "?page=true&before=007", "?page=true&before=%2B7"} {
+			spelled = append(spelled, p+q)
+		}
+		if p != "/users/ana/outbox" {
+			spelled = append(spelled, p+"?page=true")
+		}
+	}
 	for _, accept := range []string{apAccept, ldAccept, browser, ""} {
 		want := of(pubAsk(e, "GET", "/users/nobody", accept))
 		activity := wantsActivity(http.Header{"Accept": {accept}})

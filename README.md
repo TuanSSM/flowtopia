@@ -508,8 +508,11 @@ profile page, the post's page or `/actor`:
   says how many there are and links its first page (`?page=true`); each page holds 20 and links the next
   (`?page=true&before=<post id>`, the profile page's cursor).
 - `GET /users/{name}/posts/{id}/activity`: one Public post's `Create`, the same one the outbox lists.
-- `GET /users/{name}/followers` and `/following`: how many follow the member and how many they follow, only
-  while the `follows` flag is on, and never who: those lists are the member's own, in the app.
+- `GET /users/{name}/followers` and `/following`: how many follow the member and how many they follow, never
+  who (those lists are the member's own, in the app). A count is given only while the `community` and
+  `follows` flags are both on, and counts only members who themselves share beyond this server (opted in,
+  not suspended), so a follow by or of someone who never opted in stays on this server. It can be smaller
+  than the count members see in the app.
 - `GET /users/{name}/featured`: an empty list (posts cannot be pinned), which Mastodon asks for.
 - `GET /actor/outbox`: the instance account's outbox, empty.
 

@@ -535,8 +535,8 @@ Usernames never change (no endpoint renames), and the numeric post and comment i
 (`BIGSERIAL`), so these stay stable. A deleted member's name goes into `retired_usernames` (**new**)
 and cannot be taken again.
 
-Correction (FRD 6): the Create of a post is not a random activity id but the post's id with `/activity`
-(`https://flowa.example.org/users/ana/posts/812/activity`), as Mastodon names a status's Create
+Correction (FRD 6): the Create of a post is not a random activity id but the post's full address with
+`/activity` after it (`https://flowa.example.org/users/ana/posts/812/activity`), as Mastodon names a status's Create
 (`/users/{name}/statuses/{id}/activity`). It is made from the post whenever it is needed (the outbox now, the
 deliveries of FWR 4 later), so it is the same every time with nothing stored, and it answers at that address
 (6.2, "As built (FRD 6)"). The random form stays for activities that are rows of their own (a Follow, a Like,
@@ -960,7 +960,8 @@ silent:
 
 - **One function for the Create.** `createOf` makes the Create of a Public post from the post (`noteOf` its
   Note), for a page of the outbox, for the Create's own address, and for FWR 4's deliveries when they come:
-  `id` the post's id with `/activity`, `type` `Create`, `actor` the author, `published` the post's, `to` the
+  `id` the post's full address with `/activity` after it (`https://flowa.example.org/users/ana/posts/812/activity`),
+  `type` `Create`, `actor` the author, `published` the post's, `to` the
   public collection and `cc` the author's followers collection (6.4, 6.7), the same as the Note's own `to` and
   `cc`; `object` the Note without a `@context`. The Note at its own address gains the same `cc` (its golden file
   changed), since the followers collection now answers.
@@ -969,13 +970,17 @@ silent:
   `[]`). A page is `OrderedCollectionPage` with `partOf`, 20 Creates (`pubPage`, the profile page's size; no
   size parameter) newest first, and `next` (`?page=true&before=<the last post id on the page>`) while there are
   older posts. There is no `prev`: Activity Streams 2.0 Core 2.3 allows a singly linked list and tells a reader
-  to walk from `first` by `next`, and a newer page would need a second cursor. Exactly three query forms answer
-  (none, `page=true`, `page=true&before=<id>`, the cursor by the profile page's own rule, `pageCursor`); any
-  other (`page=1`, `max_id`, `limit`, a repeated or unknown parameter) is the 404, so each page has one address.
-  The cursor only bounds a statement that is already held to the one member's Public posts (the profile page's
-  `profilePageSQL`, which the outbox reuses), so a cursor that names another member's post, a This server post
-  or no post reads that member's own Public posts older than the id, and nothing else (`TestDBOutboxPaging`).
-  A cursor past 2^31 failed on the profile page (the statement took it for an integer); it is a bigint now.
+  to walk from `first` by `next`, and a newer page would need a second cursor. Exactly three queries answer,
+  compared as written (`docQuery`, on the raw query, so nothing is dropped unseen as `url.ParseQuery` drops a
+  pair with a semicolon): none, `page=true`, and `page=true&before=<id>` with the id as a plain decimal (no
+  sign, no leading zero, no escape). Any other (`page=1`, `max_id`, `limit`, `before=007`, `before=%2B7`, the
+  parameters in another order, a repeated, unknown or semicolon-joined one) is the 404, so each page answers at
+  exactly the address its `id` names. Followers, following, featured, a Create and the instance actor's outbox
+  answer with no query at all, by the same function. The cursor only bounds a statement that is already held to
+  the one member's Public posts (the profile page's `profilePageSQL`, which the outbox reuses), so a cursor that
+  names another member's post, a This server post or no post reads that member's own Public posts older than
+  the id, and nothing else (`TestDBOutboxPaging`). A cursor past 2^31 answered 500 on the profile page (the
+  statement took it for an integer): this item found it, and the fix (a bigint) merged with FRD 5 (#107).
   `totalItems` counts what the pages list (`publicPost`: Public, not hidden, not a milestone) in the same
   statement as the gate (`outboxSQL`), through `posts_public` for the one member: it reads the member's Public
   posts and nothing else (about 6 ms for a member with 22,000 of them, on a 2.1 GHz Xeon). That is linear; an
@@ -985,11 +990,18 @@ silent:
   `first`, a page or an item. F10 shows the lists only to "the account itself", and nobody who asks at this
   address can be that account: nothing here reads a session, and a signed request, once there is one (7.6), is
   signed by another server's actor. A member reads their own lists in the app (`GET /api/followers`, `GET
-  /api/following`, since INS), which is that other surface. The count is `followCountsSQL`, the one the app
-  shows members on a profile (follows across a block are not counted), and it is given only while the `follows`
-  flag is on, because the app gives it only then; with the flag off the collection has no `totalItems` at all,
-  which Activity Streams allows. No member can hide the counts (section 11 hides the lists, which are hidden
-  from everyone here). Remote followers do not exist yet (FWR 3), so the counts are of members of this server.
+  /api/following`, since INS), which is that other surface. **The count says no more than the app does, and
+  less.** It is given only while the app shows counts at all, the `community` and `follows` flags both on
+  (`followCountsShown`, which the app's profile asks too); otherwise the collection has no `totalItems`, which
+  Activity Streams allows. And it counts only the follows whose other side is itself a member who may be shown
+  beyond this server (opted in, not suspended: `publicMember`, the gate's own condition) and no follow across
+  a block (`publicFollowCountsSQL`). The app shows its signed-in members every local follow, but a follow made
+  by, or of, a member who never chose to federate, and when it changed, is theirs to keep inside the app: a
+  public count of all of them would tell the internet something those members never shared. A member who opts
+  out or is suspended leaves the counts at the next request (other servers' copies within the three minutes of
+  `Cache-Control`). No member can hide the counts (section 11 hides the lists, which are hidden from everyone
+  here). Remote followers do not exist yet (FWR 3). **Open for the owner (F10):** whether a public count
+  should count every local follower, or, as built, only those who federate.
 - **Featured** (`/users/{name}/featured`, 5.2): `totalItems` 0 and `orderedItems` `[]`, since posts cannot be
   pinned. **The instance actor's outbox** (`/actor/outbox`, which 5.5 names): the same, empty; like the instance
   actor's document it records no origin.
@@ -1010,8 +1022,10 @@ silent:
   milestone absent and not counted, every cursor, every query that names no page, the browser's redirect),
   `TestDBCreateActivity`, `TestDBCollections`, `TestDBCollectionSurfaces`, `TestDBOwnDocumentsDecode` (the
   outbox, its pages, the Creates and the collections through `decodeCollection` and `decodeActivity`),
-  `TestDBQueryPlans` (`outboxSQL`), `TestDBDefaultsUnchanged` (the new addresses in local and plain single
-  mode) and `BenchmarkOutboxPage` are in FRD's todo.
+  `TestDBOneConnection` and `TestDBPublicPool` (the new addresses), `TestDBNamesFailingRead` (a failing read of
+  the skill names costs one statement per prop for 10 s, `namesRetry`, not one per name on a page),
+  `TestDBQueryPlans` (`outboxSQL`, `publicFollowCountsSQL`), `TestDBDefaultsUnchanged` (the new addresses in
+  local and plain single mode) and `BenchmarkOutboxPage` are in FRD's todo.
 
 ### 6.3 Activities in
 
@@ -2310,8 +2324,10 @@ keyword filters.
   federates.
 - **Privacy defaults:** opt-in off, `discoverable` and `indexable` off, followers and following lists hidden,
   approve-by-hand off, audience Public only after opting in. As built (FRD 6): the lists are hidden from everyone
-  at the collection addresses (only the counts, while the `follows` flag is on), and shown to the member in the
-  app (6.2).
+  at the collection addresses and shown to the member in the app. The counts there are given only while the app
+  shows counts (the `community` and `follows` flags on), and count only follows whose other side also federates
+  (opted in, not suspended), so a follow by or of a member who never opted in stays inside the app; whether a
+  public count should include every local follower is the owner's question under F10 (6.2).
 - **A signed-out visitor from another server** who opens `https://flowa.example.org/users/ana/posts/812`
   in a browser sees the post (text, picture, chips as text, the author) in a small page with "Open in
   Flowa"; for a This server post or a non-federating member, a 404 page. In local mode, as today. Built in

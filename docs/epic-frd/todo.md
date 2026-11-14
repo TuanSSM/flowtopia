@@ -197,25 +197,37 @@ design note says it exists.
   Built (federation.md 5.2, 5.5, 6.2, 6.4, 6.5, 7.6 and 11 say what and why, each in an "As built (FRD 6)"
   paragraph): `GET /users/{name}/outbox` (an `OrderedCollection` with `totalItems` and `first`; pages of 20
   Creates newest first, `OrderedCollectionPage` with `partOf` and `next`, no `prev`, by the profile page's cursor
-  `?page=true&before=<id>` through the same statement and `pageCursor`; every other query the 404), `GET
-  /users/{name}/posts/{id}/activity` (the Create at its own id, the post's id with `/activity`: `createOf`, the one
-  function the outbox and FWR 4 use, to the public and cc the followers as the Note now is), `GET
-  /users/{name}/followers` and `/following` (the count of `followCountsSQL` while the `follows` flag is on, no
-  `totalItems` while it is off, and never `first`, a page or an item: nobody who asks there can be the account
-  itself, which reads its lists in the app), `GET /users/{name}/featured` and `GET /actor/outbox` (empty); the
+  `?page=true&before=<id>` through the same statement; every other query the 404, read whole from the raw query
+  by `docQuery`, which also holds every other new address to no query at all), `GET
+  /users/{name}/posts/{id}/activity` (the Create at its own id, the post's full address with `/activity` after it,
+  as in `https://flowa.example.org/users/ana/posts/812/activity`: `createOf`, the one function the outbox and FWR 4
+  use, to the public and cc the followers as the Note now is), `GET /users/{name}/followers` and `/following`
+  (a count only while the app shows counts, the `community` and `follows` flags both on, through the
+  predicate the app's profile asks, `followCountsShown`; counting only follows whose other side also federates,
+  opted in and not suspended, and none across a block, `publicFollowCountsSQL`; never `first`, a page or an item:
+  nobody who asks there can be the account itself, which reads its lists in the app; whether a public count
+  should include every local follower is left to the owner under F10), `GET /users/{name}/featured` and `GET
+  /actor/outbox` (empty); the
   actor names `followers`, `following` and `featured`; `fedBuilt` and NodeInfo's parts (`outbox`, `collections`)
   say so; a browser at any of these is sent with 303 to the page that shows the same thing; a retired name is the
   404 there, as at its posts. Every rule of the public addresses holds through item 5's code (the gate, one 404,
-  the allowance first, HEAD, 405, `Vary: Accept`, three minutes in caches, `ensureOrigin`, no CORS); a profile
-  page cursor past 2^31, which answered 500, is a bigint now. The test is `TestDBOutboxPaging` (the DB prefix
+  the allowance first, HEAD, 405, `Vary: Accept`, three minutes in caches, `ensureOrigin`, no CORS). This item
+  found that a profile page cursor past 2^31 answered 500; the fix (a bigint) merged with FRD 5 (#107). When the
+  published skill names cannot be read, the shipped ones stand in for 10 s (`namesRetry`), so a failing read
+  costs one statement per prop, not one per chip and combo step of every Create on a page (80 measured without
+  it, `TestDBNamesFailingRead`). The test is `TestDBOutboxPaging` (the DB prefix
   CI's database job selects with `-run DB`): empty, one page, many pages (20, 20, 6), a deleted and a hidden
   post, This server posts and a milestone absent and uncounted, cursors naming other members' posts, This server
   posts, missing posts and ids past 32 bits, every query that names no page, the browser's redirect; with
-  `TestDBCreateActivity`, `TestDBCollections`, `TestDBCollectionSurfaces` (each new address, every case byte
-  for byte in both representations, HEAD, 405, the allowance, refused federation), `TestDBOwnDocumentsDecode`
-  (the outbox, its pages, the Creates and the collections through `decodeCollection` and `decodeActivity`),
-  `TestDBQueryPlans` (`outboxSQL`: the count reads the member's Public posts through `posts_public` and nothing
-  else), `TestDBDefaultsUnchanged` (the new addresses in local and plain single mode) and `TestDBFederatedRoutes`
+  `TestDBCreateActivity`, `TestDBCollections` (the counts with the community flag off, followers who never
+  opted in, are suspended or opt out later, a blocked follow), `TestDBCollectionSurfaces` (each new address,
+  every case and every query that names nothing, byte for byte in both representations, HEAD, 405, the
+  allowance, refused federation), `TestDBOwnDocumentsDecode` (the outbox, its pages, the Creates and the
+  collections through `decodeCollection` and `decodeActivity`), `TestDBOneConnection` and `TestDBPublicPool`
+  (every new address on a pool of one and 40 at once on the real pool, at a cold names cache, with 25 posts with
+  chips and a combo), `TestDBQueryPlans` (`outboxSQL`: the count reads the member's Public posts through
+  `posts_public` and nothing else; `publicFollowCountsSQL`: the member's follows and each other side by its
+  key), `TestDBDefaultsUnchanged` (the new addresses in local and plain single mode) and `TestDBFederatedRoutes`
   pass; `routes-local.txt`, `routes-single.txt`, `headers-local.txt` and `fetch_test.go` are unedited. The
   `federated` browser suite reads the outbox, its first page, the Create, the collections and the redirect over
   HTTP. On a 2.1 GHz Xeon through the whole server chain, `BenchmarkOutboxPage` (a full page of 20 Creates, one

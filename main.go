@@ -7726,12 +7726,14 @@ func summaryHTML(bio string) string { return noteHTML(bio, nil) }
 // The lock guards the map only and is never held while the database is asked: a caller that waits for
 // it must never be holding a connection another caller needs. Two requests that find the names old at
 // once both read them, and the later one is kept. The read takes the request's context; when it fails
-// the shipped map's names are used and not kept, so the next request asks again.
+// the shipped map's names are used and kept for namesRetry only, so a failing read costs one statement
+// per prop in that time, not one for every chip and combo step of every post on a page (an outbox page
+// has 20), and the published names come back soon after the database does.
 func (a *app) skillNames(ctx context.Context, prop string) map[string]string {
 	a.namesMu.Lock()
 	c, ok := a.names[prop]
 	a.namesMu.Unlock()
-	if ok && time.Since(c.at) < time.Minute {
+	if ok && time.Now().Before(c.until) {
 		return c.names
 	}
 	var raw []byte
@@ -7748,21 +7750,25 @@ func (a *app) skillNames(ctx context.Context, prop string) map[string]string {
 	for _, s := range cat.Skills {
 		names[s.ID] = s.Name
 	}
+	until := time.Now().Add(time.Minute)
 	if !keep {
-		return names
+		until = time.Now().Add(namesRetry)
 	}
 	a.namesMu.Lock()
 	defer a.namesMu.Unlock()
 	if a.names == nil {
 		a.names = map[string]skillNameCache{}
 	}
-	a.names[prop] = skillNameCache{names, time.Now()}
+	a.names[prop] = skillNameCache{names, until}
 	return names
 }
 
+// namesRetry is how long the shipped names stand in after a failed read of the published ones.
+const namesRetry = 10 * time.Second
+
 type skillNameCache struct {
 	names map[string]string
-	at    time.Time
+	until time.Time // used until then
 }
 
 // postExtras are a post's chips and combo as lines of text (6.5's fallback): "Tricks: Six basic figure-8s
@@ -8459,6 +8465,10 @@ func (a *app) handlePublicPost(st *static, create bool) http.HandlerFunc {
 			rest += "/activity"
 		}
 		name, ok := canonicalName(r, rest)
+		if create {
+			_, _, qOK := docQuery(r.URL.RawQuery, false)
+			ok = ok && qOK
+		}
 		if a.fed.refusal() != "" || !ok || !idOK {
 			site.notFound(w, r, activity)
 			return
@@ -8545,10 +8555,11 @@ actor is what tells other servers to stop asking. */
 // or anyone else's (TestDBQueryPlans).
 const outboxSQL = `SELECT u.id, (SELECT count(*) FROM posts p WHERE p.user_id = u.id AND ` + publicPost + `) FROM users u WHERE u.username = $1 AND ` + publicMember
 
-// pageCursor reads the cursor of a page of Public posts, ?before=<post id>: the posts older than that one,
+// pageCursor reads the cursor of a page of the profile, ?before=<post id>: the posts older than that one,
 // or the newest (0) when it is absent. ok is false when it is given and is not one positive id written
-// once. The profile page and the outbox page by it alike; it only ever bounds a statement that is already
-// held to one member's Public posts (profilePageSQL), so no value of it reaches anything else.
+// once. It only ever bounds a statement that is already held to one member's Public posts
+// (profilePageSQL), so no value of it reaches anything else. The outbox reads the same cursor more
+// strictly (docQuery), since a document's id must be the address it answers at.
 func pageCursor(q url.Values) (int64, bool) {
 	if !q.Has("before") {
 		return 0, true
@@ -8557,24 +8568,28 @@ func pageCursor(q url.Values) (int64, bool) {
 	return n, err == nil && n > 0 && len(q["before"]) == 1
 }
 
-// outboxQuery reads what an outbox address asks for: the collection (no query), or a page (page=true, and
-// an older one with the cursor of pageCursor). Anything else (another value of page, page twice, a cursor
-// without page, any other parameter) is no page and is the 404, so each page has one address and a cache
-// one copy of it. There is no size parameter: a page is pubPage Creates.
-func outboxQuery(q url.Values) (page bool, before int64, ok bool) {
-	for k := range q {
-		if k != "page" && k != "before" {
-			return false, 0, false
-		}
+// docQuery reads the query of a document-only address (the outbox, the collections, a Create, the instance
+// actor's outbox) from the raw query, so nothing is dropped unseen (url.ParseQuery skips a pair with a
+// semicolon). Every address answers with no query at all; the outbox (pages true) also answers exactly
+// "page=true", its first page, and "page=true&before=<id>", an older one, the id written as
+// strconv.FormatInt writes it (no sign, no leading zero, no escape). Anything else is no page and is the
+// 404, so each page has one address, the one its id names, and a cache one copy of it. There is no size
+// parameter: a page is pubPage Creates.
+func docQuery(raw string, pages bool) (page bool, before int64, ok bool) {
+	switch {
+	case raw == "":
+		return false, 0, true
+	case !pages:
+		return false, 0, false
+	case raw == "page=true":
+		return true, 0, true
 	}
-	if !q.Has("page") {
-		return false, 0, len(q) == 0
-	}
-	if len(q["page"]) != 1 || q.Get("page") != "true" {
+	s, found := strings.CutPrefix(raw, "page=true&before=")
+	n, err := strconv.ParseInt(s, 10, 64)
+	if !found || err != nil || n <= 0 || strconv.FormatInt(n, 10) != s {
 		return false, 0, false
 	}
-	before, ok = pageCursor(q)
-	return true, before, ok
+	return true, n, true
 }
 
 // seeOther sends a browser from a document-only address to the page that shows the same thing, as people
@@ -8600,8 +8615,8 @@ func serveDoc(w http.ResponseWriter, r *http.Request, what string, v any) {
 // memberCollections are the collections of a member, by the last part of their address (5.2).
 var memberCollections = []string{"outbox", "followers", "following", "featured"}
 
-// handleCollection answers GET /users/{name}/{kind}, kind one of memberCollections.
-// The followers, following and featured documents take no query, as the actor's does not.
+// handleCollection answers GET /users/{name}/{kind}, kind one of memberCollections. The followers,
+// following and featured documents take no query (docQuery).
 func (a *app) handleCollection(st *static, kind string) http.HandlerFunc {
 	site := a.pubSiteOf(st)
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -8611,10 +8626,7 @@ func (a *app) handleCollection(st *static, kind string) http.HandlerFunc {
 		}
 		activity := wantsActivity(r.Header)
 		name, ok := canonicalName(r, "/"+kind)
-		page, before, qOK := false, int64(0), true
-		if kind == "outbox" {
-			page, before, qOK = outboxQuery(r.URL.Query())
-		}
+		page, before, qOK := docQuery(r.URL.RawQuery, kind == "outbox")
 		if a.fed.refusal() != "" || !ok || !qOK {
 			site.notFound(w, r, activity)
 			return
@@ -8726,6 +8738,16 @@ func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubS
 	serveDoc(w, r, "an outbox page", p)
 }
 
+// publicFollowCountsSQL is how many follow member $1 and how many they follow, counting only the other
+// sides who may be shown beyond this server themselves (publicMember, $2 as in the gate) and no follow
+// across a block (followShown): followCountsSQL's two counts, narrowed to what is already public. The other
+// side is looked up by its primary key once per follow (OFFSET 0 keeps the planner from joining users
+// whole), so the cost is the member's follows, as for followCountsSQL.
+var publicFollowCountsSQL = `SELECT (SELECT count(*) FROM follows f WHERE f.followee_id = $1 AND ` + followShown("f.follower_id") + `
+		AND EXISTS (SELECT 1 FROM users u WHERE u.id = f.follower_id AND ` + publicMember + ` OFFSET 0)),
+	(SELECT count(*) FROM follows f WHERE f.follower_id = $1 AND ` + followShown("f.followee_id") + `
+		AND EXISTS (SELECT 1 FROM users u WHERE u.id = f.followee_id AND ` + publicMember + ` OFFSET 0))`
+
 // serveFollows sends a member's followers or following collection, or their featured one.
 //
 // Followers and following (ActivityPub 5.3 and 5.4, which let either be filtered by who asks; F10): the
@@ -8733,17 +8755,20 @@ func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubS
 // at this address can be that account: a request here carries no session (nothing here reads one), and a
 // signed request, once authorized fetch exists (7.6), is signed by another server's actor. A member reads
 // their own lists in the app (GET /api/followers and /api/following), a different surface. So there is no
-// first and no page, for anyone. The count is followCountsSQL's, the one a member's profile shows other
-// members in the app (follows across a block are not counted); it is given only while the follows flag is
-// on, as the app gives it only then, and a collection without totalItems says nothing at all. Remote
-// followers do not exist yet (FWR 3), so it counts members of this server.
+// first and no page, for anyone. The count says no more than the app does, and less: it is given only while
+// the app shows counts at all (followCountsShown: the community and follows flags both on), and it counts
+// only the follows whose other side is itself a member who may be shown beyond this server
+// (publicFollowCountsSQL), since a follow by a member who never chose to federate is theirs to keep inside
+// the app. Without it the collection has no totalItems, which says nothing. Remote followers do not exist
+// yet (FWR 3). Whether a public count should include every local follower is F10's open question.
 //
 // Featured (Mastodon's pinned posts, 5.2): empty, since posts cannot be pinned; it is there because
 // Mastodon fetches it for a profile, and an empty list is the true answer.
 func (a *app) serveFollows(w http.ResponseWriter, r *http.Request, site *pubSite, name, id, kind string) {
 	var uid sql.NullInt64
 	var retired bool
-	if err := a.db.QueryRowContext(r.Context(), actorGateSQL, name, a.mode == modeSingle).Scan(&uid, &retired); err != nil {
+	single := a.mode == modeSingle
+	if err := a.db.QueryRowContext(r.Context(), actorGateSQL, name, single).Scan(&uid, &retired); err != nil {
 		pubFailed(w, "a collection", err)
 		return
 	}
@@ -8759,9 +8784,9 @@ func (a *app) serveFollows(w http.ResponseWriter, r *http.Request, site *pubSite
 	case kind == "featured":
 		none := 0
 		doc.TotalItems, doc.OrderedItems = &none, &[]string{}
-	case a.flagsCached()["follows"]:
+	case a.followCountsShown():
 		var followers, following int
-		if err := a.db.QueryRowContext(r.Context(), followCountsSQL, uid.Int64).Scan(&followers, &following); err != nil {
+		if err := a.db.QueryRowContext(r.Context(), publicFollowCountsSQL, uid.Int64, single).Scan(&followers, &following); err != nil {
 			pubFailed(w, "a collection", err)
 			return
 		}
@@ -8784,7 +8809,7 @@ func (a *app) handleInstanceOutbox(st *static) http.HandlerFunc {
 			return
 		}
 		activity := wantsActivity(r.Header)
-		if a.fed.refusal() != "" || r.URL.EscapedPath() != "/actor/outbox" {
+		if _, _, qOK := docQuery(r.URL.RawQuery, false); a.fed.refusal() != "" || r.URL.EscapedPath() != "/actor/outbox" || !qOK {
 			site.notFound(w, r, activity)
 			return
 		}
@@ -15206,7 +15231,7 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *
 	// With follows on, how many follow this member and how many they follow, for everyone, and whether
 	// the viewer follows them. Who they are is shown only to the member (handleFollowers). With the flag
 	// off none of this is asked, so the profile costs what it did.
-	if a.flagsCached()["follows"] {
+	if a.followCountsShown() {
 		var followers, following int
 		var followed bool
 		if err := a.db.QueryRow(followCountsSQL+`, EXISTS (SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = $1) AND `+blockFree("$2", "$1", "false"),
@@ -17023,6 +17048,15 @@ func (a *app) handleBlocks(w http.ResponseWriter, _ *http.Request, u *user) {
 // maxFollows is how many accounts one member may follow. It is what bounds the rows a page of Home
 // reads: one page of posts per account followed at most (homeSQL).
 const maxFollows = 1000
+
+// followCountsShown says whether follow counts are shown at all: the follows routes and a profile's counts
+// sit behind both the community flag (the social routes) and the follows flag. A member's profile in the
+// app and the followers and following collections of a mode that federates (serveFollows) both ask it,
+// so the public documents never show a count the app does not.
+func (a *app) followCountsShown() bool {
+	f := a.flagsCached()
+	return f["community"] && f["follows"]
+}
 
 // handleFollow follows a member for the one asking; following again changes nothing and is answered
 // the same. Nobody follows themself (400), and a name that is no account is a 404 in the profile
