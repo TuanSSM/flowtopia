@@ -449,7 +449,8 @@ try:
         if(p==='fed/accounts/7/follow'){window.__calls.push(m+' '+p);window.__fed.follow=m==='PUT'?'requested':'none';return json({view:{follow:window.__fed.follow},changed:true,sent:true})}
         if(p==='fed/requests/7'){window.__calls.push(m+' '+p);window.__fed.items=[];return json({approved:m==='PUT',sent:true})}
         if(p==='fed/requests')return json({requests:window.__fed.items.length?[{user:bo,since:new Date().toISOString()}]:[],total:window.__fed.items.length});
-        if(p==='notifications')return json({items:window.__fed.items,users:{7:bo},unread:window.__fed.items.length});
+        const long={id:8,username:'+0123456789ab@long.example',displayName:'',role:'user',avatar:'',remote:{id:8,handle:'x'.repeat(200)+'@long.example',host:'long.example'}};
+        if(p==='notifications')return json({items:window.__fed.items,users:{7:bo,8:long},unread:window.__fed.items.length});
         return real(u,o)};"""
     js(STUB,'none')
     nav('#/fed/7')
@@ -480,6 +481,12 @@ try:
     picture('federated-follow-request','Federated mode: a follow request from another server in the notifications, with Approve and Decline (the answer supplied by the suite)')
     click('.ntf-panel [data-act=req-approve]')
     check('Approve answers the request, and it leaves the list',lambda: 'PUT fed/requests/7' in js('return window.__calls') and not js("return document.querySelector('[data-act=req-approve]')"),lambda: js('return window.__calls'))
+    # A handle of 200 characters with no break in it wraps inside the 380 px panel rather than scroll it sideways.
+    js("window.__fed.items=[{id:902,kind:'follow',actorId:8,postId:0,commentId:0,rootId:0,text:'',read:false,created:new Date().toISOString()}]")
+    if js("return !!document.querySelector('.ntf-panel')"): click('[data-act=bell]')  # closed first, so the next press opens it and reads the bell again
+    click('[data-act=bell]')
+    wide=lambda: js("const p=document.querySelector('.ntf-panel');return p&&p.innerText.includes('@long.example')?[p.scrollWidth,p.clientWidth]:null")
+    check('a handle of 200 characters wraps in the bell: the panel does not scroll sideways',lambda: (lambda v: bool(v) and v[0]<=v[1])(wide()),wide)
     load(BASE)
     api(op,'me',{'federates':False},'PUT');api(op,'flags',{'flags':{'follows':False}},'PUT')
     load(BASE)
