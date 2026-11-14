@@ -3799,9 +3799,8 @@ func TestDBQueryPlans(t *testing.T) {
 	// Remote actors (FRD 7), the 2,000 inserted at the top among 8,500 members. A lookup by id or by key id is
 	// one row through its index. The members who opted in and have no key are read once at a start, with
 	// users and ap_keys whole, as before. The removal of the least recently fetched (asked in a transaction that
-	// is rolled back, since EXPLAIN ANALYZE runs it) walks ap_actors_fetched oldest first and asks each
-	// candidate's posts, likes, follows and blocks through their indexes, one at a time: about six rows for
-	// each account it removes, whatever the size of those tables.
+	// is rolled back, since EXPLAIN ANALYZE runs it) walks ap_actors_fetched oldest first and asks, for each
+	// candidate, whether anything points at it, one at a time (below).
 	var someID, someKey string
 	if err := db.QueryRow(`SELECT ap_id, key_id FROM ap_actors ORDER BY user_id LIMIT 1 OFFSET 777`).Scan(&someID, &someKey); err != nil {
 		t.Fatal(err)
@@ -3818,7 +3817,11 @@ func TestDBQueryPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	on = tx
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200}, 3000, ""}})
+	// It asks every table that references users (userRefs), each through its index for a table the size it
+	// is meant for; a table this small (the 200 reports, the empty achievements) the planner reads whole for
+	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
+	// all for 200 removed, a few milliseconds, once for every 200 new actors.
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements badge_blocks catalog_revisions instance_settings mod_actions reports"}})
 	on = db
 	tx.Rollback()
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.

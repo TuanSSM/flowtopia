@@ -104,8 +104,8 @@ func TestActorReasons(t *testing.T) {
 		}
 	}
 	// What the remote server answered is remembered; this server's own state is not.
-	for r := actorBadID; r <= actorNoKey; r++ {
-		mine := r <= actorCanceled
+	for r := actorBadID; r <= actorTooManyNames; r++ {
+		mine := r <= actorSuspended
 		if r.cached() == mine {
 			t.Errorf("%v: remembered %v", r, r.cached())
 		}
@@ -115,6 +115,7 @@ func TestActorReasons(t *testing.T) {
 	}
 	c := newActorCache(&federation{}, nil)
 	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	failed := func(id string, at time.Time) bool { m, ok := c.recall(id, at); return ok && m.reason != 0 }
 	c.remember("https://a.example/1", actorNotFound, now)
 	c.remember("https://a.example/2", actorGone, now)
 	c.remember("https://a.example/3", actorBusy, now)
@@ -127,16 +128,16 @@ func TestActorReasons(t *testing.T) {
 		{"https://a.example/2", actorGoneFor - time.Second, true}, {"https://a.example/2", actorGoneFor, false},
 		{"https://a.example/3", 0, false},
 	} {
-		if _, got := c.failed(s.id, now.Add(s.after)); got != s.want {
+		if got := failed(s.id, now.Add(s.after)); got != s.want {
 			t.Errorf("%s after %v: remembered %v, want %v", s.id, s.after, got, s.want)
 		}
 	}
 	// The memory of failures is bounded: a flood of failing ids costs refetches, not memory.
-	for i := range actorFailsMax + 500 {
+	for i := range actorMemoMax + 500 {
 		c.remember(fmt.Sprintf("https://flood.example/%d", i), actorNotFound, now)
 	}
-	if n := len(c.fails); n > actorFailsMax {
-		t.Errorf("%d failures remembered, more than %d", n, actorFailsMax)
+	if n := len(c.memo); n > actorMemoMax {
+		t.Errorf("%d failures remembered, more than %d", n, actorMemoMax)
 	}
 	e := &actorError{Reason: actorNotFound, Host: strings.Repeat("h", 10), Cached: true, err: errors.New("secret detail")}
 	if s := e.Error(); s != "remote actor on hhhhhhhhhh: not found (remembered)" {
@@ -144,37 +145,55 @@ func TestActorReasons(t *testing.T) {
 	}
 }
 
-// TestDialOverrideTestOnly holds that the fetcher's dial override, which lets a request reach a local
-// stub, is set by tests alone: main.go only reads the field, and no setting can make one. A request to a
-// private address from a running server is impossible by construction, not by configuration.
+// TestDialOverrideTestOnly holds that a build of the server cannot reach a private address through the
+// fetcher's dial override. fetcher.over is an interface whose methods are unexported, so only a type of
+// this package can implement it, and the one that does is declared in override_test.go, which a build of
+// the server does not compile. So the guarantee is that no file of the server declares a stubAddr method
+// (a type that could fill the field); the other checks are tripwires on top (the field set, the test's type
+// named), which aliasing could slip past but the first cannot.
 func TestDialOverrideTestOnly(t *testing.T) {
-	fs := token.NewFileSet()
-	f, err := parser.ParseFile(fs, "main.go", nil, 0)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.AssignStmt:
-			for _, l := range n.Lhs {
-				if s, ok := l.(*ast.SelectorExpr); ok && s.Sel.Name == "over" {
-					t.Errorf("%s: main.go sets a dial override", fs.Position(n.Pos()))
+	fs := token.NewFileSet()
+	checked := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fs, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checked++
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.FuncDecl:
+				if n.Recv != nil && n.Name.Name == "stubAddr" {
+					t.Errorf("%s: a file of the server implements the dial override", fs.Position(n.Pos()))
 				}
-			}
-		case *ast.CompositeLit:
-			if id, ok := n.Type.(*ast.Ident); ok && id.Name == "dialOverride" {
-				t.Errorf("%s: main.go makes a dial override", fs.Position(n.Pos()))
-			}
-			if id, ok := n.Type.(*ast.Ident); ok && id.Name == "fetcher" {
-				for _, el := range n.Elts {
-					if kv, ok := el.(*ast.KeyValueExpr); ok && fmt.Sprint(kv.Key) == "over" {
-						t.Errorf("%s: main.go makes a fetcher with a dial override", fs.Position(n.Pos()))
+			case *ast.TypeSpec:
+				if n.Name.Name == "dialOverride" {
+					t.Errorf("%s: a file of the server declares the dial override", fs.Position(n.Pos()))
+				}
+			case *ast.AssignStmt:
+				for _, l := range n.Lhs {
+					if s, ok := l.(*ast.SelectorExpr); ok && s.Sel.Name == "over" {
+						t.Errorf("%s: a file of the server sets a dial override", fs.Position(n.Pos()))
 					}
 				}
+			case *ast.KeyValueExpr:
+				if id, ok := n.Key.(*ast.Ident); ok && id.Name == "over" {
+					t.Errorf("%s: a file of the server makes a fetcher with a dial override", fs.Position(n.Pos()))
+				}
 			}
-		}
-		return true
-	})
+			return true
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no file of the server was read")
+	}
 }
 
 // fixtureFiles are every document under testdata/federation that a server could send: the shapes copied
@@ -664,12 +683,12 @@ func TestDBRemoteActorCache(t *testing.T) {
 	want := remoteActor{UserID: got.UserID, ID: gid, Kind: "Person", Username: "Gargron@mastodon.social", Domain: "mastodon.social", Name: "Gargron",
 		PreferredUsername: "Gargron", Summary: "<p>Founder</p>", URL: "https://mastodon.social/@Gargron", Icon: "https://mastodon.social/avatar.png",
 		Inbox: gid + "/inbox", SharedInbox: "https://mastodon.social/inbox", Followers: gid + "/followers", Locked: true, KeyID: gid + "#main-key",
-		PublicKeyPEM: pemOf(&a.PublicKey), State: "ok", FetchedAt: r.clock.now(), ExpiresAt: r.clock.now().Add(actorTTL)}
+		State: "ok", FetchedAt: r.clock.now(), ExpiresAt: r.clock.now().Add(actorTTL), keyPEM: pemOf(&a.PublicKey)}
 	got.FetchedAt, got.ExpiresAt = got.FetchedAt.UTC(), got.ExpiresAt.UTC()
 	if *got != want {
 		t.Errorf("stored:\n%+v\nwant\n%+v", *got, want)
 	}
-	if k, err := got.publicKey(); err != nil || !k.Equal(&a.PublicKey) {
+	if k, err := got.publicKey(keyToVerify); err != nil || !k.Equal(&a.PublicKey) {
 		t.Errorf("the kept key does not parse back: %v", err)
 	}
 	// The users row is inert: no password that can match, a plain role, never the owner, never opted in.
@@ -725,19 +744,19 @@ func TestDBRemoteActorCache(t *testing.T) {
 	r.clock.add(actorRecheck - time.Second)
 	for range 3 {
 		k, err := r.a.fed.remoteKeyFailed(context.Background(), gid+"#main-key")
-		if err != nil || r.w.hit(gid) != 4 || k.PublicKeyPEM != pemOf(&a.PublicKey) {
+		if err != nil || r.w.hit(gid) != 4 || k.keyPEM != pemOf(&a.PublicKey) {
 			t.Fatalf("a failed verification within 10 minutes fetched again: %d requests, %v", r.w.hit(gid), err)
 		}
 	}
 	r.clock.add(time.Second)
 	k, err := r.a.fed.remoteKeyFailed(context.Background(), gid+"#main-key")
-	if err != nil || r.w.hit(gid) != 5 || k.PublicKeyPEM != pemOf(&b.PublicKey) {
+	if err != nil || r.w.hit(gid) != 5 || k.keyPEM != pemOf(&b.PublicKey) {
 		t.Fatalf("after 10 minutes the rotated key was not taken: %d requests, %v", r.w.hit(gid), err)
 	}
-	if k, err := r.a.fed.remoteKey(context.Background(), gid+"#main-key"); err != nil || k.UserID != got.UserID || r.w.hit(gid) != 5 {
+	if k, err := r.a.fed.remoteKey(context.Background(), gid+"#main-key", keyToVerify); err != nil || k.UserID != got.UserID || r.w.hit(gid) != 5 {
 		t.Fatalf("a cached key was fetched: %d requests, %v", r.w.hit(gid), err)
 	}
-	if _, err := r.a.fed.remoteKey(context.Background(), gid+"#other-key"); reason(err) != actorNoKey {
+	if _, err := r.a.fed.remoteKey(context.Background(), gid+"#other-key", keyToVerify); reason(err) != actorNoKey {
 		t.Errorf("a key the actor does not name: %v", err)
 	}
 
@@ -813,7 +832,7 @@ func TestDBRemoteActorCache(t *testing.T) {
 	}
 	// The instance's own origin is refused by name before anything, a key id on it too, and nothing was dialled.
 	dials := r.ft.dials.Load()
-	if _, err := r.a.fed.remoteKey(context.Background(), "https://here.example/actor#main-key"); reason(err) != actorLocal {
+	if _, err := r.a.fed.remoteKey(context.Background(), "https://here.example/actor#main-key", keyToVerify); reason(err) != actorLocal {
 		t.Errorf("our own key id: %v", err)
 	}
 	if r.w.hit("https://here.example/users/ana") != 0 || r.w.hit("https://here.example/actor") != 0 || r.ft.dials.Load() != dials {
@@ -904,14 +923,14 @@ func TestDBRemoteActorCache(t *testing.T) {
 	odoc, _ := os.ReadFile("testdata/federation/actors/swicg-key-owner.json")
 	r.w.put("https://social.example/keys/alyssa", worldDoc{body: kdoc})
 	r.w.put("https://social.example/alyssa/", worldDoc{body: odoc})
-	if k, err := r.a.fed.remoteKey(context.Background(), "https://social.example/keys/alyssa"); err != nil || k.ID != "https://social.example/alyssa/" || k.KeyID != "https://social.example/keys/alyssa" {
+	if k, err := r.a.fed.remoteKey(context.Background(), "https://social.example/keys/alyssa", keyToVerify); err != nil || k.ID != "https://social.example/alyssa/" || k.KeyID != "https://social.example/keys/alyssa" {
 		t.Errorf("a key at a path of its own: %+v %v", k, err)
 	}
 	// A key document whose owner does not name it back, or is on another origin, vouches for nobody.
 	r.w.put("https://remote.example/keys/stray", worldDoc{body: []byte(`{"id":"https://remote.example/keys/stray","type":"Key","owner":"https://remote.example/users/bo","publicKeyPem":` + strings.TrimSpace(string(must(json.Marshal(pemOf(&a.PublicKey))))) + `}`)})
 	r.w.put("https://remote.example/keys/far", worldDoc{body: []byte(`{"id":"https://remote.example/keys/far","type":"Key","owner":"https://other.example/u","publicKeyPem":` + string(must(json.Marshal(pemOf(&a.PublicKey)))) + `}`)})
 	for _, kid := range []string{"https://remote.example/keys/stray", "https://remote.example/keys/far"} {
-		if _, err := r.a.fed.remoteKey(context.Background(), kid); reason(err) != actorNoKey {
+		if _, err := r.a.fed.remoteKey(context.Background(), kid, keyToVerify); reason(err) != actorNoKey {
 			t.Errorf("%s: %v", kid, err)
 		}
 	}
@@ -1092,7 +1111,7 @@ func TestDBRemoteFixtures(t *testing.T) {
 	}
 	for id, want := range map[string]string{
 		"https://mastodon.social/users/Gargron":  "Gargron@mastodon.social key https://mastodon.social/users/Gargron#main-key ok",
-		"https://social.example/alyssa/":         "alyssa@social.example key  ok", // its key is a document of its own, which remoteKey follows
+		"https://social.example/alyssa/":         "alyssa@social.example key https://social.example/keys/alyssa ok", // its key is a document of its own, followed at every fetch
 		"https://kenzoishii.example.com/":        "kenzoishii@kenzoishii.example.com key  ok",
 		"https://example.com/@eve":               remoteUsername("", "example.com", "https://example.com/@eve", false) + " key  suspended",
 		"https://flowa.example.org/users/ana":    "ana@flowa.example.org key  ok",
@@ -1110,7 +1129,7 @@ func TestDBRemoteFixtures(t *testing.T) {
 			t.Errorf("%s: %s, want %s", id, got, want)
 		}
 	}
-	if k, err := r.a.fed.remoteKey(context.Background(), "https://social.example/keys/alyssa"); err != nil || k.KeyID != "https://social.example/keys/alyssa" {
+	if k, err := r.a.fed.remoteKey(context.Background(), "https://social.example/keys/alyssa", keyToVerify); err != nil || k.KeyID != "https://social.example/keys/alyssa" {
 		t.Errorf("the key at a path of its own: %+v %v", k, err)
 	}
 	if sigs := r.w.signatures(); slices.ContainsFunc(sigs, func(s string) bool { return s != "" }) {
@@ -1167,12 +1186,12 @@ func TestDBTwoFlowaActors(t *testing.T) {
 	if len(verified) != 1 || verified[0] != hereKeyID {
 		t.Fatalf("b.example verified %q, want the signature of %s", verified, hereKeyID)
 	}
-	if got.Username != "ana@b.example" || got.Domain != "b.example" || got.KeyID != "https://b.example/users/ana#main-key" || got.PublicKeyPEM != anaPEM ||
+	if got.Username != "ana@b.example" || got.Domain != "b.example" || got.KeyID != "https://b.example/users/ana#main-key" || got.keyPEM != anaPEM ||
 		got.Inbox != "https://b.example/users/ana/inbox" || got.Kind != "Person" || got.Name != "Ana B" {
 		t.Errorf("stored %+v", got)
 	}
 	// Its key verifies a request ana's server signs, as the inbox will check it.
-	if k, err := r.a.fed.remoteKey(context.Background(), "https://b.example/users/ana#main-key"); err != nil || k.UserID != got.UserID {
+	if k, err := r.a.fed.remoteKey(context.Background(), "https://b.example/users/ana#main-key", keyToVerify); err != nil || k.UserID != got.UserID {
 		t.Errorf("the key by its id: %+v %v", k, err)
 	}
 	// The second instance's own lists know nothing of the first, and the first lists ana nowhere.
@@ -1297,6 +1316,18 @@ func TestDBRemoteRowsStayRemote(t *testing.T) {
 	e.must(200, ana, "POST", "/api/posts", map[string]any{"body": "hi @ana@remote.example @Bo@remote.example @boss"})
 	if n := e.count(`SELECT count(*) FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.domain <> ''`); n != 0 {
 		t.Errorf("%d notifications for remote rows", n)
+	}
+	// Reports and moderation by id take a remote account as F5 and 9.2 say they will (moderating a remote
+	// account works unchanged once one can be met): a member's report of one is taken and a moderator can mute
+	// it, as for a local account; the muted row is then never removed by the cache's bound
+	// (TestDBEvictionCoversReferences). No remote account has a post or a comment in this version, so the
+	// comment routes, which take a post's or a comment's id, cannot meet one; FWR's items, which store them,
+	// hold those routes.
+	_, mo := e.user("mo", "moderator")
+	e.must(200, ana, "POST", "/api/reports", map[string]any{"kind": "user", "id": remote[1], "reason": "spam"})
+	e.must(200, mo, "POST", "/api/mod/actions", map[string]any{"action": "mute", "id": remote[1], "reason": "spam", "until": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)})
+	if n := e.count(`SELECT count(*) FROM users WHERE id = $1 AND muted_until > now() AND domain <> ''`, remote[1]); n != 1 {
+		t.Error("a moderator's mute of a remote account was not kept")
 	}
 	// Housekeeping leaves them, and touches nothing else differently.
 	if _, err := e.a.housekeep(); err != nil {

@@ -4524,12 +4524,15 @@ type addrRefused struct{ what string }
 
 func (e *addrRefused) Error() string { return "refusing to connect to " + e.what }
 
-// dialOverride lets a test reach its local stub without weakening the guard for anything else. It is
-// a field set by the test, never a setting: resolve stands in for DNS, every address it gives is still
-// checked by dialGuard, and only the exact stub address passes whatever its port and address.
-type dialOverride struct {
-	resolve func(host string) []string // host to "ip:port" addresses, in the order a resolver would give them
-	stub    string                     // the stub's listening address
+// overrider lets a test reach its local stub without weakening the guard for anything else: its dial stands
+// in for DNS, every address it gives is still checked by dialGuard, and only the exact stub address
+// (stubAddr) passes whatever its port and address. Its methods are unexported, so only a type of this
+// package can implement it, and the one that does, dialOverride, is declared in a test file: a build of the
+// server has no value that can be put in fetcher.over, so no setting and no code path can reach a private
+// address through it (TestDialOverrideTestOnly holds that no file of the server declares one).
+type overrider interface {
+	stubAddr() string
+	dial(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error)
 }
 
 type fetcher struct {
@@ -4544,7 +4547,7 @@ type fetcher struct {
 	off          bool                 // FLOWA_PREVIEW_FETCH=off: never fetch a link card
 	origin       publicOrigin         // this instance, in a mode that federates: never asked unless a request says so
 	version      string               // in the User-Agent
-	over         *dialOverride        // tests only
+	over         overrider            // tests only: always nil in a build of the server
 	// deny are more address ranges never dialled, beside reservedNets: the instance's own public
 	// address and the router's, which a stranger's name can point at and which look public to the
 	// guard. Empty until the federation settings item lets an operator list them.
@@ -4614,12 +4617,12 @@ func publicIP(ip net.IP) bool {
 // connection was dialled through it too, and is reused only for the same scheme, host and port.
 // Only port 443 is dialled; the link card stub (allowPrivate) and a test's stub are the exceptions.
 // deny is the fetcher's own list of ranges never dialled (fetcher.deny), whatever allowPrivate says.
-func dialGuard(address string, allowPrivate bool, over *dialOverride, deny []netip.Prefix) error {
+func dialGuard(address string, allowPrivate bool, over overrider, deny []netip.Prefix) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
 	}
-	if over != nil && address == over.stub {
+	if over != nil && address == over.stubAddr() {
 		return nil
 	}
 	ip := net.ParseIP(host)
@@ -4670,28 +4673,6 @@ func newFetcher(base string, allowPrivate bool) *fetcher {
 	// Redirects are followed by do, which checks each one by the kind's rule.
 	f.client = &http.Client{Transport: f.tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return f
-}
-
-// dial connects to the addresses resolve gives for the host, in turn, each through the guard, as
-// net.Dialer does with the addresses of a DNS answer.
-func (o *dialOverride) dial(ctx context.Context, d *net.Dialer, network, address string) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	addrs := o.resolve(host)
-	if len(addrs) == 0 {
-		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
-	}
-	var errs []error
-	for _, a := range addrs {
-		c, err := d.DialContext(ctx, network, a)
-		if err == nil {
-			return c, nil
-		}
-		errs = append(errs, err)
-	}
-	return nil, errors.Join(errs...)
 }
 
 // fedHost says why a host may not be asked for a federation kind, or "" when it may, and gives the
@@ -6198,6 +6179,8 @@ type federation struct {
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
 
+	stopped bool // stop was called: no fetch of an actor starts any more (enter), so the wait group's Wait comes last
+
 	ask    chan keyOwner // owners the worker is asked to make a key for
 	once   sync.Once     // starts the worker on the first request
 	ctx    context.Context
@@ -6471,6 +6454,9 @@ func (f *federation) startWorker() {
 // (key generation cannot be interrupted), and is not written once ctx has ended; the next start asks
 // for it again.
 func (f *federation) stop(ctx context.Context) error {
+	f.mu.Lock()
+	f.stopped = true
+	f.mu.Unlock()
 	f.cancel()
 	done := make(chan struct{})
 	go func() { f.wg.Wait(); close(done) }()
@@ -6480,6 +6466,19 @@ func (f *federation) stop(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// enter counts a fetch of an actor about to start in the wait group stop waits for, unless stop was called:
+// then it reports false and nothing starts. The flag and the count are taken under one lock, so no fetch
+// is added once stop has begun to wait (8.6).
+func (f *federation) enter() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stopped {
+		return false
+	}
+	f.wg.Add(1)
+	return true
 }
 
 // originMoved is a start whose FLOWA_ORIGIN is not the origin this instance first federated under.
@@ -12967,41 +12966,48 @@ signature verifier (7.4), built here because finding a key by its id and followi
 item's (7.3). No route reaches any of them, and nothing runs until one is called: no goroutine, timer or
 row exists before.
 
-What a lookup does, in order: the id is checked (an https id the fetcher may ask, never this instance's own
-origin); the row is read and the connection given back; a row younger than 24 hours is the answer; so is a
-gone one (410), and an id that failed within its time is answered from memory (with its row, marked stale,
-when there is one). Otherwise one fetch per id is made at a time (the first caller's, which every other
-caller of that id waits for, each for as long as its own context allows), at most actorFetchers at once,
-signed by the instance actor (draft-cavage, as every GET is: 7.1), through fetcher.do (the document kind:
-same-origin redirects, 5 s, 1 MB, the two Activity Streams types). Before the first signed request the
-origin is frozen (ensureOrigin: the request names /actor#main-key under it, 4.3). The answer is decoded
-(decodeActor), its id must be the address it came from after redirects (sameID, 7.3), and its key must be
-one the actor names, owned by it and on its origin (7.3). Only then is anything written, in one short
-transaction. No database connection and no lock is held while the network is waited on. */
+What a lookup does, in order (lookup, the one path every way in takes): the string asked for is checked (an
+https id the fetcher may ask, never this instance's own origin); what it led to before is recalled (the id of
+the actor it names, or a failure); the row is read and the connection given back; a row younger than 24 hours
+is the answer, and so is a gone one (410); a remembered failure is answered from memory, with the row marked
+stale when there is one (for at most 30 days). Otherwise one fetch per address (the fragment removed) is made
+at a time, which every other caller of it waits for, each for as long as its own context allows, and a caller
+whose question that fetch did not answer (a key it did not keep) asks once more with a fetch of its own; at
+most actorFetchers run at once and one per host, signed by the instance actor (draft-cavage, as every GET is:
+7.1), through fetcher.do (the document kind: same-origin redirects, 5 s, 1 MB, the two Activity Streams types).
+Before the first signed request the origin is frozen (ensureOrigin: the request names /actor#main-key under
+it, 4.3). The answer is decoded (decodeActor), its id must be the address it came from after redirects
+(sameID, 7.3), its key must be one the actor names, owned by it and on its origin (7.3), and a key it names by
+id only is followed to its own document at every fetch. Only then is anything written, in one short
+transaction; a string asked for that is not the actor's id (a fragment, a redirecting address) is remembered
+as its name for as long as the row is fresh, at most actorNamesMax per actor. No database connection and no lock is held while the network is waited on. */
 
 const (
-	actorTTL         = 24 * time.Hour   // a cached actor is fetched again after this, on use (7.4, 9.3)
-	actorRecheck     = 10 * time.Minute // a failed verification fetches the key again at most this often per actor (7.4)
-	actorFailFor     = 10 * time.Minute // a failed fetch is not tried again for this long (7.4)
-	actorGoneFor     = 24 * time.Hour   // an id never stored that answered 410: a stored one is marked gone for good
-	actorFetchers    = 2                // fetches at once (7.4: at most 2 key fetches at once)
-	actorWait        = 5 * time.Second  // the longest wait for one of them; the inbox answers 503 after it (7.4)
-	actorFlightMax   = 15 * time.Second // a fetch and its writes, from the wait for a turn to the commit
-	actorDocMax      = 1 << 20          // a fetched document (7.5), as fetchRules[fetchDocument] caps it
-	remoteActorsMax  = 20000            // cached actors (section 12); the least recently fetched go first
-	actorFailsMax    = 10000            // failed ids remembered (about 60 bytes each)
-	remoteNameMax    = 255              // bytes of preferredUsername kept, for FRD 8's reverse lookup
-	remoteSummaryMax = 2048             // bytes of a summary kept, as HTML, for FWR's htmlToText
-	remoteDisplayMax = 64               // characters of a display name
-	remotePlainMax   = 64               // bytes of a preferredUsername written into a username as it is
+	actorTTL         = 24 * time.Hour      // a cached actor is fetched again after this, on use (7.4, 9.3)
+	actorRecheck     = 10 * time.Minute    // an actor is fetched again for a key at most this often (7.4)
+	actorFailFor     = 10 * time.Minute    // a failed fetch is not tried again for this long (7.4)
+	actorGoneFor     = 24 * time.Hour      // an id never stored that answered 410: a stored one is marked gone for good
+	actorStaleMax    = 30 * 24 * time.Hour // a row whose server cannot be reached is not answered at all once this old (9.3's 30 days)
+	actorFetchers    = 2                   // fetches at once (7.4: at most 2 key fetches at once), at most one of them per host
+	actorWait        = 5 * time.Second     // the longest wait for a turn; the inbox answers 503 after it (7.4)
+	actorFlightMax   = 15 * time.Second    // a fetch and its writes, from the wait for a turn to the commit
+	actorDocMax      = 1 << 20             // a fetched document (7.5), as fetchRules[fetchDocument] caps it
+	remoteActorsMax  = 20000               // cached actors (section 12); the least recently fetched go first
+	actorMemoMax     = 10000               // answers remembered in memory: failures, and other names of actors
+	actorNamesMax    = 8                   // other names one actor is remembered by (an id with a fragment, a redirecting address)
+	remoteNameMax    = 255                 // bytes of preferredUsername kept, for FRD 8's reverse lookup
+	remoteSummaryMax = 2048                // bytes of a summary kept, as HTML, for FWR's htmlToText
+	remoteDisplayMax = 64                  // characters of a display name
+	remotePlainMax   = 64                  // bytes of a preferredUsername written into a username as it is
 )
 
-// remoteActor is a cached remote actor: its ap_actors row and the users row it belongs to.
+// remoteActor is a cached remote actor: its ap_actors row and the users row it belongs to, and how fresh
+// the answer is. Its key is not a field: publicKey hands it out only for a use the row allows.
 type remoteActor struct {
 	UserID            int64
 	ID                string // the actor id, which never moves: a new id is a new actor
 	Kind              string // one of apActorKinds
-	Username          string // users.username, "name@host": a key for this row, never a Flowa name and not shown as a handle
+	Username          string // users.username, "name@host": a key for this row, never a member's name and not shown as a handle
 	Domain            string // the host of ID, lower case, in its xn-- form when it is in another script
 	Name              string // users.display_name: the actor's name as plain text, at most remoteDisplayMax characters
 	PreferredUsername string // as the actor wrote it, case kept (empty when over remoteNameMax bytes or holding NUL)
@@ -13013,19 +13019,50 @@ type remoteActor struct {
 	MovedTo           string
 	Locked            bool   // manuallyApprovesFollowers: a Follow shows as requested until Accept (6.3)
 	KeyID             string // the one key kept; "" when the actor names none Flowa can use
-	PublicKeyPEM      string
 	State             string // ok, suspended (the actor says so: nothing new is stored) or gone (410)
 	FetchedAt         time.Time
 	ExpiresAt         time.Time
-	Stale             bool // the row is past its time and fetching it again failed just now, or within actorFailFor
+	// Stale says the row is past its 24 hours and fetching it again failed, just now or within actorFailFor,
+	// for StaleReason. Such a row is answered for at most actorStaleMax after it was fetched.
+	Stale       bool
+	StaleReason actorReason
+	keyPEM      string
 }
 
-// publicKey parses the kept key, as the verifier will.
-func (r *remoteActor) publicKey() (*rsa.PublicKey, error) {
-	if r.KeyID == "" {
-		return nil, &actorError{Reason: actorNoKey, Host: r.Domain}
+// keyUse is what a caller wants a cached key for. A key is a credential: one that its owner may have
+// rotated away must not keep verifying because a refetch failed or was crowded out.
+type keyUse uint8
+
+const (
+	keyToVerify     keyUse = iota // a signed request: only a key fetched within 24 hours, of an actor neither gone nor suspended
+	keyForOwnDelete               // the actor's own Delete (6.3, 7.4): the cached key of a stale, gone or suspended actor too
+)
+
+// publicKey parses the kept key for a use. keyToVerify is refused for a stale row (whatever made it
+// stale, a server that is down or a turn that was not had), a gone one and a suspended one, each with its
+// own reason; keyForOwnDelete takes any row that has a key.
+func (r *remoteActor) publicKey(use keyUse) (*rsa.PublicKey, error) {
+	if err := r.keyUsable(use); err != nil {
+		return nil, err
 	}
-	return parsePublicKeyPEM(r.PublicKeyPEM, sigKeyMin)
+	return parsePublicKeyPEM(r.keyPEM, sigKeyMin)
+}
+
+func (r *remoteActor) keyUsable(use keyUse) error {
+	fail := func(why actorReason) error { return &actorError{Reason: why, Host: r.Domain} }
+	switch {
+	case r.KeyID == "":
+		return fail(actorNoKey)
+	case use == keyForOwnDelete:
+		return nil
+	case r.State == "gone":
+		return fail(actorGone)
+	case r.State == "suspended":
+		return fail(actorSuspended)
+	case r.Stale:
+		return fail(actorStale)
+	}
+	return nil
 }
 
 const actorCols = `a.user_id, a.ap_id, a.kind, u.username, u.domain, u.display_name, a.preferred_username, a.summary, a.url, a.icon,
@@ -13042,56 +13079,62 @@ const actorByKeySQL = `SELECT ` + actorCols + ` FROM ap_actors a JOIN users u ON
 func scanActor(row scanner) (*remoteActor, error) {
 	var r remoteActor
 	err := row.Scan(&r.UserID, &r.ID, &r.Kind, &r.Username, &r.Domain, &r.Name, &r.PreferredUsername, &r.Summary, &r.URL, &r.Icon,
-		&r.Inbox, &r.SharedInbox, &r.Followers, &r.MovedTo, &r.Locked, &r.KeyID, &r.PublicKeyPEM, &r.State, &r.FetchedAt, &r.ExpiresAt)
+		&r.Inbox, &r.SharedInbox, &r.Followers, &r.MovedTo, &r.Locked, &r.KeyID, &r.keyPEM, &r.State, &r.FetchedAt, &r.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
 	return &r, nil
 }
 
-// actorReason is why a remote actor could not be had. Each has a fixed phrase, safe to log.
+// actorReason is why a remote actor, or its key, could not be had. Each has a fixed phrase, safe to log.
 type actorReason uint8
 
 const (
-	actorBadID       actorReason = iota + 1 // not an https id the fetcher may ask (apIDOK)
-	actorLocal                              // an id on this instance's own origin, which is never fetched
-	actorFedRefused                         // federation is refused here (a moved origin, a secret that does not open)
-	actorNotReady                           // the instance actor has no key to sign with yet (it is made in the background)
-	actorClock                              // this server's clock is earlier than its build, so nothing is signed
-	actorBusy                               // no turn among the fetches within actorWait, or at the host: this server's queue
-	actorCanceled                           // the caller gave up
-	actorRefused                            // the fetcher refused the address: a refused host, a private address, a port
-	actorUnreachable                        // the host could not be reached, or answered another status
-	actorTimeout                            // the fetch took longer than its time
-	actorNotFound                           // 404
-	actorGone                               // 410
-	actorTooLarge                           // over 1 MB
-	actorWrongType                          // not one of the two Activity Streams types
-	actorRedirect                           // a redirect to another origin, or too many
-	actorUndecodable                        // the document does not decode as an actor (decodeActor refused it)
-	actorWrongID                            // the document's id is not the address it came from (7.3)
-	actorNoKey                              // the actor names no key Flowa can use with that id (7.3)
+	actorBadID        actorReason = iota + 1 // not an https id the fetcher may ask (apIDOK)
+	actorLocal                               // an id on this instance's own origin, which is never fetched
+	actorFedRefused                          // federation is refused here (a moved origin, a secret that does not open), or it stopped
+	actorNotReady                            // the instance actor has no key to sign with yet (it is made in the background)
+	actorClock                               // this server's clock is earlier than its build, so nothing is signed
+	actorBusy                                // no turn among the fetches within actorWait: this server's queue
+	actorCanceled                            // the caller gave up
+	actorStale                               // the actor could not be fetched again, so its key is not used to verify
+	actorSuspended                           // the actor says its server suspended it, so its key is not used to verify
+	actorRefused                             // the fetcher refused the address: a refused host, a private address, a port
+	actorUnreachable                         // the host could not be reached, or answered another status
+	actorTimeout                             // the fetch took longer than its time
+	actorNotFound                            // 404
+	actorGone                                // 410
+	actorTooLarge                            // over 1 MB
+	actorWrongType                           // not one of the two Activity Streams types
+	actorRedirect                            // a redirect to another origin, or too many
+	actorUndecodable                         // the document does not decode as an actor (decodeActor refused it)
+	actorWrongID                             // the document's id is not the address it came from (7.3)
+	actorNoKey                               // the actor names no key Flowa can use with that id (7.3)
+	actorTooManyNames                        // an address that leads to an actor already known by actorNamesMax others
 )
 
 var actorReasons = [...]string{
-	actorBadID:       "not an https id that may be fetched",
-	actorLocal:       "an id on this instance's own origin",
-	actorFedRefused:  "federation is refused",
-	actorNotReady:    "the instance actor has no key yet",
-	actorClock:       "the clock is earlier than this build",
-	actorBusy:        "too many fetches at once",
-	actorCanceled:    "canceled",
-	actorRefused:     "the address is refused",
-	actorUnreachable: "the server could not be reached",
-	actorTimeout:     "timed out",
-	actorNotFound:    "not found",
-	actorGone:        "gone",
-	actorTooLarge:    "the document is too large",
-	actorWrongType:   "the document is not an Activity Streams document",
-	actorRedirect:    "a redirect to another origin",
-	actorUndecodable: "the document is not an actor Flowa can read",
-	actorWrongID:     "the document's id is not where it came from",
-	actorNoKey:       "no usable key with that id",
+	actorBadID:        "not an https id that may be fetched",
+	actorLocal:        "an id on this instance's own origin",
+	actorFedRefused:   "federation is refused",
+	actorNotReady:     "the instance actor has no key yet",
+	actorClock:        "the clock is earlier than this build",
+	actorBusy:         "too many fetches at once",
+	actorCanceled:     "canceled",
+	actorStale:        "it could not be fetched again, so its key is not used",
+	actorSuspended:    "suspended by its server",
+	actorRefused:      "the address is refused",
+	actorUnreachable:  "the server could not be reached",
+	actorTimeout:      "timed out",
+	actorNotFound:     "not found",
+	actorGone:         "gone",
+	actorTooLarge:     "the document is too large",
+	actorWrongType:    "the document is not an Activity Streams document",
+	actorRedirect:     "a redirect to another origin",
+	actorUndecodable:  "the document is not an actor Flowa can read",
+	actorWrongID:      "the document's id is not where it came from",
+	actorNoKey:        "no usable key with that id",
+	actorTooManyNames: "one more address for an actor known by too many",
 }
 
 func (r actorReason) String() string {
@@ -13104,13 +13147,7 @@ func (r actorReason) String() string {
 // cached says whether a failure of this kind is remembered for actorFailFor (actorGoneFor for gone): what
 // the remote server answered is; this server's own state (no key yet, a busy queue, a canceled caller, an
 // unset clock, federation refused) is not, since it says nothing about the actor.
-func (r actorReason) cached() bool {
-	switch r {
-	case actorRefused, actorUnreachable, actorTimeout, actorNotFound, actorGone, actorTooLarge, actorWrongType, actorRedirect, actorUndecodable, actorWrongID, actorNoKey:
-		return true
-	}
-	return false
-}
+func (r actorReason) cached() bool { return r >= actorRefused }
 
 // actorError is every error of this section. Host is the actor's host, cut to a DNS name's length; the
 // cause is kept for errors.As (a fetchError, an apError) and never printed.
@@ -13148,6 +13185,15 @@ func actorHost(id string) string {
 	return h
 }
 
+// noFragment is an id without its fragment: the address that is fetched for it (7.3, and the SWICG report:
+// "fetch it, discarding its fragment first if necessary").
+func noFragment(id string) string {
+	if i := strings.IndexByte(id, '#'); i >= 0 {
+		return id[:i]
+	}
+	return id
+}
+
 // fetchReason maps the fetcher's failure kinds onto the cache's.
 func fetchReason(err error) actorReason {
 	var fe *fetchError
@@ -13177,15 +13223,19 @@ func fetchReason(err error) actorReason {
 	return actorUnreachable // failConnect, failStatus
 }
 
-// actorFail is a failure remembered: why, and until when.
-type actorFail struct {
-	reason actorReason
+// actorMemo is what a string that was asked for led to, remembered in memory: a failure, or the id of the
+// actor it names (an id with a fragment, an address that redirects to the actor's own).
+type actorMemo struct {
+	reason actorReason // a failure; 0 for a name of an actor
+	actor  string      // the actor's id, for a name
 	until  time.Time
 }
 
-// actorFlight is the one fetch of an id in progress. Its row and error are written before done is closed.
+// actorFlight is the one fetch of an address in progress. Its row and error are written before done is
+// closed; opts are the options it was started with, which a caller that joined it compares with its own.
 type actorFlight struct {
 	done chan struct{}
+	opts lookupOpts
 	row  *remoteActor
 	err  error
 }
@@ -13196,14 +13246,15 @@ type lookupOpts struct {
 	want   string // the key id the caller needs; the document may also be that key's own (7.3)
 	keyDoc *apKey // the key document already fetched, whose owner is being fetched
 	depth  int    // 1 while a key document's owner is fetched: an owner is never followed further
+	again  bool   // a caller's own fetch after the one it waited for answered another question
 }
 
 // actorCache is the cache of remote actors of one federation. Its rows live in Postgres; in memory it
-// keeps only the fetches in flight, the failures remembered and a count of the rows.
+// keeps only the fetches in flight, what strings asked for led to, the turns, and a count of the rows.
 type actorCache struct {
 	fed   *federation
 	fetch *fetcher
-	now   func() time.Time // the clock of expiry, the 10 minute rule and the failures; a test sets its own
+	now   func() time.Time // the clock of expiry, the 10 minute rule and the memory; a test sets its own
 	built time.Time        // builtAt(): nothing is signed before it (clockTrusted)
 	wait  time.Duration    // actorWait
 	max   int              // remoteActorsMax
@@ -13213,23 +13264,31 @@ type actorCache struct {
 	slots   chan struct{} // actorFetchers turns
 
 	mu       sync.Mutex
+	hosts    map[string]*hostSlot // one turn per host, taken before one of slots
 	flights  map[string]*actorFlight
-	fails    map[[16]byte]actorFail // by the first 16 bytes of the SHA-256 of the id, so an id costs 16 bytes here
+	memo     map[[16]byte]actorMemo // by the first 16 bytes of the SHA-256 of the string asked for
+	names    map[string]int         // other names remembered, by actor id
 	count    int                    // remote actors cached, -1 until counted
 	evicting bool
 	// joined, when set (by a test), hears of every caller of join: whether it started the fetch or waits
 	// for one in flight.
 	joined func(id string, lead bool)
+	// ended, when set (by a test), is called by a fetch's goroutine after its callers have their answer and
+	// before stop's wait counts it done.
+	ended func()
 }
 
 func newActorCache(f *federation, ft *fetcher) *actorCache {
 	return &actorCache{fed: f, fetch: ft, now: time.Now, built: builtAt(), wait: actorWait, max: remoteActorsMax,
-		slots: make(chan struct{}, actorFetchers), flights: map[string]*actorFlight{}, fails: map[[16]byte]actorFail{}, count: -1}
+		slots: make(chan struct{}, actorFetchers), hosts: map[string]*hostSlot{}, flights: map[string]*actorFlight{},
+		memo: map[[16]byte]actorMemo{}, names: map[string]int{}, count: -1}
 }
 
 // remoteActor returns the actor with this id, from the cache while it is younger than 24 hours, fetched
 // otherwise. It is the one way in of this version (FRD 8's search by handle calls it). An error means
-// there is no row: a row whose fetch failed is returned marked Stale, a gone one with State "gone".
+// there is no row to answer with: a row whose fetch failed is returned marked Stale (until actorStaleMax),
+// a gone one with State "gone". An id with a fragment, or an address that redirects to the actor's own id,
+// answers with that actor and is remembered as its name for as long as the row is fresh.
 func (f *federation) remoteActor(ctx context.Context, id string) (*remoteActor, error) {
 	if f.actors == nil {
 		return nil, &actorError{Reason: actorFedRefused}
@@ -13239,23 +13298,25 @@ func (f *federation) remoteActor(ctx context.Context, id string) (*remoteActor, 
 
 // remoteKey returns the actor whose key has this id (7.3, 7.4): the cached actor that keeps it, or else
 // the document at the key id without its fragment, an actor naming the key or a key document naming its
-// owner, whose actor must name the key back. The actor returned keeps exactly this key.
-func (f *federation) remoteKey(ctx context.Context, keyID string) (*remoteActor, error) {
+// owner, whose actor must name the key back. The actor returned keeps exactly this key, usable for use: a
+// stale, gone or suspended actor is an error for keyToVerify. A key id that leads to no such key is
+// remembered for actorFailFor.
+func (f *federation) remoteKey(ctx context.Context, keyID string, use keyUse) (*remoteActor, error) {
 	if f.actors == nil {
 		return nil, &actorError{Reason: actorFedRefused}
 	}
-	return f.actors.byKey(ctx, keyID, false)
+	return f.actors.byKey(ctx, keyID, false, use)
 }
 
-// remoteKeyFailed is remoteKey after a signature did not verify with the key it returned: the actor is
-// fetched again, unless it was fetched in the last 10 minutes (7.4), so a key that changed is taken (a
-// rotation, which the document itself vouches for: fetched from the actor's origin by its id) and a
-// stranger's bad signatures cost at most one fetch per actor in 10 minutes.
+// remoteKeyFailed is remoteKey (to verify) after a signature did not verify with the key it returned: the
+// actor is fetched again, unless it was fetched in the last 10 minutes (7.4), so a key that changed is
+// taken (a rotation, which the document itself vouches for: fetched from the actor's origin by its id) and
+// a stranger's bad signatures cost at most one fetch per actor in 10 minutes.
 func (f *federation) remoteKeyFailed(ctx context.Context, keyID string) (*remoteActor, error) {
 	if f.actors == nil {
 		return nil, &actorError{Reason: actorFedRefused}
 	}
-	return f.actors.byKey(ctx, keyID, true)
+	return f.actors.byKey(ctx, keyID, true, keyToVerify)
 }
 
 // allowed checks an id before anything else: an https id the fetcher may ask, and not on this instance's
@@ -13282,25 +13343,66 @@ func (c *actorCache) read(ctx context.Context, q string, arg string) (*remoteAct
 	return r, err
 }
 
-func failKey(id string) [16]byte {
-	sum := sha256.Sum256([]byte(id))
+func memoKey(s string) [16]byte {
+	sum := sha256.Sum256([]byte(s))
 	return [16]byte(sum[:16])
 }
 
-// failed says whether id failed within its time, and why.
-func (c *actorCache) failed(id string, now time.Time) (actorReason, bool) {
+// recall is what the string s led to, while that is remembered.
+func (c *actorCache) recall(s string, now time.Time) (actorMemo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	f, ok := c.fails[failKey(id)]
-	if !ok || !now.Before(f.until) {
-		return 0, false
+	k := memoKey(s)
+	m, ok := c.memo[k]
+	if !ok {
+		return m, false
 	}
-	return f.reason, true
+	if !now.Before(m.until) {
+		c.forget(k, m)
+		return m, false
+	}
+	return m, true
 }
 
-// remember keeps a failure for its time. When actorFailsMax are kept, the expired go first, then about a
-// tenth of the rest, any of them (map order): a flood of failing ids costs a few refetches, never memory.
-func (c *actorCache) remember(id string, r actorReason, now time.Time) {
+// forget drops one memory; c.mu is held.
+func (c *actorCache) forget(k [16]byte, m actorMemo) {
+	delete(c.memo, k)
+	if m.actor != "" {
+		if c.names[m.actor]--; c.names[m.actor] <= 0 {
+			delete(c.names, m.actor)
+		}
+	}
+}
+
+// keep stores one memory; c.mu is held. When actorMemoMax are kept, the expired go first, then about a
+// tenth of the rest, any of them (map order): a flood of distinct strings costs a few refetches, never
+// memory, and the same string asked again is answered from memory while it is kept.
+func (c *actorCache) keep(s string, m actorMemo, now time.Time) {
+	if len(c.memo) >= actorMemoMax {
+		for k, old := range c.memo {
+			if !now.Before(old.until) {
+				c.forget(k, old)
+			}
+		}
+		for k, old := range c.memo {
+			if len(c.memo) < actorMemoMax*9/10 {
+				break
+			}
+			c.forget(k, old)
+		}
+	}
+	k := memoKey(s)
+	if old, ok := c.memo[k]; ok {
+		c.forget(k, old)
+	}
+	c.memo[k] = m
+	if m.actor != "" {
+		c.names[m.actor]++
+	}
+}
+
+// remember keeps a failure of s for its time; this server's own state is not remembered (cached).
+func (c *actorCache) remember(s string, r actorReason, now time.Time) {
 	if !r.cached() {
 		return
 	}
@@ -13310,124 +13412,176 @@ func (c *actorCache) remember(id string, r actorReason, now time.Time) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.fails) >= actorFailsMax {
-		for k, f := range c.fails {
-			if !now.Before(f.until) {
-				delete(c.fails, k)
-			}
-		}
-		for k := range c.fails {
-			if len(c.fails) < actorFailsMax*9/10 {
-				break
-			}
-			delete(c.fails, k)
-		}
-	}
-	c.fails[failKey(id)] = actorFail{reason: r, until: now.Add(d)}
+	c.keep(s, actorMemo{reason: r, until: now.Add(d)}, now)
 }
 
-// cached says whether a lookup is answered without a fetch, and with what.
-// A row that keeps another key than the one asked for is fetched again as after a failed verification,
-// within the same 10 minute rule: the actor may name several keys, or have changed its key. The owner of
-// a key document just fetched is always fetched again (unless gone): its stored row keeps no list of the
-// keys it names, and only its document can say whether it names this one; the key document's own fetch
-// already went through the flight and the memory of failures.
-func (c *actorCache) cached(prev *remoteActor, id string, o lookupOpts) (*remoteActor, bool, error) {
+// name remembers that s led to the actor row, until the row is due to be fetched again, and says whether
+// it did: an actor already known by actorNamesMax other names gets no more, and the refusal is remembered
+// instead, so a server that answers every address with a redirect to one actor costs one fetch per
+// address in actorFailFor, not one per request.
+func (c *actorCache) name(s string, row *remoteActor, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if old, ok := c.memo[memoKey(s)]; ok && old.actor == row.ID {
+		return true
+	}
+	if c.names[row.ID] >= actorNamesMax {
+		c.keep(s, actorMemo{reason: actorTooManyNames, until: now.Add(actorFailFor)}, now)
+		return false
+	}
+	c.keep(s, actorMemo{actor: row.ID, until: row.ExpiresAt}, now)
+	return true
+}
+
+// staleOK says whether a row whose refetch failed may still be the answer: not once it is actorStaleMax old.
+func staleOK(r *remoteActor, now time.Time) bool { return now.Sub(r.FetchedAt) < actorStaleMax }
+
+// cached says whether a lookup is answered without a fetch, and with what. A row that keeps another key
+// than the one asked for is fetched again as after a failed verification, within the same 10 minute rule:
+// the actor may have changed its key. The owner of a key document just fetched is always fetched again
+// (unless gone): its stored row keeps no list of the keys it names, and only its document can say
+// whether it names this one; the key document's own fetch already went through the flight and the
+// memory. A caller's own fetch after a shared one that answered another question is not held to the
+// rule once (lookupOpts.again).
+func (c *actorCache) cached(prev *remoteActor, asked string, o lookupOpts) (*remoteActor, bool, error) {
 	now := c.now()
 	if prev != nil {
 		force := o.force || o.want != "" && prev.KeyID != o.want
 		switch {
 		case prev.State == "gone":
 			return prev, true, nil
-		case o.keyDoc != nil:
+		case o.keyDoc != nil || o.again:
 		case force && now.Sub(prev.FetchedAt) < actorRecheck:
 			return prev, true, nil
 		case !force && now.Before(prev.ExpiresAt):
 			return prev, true, nil
 		}
 	}
-	if r, ok := c.failed(id, now); ok {
-		if prev != nil {
-			prev.Stale = true
+	if o.again {
+		return nil, false, nil
+	}
+	if m, ok := c.recall(asked, now); ok && m.reason != 0 {
+		if prev != nil && staleOK(prev, now) {
+			prev.Stale, prev.StaleReason = true, m.reason
 			return prev, true, nil
 		}
-		return nil, true, &actorError{Reason: r, Host: actorHost(id), Cached: true}
+		return nil, true, &actorError{Reason: m.reason, Host: actorHost(asked), Cached: true}
 	}
 	return nil, false, nil
 }
 
-// lookup is remoteActor's work, and each step of remoteKey's.
-func (c *actorCache) lookup(ctx context.Context, id string, o lookupOpts) (*remoteActor, error) {
-	if err := c.allowed(id); err != nil {
+// lookup is the one path every way in goes through, whatever it is asked with: an id, an id with a
+// fragment, an address that redirects, the owner of a key document. A string that led to an actor whose
+// id it is not is remembered as that actor's name (name), so asking it again is answered as asking the
+// actor; a string that led to a failure is remembered as that failure. So N lookups of any one string
+// cost at most one fetch in actorFailFor, or in actorRecheck for a key, or in actorTTL for a fresh row.
+func (c *actorCache) lookup(ctx context.Context, asked string, o lookupOpts) (*remoteActor, error) {
+	if err := c.allowed(asked); err != nil {
 		return nil, err
+	}
+	id := asked
+	if m, ok := c.recall(asked, c.now()); ok && m.actor != "" {
+		id = m.actor
 	}
 	prev, err := c.read(ctx, actorByIDSQL, id)
 	if err != nil {
 		return nil, err
 	}
-	if r, done, err := c.cached(prev, id, o); done {
+	if r, done, err := c.cached(prev, asked, o); done {
 		return r, err
 	}
-	return c.join(ctx, id, o)
+	row, lead, opts, err := c.join(ctx, noFragment(id), o)
+	// A caller that waited for a fetch started with another question (a key it needs that the shared fetch
+	// did not keep) asks its own question once, with a fetch of its own.
+	if err == nil && !lead && !o.again && o.want != "" && row.KeyID != o.want && (opts.want != o.want || opts.keyDoc != o.keyDoc) {
+		o.again = true
+		row, _, _, err = c.join(ctx, noFragment(id), o)
+	}
+	if err == nil && row == nil { // the row went between its write and its read (a -purge-remote beside the server)
+		err = &actorError{Reason: actorNotFound, Host: actorHost(asked)}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.ID != asked && !c.name(asked, row, c.now()) {
+		return nil, &actorError{Reason: actorTooManyNames, Host: actorHost(asked)}
+	}
+	return row, nil
 }
 
-// join waits for the fetch of id in flight, or starts it. The fetch runs on its own context, under the
-// federation's (so a stop ends it) with actorFlightMax, not under the first caller's: a caller that gives
-// up does not fail the others waiting for the same actor. Each caller waits as long as its own context
-// allows.
-func (c *actorCache) join(ctx context.Context, id string, o lookupOpts) (*remoteActor, error) {
+// join waits for the fetch of the address in flight, or starts it, and returns its answer, whether this
+// caller started it, and the options it was started with. Flights are kept by address and depth: a key
+// document's owner (depth 1) never waits for a fetch at depth 0, and a fetch at depth 1 waits for
+// nothing, so no two fetches can wait for each other. The fetch runs on its own context, under the
+// federation's (so a stop ends it, and waits for it) with actorFlightMax, not under the first caller's: a
+// caller that gives up does not fail the others waiting for the same actor. Each caller waits as long as
+// its own context allows.
+func (c *actorCache) join(ctx context.Context, addr string, o lookupOpts) (*remoteActor, bool, lookupOpts, error) {
+	key := addr + "\x00" + strconv.Itoa(o.depth)
+	if o.again {
+		key += "\x00again" // a caller's own question is not answered by another's fetch again
+	}
 	c.mu.Lock()
-	fl := c.flights[id]
+	fl := c.flights[key]
 	lead := fl == nil
 	if lead {
-		fl = &actorFlight{done: make(chan struct{})}
-		c.flights[id] = fl
+		if !c.fed.enter() {
+			c.mu.Unlock()
+			return nil, false, o, &actorError{Reason: actorFedRefused, Host: actorHost(addr)}
+		}
+		fl = &actorFlight{done: make(chan struct{}), opts: o}
+		c.flights[key] = fl
 		go func() {
+			defer c.fed.wg.Done()
 			fctx, cancel := context.WithTimeout(c.fed.ctx, actorFlightMax)
 			defer cancel()
-			row, err := c.lead(fctx, id, o)
+			row, err := c.lead(fctx, addr, o)
 			c.mu.Lock()
 			fl.row, fl.err = row, err
-			delete(c.flights, id)
+			delete(c.flights, key)
 			c.mu.Unlock()
 			close(fl.done)
+			if c.ended != nil {
+				c.ended()
+			}
 		}()
 	}
 	c.mu.Unlock()
 	if c.joined != nil {
-		c.joined(id, lead)
+		c.joined(addr, lead)
 	}
 	select {
 	case <-fl.done:
 		if fl.row == nil {
-			return nil, fl.err
+			return nil, lead, fl.opts, fl.err
 		}
 		r := *fl.row // each caller its own copy
-		return &r, fl.err
+		return &r, lead, fl.opts, fl.err
 	case <-ctx.Done():
-		return nil, &actorError{Reason: actorCanceled, Host: actorHost(id), err: ctx.Err()}
+		return nil, lead, fl.opts, &actorError{Reason: actorCanceled, Host: actorHost(addr), err: ctx.Err()}
 	}
 }
 
-// lead is the one fetch of id: the row read again (a fetch that ended just now may have stored it), the
-// document fetched, decoded and checked, and the result stored.
-func (c *actorCache) lead(ctx context.Context, id string, o lookupOpts) (*remoteActor, error) {
-	prev, err := c.read(ctx, actorByIDSQL, id)
+// lead is the one fetch of an address: the row read again (a fetch that ended just now may have stored
+// it), the document fetched, decoded and checked, a key the actor names by id only followed to its own
+// document, and the result stored.
+func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remoteActor, error) {
+	prev, err := c.read(ctx, actorByIDSQL, addr)
 	if err != nil {
 		return nil, err
 	}
-	if r, done, err := c.cached(prev, id, o); done {
+	if r, done, err := c.cached(prev, addr, o); done {
 		return r, err
 	}
-	res, err := c.get(ctx, id)
+	res, err := c.get(ctx, addr)
 	if err != nil {
 		var ae *actorError
 		var fe *fetchError
 		switch {
 		case errors.As(err, &ae):
-			return c.failure(ctx, id, prev, ae.Reason, ae.err)
+			return c.failure(ctx, addr, prev, ae.Reason, ae.err)
 		case errors.As(err, &fe):
-			return c.failure(ctx, id, prev, fetchReason(err), err)
+			return c.failure(ctx, addr, prev, fetchReason(err), err)
 		}
 		return nil, err // the database
 	}
@@ -13435,61 +13589,160 @@ func (c *actorCache) lead(ctx context.Context, id string, o lookupOpts) (*remote
 	if err != nil {
 		var ae *apError
 		if o.want != "" && o.depth == 0 && errors.As(err, &ae) && ae.Reason == apWrongKind {
-			return c.keyDocument(ctx, id, res, o)
+			return c.keyDocument(ctx, addr, res, o)
 		}
-		return c.failure(ctx, id, prev, actorUndecodable, err)
+		return c.failure(ctx, addr, prev, actorUndecodable, err)
 	}
 	if !sameID(doc.ID, res.URL) {
-		return c.failure(ctx, id, prev, actorWrongID, nil)
+		return c.failure(ctx, addr, prev, actorWrongID, nil)
 	}
-	return c.store(ctx, doc, o)
+	keyDoc := o.keyDoc
+	if keyDoc == nil {
+		kept := ""
+		if prev != nil {
+			kept = prev.KeyID
+		}
+		keyDoc = c.followKey(ctx, doc, o.want, kept)
+	}
+	return c.store(ctx, doc, o.want, keyDoc)
+}
+
+// followKey fetches the document of a key the actor names by id only, so that the key is kept at every
+// fetch of the actor, not only when it was found through the key (federation.md 7.3, the SWICG report: "If
+// it's an id, fetch it"): the key asked for, else the one kept, else the first such key on the actor's
+// origin. One fetch, never followed further; nil when there is none to follow or it does not vouch for
+// the actor (its id where it came from and the key id, its owner the actor, a PEM).
+func (c *actorCache) followKey(ctx context.Context, doc *apActor, want, kept string) *apKey {
+	var pick string
+	for _, id := range []string{want, kept} {
+		if k, err := doc.key(id); id != "" && err == nil && k.ByID {
+			pick = id
+			break
+		}
+	}
+	if pick == "" {
+		for _, k := range doc.Keys {
+			if k.ByID && sameOrigin(k.ID, doc.ID) {
+				pick = k.ID
+				break
+			}
+		}
+	}
+	if pick == "" || !sameOrigin(pick, doc.ID) || noFragment(pick) == noFragment(doc.ID) {
+		return nil
+	}
+	res, err := c.get(ctx, noFragment(pick))
+	if err != nil {
+		return nil
+	}
+	k, ok := keyDocOf(res, pick)
+	if !ok || k.Owner != doc.ID {
+		return nil
+	}
+	return &k
+}
+
+// keyDocOf reads a fetched key document: its id must be where it came from and the key id asked for, and
+// it must name an owner on its own origin and a PEM.
+func keyDocOf(res *fetchResult, keyID string) (apKey, bool) {
+	fields, err := apParse(res.Body, actorDocMax)
+	if err != nil {
+		return apKey{}, false
+	}
+	id, err := fields.id("id")
+	if err != nil || id == "" || id != keyID || !sameID(id, res.URL) {
+		return apKey{}, false
+	}
+	k, ok := apKeyOf(idOrObject{ID: id, Obj: fields})
+	if !ok || k.Owner == "" || k.PEM == "" || !sameOrigin(k.ID, k.Owner) {
+		return apKey{}, false
+	}
+	return k, true
 }
 
 // keyDocument reads a document that is a key of its own (federation.md 7.3: "some servers keep the key
 // at a path of its own"): its id must be where it came from and the key id asked for, its owner on the
-// same origin; then the owner is fetched, and must name the key back.
-func (c *actorCache) keyDocument(ctx context.Context, id string, res *fetchResult, o lookupOpts) (*remoteActor, error) {
-	fields, err := apParse(res.Body, actorDocMax)
-	if err != nil {
-		return c.failure(ctx, id, nil, actorUndecodable, err)
-	}
-	keyID, err := fields.id("id")
-	if err != nil || keyID == "" || !sameID(keyID, res.URL) || keyID != o.want {
-		return c.failure(ctx, id, nil, actorWrongID, err)
-	}
-	k, ok := apKeyOf(idOrObject{ID: keyID, Obj: fields})
-	if !ok || k.Owner == "" || k.PEM == "" || !sameOrigin(k.ID, k.Owner) {
-		return c.failure(ctx, id, nil, actorNoKey, nil)
+// same origin and not the key document itself; then the owner is fetched, once, at depth 1, and must name
+// the key back.
+func (c *actorCache) keyDocument(ctx context.Context, addr string, res *fetchResult, o lookupOpts) (*remoteActor, error) {
+	k, ok := keyDocOf(res, o.want)
+	if !ok || noFragment(k.Owner) == noFragment(k.ID) || noFragment(k.Owner) == addr {
+		return c.failure(ctx, addr, nil, actorNoKey, nil)
 	}
 	return c.lookup(ctx, k.Owner, lookupOpts{want: o.want, keyDoc: &k, depth: 1})
 }
 
 // failure records a failed fetch. A 410 marks a stored actor gone for good (7.4); every failure the remote
-// server is the cause of is remembered for its time. A stored row is still the answer, marked stale (or
-// gone): a key that verified yesterday is better than none while its server is down, and FWR's handling
-// of an actor's own Delete relies on the cached key (6.3, 7.4).
-func (c *actorCache) failure(ctx context.Context, id string, prev *remoteActor, r actorReason, cause error) (*remoteActor, error) {
+// server is the cause of is remembered for its time. A stored row is still the answer, marked stale with
+// the reason (or gone), for at most actorStaleMax after its last fetch: FWR's handling of an actor's own
+// Delete relies on the cached key (6.3, 7.4), and a profile may still be shown; a stale key never verifies
+// a signed request (publicKey).
+func (c *actorCache) failure(ctx context.Context, addr string, prev *remoteActor, r actorReason, cause error) (*remoteActor, error) {
 	now := c.now()
-	c.remember(id, r, now)
-	if prev == nil {
-		return nil, &actorError{Reason: r, Host: actorHost(id), err: cause}
-	}
-	if r == actorGone {
+	c.remember(addr, r, now)
+	if prev != nil && r == actorGone {
 		if _, err := c.fed.db.ExecContext(ctx, `UPDATE ap_actors SET state = 'gone', fetched_at = $2 WHERE user_id = $1`, prev.UserID, now); err != nil {
 			return nil, err
 		}
 		prev.State, prev.FetchedAt = "gone", now
 		return prev, nil
 	}
-	prev.Stale = true
-	return prev, nil
+	if prev != nil && staleOK(prev, now) {
+		prev.Stale, prev.StaleReason = true, r
+		return prev, nil
+	}
+	return nil, &actorError{Reason: r, Host: actorHost(addr), err: cause}
 }
 
-// get fetches an actor's document, signed by the instance actor. The origin is frozen first: a signed
-// request names the instance actor's key id under it (4.3). The instance actor's key is read before a
-// turn is taken, so no connection is held while waiting for one or for the network.
-func (c *actorCache) get(ctx context.Context, id string) (*fetchResult, error) {
-	host := actorHost(id)
+// turn takes the host's one turn, then one of the actorFetchers, within c.wait in all: a slow host holds
+// at most one of them, so it cannot stop the fetches of every other host. The fetcher keeps one request
+// per host too; holding the host's turn first means the cache's turn is never held while waiting for the
+// fetcher's.
+func (c *actorCache) turn(ctx context.Context, host string) (func(), error) {
+	wait, stop := context.WithTimeout(ctx, c.wait)
+	defer stop()
+	c.mu.Lock()
+	s := c.hosts[host]
+	if s == nil {
+		s = &hostSlot{ch: make(chan struct{}, 1)}
+		c.hosts[host] = s
+	}
+	s.users++
+	c.mu.Unlock()
+	leave := func() {
+		c.mu.Lock()
+		if s.users--; s.users == 0 {
+			delete(c.hosts, host)
+		}
+		c.mu.Unlock()
+	}
+	busy := func() error {
+		if ctx.Err() != nil {
+			return &actorError{Reason: actorCanceled, Host: host, err: ctx.Err()}
+		}
+		return &actorError{Reason: actorBusy, Host: host}
+	}
+	select {
+	case s.ch <- struct{}{}:
+	case <-wait.Done():
+		leave()
+		return nil, busy()
+	}
+	select {
+	case c.slots <- struct{}{}:
+	case <-wait.Done():
+		<-s.ch
+		leave()
+		return nil, busy()
+	}
+	return func() { <-c.slots; <-s.ch; leave() }, nil
+}
+
+// get fetches a document, signed by the instance actor. The origin is frozen first: a signed request names
+// the instance actor's key id under it (4.3). The instance actor's key is read before a turn is taken, so
+// no connection is held while waiting for one or for the network.
+func (c *actorCache) get(ctx context.Context, addr string) (*fetchResult, error) {
+	host := actorHost(addr)
 	if c.fed.refusal() != "" {
 		return nil, &actorError{Reason: actorFedRefused, Host: host}
 	}
@@ -13515,18 +13768,12 @@ func (c *actorCache) get(ctx context.Context, id string) (*fetchResult, error) {
 	if c.refused != nil {
 		refused = c.refused()
 	}
-	wait, stop := context.WithTimeout(ctx, c.wait)
-	defer stop()
-	select {
-	case c.slots <- struct{}{}:
-	case <-wait.Done():
-		if ctx.Err() != nil {
-			return nil, &actorError{Reason: actorCanceled, Host: host, err: ctx.Err()}
-		}
-		return nil, &actorError{Reason: actorBusy, Host: host}
+	release, err := c.turn(ctx, host)
+	if err != nil {
+		return nil, err
 	}
-	defer func() { <-c.slots }()
-	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: id, sign: sign, refused: refused})
+	defer release()
+	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: addr, sign: sign, refused: refused})
 }
 
 // actorKey chooses the key a row keeps: the one asked for, else the one kept before, else the first the
@@ -13578,7 +13825,10 @@ func plainRemoteName(s string) bool {
 // "name@host". A name that is not plain, or that another actor of the host holds already (a name is not
 // an identity, the SWICG WebFinger report says: "SHOULD use the actor id"), gets "+" and twelve hex
 // digits of the SHA-256 of the actor id, which no plain name has. Every such name holds an "@", which
-// usernameRE never allows, so it can never be a Flowa name, at sign-up or anywhere a name is looked up.
+// usernameRE never allows, so no member can sign up with it. ADMIN_USER is the one name not held to
+// usernameRE (an older deployment may use any): when it already holds a remote actor's name, the actor
+// gets the hashed name instead (store tries both), and when a remote actor holds the name first, makeAdmin
+// says so in words.
 func remoteUsername(pref, host, id string, taken bool) string {
 	base := pref
 	if !plainRemoteName(pref) {
@@ -13636,7 +13886,7 @@ func firstLink(l []apLink) string {
 // "stores nothing new from it"); one never seen is stored with its id, kind, name and key, so that an
 // Update that lifts the suspension can be verified. A row made by another server at the same moment
 // (the unique ap_id) wins, and this one reads it.
-func (c *actorCache) store(ctx context.Context, doc *apActor, o lookupOpts) (*remoteActor, error) {
+func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDoc *apKey) (*remoteActor, error) {
 	now := c.now()
 	host := actorHost(doc.ID)
 	pref := doc.PreferredUsername
@@ -13659,7 +13909,7 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, o lookupOpts) (*re
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	key := actorKey(doc, []string{o.want, keptKey}, o.keyDoc)
+	key := actorKey(doc, []string{want, keptKey}, keyDoc)
 	display, summary, link, icon := remoteDisplay(doc.Name, pref), remoteText(doc.Summary, remoteSummaryMax), firstLink(doc.URL), firstLink(doc.Icon)
 	if doc.Suspended {
 		display, summary, link, icon = "", "", "", ""
@@ -13705,60 +13955,88 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, o lookupOpts) (*re
 		return nil, err
 	}
 	if inserted {
-		c.added(ctx)
+		c.added(ctx, uid)
 	}
 	return c.read(ctx, actorByIDSQL, doc.ID)
 }
 
-// byKey is remoteKey's work. force is a failed verification (remoteKeyFailed).
-func (c *actorCache) byKey(ctx context.Context, keyID string, force bool) (*remoteActor, error) {
+// byKey is remoteKey's work. force is a failed verification (remoteKeyFailed). The key id is looked up as
+// the key a cached actor keeps, else through lookup with the address it names (its fragment removed), so
+// every rule of lookup holds here too; a key id that leads to no actor keeping it is remembered as that
+// failure, so asking it again costs nothing for actorFailFor.
+func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use keyUse) (*remoteActor, error) {
 	if !httpsURL(keyID) {
 		return nil, &actorError{Reason: actorBadID, Host: actorHost(keyID)}
 	}
 	if err := c.allowed(keyID); err != nil {
 		return nil, err
 	}
+	if m, ok := c.recall(keyID, c.now()); ok && m.reason != 0 {
+		return nil, &actorError{Reason: m.reason, Host: actorHost(keyID), Cached: true}
+	}
 	kept, err := c.read(ctx, actorByKeySQL, keyID)
 	if err != nil {
 		return nil, err
 	}
-	id := keyID
+	id := noFragment(keyID)
 	if kept != nil {
 		id = kept.ID
-	} else if i := strings.IndexByte(id, '#'); i >= 0 {
-		id = id[:i]
 	}
 	r, err := c.lookup(ctx, id, lookupOpts{want: keyID, force: force})
 	if err != nil {
+		var ae *actorError
+		if errors.As(err, &ae) && !ae.Cached {
+			c.remember(keyID, ae.Reason, c.now())
+		}
 		return nil, err
 	}
 	if r.KeyID != keyID {
+		c.remember(keyID, actorNoKey, c.now())
 		return nil, &actorError{Reason: actorNoKey, Host: actorHost(keyID)}
+	}
+	if err := r.keyUsable(use); err != nil {
+		return nil, err
 	}
 	return r, nil
 }
 
-// evictActorsSQL removes the $1 remote accounts fetched longest ago, through ap_actors_fetched, leaving
-// any account something of this server points at (a post, a like, a follow or a block, each asked through
-// its index, one row at a time). Nothing can point at a remote account in this version: every statement
-// that writes such a row writes the session's own account, or one looked up local only. FWR, which writes
-// the first, adds the tables it writes to (comments, notifications, reports) here with their indexes.
-const evictActorsSQL = `DELETE FROM users u WHERE u.domain <> '' AND u.id IN (SELECT a.user_id FROM ap_actors a
-	WHERE NOT EXISTS (SELECT 1 FROM posts p WHERE p.user_id = a.user_id OFFSET 0)
-	AND NOT EXISTS (SELECT 1 FROM likes l WHERE l.user_id = a.user_id OFFSET 0)
-	AND NOT EXISTS (SELECT 1 FROM comment_likes l WHERE l.user_id = a.user_id OFFSET 0)
-	AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = a.user_id OFFSET 0)
-	AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.followee_id = a.user_id OFFSET 0)
-	AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = a.user_id OFFSET 0)
-	AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.target_id = a.user_id OFFSET 0)
-	ORDER BY a.fetched_at, a.user_id LIMIT $1)`
+// userRefs are every column of another table that references users. A remote account that any of them
+// points at is never removed by the bound of the cache: not the posts, comments, likes, follows, blocks,
+// notifications or reports later items write for it, nor a moderator's action on it, whose suspension
+// would otherwise be lost with the row. TestDBEvictionCoversReferences reads the foreign keys to users
+// from the catalog and fails when one is missing here or has no index that starts with its column.
+// ap_actors.user_id is the row's own cached document and is not a reference to keep it for.
+var userRefs = []struct{ table, column string }{
+	{"achievements", "user_id"}, {"ap_keys", "user_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
+	{"blocks", "user_id"}, {"bookmarks", "user_id"}, {"catalog_revisions", "author_id"}, {"comment_likes", "user_id"},
+	{"comments", "user_id"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
+	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"}, {"notifications", "actor_id"},
+	{"notifications", "user_id"}, {"posts", "user_id"}, {"progress", "user_id"}, {"reports", "reporter_id"},
+	{"reports", "resolver_id"}, {"sessions", "user_id"},
+}
+
+// evictActorsSQL removes the $1 remote accounts fetched longest ago, through ap_actors_fetched, leaving any
+// account a row of userRefs points at (each asked through its index, one candidate at a time), and any
+// that a moderator muted or suspended, and never $2, the actor just stored, which its caller is about to
+// read back. The chosen ids are an array, so the rows are then found by the
+// primary key, never by reading users.
+var evictActorsSQL = func() string {
+	var b strings.Builder
+	b.WriteString(`DELETE FROM users u WHERE u.domain <> '' AND u.id = ANY (ARRAY(SELECT a.user_id FROM ap_actors a
+	WHERE a.user_id <> $2 AND NOT EXISTS (SELECT 1 FROM users v WHERE v.id = a.user_id AND (v.suspended_until IS NOT NULL OR v.muted_until IS NOT NULL) OFFSET 0)`)
+	for _, r := range userRefs {
+		fmt.Fprintf(&b, "\n\tAND NOT EXISTS (SELECT 1 FROM %s x WHERE x.%s = a.user_id OFFSET 0)", r.table, r.column)
+	}
+	b.WriteString("\n\tORDER BY a.fetched_at, a.user_id LIMIT $1))")
+	return b.String()
+}()
 
 // added counts a new remote actor, and when the cache holds more than max, removes the least recently
 // fetched, a hundredth of max beyond it at once, so a full cache counts and removes once per that many
 // new actors rather than at each. The count is read from the table at the first insert and after each
 // removal, so a -purge-remote run beside a running server is caught up with then. Only one removal runs
 // at a time, and no lock is held across its statements.
-func (c *actorCache) added(ctx context.Context) {
+func (c *actorCache) added(ctx context.Context, keep int64) {
 	c.mu.Lock()
 	if c.count >= 0 {
 		c.count++
@@ -13783,7 +14061,7 @@ func (c *actorCache) added(ctx context.Context) {
 		return
 	}
 	if have > c.max {
-		res, err := c.fed.db.ExecContext(ctx, evictActorsSQL, have-c.max+max(c.max/100, 1))
+		res, err := c.fed.db.ExecContext(ctx, evictActorsSQL, have-c.max+max(c.max/100, 1), keep)
 		if err != nil {
 			log.Printf("actors: removing the least recently fetched: %v", err)
 			return
@@ -14032,8 +14310,10 @@ var migrations = []string{schema, schemaSocial,
 	// hash checkPassword can match ('!'), no role above user, never the owner, never opted in, and a name that
 	// ends in "@" and its domain. users_local is the index the people list and the counts read local members
 	// through. ap_actors holds what Flowa reads of a remote actor (6.3) and its one key, kept for 24 hours
-	// (7.4); state is ok, suspended (Mastodon's flag, 6.3) or gone (410). Adding the column and the check reads
-	// users once (a row or a few per member); the rest are new. Additive: an older build ignores the column and
+	// (7.4); state is ok, suspended (Mastodon's flag, 6.3) or gone (410). The nine indexes after it let the
+	// cache's bound ask, one row at a time, whether anything points at an account before it removes one
+	// (userRefs); each table they index has a row or a few per member or per post. Adding the column and the
+	// check reads users once, and each index reads its table once; the rest are new. Additive: an older build ignores the column and
 	// the table, but would list remote rows as members, which is why -purge-remote exists (14.4).
 	`ALTER TABLE users ADD COLUMN IF NOT EXISTS domain TEXT NOT NULL DEFAULT '';
 	ALTER TABLE users DROP CONSTRAINT IF EXISTS users_remote_inert;
@@ -14060,7 +14340,16 @@ var migrations = []string{schema, schemaSocial,
 		expires_at TIMESTAMPTZ NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS ap_actors_key ON ap_actors (key_id) WHERE key_id <> '';
-	CREATE INDEX IF NOT EXISTS ap_actors_fetched ON ap_actors (fetched_at, user_id)`,
+	CREATE INDEX IF NOT EXISTS ap_actors_fetched ON ap_actors (fetched_at, user_id);
+	CREATE INDEX IF NOT EXISTS comments_user ON comments (user_id);
+	CREATE INDEX IF NOT EXISTS notifications_actor ON notifications (actor_id);
+	CREATE INDEX IF NOT EXISTS reports_reporter ON reports (reporter_id);
+	CREATE INDEX IF NOT EXISTS reports_resolver ON reports (resolver_id);
+	CREATE INDEX IF NOT EXISTS mod_actions_actor ON mod_actions (actor_id);
+	CREATE INDEX IF NOT EXISTS mod_actions_target ON mod_actions (target_user_id);
+	CREATE INDEX IF NOT EXISTS catalog_revisions_author ON catalog_revisions (author_id);
+	CREATE INDEX IF NOT EXISTS instance_settings_by ON instance_settings (updated_by);
+	CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -14182,9 +14471,20 @@ func (a *app) makeAdmin(name, hash string) (int64, error) {
 	// A retired name, or the instance's own host, is taken for the operator too. The start goes on
 	// without the account (a deleted admin used to come back at every start, and a server that will not
 	// start for it would be worse) unless no account exists at all, when there would be nobody to run it.
-	var retired, someone bool
-	if err := tx.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users WHERE domain = '')`, name).Scan(&retired, &someone); err != nil {
+	var retired, someone, remote bool
+	if err := tx.QueryRow(`SELECT `+retiredSQL+`, EXISTS (SELECT 1 FROM users WHERE domain = ''), EXISTS (SELECT 1 FROM users WHERE username = $1 AND domain <> '')`, name).Scan(&retired, &someone, &remote); err != nil {
 		return 0, err
+	}
+	// ADMIN_USER is not held to usernameRE (an older deployment may use any name), so it can be the name of an
+	// account of another server kept here ("name@host", 9.2). That is said in words, not as a unique-index
+	// error, and handled as a taken name.
+	if remote {
+		msg := fmt.Sprintf("ADMIN_USER=%s: that is the name of an account of another server kept here, so no account is made for it. Choose a name without \"@\", or remove the remote accounts with /nunchaku -purge-remote", name)
+		if !someone {
+			return 0, errors.New(msg)
+		}
+		log.Print(msg)
+		return 0, nil
 	}
 	if retired || a.reservedName(name) {
 		if !someone {
