@@ -6179,8 +6179,11 @@ type federation struct {
 	// actors is the cache of remote actors (remoteActor), set by startFederation with the app's fetcher;
 	// nil in the federation -rotate-keys makes, which fetches nothing.
 	actors *actorCache
-	// lookups holds a turn for each search by handle running (lookupsAtOnce: handleLookup).
-	lookups chan struct{}
+	// lookups holds a turn for each search by handle running (lookupsAtOnce: handleLookup), and lookupBy
+	// the members who have one running: one at a time each, so one member cannot hold every turn.
+	lookups  chan struct{}
+	lookupMu sync.Mutex
+	lookupBy map[int64]bool
 	// lookupNow and lookupPause are the clock of lookupFloor; a test sets its own, so nothing waits in a test.
 	lookupNow   func() time.Time
 	lookupPause func(ctx context.Context, d time.Duration)
@@ -6208,7 +6211,7 @@ var generateKey = func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.
 func newFederation(db *sql.DB, s fedSettings) *federation {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &federation{db: db, origin: s.origin, secret: s.secret, cache: map[keyOwner]cachedKey{}, gen: generateKey,
-		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupNow: time.Now, lookupPause: lookupWait, ctx: ctx, cancel: cancel}
+		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupBy: map[int64]bool{}, lookupNow: time.Now, lookupPause: lookupWait, ctx: ctx, cancel: cancel}
 }
 
 // lookupWait waits for d, or until ctx ends: lookupFloor's pause.
@@ -15043,6 +15046,26 @@ func (r *lookupRun) posts(ctx context.Context, a *remoteActor, handle string) ([
 	return out, ""
 }
 
+// document fetches an outbox or one of its pages, signed by the instance actor as an actor is, through the
+// fetcher alone (the review's M3): not through the actor cache's turns, which are the inbox's key fetches'
+// (actorFetchers), so a lookup holds a cache turn only while it asks for an actor, one at a time. The
+// fetcher's own turn per host and the lookups' own limits (lookupsAtOnce, one per member) bound the rest.
+func (r *lookupRun) document(ctx context.Context, addr string) (*fetchResult, error) {
+	c := r.f.actors
+	if r.f.refusal() != "" || !clockTrusted(c.now(), c.built) {
+		return nil, &lookupError{Reason: lookupUnavailable, Step: "posts"}
+	}
+	if err := r.f.ensureOrigin(ctx); err != nil {
+		return nil, err
+	}
+	key, keyID, err := r.f.privateKey(ctx, instanceActor)
+	if err != nil {
+		return nil, err
+	}
+	sign := httpSigner(key, r.f.origin.url+keyID, sigCavage, c.now, c.built)
+	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: addr, sign: sign, refused: r.refused()})
+}
+
 // ownLink says whether a link another server gave may be offered: an https address on the actor's own origin
 // or on the origin of its proven handle's host (the review's LOW 1: "See the profile on its server" must not
 // lead to https://bank.example/login). Otherwise the page links the actor's or the post's id, which 7.3 has
@@ -15061,7 +15084,7 @@ func (r *lookupRun) collection(ctx context.Context, step, id string) (*apCollect
 	if r.spend(step, 1) != nil {
 		return nil, lookupPostsFailed
 	}
-	res, err := r.f.actors.get(ctx, id)
+	res, err := r.document(ctx, id)
 	if err != nil {
 		return nil, lookupPostsFailed
 	}
@@ -15126,9 +15149,19 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 		answer(w, lookupRefused, "")
 		return
 	}
+	f := a.fed
+	f.lookupMu.Lock()
+	mine := f.lookupBy[u.ID]
+	f.lookupBy[u.ID] = true
+	f.lookupMu.Unlock()
+	if mine {
+		answer(rw, lookupBusy, "") // this member's own lookup is running: one at a time each
+		return
+	}
+	defer func() { f.lookupMu.Lock(); delete(f.lookupBy, u.ID); f.lookupMu.Unlock() }()
 	select {
-	case a.fed.lookups <- struct{}{}:
-		defer func() { <-a.fed.lookups }()
+	case f.lookups <- struct{}{}:
+		defer func() { <-f.lookups }()
 	default:
 		answer(rw, lookupBusy, "")
 		return

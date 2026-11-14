@@ -938,3 +938,89 @@ func TestDBLookupTimingFloor(t *testing.T) {
 		t.Errorf("not an account: %d %v", code, p)
 	}
 }
+
+// The review's M3: lookups read outboxes without the actor cache's turns, so four lookups held at slow
+// outboxes do not delay a key fetch the inbox needs; and one member runs one lookup at a time.
+func TestDBLookupKeepsKeyTurns(t *testing.T) {
+	r := newRemoteEnv(t)
+	w := r.w
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	hosts := []string{"social.example", "other.example", "big.example", "a.example"}
+	var releases []func()
+	defer func() {
+		for _, rel := range releases {
+			rel()
+		}
+	}()
+	errs := make(chan error, len(hosts))
+	held := map[string]bool{}
+	for _, h := range hosts {
+		id := "https://" + h + "/users/slow"
+		person(w, id, "slow", nil)
+		outbox(w, id)
+		releases = append(releases, w.holdAt(id+"/outbox"))
+		held[worldKey(id+"/outbox")] = true
+		in, _ := parseLookup("slow@" + h)
+		go func() { _, err := r.a.fed.findRemote(ctx, in); errs <- err }()
+	}
+	for n := 0; n < len(hosts); {
+		select {
+		case k := <-w.arrived:
+			if held[k] {
+				n++
+			}
+		case <-ctx.Done():
+			t.Fatalf("the lookups did not all reach their outboxes")
+		}
+	}
+	// Four lookups wait at their outboxes, holding none of the actor cache's turns; a key fetch (what the
+	// inbox's verifier asks) gets one at once.
+	if n := len(r.c.slots); n != 0 {
+		t.Errorf("four lookups reading outboxes hold %d of the cache's %d turns", n, cap(r.c.slots))
+	}
+	keyA, _ := sigTestKeys()
+	kid := "https://remote.example/users/signer"
+	w.put(kid, worldDoc{body: actorDoc(kid, "signer", "", &keyA.PublicKey, nil)})
+	got, err := r.a.fed.remoteKey(ctx, kid+"#main-key", keyToVerify)
+	if err != nil || got.KeyID != kid+"#main-key" {
+		t.Fatalf("a key fetch while four lookups read outboxes: %+v %v", got, err)
+	}
+	for _, rel := range releases {
+		rel()
+	}
+	for range hosts {
+		if err := <-errs; err != nil {
+			t.Errorf("a held lookup: %v", err)
+		}
+	}
+
+	// One at a time per member: while ana's lookup waits, her second is told to try again, and bo's runs.
+	r.a.fed.lookupPause = func(context.Context, time.Duration) {}
+	_, ana := r.user("ana", "user")
+	_, bo := r.user("bo", "user")
+	id := "https://remote.example/users/held"
+	person(w, id, "held", nil)
+	outbox(w, id)
+	rel := w.holdAt(id + "/outbox")
+	defer rel()
+	first := make(chan int, 1)
+	go func() { code, _ := r.do(ana, "POST", "/api/fed/lookup", map[string]any{"q": "held@remote.example"}); first <- code }()
+	for k := ""; k != worldKey(id+"/outbox"); {
+		select {
+		case k = <-w.arrived:
+		case <-ctx.Done():
+			t.Fatal("ana's lookup never reached the outbox")
+		}
+	}
+	if code, out := r.do(ana, "POST", "/api/fed/lookup", map[string]any{"q": "slow@social.example"}); code != 503 || out["reason"] != "busy" {
+		t.Errorf("a member's second lookup at once: %d %s", code, out["_raw"])
+	}
+	if code, out := r.do(bo, "POST", "/api/fed/lookup", map[string]any{"q": "slow@social.example"}); code != 200 {
+		t.Errorf("another member meanwhile: %d %s", code, out["_raw"])
+	}
+	rel()
+	if code := <-first; code != 200 {
+		t.Errorf("ana's lookup: %d", code)
+	}
+}
