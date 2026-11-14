@@ -187,7 +187,7 @@ func TestParseJRD(t *testing.T) {
 // Every failure the fetcher and the actor cache report is told in one of the fixed reasons, and every
 // reason has its words, code and status, none naming a host, a status or another server's text.
 func TestLookupReasons(t *testing.T) {
-	for r := lookupBadInput; r <= lookupUnavailable; r++ {
+	for r := lookupBadInput; r <= lookupNotAllowed; r++ {
 		w := lookupReasons[r]
 		if w.code == "" || w.words == "" || lookupHTTP[r] < 400 || strings.ContainsAny(w.words, "–—") {
 			t.Errorf("reason %d: %+v %d", r, w, lookupHTTP[r])

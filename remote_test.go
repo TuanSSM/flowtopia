@@ -105,7 +105,7 @@ func TestActorReasons(t *testing.T) {
 	}
 	// What the remote server answered is remembered; this server's own state is not.
 	for r := actorBadID; r <= actorTooManyNames; r++ {
-		mine := r <= actorSuspended
+		mine := r <= actorHostLimit
 		if r.cached() == mine {
 			t.Errorf("%v: remembered %v", r, r.cached())
 		}
@@ -618,6 +618,7 @@ func remoteOn(t *testing.T, e *tenv) *remoteEnv {
 	if _, err := f.ensureKey(context.Background(), instanceActor); err != nil {
 		t.Fatal(err)
 	}
+	settleKeys(t, f)
 	var p string
 	if err := e.a.db.QueryRow(`SELECT public_key FROM ap_keys WHERE user_id IS NULL`).Scan(&p); err != nil {
 		t.Fatal(err)
@@ -638,7 +639,42 @@ func remoteOn(t *testing.T, e *tenv) *remoteEnv {
 	ft.origin = f.origin
 	c := f.actors
 	c.fetch, c.now, c.built = ft, clock.now, time.Time{}
+	// These tests are about the cache, the search and the inbox, not the domain policy: the instance federates
+	// with every server not suspended. A fresh instance's allowlist is held by TestDBPolicyBothWays.
+	if _, err := e.a.db.Exec(`INSERT INTO instance_settings (key, value) VALUES ('federation_policy', '"open"') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.loadPolicy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	return &remoteEnv{tenv: e, c: c, w: w, ft: ft, clock: clock, pub: pub}
+}
+
+// settleKeys waits until the key worker has finished what the start asked of it (the instance actor's key, made
+// in the background), so that a test measuring the database pool or federation's turns measures its own request:
+// the worker takes one request at a time in order, so once a marker asked after them is handled, they are too.
+func settleKeys(t testing.TB, f *federation) {
+	t.Helper()
+	const marker = keyOwner(-1) // no account has it: the worker answers it with an error and makes nothing
+	seen := make(chan struct{})
+	f.mu.Lock()
+	f.handled = func(o keyOwner, _ bool, _ error) {
+		if o == marker {
+			close(seen)
+		}
+	}
+	f.mu.Unlock()
+	if !f.requestKey(marker) {
+		t.Fatal("the key worker took no request")
+	}
+	select {
+	case <-seen:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the key worker did not finish what the start asked of it in 30 s")
+	}
+	f.mu.Lock()
+	f.handled = nil
+	f.mu.Unlock()
 }
 
 func (r *remoteEnv) actor(id string) (*remoteActor, error) {
@@ -1075,6 +1111,10 @@ func TestDBRemoteActorNotReady(t *testing.T) {
 	ft := actorStub(t, w)
 	ft.origin = f.origin
 	f.actors.fetch, f.actors.now, f.actors.built = ft, clock.now, time.Time{}
+	e.mustExec(`INSERT INTO domain_policies (domain, policy) VALUES ('remote.example', 'allow')`) // the allowlist, which a fresh instance has, lets it in
+	if err := f.loadPolicy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	id := "https://remote.example/users/x"
 	w.put(id, worldDoc{body: actorDoc(id, "x", "", nil, nil)})
 	if _, err := f.remoteActor(context.Background(), id); reason(err) != actorNotReady || w.total() != 0 {
@@ -1422,6 +1462,7 @@ func TestDBPurgeRemote(t *testing.T) {
 		`INSERT INTO blocks (user_id, target_id) VALUES (%[2]d, %[4]d)`,
 		`INSERT INTO notifications (user_id, actor_id, kind, post_id) VALUES (%[2]d, %[1]d, 'like', %[3]d)`,
 		`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES (%[1]d, 'post', %[3]d, 'spam')`,
+		`INSERT INTO ap_inbox (activity_id, actor_id, host, kind, received_at, next_at) VALUES ('https://remote.example/a/1', %[1]d, 'remote.example', 'Delete', now(), now())`,
 		`INSERT INTO mod_actions (actor_id, action, target_kind, target_id, target_user_id, reason) VALUES (%[5]d, 'mute', 'user', %[1]d, %[1]d, 'test')`,
 	} {
 		q = fmt.Sprintf(q, r0, anaID, p, r1, bossID)
@@ -1442,12 +1483,12 @@ func TestDBPurgeRemote(t *testing.T) {
 	if err := purgeWith(e.a.db, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 2 follows, 1 blocks, 1 notifications, 1 reports. Local accounts and their posts are as they were.\n"
+	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 2 follows, 1 blocks, 1 notifications, 1 reports, 1 inbox rows. Local accounts and their posts are as they were.\n"
 	if out.String() != want {
 		t.Errorf("printed %q\nwant    %q", out.String(), want)
 	}
 	if n := e.count(`SELECT count(*) FROM users WHERE domain <> ''`) + e.count(`SELECT count(*) FROM ap_actors`) + e.count(`SELECT count(*) FROM follows`) +
-		e.count(`SELECT count(*) FROM likes`) + e.count(`SELECT count(*) FROM comments`) + e.count(`SELECT count(*) FROM notifications`) + e.count(`SELECT count(*) FROM reports`) + e.count(`SELECT count(*) FROM blocks`); n != 0 {
+		e.count(`SELECT count(*) FROM likes`) + e.count(`SELECT count(*) FROM comments`) + e.count(`SELECT count(*) FROM notifications`) + e.count(`SELECT count(*) FROM reports`) + e.count(`SELECT count(*) FROM blocks`) + e.count(`SELECT count(*) FROM ap_inbox`); n != 0 {
 		t.Errorf("%d rows left behind", n)
 	}
 	if got := local(); got != before {

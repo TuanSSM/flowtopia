@@ -20,8 +20,16 @@
 #     each said to a screen reader, held to the a11y, contrast and keys walks and to 420 px. This server can
 #     reach no other server (private addresses are refused and no setting changes that), so a remote account,
 #     the reverse check and the outbox are covered in Go only (TestDBResolveHandle, TestDBLookupRoute);
-#   - the admin dashboard's mode line, and the start log, say what this version serves (no inbox, nothing
-#     delivered), and
+#   - the inbox over HTTP (FWR 1): an unsigned POST from another site refused as unsigned (past the write
+#     guard), plain JSON 415, a GET 405 with Allow: POST, and a search for a server nobody allowed refused; a
+#     signed delivery needs another server for its key,
+#     so verifying, queueing and handling are Go's (TestInboxRefusals, TestDBInboxQueue, TestDBTwoFlowaInbox);
+#   - the Federation tab of the Admin page (FMD 1): a domain allowed with the keyboard, read back through the
+#     API and the audit log, the policy chosen with Space, the inbox's numbers showing the refusals, held to
+#     the a11y and contrast walks;
+#   - the admin dashboard's mode line, and the start log, say what this version serves (the inbox acts only on
+#     an account deleting itself or changing its profile, nothing delivered) and that taking deliveries is off
+#     until the Federation switch is turned on, and
 #     the dashboard that the origin is not announced until an answer first names a member, then since when;
 #   - the card holds to the rules the keys, a11y and contrast suites hold every page to (those suites run in
 #     local mode, where the card does not exist): the switch takes the focus and shows a ring of 2 px at 3:1 in
@@ -159,6 +167,47 @@ try:
     check('the dashboard: federated mode, the origin, announced since the first answer, and what is served',lambda: (lambda t: bool(t) and t.startswith('Instance mode federated') and 'Federating as https://flowa.test, first announced' in t and 'serves the profiles and Public posts' in t and 'nobody can follow anyone yet' in t and 'nothing is delivered' in t)(txt('.dash-mode')),lambda: (location_of(),txt('#main')[:300]))
     js("scrollTo(0,0)");frames()  # a picture of the whole page starts at its top, or the sticky bar lands in its middle
     picture('federated-dashboard','Federated mode: the dashboard says the origin and what this version serves')
+    check('the mode line says deliveries are not taken while the Federation switch is off (its default)',lambda: 'Taking deliveries is off under Features' in (txt('.dash-mode') or ''),lambda: txt('.dash-mode'))
+
+    # The inbox over HTTP (FWR 1): it takes a POST from another server past the write guard, and checks the
+    # type and the signature itself; any other method is 405 with Allow: POST. A signed delivery cannot be
+    # made here (this server reaches no other server for the key), so those cases are Go's (TestInboxRefusals,
+    # TestDBTwoFlowaInbox).
+    s,h,b=ask('inbox','POST',b'{}',{'Content-Type':'application/activity+json','Origin':'https://evil.example'})
+    check('POST /inbox unsigned, from another site: 401 "not signed", not the write guard\'s 403',s==401 and b'not signed' in b,lambda: (s,b))
+    s,h,b=ask('users/nobody/inbox','POST',b'{}',{'Content-Type':'application/json'})
+    check('POST to a name nobody has, as plain JSON: 415, the same as any name',s==415,lambda: (s,b))
+    s,h,b=ask('inbox')
+    check('GET /inbox: 405 with Allow: POST',s==405 and h.get('Allow')=='POST',lambda: (s,dict(h)))
+
+    # The Federation tab (FMD 1): an admin allows a domain with the keyboard; the policy is read back; the
+    # numbers of the inbox show the refusals above.
+    nav('#/admin/federation')
+    check('the Federation tab: allowed servers only, no domain yet, and the deliveries refused counted',lambda: (lambda t: 'Allowed servers only' in t and 'No domain is allowed yet' in t and 'not signed' in t)(txt('#main') or ''),lambda: txt('#main')[:600])
+    if tab_to('#fed-domain-form [name=domain]','the domain field'):
+        check('the field shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
+        type_text('Social.Example')
+        key(TAB);key(TAB);type_text('friends of the house');key(ENTER)
+        check('Enter saves it: the row is there, allowed, with the reason, and the server has it',lambda: js("const r=document.querySelector('tr[data-domain=\"social.example\"]');return !!r&&r.innerText.includes('Allowed')&&r.innerText.includes('friends of the house')") and any(d['domain']=='social.example' and d['policy']=='allow' for d in get_json(op,'admin/federation').get('domains',[])),lambda: txt('#main')[:600])
+        check('the focus is back in the domain field for the next one',lambda: on('#fed-domain-form [name=domain]'),active)
+    j=get_json(op,'admin/audit?action=domain_policy')
+    check('the change is in the audit log',any(i.get('action')=='domain_policy' for i in j.get('items',[])),lambda: j)
+    for t in ('dark','light'):
+        themed(t)
+        n,f,d=js(A['NAMES'],'#main'),js(A['FIELDS'],'#main'),js(A['IDS'])
+        check(f'the Federation tab, {t}: every control and field has a name, and no id repeats (a11y.py)',n['n']>0 and f['n']>0 and not n['bad'] and not f['bad'] and not d['bad'],lambda: (n,f,d))
+        r=js(C['CHECK'],'#main',False,C['KNOWN'],'')
+        check(f'the Federation tab, {t}: text and the edges of controls stand out (contrast.py)',r['n']>0 and not r['bad'] and not r['unknown'],lambda: (r['n'],r['bad'][:4],r['unknown'][:4]))
+    themed('dark')
+    js("scrollTo(0,0)");frames()
+    picture('federated-admin-federation','Federated mode: the Federation tab, a domain allowed and the deliveries refused')
+    # A group of radio buttons is one stop for Tab, on the chosen one; an arrow key chooses the next.
+    if tab_to('[data-change=fed-policy][value=allowlist]','the chosen policy, "Allowed servers only"'):
+        key(DOWN)
+        check('the arrow key chooses "Every server not suspended", and the server has it',lambda: get_json(op,'admin/federation').get('policy')=='open')
+        check('the focus stays on the choice made',lambda: on('[data-change=fed-policy][value=open]'),active)
+    api(op,'admin/federation/policy',{'policy':'allowlist'},'PUT')
+    api(op,'admin/federation/domains/social.example',None,'DELETE')
 
     # The composer offers the audience once the member shares; a Public post is marked, and is public.
     api(op,'me',{'federates':True},'PUT')
@@ -273,10 +322,15 @@ try:
         except urllib.error.HTTPError as e: return e.code,json.loads(e.read() or b'{}')
     s,j=lookup(op,'@Admin@FLOWA.test')
     check('a handle on this instance is a member of it, answered from the database',s==200 and j.get('result',{}).get('kind')=='local' and j['result'].get('handle')=='admin',lambda: (s,j))
+    # The allowlist a fresh instance has holds outbound too (F8, section 10): a server nobody allowed is not asked.
+    s,j=lookup(op,'bo@nowhere.invalid')
+    check('with the allowlist of a fresh instance, a server nobody allowed is not asked, in fixed words',s==403 and j.get('reason')=='notAllowed' and 'allow' in j.get('error',''),lambda: (s,j))
+    api(op,'admin/federation/domains/nowhere.invalid',{'policy':'allow'},'PUT')  # allowed, the lookup goes on to its resolver
     for q,code,reason in (('@nobody@flowa.test',404,'notFound'),('https://flowa.test/actor',404,'notFound'),('bo',400,'badInput'),('http://social.example/@bo',400,'badInput'),
                           ('bo@10.0.0.1',422,'refused'),('bo@localhost',422,'refused'),('https://social.example:8443/@bo',422,'refused'),('bo@nowhere.invalid',404,'notFound')):
         s,j=lookup(op,q)
         check(f'{q!r}: {code} {reason}, in fixed words',s==code and j.get('reason')==reason and j.get('error') and '10.0.0.1' not in j.get('error',''),lambda: (s,j))
+    api(op,'admin/federation/domains/nowhere.invalid',None,'DELETE')
     s,j=lookup(urllib.request.build_opener(),'@admin@flowa.test')
     check('a visitor cannot look anyone up',s==401,lambda: (s,j))
     s,j=lookup(op,'@admin@flowa.test',{'Origin':'https://evil.example'})
@@ -380,7 +434,7 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==13)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==14)
     else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.

@@ -9,6 +9,7 @@ const adminTabs = () => [
   ['accounts', `Accounts${mod.waiting ? ` (${mod.waiting})` : ''}`, canDo('dashboard.read')],
   ['features', 'Features', canDo('flags.edit')],
   ['instance', 'Instance', canDo('flags.edit')],
+  ['federation', 'Federation', canDo('federation.read')],
   ['audit', 'Audit log', canDo('audit.read')],
   ['maps', 'Catalogs', flags.catalogEditor && canDo('catalog.edit')],
 ].filter(t => t[2]);
@@ -113,12 +114,12 @@ function pageAdmin(tab) {
   if (!tabs.length) return notFound();
   const cur = tabs.find(t => t[0] === tab) ? tab : tabs[0][0];
   const nav = `<div class="seg admin-tabs" role="group" aria-label="Admin sections">${tabs.map(([k, n]) => `<a class="${k === cur ? 'on' : ''}" href="#/admin/${k}" ${k === cur ? 'aria-current="page"' : ''}>${n}</a>`).join('')}</div>`;
-  const body = { dashboard: () => adminDashboard(), accounts: adminAccounts, features: adminFeatures, instance: adminInstance, audit: adminAudit, maps: () => adminMaps() }[cur]();
+  const body = { dashboard: () => adminDashboard(), accounts: adminAccounts, features: adminFeatures, instance: adminInstance, federation: adminFederation, audit: adminAudit, maps: () => adminMaps() }[cur]();
   return `<div class="page-h"><div class="grow"><h1>Admin</h1><p>Features, accounts and records for everyone on this Flowa.</p></div></div>${nav}${body}`;
 }
 function adminFeatures() {
   return `<div class="card"><div class="card-h"><h2 class="grow">Features</h2><span class="sub">Apply to every member, straight away</span></div>
-    <div class="stack" style="gap:8px">${FLAGS.map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
+    <div class="stack" style="gap:8px">${[...FLAGS, ...FED_FLAGS.filter(([k]) => k in flags)].map(([k, n, d]) => `<label class="check"><input type="checkbox" data-change="flag" data-k="${k}" ${flags[k] ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${d}</span></span></label>`).join('')}</div></div>`;
 }
 // The instance information: a description, a contact and the rules, which people see at sign-up and on the
 // about page (docs/federation.md, section 10). The whole document is saved at once, against the version it
@@ -307,7 +308,7 @@ function adminAccounts() {
       <span class="sub tiny">${list.length} of ${ui.users.length}</span></div>
     <div class="table-wrap"><table class="table"><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Last active</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">No accounts match.</td></tr>'}</tbody></table></div></div>`;
 }
-const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft', instance: 'Changed the instance information', approve_user: 'Approved the request to join of', decline_user: 'Declined a request to join' };
+const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft', instance: 'Changed the instance information', approve_user: 'Approved the request to join of', decline_user: 'Declined a request to join', domain_policy: 'Set a domain policy', domain_policy_remove: 'Removed a domain policy', federation_policy: 'Chose whom to federate with' };
 async function loadAudit(more) {
   const f = mod.filter, before = more && mod.audit?.length ? mod.audit[mod.audit.length - 1].id : 0;
   const r = await api(`admin/audit?actor=${encodeURIComponent(f.actor)}&action=${encodeURIComponent(f.action)}&before=${before}`);
@@ -324,6 +325,9 @@ function adminAudit() {
     if (e.action === 'flags') return Object.entries(d).map(([k, v]) => `${esc(k)} ${v ? 'on' : 'off'}`).join(', ');
     if (e.action === 'instance') return `${(d.parts || []).map(esc).join(', ')}; ${d.rules} ${d.rules === 1 ? 'rule' : 'rules'}${d.registration ? `; joining ${d.registration === 'approval' ? 'by approval' : 'open'}` : ''}`;
     if (e.action === 'decline_user') return `@${esc(d.username)}`;
+    if (e.action === 'domain_policy') return `${esc(d.domain)}: ${esc(DOMAIN_POLICY[d.policy] || d.policy)}${d.was ? `, was ${esc(DOMAIN_POLICY[d.was] || d.was)}` : ''}`;
+    if (e.action === 'domain_policy_remove') return `${esc(d.domain)}, was ${esc(DOMAIN_POLICY[d.was] || d.was)}`;
+    if (e.action === 'federation_policy') return d.policy === 'open' ? 'every server not suspended' : 'allowed servers only';
     if (e.action === 'resolve') return `${esc(d.outcome)}, ${d.reports} ${d.reports === 1 ? 'report' : 'reports'}`;
     if (d.until) return `until ${esc(fmtWhen(d.until))}`;
     if (d.key) return esc(d.key);
@@ -337,6 +341,57 @@ function adminAudit() {
     <div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Detail</th><th>Reason</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">Nothing recorded yet.</td></tr>'}</tbody></table></div>
     ${mod.auditMore ? '<button class="btn sm" data-act="audit-more" style="margin-top:10px">Load more</button>' : ''}</div>`;
 }
+// The federation page (docs/federation.md, section 10; FMD 1): whom this Flowa takes deliveries from. With the
+// allowlist (the default while federated mode is experimental) only the domains allowed here; open, every
+// server not suspended. A suspended domain is refused both ways. Moderators read it; admins change it, and
+// every change is in the audit log. The list is read when the tab opens and after each change.
+const fedAdm = { data: null, busy: false };
+const DOMAIN_POLICY = { allow: 'Allowed', limit: 'Limited', suspend: 'Suspended' };
+window.addEventListener('hashchange', () => { fedAdm.data = null; });
+async function loadFedAdmin() {
+  fedAdm.busy = true;
+  const r = await api('admin/federation');
+  fedAdm.busy = false;
+  if (!r.ok) { toast(r.error); return; }
+  fedAdm.data = r.data; render();
+}
+function adminFederation() {
+  if (!fedAdm.data) { if (!fedAdm.busy) loadFedAdmin(); return '<div class="card"><div class="empty small">Loading…</div></div>'; }
+  const D = fedAdm.data, manage = canDo('federation.manage'), open = D.policy === 'open';
+  const rows = D.domains.map(x => `<tr data-domain="${esc(x.domain)}"><td><b style="font-weight:560">${esc(x.domain)}</b><br><span class="tiny">and its subdomains</span></td>
+      <td><span class="chip ${x.policy === 'suspend' ? 'warn' : 'ok'}">${esc(DOMAIN_POLICY[x.policy] || x.policy)}</span></td>
+      <td class="small plain-text">${x.note ? esc(x.note) : '<span class="tiny">No note</span>'}</td>
+      <td class="small" style="white-space:nowrap">${esc(fmtWhen(x.createdAt))}${x.createdBy ? `<br><span class="tiny">by @${esc(x.createdBy)}</span>` : ''}</td>
+      <td>${manage ? `<button class="btn sm" data-act="fed-domain-rm" data-domain="${esc(x.domain)}" aria-label="Remove the policy for ${esc(x.domain)}">Remove</button>` : ''}</td></tr>`).join('');
+  return `<section class="card fed-policy" aria-labelledby="fed-pol-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-pol-h">Whom this Flowa federates with</h2><span class="sub">Experimental</span></div>
+      ${manage ? `<div class="stack" style="gap:6px" role="radiogroup" aria-labelledby="fed-pol-h">${[['allowlist', 'Allowed servers only', 'Flowa takes deliveries only from the domains allowed below, and connects only to them: no key, profile or search by handle reaches any other server. A new instance starts here, so nothing comes in or goes out until a domain is allowed.'], ['open', 'Every server not suspended', 'Flowa takes deliveries from, and connects to, any server except the domains suspended below.']].map(([k, n, h]) => `<label class="check"><input type="radio" name="fed-policy" data-change="fed-policy" value="${k}" ${D.policy === k ? 'checked' : ''}><span><b style="font-weight:560">${n}</b><br><span class="tiny">${h}</span></span></label>`).join('')}</div>`
+        : `<p class="small">${open ? 'Every server not suspended below.' : 'Only the domains allowed below.'} An admin changes this.</p>`}
+      <p class="tiny" style="margin-top:8px">Neither choice stops a server that is not listed from reading the profiles and Public posts of the members who share them: anyone can read those pages, as a person in a browser can. A suspended domain is refused both ways: nothing it sends is taken, and Flowa fetches nothing from it.</p></section>
+${fedInboxHTML(D.inbox)}
+    <section class="card" aria-labelledby="fed-dom-h"><div class="card-h"><h2 class="grow" id="fed-dom-h">Domains</h2><span class="sub">${D.domains.length} of at most ${D.max.toLocaleString()}</span></div>
+      ${manage ? `<form class="stack fed-add" id="fed-domain-form" style="gap:8px;margin-bottom:12px">
+        <div class="row wrap" style="gap:8px;align-items:flex-end"><label class="field grow" style="min-width:180px">Domain<input type="text" name="domain" placeholder="social.example" autocapitalize="none" spellcheck="false" required></label>
+          <label class="field" style="width:auto">Policy<select name="policy"><option value="allow">${open ? 'Allow (listed only; open lets it in anyway)' : 'Allow'}</option><option value="suspend">Suspend</option></select></label></div>
+        <div class="stack" style="gap:4px"><label class="field">Reason, seen by staff only (optional)<input type="text" name="note" ${countAttrs('fed-note', '', D.noteMax)}></label>${countHTML('fed-note', '', D.noteMax)}</div>
+        <p class="tiny">A domain covers its subdomains. A name in another script is written in its xn-- form. Suspending a domain that is allowed replaces the allow.</p>
+        <p class="form-err" id="fed-err" role="alert"></p>
+        <div><button class="btn primary" type="submit">Save the policy</button></div></form>` : ''}
+      <div class="table-wrap"><table class="table"><thead><tr><th>Domain</th><th>Policy</th><th>Reason</th><th>Since</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty small">${open ? 'No domain is suspended.' : 'No domain is allowed yet, so no delivery is taken.'}</td></tr>`}</tbody></table></div></section>`;
+}
+// The inbox's numbers (docs/federation.md 14.2): what waits, and how deliveries were answered over the last day
+// (or since the start, when that is sooner), each list as a small table with its counts.
+function fedInboxHTML(n) {
+  if (!n) return '';
+  const age = s => s < 120 ? `${s} seconds` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
+  const since = n.since ? `since the last start, ${esc(fmtWhen(n.since))}` : 'in the last 24 hours';
+  const list = (o, empty) => { const e = Object.entries(o || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])); return e.length ? `<ul class="fed-counts">${e.map(([k, v]) => `<li><span>${esc(k)}</span> <span class="num">${v.toLocaleString()}</span></li>`).join('')}</ul>` : `<p class="tiny">${empty}</p>`; };
+  return `<section class="card fed-inbox" aria-labelledby="fed-in-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-in-h">Deliveries</h2><span class="sub">${since}</span></div>
+    ${n.paused ? `<p class="notice warn">Taking deliveries is off under Features, so other servers are told to try again later${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
+    <p class="small"><span class="num">${n.queued.toLocaleString()}</span> waiting to be handled, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}. <span class="num">${n.failed.toLocaleString()}</span> given up in the last 7 days.</p>
+    <p class="tiny fed-since">The counts below are kept in memory since the last start, ${esc(fmtWhen(n.started))}: a restart begins them again, so a low count just after one is not a quiet day.</p>
+    <div class="grid g2 fed-lists" style="margin-top:8px"><div><h3 class="small">Taken</h3>${list(n.answers, 'None yet.')}<h3 class="small">Handled, by type</h3>${list(n.handled, 'None yet.')}</div>
+      <div><h3 class="small">Dropped, by type (not acted on in this version)</h3>${list(n.dropped, 'None yet.')}<h3 class="small">Refused, by reason</h3>${list(n.refused, 'None yet.')}</div></div></section>`;
+}
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).
 const MODES = { local: 'a community that lives on this server only, which is what FLOWA_MODE means when it is not set', federated: 'a community on this server whose members can let other servers find them' };
@@ -344,7 +399,10 @@ const MODES = { local: 'a community that lives on this server only, which is wha
 // what this version of federation does (built, the sentence the start log writes), or why federation is
 // refused (a moved origin, a key secret that does not open the keys).
 const fedLine = f => !f ? '' : f.refused ? ` Federation is refused: ${f.refused.replace(/^federation refused: /, '')}.`
-  : ` Federating as ${f.origin}, ${f.announced ? `first announced ${fmtWhen(f.announced)}, so this origin cannot change` : 'not announced yet, so the origin can still change until an answer first names a member'}. ${f.built ? f.built[0].toUpperCase() + f.built.slice(1) : ''}.`;
+  : ` Federating as ${f.origin}, ${f.announced ? `first announced ${fmtWhen(f.announced)}, so this origin cannot change` : 'not announced yet, so the origin can still change until an answer first names a member'}. ${f.built ? f.built[0].toUpperCase() + f.built.slice(1) : ''}.${inboxLine(f.inbox)}`;
+// The inbox's part of the mode line: paused, or what waits.
+const inboxLine = n => !n ? '' : n.paused ? ' Taking deliveries is off under Features.'
+  : ` Deliveries waiting: ${n.queued}${n.queued ? `, the oldest for ${Math.round(n.oldestSeconds / 60)} minutes` : ''}; given up in 7 days: ${n.failed}; the counts on the Federation tab are since the last start, ${fmtWhen(n.started)}.`;
 let adminDashboard = () => {
   if (!mod.dash) { loadDash(); return '<div class="card"><div class="empty small">Loading…</div></div>'; }
   const t = mod.dash.totals, W = mod.dash.weeks;
@@ -439,6 +497,14 @@ document.addEventListener('click', async e => {
       await loadReqs(); if (yes) await loadUsers();
       break;
     }
+    case 'fed-domain-rm': {
+      if (!confirm(`Remove the policy for ${d.domain}? It is then treated as any server that is not listed.`)) break;
+      const r = await api('admin/federation/domains/' + encodeURIComponent(d.domain), 'DELETE');
+      if (!r.ok) { toast(r.error); break; }
+      fedAdm.data = r.data; render(); say(`The policy for ${d.domain} was removed.`);
+      $('#fed-domain-form [name=domain]')?.focus();
+      break;
+    }
     case 'user-del':
       if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.`)) {
         const r = await api('admin/users/' + d.id, 'DELETE');
@@ -480,6 +546,11 @@ document.addEventListener('change', async e => {
     render(); focusRole(id);
   } else if (t.name === 'reason' && t.form?.id === 'report-form') {
     t.form.querySelector('[type=submit]').disabled = false;
+  } else if (d.change === 'fed-policy') {
+    const r = await api('admin/federation/policy', 'PUT', { policy: t.value });
+    if (!r.ok) { toast(r.error); fedAdm.data = null; render(); return; }
+    fedAdm.data = r.data; render(); $(`[data-change="fed-policy"][value="${t.value}"]`)?.focus();
+    say(t.value === 'open' ? 'Deliveries are now taken from every server not suspended.' : 'Deliveries are now taken only from allowed domains.');
   } else if (d.change === 'user-filter') {
     ui.userFilter = { ...(ui.userFilter || { q: '', role: '', status: '' }), [d.k]: t.value }; render();
   }
@@ -515,6 +586,16 @@ document.addEventListener('submit', async e => {
     closeModal(); toast('Done. They have been told.'); refreshAfterMod();
   } else if (f.id === 'inst-form') {
     e.preventDefault(); instSave(false);
+  } else if (f.id === 'fed-domain-form') {
+    e.preventDefault();
+    const domain = f.domain.value.trim(), policy = f.policy.value;
+    const r = await api('admin/federation/domains/' + encodeURIComponent(domain), 'PUT', { policy, note: f.note.value });
+    if (!r.ok) { const el = f.elements[r.data?.field] || f.domain; showErr('fed-err', r.error, [el]); el.focus(); return; }
+    // The page is not drawn again under a text box that has the cursor (render), so the box lets go first; the
+    // new form is empty, and the keyboard goes back to its first field for the next domain.
+    document.activeElement?.blur();
+    fedAdm.data = r.data; render(); toast(`${domain.toLowerCase()}: ${DOMAIN_POLICY[policy].toLowerCase()}.`);
+    $('#fed-domain-form [name=domain]')?.focus();
   } else if (f.id === 'audit-form') {
     e.preventDefault();
     mod.filter = { actor: f.actor.value.trim(), action: f.action.value }; mod.audit = null; render();

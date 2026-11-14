@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"container/heap"
+	"container/list"
 	"context"
 	"crypto"
 	"crypto/aes"
@@ -232,11 +233,12 @@ const (
 )
 
 // modesBuilt are the modes this version can run. A mode that is planned and not built stops the
-// start, as an unknown word does. All three are built. Federation itself is built only as far as
-// reading: a federated instance (and a single-profile one with FLOWA_FEDERATE=on) answers WebFinger and
-// NodeInfo and serves the actors, profiles and Public posts of the members who opted in, and has no
-// inbox and delivers nothing yet. The start says so in the log (fedBuiltLog), and so do the admin dashboard and the
-// README, so that an operator is not told more than this version does.
+// start, as an unknown word does. All three are built. Federation itself is built as far as reading and
+// taking deliveries: a federated instance (and a single-profile one with FLOWA_FEDERATE=on) answers WebFinger
+// and NodeInfo, serves the actors, profiles and Public posts of the members who opted in, and takes deliveries
+// at its inboxes, acting only on an account deleting itself or changing its profile; it delivers nothing yet.
+// The start says so in the log (fedBuiltLog), and so do the admin dashboard and the README, so that an
+// operator is not told more than this version does.
 var modesBuilt = map[instanceMode]bool{modeLocal: true, modeFederated: true, modeSingle: true}
 
 // parseMode reads FLOWA_MODE. Unset or blank is local, so a deployment that sets nothing runs as it
@@ -522,6 +524,10 @@ type limits struct {
 	public                                      *limiter // reads of actor documents, public pages and their pictures, per address, in a mode that federates
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 	lookups                                     *limiter // searches by handle of people on other servers, per member, in a mode that federates
+	domains                                     *limiter // changes to domain policies, per admin, in a mode that federates
+	inbox                                       *limiter // verified deliveries per sender group (the last two labels of the key id's host), in a mode that federates
+	inboxHost                                   *limiter // verified deliveries per host of the key id, in a mode that federates
+	inboxAddr                                   *limiter // deliveries per address, before a signature is read, in a mode that federates
 }
 
 func newLimits() limits {
@@ -544,6 +550,14 @@ func newLimits() limits {
 		// A search by handle sends up to lookupFetches requests to other servers; 30 an hour is a person
 		// looking for the people they know, and at most 210 requests an hour from one member.
 		lookups: newLimiter(30, time.Hour),
+		// An admin pasting a list of servers to allow or suspend, one at a time; more than that in an hour
+		// is a script, and a stolen session is held to it too.
+		domains: newLimiter(300, time.Hour),
+		// 7.5: 300 deliveries in 5 minutes from one server; and per address a bound a server's own traffic stays
+		// under, so a flood of requests that are not even signed is turned away for the cost of a counter.
+		inbox:     newLimiter(inboxGroupRate, inboxGroupWindow),
+		inboxHost: newLimiter(inboxHostRate, inboxGroupWindow),
+		inboxAddr: newLimiter(inboxAddrRate, time.Hour),
 	}
 }
 
@@ -984,14 +998,36 @@ var rolePerms = map[string][]string{
 		permCatalogEdit, permCatalogPublish, permFlagsEdit, permUserRole, permUserManage},
 }
 
-func can(u *user, perm string) bool { return u != nil && slices.Contains(rolePerms[u.Role], perm) }
+// fedPerms are the permissions of a mode that federates (docs/federation.md, section 10): reading the
+// federation page (the domain policies and the inbox's numbers), and changing the policies. They are a table
+// of their own so that an instance that does not federate lists exactly the permissions it always did
+// (permsOf); can asks both, which is harmless outside such a mode, since only its routes ask for these.
+const (
+	permFedRead   = "federation.read"   // the federation page: domain policies, the inbox's numbers
+	permFedManage = "federation.manage" // allow and suspend domains, and choose allowlist or open
+)
 
-// permsOf lists what a user may do, for the interface to show only what the server allows.
-func permsOf(u *user) []string {
+var fedPerms = map[string][]string{
+	"user":      {},
+	"moderator": {permFedRead},
+	"admin":     {permFedRead, permFedManage},
+}
+
+func can(u *user, perm string) bool {
+	return u != nil && (slices.Contains(rolePerms[u.Role], perm) || slices.Contains(fedPerms[u.Role], perm))
+}
+
+// permsOf lists what a user may do, for the interface to show only what the server allows: the permissions of
+// a mode that federates only in such a mode.
+func (a *app) permsOf(u *user) []string {
 	if u == nil {
 		return []string{}
 	}
-	return append([]string{}, rolePerms[u.Role]...)
+	out := append([]string{}, rolePerms[u.Role]...)
+	if a.fed != nil {
+		out = append(out, fedPerms[u.Role]...)
+	}
+	return out
 }
 
 // outranks reports whether someone with role a may act on someone with role b.
@@ -1011,10 +1047,30 @@ func below(r string) []string {
 
 /* ---------- flags ---------- */
 
+// fedFlagDefaults are the flags of a mode that federates, and their defaults: a list of their own, so that an
+// instance that does not federate lists exactly the flags it always did (knownFlag), and the page keeps them in a
+// list of its own too (FED_FLAGS in web/app.js; test/flags.js compares each list with its counterpart). The one
+// flag is fedFlag (docs/federation.md, F1 and 14.1): the admin's pause switch, off by default, so an instance that
+// upgrades takes no delivery until an admin turns it on. While off, the inbox answers 503 with Retry-After
+// (senders try again later) and its workers handle nothing.
+var fedFlagDefaults = map[string]bool{"federation": false}
+
+const fedFlag = "federation"
+
+// knownFlag says whether a name is a flag of this instance.
+func (a *app) knownFlag(name string) bool {
+	_, ok := flagDefaults[name]
+	_, fed := fedFlagDefaults[name]
+	return ok || fed && a.fed != nil
+}
+
 func (a *app) flags() (map[string]bool, error) {
 	out := map[string]bool{}
 	for k, v := range flagDefaults {
 		out[k] = v
+	}
+	if a.fed != nil {
+		maps.Copy(out, fedFlagDefaults)
 	}
 	rows, err := a.db.Query(`SELECT name, enabled FROM flags`)
 	if err != nil {
@@ -1027,7 +1083,7 @@ func (a *app) flags() (map[string]bool, error) {
 		if err := rows.Scan(&name, &on); err != nil {
 			return nil, err
 		}
-		if _, ok := flagDefaults[name]; ok {
+		if a.knownFlag(name) {
 			out[name] = on
 		}
 	}
@@ -1056,7 +1112,7 @@ func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	for k := range in.Flags {
-		if _, ok := flagDefaults[k]; !ok {
+		if !a.knownFlag(k) {
 			fail(w, http.StatusBadRequest, "Unknown flag: "+k)
 			return
 		}
@@ -1072,6 +1128,10 @@ func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, u *user) {
 	if err := a.audit(a.db, u.ID, "flags", "", 0, 0, "", changed); err != nil {
 		a.serverError(w, err)
 		return
+	}
+	// The pause lifted: rows that waited are handled now, not at the workers' next look.
+	if on := in.Flags[fedFlag]; on && a.fed != nil && a.fed.inbox != nil && a.fed.refusal() == "" {
+		a.fed.inbox.kick()
 	}
 	f, err := a.flags()
 	if err != nil {
@@ -1517,7 +1577,7 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out := map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": permsOf(u)}
+	out := map[string]any{"user": u, "flags": f, "props": knownProps, "achievements": ach, "perms": a.permsOf(u)}
 	// What an admin has said about this Flowa, only once something is saved, so an instance that has
 	// saved nothing answers as it always has. about says whether this reader may open the about page (a
 	// visitor only once there is a description); a visitor is also given the rules, for the sign-up form.
@@ -4475,8 +4535,12 @@ type fetchReq struct {
 	// refused are the hosts the domain policy refuses, each with its subdomains. Until FMD keeps
 	// domain policies the caller passes them; the tests fill them.
 	refused []string
-	self    bool   // the instance's own origin may be asked (nothing does yet); refused otherwise
-	sign    signer // required for a delivery, optional for a document (signed fetch)
+	// admits is the domain policy's verdict on a host (federation.admits): in allowlist mode only the domains
+	// an admin allowed, in open mode every domain not suspended (F8, section 10, 7.6). It is asked of the first
+	// URL and of every redirect, before any connection; nil admits every host.
+	admits func(host string) bool
+	self   bool   // the instance's own origin may be asked (nothing does yet); refused otherwise
+	sign   signer // required for a delivery, optional for a document (signed fetch)
 	// Link cards only, as fetcher.get has always been given them: the hosts allowed and the cap.
 	allow []string
 	limit int64
@@ -4740,6 +4804,9 @@ func (f *fetcher) check(rule *fetchRule, r *fetchReq, refused []string, u *url.U
 	}
 	if hostAllowed(host, refused) {
 		return "a refused host"
+	}
+	if r.admits != nil && !r.admits(host) {
+		return "a host the domain policy does not let in"
 	}
 	if f.origin.host != "" && host == f.origin.host && !r.self {
 		return "this instance's own origin"
@@ -5701,7 +5768,7 @@ func gateOpens(pairs, recent int, now time.Time) string {
 
 // handleDashboard returns the numbers on the admin dashboard: totals, active users, and per week
 // for the last 12 weeks (Monday to Sunday) the practice sessions logged, posts, comments and reports.
-func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
+func (a *app) handleDashboard(w http.ResponseWriter, r *http.Request, _ *user) {
 	out := map[string]any{"version": a.version, "mode": string(a.mode)}
 	// In a mode that federates, the origin and what this version of federation does, or why it is
 	// refused: the dashboard says it in its mode line, as the start log does.
@@ -5712,7 +5779,15 @@ func (a *app) handleDashboard(w http.ResponseWriter, _ *http.Request, _ *user) {
 			a.serverError(w, err)
 			return
 		}
-		out["federation"] = map[string]string{"origin": a.fed.origin.url, "refused": a.fed.refusal(), "built": fedBuilt, "announced": announced}
+		fd := map[string]any{"origin": a.fed.origin.url, "refused": a.fed.refusal(), "built": fedBuilt, "announced": announced}
+		// The inbox's line (14.2): whether it is paused, what waits, and how old the oldest is.
+		if n, err := a.fedNumbers(r.Context()); err != nil {
+			a.serverError(w, err)
+			return
+		} else if n != nil {
+			fd["inbox"] = map[string]any{"paused": n.Paused, "queued": n.Queued, "oldestSeconds": n.Oldest, "failed": n.Failed, "started": n.Started}
+		}
+		out["federation"] = fd
 	}
 	var users, mods, admins, active7, active30, open int
 	err := a.db.QueryRow(dashTotalsSQL).Scan(&users, &mods, &admins)
@@ -5807,8 +5882,8 @@ func (a *app) audit(x execer, actor int64, action, kind string, targetID, target
 
 The foundation of federation (docs/federation.md, F7, 4.3, 5.1 and 5.7). All of it runs only in a mode
 that federates: federated mode, or single mode with FLOWA_FEDERATE=on (modeFederates). What talks to
-another server is built as far as reading: discovery (WebFinger and NodeInfo) and the actor documents
-and public pages, further down; there is no inbox and nothing is delivered yet. */
+another server is built as far as reading and taking deliveries: discovery (WebFinger and NodeInfo), the
+actor documents and public pages, and the inbox, further down; nothing is delivered yet. */
 
 // fedMemberBuilt is what a member is told in Settings about what sharing does in this version, as the
 // server sends it (fedView), and fedSwitch the switch's label, the opt-in of F2 in the note's words: other
@@ -6167,7 +6242,8 @@ type federation struct {
 	origin publicOrigin
 	secret keySecret
 	gen    func() (*rsa.PrivateKey, error) // makes a key pair; a test counts or holds it
-	// handled, when set (by a test), hears of each request the worker has finished with.
+	// handled, when set (by a test, under mu once the worker may run), hears of each request the worker has
+	// finished with.
 	handled func(o keyOwner, made bool, err error)
 
 	mu      sync.Mutex
@@ -6187,6 +6263,16 @@ type federation struct {
 	// lookupNow and lookupPause are the clock of lookupFloor; a test sets its own, so nothing waits in a test.
 	lookupNow   func() time.Time
 	lookupPause func(ctx context.Context, d time.Duration)
+
+	// policy is the domain policy as last read (loadPolicy): the allowlist or open, and the rows by domain.
+	policy atomic.Pointer[fedPolicy]
+	// conns are the turns at the database federation's own work takes, one per statement or transaction and
+	// never across a fetch (dbTurn): at most fedConnsMax of the pool's 8 connections (section 12, 8.2).
+	conns chan struct{}
+	// verifier checks the signatures of deliveries (inboxKeyFor gives it the keys), and inbox is the queue of
+	// what was accepted; both are set by startFederation.
+	verifier *sigVerifier
+	inbox    *inboxQueue
 
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
@@ -6211,7 +6297,8 @@ var generateKey = func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.
 func newFederation(db *sql.DB, s fedSettings) *federation {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &federation{db: db, origin: s.origin, secret: s.secret, cache: map[keyOwner]cachedKey{}, gen: generateKey,
-		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupBy: map[int64]bool{}, lookupNow: time.Now, lookupPause: lookupWait, ctx: ctx, cancel: cancel}
+		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupBy: map[int64]bool{}, lookupNow: time.Now, lookupPause: lookupWait,
+		conns: make(chan struct{}, fedConnsMax), ctx: ctx, cancel: cancel}
 }
 
 // lookupWait waits for d, or until ctx ends: lookupFloor's pause.
@@ -6251,8 +6338,14 @@ func (f *federation) keyIDOf(ctx context.Context, o keyOwner) (string, error) {
 	if o == instanceActor {
 		return instanceKeyID, nil
 	}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", err
+	}
 	var name string
-	if err := f.db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1 AND domain = ''`, int64(o)).Scan(&name); err != nil {
+	err = f.db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1 AND domain = ''`, int64(o)).Scan(&name)
+	done()
+	if err != nil {
 		return "", err
 	}
 	return "/users/" + name + "#main-key", nil
@@ -6298,7 +6391,13 @@ func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 		return false, errRefused
 	}
 	var have bool
-	if err := f.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint)`, o.arg()).Scan(&have); err != nil {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return false, err
+	}
+	err = f.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint)`, o.arg()).Scan(&have)
+	done()
+	if err != nil {
 		return false, err
 	}
 	if have {
@@ -6315,6 +6414,11 @@ func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 	if f.refusal() != "" { // refused while the key was being made
 		return false, errRefused
 	}
+	// One of federation's turns for the transaction, given back when it is over (dbTurn).
+	if done, err = f.dbTurn(ctx); err != nil {
+		return false, err
+	}
+	defer done()
 	tx, err := f.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -6360,6 +6464,11 @@ func (f *federation) ensureOrigin(ctx context.Context) error {
 	if f.recorded.Load() {
 		return nil
 	}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
 	tx, err := f.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -6392,7 +6501,12 @@ func (f *federation) privateKey(ctx context.Context, o keyOwner) (*rsa.PrivateKe
 		return c.key, c.id, nil
 	}
 	var keyID, sealed string
-	err := f.db.QueryRowContext(ctx, `SELECT key_id, private_sealed FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint`, o.arg()).Scan(&keyID, &sealed)
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	err = f.db.QueryRowContext(ctx, `SELECT key_id, private_sealed FROM ap_keys WHERE user_id IS NOT DISTINCT FROM $1::bigint`, o.arg()).Scan(&keyID, &sealed)
+	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", errNoKey
 	}
@@ -6464,8 +6578,11 @@ func (f *federation) startWorker() {
 					log.Printf("keys: made the key of %s in %d ms", o, time.Since(began).Milliseconds())
 					f.dropActor(o) // a document is not kept without a key, but one may be on its way
 				}
-				if f.handled != nil {
-					f.handled(o, made, err)
+				f.mu.Lock()
+				handled := f.handled
+				f.mu.Unlock()
+				if handled != nil {
+					handled(o, made, err)
 				}
 			}
 		}
@@ -6553,7 +6670,17 @@ func recordOrigin(ctx context.Context, tx *sql.Tx, o publicOrigin) error {
 func (a *app) startFederation(s fedSettings) error {
 	f := newFederation(a.db, s)
 	f.actors = newActorCache(f, a.fetch)
+	f.actors.refused, f.actors.admits = f.refusedByPolicy, f.admits
 	a.fed = f
+	if err := f.loadPolicy(context.Background()); err != nil {
+		return err
+	}
+	v, err := newSigVerifier(s.origin.url, f.inboxKeyFor)
+	if err != nil {
+		return err
+	}
+	f.verifier = v
+	f.inbox = newInboxQueue(f, func() bool { return !a.flagsCached()["federation"] })
 	was, err := recordedOrigin(a.db)
 	if err != nil {
 		return err
@@ -6605,6 +6732,17 @@ func (a *app) startFederation(s fedSettings) error {
 		}
 		if err := rows.Err(); err != nil {
 			return err
+		}
+	}
+	// Rows the inbox took before a stop, or that an older build left after a rollback, are handled now: the
+	// workers start when a row waits, and otherwise with the first row the inbox stores (8.6, 8.7).
+	if f.refusal() == "" {
+		var waiting bool
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_inbox WHERE state = 'queued')`).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting {
+			f.inbox.kick()
 		}
 	}
 	return nil
@@ -6963,23 +7101,25 @@ func discoveryWrite(w http.ResponseWriter, ctype string, v any) {
 // counted against their allowance first, as a GET is. It passes everything else on, and is not in the
 // chain at all in a mode that does not federate (routes).
 //
-// The inboxes the actor documents name (/users/{name}/inbox and /actor/inbox) are not built yet (FWR 1),
-// and answer every method with 405 and an empty Allow, counted against the public allowance: RFC 9110
-// 15.5.6 makes 405 the answer for a method the target does not support, and 10.2.1 an empty Allow the way
-// a resource temporarily disabled by configuration says it takes none. A 4xx tells a sender not to keep
-// trying, so a Follow pressed on Mastodon now is not retried for days and stays requested there. 404
-// would say the address does not exist, which the actor contradicts, and 501 is for a method the server
-// supports nowhere (15.6.2), while it takes POST elsewhere.
-func (a *app) fedMethods(next http.Handler) http.Handler {
+// The inboxes (/inbox, /actor/inbox and /users/{name}/inbox for any name) take a POST from other servers, which
+// carries application/activity+json or application/ld+json and no session: fedMethods sends it to the mux past
+// guard, the one exemption from it, and handleInbox checks the content type and the signature itself (FWR 1).
+// Any other method there is 405 with Allow: POST (RFC 9110 15.5.6), counted against the public allowance as a
+// read of the public addresses is: there is no client-to-server side to show an inbox to (6.2).
+func (a *app) fedMethods(next http.Handler, mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if inboxPath(r.URL.Path) {
+			if r.Method == http.MethodPost {
+				mux.ServeHTTP(w, r)
+				return
+			}
 			if !a.publicAllowed(w, r) {
 				return
 			}
 			h := w.Header()
-			h.Set("Allow", "")
+			h.Set("Allow", "POST")
 			h.Set("Cache-Control", "no-store")
-			http.Error(w, "This server does not take deliveries yet.", http.StatusMethodNotAllowed)
+			http.Error(w, "This address takes deliveries from other servers, by POST only.", http.StatusMethodNotAllowed)
 			return
 		}
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
@@ -7310,11 +7450,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts; it has no inbox, so nobody can follow anyone yet, and nothing is delivered"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) but acts only on an account deleting itself or changing its profile: follows, posts, replies and likes sent to it are counted and dropped, so nobody can follow anyone yet, and nothing is delivered"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -7553,6 +7693,7 @@ type outActor struct {
 	Followers                 string        `json:"followers,omitempty"`
 	Following                 string        `json:"following,omitempty"`
 	Featured                  string        `json:"featured,omitempty"`
+	Endpoints                 *outEndpoints `json:"endpoints,omitempty"`
 	ManuallyApprovesFollowers *bool         `json:"manuallyApprovesFollowers,omitempty"`
 	Discoverable              *bool         `json:"discoverable,omitempty"`
 	Indexable                 *bool         `json:"indexable,omitempty"`
@@ -7560,6 +7701,12 @@ type outActor struct {
 	Icon                      *outImage     `json:"icon,omitempty"`
 	Attachment                []outProperty `json:"attachment,omitempty"`
 	PublicKey                 outKey        `json:"publicKey"`
+}
+
+// outEndpoints names the shared inbox (ActivityPub 4.1 and 7.1.3), which every member's actor names since the
+// inbox was built (FWR 1): another server may then send one delivery for all its followers here.
+type outEndpoints struct {
+	SharedInbox string `json:"sharedInbox"`
 }
 
 type outImage struct {
@@ -7923,10 +8070,10 @@ func (a *app) publicAllowed(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// inboxPath says whether a path is an inbox an actor document names: /actor/inbox, or /users/{name}/inbox
-// for any name, so the answer says nothing of who exists.
+// inboxPath says whether a path is an inbox: the shared /inbox, /actor/inbox, or /users/{name}/inbox for any
+// name, so the answer says nothing of who exists.
 func inboxPath(p string) bool {
-	if p == "/actor/inbox" {
+	if p == "/actor/inbox" || p == "/inbox" {
 		return true
 	}
 	name, ok := strings.CutSuffix(strings.TrimPrefix(p, "/users/"), "/inbox")
@@ -8183,6 +8330,7 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 	no := false
 	doc := outActor{Context: actorContext, ID: id, Type: "Person", PreferredUsername: name, Name: display, Summary: summaryHTML(bio),
 		URL: id, Inbox: id + "/inbox", Outbox: id + "/outbox", Followers: id + "/followers", Following: id + "/following", Featured: id + "/featured",
+		Endpoints:                 &outEndpoints{SharedInbox: a.fed.origin.url + "/inbox"},
 		ManuallyApprovesFollowers: &no, Discoverable: &no, Indexable: &no, Published: created.UTC().Format(time.RFC3339),
 		PublicKey: outKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}}
 	if ext, mt, _, _, ok := pictureOf(head); ok && tag != "" {
@@ -13463,6 +13611,7 @@ const (
 	actorCanceled                            // the caller gave up
 	actorStale                               // the actor could not be fetched again, so its key is not used to verify
 	actorSuspended                           // the actor says its server suspended it, so its key is not used to verify
+	actorHostLimit                           // the inbox's allowance of key fetches for the key's sender group is used up (7.4)
 	actorRefused                             // the fetcher refused the address: a refused host, a private address, a port
 	actorUnreachable                         // the host could not be reached, or answered another status
 	actorTimeout                             // the fetch took longer than its time
@@ -13487,6 +13636,7 @@ var actorReasons = [...]string{
 	actorCanceled:     "canceled",
 	actorStale:        "it could not be fetched again, so its key is not used",
 	actorSuspended:    "suspended by its server",
+	actorHostLimit:    "too many key fetches for that server",
 	actorRefused:      "the address is refused",
 	actorUnreachable:  "the server could not be reached",
 	actorTimeout:      "timed out",
@@ -13611,6 +13761,12 @@ type lookupOpts struct {
 	keyDoc *apKey // the key document already fetched, whose owner is being fetched
 	depth  int    // 1 while a key document's owner is fetched: an owner is never followed further
 	again  bool   // a caller's own fetch after the one it waited for answered another question
+	// payer is the client address of the delivery whose key this is, when the inbox asks: each request the fetch
+	// sends is counted against that address's allowance of key fetches (addrFetches), and none is sent while the
+	// key id's sender group has used its allowance of fetches that went on to verify a signature (keyFetches).
+	// fetched hears of each request sent, so that the group is charged only once the key verifies (spend).
+	payer   string
+	fetched func()
 }
 
 // actorCache is the cache of remote actors of one federation. Its rows live in Postgres; in memory it
@@ -13625,7 +13781,14 @@ type actorCache struct {
 	// refused is the domain policy's list of refused hosts, each with its subdomains (fetchReq.refused).
 	// FMD's domain policies fill it; until they exist it is nil, and nothing is refused by domain.
 	refused func() []string
-	slots   chan struct{} // actorFetchers turns
+	// admits is the domain policy's verdict on a host (fetchReq.admits); nil, before FMD's policies, admits all.
+	admits func(host string) bool
+	slots  chan struct{} // actorFetchers turns
+	// keyFetches and addrFetches bound the requests a delivery's key costs (spend; 7.4, 7.10). Other callers (the
+	// search by handle) have allowances of their own.
+	keyFetches  *limiter // per sender group of the key id, charged only for fetches whose key then verified
+	addrFetches *limiter // per client address of the delivery, charged for every request sent
+	keys        keyMemo  // the parsed keys the inbox verified with lately (7.4)
 
 	mu       sync.Mutex
 	hosts    map[string]*hostSlot // one turn per host, taken before one of slots
@@ -13645,7 +13808,8 @@ type actorCache struct {
 func newActorCache(f *federation, ft *fetcher) *actorCache {
 	return &actorCache{fed: f, fetch: ft, now: time.Now, built: builtAt(), wait: actorWait, max: remoteActorsMax,
 		slots: make(chan struct{}, actorFetchers), hosts: map[string]*hostSlot{}, flights: map[string]*actorFlight{},
-		memo: map[[16]byte]actorMemo{}, names: map[string]int{}, count: -1}
+		memo: map[[16]byte]actorMemo{}, names: map[string]int{}, count: -1, keyFetches: newLimiter(keyFetchesPerHour, time.Hour), addrFetches: newLimiter(keyFetchesPerAddr, time.Hour),
+		keys: keyMemo{max: keyMemoMax, m: map[string]*list.Element{}, l: list.New()}}
 }
 
 // remoteActor returns the actor with this id, from the cache while it is younger than 24 hours, fetched
@@ -13669,7 +13833,7 @@ func (f *federation) remoteKey(ctx context.Context, keyID string, use keyUse) (*
 	if f.actors == nil {
 		return nil, &actorError{Reason: actorFedRefused}
 	}
-	return f.actors.byKey(ctx, keyID, false, use)
+	return f.actors.byKey(ctx, keyID, false, use, lookupOpts{})
 }
 
 // remoteKeyFailed is remoteKey (to verify) after a signature did not verify with the key it returned: the
@@ -13680,7 +13844,7 @@ func (f *federation) remoteKeyFailed(ctx context.Context, keyID string) (*remote
 	if f.actors == nil {
 		return nil, &actorError{Reason: actorFedRefused}
 	}
-	return f.actors.byKey(ctx, keyID, true, keyToVerify)
+	return f.actors.byKey(ctx, keyID, true, keyToVerify, lookupOpts{})
 }
 
 // allowed checks an id before anything else: an https id the fetcher may ask, and not on this instance's
@@ -13700,7 +13864,12 @@ func (c *actorCache) allowed(id string) error {
 // read reads one cached actor; nil when there is none. The row is scanned and its connection given back
 // before it returns.
 func (c *actorCache) read(ctx context.Context, q string, arg string) (*remoteActor, error) {
+	done, err := c.fed.dbTurn(ctx)
+	if err != nil {
+		return nil, err
+	}
 	r, err := scanActor(c.fed.db.QueryRowContext(ctx, q, arg))
+	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -13937,6 +14106,9 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 	if r, done, err := c.cached(prev, addr, o); done {
 		return r, err
 	}
+	if o.payer != "" && !c.spend(addr, o) {
+		return nil, &actorError{Reason: actorHostLimit, Host: actorHost(addr)}
+	}
 	res, err := c.get(ctx, addr)
 	if err != nil {
 		var ae *actorError
@@ -13966,7 +14138,7 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 		if prev != nil {
 			kept = prev.KeyID
 		}
-		keyDoc = c.followKey(ctx, doc, o.want, kept)
+		keyDoc = c.followKey(ctx, doc, o.want, kept, o)
 	}
 	return c.store(ctx, doc, o.want, keyDoc)
 }
@@ -13976,7 +14148,7 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 // it's an id, fetch it"): the key asked for, else the one kept, else the first such key on the actor's
 // origin. One fetch, never followed further; nil when there is none to follow or it does not vouch for
 // the actor (its id where it came from and the key id, its owner the actor, a PEM).
-func (c *actorCache) followKey(ctx context.Context, doc *apActor, want, kept string) *apKey {
+func (c *actorCache) followKey(ctx context.Context, doc *apActor, want, kept string, o lookupOpts) *apKey {
 	var pick string
 	for _, id := range []string{want, kept} {
 		if k, err := doc.key(id); id != "" && err == nil && k.ByID {
@@ -13993,6 +14165,9 @@ func (c *actorCache) followKey(ctx context.Context, doc *apActor, want, kept str
 		}
 	}
 	if pick == "" || !sameOrigin(pick, doc.ID) || noFragment(pick) == noFragment(doc.ID) {
+		return nil
+	}
+	if o.payer != "" && !c.spend(pick, o) {
 		return nil
 	}
 	res, err := c.get(ctx, noFragment(pick))
@@ -14033,7 +14208,7 @@ func (c *actorCache) keyDocument(ctx context.Context, addr string, res *fetchRes
 	if !ok || noFragment(k.Owner) == noFragment(k.ID) || noFragment(k.Owner) == addr {
 		return c.failure(ctx, addr, nil, actorNoKey, nil)
 	}
-	return c.lookup(ctx, k.Owner, lookupOpts{want: o.want, keyDoc: &k, depth: 1})
+	return c.lookup(ctx, k.Owner, lookupOpts{want: o.want, keyDoc: &k, depth: 1, payer: o.payer, fetched: o.fetched})
 }
 
 // failure records a failed fetch. A 410 marks a stored actor gone for good (7.4); every failure the remote
@@ -14045,7 +14220,14 @@ func (c *actorCache) failure(ctx context.Context, addr string, prev *remoteActor
 	now := c.now()
 	c.remember(addr, r, now)
 	if prev != nil && r == actorGone {
-		if _, err := c.fed.db.ExecContext(ctx, `UPDATE ap_actors SET state = 'gone', fetched_at = $2 WHERE user_id = $1`, prev.UserID, now); err != nil {
+		done, err := c.fed.dbTurn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		_, err = c.fed.db.ExecContext(ctx, `UPDATE ap_actors SET state = 'gone', fetched_at = $2 WHERE user_id = $1`, prev.UserID, now)
+		done()
+		c.keys.drop(prev.ID)
+		if err != nil {
 			return nil, err
 		}
 		prev.State, prev.FetchedAt = "gone", now
@@ -14137,7 +14319,7 @@ func (c *actorCache) get(ctx context.Context, addr string) (*fetchResult, error)
 		return nil, err
 	}
 	defer release()
-	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: addr, sign: sign, refused: refused})
+	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: addr, sign: sign, refused: refused, admits: c.admits})
 }
 
 // actorKey chooses the key a row keeps: the one asked for, else the one kept before, else the first the
@@ -14261,11 +14443,25 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	if doc.Suspended {
 		state = "suspended"
 	}
-	tx, err := c.fed.db.BeginTx(ctx, nil)
+	// Whatever is written, a key the inbox kept for this actor is not used again, and one read from the row before
+	// this write is not kept after it (rewritten, by the row's fetched_at). The time is cut to microseconds, as
+	// Postgres keeps it, so the lookup that reads this row back compares equal.
+	now = now.Truncate(time.Microsecond)
+	defer c.keys.rewritten(doc.ID, now)
+	done, err := c.fed.dbTurn(ctx)
 	if err != nil {
 		return nil, err
 	}
+	tx, err := c.fed.db.BeginTx(ctx, nil)
+	if err != nil {
+		done()
+		return nil, err
+	}
 	defer tx.Rollback()
+	// The turn is given back as soon as the transaction is over: added and read below take turns of their own,
+	// and one held while waiting for another could wait for ever once every turn is held that way.
+	release := sync.OnceFunc(done)
+	defer release()
 	var uid int64
 	var keptKey string
 	err = tx.QueryRowContext(ctx, `SELECT user_id, key_id FROM ap_actors WHERE ap_id = $1 FOR UPDATE`, doc.ID).Scan(&uid, &keptKey)
@@ -14309,6 +14505,7 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 		}
 		if err == nil && n == 0 {
 			tx.Rollback()
+			release()
 			return c.read(ctx, actorByIDSQL, doc.ID)
 		}
 		inserted = true
@@ -14316,7 +14513,9 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	release()
+	if err != nil {
 		return nil, err
 	}
 	if inserted {
@@ -14329,7 +14528,7 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 // the key a cached actor keeps, else through lookup with the address it names (its fragment removed), so
 // every rule of lookup holds here too; a key id that leads to no actor keeping it is remembered as that
 // failure, so asking it again costs nothing for actorFailFor.
-func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use keyUse) (*remoteActor, error) {
+func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use keyUse, pay lookupOpts) (*remoteActor, error) {
 	if !httpsURL(keyID) {
 		return nil, &actorError{Reason: actorBadID, Host: actorHost(keyID)}
 	}
@@ -14347,7 +14546,7 @@ func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use ke
 	if kept != nil {
 		id = kept.ID
 	}
-	r, err := c.lookup(ctx, id, lookupOpts{want: keyID, force: force})
+	r, err := c.lookup(ctx, id, lookupOpts{want: keyID, force: force, payer: pay.payer, fetched: pay.fetched})
 	if err != nil {
 		var ae *actorError
 		if errors.As(err, &ae) && !ae.Cached {
@@ -14372,9 +14571,9 @@ func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use ke
 // from the catalog and fails when one is missing here or has no index that starts with its column.
 // ap_actors.user_id is the row's own cached document and is not a reference to keep it for.
 var userRefs = []struct{ table, column string }{
-	{"achievements", "user_id"}, {"ap_keys", "user_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
+	{"achievements", "user_id"}, {"ap_inbox", "actor_id"}, {"ap_keys", "user_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
 	{"blocks", "user_id"}, {"bookmarks", "user_id"}, {"catalog_revisions", "author_id"}, {"comment_likes", "user_id"},
-	{"comments", "user_id"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
+	{"comments", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
 	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"}, {"notifications", "actor_id"},
 	{"notifications", "user_id"}, {"posts", "user_id"}, {"progress", "user_id"}, {"reports", "reporter_id"},
 	{"reports", "resolver_id"}, {"sessions", "user_id"},
@@ -14421,6 +14620,11 @@ func (c *actorCache) added(ctx context.Context, keep int64) {
 		c.mu.Unlock()
 	}()
 	var have int
+	turnDone, err := c.fed.dbTurn(ctx)
+	if err != nil {
+		return
+	}
+	defer turnDone()
 	if err := c.fed.db.QueryRowContext(ctx, `SELECT count(*) FROM ap_actors`).Scan(&have); err != nil {
 		log.Printf("actors: counting the cache: %v", err)
 		return
@@ -14433,6 +14637,9 @@ func (c *actorCache) added(ctx context.Context, keep int64) {
 		}
 		gone, _ := res.RowsAffected()
 		have -= int(gone)
+		if gone > 0 {
+			c.keys.clear() // a kept key of a removed actor would name a row that is no more
+		}
 	}
 	n = have
 }
@@ -14516,6 +14723,7 @@ const (
 	lookupSuspended                           // its server says it is suspended
 	lookupBusy                                // this server is running too many lookups or fetches
 	lookupUnavailable                         // this server cannot look anyone up now (federation refused, no key yet)
+	lookupNotAllowed                          // the typed host is one the domain policy does not let in (allowlist mode, or suspended)
 )
 
 var lookupReasons = [...]struct{ code, words string }{
@@ -14527,11 +14735,12 @@ var lookupReasons = [...]struct{ code, words string }{
 	lookupSuspended:   {"suspended", "That account is suspended on its server."},
 	lookupBusy:        {"busy", "Flowa is busy looking up other accounts. Try again in a minute."},
 	lookupUnavailable: {"unavailable", "Looking up people on other servers is not available right now. Try again later."},
+	lookupNotAllowed:  {"notAllowed", "This Flowa talks only to the servers its admins allow, and that server is not one of them."},
 }
 
 // lookupHTTP is the status each reason is answered with.
 var lookupHTTP = [...]int{lookupBadInput: 400, lookupNotFound: 404, lookupRefused: 422, lookupNotAccount: 422,
-	lookupGone: 410, lookupSuspended: 403, lookupBusy: 503, lookupUnavailable: 503}
+	lookupGone: 410, lookupSuspended: 403, lookupBusy: 503, lookupUnavailable: 503, lookupNotAllowed: 403}
 
 // lookupHTTPWord is said when http:// was typed: WebFinger is HTTPS only (RFC 7033 4, 9.1), and so is every
 // request Flowa sends to another server.
@@ -14550,7 +14759,7 @@ func (e *lookupError) Error() string {
 func (e *lookupError) Unwrap() error { return e.err }
 
 // lookupNotice is what the page says under a remote profile: what this version cannot do with it.
-const lookupNotice = "Following people on other servers is not built yet: this server has no inbox, so nothing they post could reach it. Pictures from other servers are not shown yet."
+const lookupNotice = "Following people on other servers is not built yet: this server does not act on what other servers send it yet, so nothing they post would show here. Pictures from other servers are not shown yet."
 
 // lookupNoPosts and lookupPostsFailed say why a remote profile shows no posts.
 const (
@@ -14655,6 +14864,17 @@ func lookupHostOK(in lookupInput) bool {
 	}
 	_, why := fedHost(u.Hostname())
 	return why == "" && (u.Port() == "" || u.Port() == "443")
+}
+
+// lookupHostOf is the host a lookup asks first: the handle's, or the address's.
+func lookupHostOf(in lookupInput) string {
+	if in.url == "" {
+		return in.host
+	}
+	if u, err := url.Parse(in.url); err == nil {
+		return u.Hostname()
+	}
+	return ""
 }
 
 // acctURI writes an acct URI (RFC 7565 7), percent-encoding what a userpart cannot hold as it is.
@@ -14838,7 +15058,7 @@ func (r *lookupRun) webfinger(ctx context.Context, step, resource, host string) 
 	if err := r.spend(step, 1); err != nil {
 		return wfAnswer{}, err
 	}
-	res, err := r.f.actors.fetch.do(ctx, fetchReq{kind: fetchWebFinger, url: "https://" + host + "/.well-known/webfinger?resource=" + url.QueryEscape(resource), refused: r.refused()})
+	res, err := r.f.actors.fetch.do(ctx, fetchReq{kind: fetchWebFinger, url: "https://" + host + "/.well-known/webfinger?resource=" + url.QueryEscape(resource), refused: r.refused(), admits: r.f.actors.admits})
 	if err != nil {
 		return wfAnswer{}, &lookupError{Reason: lookupReasonOf(err), Step: step, err: err}
 	}
@@ -15063,7 +15283,7 @@ func (r *lookupRun) document(ctx context.Context, addr string) (*fetchResult, er
 		return nil, err
 	}
 	sign := httpSigner(key, r.f.origin.url+keyID, sigCavage, c.now, c.built)
-	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: addr, sign: sign, refused: r.refused()})
+	return c.fetch.do(ctx, fetchReq{kind: fetchDocument, url: addr, sign: sign, refused: r.refused(), admits: c.admits})
 }
 
 // ownLink says whether a link another server gave may be offered: an https address on the actor's own origin
@@ -15133,7 +15353,11 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 			return
 		}
 		var p lookupProfile
-		err := a.db.QueryRowContext(r.Context(), `SELECT username, display_name FROM users WHERE username = $1 AND domain = ''`, name).Scan(&p.Handle, &p.Name)
+		done, err := a.fed.dbTurn(r.Context())
+		if err == nil {
+			err = a.db.QueryRowContext(r.Context(), `SELECT username, display_name FROM users WHERE username = $1 AND domain = ''`, name).Scan(&p.Handle, &p.Name)
+			done()
+		}
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			answer(rw, lookupNotFound, "")
@@ -15147,6 +15371,14 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	if !lookupHostOK(in) {
 		answer(w, lookupRefused, "")
+		return
+	}
+	// The domain policy, before any connection (F8, section 10): in allowlist mode only an allowed server is
+	// asked, and a suspended one never. It costs no connection, so most of the count is given back. A redirect
+	// to a host the policy does not let in is refused by the fetcher itself (fetchReq.admits), as any failure
+	// after the first request is: lookupNotFound.
+	if !a.fed.admits(lookupHostOf(in)) {
+		answer(rw, lookupNotAllowed, "")
 		return
 	}
 	f := a.fed
@@ -15187,6 +15419,1665 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"result": p})
 }
 
+/* ---------- federation: the inbox and its queue ----------
+
+Other servers deliver activities here (docs/federation.md, 6.3, 7, 8.1, 8.5, 8.6, 9.3 and 12; FWR item 1). The
+three addresses are POST /users/{name}/inbox, the shared POST /inbox that every member's actor names, and POST
+/actor/inbox, all answered by one handler: which of them a delivery came to says nothing, the activity's own
+fields say what it is about, and no name is looked up, so no answer can tell whether a local name exists. They
+take application/activity+json and application/ld+json from other servers, with no session and no same-origin
+check, so they are the one exemption from guard (fedMethods sends a POST to them past it); everything else
+about guard is unchanged, and only a mode that federates registers them.
+
+A delivery is refused as early as the refusal can be known, and nothing a sender has not proven is charged to
+anyone but the address it came from (TestInboxStageOrder pins this order):
+
+  1. Before anything is read, at the cost of a few counters: federation refused (404, as every federation address
+     then), the address's allowance (inboxAddrRate an hour, 429), the content type (415), no signature or one
+     that does not parse (401), the key id's domain suspended or, in allowlist mode, not allowed (403, 7.7 and
+     section 10), the Federation switch off (503, the pause of F1), a Content-Length over 256 KB (413), and no
+     read turn (503 at once): inboxReadsAtOnce in all, at most inboxReadsPerAddr for one address.
+  2. The body, within 256 KB (413) and inboxReadFor (408), the connection's read deadline set. The read turn goes
+     back as soon as the body is read, or failed (before anything else then): it bounds bodies being read, and
+     what follows has its own turns.
+  3. The signature (verifyRequest: both forms, the digest, the window, replay), with the key from inboxKeyFor:
+     the parsed keys verified with lately (keyMemo, at most 1,000, kept no longer than their row is fresh), else,
+     under one of inboxKeyAtOnce key turns (503 at once beyond), remoteKey, whose fetches the address pays for and
+     the key id's sender group only once the key verified (spend). A signature that does not verify asks once
+     more after remoteKeyFailed, so a rotated key is taken (7.4). Refused: 401; this server's clock before its
+     build, a full replay memory, and a busy or used-up key lookup: 503 with Retry-After.
+  4. Proven now, so charged to the sender: its host's allowance (inboxHostRate in 5 minutes, 7.5) and its sender
+     group's (inboxGroupRate; the last two labels of the host, senderGroup, so a wildcard name's subdomains share
+     one), 429; and the key fetches it cost, to the group.
+  5. Only then the body is decoded, under one of the inboxAtOnce decode turns (8 more wait 2 s, then 503)
+     (decodeActivity: depth, sizes, names, 400), and the origin rule of 7.3 applied: the activity's actor must be
+     the actor whose key signed it, which is on the key id's origin (the cache keeps only a key its actor names,
+     owned by it, on its origin). A cavage signature does not cover its keyId, so this rule is what refuses a
+     signature replayed under another domain's key id (7.2, TestReplayAcrossDomains). A delivery whose signer is
+     not its actor (a forward) is answered 202 and dropped, as 7.3 says of forwards; its id is not recorded, since
+     only its own origin may claim it. The activity's id must be on the actor's origin before it is written
+     (7.2): 400.
+  6. Stored in ap_inbox, one row per actor and activity id (ActivityPub 5.2: de-duplicated by id), and answered
+     202; a repeat is answered 202 and not stored again. Past inboxQueueMax rows waiting the answer is 503 with
+     Retry-After (7.5), and past inboxGroupQueued rows of one sender group 429 (8.5).
+
+The one exception to "decode only after the signature verified" is peekOwnDelete: when the key is not cached
+at all, the top level of the body is read (after the decoder's own scan, under the request's turn) to see
+whether it is an actor's own Delete. A Delete from an actor never seen is answered 202 and dropped with no
+fetch (7.4: "one indexed lookup in ap_actors before anything else"), and an actor's own Delete is verified with
+its cached key when its server answers 410 (6.3, keyForOwnDelete). Nothing else uses the key of a stale, gone
+or suspended actor (inStaleKey).
+
+Workers (inboxWorkers) claim rows with FOR UPDATE SKIP LOCKED and a lease, handle them, and mark them done (the
+body dropped), retried (inboxRetries) or failed (dead, the body dropped too). They start with the first row
+queued, and at start when rows wait; they hold no connection while they wait, stop with the federation's
+context (8.6), and a row claimed when they stop is given back. Every statement of the inbox, the workers and
+the actor cache takes one of the federation's turns at the database (dbTurn), at most fedConnsMax of the pool's
+8, and none is held across a fetch.
+
+What a worker does with each type (6.3; the rest belongs to FWR's later items): an actor's own Delete marks it
+gone (FWR 7 purges its content), and an Update of a Person by itself fetches the actor again (within the 10
+minute rule), which takes a new key and lifts a suspension. Every other type is counted per type and dropped
+at the inbox, with 202 and no row: Follow (so a Follow pressed on Mastodon stays "requested", and nothing is
+answered: there is no delivery yet, FWR 2 and 3), Create, Update of anything else, Delete of anything else,
+Like, Announce, Undo, Accept, Reject, Block, Flag, Move, Add, Remove and the types no vocabulary has. */
+
+const (
+	inboxBodyMax      = 256 << 10          // a delivery's body (7.5)
+	inboxAtOnce       = 4                  // deliveries handled at once (7.5), and so at most 4 bodies decoded at once: 16 MB at worst (TestDecodeMemory)
+	inboxWaitMax      = 8                  // deliveries that may wait for one of those turns (7.5)
+	inboxReadsAtOnce  = 8                  // bodies being read at once: 2 MB at most; one more is 503 at once
+	inboxKeyAtOnce    = actorFetchers      // deliveries whose key is not kept, looked up at once (the cache fetches 2 at once anyway); one more is 503 at once
+	inboxWaitFor      = 2 * time.Second    // how long they wait, then 503
+	inboxQueueMax     = 5000               // rows waiting in ap_inbox, then 503 (7.5, section 12)
+	inboxGroupQueued  = 500                // rows waiting from one sender group, then 429: a tenth of the queue (8.5)
+	inboxHostRate     = 300                // verified deliveries per host of the key id in inboxGroupWindow (7.5)
+	inboxGroupRate    = 3000               // verified deliveries per sender group in inboxGroupWindow: ten hosts' worth, so a wildcard name gets ten, and the other servers under co.uk or github.io are hurt only by ten times one server's traffic
+	inboxGroupWindow  = 5 * time.Minute    //
+	inboxAddrRate     = 3600               // deliveries per address an hour, counted before a signature is read; above a host's own rate, so a server's own traffic is held by that one
+	inboxReadsPerAddr = 2                  // read turns one address may hold, so no address can hold them all
+	inboxReadFor      = 10 * time.Second   // the longest a body may take to arrive: 256 KB at about 200 kbit/s, a slow mobile link
+	keyFetchesPerHour = 120                // fetches whose key then verified that one sender group may cause in an hour (7.4, spend)
+	keyFetchesPerAddr = 60                 // key fetches one client address may cause in an hour, verified or not: one a minute, more than a server's first contacts need (spend)
+	inboxWorkers      = 2                  // goroutines that handle rows; with the inbox they stay within fedConnsMax
+	inboxLease        = time.Minute        // a claimed row is another worker's again after this (8.1)
+	inboxPoll         = 5 * time.Second    // an idle worker looks again after this, or at once when a row is written (8.2)
+	inboxKeep         = 7 * 24 * time.Hour // a handled or failed row is kept this long, for de-duplication and the numbers (7.2, 9.3)
+	fedConnsMax       = 3                  // database connections federation holds at once, of the pool's 8 (section 12)
+	keyMemoMax        = 1000               // parsed keys kept in memory (7.4)
+	inboxStatsHours   = 24                 // hours the counts of the federation page cover
+)
+
+// inboxRetries is the wait before each attempt after the first of a row whose handling failed for a reason of
+// this server's (a busy database, a busy fetch); after the last the row is failed. The note gives no schedule for
+// inbound rows (8.3 is the deliveries'); these reach six hours, past which a sender that sent the activity has
+// long been answered, and a later copy of the same id is still refused as a repeat.
+var inboxRetries = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 6 * time.Hour}
+
+// inboxReason is how the inbox answered a delivery: each has its status, a fixed phrase safe to log and to send,
+// and for a 503 or 429 the seconds of Retry-After.
+type inboxReason uint8
+
+const (
+	inAccepted         inboxReason = iota // stored, 202
+	inDropped                             // a type this version does not act on: counted and dropped, 202
+	inDuplicate                           // an activity id stored before, 202
+	inForward                             // signed by another actor than its own (7.3), 202, dropped
+	inUnknownDelete                       // a Delete from an actor never seen, 202, dropped with no fetch (7.4)
+	inUnverifiedDelete                    // an actor's own Delete whose signature did not verify, 202, dropped (7.10)
+	inRefused                             // federation is refused here, 404
+	inAddrLimit                           // the address's allowance, 429
+	inType                                // not an Activity Streams type, 415
+	inUnsigned                            // no signature, 401
+	inSignature                           // a signature that does not parse or verify, 401
+	inBlocked                             // a suspended domain, 403
+	inNotListed                           // allowlist mode and a domain not allowed, 403
+	inPaused                              // the Federation switch is off, 503
+	inGroupLimit                          // the sender group's allowance, 429
+	inTooLarge                            // over 256 KB, 413
+	inBusy                                // no turn within 2 s, 503
+	inKeyBusy                             // the key lookup was busy or its allowance used up, 503
+	inClock                               // this server's clock is earlier than its build, 503 (8.3)
+	inReplayFull                          // the replay memory holds its most sender groups, 503 (7.2)
+	inUndecodable                         // the decoder refused the body, 400
+	inForeignID                           // the activity's id is not on its actor's origin, 400 (7.2)
+	inStaleKey                            // a key only an actor's own Delete may use, on something else, 401 (6.3)
+	inQueueFull                           // the queue holds inboxQueueMax rows, 503 (7.5)
+	inGroupQueued                         // the sender group has inboxGroupQueued rows waiting, 429 (8.5)
+	inServer                              // this server failed, 500
+	inSlowBody                            // the body did not arrive within inboxReadFor, 408
+	inboxReasonCount
+)
+
+var inboxReasons = [inboxReasonCount]struct {
+	code  int
+	retry int
+	words string
+}{
+	inAccepted:         {202, 0, "accepted"},
+	inDropped:          {202, 0, "accepted, not acted on in this version"},
+	inDuplicate:        {202, 0, "accepted before"},
+	inForward:          {202, 0, "signed by another actor than its own, not acted on"},
+	inUnknownDelete:    {202, 0, "a deletion of an actor never seen, not acted on"},
+	inUnverifiedDelete: {202, 0, "a deletion whose signature did not verify, not acted on"},
+	inRefused:          {404, 0, "Not found."},
+	inAddrLimit:        {429, 3600, "too many deliveries from this address"},
+	inType:             {415, 0, "not an Activity Streams type"},
+	inUnsigned:         {401, 0, "not signed"},
+	inSignature:        {401, 0, "the signature is refused"},
+	inBlocked:          {403, 0, "this server's domain is suspended here"},
+	inNotListed:        {403, 0, "this server's domain is not on the allowlist here"},
+	inPaused:           {503, 3600, "deliveries are paused here"},
+	inGroupLimit:       {429, 300, "too many deliveries from this server or its domain"},
+	inTooLarge:         {413, 0, "the body is over 256 KB"},
+	inBusy:             {503, 30, "too many deliveries at once"},
+	inKeyBusy:          {503, 60, "the key could not be fetched just now"},
+	inClock:            {503, 600, "this server's clock is not set yet"},
+	inReplayFull:       {503, 600, "too many senders at once"},
+	inUndecodable:      {400, 0, "the activity cannot be read"},
+	inForeignID:        {400, 0, "the activity's id is not on its actor's origin"},
+	inStaleKey:         {401, 0, "the key is not fresh"},
+	inQueueFull:        {503, 120, "too many activities wait here"},
+	inGroupQueued:      {429, 120, "too many activities from this server wait here"},
+	inServer:           {500, 0, "Something went wrong on the server."},
+	inSlowBody:         {408, 0, "the body did not arrive in time"},
+}
+
+func (r inboxReason) String() string { return inboxReasons[r].words }
+
+// inboxKinds are the activity types counted by name on the federation page: the Activity Vocabulary's and the
+// extensions Mastodon's page names. Any other name a sender writes is counted as "other", so the counts stay a
+// fixed, short list whatever arrives.
+var inboxKinds = map[string]bool{"Accept": true, "Add": true, "Announce": true, "Arrive": true, "Block": true, "Create": true, "Delete": true,
+	"Dislike": true, "Flag": true, "Follow": true, "Ignore": true, "Invite": true, "Join": true, "Leave": true, "Like": true, "Listen": true,
+	"Move": true, "Offer": true, "Question": true, "Read": true, "Reject": true, "Remove": true, "TentativeAccept": true, "TentativeReject": true,
+	"Travel": true, "Undo": true, "Update": true, "View": true, "EmojiReact": true, "QuoteRequest": true}
+
+// inboxKind is the name an activity is counted under: its vocabulary type, else the first of its types that is
+// a known extension, else "other".
+func inboxKind(a *apActivity) string {
+	if inboxKinds[a.Kind] {
+		return a.Kind
+	}
+	for _, t := range a.Types {
+		if inboxKinds[t] {
+			return t
+		}
+	}
+	return "other"
+}
+
+// inboxStats counts, by the hour, how the inbox answered (per reason), what it dropped and what the workers
+// handled (per type), and the readers' drop counts (6.3), for the federation page's last 24 hours and the
+// hourly log line. In memory: a restart starts them again, and the page says "since the start" until a day has
+// passed. Each hour is a bucket; one older than a day is emptied when its slot comes round.
+type inboxStats struct {
+	mu      sync.Mutex
+	started time.Time
+	hours   [inboxStatsHours]inboxHour
+	// The readers' counts of what they dropped since the last log line (housekeeping writes it and resets them).
+	recipients, objects, badDates int64
+}
+
+type inboxHour struct {
+	hour    int64 // Unix hours; the bucket is empty unless it is now's or within a day
+	reasons [inboxReasonCount]int64
+	dropped map[string]int64 // by inboxKind
+	handled map[string]int64 // by inboxKind and outcome ("Delete", "Update", "Delete failed")
+}
+
+func (s *inboxStats) bucket(now time.Time) *inboxHour {
+	h := now.Unix() / 3600
+	b := &s.hours[h%inboxStatsHours]
+	if b.hour != h {
+		*b = inboxHour{hour: h}
+	}
+	return b
+}
+
+func (s *inboxStats) answer(now time.Time, r inboxReason, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := s.bucket(now)
+	b.reasons[r]++
+	if r == inDropped {
+		if b.dropped == nil {
+			b.dropped = map[string]int64{}
+		}
+		b.dropped[kind]++
+	}
+}
+
+func (s *inboxStats) handled(now time.Time, what string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := s.bucket(now)
+	if b.handled == nil {
+		b.handled = map[string]int64{}
+	}
+	b.handled[what]++
+}
+
+func (s *inboxStats) drops(a *apActivity) {
+	if a.Audience.Dropped == 0 && a.ObjectsDropped == 0 && !a.BadDate {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recipients += int64(a.Audience.Dropped)
+	s.objects += int64(a.ObjectsDropped)
+	if a.BadDate {
+		s.badDates++
+	}
+}
+
+// inboxNumbers are the inbox's counts over the last day, for the federation page (14.2).
+type inboxNumbers struct {
+	Since    time.Time        `json:"since"`   // the start, when that is less than a day ago
+	Started  time.Time        `json:"started"` // the last start: the counts are in memory and begin again at each one
+	Answers  map[string]int64 `json:"answers"`
+	Refused  map[string]int64 `json:"refused"`
+	Dropped  map[string]int64 `json:"dropped"`
+	Handled  map[string]int64 `json:"handled"`
+	Queued   int              `json:"queued"`
+	Oldest   int64            `json:"oldestSeconds"` // the oldest row waiting, in seconds; 0 with none
+	Failed   int              `json:"failed"`        // rows given up within the last 7 days
+	Paused   bool             `json:"paused"`
+	QueueMax int              `json:"queueMax"`
+}
+
+func (s *inboxStats) numbers(now time.Time) inboxNumbers {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := inboxNumbers{Answers: map[string]int64{}, Refused: map[string]int64{}, Dropped: map[string]int64{}, Handled: map[string]int64{}, QueueMax: inboxQueueMax, Started: s.started}
+	if now.Sub(s.started) < inboxStatsHours*time.Hour {
+		n.Since = s.started
+	}
+	h := now.Unix() / 3600
+	for i := range s.hours {
+		b := &s.hours[i]
+		if b.hour <= h-inboxStatsHours || b.hour > h {
+			continue
+		}
+		for r, c := range b.reasons {
+			if c == 0 {
+				continue
+			}
+			if inboxReasons[r].code < 400 {
+				n.Answers[inboxReason(r).String()] += c
+			} else {
+				n.Refused[inboxReason(r).String()] += c
+			}
+		}
+		for k, c := range b.dropped {
+			n.Dropped[k] += c
+		}
+		for k, c := range b.handled {
+			n.Handled[k] += c
+		}
+	}
+	return n
+}
+
+// keyMemo is the in-memory cache of parsed public keys of 7.4, at most max, the least recently used out. An
+// entry is kept no longer than the actor's row is fresh (its ExpiresAt), and is dropped whenever the cache
+// writes the actor (store, a 410), so a key here is always one remoteKey would give to verify with: never a stale,
+// gone or suspended actor's.
+type keyMemo struct {
+	mu  sync.Mutex
+	max int
+	m   map[string]*list.Element // by key id
+	l   *list.List               // of *keyHeld, the most recently used first
+	// gen moves at every drop: a key read from a row before a drop (the worker marking its actor gone, a 410, an
+	// eviction) is not kept after it (putAt), so a lookup that raced a drop cannot keep a key the drop meant to
+	// forget.
+	gen uint64
+	// written is, per actor, the fetched_at of the last row the cache wrote for it (rewritten, from store): a key
+	// read from an older row is not kept (putAt). The cache's own write is versioned by the row rather than by gen,
+	// because the lookup that waited for that very write reads it back and must keep its key. At most max*10
+	// actors are remembered; beyond that the memory is emptied and gen moved, so no older read is kept either.
+	written map[string]time.Time
+}
+
+// generation is the memo's generation now, read before a key is looked up, for putAt.
+func (k *keyMemo) generation() uint64 {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.gen
+}
+
+// putAt keeps a key looked up at generation gen from a row fetched at h.fetched, unless something was dropped
+// since, or the cache wrote the actor's row anew after that one. The checks and the put are under one lock, so a
+// drop either comes before (and the key is not kept) or after (and forgets it).
+func (k *keyMemo) putAt(h *keyHeld, gen uint64) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.gen != gen {
+		return
+	}
+	if w, ok := k.written[h.actor]; ok && h.fetched.Before(w) {
+		return
+	}
+	k.putLocked(h)
+}
+
+// rewritten records that the cache wrote an actor's row, fetched at at, and forgets its kept keys.
+func (k *keyMemo) rewritten(actor string, at time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.written == nil {
+		k.written = map[string]time.Time{}
+	}
+	if len(k.written) >= k.max*10 {
+		clear(k.written)
+		k.gen++
+	}
+	k.written[actor] = at
+	k.forgetLocked(actor)
+}
+
+// clear forgets every key: the cache removed actors it no longer keeps (added's bound), whose ids it does not list.
+func (k *keyMemo) clear() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.gen++
+	clear(k.m)
+	k.l.Init()
+}
+
+// keyHeld is a key the inbox verified with, and whose it is.
+type keyHeld struct {
+	keyID, actor, domain string
+	user                 int64
+	key                  *rsa.PublicKey
+	until                time.Time
+	fetched              time.Time // the row's fetched_at: what putAt compares with a later write of the row
+}
+
+func (k *keyMemo) get(keyID string, now time.Time) (*keyHeld, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	e, ok := k.m[keyID]
+	if !ok {
+		return nil, false
+	}
+	h := e.Value.(*keyHeld)
+	if !now.Before(h.until) {
+		k.l.Remove(e)
+		delete(k.m, keyID)
+		return nil, false
+	}
+	k.l.MoveToFront(e)
+	return h, true
+}
+
+func (k *keyMemo) put(h *keyHeld) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.putLocked(h)
+}
+
+func (k *keyMemo) putLocked(h *keyHeld) {
+	if e, ok := k.m[h.keyID]; ok {
+		e.Value = h
+		k.l.MoveToFront(e)
+		return
+	}
+	for k.l.Len() >= k.max {
+		old := k.l.Back()
+		k.l.Remove(old)
+		delete(k.m, old.Value.(*keyHeld).keyID)
+	}
+	k.m[h.keyID] = k.l.PushFront(h)
+}
+
+// drop forgets every key of an actor (by its id), and dropKey one key id.
+func (k *keyMemo) drop(actor string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.gen++
+	k.forgetLocked(actor)
+}
+
+func (k *keyMemo) forgetLocked(actor string) {
+	for e := k.l.Front(); e != nil; {
+		next := e.Next()
+		if h := e.Value.(*keyHeld); h.actor == actor {
+			k.l.Remove(e)
+			delete(k.m, h.keyID)
+		}
+		e = next
+	}
+}
+
+func (k *keyMemo) dropKey(keyID string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.gen++
+	if e, ok := k.m[keyID]; ok {
+		k.l.Remove(e)
+		delete(k.m, keyID)
+	}
+}
+
+// spend counts one key fetch against the sender group of the address (keyFetches), and says whether there was
+// room for it.
+//
+// Nothing a sender has not proven is charged to anyone else (7.10). Before a signature verifies, the only thing
+// known about a delivery is the address it came from, so that address pays: every request its key costs counts
+// against keyFetchesPerAddr an hour for it. The key id's sender group pays only for a fetch whose key then
+// verified the signature (the inbox charges it after verifyRequest), and while the group has used its
+// keyFetchesPerHour of those, nothing more is fetched for it, so a real server that floods with new keys is
+// bounded, and forged requests, which never verify, cannot use the group's allowance up. What bounds a flood of
+// distinct made-up key ids on one peer from many addresses is not an allowance but the cache's own pace: one
+// request at a time per host and actorFetchers at once in all, each within its 5 s, and every key id that leads to
+// no key remembered for 10 minutes; so the peer receives at most one of these requests at a time, and this server
+// spends at most its two fetch turns, which an inbox delivery takes only under one of its two key turns.
+//
+// The group looked at is that of the address fetched, which for a key's own fetch is the key id's, and for the
+// owner of a key document on the same origin the same group again: so the group checked is the group the inbox
+// charges once the key verifies. A fetch two deliveries share (one waits for the other's) is charged to the one
+// that started it: when that was a forged request and the waiting one verifies, the domain is charged nothing for
+// it, which only ever undercounts verified traffic.
+func (c *actorCache) spend(addr string, o lookupOpts) bool {
+	g := senderGroup(addr)
+	if g == "" || c.keyFetches.over(g) || !c.addrFetches.add(o.payer) {
+		return false
+	}
+	if o.fetched != nil {
+		o.fetched()
+	}
+	return true
+}
+
+// dbTurn takes one of the federation's turns at the database (fedConnsMax), or gives up when ctx ends. The
+// caller gives it back as soon as its statement or transaction is over, and never holds it across a fetch or
+// while it takes another (8.2, section 12). A federation made without the turns (a test's) has no bound.
+func (f *federation) dbTurn(ctx context.Context) (func(), error) {
+	if f.conns == nil {
+		return func() {}, nil
+	}
+	select {
+	case f.conns <- struct{}{}:
+		return func() { <-f.conns }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// inboxCall is one delivery as inboxKeyFor sees it: the body (for peekOwnDelete) and, once looked up, the
+// actor whose key it was, and whether it may only be the actor's own Delete.
+type inboxCall struct {
+	body          []byte
+	payer         string       // the client address, which pays for the key fetches (spend)
+	fetches       atomic.Int32 // requests the key cost, charged to the sender group once it verifies
+	force         bool         // the signature did not verify with the key first given: ask after remoteKeyFailed
+	held          *keyHeld     // the key verified with, and its actor
+	ownDelete     bool         // the key was given for the actor's own Delete only (keyForOwnDelete)
+	peeked        bool         // peekOwnDelete has run on the body
+	ownShaped     bool         // and found an own Delete on the key id's origin
+	unknownDelete bool         // a Delete from an actor never seen: nothing was fetched
+}
+
+type inboxCallKey struct{}
+
+// errUnknownDelete is inboxKeyFor's answer to a Delete from an actor never seen: no key is fetched for it.
+var errUnknownDelete = errors.New("a deletion of an actor never seen")
+
+// errKeyTurns is inboxKeyFor's answer when every turn for looking up keys not kept is taken: 503, try later.
+var errKeyTurns = errors.New("too many keys being looked up at once")
+
+// inboxKeyFor is the verifier's key lookup for deliveries (7.4). The key is the one verified with lately while
+// its actor's row is fresh (keyMemo), else the cache's (remoteKey, with the key fetches counted against the
+// sender group), never a stale, gone or suspended actor's except for that actor's own Delete. With force, the
+// signature did not verify with the key given first: the actor is fetched again unless it was in the last 10
+// minutes (remoteKeyFailed), so a rotated key verifies.
+func (f *federation) inboxKeyFor(ctx context.Context, keyID string) (*rsa.PublicKey, error) {
+	call, _ := ctx.Value(inboxCallKey{}).(*inboxCall)
+	if call == nil {
+		return nil, errors.New("a key asked for outside a delivery")
+	}
+	c := f.actors
+	now := c.now()
+	if !call.force {
+		if h, ok := c.keys.get(keyID, now); ok {
+			call.held = h
+			return h.key, nil
+		}
+	}
+	// A key not kept is looked up, perhaps fetched, under one of inboxKeyAtOnce turns, taken at once or not at
+	// all: a flood of deliveries naming keys nobody has holds at most these, never a decode turn nor more of the
+	// read turns, so deliveries whose keys are kept go on meanwhile.
+	release, ok := f.inbox.take(f.inbox.keyTurns)
+	if !ok {
+		return nil, errKeyTurns
+	}
+	defer release()
+	gen := c.keys.generation()
+	use := keyToVerify
+	actor, ok := peekOwnDelete(call.body, keyID)
+	call.peeked, call.ownShaped = true, ok
+	if ok && !call.force {
+		known, err := f.actorKnown(ctx, keyID, actor)
+		if err != nil {
+			return nil, err
+		}
+		if !known {
+			call.unknownDelete = true
+			return nil, errUnknownDelete
+		}
+		use, call.ownDelete = keyForOwnDelete, true
+	}
+	r, err := c.byKey(ctx, keyID, call.force, use, lookupOpts{payer: call.payer, fetched: func() { call.fetches.Add(1) }})
+	if err != nil {
+		return nil, err
+	}
+	key, err := r.publicKey(use)
+	if err != nil {
+		return nil, err
+	}
+	call.held = &keyHeld{keyID: keyID, actor: r.ID, domain: r.Domain, user: r.UserID, key: key, until: r.ExpiresAt, fetched: r.FetchedAt}
+	if r.keyUsable(keyToVerify) == nil {
+		c.keys.putAt(call.held, gen)
+	}
+	return key, nil
+}
+
+// ownFailure says whether a signature check failed for a reason of this server's own that any sender of an own
+// Delete can meet, cached actor or not, which keeps its 503 so the sender retries: the clock not set, the replay
+// memory full (both checked before any key), every key turn taken (taken before the peek, for any key not kept),
+// and the database (actorKnown's lookup runs for both). The failures of a key fetch (a busy fetch turn, the
+// address's allowance of fetches used up, a canceled or not yet possible fetch) are left out on purpose: an own
+// Delete of an actor never seen is dropped before any fetch, so only a cached actor can meet them, and answering
+// them 503 would tell a sender that the actor is cached, the oracle the 202 closes (TestInboxPeekOracle).
+func ownFailure(err error) bool {
+	var se *sigError
+	if !errors.As(err, &se) {
+		return true // not a signature check's answer: the database
+	}
+	switch se.Reason {
+	case sigClock, sigFull:
+		return true
+	case sigKeyUnavailable:
+		var ae *actorError
+		return errors.Is(err, errKeyTurns) || se.err != nil && !errors.As(err, &ae)
+	}
+	return false
+}
+
+// ownShaped says whether a delivery whose signature failed is shaped as its actor's own Delete, on the key id's
+// origin: from the peek inboxKeyFor made, or from one made now, under a key turn as every peek is. With no key turn
+// free it says no, and the delivery is answered as any other failure.
+func (f *federation) ownShaped(ctx context.Context, call *inboxCall, keyID string) bool {
+	if call.peeked {
+		return call.ownShaped
+	}
+	release, ok := f.inbox.take(f.inbox.keyTurns)
+	if !ok {
+		return false
+	}
+	defer release()
+	_, own := peekOwnDelete(call.body, keyID)
+	return own
+}
+
+// actorKnown is the one indexed lookup of 7.4 before a Delete is verified: is the key or the actor in ap_actors?
+func (f *federation) actorKnown(ctx context.Context, keyID, actor string) (bool, error) {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer done()
+	var known bool
+	err = f.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_actors WHERE key_id = $1) OR EXISTS (SELECT 1 FROM ap_actors WHERE ap_id = $2)`, keyID, actor).Scan(&known)
+	return known, err
+}
+
+// peekOwnDelete says whether a body is a Delete whose object is its own actor, and gives that actor. It is the
+// one reading of a body before its signature verifies, needed so that an unknown actor's Delete costs no fetch
+// (7.4) and a gone actor's own Delete can be verified with its cached key (6.3). Its bounds:
+//
+//   - it runs only for a key not kept in keyMemo, or once a signature failed to verify, and so only after
+//     everything before the body (the address's allowance, the domain policy, the switch, one of the read turns);
+//   - only for an actor on the key id's origin: any other could not pass the origin rule anyway;
+//   - on at most inboxBodyMax bytes, already read within that cap;
+//   - through the decoder's scan (apScan: linear, no recursion, the limits of 7.5) and then the top level's
+//     members only (apFieldsOf: one map of slices of the body), reading type, actor and object.id and nothing
+//     deeper;
+//   - under one of the inboxKeyAtOnce turns for keys not kept, which no verified delivery needs: beyond them a
+//     delivery is answered 503 at once; never under a decode turn;
+//   - with no database work but the one indexed lookup of actorKnown, and only when it says "own Delete";
+//   - and its answer chooses only between dropping with 202 (an actor never seen, or a signature that does not
+//     verify: inUnverifiedDelete), verifying with the cached key (keyForOwnDelete, and then the decoded activity
+//     must be that own Delete, or 401), and going on as for any delivery. Nothing it reads is stored, logged or
+//     acted on.
+func peekOwnDelete(body []byte, keyID string) (string, bool) {
+	f, err := apParse(body, inboxBodyMax)
+	if err != nil {
+		return "", false
+	}
+	if _, kind, err := f.types(); err != nil || kind != "Delete" {
+		return "", false
+	}
+	actor, err := f.id("actor")
+	if err != nil || actor == "" {
+		return "", false
+	}
+	obj, err := f.ref("object")
+	if err != nil || obj.ID != actor || !sameOrigin(keyID, actor) {
+		return "", false
+	}
+	return actor, true
+}
+
+// asMediaType says whether a Content-Type is an Activity Streams one: application/activity+json, or
+// application/ld+json with no profile or with the Activity Streams one among its profiles (ActivityPub 7: a POST
+// uses the latter, and servers SHOULD treat the former as the same), as the fetcher takes them (7.5).
+func asMediaType(ctype string) bool {
+	mt, params, err := mime.ParseMediaType(ctype)
+	if err != nil {
+		return false
+	}
+	switch mt {
+	case "application/activity+json":
+		return true
+	case "application/ld+json":
+		p := params["profile"]
+		return p == "" || slices.Contains(strings.Fields(p), "https://www.w3.org/ns/activitystreams")
+	}
+	return false
+}
+
+// inboxQueue is the inbound queue's memory: the turns of the handling at once, the workers, the counts.
+type inboxQueue struct {
+	f        *federation
+	now      func() time.Time // the clock of the rows (received, next attempt, lease); a test sets its own
+	paused   func() bool      // the Federation switch is off: nothing is taken or handled
+	slots    chan struct{}    // inboxAtOnce turns, for a verified body's decode and what follows
+	reads    chan struct{}    // inboxReadsAtOnce turns, from reading a body to the end of the delivery
+	keyTurns chan struct{}    // inboxKeyAtOnce turns, for looking up a key not kept (inboxKeyFor)
+	waiting  atomic.Int32     // deliveries waiting for a decode turn
+	waitFor  time.Duration    // inboxWaitFor; a test shortens it
+	// readsMu guards readsBy, the read turns each address holds (inboxReadsPerAddr).
+	readsMu sync.Mutex
+	readsBy map[string]int
+	// readDeadline gives the end of a body's time to arrive (inboxReadFor); a test gives a channel it closes.
+	readDeadline func() <-chan time.Time
+	// reading and readGiven, when set (by a test), hear that a delivery took a read turn and began to read its
+	// body, and that a delivery whose body failed gave its read turn back.
+	reading, readGiven func()
+	wake               chan struct{}
+	once               sync.Once
+	manual             bool // set by a test, which then calls step itself: no worker starts
+	stats              inboxStats
+	// stepped says the replay memory forgot everything because the clock stepped back (7.2); logged once.
+	stepped atomic.Bool
+	// heard, when set (by a test), hears how each delivery was answered.
+	heard func(r inboxReason)
+	// unforwarded logs once that deliveries come from a trusted proxy that passes no sender's address.
+	unforwarded sync.Once
+}
+
+func newInboxQueue(f *federation, paused func() bool) *inboxQueue {
+	q := &inboxQueue{f: f, now: time.Now, paused: paused, slots: make(chan struct{}, inboxAtOnce), reads: make(chan struct{}, inboxReadsAtOnce),
+		keyTurns: make(chan struct{}, inboxKeyAtOnce), waitFor: inboxWaitFor, wake: make(chan struct{}, 1), readsBy: map[string]int{},
+		readDeadline: func() <-chan time.Time { return time.After(inboxReadFor) }}
+	q.stats.started = time.Now()
+	return q
+}
+
+// take takes one turn of turns at once, or none: the read turns and the key turns wait for nothing.
+func (q *inboxQueue) take(turns chan struct{}) (func(), bool) {
+	select {
+	case turns <- struct{}{}:
+		return func() { <-turns }, true
+	default:
+		return nil, false
+	}
+}
+
+// forwardMissing says whether a request came straight from a trusted proxy that named no sender (no
+// X-Forwarded-For, no X-Real-IP): the case in which clientIP can only answer the proxy's own address, so every
+// sender behind it shares one address's allowances. clientIP is not changed; this only lets the inbox say so.
+func forwardMissing(a *app, r *http.Request) bool {
+	remote, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remote = r.RemoteAddr
+	}
+	ip := net.ParseIP(remote)
+	return ip != nil && a.trustedProxy(ip) && len(r.Header.Values("X-Forwarded-For")) == 0 && r.Header.Get("X-Real-IP") == ""
+}
+
+// takeRead takes a read turn for an address: one of inboxReadsAtOnce, and at most inboxReadsPerAddr for one
+// address, so that a few slow connections from one place cannot hold them all (7.10). It never waits.
+func (q *inboxQueue) takeRead(addr string) (func(), bool) {
+	q.readsMu.Lock()
+	if q.readsBy[addr] >= inboxReadsPerAddr {
+		q.readsMu.Unlock()
+		return nil, false
+	}
+	q.readsBy[addr]++
+	q.readsMu.Unlock()
+	give := func() {
+		q.readsMu.Lock()
+		if q.readsBy[addr]--; q.readsBy[addr] <= 0 {
+			delete(q.readsBy, addr)
+		}
+		q.readsMu.Unlock()
+	}
+	release, ok := q.take(q.reads)
+	if !ok {
+		give()
+		return nil, false
+	}
+	return sync.OnceFunc(func() { release(); give() }), true
+}
+
+// errSlowBody is a body that did not arrive within inboxReadFor.
+var errSlowBody = errors.New("the body did not arrive in time")
+
+// readBody reads a delivery's body within inboxBodyMax and inboxReadFor. The connection's read deadline is set
+// (best effort: a server connection has one, a test's recorder does not), and the read also runs beside a timer,
+// so a body that never arrives is answered at the deadline whatever the connection allows. The caller gives the
+// read turn back at once on an error, answers, and only then calls wait, which returns when the read has ended
+// (at the deadline on a server connection), since a handler must not return while its body is still being read.
+func (q *inboxQueue) readBody(w http.ResponseWriter, r *http.Request) (body []byte, wait func(), err error) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(inboxReadFor))
+	type read struct {
+		b   []byte
+		err error
+	}
+	got := make(chan read, 1)
+	go func() {
+		b, err := io.ReadAll(io.LimitReader(r.Body, inboxBodyMax+1))
+		got <- read{b, err}
+	}()
+	if q.reading != nil {
+		q.reading()
+	}
+	var x read
+	select {
+	case x = <-got:
+	case <-q.readDeadline():
+		return nil, func() { <-got }, errSlowBody
+	}
+	if x.err != nil {
+		return nil, func() {}, x.err
+	}
+	if len(x.b) > inboxBodyMax {
+		return nil, func() {}, &http.MaxBytesError{Limit: inboxBodyMax}
+	}
+	return x.b, func() {}, nil
+}
+
+// enter takes one of the inboxAtOnce turns, waiting at most inboxWaitFor behind at most inboxWaitMax others.
+func (q *inboxQueue) enter(ctx context.Context) (func(), bool) {
+	release := func() { <-q.slots }
+	select {
+	case q.slots <- struct{}{}:
+		return release, true
+	default:
+	}
+	if q.waiting.Add(1) > inboxWaitMax {
+		q.waiting.Add(-1)
+		return nil, false
+	}
+	defer q.waiting.Add(-1)
+	t := time.NewTimer(q.waitFor)
+	defer t.Stop()
+	select {
+	case q.slots <- struct{}{}:
+		return release, true
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return nil, false
+}
+
+// handleInbox answers a delivery to any of the three inboxes (the section's comment says in what order and why).
+func (a *app) handleInbox(w http.ResponseWriter, r *http.Request) {
+	f := a.fed
+	q := f.inbox
+	from := "an unknown host"
+	answer := func(why inboxReason, kind string) {
+		q.stats.answer(time.Now(), why, kind)
+		if q.heard != nil {
+			q.heard(why)
+		}
+		e := inboxReasons[why]
+		if e.code >= 400 && why != inRefused {
+			logRefusal(w, "inbox: "+e.words, "from "+from)
+		}
+		h := w.Header()
+		h.Set("Cache-Control", "no-store")
+		if e.retry > 0 {
+			h.Set("Retry-After", strconv.Itoa(e.retry))
+		}
+		if e.code == http.StatusAccepted {
+			w.WriteHeader(e.code)
+			return
+		}
+		writeJSON(w, e.code, map[string]string{"error": e.words})
+	}
+	if f.refusal() != "" || f.verifier == nil {
+		answer(inRefused, "")
+		return
+	}
+	addr := limitKey(a.clientIP(r))
+	from = addr
+	if forwardMissing(a, r) {
+		q.unforwarded.Do(func() {
+			log.Printf("inbox: a delivery came from %s, a trusted proxy, with no X-Forwarded-For or X-Real-IP, so every server that delivers through it shares that one address's allowances (3,600 deliveries and 60 key fetches an hour, 2 bodies read at once); make the proxy pass the sender's address (README, Behind a reverse proxy). Said once.", addr)
+		})
+	}
+	if !a.lim.inboxAddr.add(addr) {
+		answer(inAddrLimit, "")
+		return
+	}
+	if !asMediaType(r.Header.Get("Content-Type")) {
+		answer(inType, "")
+		return
+	}
+	cav, in, _, err := sigHeaders(r.Header)
+	if err != nil {
+		var se *sigError
+		if errors.As(err, &se) && se.Reason == sigMissing {
+			answer(inUnsigned, "")
+		} else {
+			answer(inSignature, "")
+		}
+		return
+	}
+	keyID := ""
+	if cav != nil {
+		keyID = cav.keyID
+	} else {
+		keyID = in.keyID
+	}
+	ku, err := url.Parse(keyID)
+	if err != nil || !httpsURL(keyID) {
+		answer(inSignature, "")
+		return
+	}
+	host, why := fedHost(ku.Hostname())
+	if why == "" {
+		from = host
+	}
+	switch f.policyNow().decide(ku.Hostname()) {
+	case policySuspended:
+		answer(inBlocked, "")
+		return
+	case policyNotListed, policyUnreadable:
+		answer(inNotListed, "")
+		return
+	}
+	if q.paused() {
+		answer(inPaused, "")
+		return
+	}
+	if r.ContentLength > inboxBodyMax {
+		answer(inTooLarge, "")
+		return
+	}
+	release, ok := q.takeRead(addr)
+	if !ok {
+		answer(inBusy, "")
+		return
+	}
+	defer release()
+	body, wait, err := q.readBody(w, r)
+	if err != nil {
+		release() // the turn goes back before the answer, and before a read that never ends is waited for
+		if q.readGiven != nil {
+			q.readGiven()
+		}
+		var mb *http.MaxBytesError
+		switch {
+		case errors.Is(err, errSlowBody):
+			answer(inSlowBody, "")
+		case errors.As(err, &mb):
+			answer(inTooLarge, "")
+		default:
+			answer(inUndecodable, "")
+		}
+		wait()
+		return
+	}
+	// The body is here: its read turn goes back now. What follows has turns of its own (the key turns, the decode
+	// turns), so a delivery waiting for a key or a decode does not keep its address's read turns.
+	release()
+	why2, kind := a.takeDelivery(r, body, addr, host, senderGroup(keyID), keyID)
+	answer(why2, kind)
+}
+
+// takeDelivery verifies, decodes, checks and stores a delivery whose body was read (steps 3 to 5 above).
+func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyID string) (inboxReason, string) {
+	f, q := a.fed, a.fed.inbox
+	call := &inboxCall{body: body, payer: addr}
+	ctx := context.WithValue(r.Context(), inboxCallKey{}, call)
+	_, err := f.verifier.verifyRequest(ctx, r, body)
+	var se *sigError
+	if errors.As(err, &se) && (se.Reason == sigInvalid || se.Reason == sigBadSignature) && call.held != nil && !call.ownDelete {
+		// One more try with the actor fetched again, unless that was done in the last 10 minutes (7.4): a key
+		// that its owner rotated verifies, and a stranger's bad signatures cost at most one fetch in that time.
+		f.actors.keys.dropKey(call.held.keyID)
+		call.force, call.held = true, nil
+		_, err = f.verifier.verifyRequest(ctx, r, body)
+	}
+	if f.verifier.seen.stepped() && !q.stepped.Swap(true) {
+		log.Print("inbox: the clock stepped back by more than an hour, so the memory of signatures seen was emptied, as at a restart; a replay within 12 hours rests on the activity ids stored (docs/federation.md 7.2)")
+	}
+	if call.unknownDelete {
+		return inUnknownDelete, "Delete"
+	}
+	// An actor's own Delete whose signature does not verify is answered as one from an actor never seen: 202, and
+	// nothing done. Otherwise the answer (202 or 401) would tell anyone who sends a garbage signature whether this
+	// instance has cached that actor, that is whether a member here looked the person up (7.10). Only this
+	// server's unset clock, which is the same for every sender, keeps its 503.
+	if err != nil && !ownFailure(err) && f.ownShaped(ctx, call, keyID) {
+		return inUnverifiedDelete, "Delete"
+	}
+	if err != nil {
+		se = nil
+		var ae *actorError
+		switch {
+		case !errors.As(err, &se):
+			return inSignature, ""
+		case se.Reason == sigClock:
+			return inClock, ""
+		case se.Reason == sigFull:
+			return inReplayFull, ""
+		case se.Reason == sigKeyUnavailable && errors.Is(err, errKeyTurns):
+			return inKeyBusy, ""
+		case se.Reason == sigKeyUnavailable && errors.As(err, &ae) && (ae.Reason == actorBusy || ae.Reason == actorHostLimit || ae.Reason == actorNotReady || ae.Reason == actorClock):
+			return inKeyBusy, ""
+		case se.Reason == sigKeyUnavailable && se.err != nil && !errors.As(err, &ae):
+			log.Printf("error: inbox: looking up a key: %v", se.err)
+			return inServer, ""
+		}
+		return inSignature, ""
+	}
+	// Proven now: the key id's server signed this. Only from here is anything charged to it: the key fetches the
+	// request cost, its host's and its domain's allowances of deliveries (7.5), and later its share of the queue.
+	for n := call.fetches.Load(); n > 0; n-- {
+		f.actors.keyFetches.add(group)
+	}
+	if !a.lim.inboxHost.add(host) || !a.lim.inbox.add(group) {
+		return inGroupLimit, ""
+	}
+	// The decode, and only it with what follows, takes one of the inboxAtOnce turns (7.5), so at most that many
+	// bodies are decoded at once, each verified first.
+	done, ok := q.enter(ctx)
+	if !ok {
+		return inBusy, ""
+	}
+	defer done()
+	act, err := decodeActivity(body, inboxBodyMax)
+	if err != nil {
+		return inUndecodable, ""
+	}
+	q.stats.drops(act)
+	kind := inboxKind(act)
+	held := call.held
+	// 7.3: the activity's actor is the actor whose key signed it. The cache keeps only a key its actor names,
+	// owns, and has on its own origin, so this also holds the key id and the actor on one origin. A delivery
+	// signed by someone else is a forward, which 7.3 answers with 202 and does not act on.
+	if held == nil || act.Actor != held.actor || !sameOrigin(held.keyID, act.Actor) {
+		return inForward, kind
+	}
+	if !sameOrigin(act.ID, act.Actor) {
+		return inForeignID, kind
+	}
+	self := len(act.Object) == 1 && act.Object[0].ID == act.Actor
+	if call.ownDelete && (act.Kind != "Delete" || !self) {
+		return inStaleKey, kind
+	}
+	switch {
+	case act.Kind == "Delete" && self:
+	case act.Kind == "Update" && self && act.Object[0].Obj != nil:
+		// An Update of the actor's own document: the object is embedded, as Mastodon sends it, and its type is
+		// an actor's. It is not stored as received: the worker fetches the actor from its origin (7.3).
+		if _, k, err := act.Object[0].Obj.types(); err != nil || !apActorKinds[k] {
+			return inDropped, kind
+		}
+	default:
+		return inDropped, kind
+	}
+	return a.queueDelivery(ctx, act, held, kind, group, body)
+}
+
+// The two caps are counted in the statement that inserts, under READ COMMITTED, so statements that run at the same
+// moment each see the count before the others' rows: the queue can pass inboxQueueMax, and a group its share, by at
+// most inboxAtOnce-1 rows, since a delivery is stored only under one of the decode turns. That is the true bound.
+//
+// inboxEnqueueSQL stores a delivery unless the queue, or the sender group's share of it, is full, and says how
+// full each was and whether a row was written: none with room means this actor sent this id before. A repeat is
+// known by the verified signer's actor and the id together: the id alone is only held to the actor's origin, so a
+// second account of the same server could otherwise send its own activity under the first one's id (Mastodon
+// names an account's own Delete <actor>#delete) and have the real one refused as a repeat. Each count stops
+// at its cap, so it reads at most that many index entries.
+const inboxEnqueueSQL = `WITH c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_inbox WHERE state = 'queued' LIMIT $7) a) AS total,
+		(SELECT count(*) FROM (SELECT 1 FROM ap_inbox WHERE state = 'queued' AND host = $3 LIMIT $8) h) AS mine),
+	ins AS (INSERT INTO ap_inbox (activity_id, actor_id, host, kind, body, received_at, next_at)
+		SELECT $1, $2, $3, $4, $5, $6, $6 FROM c WHERE c.total < $7 AND c.mine < $8
+		ON CONFLICT (actor_id, activity_id) DO NOTHING RETURNING id)
+	SELECT c.total, c.mine, (SELECT count(*) FROM ins) FROM c`
+
+// queueDelivery writes the row and wakes a worker.
+func (a *app) queueDelivery(ctx context.Context, act *apActivity, held *keyHeld, kind, group string, body []byte) (inboxReason, string) {
+	f, q := a.fed, a.fed.inbox
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return inBusy, kind
+	}
+	var total, mine, made int
+	err = f.db.QueryRowContext(ctx, inboxEnqueueSQL, act.ID, held.user, group, act.Kind, string(body), q.now(), inboxQueueMax, inboxGroupQueued).Scan(&total, &mine, &made)
+	done()
+	var pqe *pq.Error
+	switch {
+	case errors.As(err, &pqe) && pqe.Code == "23503":
+		// The actor's row went while its key was kept (a -purge-remote run beside the server): its key is
+		// forgotten, and the sender is told to try again, when the actor is fetched anew.
+		f.actors.keys.drop(held.actor)
+		return inKeyBusy, kind
+	case err != nil:
+		log.Printf("error: inbox: storing an activity: %v", err)
+		return inServer, kind
+	case made == 1:
+		q.kick()
+		return inAccepted, kind
+	case total >= inboxQueueMax:
+		return inQueueFull, kind
+	case mine >= inboxGroupQueued:
+		return inGroupQueued, kind
+	}
+	return inDuplicate, kind
+}
+
+// kick wakes a worker, starting them on the first row.
+func (q *inboxQueue) kick() {
+	if q.manual {
+		return
+	}
+	q.once.Do(q.start)
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+}
+
+// start starts the workers, each counted in the federation's wait group (enter), so a stop waits for them (8.6).
+func (q *inboxQueue) start() {
+	for range inboxWorkers {
+		if !q.f.enter() {
+			return
+		}
+		go func() {
+			defer q.f.wg.Done()
+			q.loop()
+		}()
+	}
+}
+
+// loop handles rows until the federation stops, waiting for a row to be written or inboxPoll between them.
+func (q *inboxQueue) loop() {
+	ctx := q.f.ctx
+	failed := time.Time{}
+	for ctx.Err() == nil {
+		worked, err := q.step(ctx)
+		if err != nil && ctx.Err() == nil && time.Since(failed) > time.Minute {
+			failed = time.Now()
+			log.Printf("error: inbox: handling a row: %v", err)
+		}
+		if worked {
+			continue
+		}
+		t := time.NewTimer(inboxPoll)
+		select {
+		case <-ctx.Done():
+		case <-q.wake:
+		case <-t.C:
+		}
+		t.Stop()
+	}
+}
+
+// inboxClaimSQL claims the next row due: one no other worker holds (SKIP LOCKED, and a lease that has not run
+// out), oldest due first, through ap_inbox_due. $1 is the queue's clock.
+const inboxClaimSQL = `UPDATE ap_inbox SET locked_until = $1::timestamptz + make_interval(secs => $2), attempts = attempts + 1
+	WHERE id = (SELECT id FROM ap_inbox WHERE state = 'queued' AND next_at <= $1 AND (locked_until IS NULL OR locked_until < $1)
+		ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
+	RETURNING id, actor_id, kind, attempts`
+
+// errRetry is a handling that failed for this server's reason, to be tried again later.
+type errRetry struct{ why string }
+
+func (e *errRetry) Error() string { return e.why }
+
+// step claims one row and handles it. It reports whether there was one. A row whose handling the stop
+// interrupted is given back at once (its lease cleared and its attempt not counted), so it is handled after the
+// next start, or by the other process of a deploy, and never lost; one whose process died is claimed again
+// when its lease runs out.
+func (q *inboxQueue) step(ctx context.Context) (bool, error) {
+	f := q.f
+	if q.paused() {
+		return false, nil
+	}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return false, err
+	}
+	var id, actor int64
+	var kind string
+	var attempts int
+	err = f.db.QueryRowContext(ctx, inboxClaimSQL, q.now(), inboxLease.Seconds()).Scan(&id, &actor, &kind, &attempts)
+	done()
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// A row claimed more often than its attempts allow is one whose handling kept ending its worker (a crash, a
+	// stop at the worst moment) or kept outlasting its lease: it is failed now, not handled again.
+	if attempts > len(inboxRetries)+1 {
+		q.stats.handled(time.Now(), kind+" failed")
+		return true, q.finish(ctx, `UPDATE ap_inbox SET state = 'failed', body = NULL, locked_until = NULL, handled_at = $2, outcome = $3 WHERE id = $1`,
+			id, q.now(), "claimed more often than its attempts allow")
+	}
+	outcome, herr := q.handle(ctx, actor, kind)
+	if ctx.Err() != nil {
+		// Stopping: the row goes back as it was, on a context of its own, since the federation's has ended.
+		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return true, q.finish(c, `UPDATE ap_inbox SET locked_until = NULL, attempts = attempts - 1 WHERE id = $1 AND state = 'queued'`, id)
+	}
+	now := q.now()
+	var ret *errRetry
+	switch {
+	case herr == nil:
+		q.stats.handled(time.Now(), kind+outcome)
+		err = q.finish(ctx, `UPDATE ap_inbox SET state = 'done', body = NULL, locked_until = NULL, handled_at = $2, outcome = $3 WHERE id = $1`, id, now, outcome)
+	case errors.As(herr, &ret) && attempts <= len(inboxRetries):
+		err = q.finish(ctx, `UPDATE ap_inbox SET locked_until = NULL, next_at = $2, outcome = $3 WHERE id = $1`, id, now.Add(inboxRetries[attempts-1]), ret.why)
+	default:
+		q.stats.handled(time.Now(), kind+" failed")
+		err = q.finish(ctx, `UPDATE ap_inbox SET state = 'failed', body = NULL, locked_until = NULL, handled_at = $2, outcome = $3 WHERE id = $1`, id, now, herr.Error())
+	}
+	return true, err
+}
+
+func (q *inboxQueue) finish(ctx context.Context, stmt string, args ...any) error {
+	done, err := q.f.dbTurn(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	_, err = q.f.db.ExecContext(ctx, stmt, args...)
+	return err
+}
+
+// handle acts on one row (the section's comment says what for each type). outcome is "" when it did what the
+// type asks, or a short fixed note; an *errRetry is this server's own failure, tried again later.
+func (q *inboxQueue) handle(ctx context.Context, actor int64, kind string) (string, error) {
+	f := q.f
+	var apID string
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", &errRetry{"no turn at the database"}
+	}
+	err = f.db.QueryRowContext(ctx, `SELECT ap_id FROM ap_actors WHERE user_id = $1`, actor).Scan(&apID)
+	done()
+	if errors.Is(err, sql.ErrNoRows) {
+		return " of an actor no longer kept", nil
+	}
+	if err != nil {
+		return "", &errRetry{"the database"}
+	}
+	// A domain suspended since the row was taken: what an admin means by suspending is that nothing more from
+	// it is acted on (section 10), so the row is dropped and counted, not handled nor retried.
+	if f.policyNow().decide(actorHost(apID)) == policySuspended {
+		return " dropped (its domain is suspended)", nil
+	}
+	switch kind {
+	case "Delete":
+		// The actor deleted itself (6.3): marked gone, so its key verifies nothing more and its profile is not
+		// shown; FWR 7 purges what it left here. Every key of it kept in memory goes too.
+		if err := q.finish(ctx, `UPDATE ap_actors SET state = 'gone' WHERE user_id = $1`, actor); err != nil {
+			return "", &errRetry{"the database"}
+		}
+		f.actors.keys.drop(apID)
+		return "", nil
+	case "Update":
+		// The actor changed its profile, or its key, or its server lifted a suspension: fetched again from its
+		// origin, unless that was done in the last 10 minutes (7.4), which takes whatever changed.
+		// A row whose fetch failed comes back marked stale, with the reason: this server's own (a busy turn, a
+		// stop) is tried again later; the remote server's is the answer.
+		row, err := f.actors.lookup(ctx, apID, lookupOpts{force: true})
+		var ae *actorError
+		switch {
+		case errors.As(err, &ae) && !ae.Reason.cached():
+			return "", &errRetry{"the actor could not be fetched just now: " + ae.Reason.String()}
+		case err != nil && !errors.As(err, &ae):
+			return "", &errRetry{"the database"}
+		case err == nil && row.Stale && !row.StaleReason.cached():
+			return "", &errRetry{"the actor could not be fetched just now: " + row.StaleReason.String()}
+		case err != nil, row.Stale:
+			return " (its server did not answer)", nil
+		}
+		return "", nil
+	}
+	return " of a type no worker handles", nil
+}
+
+// fedNumbers are the inbox's numbers for the federation page and the dashboard: the counts of the last day from
+// memory, and the queue from the table.
+func (a *app) fedNumbers(ctx context.Context) (*inboxNumbers, error) {
+	f := a.fed
+	if f.inbox == nil {
+		return nil, nil
+	}
+	n := f.inbox.stats.numbers(time.Now())
+	n.Paused = f.inbox.paused()
+	now := f.inbox.now()
+	var oldest sql.NullTime
+	err := a.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM ap_inbox WHERE state = 'queued'), (SELECT min(received_at) FROM ap_inbox WHERE state = 'queued'),
+		(SELECT count(*) FROM ap_inbox WHERE state = 'failed')`).Scan(&n.Queued, &oldest, &n.Failed)
+	if err != nil {
+		return nil, err
+	}
+	if oldest.Valid {
+		n.Oldest = max(int64(now.Sub(oldest.Time).Seconds()), 0)
+	}
+	return &n, nil
+}
+
+// inboxHousekeep removes handled and failed rows older than inboxKeep (9.3), sweeps the replay memory of
+// expired signatures (7.2), and writes the readers' drop counts of the last pass as one line (6.3). Only a mode
+// that federates calls it.
+func (a *app) inboxHousekeep() (int64, error) {
+	f := a.fed
+	if f.verifier != nil {
+		f.verifier.seen.sweep(time.Now().Unix(), sigSeenMax)
+	}
+	if f.inbox != nil {
+		s := &f.inbox.stats
+		s.mu.Lock()
+		rec, obj, bad := s.recipients, s.objects, s.badDates
+		s.recipients, s.objects, s.badDates = 0, 0, 0
+		s.mu.Unlock()
+		if rec+obj+bad > 0 {
+			log.Printf("inbox: since the last pass the readers dropped %d recipients and %d objects they could not use, and read %d dates that were not dates (docs/federation.md 6.3)", rec, obj, bad)
+		}
+	}
+	done, err := f.dbTurn(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	defer done()
+	res, err := a.db.Exec(`DELETE FROM ap_inbox WHERE state <> 'queued' AND handled_at < $1`, time.Now().Add(-inboxKeep))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+/* ---------- federation: domain policies and the allowlist ----------
+
+What an admin decides about other servers (docs/federation.md, F8, section 10 and 7.7; FMD item 1, as far as
+the inbox needs it). One row of domain_policies per domain, matched with its subdomains: allow or suspend
+(Mastodon's domain allow and Suspend; the table also takes limit, whose effect on follows comes with FWR 3),
+with a note for staff saying why. The instance setting federation_policy says whether the instance takes
+deliveries from every server not suspended ("open") or only from those an admin allowed ("allowlist"); with
+nothing saved it is the allowlist, F8's recommendation while federated mode is marked experimental, so a
+federating instance accepts no delivery until an admin names a server.
+
+Where each is applied in this version:
+
+  - The inbox refuses, with 403 and before the body is read or any key fetched, a delivery signed by a key on
+    a suspended domain, and in allowlist mode one on a domain no row allows (or limits).
+  - The fetcher refuses every host the policy does not let in (fetchReq.admits, through the actor cache's
+    admits hook, on the first URL and every redirect): in allowlist mode every unlisted host, in both modes
+    every suspended one (also fetchReq.refused). F8's allowlist is "talk only to servers an admin listed", and
+    7.6 reads it as sending to and accepting from only those, so on a fresh federating instance nothing reaches
+    another server, for a key, an actor or a member's search by handle (told lookupNotAllowed), until an admin
+    allows a domain or chooses open. Neither mode makes the public pages private (7.6): anyone can read them.
+  - Not yet (FMD's todo says so): limit's effect, reject media and reject reports, and the public comment on
+    the about page.
+
+The rows are read once at start and again after each change, into memory (fedPolicy), so a refusal costs no
+query. Only a mode that federates has the routes, the permissions and the memory; local mode has none. */
+
+const (
+	domainPoliciesMax = 10000 // rows an instance keeps; an admin past it is refused, so the memory and every check stay bounded
+	domainNoteMax     = 500   // characters of the staff note on a row
+	policyAllowlist   = "allowlist"
+	policyOpen        = "open"
+)
+
+// domainPolicy is one row of domain_policies, as the admin page reads it.
+type domainPolicy struct {
+	Domain    string    `json:"domain"`
+	Policy    string    `json:"policy"` // allow, limit or suspend
+	Note      string    `json:"note"`   // private_note: why, for staff
+	CreatedBy string    `json:"createdBy"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// fedPolicy is the domain policy as last read: the mode and the rows by domain. Each change replaces the whole
+// (federation.policy is atomic), so a reader never sees half of one.
+type fedPolicy struct {
+	mode string                  // policyAllowlist or policyOpen
+	rows map[string]domainPolicy // by domain
+	// suspended is every suspended domain, for the fetcher's refused list (refusedHosts' form: lower case,
+	// matched with its subdomains).
+	suspended []string
+}
+
+// policyVerdict is what the policy says of a host: in, or why not.
+type policyVerdict uint8
+
+const (
+	policyIn         policyVerdict = iota
+	policySuspended                // the host or a domain above it is suspended
+	policyNotListed                // allowlist mode, and no row allows the host or a domain above it
+	policyUnreadable               // not a host the fetcher would ask (fedHost), so never in
+)
+
+// decide is the verdict for a host, compared lower case and without a trailing dot, with each of its parent
+// domains: a.b.example.com is held to the rows for itself, b.example.com and example.com. A suspension anywhere
+// above wins over an allow, so suspending a subdomain of an allowed domain works and allowing a subdomain of a
+// suspended one does not.
+func (p *fedPolicy) decide(host string) policyVerdict {
+	h, why := fedHost(host)
+	if why != "" {
+		return policyUnreadable
+	}
+	listed := false
+	for d := h; ; {
+		if r, ok := p.rows[d]; ok {
+			if r.Policy == "suspend" {
+				return policySuspended
+			}
+			listed = true
+		}
+		i := strings.IndexByte(d, '.')
+		if i < 0 {
+			break
+		}
+		d = d[i+1:]
+	}
+	if p.mode == policyAllowlist && !listed {
+		return policyNotListed
+	}
+	return policyIn
+}
+
+// policyNow is the policy in memory; before the first read, the allowlist with no row, so nothing is let in
+// that an admin has not allowed.
+func (f *federation) policyNow() *fedPolicy {
+	if p := f.policy.Load(); p != nil {
+		return p
+	}
+	return &fedPolicy{mode: policyAllowlist}
+}
+
+// loadPolicy reads the mode and the rows into memory. It runs at start and after each change an admin makes;
+// the rows are read and their connection given back before the new policy is put in place.
+func (f *federation) loadPolicy(ctx context.Context) error {
+	p := &fedPolicy{mode: policyAllowlist, rows: map[string]domainPolicy{}}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return err
+	}
+	defer done() // the two reads one after the other, the rows closed before it is given back
+	var mode string
+	err = f.db.QueryRowContext(ctx, `SELECT value #>> '{}' FROM instance_settings WHERE key = 'federation_policy'`).Scan(&mode)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if mode == policyOpen {
+		p.mode = policyOpen
+	}
+	rows, err := f.db.QueryContext(ctx, `SELECT d.domain, d.policy, d.private_note, COALESCE(u.username, ''), d.created_at FROM domain_policies d
+		LEFT JOIN users u ON u.id = d.created_by ORDER BY d.domain LIMIT $1`, domainPoliciesMax)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r domainPolicy
+		if err := rows.Scan(&r.Domain, &r.Policy, &r.Note, &r.CreatedBy, &r.CreatedAt); err != nil {
+			return err
+		}
+		p.rows[r.Domain] = r
+		if r.Policy == "suspend" {
+			p.suspended = append(p.suspended, r.Domain)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	f.policy.Store(p)
+	// An address refused under the old policy is not remembered as refused under the new one: allowing a
+	// domain lets its actors be fetched at once, not after the cache's 10 minutes.
+	if f.actors != nil {
+		f.actors.forgetRefusals()
+	}
+	return nil
+}
+
+// forgetRefusals drops every remembered refusal of an address (actorRefused): what a domain policy refused.
+func (c *actorCache) forgetRefusals() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, m := range c.memo {
+		if m.reason == actorRefused {
+			c.forget(k, m)
+		}
+	}
+}
+
+// refusedByPolicy is the actor cache's refused hook: every suspended domain, each with its subdomains.
+func (f *federation) refusedByPolicy() []string { return f.policyNow().suspended }
+
+// admits is the fetcher's hook (fetchReq.admits): whether the policy lets a host in, both ways. F8's allowlist is
+// "talk only to servers an admin listed", and 7.6 reads it as "sends to and accepts from only the listed
+// servers", so in allowlist mode no request leaves for an unlisted host: no key, no actor, no search by handle.
+func (f *federation) admits(host string) bool { return f.policyNow().decide(host) == policyIn }
+
+// cleanDomain reads a domain an admin typed: trimmed, lower case, one trailing dot dropped, a plain ASCII DNS
+// name the fetcher could ask (fedHost: at least two labels, no address, no private name). A name in another
+// script must be written in its xn-- form, since the standard library cannot make that form and the fetcher
+// compares what a URL carries (refusedHosts, 7.8). This instance's own domain, or one above it, is refused. It
+// returns the name, or a sentence saying what is wrong.
+func cleanDomain(v, own string) (string, string) {
+	d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(v)), ".")
+	switch {
+	case d == "":
+		return "", "Write the server's domain, such as social.example."
+	case strings.ContainsAny(d, "/@: "):
+		return "", "Write the domain alone, such as social.example: no https://, path, port or handle."
+	case strings.Trim(d, "abcdefghijklmnopqrstuvwxyz0123456789.-") != "":
+		return "", "Use only letters, digits, dots and dashes; write a name in another script in its xn-- form, as the server's addresses carry it."
+	}
+	if _, why := fedHost(d); why != "" {
+		return "", "That is not a domain another server can have: it is " + why + "."
+	}
+	if d == own || strings.HasSuffix(own, "."+d) {
+		return "", "That is this server's own domain."
+	}
+	return d, ""
+}
+
+// handleFedAdmin answers GET /api/admin/federation: the policy, the rows and the inbox's numbers (fedNumbers).
+func (a *app) handleFedAdmin(w http.ResponseWriter, r *http.Request, _ *user) {
+	p := a.fed.policyNow()
+	list := make([]domainPolicy, 0, len(p.rows))
+	for _, d := range slices.Sorted(maps.Keys(p.rows)) {
+		list = append(list, p.rows[d])
+	}
+	out := map[string]any{"policy": p.mode, "domains": list, "max": domainPoliciesMax, "noteMax": domainNoteMax}
+	n, err := a.fedNumbers(r.Context())
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if n != nil {
+		out["inbox"] = n
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handlePutDomain answers PUT /api/admin/federation/domains/{domain}: allow or suspend a domain, with a note for
+// staff, audited in the same transaction. A row there already is replaced.
+func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
+	if !ok {
+		return
+	}
+	d, why := cleanDomain(r.PathValue("domain"), a.fed.origin.host)
+	if why != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": why, "field": "domain"})
+		return
+	}
+	var in struct {
+		Policy string `json:"policy"`
+		Note   string `json:"note"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if in.Policy != "allow" && in.Policy != "suspend" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose allow or suspend.", "field": "policy"})
+		return
+	}
+	note := strings.TrimSpace(in.Note)
+	if v, ok := visibleText(note); !ok || utf8.RuneCountInString(note) > domainNoteMax {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("The note is plain text of at most %d characters.", domainNoteMax), "field": "note"})
+		return
+	} else {
+		note = v
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM domain_policies WHERE domain <> $1`, d).Scan(&n); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// Counted in the transaction that inserts, so admins saving at the same moment can pass the cap by the number of
+	// saves running at once, a handful: the cap bounds memory and checks, which that does not change.
+	if n >= domainPoliciesMax {
+		fail(w, http.StatusConflict, fmt.Sprintf("This server keeps at most %d domain policies. Remove one first.", domainPoliciesMax))
+		return
+	}
+	var was string
+	err = tx.QueryRow(`SELECT policy FROM domain_policies WHERE domain = $1`, d).Scan(&was)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
+	if _, err := tx.Exec(`INSERT INTO domain_policies (domain, policy, private_note, created_by) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (domain) DO UPDATE SET policy = EXCLUDED.policy, private_note = EXCLUDED.private_note, created_by = EXCLUDED.created_by, created_at = now()`,
+		d, in.Policy, note, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, map[string]any{"domain": d, "policy": in.Policy, "was": was}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.fedPolicyChanged(w, r, u)
+}
+
+// handleDeleteDomain answers DELETE /api/admin/federation/domains/{domain}: the row goes, audited.
+func (a *app) handleDeleteDomain(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
+	if !ok {
+		return
+	}
+	d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.PathValue("domain"))), ".")
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var was string
+	if err := tx.QueryRow(`DELETE FROM domain_policies WHERE domain = $1 RETURNING policy`, d).Scan(&was); errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No policy for that domain.")
+		return
+	} else if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "domain_policy_remove", "domain", 0, 0, "", map[string]any{"domain": d, "was": was}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.fedPolicyChanged(w, r, u)
+}
+
+// handlePutFedPolicy answers PUT /api/admin/federation/policy: allowlist or open, audited.
+func (a *app) handlePutFedPolicy(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
+	if !ok {
+		return
+	}
+	var in struct {
+		Policy string `json:"policy"`
+	}
+	if !readJSON(w, r, 1024, &in) {
+		return
+	}
+	if in.Policy != policyAllowlist && in.Policy != policyOpen {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose allowlist or open.", "field": "policy"})
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO instance_settings (key, value, updated_at, updated_by) VALUES ('federation_policy', to_jsonb($1::text), now(), $2)
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by`, in.Policy, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "federation_policy", "", 0, 0, "", map[string]any{"policy": in.Policy}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.fedPolicyChanged(w, r, u)
+}
+
+// fedPolicyChanged reads the policy into memory again after a change, and answers with the admin page's data.
+func (a *app) fedPolicyChanged(w http.ResponseWriter, r *http.Request, u *user) {
+	if err := a.fed.loadPolicy(r.Context()); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.handleFedAdmin(w, r, u)
+}
+
 /* ---------- federation: removing every remote row ---------- */
 
 // purgeCounts are the rows that point at remote accounts, counted before they go with them: each
@@ -15201,6 +17092,7 @@ var purgeCounts = []struct{ what, sql string }{
 	{"blocks", `SELECT count(*) FROM blocks b WHERE EXISTS (SELECT 1 FROM users u WHERE u.id IN (b.user_id, b.target_id) AND u.domain <> '')`},
 	{"notifications", `SELECT count(*) FROM notifications n WHERE EXISTS (SELECT 1 FROM users u WHERE u.id IN (n.user_id, n.actor_id) AND u.domain <> '')`},
 	{"reports", `SELECT count(*) FROM reports r JOIN users u ON u.id = r.reporter_id WHERE u.domain <> ''`},
+	{"inbox rows", `SELECT count(*) FROM ap_inbox`}, // each is a remote account's (actor_id), and goes with it
 }
 
 // purgeRemote removes every remote account and everything that hangs off it (docs/federation.md 14.4), in
@@ -15470,6 +17362,50 @@ var migrations = []string{schema, schemaSocial,
 	// fetch, at most 24 hours later. One column with a constant default: no row is rewritten, and an older
 	// build ignores it.
 	`ALTER TABLE ap_actors ADD COLUMN IF NOT EXISTS outbox TEXT NOT NULL DEFAULT ''`,
+	// 17: domain policies (docs/federation.md 9.1 and section 10; FMD 1): one row per domain an admin allowed,
+	// limited or suspended, matched with its subdomains, with the note for staff and the public comment of
+	// Mastodon's domain blocks, and the two switches FMD's later items read. The domain is stored as the fetcher
+	// compares it: lower case ASCII, a name in another script in its xn-- form. created_by is indexed for the
+	// actor cache's bound (userRefs). A new table: nothing is rewritten, and an older build ignores it.
+	`CREATE TABLE IF NOT EXISTS domain_policies (
+		domain TEXT PRIMARY KEY CHECK (domain <> '' AND domain = lower(domain)),
+		policy TEXT NOT NULL CHECK (policy IN ('allow', 'limit', 'suspend')),
+		reject_media BOOLEAN NOT NULL DEFAULT false,
+		reject_reports BOOLEAN NOT NULL DEFAULT false,
+		public_comment TEXT NOT NULL DEFAULT '',
+		private_note TEXT NOT NULL DEFAULT '',
+		created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	);
+	CREATE INDEX IF NOT EXISTS domain_policies_by ON domain_policies (created_by)`,
+	// 18: the inbound queue (docs/federation.md 7.2, 8.1, 9.1 and 9.3; FWR 1): one row per delivery the inbox
+	// took, unique by the signer's actor and the activity id (ActivityPub 5.2: de-duplicated by id; by the actor too,
+	// so that one account of a server cannot take another's ids, such as Mastodon's <actor>#delete), with the body
+	// as received (text, not JSONB: the decoder reads it again byte for byte, and a later forward sends it as
+	// received, 7.1.2), dropped once the row is handled; claimed by a worker with a lease (8.1); the row kept 7 days
+	// after (9.3). host is the sender group (the last two labels of the key id's host), whose share of the queue is
+	// bounded (8.5). actor_id is the remote account that signed it; the unique index starts with it, which serves
+	// the actor cache's bound (userRefs). A new table: an older build
+	// ignores it, and the rows it leaves are handled when this build runs again.
+	`CREATE TABLE IF NOT EXISTS ap_inbox (
+		id BIGSERIAL PRIMARY KEY,
+		activity_id TEXT NOT NULL,
+		actor_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		host TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		body TEXT,
+		state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'done', 'failed')),
+		attempts INT NOT NULL DEFAULT 0,
+		next_at TIMESTAMPTZ NOT NULL,
+		locked_until TIMESTAMPTZ,
+		outcome TEXT NOT NULL DEFAULT '',
+		received_at TIMESTAMPTZ NOT NULL,
+		handled_at TIMESTAMPTZ,
+		UNIQUE (actor_id, activity_id)
+	);
+	CREATE INDEX IF NOT EXISTS ap_inbox_due ON ap_inbox (next_at, id) WHERE state = 'queued';
+	CREATE INDEX IF NOT EXISTS ap_inbox_host ON ap_inbox (host) WHERE state = 'queued';
+	CREATE INDEX IF NOT EXISTS ap_inbox_handled ON ap_inbox (handled_at) WHERE state <> 'queued'`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -15537,6 +17473,14 @@ func (a *app) housekeep() (map[string]int64, error) {
 		}
 		out[st.name], _ = res.RowsAffected()
 	}
+	// The inbox's rows and memories, only in a mode that federates: a local instance's pass is as it was.
+	if a.fed != nil {
+		n, err := a.inboxHousekeep()
+		if err != nil {
+			return out, fmt.Errorf("housekeeping inbox: %w", err)
+		}
+		out["inbox"] = n
+	}
 	return out, nil
 }
 
@@ -15554,6 +17498,9 @@ func (a *app) housekeeping(ctx context.Context, every time.Duration) {
 		// A line of its own, so the line above reads as it always has.
 		if n["requests"] > 0 {
 			log.Printf("housekeeping: removed %d requests to join that waited more than %d days", n["requests"], joinWaitDays)
+		}
+		if n["inbox"] > 0 {
+			log.Printf("housekeeping: removed %d inbox rows handled more than 7 days ago", n["inbox"])
 		}
 		select {
 		case <-ctx.Done():
@@ -16145,7 +18092,7 @@ func (a *app) routes(st *static) http.Handler {
 	mux := a.table(st)
 	var h http.Handler = a.guard(mux.ServeMux)
 	if a.fed != nil {
-		h = a.fedMethods(h)
+		h = a.fedMethods(h, mux.ServeMux)
 	}
 	return a.logged(mux.ServeMux, a.secure(h))
 }
@@ -16219,6 +18166,13 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st, false))
 		mux.HandleFunc("GET /users/{name}/posts/{id}/activity", a.handlePublicPost(st, true))
 		mux.HandleFunc("POST /api/fed/lookup", a.flagged("community", a.authed("", a.handleLookup)))
+		mux.HandleFunc("POST /inbox", a.handleInbox)
+		mux.HandleFunc("POST /actor/inbox", a.handleInbox)
+		mux.HandleFunc("POST /users/{name}/inbox", a.handleInbox)
+		mux.HandleFunc("GET /api/admin/federation", a.authed(permFedRead, a.handleFedAdmin))
+		mux.HandleFunc("PUT /api/admin/federation/policy", a.authed(permFedManage, a.handlePutFedPolicy))
+		mux.HandleFunc("PUT /api/admin/federation/domains/{domain}", a.authed(permFedManage, a.handlePutDomain))
+		mux.HandleFunc("DELETE /api/admin/federation/domains/{domain}", a.authed(permFedManage, a.handleDeleteDomain))
 		mux.HandleFunc("GET /actor/outbox", a.handleInstanceOutbox(st))
 		for _, kind := range memberCollections {
 			mux.HandleFunc("GET /users/{name}/"+kind, a.handleCollection(st, kind))

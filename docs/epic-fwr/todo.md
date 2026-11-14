@@ -6,7 +6,7 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** not started (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); waits for FRD. 0 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review). 0 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -49,6 +49,45 @@ route and test named below is new unless the design note says it exists.
   `TestDBRemoteActorTurns`. `actorBusy` (no turn within 5 s) is answered 503 with `Retry-After`, as `sigFull` is.
   The first inbox request that fetches a key freezes the origin through `ensureOrigin`, by design: a signed
   fetch names the instance actor's key id under it (federation.md 4.3).
+  Built (federation.md 7.10 says what and why; with FMD 1's domain policies, which the inbox needs, in their own
+  commit): the three inboxes past `guard`, every refusal in the order and with the status of 7.10 (pinned by
+  `TestInboxStageOrder`), the `federation` flag (only in a mode that federates) as the pause, `ap_inbox`
+  (migration 18, unique by the signer's actor and the activity id), two workers with claim, lease, retries, dead
+  rows, retention and a shutdown that gives a claimed row back, `fedConnsMax` turns at the database. Who pays:
+  before the signature verifies only the request's address (3,600 deliveries and 60 key fetches an hour, at most 2
+  of the 8 bodies being read, each turn ending when its body has arrived within 10 s, else 408); once verified, the
+  key id's host (300 in 5 minutes) and domain (3,000) and, for a fetched key that verified, the domain's 120 key
+  fetches an hour. `keyMemo` tied to its actor's row, the origin rule, the stale, gone and suspended rules with
+  `keyForOwnDelete`, the unknown actor's Delete dropped with no fetch and an unverified own Delete answered alike
+  (202; this server's own failures keep their 503), the replay memory's `sweep` in housekeeping and its `stepped`
+  logged once, the readers' drop counts logged, the README's sentences on the root of the origin and on the
+  sender's address behind a proxy (logged once when a trusted proxy passes none), the inbox section, `fedBuilt`
+  and NodeInfo's `inbox`, `endpoints.sharedInbox` in the actor.
+  What each type does in this version: an actor's own Delete marks it gone, an Update of the actor's own document
+  fetches it again; everything else (Follow included) is counted per type and dropped with 202, and nothing is
+  answered back. Tests: `TestInboxRefusals` (every case above, each with its status and reason),
+  `TestInboxKeys` (a rotated key after one refetch, a stale row, a gone and a suspended actor, an own Delete with
+  the cached key after the actor's server stopped answering, a Delete from an actor never seen with no fetch),
+  `TestInboxKeyFetchBound`, `TestDBInboxSlowKey` (no connection held while the key is fetched), `TestDBInboxQueue`
+  (the same id 9 times, 8 at once: one row; two workers never handle a row twice; the retry schedule on the
+  test's clock and the give-up; the lease; a stop mid-handling gives the row back; retention; the pause),
+  `TestDBInboxHandlers`, `TestDBInboxMethods` (replacing `TestDBInboxNotYet`), `TestDBTwoFlowaInbox` (a signed
+  delivery in both forms through the real fetcher and `httpSigner`, verified, queued and handled by the other
+  instance), `TestDBInboxOneConnection`, `TestDBFedConnsBound`, `TestDBInboxClockStep`, `TestDBInboxTurns` (4
+  decodes at once, 8 waiting), `TestDBInboxFlood` (unsigned 256 KB bodies refused unread with no fetch or row; keys
+  nobody keeps limited to their 2 turns while a kept key's delivery is accepted), `TestDBInboxForwardPays` (a
+  forward spends the signer's allowances, never the named actor's domain's), `TestDBPolicyBothWays` (the allowlist
+  outbound too), `TestInboxStageOrder`, `TestInboxSlowBodies`, `TestInboxReadTurnFreed`, `TestInboxForgedSpendsGroup`,
+  `TestInboxIDSquat`, `TestInboxPeekOracle`, `TestInboxOwnDeleteByAnother`, `TestInboxUnforwardedSaidOnce`,
+  `TestKeyMemoRaces`, `TestDBInboxKeyFollowsRow`, `TestDBInboxWorkerLimits`, `TestDBPurgeRemote` and
+  `TestDBQueryPlans` updated, all with `-race -count=3` on two cores;
+  `BenchmarkInboxRequest` (with the key kept: 66 to 75 µs and 173 allocations dropped, 1.4 to 2.1 ms wall and 219
+  allocations stored with its commit; an unsigned 256 KB request 6.2 to 6.6 µs and 41 allocations; a 256 KB Delete
+  of an actor never seen 1.7 to 1.8 ms and 640 KB, on a 2.1 GHz Xeon) and `BenchmarkInboxVerify` under budget. The `federated` browser suite covers the inbox's answers
+  over HTTP that need no other server and the Federation tab (`federated-admin-federation`).
+  **Open:** `TestFederationMemory` (it needs FWR 2's deliveries; the inbox's share is `TestDecodeMemory`'s 4 MB
+  times its 4 turns), the `/healthz` fields (FWR 2), the Pi's figures for the budget of section 12, and the box
+  stays unchecked until the owner's review merges it.
 - [ ] **A delivery queue in Postgres.** `ap_outbox`, `ap_deliveries`, `ap_hosts`; workers
   (`FLOWA_FEDERATION_WORKERS`), one request at a time per host, 10 a second, at most 3 database
   connections; the retry schedule and the 48-hour horizon (F9); the circuit breaker and unavailable

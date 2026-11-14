@@ -28,6 +28,9 @@
   "followers": "https://flowa.example.org/users/ana/followers",
   "following": "https://flowa.example.org/users/ana/following",
   "featured": "https://flowa.example.org/users/ana/featured",
+  "endpoints": {
+    "sharedInbox": "https://flowa.example.org/inbox"
+  },
   "manuallyApprovesFollowers": false,
   "discoverable": false,
   "indexable": false,
