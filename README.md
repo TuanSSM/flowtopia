@@ -483,10 +483,15 @@ later version; showing them straight from the other server would tell it the mem
 full-text search of anything.
 
 Limits: 30 lookups an hour per member (a mistyped query costs almost nothing; one that asked another server,
-or named an address Flowa refuses, costs its whole count), at most 4 running at once on the server, at most 7
-requests to other servers each (each following at most 3 redirects), 15 s in all, ended when the member's
-request ends. A failure is told in a few fixed words (not found, refused, timed out, not an account, gone,
-suspended, busy, unavailable), never with the other server's own text or an address. Visitors, suspended
+or named an address Flowa refuses, costs its whole count), one at a time per member and at most 4 at once on
+the server, at most 8 requests to other servers each (each following at most 3 redirects), 15 s in all. A
+failure is told in a few fixed words (not found, refused, not an account, gone, suspended, busy,
+unavailable), never with the other server's own text or an address: "refused" is only for an address typed
+that Flowa never asks (an IP address, localhost, a private name, another port), and everything that fails
+once a name has been looked up (no such name, a private address, no connection, no answer in time) is "not
+found", answered no sooner than a second after the search began, so the answer does not tell which. A
+handle's name holds only letters, digits and "-", ".", "_", "~", and the page shows it apart from its host;
+a link is offered only to the account's own server, with its host beside it. Visitors, suspended
 members and pages of other sites cannot start one (it is a POST behind the same-origin check of every write).
 In local mode, and in single mode without `FLOWA_FEDERATE=on`, none of this exists.
 

@@ -2591,12 +2591,29 @@ keyword filters.
   `limits.lookups` (30 an hour per member) counted before anything is read; a mistyped query and the answers
   that cost no connection (a local member, this server's own state) give most of it back, a lookup that asked
   another server and a query naming an address the fetcher refuses do not; at most 4 lookups at once on the
-  server (a fifth is told to try again); at most 7 requests through the fetcher (section 12), 15 s in all, ended
-  when the member's request ends (the actor's own fetch, shared with other callers, runs on to its 15 s and is
-  kept, as 7.4 says). A member is told one of nine fixed reasons and nothing else: not a handle, not found (no
-  answer, no such account, a name that does not resolve and a server that cannot be reached alike), refused (an
-  address Flowa does not connect to, whether refused before any connection or at connect time: the same words),
-  timed out, not an account, gone, suspended, busy, unavailable. No remote server's text, status or address
+  server (a fifth is told to try again), one at a time per member; at most 8 requests through the fetcher
+  (section 12), 15 s in all. When the member's request ends, the lookup stops waiting and sends nothing more;
+  an actor fetch already started is the cache's, shared with other callers, and runs on to its own 15 s and is
+  kept (7.4). A member is told one of eight fixed reasons and nothing else: not a handle, refused (only what
+  the typed text alone shows, before any DNS lookup: an IP address, localhost, a private suffix, another port),
+  not found (every failure once the name was handed to the resolver: no such name, a private address refused
+  at connect time, a connection refused, TLS that fails, no answer in time, a status that is not a success,
+  answered no sooner than one second after the lookup began, `lookupFloor`, so neither the words nor the time
+  tell a public name that resolves to a private address from one that does not resolve), not an account, gone,
+  suspended, busy, unavailable.
+  **As built after its review:** a handle's name part, in the query, in every WebFinger subject and built from
+  an actor, is taken only when `handleNameOK` passes it: after decoding, letters, decimal digits, marks after
+  them, and "-", ".", "_", "~" (RFC 7565's userpart narrowed to what servers use: Mastodon's rule in the SWICG
+  report, and RFC 7565 4's PRECIS class, which holds no control, format or space character), with no control,
+  format, private-use, separator, unseen or variation character (`shownRune`, which a bio and a post go through
+  too); anything else is "not an account". The name shown falls back to the proven handle's name, never the raw
+  `preferredUsername`; the page shows the name in a `bdi` and the handle as an isolated name and, apart from it,
+  the host. A link is offered only on the actor's origin or the proven handle's host (else the actor's or the
+  post's id), with the host beside it. The outbox and its page are fetched through the fetcher alone, signed,
+  not through the actor cache's turns: what a lookup can cost the inbox is one actor fetch at a time (at most
+  two in one lookup, the address of a profile and then its actor, each with its key's document), never the
+  posts. The actor fetch counts two requests (the document and, when the actor names its key by id at an
+  address of its own, the cache's `followKey`), so the true bound is 8. No remote server's text, status or address
   reaches the member or the log. Staff are answered as anyone else; visitors and suspended members have no
   session; a page of another site cannot start one (POST behind `guard`, JSON only). No database connection or
   lock is held while the network is waited on (`TestDBOneConnection`).
@@ -2642,7 +2659,7 @@ the budget, and the first measured value is written into the pull request that a
 | Database connections held by federation | at most 3 of 8 | `TestDBDeliveryQueue` reads `db.Stats().InUse` during a burst |
 | Queue rows | 50,000 in all, 2,000 per host | `TestDBDeliveryBackPressure` (**new**) |
 | Inbound queue | 5,000 rows; 503 above | `TestInboxRefusals` |
-| A search by handle | at most 7 requests through the fetcher, each with at most 3 redirects (28 requests at most), 15 s in all; 30 an hour per member, 4 at once on the server | `TestDBResolveHandle` counts the requests each case sends at the stub (4 for a plain handle, 6 for a handle domain apart from its server or a profile page that answers no actor, 5 for a profile address that redirects to its actor and 3 when it is asked again, 13 for a lookup that takes every step with redirects), and `spend` refuses the eighth; `TestDBLookupRoute` the allowance and the turns |
+| A search by handle | at most 8 requests through the fetcher, each with at most 3 redirects (32 requests at most), 15 s in all; 30 an hour per member, one at a time per member, 4 at once on the server, none of the actor cache's turns for the posts | `TestDBResolveHandle` counts the requests each case sends at the stub (4 for a plain handle, 6 for a handle domain apart from its server or a profile page that answers no actor, 5 for a profile address that redirects to its actor and 3 when it is asked again, 13 for a lookup that takes every step with redirects, 8 for the longest way of all: a profile page that answers no actor, its WebFinger, the actor and its key at an address of its own, the reverse and canonical WebFinger, the outbox and its page), and `spend` refuses the ninth; `TestDBLookupRoute` the allowance, `TestDBLookupKeepsKeyTurns` the turns |
 | Remote actors cached | 20,000 rows, about 2 KB each | `TestDBRemoteActorCache` and `TestDBRemoteActorBound` (as built in FRD 7: 858 bytes for an actor with a 2048-bit key and short addresses, both rows, indexes apart; at most about 18 KB for one with a 2,048-byte summary and seven addresses of 2,048 bytes; `BenchmarkRemoteActorCached` about 0.8 ms, 6.2 KB and 79 allocations a lookup the cache answers, one query to a local Postgres; `BenchmarkRemoteActorFetch` about 7 ms, 50 KB and 586 allocations a fetch of an expired actor, signing, the local TLS stub and five queries counted, on a 2.1 GHz Xeon) |
 | Picture cache | 200 MB on disk | `TestMediaCacheBudget` (**new**) with a 2 MB budget |
 | Replay memory | 100,000 signatures, about 6 MB (5.2 to 5.6 MB measured: 52 to 56 bytes each; at most about 7 MB) | `TestReplayExpiry` |

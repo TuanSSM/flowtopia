@@ -356,8 +356,9 @@ design note says it exists.
   of Mastodon's page and the rule written in 5.3 for a handle's host apart from the actor's (the query's own
   subject must be the proven account), a profile address asked as an actor and else of its host's WebFinger by
   URL, the first page of the outbox (only Public and unlisted Notes by the actor on its origin, at most 20,
-  nothing stored), nine fixed reasons (`lookupReason`), `limits.lookups` (30 an hour per member, counted first),
-  4 lookups at once, at most 7 requests through the fetcher and 15 s, cancelled with the member's request;
+  nothing stored), eight fixed reasons (`lookupReason`), `limits.lookups` (30 an hour per member, counted first),
+  one lookup at a time per member and 4 at once, at most 8 requests through the fetcher and 15 s (when the
+  member's request ends the lookup stops; an actor fetch already started runs on in the cache, as 7.4 says);
   the card "People elsewhere" in the timeline (`lookupCard` in `web/social.js`, offered by `/api/me`'s
   `federation.lookup`), with no remote picture and no Follow, and the server's notice saying why; `fedBuilt`
   and NodeInfo's parts (`lookup`). `TestParseLookup`, `TestAcct`, `TestParseJRD`, `TestLookupReasons`,
@@ -379,6 +380,7 @@ design note says it exists.
   that does not resolve), a visitor, another page's write and a GET, then works the card with the keyboard (a
   member found, an address refused, each said to a screen reader) held to the a11y, contrast and keys walks and
   to 420 px, and writes `federated-lookup`, `federated-lookup-failure` and their `-phone` pictures.
+  After its review (#110): a handle's name part only as `handleNameOK` takes it, shown isolated and apart from its host; the name fallback through the proven handle; links only to the account's own origin, with the host shown; one reason, "not found", for every failure after the resolver, answered no sooner than 1 s (`lookupFloor`); the request bound corrected to 8 (the key document the cache fetches inside `remoteActor`); outboxes read without the actor cache's turns, and one lookup at a time per member. `TestHandleNameOK`, `FuzzHandleName` (30 s), `TestDBLookupReviewProbes`, `TestDBLookupTimingFloor` and `TestDBLookupKeepsKeyTurns` hold them.
   Open: the DoD's "recorded fixtures" (none is recorded: the stub serves documents written from documentation,
   as FRD 7's do) and "a browser check with the stub" (the browser suite's server refuses private addresses and
   must not be given a way round that, so a remote account, the reverse check and the outbox are checked in Go
