@@ -7796,13 +7796,14 @@ const actorDocSQL = `SELECT u.username, u.display_name, u.bio, u.links, u.props,
 
 // profilePageSQL is a member's public page in one statement: the member, if they may be shown, with a page
 // of their Public posts newest first ($3: older than this post, 0 for the first page; $4 how many), and
-// whether the name is retired. posts_public serves the posts.
+// whether the name is retired. posts_public serves the posts. $3 is a bigint like the ids it is compared
+// with: written as "$3 = 0" alone, Postgres would take it for an integer and fail on a cursor past 2^31.
 const profilePageSQL = `SELECT r.retired, m.id, m.username, m.display_name, m.bio, m.links, m.head, m.tag, m.pid, m.body, m.image, m.data, m.created_at
 	FROM (SELECT ` + retiredSQL + ` AS retired) r LEFT JOIN (
 		SELECT u.id, u.username, u.display_name, u.bio, u.links, left(u.avatar, 64) AS head, CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END AS tag,
 			p.id AS pid, p.body, left(p.image, ` + pictureHead + `) AS image, p.data, p.created_at
 		FROM users u LEFT JOIN LATERAL (SELECT p.id, p.body, p.image, p.data, p.created_at FROM posts p WHERE p.user_id = u.id AND ` + publicPost + `
-			AND ($3 = 0 OR p.id < $3) ORDER BY p.id DESC LIMIT $4) p ON true
+			AND ($3::bigint = 0 OR p.id < $3) ORDER BY p.id DESC LIMIT $4) p ON true
 		WHERE u.username = $1 AND ` + publicMember + `) m ON true ORDER BY m.pid DESC`
 
 // publicPostSQL reads a Public post $3 by the member $1, with what its page and its Note say of the author.

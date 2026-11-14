@@ -440,3 +440,14 @@ func TestDBRetireRace(t *testing.T) {
 		}
 	}
 }
+
+// A post id is a BIGSERIAL, so a profile page's cursor past 32 bits is an id like any other: the page of
+// the posts older than it, not a 500.
+func TestDBProfileCursorWide(t *testing.T) {
+	f := newPubFixture(t)
+	for _, cur := range []int64{1 << 31, 1 << 40, 1<<63 - 1} {
+		if w := pubAsk(f.e, "GET", fmt.Sprintf("/users/ana?before=%d", cur), browser); w.Code != 200 || !strings.Contains(w.Body.String(), "Finally clean!") {
+			t.Errorf("the profile page before %d: %d", cur, w.Code)
+		}
+	}
+}
