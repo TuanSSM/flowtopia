@@ -7202,15 +7202,15 @@ documents are kept in memory per member (federation.docs) and dropped when the p
 key or the opt-in changes. Nothing here reads a cookie or a session. */
 
 const (
-	asContext   = "https://www.w3.org/ns/activitystreams"
-	secContext  = "https://w3id.org/security/v1"
-	asPublic    = "https://www.w3.org/ns/activitystreams#Public" // the public collection, sent only in this form (6.7)
-	apKeep      = "public, max-age=180"                          // 5.6; opting out reaches other servers' caches within three minutes
-	acceptMax   = 4096                                           // bytes of Accept read; a longer header is read as none
-	acceptRange = 64                                             // media ranges read; more is read as no header
-	pubPage     = 20                                             // Public posts on a page of a profile
-	docsMax     = 1000                                           // actor documents kept in memory; all are dropped when it is full
-	docsAge     = 10 * time.Minute                               // a kept document is made again after this, as a net for a change made by hand
+	asContext        = "https://www.w3.org/ns/activitystreams"
+	secContext       = "https://w3id.org/security/v1"
+	publicCollection = "https://www.w3.org/ns/activitystreams#Public" // the public collection, sent only in this form (6.7)
+	apKeep           = "public, max-age=180"                          // 5.6; opting out reaches other servers' caches within three minutes
+	acceptMax        = 4096                                           // bytes of Accept read; a longer header is read as none
+	acceptRange      = 64                                             // media ranges read; more is read as no header
+	pubPage          = 20                                             // Public posts on a page of a profile
+	docsMax          = 1000                                           // actor documents kept in memory; all are dropped when it is full
+	docsAge          = 10 * time.Minute                               // a kept document is made again after this, as a net for a change made by hand
 )
 
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
@@ -7409,7 +7409,9 @@ func wantsActivity(h http.Header) bool {
 }
 
 /* The documents. Each is a typed struct written by encoding/json without HTML escaping, so the HTML
-inside summary and content stays as written; every name appears once and every id is https. */
+inside summary and content stays as written; every name appears once and every id is https. Their names
+start with out: they are what this server writes, kept apart from the types of the decoder that reads
+what other servers send (6.3), which take the ap names. */
 
 // actorTerms is the object in the @context of an actor (5.5), its terms in the note's order.
 type actorTerms struct {
@@ -7440,41 +7442,41 @@ var actorContext = []any{asContext, secContext, actorTerms{
 // flowaNS is the one namespace of Flowa's own terms, the same on every Flowa (F14).
 const flowaNS = "https://github.com/TuanSSM/flowtopia/ns#"
 
-// apActor is an actor document (5.5). The addresses an actor MUST name (ActivityPub 4.1: inbox and
+// outActor is an actor document (5.5). The addresses an actor MUST name (ActivityPub 4.1: inbox and
 // outbox) are named though this version does not serve them yet; the ones it only SHOULD or MAY name
 // (followers, following, featured, endpoints.sharedInbox) are left out until they answer (FRD 6, FWR 1).
-type apActor struct {
-	Context                   []any        `json:"@context"`
-	ID                        string       `json:"id"`
-	Type                      string       `json:"type"`
-	PreferredUsername         string       `json:"preferredUsername"`
-	Name                      string       `json:"name,omitempty"`
-	Summary                   string       `json:"summary,omitempty"`
-	URL                       string       `json:"url"`
-	Inbox                     string       `json:"inbox"`
-	Outbox                    string       `json:"outbox"`
-	ManuallyApprovesFollowers *bool        `json:"manuallyApprovesFollowers,omitempty"`
-	Discoverable              *bool        `json:"discoverable,omitempty"`
-	Indexable                 *bool        `json:"indexable,omitempty"`
-	Published                 string       `json:"published,omitempty"`
-	Icon                      *apImage     `json:"icon,omitempty"`
-	Attachment                []apProperty `json:"attachment,omitempty"`
-	PublicKey                 apKey        `json:"publicKey"`
+type outActor struct {
+	Context                   []any         `json:"@context"`
+	ID                        string        `json:"id"`
+	Type                      string        `json:"type"`
+	PreferredUsername         string        `json:"preferredUsername"`
+	Name                      string        `json:"name,omitempty"`
+	Summary                   string        `json:"summary,omitempty"`
+	URL                       string        `json:"url"`
+	Inbox                     string        `json:"inbox"`
+	Outbox                    string        `json:"outbox"`
+	ManuallyApprovesFollowers *bool         `json:"manuallyApprovesFollowers,omitempty"`
+	Discoverable              *bool         `json:"discoverable,omitempty"`
+	Indexable                 *bool         `json:"indexable,omitempty"`
+	Published                 string        `json:"published,omitempty"`
+	Icon                      *outImage     `json:"icon,omitempty"`
+	Attachment                []outProperty `json:"attachment,omitempty"`
+	PublicKey                 outKey        `json:"publicKey"`
 }
 
-type apImage struct {
+type outImage struct {
 	Type      string `json:"type"`
 	MediaType string `json:"mediaType"`
 	URL       string `json:"url"`
 }
 
-type apProperty struct {
+type outProperty struct {
 	Type  string `json:"type"`
 	Name  string `json:"name"`
 	Value string `json:"value"`
 }
 
-type apKey struct {
+type outKey struct {
 	ID           string `json:"id"`
 	Owner        string `json:"owner"`
 	PublicKeyPem string `json:"publicKeyPem"`
@@ -7489,27 +7491,27 @@ type noteTerms struct {
 
 var noteContext = []any{asContext, noteTerms{Flowa: flowaNS, Sensitive: "as:sensitive", Hashtag: "as:Hashtag"}}
 
-// apNote is a Public post as a Note (6.5), with what this version can serve: the text (and the chips and
+// outNote is a Public post as a Note (6.5), with what this version can serve: the text (and the chips and
 // the combo as text, the fallback 6.5 asks for), the picture and the addressing of 6.7 (to the public
 // collection). The followers collection in cc, mentions and hashtags in tag, and flowa:tricks come with
 // the items that serve or send them (FRD 6, FWR 4); a reader that knows only ActivityStreams sees the
 // same post either way.
-type apNote struct {
-	Context      []any          `json:"@context"`
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	AttributedTo string         `json:"attributedTo"`
-	URL          string         `json:"url"`
-	Published    string         `json:"published"`
-	To           []string       `json:"to"`
-	Sensitive    bool           `json:"sensitive"`
-	Content      string         `json:"content"`
-	Attachment   []apAttachment `json:"attachment,omitempty"`
+type outNote struct {
+	Context      []any           `json:"@context"`
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	AttributedTo string          `json:"attributedTo"`
+	URL          string          `json:"url"`
+	Published    string          `json:"published"`
+	To           []string        `json:"to"`
+	Sensitive    bool            `json:"sensitive"`
+	Content      string          `json:"content"`
+	Attachment   []outAttachment `json:"attachment,omitempty"`
 }
 
-// apAttachment is a post's picture. name and summary are its alt text, empty until the composer has a
+// outAttachment is a post's picture. name and summary are its alt text, empty until the composer has a
 // field for it (FWR 4); both are written, as 6.5 says.
-type apAttachment struct {
+type outAttachment struct {
 	Type      string `json:"type"`
 	MediaType string `json:"mediaType"`
 	URL       string `json:"url"`
@@ -7519,8 +7521,8 @@ type apAttachment struct {
 	Height    int    `json:"height,omitempty"`
 }
 
-// apTombstone is what the actor of a deleted member who had opted in answers, with 410 (ActivityPub 6.4).
-type apTombstone struct {
+// outTombstone is what the actor of a deleted member who had opted in answers, with 410 (ActivityPub 6.4).
+type outTombstone struct {
 	Context    string `json:"@context"`
 	ID         string `json:"id"`
 	Type       string `json:"type"`
@@ -8007,12 +8009,12 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 	}
 	id := f.origin.url + "/users/" + name
 	no := false
-	doc := apActor{Context: actorContext, ID: id, Type: "Person", PreferredUsername: name, Name: display, Summary: summaryHTML(bio),
+	doc := outActor{Context: actorContext, ID: id, Type: "Person", PreferredUsername: name, Name: display, Summary: summaryHTML(bio),
 		URL: id, Inbox: id + "/inbox", Outbox: id + "/outbox",
 		ManuallyApprovesFollowers: &no, Discoverable: &no, Indexable: &no, Published: created.UTC().Format(time.RFC3339),
-		PublicKey: apKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}}
+		PublicKey: outKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}}
 	if ext, mt, _, _, ok := pictureOf(head); ok && tag != "" {
-		doc.Icon = &apImage{Type: "Image", MediaType: mt, URL: id + "/avatar." + ext + "?v=" + tag}
+		doc.Icon = &outImage{Type: "Image", MediaType: mt, URL: id + "/avatar." + ext + "?v=" + tag}
 	}
 	// The props a member practises and their links, as profile fields (5.5); no number (F12).
 	var ids []string
@@ -8024,14 +8026,14 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 		}
 	}
 	if len(names) > 0 {
-		doc.Attachment = append(doc.Attachment, apProperty{Type: "PropertyValue", Name: "Props", Value: html.EscapeString(strings.Join(names, ", "))})
+		doc.Attachment = append(doc.Attachment, outProperty{Type: "PropertyValue", Name: "Props", Value: html.EscapeString(strings.Join(names, ", "))})
 	}
 	stored := map[string]string{}
 	json.Unmarshal(links, &stored)
 	for _, k := range linkKinds {
 		handle, _ := cleanLink(k, stored[k])
 		if href, ok := visitorLinkURL(k, stored[k]); ok {
-			doc.Attachment = append(doc.Attachment, apProperty{Type: "PropertyValue", Name: visitorLinkNames[k],
+			doc.Attachment = append(doc.Attachment, outProperty{Type: "PropertyValue", Name: visitorLinkNames[k],
 				Value: `<a href="` + html.EscapeString(href) + `" rel="me nofollow noopener" target="_blank">` + html.EscapeString(handle) + `</a>`})
 		}
 	}
@@ -8061,8 +8063,8 @@ func (a *app) instanceDoc(ctx context.Context) (pubAnswer, error) {
 		return pubAnswer{}, err
 	}
 	id := f.origin.url + "/actor"
-	b, err := apJSON(apActor{Context: actorContext, ID: id, Type: "Application", PreferredUsername: f.origin.host, URL: id,
-		Inbox: id + "/inbox", Outbox: id + "/outbox", PublicKey: apKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}})
+	b, err := apJSON(outActor{Context: actorContext, ID: id, Type: "Application", PreferredUsername: f.origin.host, URL: id,
+		Inbox: id + "/inbox", Outbox: id + "/outbox", PublicKey: outKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}})
 	if err != nil {
 		return pubAnswer{}, err
 	}
@@ -8166,7 +8168,7 @@ func (a *app) serveActor(w http.ResponseWriter, r *http.Request, site *pubSite, 
 	}
 	if !uid.Valid {
 		if retired {
-			b, _ := apJSON(apTombstone{Context: asContext, ID: a.fed.origin.url + "/users/" + name, Type: "Tombstone", FormerType: "Person"})
+			b, _ := apJSON(outTombstone{Context: asContext, ID: a.fed.origin.url + "/users/" + name, Type: "Tombstone", FormerType: "Person"})
 			newAnswer(b, activityType).serve(w, r, http.StatusGone, apKeep)
 			return
 		}
@@ -8339,11 +8341,11 @@ func (a *app) handlePublicPost(st *static) http.HandlerFunc {
 			return
 		}
 		actor := a.fed.origin.url + "/users/" + uname
-		note := apNote{Context: noteContext, ID: actor + "/posts/" + strconv.FormatInt(id, 10), Type: "Note", AttributedTo: actor,
-			Published: created.UTC().Format(time.RFC3339), To: []string{asPublic}, Content: noteHTML(body, a.postExtras(data))}
+		note := outNote{Context: noteContext, ID: actor + "/posts/" + strconv.FormatInt(id, 10), Type: "Note", AttributedTo: actor,
+			Published: created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Content: noteHTML(body, a.postExtras(data))}
 		note.URL = note.ID
 		if ext, mt, pw, ph, ok := pictureOf(image); ok {
-			note.Attachment = []apAttachment{{Type: "Image", MediaType: mt, URL: note.ID + "/picture." + ext, Width: pw, Height: ph}}
+			note.Attachment = []outAttachment{{Type: "Image", MediaType: mt, URL: note.ID + "/picture." + ext, Width: pw, Height: ph}}
 		}
 		b, err := apJSON(note)
 		if err != nil {
