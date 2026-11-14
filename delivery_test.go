@@ -564,9 +564,9 @@ func TestDBDeliveryQueue(t *testing.T) {
 				return 404, ""
 			case host == "b.example":
 				return 403, ""
-			case host == "social.example" && path == "/long":
-				return 429, "120"
 			case host == "social.example":
+				return 429, "120"
+			case host == "other.example":
 				return 429, "10"
 			}
 			return 202, ""
@@ -594,11 +594,11 @@ func TestDBDeliveryQueue(t *testing.T) {
 			}
 		}
 		// A 429 waits its Retry-After when that is between a minute and 12 hours, else the schedule.
-		for path, wait := range map[string]time.Duration{"long": 2 * time.Minute, "short": time.Minute} {
-			id, _ := e.send("social.example/" + path)
+		for host, wait := range map[string]time.Duration{"social.example": 2 * time.Minute, "other.example": time.Minute} {
+			id, _ := e.send(host + "/inbox")
 			e.step()
-			if st, _, next, _ := e.row(id, "social.example/"+path); st != "queued" || !next.Equal(e.clock.now().Add(wait)) {
-				t.Errorf("429 (%s): %s, due %v, now %v", path, st, next, e.clock.now())
+			if st, _, next, _ := e.row(id, host+"/inbox"); st != "queued" || !next.Equal(e.clock.now().Add(wait)) {
+				t.Errorf("429 (%s): %s, due %v, now %v", host, st, next, e.clock.now())
 			}
 		}
 	})
@@ -1579,7 +1579,7 @@ func TestDBHealthzFederation(t *testing.T) {
 	// The Federation tab shows the queue's numbers to staff.
 	_, mod := e.user("mo", "moderator")
 	d, _ := e.must(200, mod, "GET", "/api/admin/federation", nil)["deliveries"].(map[string]any)
-	if d == nil || d["queued"] != 2.0 || d["queueMax"] != float64(deliveryQueueMax) || d["failing"] != 1.0 || d["failedMax"] != float64(deliveryFailedShown) {
+	if d == nil || d["queued"] != 2.0 || d["queueMax"] != float64(deliveryQueueMax) || d["failing"] != 1.0 || d["failedMax"] != float64(deliveryFailedKeep) {
 		t.Errorf("the Federation tab: %v", d)
 	}
 }
@@ -1598,8 +1598,8 @@ func TestDBDeliveryRetention(t *testing.T) {
 	sent, _ := e.send("b.example/inbox")
 	e.step()
 	waits, _ := e.send("c.example/inbox")
-	e.mustExec(`UPDATE ap_deliveries SET next_at = next_at + interval '30 days' WHERE state = 'queued'`)
 	e.clock.add(deliveryKeep + time.Hour)
+	e.mustExec(`UPDATE ap_deliveries SET next_at = $1::timestamptz + interval '1 day', created_at = $1 WHERE state = 'queued'`, e.clock.now()) // still waiting, and young
 	n, err := e.a.housekeep()
 	if err != nil {
 		t.Fatal(err)
@@ -1624,5 +1624,140 @@ func TestDBDeliveryRetention(t *testing.T) {
 	}
 	if e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'failed' AND failed_at < $1::timestamptz - make_interval(secs => $2)`, e.clock.now(), deliveryFailedKeep) != 0 {
 		t.Error("the rows kept are not the newest")
+	}
+}
+
+// A clock that jumps forward does not empty the queue (8.3): rows too old for the schedule are held for an hour on
+// the monotonic clock, nothing is cleared meanwhile, and the page says so. Set right again, rows dated in the future
+// are pulled back and sent; a server that was really off that long gives them up after the hour, as 8.7 says.
+func TestDBDeliveryClockJump(t *testing.T) {
+	t.Run("forward, then corrected", func(t *testing.T) {
+		e := newDelivEnv(t)
+		e.answer(func(string, string, string) (int, string) { return 503, "" })
+		var ids []string
+		for range 3 {
+			id, _ := e.send("a.example/inbox", "b.example/inbox")
+			ids = append(ids, id)
+		}
+		e.mustExec(`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at) VALUES ('https://here.example/a/f', '{}', true, $1)`, e.clock.now())
+		e.mustExec(`INSERT INTO ap_deliveries (outbox_id, inbox, host, state, next_at, created_at, failed_at) SELECT id, 'https://c.example/inbox', 'c.example', 'failed', $1, $1, $1 FROM ap_outbox WHERE ap_id = 'https://here.example/a/f'`, e.clock.now())
+		e.clock.add(365 * 24 * time.Hour)
+		e.drain(20)
+		if n := len(e.s.requests()); n != 0 || e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued' AND attempts = 0`) != 6 {
+			t.Fatalf("after the jump: %d requests, %d rows held of 6", n, e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued' AND attempts = 0`))
+		}
+		_, admin := e.user("boss", "admin")
+		if d := e.must(200, admin, "GET", "/api/admin/federation", nil)["deliveries"].(map[string]any); d["clockJumped"] != true || d["clockWaiting"] != true {
+			t.Errorf("the page does not say the clock may have jumped: %v", d)
+		}
+		// Written while the clock is ahead: dated a year on.
+		during, _ := e.send("b.example/inbox")
+		if n, err := e.a.housekeep(); err != nil || e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'failed'`) != 1 {
+			t.Errorf("housekeeping cleared on a doubted clock: %v %v", n, err)
+		}
+		// The clock is set right: the doubt ends, the rows dated a year ahead are pulled back, and all are sent.
+		e.clock.add(-365 * 24 * time.Hour)
+		if _, err := e.a.housekeep(); err != nil {
+			t.Fatal(err)
+		}
+		if n := e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued' AND (next_at > $1 OR created_at > $2)`, e.clock.now().Add(deliveryFutureMax), e.clock.now()); n != 0 {
+			t.Errorf("%d rows still dated ahead after the clock was set right", n)
+		}
+		e.answer(func(string, string, string) (int, string) { return 202, "" })
+		e.clock.add(deliveryFutureMax + time.Minute)
+		e.drain(20)
+		for _, id := range append(ids, during) {
+			if len(e.hits(id)) == 0 {
+				t.Errorf("%s was not sent after the clock was set right", id)
+			}
+		}
+		if e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued'`) != 0 {
+			t.Error("rows are left queued")
+		}
+	})
+
+	t.Run("off for five days", func(t *testing.T) {
+		e := newDelivEnv(t)
+		id, _ := e.send("a.example/inbox")
+		e.mustExec(`UPDATE ap_deliveries SET created_at = created_at - interval '5 days', next_at = next_at - interval '5 days'`)
+		up := time.Minute
+		e.q.since = func() time.Duration { return up }
+		e.step()
+		if st, at, _, _ := e.row(id, "a.example/inbox"); st != "queued" || at != 0 {
+			t.Fatalf("a row five days old within the hour: %s %d", st, at)
+		}
+		up += deliveryClockDoubt + time.Minute
+		e.clock.add(2 * time.Minute)
+		e.step()
+		if st, _, _, why := e.row(id, "a.example/inbox"); st != "failed" || why != "not delivered within 48 hours" || len(e.hits(id)) != 0 {
+			t.Errorf("after the hour: %s %q", st, why)
+		}
+	})
+}
+
+// A host marked unavailable just after it proved alive is not: the mark is written only if the host is still due
+// for it, so a valid delivery from it between the counted failure and the mark wins (8.4).
+func TestDBDeliveryUnavailableRace(t *testing.T) {
+	e := newDelivEnv(t)
+	e.answer(func(string, string, string) (int, string) { return 503, "" })
+	id, _ := e.send("a.example/inbox")
+	e.mustExec(`UPDATE ap_hosts SET down_since = $1, last_failure = $2 WHERE host = 'a.example'`, e.clock.now().Add(-hostUnavailableAfter), e.clock.now().Add(-time.Hour))
+	heard := false
+	e.q.beforeUnavailable = func() { heard = true; e.q.heardFrom(context.Background(), "a.example", sigCavage) }
+	e.step()
+	if !heard {
+		t.Fatal("the hook between the two statements was not reached")
+	}
+	if st, _, _, _ := e.row(id, "a.example/inbox"); st != "queued" || e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND state = 'ok'`) != 1 {
+		t.Errorf("a host that proved alive in between was marked unavailable: its row is %s", st)
+	}
+}
+
+// A 429 is the host asking us to slow down (8.3, 8.4): its Retry-After, bounded to an hour, holds the whole host, and
+// it does not reset the count of failures, so a host answering 503 and 429 in turn still opens its circuit.
+func TestDBDelivery429(t *testing.T) {
+	e := newDelivEnv(t)
+	k := 0
+	e.answer(func(string, string, string) (int, string) {
+		k++
+		if k%2 == 0 {
+			return 429, ""
+		}
+		return 503, ""
+	})
+	for range 20 {
+		e.send("a.example/inbox")
+	}
+	e.drain(40)
+	if e.count(`SELECT count(*) FROM ap_hosts WHERE host = 'a.example' AND state = 'open'`) != 1 {
+		t.Errorf("503 and 429 in turn did not open the circuit (%d requests)", len(e.s.requests()))
+	}
+	for ra, hold := range map[string]time.Duration{"120": 2 * time.Minute, "7200": hostRetryAfterMax} {
+		f := newDelivEnv(t)
+		f.answer(func(string, string, string) (int, string) { return 429, ra })
+		f.send("b.example/inbox")
+		f.send("b.example/inbox")
+		f.step()
+		var until time.Time
+		if err := f.a.db.QueryRow(`SELECT until FROM ap_hosts WHERE host = 'b.example' AND state = 'open'`).Scan(&until); err != nil || !until.Equal(f.clock.now().Add(hold)) {
+			t.Errorf("Retry-After %s: the host is held until %v (now %v), want %v later: %v", ra, until, f.clock.now(), hold, err)
+		}
+		if f.step() {
+			t.Errorf("Retry-After %s: a row was claimed while the host is held", ra)
+		}
+	}
+}
+
+// One spelling per address: the scheme and host in lower case, no :443, so two followers naming their server's shared
+// inbox in different letter cases are one row (8.1).
+func TestDBDeliveryAddressSpelling(t *testing.T) {
+	e := newDelivEnv(t)
+	in, _, refused := e.q.collect([]deliveryTarget{
+		{Actor: "https://a.example/u1", Inbox: "https://a.example/u1/inbox", SharedInbox: "https://a.example/inbox"},
+		{Actor: "https://a.example/u2", Inbox: "https://a.example/u2/inbox", SharedInbox: "https://A.EXAMPLE/inbox"},
+		{Actor: "https://a.example/u3", Inbox: "https://a.example/u3/inbox", SharedInbox: "HTTPS://a.example:443/inbox"},
+	})
+	if !slices.Equal(in, []string{"https://a.example/inbox"}) || refused != 0 {
+		t.Errorf("one shared inbox in three spellings: %v, %d refused", in, refused)
 	}
 }

@@ -2275,6 +2275,24 @@ it passes `-X main.buildTime=$SOURCE_DATE_EPOCH`, the commit's own time, which k
 the same bytes; that one line, with the release suite run to show it, belongs to the item that first
 signs. The newest `updated_at` bound is the delivery queue's.
 
+**A clock that jumps forward** (as built, FWR 2, after the second review of #112). Without a rule, a clock set a year
+ahead would give up every queued row at its next claim with no request sent, housekeeping would clear what is not
+old, and once the clock was set right the rows written meanwhile would be dated a year ahead and never claimed. The
+rules, the simplest that close those:
+
+- A queued row older than twice the horizon (96 hours) cannot come of the schedule, whose last attempt falls about 40
+  hours after a row starts. Meeting one, the queue doubts the clock: such rows are held (given back for a minute, no
+  attempt counted), housekeeping deletes nothing, and the Federation tab, the dashboard and `/healthz` say "waiting for
+  the clock" (the tab adds that the clock may have jumped forward). The doubt lasts an hour on the monotonic clock. If
+  the wall clock is set back before the moment of doubt, the doubt ends at once (the jump was undone); if the hour
+  passes on a wall clock that moved with the monotonic one, the clock is believed (the server was off that long) and
+  the rows are given up as 8.7 says. One line in the log says so when the doubt begins.
+- Rows dated in the future, once the clock is right again: housekeeping (at the start and every hour) pulls a row's
+  `next_at` back to at most the longest wait the schedule can give (12 hours and its 20%: 14.4 hours) and its
+  `created_at` back to now, in batches of 1,000, so it is claimed and its 48 hours count from then. A future
+  `failing_since` or `down_since` on a host is taken as now when its next failure is counted.
+- The floor from the database (above) is believed for the first hour after a start only (8.8).
+
 ### 8.4 Hosts
 
 `ap_hosts` holds per host: consecutive failures, last success, last failure, state.
@@ -2334,7 +2352,10 @@ corrected:
   one per post. None of the pages on disk shows such a server: ActivityPub's examples and Mastodon's ActivityPub page
   name no shared inbox on another host, and Mastodon's `WEB_DOMAIN` puts the actor and its inboxes on the same host.
   **For FWR 3:** its callers pass each follower's actor id beside its inbox and shared inbox, as they come from the
-  cached actor (`ap_actors.ap_id`, `inbox`, `shared_inbox`). The activity's id
+  cached actor (`ap_actors.ap_id`, `inbox`, `shared_inbox`). The actor id must be that verified `ap_actors.ap_id`,
+  the id of an actor fetched from its own origin (7.3), never one a delivery merely named: the host rule is only as
+  good as the id it is checked against. Addresses are compared in one spelling (scheme and host in lower case, no
+  `:443`), so `https://A.EXAMPLE/inbox` and `https://a.example/inbox` are one row. The activity's id
   must be on this origin and its body JSON of at most 256 KB, sent as it was given (`body` is `TEXT`, not `JSONB`,
   which would reorder it: a correction to 9.1), and signed at each send. One enqueue or fan-out runs at a time
   (`pg_advisory_xact_lock` on `ap_outbox`), so the caps below are exact, not soft as the inbox's are.
@@ -2389,11 +2410,20 @@ corrected:
   claim reads of the table; `software` and the flood block's use of `until` wait for the items that need them (FMD
   7). 5 failures within 10 minutes open the circuit for 10 minutes. When its time is up the circuit is half-open: one
   row is tried (one request per host does that by itself), a failure that counts opens it again at once, and any
-  other answer (taken, or a 4xx, 429 or redirect: the host answered) closes it. **Unavailable** (corrected after the
+  other answer (taken, or a 4xx, 429 or redirect: the host answered) closes it. One request at a time per host is kept
+  per process, so during a deploy, when two processes run, each may try one row. Only a delivery taken or a valid
+  delivery from the host resets the failures in a row: a 401, a 429 or a redirect is a sign of life but leaves the
+  count, so a host answering 503 and 429 in turn still opens its circuit. A 429 with `Retry-After` holds the whole host
+  for that long, at most an hour, as an open circuit does (its rows moved to the end of it). **Unavailable** (corrected after the
   review of #112: it counted the 7 days from the last success, so one 503 after a quiet week marked a host
   unavailable): a host that has failed for 7 days with no sign of life between, and no two failures further apart than
   48 hours (a longer silence says nothing, since every row of the first failure was long given up, so the streak
-  starts again). A sign of life is any answer from the host but a failure that counts, a valid delivery from it, or
+  starts again). So a host this server writes to less often than about every 88 hours (a row's last attempt falls
+  about 40 hours after it starts, and the next row's first failure must come within 48 hours of it) never becomes
+  unavailable: harmless, since each of its rows still has its own 11 attempts and 48 hours, and being unavailable
+  only saves requests to a host that is written to often. The mark is written only if the host is still due for it
+  when the statement runs, so a sign of life written between the counted failure and the mark wins. A sign of life is
+  any answer from the host but a failure that counts, a valid delivery from it, or
   an answer to the probe; each ends the streak (`down_since` back to NULL). An unavailable host's queued rows are given
   up and new ones are not written (counted as unavailable). Once a day housekeeping asks
   the NodeInfo discovery document of up to 20 unavailable hosts, one after the other, and an answer marks a host
@@ -2426,12 +2456,14 @@ corrected:
 - **Retention** (8.5, 9.3): sent rows go at once; failed rows (`failed_at`, a new column) are removed by housekeeping
   after 7 days, and past the newest 20,000 failed rows the oldest go too, so a run of give-ups (an unavailable host
   alone gives up to 2,000) cannot grow the table without bound; an activity with no row left goes 7 days after it was
-  written. Each delete removes at most 1,000 rows and gives its turn back before the next, on the workers' context, so
+  written. Each delete removes at most 1,000 rows, chosen through an index and removed through the primary key
+  (`id = ANY(ARRAY(...))`: the `id IN (SELECT ...)` form was planned as a pass over the whole table, 24 to 40 ms a
+  batch at 150,000 rows, against 2 ms), and gives its turn back before the next, on the workers' context, so
   a stop ends it between two statements. `-purge-remote` removes every row of
   the three tables (each names another server), and says how many.
 - **What it shows** (14.2): the Federation tab's "Sending to other servers" (queued and the oldest, waiting
   activities, sent and given up over the last day from memory, given up in 7 days, hosts paused after failures and
-  unavailable; "100,000 or more" when the count of rows given up reaches the most it counts), the dashboard's mode line
+  unavailable; "20,000 or more" when the count of rows given up reaches the 20,000 kept, one constant for both), the dashboard's mode line
   (to send, the oldest, given up, unavailable, or waiting for the clock), and `/healthz` for a local probe (14.2). The
   numbers are asked only for a local probe, and kept 5 seconds: a remote probe, which sees only `{"ok": true}`, runs
   no statement of the queue's.

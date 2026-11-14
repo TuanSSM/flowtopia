@@ -3908,7 +3908,13 @@ func TestDBQueryPlans(t *testing.T) {
 		{"deliveries: the counts before an enqueue", deliveryCountsSQL, []any{deliveryQueueMax, deliveryWaitingMax}, 2*(deliveryQueueMax+20000) + 200, "ap_deliveries ap_outbox"},
 		{"deliveries: an activity to 300 hosts", deliveryFanOutSQL, []any{1, pq.Array(fanIn), pq.Array(fanHosts), time.Now(), deliveryHostMax}, 2*deliveryQueueMax + 5000, ""},
 		{"deliveries: a host's failure", hostFailedSQL, []any{"h5.fan.example", time.Now(), "answered 503", 600.0, hostStreakGap.Seconds()}, 10, ""},
-		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedShown, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_outbox ap_hosts"},
+		// Housekeeping's batches: chosen through an index, removed or moved through the primary key, never a pass over
+		// the table (each read once by its index and counted again by the steps above it).
+		{"deliveries: failed rows past 7 days, a batch", deliveryRetainOldSQL, []any{time.Now(), deliveryBatch}, 4*deliveryBatch + 100, ""},
+		{"deliveries: failed rows past the cap, a batch", deliveryRetainCapSQL, []any{10000, deliveryBatch}, 3*(10000+deliveryBatch) + 100, ""},
+		{"deliveries: rows due too far ahead, a batch", deliveryPullDueSQL, []any{time.Now(), time.Now().Add(-2 * time.Hour), deliveryBatch}, 4*deliveryBatch + 100, ""},
+		{"deliveries: rows written in the future, a batch", deliveryPullAgeSQL, []any{time.Now().Add(-2 * time.Hour), time.Now(), deliveryBatch}, 4*deliveryBatch + 100, ""},
+		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedKeep, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_outbox ap_hosts"},
 	})
 	on = db
 	tx.Rollback()

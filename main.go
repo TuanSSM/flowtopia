@@ -16805,33 +16805,36 @@ is exercised by the tests alone, and a federated instance starts no worker unles
     its answer written, and one that outlasts the stop keeps its lease and is sent again after it ends. */
 
 const (
-	deliveryWorkersDefault = 4                  // FLOWA_FEDERATION_WORKERS unset (8.2): with one request per host and 10 a second, 4 keep 10 a second going to hosts answering in up to 400 ms
-	deliveryWorkersMax     = 8                  // its most (8.2); a worker holds no connection while it sends, so this bounds requests in flight, not the database
-	deliveryLease          = time.Minute        // a claimed row is another worker's again after this (8.1)
-	deliveryPoll           = 5 * time.Second    // an idle worker looks again after this, or at once when a row is written (8.2)
-	deliveryPerSecond      = 10                 // requests a second out, in all (8.2)
-	deliveryHorizon        = 48 * time.Hour     // a row older than this is given up (F9, 8.3)
-	deliveryQueueMax       = 50000              // rows queued in all (8.5)
-	deliveryQueueResume    = 40000              // a waiting activity is fanned out once fewer rows than this are queued (8.5)
-	deliveryHostMax        = 2000               // rows queued for one host; more are dropped and counted (8.5)
-	deliveryTargetsMax     = 10000              // inboxes of one activity, after shared inboxes: so a waiting activity fits under deliveryQueueMax once the queue is under deliveryQueueResume
-	deliveryWaitingMax     = 1000               // activities waiting for their fan-out; then enqueue refuses (errDeliveryFull)
-	deliveryKeep           = 7 * 24 * time.Hour // a failed row, and an activity with no row left, are kept this long (8.5, 9.3)
-	deliveryOwnWait        = time.Minute        // this server's own hold-up (no key yet, our own request to the host in the way): tried again after this, not counted as an attempt
-	deliveryJitter         = 0.2                // each wait of deliveryRetries is moved by up to this share either way (8.3)
-	hostFailuresOpen       = 5                  // failures within hostFailureWindow that open a host's circuit (8.4)
-	hostFailureWindow      = 10 * time.Minute   //
-	hostOpenFor            = 10 * time.Minute   // how long an open circuit stays open
-	hostUnavailableAfter   = 7 * 24 * time.Hour // failing this long, with no sign of life between: unavailable (8.4)
-	hostStreakGap          = deliveryHorizon    // failures further apart than this are not one streak: the first of them is long given up, so the silence between says nothing
-	hostAliveEvery         = time.Hour          // a host's sign of life from the inbox is written at most this often (heardFrom)
-	deliveryBatch          = 1000               // rows one housekeeping statement removes; the turn is given back between batches
-	deliveryFailedKeep     = 20000              // failed rows kept for the Federation tab, the oldest removed past it (8.5)
-	floorTrust             = time.Hour          // the clock's floor from the database is believed this long after the start, then dropped if the clock is still before it
-	hostProbeEvery         = 24 * time.Hour     // an unavailable host's NodeInfo is asked this often
-	hostProbesPerPass      = 20                 // hosts probed in one housekeeping pass, one after the other
-	hostMemoMax            = 10000              // hosts the inbox's marks remember (heardFrom), then the memory starts again
-	deliveryFailedShown    = 100000             // the count of rows given up stops here ("100,000 or more"), so the numbers read a bounded part
+	deliveryWorkersDefault = 4                             // FLOWA_FEDERATION_WORKERS unset (8.2): with one request per host and 10 a second, 4 keep 10 a second going to hosts answering in up to 400 ms
+	deliveryWorkersMax     = 8                             // its most (8.2); a worker holds no connection while it sends, so this bounds requests in flight, not the database
+	deliveryLease          = time.Minute                   // a claimed row is another worker's again after this (8.1)
+	deliveryPoll           = 5 * time.Second               // an idle worker looks again after this, or at once when a row is written (8.2)
+	deliveryPerSecond      = 10                            // requests a second out, in all (8.2)
+	deliveryHorizon        = 48 * time.Hour                // a row older than this is given up (F9, 8.3)
+	deliveryQueueMax       = 50000                         // rows queued in all (8.5)
+	deliveryQueueResume    = 40000                         // a waiting activity is fanned out once fewer rows than this are queued (8.5)
+	deliveryHostMax        = 2000                          // rows queued for one host; more are dropped and counted (8.5)
+	deliveryTargetsMax     = 10000                         // inboxes of one activity, after shared inboxes: so a waiting activity fits under deliveryQueueMax once the queue is under deliveryQueueResume
+	deliveryWaitingMax     = 1000                          // activities waiting for their fan-out; then enqueue refuses (errDeliveryFull)
+	deliveryKeep           = 7 * 24 * time.Hour            // a failed row, and an activity with no row left, are kept this long (8.5, 9.3)
+	deliveryOwnWait        = time.Minute                   // this server's own hold-up (no key yet, our own request to the host in the way): tried again after this, not counted as an attempt
+	deliveryJitter         = 0.2                           // each wait of deliveryRetries is moved by up to this share either way (8.3)
+	hostFailuresOpen       = 5                             // failures within hostFailureWindow that open a host's circuit (8.4)
+	hostFailureWindow      = 10 * time.Minute              //
+	hostOpenFor            = 10 * time.Minute              // how long an open circuit stays open
+	hostUnavailableAfter   = 7 * 24 * time.Hour            // failing this long, with no sign of life between: unavailable (8.4)
+	hostStreakGap          = deliveryHorizon               // failures further apart than this are not one streak: the first of them is long given up, so the silence between says nothing
+	hostAliveEvery         = time.Hour                     // a host's sign of life from the inbox is written at most this often (heardFrom)
+	deliveryBatch          = 1000                          // rows one housekeeping statement removes; the turn is given back between batches
+	deliveryFailedKeep     = 20000                         // failed rows kept for the Federation tab, the oldest removed past it (8.5); the count shown stops there too ("20,000 or more")
+	deliveryClockFault     = 2 * deliveryHorizon           // a queued row older than this cannot come of the schedule: the clock jumped forward, or the server was off that long (8.3)
+	deliveryClockDoubt     = time.Hour                     // how long such rows are held, on the monotonic clock, before the clock is believed and they are given up
+	deliveryFutureMax      = 12*time.Hour + 12*time.Hour/5 // the latest a row can be due by the schedule: the longest wait plus its jitter; a row due later was dated by a clock that was ahead
+	hostRetryAfterMax      = time.Hour                     // the most a 429's Retry-After holds a whole host
+	floorTrust             = time.Hour                     // the clock's floor from the database is believed this long after the start, then dropped if the clock is still before it
+	hostProbeEvery         = 24 * time.Hour                // an unavailable host's NodeInfo is asked this often
+	hostProbesPerPass      = 20                            // hosts probed in one housekeeping pass, one after the other
+	hostMemoMax            = 10000                         // hosts the inbox's marks remember (heardFrom), then the memory starts again
 )
 
 // deliveryRetries is the wait before each attempt after the first (8.3): 11 attempts over about 40 hours, each
@@ -16901,33 +16904,36 @@ func pauseFor(ctx context.Context, d time.Duration) error {
 
 // deliveryQueue is the outbound queue's memory: the workers, the hosts being sent to, the pacer, the clock's floor.
 type deliveryQueue struct {
-	f          *federation
-	fetch      *fetcher
-	workers    int
-	now        func() time.Time // the clock of the rows (start, next attempt, lease) and of the signatures; a test sets its own
-	built      time.Time        // builtAt(): nothing is claimed or signed before it (8.3)
-	jitter     func() float64   // a share in [-deliveryJitter, deliveryJitter]; a test sets 0
-	paused     func() bool      // the Federation switch is off: nothing is claimed
-	pace       pacer
-	mu         sync.Mutex
-	busy       map[string]bool      // hosts this process is sending to (one request at a time per host)
-	floor      time.Time            // the newest time the database held at the start (readFloor): nothing is claimed before it
-	unavail    map[string]bool      // hosts marked unavailable, so a delivery from one is told cheaply (heardFrom)
-	rfc        map[string]bool      // hosts the inbox marked as signing with RFC 9421, so it writes the mark once
-	learned    map[string]bool      // hosts whose form a send of ours learned, which the inbox's mark does not change
-	alive      map[string]time.Time // when the inbox last wrote each host's sign of life (hostAliveEvery)
-	started    time.Time            // the queue's start, on the monotonic clock: the floor is believed floorTrust after it
-	since      func() time.Duration // time since started; a test sets its own
-	numbersRun atomic.Int64         // how many times numbers asked the database: a remote /healthz probe asks nothing
-	checked    time.Time            // when the waiting activities were last looked at (fanOutDue)
-	waiting    atomic.Bool          // activities may wait for their fan-out
-	wake       chan struct{}
-	once       sync.Once
-	manual     bool // set by a test, which then calls step itself: no worker starts
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	stats      inboxStats // "sent" and "given up" by the hour, for the Federation tab
+	f                 *federation
+	fetch             *fetcher
+	workers           int
+	now               func() time.Time // the clock of the rows (start, next attempt, lease) and of the signatures; a test sets its own
+	built             time.Time        // builtAt(): nothing is claimed or signed before it (8.3)
+	jitter            func() float64   // a share in [-deliveryJitter, deliveryJitter]; a test sets 0
+	paused            func() bool      // the Federation switch is off: nothing is claimed
+	pace              pacer
+	mu                sync.Mutex
+	busy              map[string]bool      // hosts this process is sending to (one request at a time per host)
+	floor             time.Time            // the newest time the database held at the start (readFloor): nothing is claimed before it
+	unavail           map[string]bool      // hosts marked unavailable, so a delivery from one is told cheaply (heardFrom)
+	rfc               map[string]bool      // hosts the inbox marked as signing with RFC 9421, so it writes the mark once
+	learned           map[string]bool      // hosts whose form a send of ours learned, which the inbox's mark does not change
+	alive             map[string]time.Time // when the inbox last wrote each host's sign of life (hostAliveEvery)
+	started           time.Time            // the queue's start, on the monotonic clock: the floor is believed floorTrust after it
+	since             func() time.Duration // time since started; a test sets its own
+	numbersRun        atomic.Int64         // how many times numbers asked the database: a remote /healthz probe asks nothing
+	doubtAt           time.Duration        // when (since start) rows too old for the schedule were first met; 0: no doubt
+	doubtWall         time.Time            // the wall clock then: a clock set back before it ends the doubt
+	beforeUnavailable func()               // a test's hook between counting a host's failure and marking it unavailable
+	checked           time.Time            // when the waiting activities were last looked at (fanOutDue)
+	waiting           atomic.Bool          // activities may wait for their fan-out
+	wake              chan struct{}
+	once              sync.Once
+	manual            bool // set by a test, which then calls step itself: no worker starts
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	stats             inboxStats // "sent" and "given up" by the hour, for the Federation tab
 	// claimStmt is deliveryClaimSQL prepared once (claim): planning it took longer than running it (1.7 ms against
 	// 0.6 ms with 50,000 rows), and a prepared statement is planned once per connection.
 	claimStmt atomic.Pointer[sql.Stmt]
@@ -17029,6 +17035,29 @@ func (q *deliveryQueue) clockOK() bool {
 	return clockTrusted(t, q.built) && !t.Before(floor)
 }
 
+// doubt notes that a row too old for the schedule was met (deliveryClockFault), and says whether the clock is still
+// doubted: for deliveryClockDoubt on the monotonic clock after the first such row, the rows are held, not given up,
+// and housekeeping deletes nothing. A wall clock set back before the moment of doubt ends it (the jump was undone);
+// once the hour has passed on a clock that moved as the monotonic one did, the clock is believed: the server was off
+// that long, and the rows are given up as 8.7 says.
+func (q *deliveryQueue) doubt() bool {
+	now, up := q.now(), q.since()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.doubtAt == 0 || now.Before(q.doubtWall) {
+		q.doubtAt, q.doubtWall = max(up, 1), now
+		log.Printf("deliveries: rows older than %s wait to be sent, which the schedule cannot leave: the clock may have jumped forward (or the server was off that long), so they are held for %s and nothing is cleared meanwhile", deliveryClockFault, deliveryClockDoubt)
+	}
+	return up-q.doubtAt < deliveryClockDoubt
+}
+
+// doubting says whether the clock is doubted now (doubt), without noting anything.
+func (q *deliveryQueue) doubting() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.doubtAt != 0 && q.since()-q.doubtAt < deliveryClockDoubt && !q.now().Before(q.doubtWall)
+}
+
 // exec runs one statement under one of the federation's turns.
 func (q *deliveryQueue) exec(ctx context.Context, stmt string, args ...any) (int64, error) {
 	done, err := q.f.dbTurn(ctx)
@@ -17078,6 +17107,12 @@ func (q *deliveryQueue) collect(to []deliveryTarget) (inboxes, hosts []string, r
 		if why != "" || h == q.f.origin.host || !q.f.admits(h) {
 			refused++
 			continue
+		}
+		// One spelling per address: the scheme and host in lower case, no :443, the path and query as given, so
+		// https://A.EXAMPLE:443/inbox and https://a.example/inbox are one row.
+		in = "https://" + h + u.EscapedPath()
+		if u.RawQuery != "" {
+			in += "?" + u.RawQuery
 		}
 		if seen[in] {
 			continue
@@ -17488,6 +17523,8 @@ func (q *deliveryQueue) step(ctx context.Context) (bool, error) {
 func (q *deliveryQueue) deliver(ctx context.Context, c *claimedRow) error {
 	f := q.f
 	switch {
+	case q.now().Sub(c.created) > deliveryClockFault && q.doubt():
+		return q.giveBack(c, deliveryOwnWait) // held while the clock is doubted
 	case q.now().Sub(c.created) > deliveryHorizon:
 		return q.fail(c, "not delivered within 48 hours")
 	case c.attempts > len(deliveryRetries)+1:
@@ -17651,7 +17688,11 @@ func (q *deliveryQueue) record(c *claimedRow, form sigForm, err error) error {
 	// redirect, a refusal) also ends a half-open circuit: the host answered, so it is closed (6c of the review).
 	var fe *fetchError
 	if out != outSent && out != outRetry && errors.As(err, &fe) && fe.Status > 0 {
-		if err := q.hostAnswered(c.host, now); err != nil {
+		hold := time.Duration(0)
+		if fe.Status == http.StatusTooManyRequests {
+			hold = fe.RetryAfter
+		}
+		if err := q.hostAnswered(c.host, now, hold); err != nil {
 			return err
 		}
 	}
@@ -17715,14 +17756,25 @@ func (q *deliveryQueue) record(c *claimedRow, form sigForm, err error) error {
 	return nil
 }
 
-// hostAnswered writes that a host answered (8.4): a sign of life, so its streak towards "unavailable" ends, and a
-// circuit whose time is up (half-open) closes; one still within its time stays open.
-func (q *deliveryQueue) hostAnswered(host string, now time.Time) error {
+// hostAnswered writes that a host answered with something other than a delivery taken or a failure that counts (8.4):
+// a sign of life, so its streak towards "unavailable" ends, and a circuit whose time is up (half-open) closes; one
+// still within its time stays open. It does not reset the failures in a row: a host answering 503 and 429 in turn
+// still opens its circuit on its 503s. Only a delivery taken, or a valid delivery from the host, resets them. A 429's
+// Retry-After (hold, bounded to hostRetryAfterMax) holds the whole host as an open circuit does, its rows moved to the
+// end of it.
+func (q *deliveryQueue) hostAnswered(host string, now time.Time, hold time.Duration) error {
 	ctx, cancel := own()
 	defer cancel()
-	_, err := q.exec(ctx, `UPDATE ap_hosts SET alive_at = $2, down_since = NULL, failures = 0, failing_since = NULL,
+	if _, err := q.exec(ctx, `UPDATE ap_hosts SET alive_at = $2, down_since = NULL,
 		state = CASE WHEN state = 'open' AND until <= $2 THEN 'ok' ELSE state END, until = CASE WHEN state = 'open' AND until <= $2 THEN NULL ELSE until END
-		WHERE host = $1`, host, now)
+		WHERE host = $1`, host, now); err != nil || hold <= 0 {
+		return err
+	}
+	until := now.Add(min(hold, hostRetryAfterMax))
+	if _, err := q.exec(ctx, `UPDATE ap_hosts SET state = 'open', until = GREATEST(COALESCE(until, $2), $2) WHERE host = $1 AND state <> 'unavailable'`, host, until); err != nil {
+		return err
+	}
+	_, err := q.exec(ctx, `UPDATE ap_deliveries SET next_at = $2 WHERE host = $1 AND state = 'queued' AND next_at < $2 AND (locked_until IS NULL OR locked_until < $3)`, host, until, now)
 	return err
 }
 
@@ -17759,12 +17811,13 @@ func (q *deliveryQueue) renew(ctx context.Context, c *claimedRow) (bool, error) 
 // hostFailedSQL counts a failure of a host (8.4): the failures in a row for the circuit, counted again from one
 // when the first of them is older than hostFailureWindow ($4); and the streak towards "unavailable", down_since,
 // which only a sign of life ends (a delivery taken, any other answer, a valid delivery from the host, a probe
-// answered), and which starts again when the failure before this one is older than hostStreakGap ($5).
+// answered), and which starts again when the failure before this one is older than hostStreakGap ($5). A start dated
+// in the future (by a clock that was ahead) is taken as now.
 const hostFailedSQL = `INSERT INTO ap_hosts (host, created_at, failures, failing_since, down_since, last_failure, last_error) VALUES ($1, $2, 1, $2, $2, $2, $3)
 	ON CONFLICT (host) DO UPDATE SET last_failure = $2, last_error = $3,
 		failures = CASE WHEN ap_hosts.failing_since IS NULL OR ap_hosts.failing_since < $2::timestamptz - make_interval(secs => $4) THEN 1 ELSE ap_hosts.failures + 1 END,
-		failing_since = CASE WHEN ap_hosts.failing_since IS NULL OR ap_hosts.failing_since < $2::timestamptz - make_interval(secs => $4) THEN $2 ELSE ap_hosts.failing_since END,
-		down_since = CASE WHEN ap_hosts.down_since IS NULL OR ap_hosts.last_failure IS NULL OR ap_hosts.last_failure < $2::timestamptz - make_interval(secs => $5) THEN $2 ELSE ap_hosts.down_since END
+		failing_since = CASE WHEN ap_hosts.failing_since IS NULL OR ap_hosts.failing_since < $2::timestamptz - make_interval(secs => $4) THEN $2 ELSE LEAST(ap_hosts.failing_since, $2) END,
+		down_since = CASE WHEN ap_hosts.down_since IS NULL OR ap_hosts.last_failure IS NULL OR ap_hosts.last_failure < $2::timestamptz - make_interval(secs => $5) THEN $2 ELSE LEAST(ap_hosts.down_since, $2) END
 	RETURNING failures, state, down_since`
 
 // hostFailed counts a host's failure and opens its circuit or marks it unavailable when that is due (8.4).
@@ -17785,6 +17838,9 @@ func (q *deliveryQueue) hostFailed(host, why string, now time.Time) error {
 	}
 	switch {
 	case now.Sub(down) >= hostUnavailableAfter:
+		if q.beforeUnavailable != nil {
+			q.beforeUnavailable()
+		}
 		return q.markUnavailable(ctx, host, now)
 	case state == "open" || failures >= hostFailuresOpen:
 		// Open, or open again: the one row tried after a circuit closed failed too. The host's rows due before the
@@ -17800,12 +17856,16 @@ func (q *deliveryQueue) hostFailed(host, why string, now time.Time) error {
 	return nil
 }
 
-// markUnavailable marks a host unavailable and gives up its rows (8.4).
+// markUnavailable marks a host unavailable and gives up its rows (8.4), only if it is still due when the mark is
+// written: a sign of life written between the failure that was counted and this statement (a valid delivery from the
+// host, heardFrom) has cleared down_since, and then nothing changes.
 func (q *deliveryQueue) markUnavailable(ctx context.Context, host string, now time.Time) error {
-	log.Printf("deliveries: %s has failed for %s with no sign of life between, so it is marked unavailable: its deliveries are given up, and its NodeInfo is asked once a day", host, hostUnavailableAfter)
-	if _, err := q.exec(ctx, `UPDATE ap_hosts SET state = 'unavailable', until = NULL, failures = 0, failing_since = NULL WHERE host = $1`, host); err != nil {
+	marked, err := q.exec(ctx, `UPDATE ap_hosts SET state = 'unavailable', until = NULL, failures = 0, failing_since = NULL
+		WHERE host = $1 AND state <> 'unavailable' AND down_since <= $2::timestamptz - make_interval(secs => $3)`, host, now, hostUnavailableAfter.Seconds())
+	if err != nil || marked == 0 {
 		return err
 	}
+	log.Printf("deliveries: %s has failed for %s with no sign of life between, so it is marked unavailable: its deliveries are given up, and its NodeInfo is asked once a day", host, hostUnavailableAfter)
 	q.mu.Lock()
 	q.unavail[host] = true
 	q.mu.Unlock()
@@ -17857,7 +17917,7 @@ func (q *deliveryQueue) heardFrom(ctx context.Context, host string, form sigForm
 	if _, err := q.exec(ctx, `INSERT INTO ap_hosts (host, created_at, alive_at, sig) VALUES ($1, $2, $2, CASE WHEN $3 THEN 'rfc9421' ELSE 'cavage' END)
 		ON CONFLICT (host) DO UPDATE SET alive_at = $2, down_since = NULL,
 			sig = CASE WHEN $3 AND NOT ap_hosts.sig_learned THEN 'rfc9421' ELSE ap_hosts.sig END,
-			failures = CASE WHEN ap_hosts.state = 'unavailable' THEN 0 ELSE ap_hosts.failures END,
+			failures = 0, failing_since = NULL,
 			state = CASE WHEN ap_hosts.state = 'unavailable' THEN 'ok' ELSE ap_hosts.state END`, host, now, rfc); err != nil {
 		log.Printf("error: deliveries: recording that %s is alive: %v", host, err)
 		q.mu.Lock()
@@ -17895,12 +17955,13 @@ type deliveryNumbers struct {
 	Started      time.Time        `json:"started"`
 	Paused       bool             `json:"paused"`
 	ClockWaiting bool             `json:"clockWaiting"` // nothing is sent until the clock is set (8.3)
+	ClockJumped  bool             `json:"clockJumped"`  // rows too old for the schedule are held: the clock may have jumped forward (8.3)
 	QueueMax     int              `json:"queueMax"`
 	FailedMax    int              `json:"failedMax"` // Failed stops counting here: the page says "or more"
 }
 
 // deliveryNumbersSQL reads the queue's state for the Federation tab, the dashboard and a local probe of /healthz
-// (cached a second): the rows queued, up to the queue's cap ($2), and those given up, up to deliveryFailedShown ($3),
+// (cached a second): the rows queued, up to the queue's cap ($2), and those given up, up to deliveryFailedKeep ($3),
 // which the planner may read as one pass over ap_deliveries; the oldest through ap_deliveries_age; the hosts table,
 // which is small.
 const deliveryNumbersSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_deliveries WHERE state = 'queued' LIMIT $2) a),
@@ -17912,7 +17973,7 @@ const deliveryNumbersSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_deliv
 // numbers reads the queue's numbers, under one of the federation's turns.
 func (q *deliveryQueue) numbers(ctx context.Context) (*deliveryNumbers, error) {
 	s := q.stats.numbers(time.Now())
-	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedShown}
+	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep}
 	now := q.now()
 	q.numbersRun.Add(1)
 	done, err := q.f.dbTurn(ctx)
@@ -17920,7 +17981,7 @@ func (q *deliveryQueue) numbers(ctx context.Context) (*deliveryNumbers, error) {
 		return nil, err
 	}
 	var oldest sql.NullTime
-	err = q.f.db.QueryRowContext(ctx, deliveryNumbersSQL, now, deliveryQueueMax, deliveryFailedShown, deliveryWaitingMax).Scan(&n.Queued, &oldest, &n.Failed, &n.Waiting, &n.Unavailable, &n.Open, &n.Failing)
+	err = q.f.db.QueryRowContext(ctx, deliveryNumbersSQL, now, deliveryQueueMax, deliveryFailedKeep, deliveryWaitingMax).Scan(&n.Queued, &oldest, &n.Failed, &n.Waiting, &n.Unavailable, &n.Open, &n.Failing)
 	done()
 	if err != nil {
 		return nil, err
@@ -17931,21 +17992,66 @@ func (q *deliveryQueue) numbers(ctx context.Context) (*deliveryNumbers, error) {
 	return n, nil
 }
 
+// The housekeeping statements, each over at most $2 (or $3) rows chosen through an index and removed through the
+// primary key: id = ANY(ARRAY(...)) is planned as an index lookup, where id IN (SELECT ...) became a hash join over
+// the whole table (TestDBQueryPlans).
+const (
+	deliveryRetainOldSQL    = `DELETE FROM ap_deliveries WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'failed' AND failed_at < $1 ORDER BY failed_at LIMIT $2))`
+	deliveryRetainCapSQL    = `DELETE FROM ap_deliveries WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'failed' ORDER BY failed_at DESC OFFSET $1 LIMIT $2))`
+	deliveryRetainOutboxSQL = `DELETE FROM ap_outbox WHERE id = ANY(ARRAY(SELECT o.id FROM ap_outbox o WHERE o.fanned_out AND o.created_at < $1
+		AND NOT EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id) ORDER BY o.id LIMIT $2))`
+	deliveryPullDueSQL = `UPDATE ap_deliveries SET next_at = $2 WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND next_at > $2 ORDER BY next_at LIMIT $3))
+		AND $1::timestamptz IS NOT NULL`
+	deliveryPullAgeSQL = `UPDATE ap_deliveries SET created_at = $1 WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND created_at > $1 ORDER BY created_at LIMIT $3))
+		AND $2::timestamptz IS NOT NULL`
+)
+
 // housekeep removes failed rows older than deliveryKeep and past the newest deliveryFailedKeep, and activities with
 // no row left after deliveryKeep (8.5, 9.3), each in batches of deliveryBatch rows with the turn given back between
 // them, and probes the unavailable hosts due for it (8.4). Only a mode that federates calls it, from the housekeeping
 // pass, on the workers' context, so a stop ends it between two statements.
 func (q *deliveryQueue) housekeep(ctx context.Context) (rows, activities int64, err error) {
-	before := q.now().Add(-deliveryKeep)
+	now := q.now()
+	before := now.Add(-deliveryKeep)
+	// Nothing is cleared on a clock in doubt: before the build or the database's newest time, or while rows too old
+	// for the schedule are held (doubt). An age measured by a clock that jumped forward would clear what is not old.
+	if !q.clockOK() {
+		return 0, 0, nil
+	}
+	var stale bool
+	done, err := q.f.dbTurn(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	err = q.f.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_deliveries WHERE state = 'queued' AND created_at < $1)`, now.Add(-deliveryClockFault)).Scan(&stale)
+	done()
+	if err != nil {
+		return 0, 0, err
+	}
+	if stale && q.doubt() {
+		return 0, 0, nil
+	}
+	// Rows dated by a clock that was ahead, once it is right again: due no later than the schedule can make a row due,
+	// and written no later than now, so they are claimed and their 48 hours count from now.
+	for _, stmt := range []string{deliveryPullDueSQL, deliveryPullAgeSQL} {
+		for {
+			n, err := q.exec(ctx, stmt, now, now.Add(deliveryFutureMax), deliveryBatch)
+			if err != nil {
+				return 0, 0, err
+			}
+			if n < deliveryBatch {
+				break
+			}
+		}
+	}
 	for _, s := range []struct {
 		n    *int64
 		stmt string
 		arg  any
 	}{
-		{&rows, `DELETE FROM ap_deliveries WHERE id IN (SELECT id FROM ap_deliveries WHERE state = 'failed' AND failed_at < $1 ORDER BY failed_at LIMIT $2)`, before},
-		{&rows, `DELETE FROM ap_deliveries WHERE id IN (SELECT id FROM ap_deliveries WHERE state = 'failed' ORDER BY failed_at DESC OFFSET $1 LIMIT $2)`, deliveryFailedKeep},
-		{&activities, `DELETE FROM ap_outbox WHERE id IN (SELECT o.id FROM ap_outbox o WHERE o.fanned_out AND o.created_at < $1
-			AND NOT EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id) ORDER BY o.id LIMIT $2)`, before},
+		{&rows, deliveryRetainOldSQL, before},
+		{&rows, deliveryRetainCapSQL, deliveryFailedKeep},
+		{&activities, deliveryRetainOutboxSQL, before},
 	} {
 		for {
 			n, err := q.exec(ctx, s.stmt, s.arg, deliveryBatch)

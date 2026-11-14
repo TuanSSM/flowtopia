@@ -122,9 +122,15 @@ route and test named below is new unless the design note says it exists.
   `clockWaiting`), asked only for a local probe and kept 5 s, unchanged in local and plain single mode; "Sending to other servers" on the Federation tab and a
   part of the dashboard's mode line. Nothing sends yet: FWR 3 is the first caller, and fills `goneInbox` with the
   removal of the followers whose inbox answered 410 (until then a 410 gives up the rows and nothing more). **For FWR 3:**
-  each recipient passed to `enqueue` names its actor's id beside its inbox and shared inbox (from `ap_actors`), and
+  each recipient passed to `enqueue` names its actor's id, the verified `ap_actors.ap_id` and never an id a delivery
+  merely named, beside its inbox and shared inbox (from `ap_actors`), and
   an inbox not on the actor's host is refused, a shared inbox on another host passed over for the actor's own inbox
-  (federation.md 8.8 says why and what it costs). Tests:
+  (federation.md 8.8 says why and what it costs). After the second review of #112: a host proved alive between a
+  counted failure and its mark stays available, batch deletes go through the primary key, a clock that jumps forward
+  holds rows for an hour instead of giving them up and dates written ahead are pulled back (federation.md 8.3), a 429
+  holds the host for its `Retry-After` (at most an hour) and neither it nor a 401 resets the circuit's count,
+  addresses are compared in one spelling, and the page says "20,000 or more" at the cap (`TestDBDeliveryClockJump`,
+  `TestDBDeliveryUnavailableRace`, `TestDBDelivery429`, `TestDBDeliveryAddressSpelling`). Tests:
   `TestDBDeliveryQueue` (the schedule and the jitter on the test's clock, the horizon, four workers on 40 rows each
   sent once and one at a time per host, a lease renewed and a lease lost, both forms with the form recorded, 400 and
   401 refused in both, 410 with the hook, 404, 403, 429, the circuit, unavailable hosts and the probe),
