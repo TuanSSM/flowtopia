@@ -315,7 +315,7 @@ a value that is not such an address stops the server at start with a message tha
 been: a community that lives on this server only, and nothing about a deployment that sets nothing
 changes. `single` is one person's own instance (below). `federated` is a community whose members can share
 their profiles with other servers; **this version of it can be read, and nothing more**: discovery (WebFinger
-and NodeInfo, under "Federation: discovery" below) and the profiles and Public posts of the members who opted
+and NodeInfo, under "Federation: discovery" below) and the profiles, Public posts and outboxes of the members who opted
 in ("Federation: profiles and Public posts"), but no inbox, so nobody can follow anyone yet, and nothing is
 delivered. Any other word stops the server at start with a message that says so, before the database is
 opened. The admin dashboard shows the mode under the version, and in a mode that federates the origin and the
@@ -500,6 +500,18 @@ Each address answers two ways from the same URL, by the request's `Accept` heade
 - `GET /users/{name}/avatar.jpg` (or `.png`) and `GET /users/{name}/posts/{id}/picture.jpg` (or `.png`): the
   member's profile picture and a Public post's picture. These two addresses reach nothing else: the app's own
   picture addresses still need a session.
+
+These further addresses are documents for other servers only (6.2); a browser that opens one is sent on to the
+profile page, the post's page or `/actor`:
+
+- `GET /users/{name}/outbox`: the member's Public posts as `Create` activities, newest first: the collection
+  says how many there are and links its first page (`?page=true`); each page holds 20 and links the next
+  (`?page=true&before=<post id>`, the profile page's cursor).
+- `GET /users/{name}/posts/{id}/activity`: one Public post's `Create`, the same one the outbox lists.
+- `GET /users/{name}/followers` and `/following`: how many follow the member and how many they follow, only
+  while the `follows` flag is on, and never who: those lists are the member's own, in the app.
+- `GET /users/{name}/featured`: an empty list (posts cannot be pinned), which Mastodon asks for.
+- `GET /actor/outbox`: the instance account's outbox, empty.
 
 **Every post is "This server" unless its author chose Public.** Posts made before this version, posts made in
 local mode or in single mode without `FLOWA_FEDERATE=on`, and milestone posts are This server and never

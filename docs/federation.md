@@ -10,9 +10,10 @@ and [PRT](epics.md#prt-portability), with checklists under `docs/epic-<code>/tod
 is in [roadmap.md](roadmap.md#third-cycle).
 
 **It is a proposal waiting for the owner's review.** Nothing in it was built when it was written; what has
-been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 5: the modes,
-the origin, the keys, the guarded fetcher, HTTP signatures, discovery, and the actor documents and public
-pages with the post audience and retired names; a federating instance can be read, and has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
+been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 6: the modes,
+the origin, the keys, the guarded fetcher, HTTP signatures, discovery, the actor documents and public
+pages with the post audience and retired names, and the outboxes and collections; a federating instance can be
+read, and has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
 proceeds on its recommendation, and each decision says what the plan assumes meanwhile.
 
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
@@ -398,6 +399,11 @@ nobody can follow anyone yet, and nothing is delivered"), the dashboard shows as
 NodeInfo's `metadata.federationBuilt` lists as parts (`webfinger`, `nodeinfo`, `actors`, `notes`). The sentence
 of FRD 4 and its two constants are gone, so there is one copy.
 
+As built (FRD 6): the sentence now adds the outboxes and the counts ("..., to other servers and to people in a
+browser, with each member's outbox of Public posts and the counts of their followers and follows; it has no
+inbox, so nobody can follow anyone yet, and nothing is delivered"), and the parts add `outbox` and
+`collections`.
+
 ### 4.2 What each mode means for every surface
 
 | Surface | `local` (default) | `federated` | `single` |
@@ -409,7 +415,7 @@ of FRD 4 and its two constants are gone, so there is one copy.
 | Timelines | Community | Community (local posts) and Home (followed accounts) | Home (followed accounts) and the owner's posts |
 | People list | as today | local members only; remote accounts by handle search | the owner's following |
 | Follows | off unless the `follows` flag is on (local only) | local and remote | the owner follows; others follow the owner |
-| Federation endpoints (WebFinger, NodeInfo, actors, inboxes, outboxes) | none: 404, as for any unknown path | answer (as built in FRD 4: WebFinger and NodeInfo only) | answer only with `FLOWA_FEDERATE=on` (the same) |
+| Federation endpoints (WebFinger, NodeInfo, actors, inboxes, outboxes) | none: 404, as for any unknown path | answer (as built in FRD 6: WebFinger, NodeInfo, actors, posts, outboxes and collections; no inbox) | answer only with `FLOWA_FEDERATE=on` (the same) |
 | Outbound connections | link previews only, as today | link previews and federation | as federated, or link previews only |
 | Public pages for signed-out visitors | none, but the about page once an admin has saved a description (INS 5) | as local, plus profiles and Public posts of members who opted in | as local, plus the owner's profile at `/` (INS 7); Public posts once posts have an audience (FRD) |
 | Feature flags | as today | `federation` (pause), `follows` | as federated |
@@ -528,6 +534,14 @@ start, and `test/release.sh` fails if `compose.yml` names it.
 Usernames never change (no endpoint renames), and the numeric post and comment ids never repeat
 (`BIGSERIAL`), so these stay stable. A deleted member's name goes into `retired_usernames` (**new**)
 and cannot be taken again.
+
+Correction (FRD 6): the Create of a post is not a random activity id but the post's id with `/activity`
+(`https://flowa.example.org/users/ana/posts/812/activity`), as Mastodon names a status's Create
+(`/users/{name}/statuses/{id}/activity`). It is made from the post whenever it is needed (the outbox now, the
+deliveries of FWR 4 later), so it is the same every time with nothing stored, and it answers at that address
+(6.2, "As built (FRD 6)"). The random form stays for activities that are rows of their own (a Follow, a Like,
+an Update). Featured is at `/users/ana/featured` as the table says, not under Mastodon's `/collections/`:
+readers follow the actor's `featured` link, never a guessed path.
 
 As built (FRD 5): `retired_usernames` (migration 14, with `flowa-schema13.dump` for the restore drill). A
 name is retired when an admin deletes an account that had opted in or ever had a key (a key is made only on
@@ -699,7 +713,7 @@ build. That makes the version private by default, as in `/healthz`; publishing i
 with `nodeinfo_version`, below. `protocols` is
 `["activitypub"]` because the schema needs one entry from its list, though only discovery is built; so that
 nobody takes that for the whole protocol, `metadata` says `{"mode": "...", "federationBuilt": ["webfinger",
-"nodeinfo"]}` (since FRD 5 `["webfinger", "nodeinfo", "actors", "notes"]`, read from the one
+"nodeinfo"]}` (since FRD 6 `["webfinger", "nodeinfo", "actors", "notes", "outbox", "collections"]`, read from the one
 sentence of 4.1) instead of the example's `nodeName` (Flowa keeps no instance name). The counts are one query of
 four counts, kept for five minutes; `openRegistrations` is read from the flag and registration caches the
 pages use. **The instance setting `nodeinfo_version` is not built**: it needs the admin's instance editor to
@@ -800,6 +814,9 @@ As built (FRD 5), checked against `TestActorDocument`'s golden files (`testdata/
   them) refuses an actor without an inbox; a delivery there fails, which is true: nobody can follow yet.
   `followers`, `following`, `featured` and `endpoints.sharedInbox` are left out until they answer (FRD 6, FWR
   1): ActivityPub makes them SHOULD and MAY, and naming an address that answers 404 says more than is built.
+  As built (FRD 6): the outbox answers, and a member's actor names `followers`, `following` and `featured`,
+  which answer too (6.2); `endpoints.sharedInbox` is still left out, and the inbox still takes nothing (405,
+  below). The instance actor names its inbox and its outbox (`/actor/outbox`, empty) and nothing else.
 - **The inboxes the actors name** (`/users/{name}/inbox`, `/actor/inbox`) answer every method with 405 and an
   empty `Allow`, whatever the name, before the write guard (which said 415 or 403), counted against the public
   allowance. RFC 9110 15.5.6 makes 405 the answer for a method the target does not support, and 10.2.1 an
@@ -929,12 +946,72 @@ app. Both are listed under "Out of scope" in FRD and FWR.
 | `GET /users/{name}` | actor or HTML (5.5, 5.6) |
 | `GET /actor` | instance actor |
 | `POST /users/{name}/inbox`, `POST /inbox`, `POST /actor/inbox` | inboxes (section 7); a GET answers 405, because Flowa has no client-to-server side to show an inbox to (ActivityPub 5.2 makes the inbox an OrderedCollection mainly for its owner's client) |
-| `GET /users/{name}/outbox` | OrderedCollection of the member's Create activities for Public posts, `totalItems`, `first`, pages of 20 newest first by post id (`?page=true&max_id=812`); ActivityPub 5.1 requires an OrderedCollection, 5 requires reverse chronological order and names an increasing integer id as a fair key, and 5.1 says an unauthenticated reader gets the Public posts |
+| `GET /users/{name}/outbox` | OrderedCollection of the member's Create activities for Public posts, `totalItems`, `first`, pages of 20 newest first by post id (`?page=true&before=812`, the profile page's cursor; corrected in FRD 6 from `max_id`); ActivityPub 5.1 requires an OrderedCollection, 5 requires reverse chronological order and names an increasing integer id as a fair key, and 5.1 says an unauthenticated reader gets the Public posts |
 | `GET /users/{name}/followers`, `/following` | OrderedCollection with `totalItems` only; `first` and pages only for the account itself (F10); ActivityPub 5.3 and 5.4 allow either collection type and filtering by who asks |
 | `GET /users/{name}/featured` | an empty OrderedCollection at first (pinned posts do not exist yet); cheap, and Mastodon reads `featured` as the pinned posts it fetches for a profile (its ActivityPub page, "Featured collection") |
 | `GET /users/{name}/posts/{id}`, `/comments/{id}` | the Note, or HTML; 404 for audience This server, 410 with a Tombstone for a deleted one (ActivityPub 6.4: 410 when a Tombstone is the body, 404 otherwise; 3.2 allows 404 for an object whose existence is private). As built (FRD 5): posts only; a deleted post is the 404, since nothing keeps a deleted post's id to answer with a Tombstone (6.4 makes replacing an object with one a MAY); comments are FWR's |
 | `GET /users/{name}/posts/{id}/picture.jpg`, `GET /users/{name}/avatar.jpg` | the stored picture, public only for federating members and Public posts. As built (FRD 5): `.png` too, the extension the picture's type has (the other one is the 404) |
 | `GET /api/fed/...` | the page's own endpoints for search by handle and remote accounts (section 11), behind `authed` and the limits. Follows and Home are not here: since INS every instance has `PUT` and `DELETE /api/users/{name}/follow`, `GET /api/home`, `GET /api/following` and `GET /api/followers`, behind the `follows` flag (off by default) and the `community` flag. Blocks of accounts are not here: they are `PUT /api/users/{name}/block`, `DELETE` of the same and `GET /api/blocks`, which every instance has since INS, behind the `community` flag |
+| `GET /users/{name}/posts/{id}/activity`, `GET /actor/outbox` | as built (FRD 6): a Public post's Create (5.2's correction), and the instance actor's empty outbox |
+
+As built (FRD 6), checked against ActivityPub 5, 5.1, 5.3 and 5.4, Activity Streams 2.0 Core 2.3 (collections
+and paging) and Mastodon's ActivityPub page ("Featured collection"), with these decisions where the table is
+silent:
+
+- **One function for the Create.** `createOf` makes the Create of a Public post from the post (`noteOf` its
+  Note), for a page of the outbox, for the Create's own address, and for FWR 4's deliveries when they come:
+  `id` the post's id with `/activity`, `type` `Create`, `actor` the author, `published` the post's, `to` the
+  public collection and `cc` the author's followers collection (6.4, 6.7), the same as the Note's own `to` and
+  `cc`; `object` the Note without a `@context`. The Note at its own address gains the same `cc` (its golden file
+  changed), since the followers collection now answers.
+- **The outbox** (`/users/{name}/outbox`): `{"@context", "id", "type": "OrderedCollection", "totalItems",
+  "first": ".../outbox?page=true"}`, `first` even when the count is 0 (the first page then has `orderedItems`
+  `[]`). A page is `OrderedCollectionPage` with `partOf`, 20 Creates (`pubPage`, the profile page's size; no
+  size parameter) newest first, and `next` (`?page=true&before=<the last post id on the page>`) while there are
+  older posts. There is no `prev`: Activity Streams 2.0 Core 2.3 allows a singly linked list and tells a reader
+  to walk from `first` by `next`, and a newer page would need a second cursor. Exactly three query forms answer
+  (none, `page=true`, `page=true&before=<id>`, the cursor by the profile page's own rule, `pageCursor`); any
+  other (`page=1`, `max_id`, `limit`, a repeated or unknown parameter) is the 404, so each page has one address.
+  The cursor only bounds a statement that is already held to the one member's Public posts (the profile page's
+  `profilePageSQL`, which the outbox reuses), so a cursor that names another member's post, a This server post
+  or no post reads that member's own Public posts older than the id, and nothing else (`TestDBOutboxPaging`).
+  A cursor past 2^31 failed on the profile page (the statement took it for an integer); it is a bigint now.
+  `totalItems` counts what the pages list (`publicPost`: Public, not hidden, not a milestone) in the same
+  statement as the gate (`outboxSQL`), through `posts_public` for the one member: it reads the member's Public
+  posts and nothing else (about 6 ms for a member with 22,000 of them, on a 2.1 GHz Xeon). That is linear; an
+  index-only count would need `kind = 'post'` in `posts_public`'s condition, which is the owner's call (FRD's
+  todo). A page is one statement, the Creates made after its rows are read.
+- **Followers and following** answer `{"@context", "id", "type": "OrderedCollection", "totalItems"}` and never
+  `first`, a page or an item. F10 shows the lists only to "the account itself", and nobody who asks at this
+  address can be that account: nothing here reads a session, and a signed request, once there is one (7.6), is
+  signed by another server's actor. A member reads their own lists in the app (`GET /api/followers`, `GET
+  /api/following`, since INS), which is that other surface. The count is `followCountsSQL`, the one the app
+  shows members on a profile (follows across a block are not counted), and it is given only while the `follows`
+  flag is on, because the app gives it only then; with the flag off the collection has no `totalItems` at all,
+  which Activity Streams allows. No member can hide the counts (section 11 hides the lists, which are hidden
+  from everyone here). Remote followers do not exist yet (FWR 3), so the counts are of members of this server.
+- **Featured** (`/users/{name}/featured`, 5.2): `totalItems` 0 and `orderedItems` `[]`, since posts cannot be
+  pinned. **The instance actor's outbox** (`/actor/outbox`, which 5.5 names): the same, empty; like the instance
+  actor's document it records no origin.
+- **The rules of the public addresses apply unchanged, through the same code**: the gate of `publicMember` (the
+  actor's `actorGateSQL` for the collections), one indistinguishable 404 per representation for an unknown, not
+  opted in, opted out, suspended or deleted member and for any spelling that is not an id, `limits.public`
+  before any database work, HEAD, 405 with `Allow` (`publicPaths` knows the new addresses), `Vary: Accept` on
+  every answer, `Cache-Control: public, max-age=180` with an `ETag` (and 304), so a member who opts out leaves
+  readers' caches within three minutes as with the actor, `ensureOrigin` before a document naming a member's id,
+  no CORS header. **A retired name** is the 404 at these addresses, as at its posts: the Tombstone at the actor
+  (5.5) is what tells other servers to stop asking.
+- **A browser** at the outbox, a collection or a Create is sent with 303 See Other to the page that shows the
+  same thing: the profile page (`?before=` kept for an outbox page), the post's page, or `/actor`. These are
+  documents for servers (Mastodon serves no page at them either), and a person who opens one should land on
+  something readable (5.6). The redirect reads nothing, so it is the same for every name; the page it leads to
+  answers for itself.
+- `TestDBOutboxPaging` (empty, one page, many pages, a deleted and a hidden post, This server posts and a
+  milestone absent and not counted, every cursor, every query that names no page, the browser's redirect),
+  `TestDBCreateActivity`, `TestDBCollections`, `TestDBCollectionSurfaces`, `TestDBOwnDocumentsDecode` (the
+  outbox, its pages, the Creates and the collections through `decodeCollection` and `decodeActivity`),
+  `TestDBQueryPlans` (`outboxSQL`), `TestDBDefaultsUnchanged` (the new addresses in local and plain single
+  mode) and `BenchmarkOutboxPage` are in FRD's todo.
 
 ### 6.3 Activities in
 
@@ -1096,6 +1173,11 @@ above.
 | Block | not sent: the block removes follows with Undo and Reject, which says less about the member (F3 follows Flowa's privacy defaults), and ActivityPub 6.9 says servers SHOULD NOT deliver a Block to its object. Mastodon does send one ("Remote blocking"), so Flowa receives Blocks (6.3) but does not send them | |
 | Announce | never in the first cut (no boosts) | |
 
+As built (FRD 6): nothing is sent yet, but the Create(Note) of the first row is built (`createOf`) and read in
+the outbox and at its id (`/users/{name}/posts/{id}/activity`, 5.2's correction): to the public collection, cc
+the author's followers, as 6.7 says; FWR 4 adds the mentioned actors to `cc` of the Create and its Note
+together, in that one function.
+
 ### 6.5 A Flowa post as a Note
 
 A post by `ana` with the body "Finally clean! Thanks @bo@social.example for the drill", a picture,
@@ -1187,7 +1269,9 @@ attachment with its type, size, and empty `name` and `summary`. Left for the ite
 the followers collection in `cc` (it does not answer until FRD 6), mentions and the `h-card` form and the
 `Mention` and `Hashtag` tags (FWR 4, which also teaches `mentionRE` the remote form; until then a mention is
 plain text), and `flowa:tricks`. A reader that knows only ActivityStreams sees the same post either way. No
-activity wraps it: the Create is FWR's.
+activity wraps it: the Create is FWR's. As built (FRD 6): `cc` is the author's followers collection, which now
+answers, and the Create that wraps the Note is built (`createOf`, 6.2's "As built (FRD 6)"), served in the
+outbox and at its own id; FWR 4 sends the same Create.
 
 `TestNoteFromPost` (**new**) holds the Note for a fixture post byte for byte against a golden file, and
 `TestNoteContentEscaping` (**new**) feeds hostile text (`<script>`, quotes, `javascript:` URLs,
@@ -1620,7 +1704,9 @@ and how it was unwrapped (RFC 8792 7.2.2 for the RFC's "\" line wrapping):
 An admin option (F11) in `instance_settings`. When on, every federation GET except WebFinger,
 NodeInfo, the instance actor and the public key part of an actor needs a valid signature, and the
 signer's domain must not be blocked; answers are `Cache-Control: private` with `Vary: Accept,
-Signature` (5.6). `TestDBAuthorizedFetch` (**new**).
+Signature` (5.6). `TestDBAuthorizedFetch` (**new**). The followers and following collections give no list
+with it on either (6.2, "As built (FRD 6)"): a signature names another server's actor, never the account
+itself, so F10's "only to the account itself" is still nobody at that address.
 
 This matches Mastodon's secure mode (configuration page, `AUTHORIZED_FETCH`): signatures required
 on the ActivityPub form of public posts and profiles, profiles answering "only barebones technical
@@ -2223,7 +2309,9 @@ keyword filters.
 - **The handle on the profile:** `@ana@flowa.example.org`, with a copy button, when the member
   federates.
 - **Privacy defaults:** opt-in off, `discoverable` and `indexable` off, followers and following lists hidden,
-  approve-by-hand off, audience Public only after opting in.
+  approve-by-hand off, audience Public only after opting in. As built (FRD 6): the lists are hidden from everyone
+  at the collection addresses (only the counts, while the `follows` flag is on), and shown to the member in the
+  app (6.2).
 - **A signed-out visitor from another server** who opens `https://flowa.example.org/users/ana/posts/812`
   in a browser sees the post (text, picture, chips as text, the author) in a small page with "Open in
   Flowa"; for a This server post or a non-federating member, a 404 page. In local mode, as today. Built in

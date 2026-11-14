@@ -1,6 +1,6 @@
 # A federating instance: run with the server started with FLOWA_MODE=federated, FLOWA_ORIGIN=https://flowa.test
 # and a test-only FLOWA_KEY_SECRET (run.sh passes the settings on, and the workflow gives them to this suite).
-# This version federates as far as reading (docs/federation.md 5.3 to 5.6, 6.5): the suite asks discovery, the
+# This version federates as far as reading (docs/federation.md 5.3 to 5.6, 6.2, 6.5): the suite asks discovery, the
 # actor documents and the public pages over HTTP as another server would, works the member's switch in Settings
 # and the audience in the composer with the keyboard, and opens the public pages in the browser:
 #   - NodeInfo: the discovery document and the 2.1 document, their content types, the counts and the mode;
@@ -9,7 +9,9 @@
 #   - Settings: "Beyond this server" with the switch, reached with Tab and turned with Space, saved (read back
 #     through the API), the focus kept on it; the warning for a name that ends with a dot;
 #   - the composer: "Who can read it", Public first, reached with Tab, a Public post marked as such; the actor
-#     document, the Note and the two public pages over HTTP, a This server post their 404; the post's page and
+#     document, the Note and the two public pages over HTTP, a This server post their 404; the outbox, its
+#     first page, the post's Create at its own id, followers, following and featured over HTTP, and a browser
+#     at the outbox sent to the profile page; the post's page and
 #     the profile page in the browser, held to the a11y, contrast and keys walks, at desktop and 420 px;
 #   - the admin dashboard's mode line, and the start log, say what this version serves (no inbox, nothing
 #     delivered), and
@@ -180,6 +182,33 @@ try:
     s,h,b=ask(f'users/admin/posts/{local}')
     nf=ask('users/nobody')
     check('and so is its page',(s,b)==(nf[0],nf[2]) and s==404,lambda: (s,b[:200]))
+
+    # The outbox, the Create at its own id and the collections (docs/federation.md 6.2, 6.4, F10).
+    check('the actor names the outbox, followers, following and featured',all(actor.get(k)==ORIGIN+'/users/admin/'+k for k in ('outbox','followers','following','featured')),lambda: actor)
+    s,h,b=ask('users/admin/outbox',headers=AS)
+    box=json.loads(b) if s==200 else {}
+    check('the outbox: an OrderedCollection with its count and its first page',s==200 and h.get('Vary')=='Accept' and box.get('type')=='OrderedCollection' and box.get('first')==ORIGIN+'/users/admin/outbox?page=true' and box.get('totalItems',0)>=1,lambda: (s,b[:300]))
+    s,h,b=ask('users/admin/outbox?page=true',headers=AS)
+    page=json.loads(b) if s==200 else {}
+    items=page.get('orderedItems',[])
+    objs=[i.get('object',{}).get('id') for i in items]
+    check('its first page: the Create of the Public post, newest first, not the This server post, as many as counted',s==200 and page.get('type')=='OrderedCollectionPage' and page.get('partOf')==ORIGIN+'/users/admin/outbox' and objs[:1]==[f'{ORIGIN}/users/admin/posts/{pid}'] and f'{ORIGIN}/users/admin/posts/{local}' not in objs and len(items)==box.get('totalItems') and 'next' not in page,lambda: (s,b[:400]))
+    s,h,b=ask(f'users/admin/posts/{pid}/activity',headers=AS)
+    cr=json.loads(b) if s==200 else {}
+    cr.pop('@context',None)
+    check('the Create at its own id is the one in the outbox, to the public and cc the followers',s==200 and items[:1]==[cr] and cr.get('to')==['https://www.w3.org/ns/activitystreams#Public'] and cr.get('cc')==[ORIGIN+'/users/admin/followers'],lambda: (s,b[:300]))
+    for k in ('followers','following'):
+        s,h,b=ask('users/admin/'+k,headers=AS)
+        d=json.loads(b) if s==200 else {}
+        check(f'{k}: a collection that names nobody, no page and no items (the follows flag is off, so no count either)',s==200 and d.get('type')=='OrderedCollection' and set(d)<={'@context','id','type','totalItems'},lambda: (s,b))
+    s,h,b=ask('users/admin/featured',headers=AS)
+    check('featured: empty',s==200 and json.loads(b).get('totalItems')==0 and json.loads(b).get('orderedItems')==[],lambda: (s,b))
+    class Stay(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self,*a): return None
+    try:
+        urllib.request.build_opener(Stay).open(urllib.request.Request(BASE+'users/admin/outbox',headers={'Accept':'text/html,*/*;q=0.8'}),timeout=20);rs=(200,'')
+    except urllib.error.HTTPError as e: rs=(e.code,e.headers.get('Location'))
+    check('a browser at the outbox is sent to the profile page',rs==(303,'/users/admin'),lambda: rs)
     s,h,b=ask('users/admin',headers={'Accept':'text/html,*/*;q=0.8'})
     check('the profile page over HTTP: HTML with a policy that allows no script, the Public post and not the other',s==200 and h.get('Content-Type','').startswith('text/html') and 'script-src' not in h.get('Content-Security-Policy','') and h.get('Content-Security-Policy','').startswith("default-src 'none'") and b'Public words from the federated suite' in b and b'Words for this server only' not in b,lambda: (s,dict(h)))
 

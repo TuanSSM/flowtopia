@@ -3710,6 +3710,16 @@ func TestDBQueryPlans(t *testing.T) {
 		{"public: a post's picture", postPictureSQL, []any{"m7", false, pubPost}, 10, ""},
 		{"public: a profile picture", avatarSQL, []any{"m7", false}, 10, ""},
 	})
+	// The outbox and the collections (FRD 6). A page of the outbox is the profile page's statement, held
+	// above. Its count reads posts_public for the one member, so it reads the member's Public posts and none
+	// of the 400 others they wrote or anyone else's 70,000: a bound of their Public posts and a few rows for
+	// the gate. The collections' gate is the actor's, and their counts followCountsSQL, both held above.
+	pubCount := e.count(`SELECT count(*) FROM posts WHERE user_id = 7 AND audience = 'public' AND hidden_at IS NULL`)
+	plans([]planCase{
+		{"public: an outbox and its count", outboxSQL, []any{"m7", false}, float64(pubCount) + 10, ""},
+		{"public: the outbox of a member not shown", outboxSQL, []any{"m8", false}, 10, ""},
+		{"public: the outbox of a name nobody has", outboxSQL, []any{"nobody", false}, 10, ""},
+	})
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {
 		if e.count(`SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`, idx) != 1 {

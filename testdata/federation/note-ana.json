@@ -15,6 +15,9 @@
   "to": [
     "https://www.w3.org/ns/activitystreams#Public"
   ],
+  "cc": [
+    "https://flowa.example.org/users/ana/followers"
+  ],
   "sensitive": false,
   "content": "<p>Finally clean! &lt;b&gt;Thanks&lt;/b&gt; &amp; see <a href=\"https://example.com/drill\" rel=\"nofollow noopener\">https://example.com/drill</a>.</p><p>Second line</p><p>Tricks: Six basic figure-8s (Nunchaku)</p><p>Combo: Morning: Six basic figure-8s, Six directions</p>",
   "attachment": [

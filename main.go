@@ -7276,11 +7276,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser; it has no inbox, so nobody can follow anyone yet, and nothing is delivered"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows; it has no inbox, so nobody can follow anyone yet, and nothing is delivered"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -7503,8 +7503,9 @@ var actorContext = []any{asContext, secContext, actorTerms{
 const flowaNS = "https://github.com/TuanSSM/flowtopia/ns#"
 
 // outActor is an actor document (5.5). The addresses an actor MUST name (ActivityPub 4.1: inbox and
-// outbox) are named though this version does not serve them yet; the ones it only SHOULD or MAY name
-// (followers, following, featured, endpoints.sharedInbox) are left out until they answer (FRD 6, FWR 1).
+// outbox) are named, the inbox though it takes nothing yet (405, inboxPath). Of the ones it only SHOULD or
+// MAY name, a member's followers, following and featured answer since FRD 6 and are named;
+// endpoints.sharedInbox is left out until it answers (FWR 1). The instance actor names none of them.
 type outActor struct {
 	Context                   []any         `json:"@context"`
 	ID                        string        `json:"id"`
@@ -7515,6 +7516,9 @@ type outActor struct {
 	URL                       string        `json:"url"`
 	Inbox                     string        `json:"inbox"`
 	Outbox                    string        `json:"outbox"`
+	Followers                 string        `json:"followers,omitempty"`
+	Following                 string        `json:"following,omitempty"`
+	Featured                  string        `json:"featured,omitempty"`
 	ManuallyApprovesFollowers *bool         `json:"manuallyApprovesFollowers,omitempty"`
 	Discoverable              *bool         `json:"discoverable,omitempty"`
 	Indexable                 *bool         `json:"indexable,omitempty"`
@@ -7552,18 +7556,19 @@ type noteTerms struct {
 var noteContext = []any{asContext, noteTerms{Flowa: flowaNS, Sensitive: "as:sensitive", Hashtag: "as:Hashtag"}}
 
 // outNote is a Public post as a Note (6.5), with what this version can serve: the text (and the chips and
-// the combo as text, the fallback 6.5 asks for), the picture and the addressing of 6.7 (to the public
-// collection). The followers collection in cc, mentions and hashtags in tag, and flowa:tricks come with
-// the items that serve or send them (FRD 6, FWR 4); a reader that knows only ActivityStreams sees the
-// same post either way.
+// the combo as text, the fallback 6.5 asks for), the picture and the addressing of 6.4 and 6.7 (to the
+// public collection, cc the author's followers, which answer since FRD 6). Mentions and hashtags in tag,
+// and flowa:tricks, come with the item that sends them (FWR 4); a reader that knows only ActivityStreams
+// sees the same post either way. Inside a Create or a page the Note has no @context of its own.
 type outNote struct {
-	Context      []any           `json:"@context"`
+	Context      []any           `json:"@context,omitempty"`
 	ID           string          `json:"id"`
 	Type         string          `json:"type"`
 	AttributedTo string          `json:"attributedTo"`
 	URL          string          `json:"url"`
 	Published    string          `json:"published"`
 	To           []string        `json:"to"`
+	Cc           []string        `json:"cc"`
 	Sensitive    bool            `json:"sensitive"`
 	Content      string          `json:"content"`
 	Attachment   []outAttachment `json:"attachment,omitempty"`
@@ -7587,6 +7592,49 @@ type outTombstone struct {
 	ID         string `json:"id"`
 	Type       string `json:"type"`
 	FormerType string `json:"formerType"`
+}
+
+// outCreate is the Create that wraps a Public post's Note (6.4, 6.5): in a page of the outbox, at its own
+// id, and, once FWR delivers, in the body sent to followers; createOf makes it for all three, so what is
+// read and what is sent agree. Its id is the post's id with /activity, so it stays the same however
+// often it is made, with nothing stored. Its actor, published, to and cc are the Note's (6.7). In a page
+// it has no @context of its own.
+type outCreate struct {
+	Context   []any    `json:"@context,omitempty"`
+	ID        string   `json:"id"`
+	Type      string   `json:"type"`
+	Actor     string   `json:"actor"`
+	Published string   `json:"published"`
+	To        []string `json:"to"`
+	Cc        []string `json:"cc"`
+	Object    outNote  `json:"object"`
+}
+
+// outCollection is an OrderedCollection (ActivityPub 5, AS2 Core 2.3 and Vocabulary): an outbox with its
+// count and its first page, a followers or following collection with its count alone (or not even that
+// while the follows flag is off), or an empty one (featured, the instance actor's outbox), whose
+// orderedItems is written as [] so a reader sees the list it would hold.
+type outCollection struct {
+	Context      any       `json:"@context"`
+	ID           string    `json:"id"`
+	Type         string    `json:"type"`
+	TotalItems   *int      `json:"totalItems,omitempty"`
+	First        string    `json:"first,omitempty"`
+	OrderedItems *[]string `json:"orderedItems,omitempty"`
+}
+
+// outPage is one page of an outbox (AS2 Core 2.3, an OrderedCollectionPage): pubPage Creates newest first,
+// the collection it is part of, and the next (older) page when there is one. Pages are a singly linked
+// list (AS2 Core 2.3 allows it): there is no prev, since a newer page would need a second cursor, and a
+// reader walks from first by next (AS2 Core 2.3, "navigate to the first ... page then recursively follow
+// the next").
+type outPage struct {
+	Context      []any       `json:"@context"`
+	ID           string      `json:"id"`
+	Type         string      `json:"type"`
+	PartOf       string      `json:"partOf"`
+	Next         string      `json:"next,omitempty"`
+	OrderedItems []outCreate `json:"orderedItems"`
 }
 
 // apJSON writes a document as JSON without escaping <, > and &, which encoding/json does by default and
@@ -7846,7 +7894,7 @@ func inboxPath(p string) bool {
 
 // publicPaths says whether a path is one of the addresses above, for publicMethods.
 func publicPaths(p string) bool {
-	if p == "/actor" {
+	if p == "/actor" || p == "/actor/outbox" {
 		return true
 	}
 	rest, ok := strings.CutPrefix(p, "/users/")
@@ -7858,11 +7906,11 @@ func publicPaths(p string) bool {
 	case 1:
 		return parts[0] != ""
 	case 2:
-		return parts[1] == "avatar.jpg" || parts[1] == "avatar.png"
+		return parts[1] == "avatar.jpg" || parts[1] == "avatar.png" || slices.Contains(memberCollections, parts[1])
 	case 3:
 		return parts[1] == "posts"
 	case 4:
-		return parts[1] == "posts" && (parts[3] == "picture.jpg" || parts[3] == "picture.png")
+		return parts[1] == "posts" && (parts[3] == "picture.jpg" || parts[3] == "picture.png" || parts[3] == "activity")
 	}
 	return false
 }
@@ -8093,7 +8141,7 @@ func (a *app) actorDoc(ctx context.Context, uid int64) (pubAnswer, error) {
 	id := f.origin.url + "/users/" + name
 	no := false
 	doc := outActor{Context: actorContext, ID: id, Type: "Person", PreferredUsername: name, Name: display, Summary: summaryHTML(bio),
-		URL: id, Inbox: id + "/inbox", Outbox: id + "/outbox",
+		URL: id, Inbox: id + "/inbox", Outbox: id + "/outbox", Followers: id + "/followers", Following: id + "/following", Featured: id + "/featured",
 		ManuallyApprovesFollowers: &no, Discoverable: &no, Indexable: &no, Published: created.UTC().Format(time.RFC3339),
 		PublicKey: outKey{ID: id + "#main-key", Owner: id, PublicKeyPem: pubPEM}}
 	if ext, mt, _, _, ok := pictureOf(head); ok && tag != "" {
@@ -8292,14 +8340,10 @@ func (a *app) originFrozen(w http.ResponseWriter, r *http.Request, site *pubSite
 // serveProfile sends a member's public page: the profile and their Public posts, newest first, pubPage at a
 // time, older ones by ?before=<id>. One statement.
 func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite, name string) {
-	var before int64
-	if q := r.URL.Query(); q.Has("before") {
-		n, err := strconv.ParseInt(q.Get("before"), 10, 64)
-		if err != nil || n <= 0 || len(q["before"]) != 1 {
-			site.notFound(w, r, false)
-			return
-		}
-		before = n
+	before, ok := pageCursor(r.URL.Query())
+	if !ok {
+		site.notFound(w, r, false)
+		return
 	}
 	// The rows are read whole and closed before anything else is done: making a post's lines may ask the
 	// database again (skillNames), and a request must never hold one connection while it waits for another,
@@ -8398,8 +8442,10 @@ func (a *app) handleInstanceActor(st *static) http.HandlerFunc {
 	}
 }
 
-// handlePublicPost answers GET /users/{name}/posts/{id}: a Public post as a Note (6.5) or as a page.
-func (a *app) handlePublicPost(st *static) http.HandlerFunc {
+// handlePublicPost answers GET /users/{name}/posts/{id}: a Public post as a Note (6.5) or as a page; and,
+// with create, GET /users/{name}/posts/{id}/activity: the Create that wraps that Note (6.4), the id the
+// outbox and FWR's deliveries give it, which a browser is sent on from to the post's own address.
+func (a *app) handlePublicPost(st *static, create bool) http.HandlerFunc {
 	site := a.pubSiteOf(st)
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Vary", "Accept")
@@ -8408,9 +8454,17 @@ func (a *app) handlePublicPost(st *static) http.HandlerFunc {
 		}
 		activity := wantsActivity(r.Header)
 		id, idOK := canonicalID(r)
-		name, ok := canonicalName(r, "/posts/"+r.PathValue("id"))
+		rest := "/posts/" + r.PathValue("id")
+		if create {
+			rest += "/activity"
+		}
+		name, ok := canonicalName(r, rest)
 		if a.fed.refusal() != "" || !ok || !idOK {
 			site.notFound(w, r, activity)
+			return
+		}
+		if create && !activity {
+			seeOther(w, "/users/"+name+"/posts/"+strconv.FormatInt(id, 10))
 			return
 		}
 		var uname, display, head, tag, body, image string
@@ -8435,19 +8489,312 @@ func (a *app) handlePublicPost(st *static) http.HandlerFunc {
 		if !a.originFrozen(w, r, site) {
 			return
 		}
-		actor := a.fed.origin.url + "/users/" + uname
-		note := outNote{Context: noteContext, ID: actor + "/posts/" + strconv.FormatInt(id, 10), Type: "Note", AttributedTo: actor,
-			Published: created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Content: noteHTML(body, a.postExtras(r.Context(), data))}
-		note.URL = note.ID
-		if ext, mt, pw, ph, ok := pictureOf(image); ok {
-			note.Attachment = []outAttachment{{Type: "Image", MediaType: mt, URL: note.ID + "/picture." + ext, Width: pw, Height: ph}}
+		var doc any
+		if create {
+			c := a.createOf(r.Context(), uname, id, body, image, data, created)
+			c.Context = noteContext
+			doc = c
+		} else {
+			n := a.noteOf(r.Context(), uname, id, body, image, data, created)
+			n.Context = noteContext
+			doc = n
 		}
-		b, err := apJSON(note)
+		b, err := apJSON(doc)
 		if err != nil {
 			pubFailed(w, "a note", err)
 			return
 		}
 		newAnswer(b, activityType).serve(w, r, http.StatusOK, apKeep)
+	}
+}
+
+// noteOf is a Public post by the member name as the Note of 6.5, without @context: to the public
+// collection, cc the author's followers (6.4, 6.7), the text with the chips and the combo as text, and
+// the picture. image is the first pictureHead bytes of the stored picture.
+func (a *app) noteOf(ctx context.Context, name string, id int64, body, image string, data []byte, created time.Time) outNote {
+	actor := a.fed.origin.url + "/users/" + name
+	n := outNote{ID: actor + "/posts/" + strconv.FormatInt(id, 10), Type: "Note", AttributedTo: actor,
+		Published: created.UTC().Format(time.RFC3339), To: []string{publicCollection}, Cc: []string{actor + "/followers"},
+		Content: noteHTML(body, a.postExtras(ctx, data))}
+	n.URL = n.ID
+	if ext, mt, pw, ph, ok := pictureOf(image); ok {
+		n.Attachment = []outAttachment{{Type: "Image", MediaType: mt, URL: n.ID + "/picture." + ext, Width: pw, Height: ph}}
+	}
+	return n
+}
+
+// createOf is the Create of a Public post (6.4), without @context: the one function that makes it for the
+// outbox, for its own id, and for FWR's deliveries. The activity is the post's: its actor is the author,
+// its published the post's, its to and cc the Note's (6.7: Mastodon reads the audience from them, and an
+// activity whose addressing differs from its object's would be read two ways).
+func (a *app) createOf(ctx context.Context, name string, id int64, body, image string, data []byte, created time.Time) outCreate {
+	n := a.noteOf(ctx, name, id, body, image, data, created)
+	return outCreate{ID: n.ID + "/activity", Type: "Create", Actor: n.AttributedTo, Published: n.Published, To: n.To, Cc: n.Cc, Object: n}
+}
+
+/* The outbox and the collections (ActivityPub 5.1, 5.3 and 5.4; docs/federation.md 5.2, 6.2 and F10), at
+/users/{name}/outbox, /followers, /following and /featured, and the instance actor's outbox at
+/actor/outbox. Each is a document for other servers and has no page of its own: a browser is sent on to
+the profile page, or the instance actor's (seeOther). Who is shown and what is counted follow the rules
+above, through the same statements: the gate of publicMember, Public posts by publicPost, one 404 for
+everything not shown. A retired name is that 404 too, as a retired name's posts are: the Tombstone at the
+actor is what tells other servers to stop asking. */
+
+// outboxSQL finds a member who may be shown, by name, with the number of their Public posts: the count
+// walks posts_public for that one member, so it costs the member's Public posts, never their other posts
+// or anyone else's (TestDBQueryPlans).
+const outboxSQL = `SELECT u.id, (SELECT count(*) FROM posts p WHERE p.user_id = u.id AND ` + publicPost + `) FROM users u WHERE u.username = $1 AND ` + publicMember
+
+// pageCursor reads the cursor of a page of Public posts, ?before=<post id>: the posts older than that one,
+// or the newest (0) when it is absent. ok is false when it is given and is not one positive id written
+// once. The profile page and the outbox page by it alike; it only ever bounds a statement that is already
+// held to one member's Public posts (profilePageSQL), so no value of it reaches anything else.
+func pageCursor(q url.Values) (int64, bool) {
+	if !q.Has("before") {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(q.Get("before"), 10, 64)
+	return n, err == nil && n > 0 && len(q["before"]) == 1
+}
+
+// outboxQuery reads what an outbox address asks for: the collection (no query), or a page (page=true, and
+// an older one with the cursor of pageCursor). Anything else (another value of page, page twice, a cursor
+// without page, any other parameter) is no page and is the 404, so each page has one address and a cache
+// one copy of it. There is no size parameter: a page is pubPage Creates.
+func outboxQuery(q url.Values) (page bool, before int64, ok bool) {
+	for k := range q {
+		if k != "page" && k != "before" {
+			return false, 0, false
+		}
+	}
+	if !q.Has("page") {
+		return false, 0, len(q) == 0
+	}
+	if len(q["page"]) != 1 || q.Get("page") != "true" {
+		return false, 0, false
+	}
+	before, ok = pageCursor(q)
+	return true, before, ok
+}
+
+// seeOther sends a browser from a document-only address to the page that shows the same thing, as people
+// get pages where servers get documents (5.6). It reads nothing, so it says the same for every name, shown
+// or not, and the page it leads to answers for itself.
+func seeOther(w http.ResponseWriter, to string) {
+	h := w.Header()
+	h.Set("Location", to)
+	h.Set("Cache-Control", apKeep)
+	w.WriteHeader(http.StatusSeeOther)
+}
+
+// serveDoc sends a document made here with the headers of 5.6.
+func serveDoc(w http.ResponseWriter, r *http.Request, what string, v any) {
+	b, err := apJSON(v)
+	if err != nil {
+		pubFailed(w, what, err)
+		return
+	}
+	newAnswer(b, activityType).serve(w, r, http.StatusOK, apKeep)
+}
+
+// memberCollections are the collections of a member, by the last part of their address (5.2).
+var memberCollections = []string{"outbox", "followers", "following", "featured"}
+
+// handleCollection answers GET /users/{name}/{kind}, kind one of memberCollections.
+// The followers, following and featured documents take no query, as the actor's does not.
+func (a *app) handleCollection(st *static, kind string) http.HandlerFunc {
+	site := a.pubSiteOf(st)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "Accept")
+		if !a.publicAllowed(w, r) {
+			return
+		}
+		activity := wantsActivity(r.Header)
+		name, ok := canonicalName(r, "/"+kind)
+		page, before, qOK := false, int64(0), true
+		if kind == "outbox" {
+			page, before, qOK = outboxQuery(r.URL.Query())
+		}
+		if a.fed.refusal() != "" || !ok || !qOK {
+			site.notFound(w, r, activity)
+			return
+		}
+		if !activity {
+			to := "/users/" + name
+			if before > 0 {
+				to += "?before=" + strconv.FormatInt(before, 10)
+			}
+			seeOther(w, to)
+			return
+		}
+		id := a.fed.origin.url + "/users/" + name + "/" + kind
+		switch {
+		case kind == "outbox" && page:
+			a.serveOutboxPage(w, r, site, name, id, before)
+		case kind == "outbox":
+			a.serveOutbox(w, r, site, name, id)
+		default:
+			a.serveFollows(w, r, site, name, id, kind)
+		}
+	}
+}
+
+// serveOutbox sends a member's outbox (ActivityPub 5.1): an OrderedCollection with the number of their
+// Public posts and its first page. One statement.
+func (a *app) serveOutbox(w http.ResponseWriter, r *http.Request, site *pubSite, name, id string) {
+	var uid int64
+	var n int
+	err := a.db.QueryRowContext(r.Context(), outboxSQL, name, a.mode == modeSingle).Scan(&uid, &n)
+	if errors.Is(err, sql.ErrNoRows) {
+		site.notFound(w, r, true)
+		return
+	}
+	if err != nil {
+		pubFailed(w, "an outbox", err)
+		return
+	}
+	if !a.originFrozen(w, r, site) {
+		return
+	}
+	serveDoc(w, r, "an outbox", outCollection{Context: asContext, ID: id, Type: "OrderedCollection", TotalItems: &n, First: id + "?page=true"})
+}
+
+// outboxRow is a post of a page of the outbox as profilePageSQL reads it.
+type outboxRow struct {
+	id         int64
+	body, head string
+	data       []byte
+	created    time.Time
+}
+
+// serveOutboxPage sends a page of a member's outbox: pubPage Creates of their Public posts, newest first,
+// older than before (ActivityPub 5: reverse chronological, by the post id, which only grows). It is the
+// profile page's statement, so the page shows exactly the posts the profile page shows, and one more row
+// says whether there is a next page. The rows are read before any Create is made, since a Create reads the
+// skill names and that may ask the database.
+func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubSite, name, id string, before int64) {
+	rows, err := a.db.QueryContext(r.Context(), profilePageSQL, name, a.mode == modeSingle, before, pubPage+1)
+	if err != nil {
+		pubFailed(w, "an outbox page", err)
+		return
+	}
+	var posts []outboxRow
+	var uname string
+	found := false
+	for rows.Next() {
+		var retired bool
+		var uid, pid sql.NullInt64
+		var un, display, bio, head, tag, body, image sql.NullString
+		var links, data []byte
+		var created sql.NullTime
+		if err := rows.Scan(&retired, &uid, &un, &display, &bio, &links, &head, &tag, &pid, &body, &image, &data, &created); err != nil {
+			rows.Close()
+			pubFailed(w, "an outbox page", err)
+			return
+		}
+		if !uid.Valid {
+			break
+		}
+		found, uname = true, un.String
+		if pid.Valid {
+			posts = append(posts, outboxRow{pid.Int64, body.String, image.String, data, created.Time})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		pubFailed(w, "an outbox page", err)
+		return
+	}
+	if !found {
+		site.notFound(w, r, true)
+		return
+	}
+	if !a.originFrozen(w, r, site) {
+		return
+	}
+	p := outPage{Context: noteContext, ID: id + "?page=true", Type: "OrderedCollectionPage", PartOf: id, OrderedItems: []outCreate{}}
+	if before > 0 {
+		p.ID += "&before=" + strconv.FormatInt(before, 10)
+	}
+	if len(posts) > pubPage {
+		posts = posts[:pubPage]
+		p.Next = id + "?page=true&before=" + strconv.FormatInt(posts[pubPage-1].id, 10)
+	}
+	for _, x := range posts {
+		p.OrderedItems = append(p.OrderedItems, a.createOf(r.Context(), uname, x.id, x.body, x.head, x.data, x.created))
+	}
+	serveDoc(w, r, "an outbox page", p)
+}
+
+// serveFollows sends a member's followers or following collection, or their featured one.
+//
+// Followers and following (ActivityPub 5.3 and 5.4, which let either be filtered by who asks; F10): the
+// count, and never who. F10 shows the members of each list only to the account itself, and nobody who asks
+// at this address can be that account: a request here carries no session (nothing here reads one), and a
+// signed request, once authorized fetch exists (7.6), is signed by another server's actor. A member reads
+// their own lists in the app (GET /api/followers and /api/following), a different surface. So there is no
+// first and no page, for anyone. The count is followCountsSQL's, the one a member's profile shows other
+// members in the app (follows across a block are not counted); it is given only while the follows flag is
+// on, as the app gives it only then, and a collection without totalItems says nothing at all. Remote
+// followers do not exist yet (FWR 3), so it counts members of this server.
+//
+// Featured (Mastodon's pinned posts, 5.2): empty, since posts cannot be pinned; it is there because
+// Mastodon fetches it for a profile, and an empty list is the true answer.
+func (a *app) serveFollows(w http.ResponseWriter, r *http.Request, site *pubSite, name, id, kind string) {
+	var uid sql.NullInt64
+	var retired bool
+	if err := a.db.QueryRowContext(r.Context(), actorGateSQL, name, a.mode == modeSingle).Scan(&uid, &retired); err != nil {
+		pubFailed(w, "a collection", err)
+		return
+	}
+	if !uid.Valid {
+		site.notFound(w, r, true)
+		return
+	}
+	if !a.originFrozen(w, r, site) {
+		return
+	}
+	doc := outCollection{Context: asContext, ID: id, Type: "OrderedCollection"}
+	switch {
+	case kind == "featured":
+		none := 0
+		doc.TotalItems, doc.OrderedItems = &none, &[]string{}
+	case a.flagsCached()["follows"]:
+		var followers, following int
+		if err := a.db.QueryRowContext(r.Context(), followCountsSQL, uid.Int64).Scan(&followers, &following); err != nil {
+			pubFailed(w, "a collection", err)
+			return
+		}
+		if kind == "following" {
+			followers = following
+		}
+		doc.TotalItems = &followers
+	}
+	serveDoc(w, r, "a collection", doc)
+}
+
+// handleInstanceOutbox answers GET /actor/outbox: the instance actor's outbox, which ActivityPub 4.1 makes
+// it name, and which is empty, since it posts nothing (5.5). Like the instance actor's document it freezes
+// nothing and names no member.
+func (a *app) handleInstanceOutbox(st *static) http.HandlerFunc {
+	site := a.pubSiteOf(st)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "Accept")
+		if !a.publicAllowed(w, r) {
+			return
+		}
+		activity := wantsActivity(r.Header)
+		if a.fed.refusal() != "" || r.URL.EscapedPath() != "/actor/outbox" {
+			site.notFound(w, r, activity)
+			return
+		}
+		if !activity {
+			seeOther(w, "/actor")
+			return
+		}
+		none := 0
+		serveDoc(w, r, "the instance actor's outbox", outCollection{Context: asContext, ID: a.fed.origin.url + "/actor/outbox", Type: "OrderedCollection",
+			TotalItems: &none, OrderedItems: &[]string{}})
 	}
 }
 
@@ -13457,7 +13804,12 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("GET /nodeinfo/2.1", a.handleNodeInfo)
 		mux.HandleFunc("GET /actor", a.handleInstanceActor(st))
 		mux.HandleFunc("GET /users/{name}", a.handleActor(st))
-		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st))
+		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st, false))
+		mux.HandleFunc("GET /users/{name}/posts/{id}/activity", a.handlePublicPost(st, true))
+		mux.HandleFunc("GET /actor/outbox", a.handleInstanceOutbox(st))
+		for _, kind := range memberCollections {
+			mux.HandleFunc("GET /users/{name}/"+kind, a.handleCollection(st, kind))
+		}
 		for _, ext := range []string{"jpg", "png"} {
 			mux.HandleFunc("GET /users/{name}/avatar."+ext, a.handlePublicPicture(false, ext))
 			mux.HandleFunc("GET /users/{name}/posts/{id}/picture."+ext, a.handlePublicPicture(true, ext))
