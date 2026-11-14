@@ -6,10 +6,12 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): the first item is
-built behind the mode, which is not startable yet, and waits for its Pi measurement; the guarded fetcher is
-done, and nothing calls its federation part yet; HTTP signatures are built, with no caller yet, and wait
-for their Pi measurements; the owner's review of the design is still asked for. 1 of 8 items done. The design note was checked against the specifications and
+**Status:** in progress (issue [#89](https://github.com/TuanSSM/flowtopia/issues/89)): federated mode, and
+single mode with `FLOWA_FEDERATE=on`, start since the WebFinger and NodeInfo item, and answer discovery only
+(no actor documents, no inbox, nothing delivered); the first item waits for its Pi measurement; the guarded
+fetcher is done, and nothing calls its federation part yet; HTTP signatures are built, with no caller yet, and
+wait for their Pi measurements; WebFinger and NodeInfo are done (discovery only: the ids they give out are served
+from FRD 5); the owner's review of the design is still asked for. 2 of 8 items done. The design note was checked against the specifications and
 Mastodon's documentation on 12 November 2026; its Sources section lists what no text settles, and
 an item that relies on one of those details settles it (from a recorded fixture or the owner's
 trial) and corrects the note. Every setting, table, route and test named below is new unless the
@@ -23,11 +25,13 @@ design note says it exists.
   `TestDBKeysGenerated`, `TestDBOriginFrozen`; the key generation time on the Pi written here.
   Built: `parseOrigin`, `parseKeySecret` (HKDF-SHA256 to the AES-256-GCM key; the value never printed),
   sealing bound to the row (`v1.`), `ap_keys` (migration 12), `ensureKey` and one key worker, the origin
-  recorded and a change refused, `-rotate-keys`, and `main` waiting for `Shutdown` and the worker (8.6);
+  recorded and a change refused (recorded when a member's actor id is first announced since FRD 4, which moved
+  it from the instance actor's first key: a key holds no origin, and a mistyped origin started once must
+  not freeze; federation.md 4.3), `-rotate-keys`, and `main` waiting for `Shutdown` and the worker (8.6);
   `TestOrigin`, `TestKeySecret`, `TestSealKey`, `FuzzOpenKey`, `TestDBKeysGenerated`,
   `TestDBOriginFrozen`, `TestDBFederatedStart`, `TestServeWaits` and `TestDBServeStopsWorker` pass. No
-  key is made for anyone while federation is refused. Not reachable by an instance yet: `federated` is
-  not in `modesBuilt`. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkGenerateKey` is
+  key is made for anyone while federation is refused. Reachable by an instance since the WebFinger and
+  NodeInfo item, which made the mode startable. On the CI-class runner (Xeon 2.3 GHz) `BenchmarkGenerateKey` is
   about 44 ms a key, `BenchmarkSealKey` 3.6 µs and `BenchmarkOpenKey` (open and parse) 0.12 ms.
   Open: the key generation time on the Pi (`go test -run xxx -bench GenerateKey -benchmem .` on the Pi, or
   the line "keys: made the key of the instance actor in N ms" in its log).
@@ -89,13 +93,49 @@ design note says it exists.
   (1.0 ms on the 2.1 GHz one); `BenchmarkReplayAdd` at the cap 0.4 to 0.6 µs and no allocation; the
   replay memory 52 to 56 bytes a signature, 5.2 to 5.6 MB full, at most about 7 MB. Open: the two Pi budgets of section 12, 10 ms to verify and 15 ms to sign
   (`go test -run xxx -bench 'InboxVerify|SignDelivery' -benchmem .` on the Pi).
-- [ ] **WebFinger and NodeInfo.** `/.well-known/webfinger`, `/.well-known/nodeinfo` and
+- [x] **WebFinger and NodeInfo.** `/.well-known/webfinger`, `/.well-known/nodeinfo` and
   `/nodeinfo/2.1`, only in a federating mode and only for members who opted in (the `federates`
   column and its switch in Settings land here). Opting in with a name that ends with a dot or a dash
   shows a warning that Mastodon cannot mention it (federation.md, finding 11). DoD:
   `TestWebFinger` (every edge case in federation.md 5.3, including `rel` and the CORS header on
   errors), `TestNodeInfo` (the discovery JRD, every field the 2.1 schema requires, the content
   type, counts as the schema defines them); `TestDBLocalModeUnchanged` still green.
+  Built (federation.md 4.1, 4.2, 4.3, 5.1, 5.3, 5.4, 5.7, 11 and 14.2 say what and why, each in an "As built
+  (FRD 4)" paragraph): `federated` in `modesBuilt` and `FLOWA_FEDERATE` read (`modeFederates`: single mode
+  only, `on` or `off`, default `off`, anything else stops the start), so a mode that federates is federated
+  mode or single mode with it on; the start logs once that this version answers discovery only, and the
+  README, the note and the dashboard's mode line (from the server's `built`) say the same; `GET
+  /.well-known/webfinger`, `GET /.well-known/nodeinfo` and `GET /nodeinfo/2.1` registered only in a mode that
+  federates (`testdata/routes-federated.txt`), with the CORS header on every answer there and nowhere else,
+  405 and `Allow` for other methods before the write guard (only in a mode that federates), short cache
+  times, and an allowance of 600 an hour per address apart from every member's; `parseResource` (every form
+  of 5.3, decided against RFC 7033, RFC 7565 sections 4 and 7, RFC 3986 and Mastodon's WebFinger page); one
+  statement on the unique username index for a member, the same 404 for an unknown, a not opted in, a
+  suspended and a deleted member, and in single mode the owner only; the origin frozen by the first answer
+  that names a member (`ensureOrigin`), not by a key, not by the instance actor's answer and not by NodeInfo,
+  and the dashboard saying "not announced yet" or since when; NodeInfo from typed structs, its counts kept
+  five minutes, `software.version` the empty string (the build is private by default, as in `/healthz`),
+  checked against the schema file itself (`testdata/federation/nodeinfo-2.1.schema.json`); `users.federates`
+  (migration 13, with `flowa-schema12.dump` for the restore drill), the switch in Settings ("Beyond this
+  server", labelled and explained in the server's words for what is built, only in a mode that federates;
+  implied and without a switch in single mode; "unavailable", with the reason for staff, while federation is
+  refused), the field ignored as any unknown field outside a mode that federates, the member's key asked for
+  on opting in, the owner's at start in single mode, and every start asking again for opted-in members
+  without one; the warning of finding 11. `TestWebFinger`, `TestDBWebFinger`, `TestNodeInfo`,
+  `TestNodeInfoSchemaCheck`, `TestDBNodeInfo`, `TestFederateSetting`, `TestDBFederatedRoutes`,
+  `TestDBFederateOptIn`, `TestDBDefaultsUnchanged` and the reworked `TestDBOriginFrozen` pass, and
+  `TestDBLocalModeUnchanged`, `routes-local.txt` and `routes-single.txt` are unedited and green; the
+  `federated` browser suite (in `test/ci-plan.sh` and the workflow: federated mode with `https://flowa.test`
+  and a test-only key secret) asks the three addresses over HTTP, works the switch with the keyboard, holds the
+  card to the rules of `keys`, `a11y` and `contrast` (their walks, read from their source) and to 420 px, and
+  writes the pictures of the card at desktop and 420 px and of the dashboard's mode line, which the screenshots
+  job publishes with the others. `BenchmarkWebFinger` with `-benchmem` through the whole server chain on a
+  2.1 GHz Xeon: the instance actor (no query) about 6.5 µs, 3.3 KB and 37 allocations a request; a member (one
+  query to a local Postgres) about 0.29 ms, 4.1 KB and 58 allocations.
+  Left for later items, outside this one's DoD: the instance setting `nodeinfo_version` (5.4), which would let
+  an admin publish the version (the default stays the empty string); `/users/{name}`, which the `self` link
+  names, served by FRD 5; and the `federation` pause flag of F1 and 14.1, which no item has built yet (the
+  mode, off by default, is the gate meanwhile), for the owner to place.
 - [ ] **Actor documents and public pages.** `/users/{name}` and `/actor`, content negotiation with
   `Vary: Accept`, the small HTML pages for profiles and Public posts, the public picture URLs, the
   post audience (Public or This server) in the composer. A name is public from here on, so

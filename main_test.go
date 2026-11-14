@@ -1113,14 +1113,19 @@ func TestInstanceMode(t *testing.T) {
 			t.Errorf("parseMode(%q) = %q, %v; want local", v, m, err)
 		}
 	}
-	// Single-profile mode is built; federated is planned and not built yet.
+	// All three modes are built (federation as far as discovery: modesBuilt).
 	for _, v := range []string{"single", " Single", "SINGLE", "SİNGLE", "\tsingle\n"} {
 		if m, err := parseMode(v); err != nil || m != modeSingle {
 			t.Errorf("parseMode(%q) = %q, %v; want single", v, m, err)
 		}
 	}
-	if !modesBuilt[modeSingle] || modesBuilt[modeFederated] || len(modesBuilt) != 2 {
-		t.Errorf("modesBuilt = %v; want local and single, not federated", modesBuilt)
+	for _, v := range []string{"federated", " Federated", "FEDERATED\n"} {
+		if m, err := parseMode(v); err != nil || m != modeFederated {
+			t.Errorf("parseMode(%q) = %q, %v; want federated", v, m, err)
+		}
+	}
+	if !modesBuilt[modeSingle] || !modesBuilt[modeFederated] || len(modesBuilt) != 3 {
+		t.Errorf("modesBuilt = %v; want all three", modesBuilt)
 	}
 	// The modes of the plan are known words: the message says one that is not built is not, and
 	// does not tell the operator the word is wrong. The capital I with a dot of a Turkish keyboard

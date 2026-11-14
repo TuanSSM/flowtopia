@@ -352,6 +352,9 @@ jobs:
             combo-avatars) export FLOWA_AVATARS=1; file=combo.py ;;
             # A single-profile instance: the server starts in that mode, and the suite reads the visitor's page.
             single) export FLOWA_MODE=single; file=single.py ;;
+            # A federating instance: federated mode, an origin under .test (a name reserved for tests, RFC 2606) and
+            # a key secret made for these tests only, which seals nothing anyone keeps.
+            federated) export FLOWA_MODE=federated FLOWA_ORIGIN=https://flowa.test FLOWA_KEY_SECRET=7e57f10a7e57c0ffee15b07700dd1ab5f00dfeedfacecafe5ec2e7deadbeef42; file=federated.py ;;
             *) file="$SUITE.py" ;;
           esac
           xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh "$file" | tee report/result.txt || code=$?
@@ -421,6 +424,15 @@ jobs:
         env:
           FLOWA_MODE: single
         run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh single.py "$RUNNER_TEMP/shots"
+      # A federating instance's switch in Settings, at desktop and at 420 px, and the dashboard's mode line:
+      # the federated suite again, with the test origin and key secret of its integration run, writing
+      # federated-*.png into the same index.json.
+      - name: Take the switch of a federating instance
+        env:
+          FLOWA_MODE: federated
+          FLOWA_ORIGIN: https://flowa.test
+          FLOWA_KEY_SECRET: 7e57f10a7e57c0ffee15b07700dd1ab5f00dfeedfacecafe5ec2e7deadbeef42
+        run: xvfb-run -a -s "-screen 0 1440x1000x24" test/browser/run.sh federated.py "$RUNNER_TEMP/shots"
       - name: Upload screenshots
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5

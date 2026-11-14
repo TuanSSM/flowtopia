@@ -628,10 +628,25 @@ function pageSettings() {
       ${me ? `<div class="field">Dominant hand<div class="seg" role="group" aria-label="Dominant hand" style="width:max-content">${[['L', 'Left'], ['R', 'Right']].map(([k, n]) => `<button class="${state.settings.dominant === k ? 'on' : ''}" data-act="dominant" data-v="${k}" aria-pressed="${state.settings.dominant === k}">${n}</button>`).join('')}</div></div>` : ''}</div></div>
     ${me ? `<div class="card"><div class="card-h"><h2>Data: ${esc(curProp().name)}</h2></div><p class="small muted" style="margin-bottom:12px">Export, import and reset apply to your ${esc(curProp().name.toLowerCase())} progress only. The server also keeps a daily backup for 14 days.</p>
       <div class="row wrap"><button class="btn" data-act="export">Export JSON</button><button class="btn" data-act="file">Import JSON</button><input type="file" accept="application/json" data-change="import" hidden><button class="btn danger" data-act="reset">Reset</button></div></div>` : ''}
+    ${me && fed ? fedCard() : ''}
     <div class="card"><div class="card-h"><h2>About the skill maps</h2></div><p class="small muted">Each map takes its technique names from the sources listed on its skills. Prerequisites and tiers are coaching proposals, not rules of the art. Skills marked unconfirmed could not be checked against a source.</p>
       <p class="small muted" style="margin-top:10px">What is planned for Flowa itself is in its repository, the same for every prop.</p>
       <div class="row wrap" style="margin-top:10px"><a href="${DOCS_URL}roadmap.md" target="_blank" rel="noopener noreferrer" class="btn sm">Roadmap ${icon('ext')}</a><a href="${DOCS_URL}epics.md" target="_blank" rel="noopener noreferrer" class="btn sm">Epics ${icon('ext')}</a></div></div>
   </div>`;
+}
+// Sharing beyond this server, shown only where the server federates (fed). The switch is the member's opt-in;
+// on a Flowa that is one person's own the setting FLOWA_FEDERATE is that choice, so there is no switch. What
+// the switch does in this version, and its label, are the server's words (fed.label, fed.built), so the card
+// says no more than is built. While federation is refused nobody can be found: the card says so, with the
+// reason for staff (fed.refused), and has no switch.
+function fedCard() {
+  const on = fed.optedIn, head = '<div class="card fed-card"><div class="card-h"><h2>Beyond this server</h2></div><div class="stack">';
+  if (fed.unavailable) return `${head}<p class="small">${esc(fed.unavailable)}</p>${fed.refused ? `<p class="notice warn">${esc(fed.refused)}</p>` : ''}</div></div>`;
+  return `${head}
+    ${fed.implied ? '<p class="small">This Flowa is yours alone, and it is set up to let other servers find you.</p>'
+    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>${esc(fed.label)}</span></label>`}
+    <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. ${esc(fed.built)}</p>
+    ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}</div></div>`;
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
 const pageOff = what => `<div class="empty">${what} is turned off on this Flowa. An admin can turn it on under Admin, Features. <a href="#/">Go to the dashboard</a>.</div>`;
@@ -1074,6 +1089,13 @@ document.addEventListener('change', async e => {
     case 'flag': setFlag(d.k, t.checked); break;
     case 'gate': if (t.checked) state.gates[d.id] = dayKey(); else delete state.gates[d.id]; commit(); break;
     case 'setting': state.settings[d.k] = t.value.trim(); t.blur(); commit(); break;
+    case 'federates': {
+      const want = t.checked, r = await api('me', 'PUT', { federates: want });
+      if (r.ok) { me = r.data.user; fed = r.data.federation || fed; toast(want ? 'Other servers can now find you by your handle.' : 'Other servers can no longer find you by your handle.'); }
+      else toast(r.error);
+      render(); document.querySelector('[data-change="federates"]')?.focus();
+      break;
+    }
     case 'note': { const r = { ...rec(d.id), notes: t.value }; state.skills[d.id] = r; commit(); break; }
     case 'import': {
       const f = t.files[0]; t.value = '';

@@ -1,0 +1,6 @@
+# Routes a mode that federates adds to those of its mode (testdata/routes-local.txt, and
+# testdata/routes-single.txt in single mode with FLOWA_FEDERATE=on): discovery, docs/federation.md 5.3 and
+# 5.4. TestDBFederatedRoutes holds the table to it.
+GET /.well-known/nodeinfo
+GET /.well-known/webfinger
+GET /nodeinfo/2.1
