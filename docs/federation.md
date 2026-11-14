@@ -1350,8 +1350,8 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   are not served, as Mastodon's Follow ids need not be) and enqueues the Follow; it stays "Requested" until the Accept.
   `DELETE` sends the Undo of that Follow, embedded with its id. (Found in FWR 4's review: the Undo could reach the other
   server before a Follow that met one error and waited for its next attempt, leaving a follow there that is gone here.
-  The Undo now takes back its Follow, 8.8 "Taking back": a Follow not yet sent is given up and no Undo goes, one in flight
-  holds the Undo until its lease ends. An Accept and a later Reject of the same Follow, after a block, can overtake each
+  The Undo now takes back its Follow, 8.8 "Taking back": a Follow never tried is given up and no Undo goes, one that met
+  an error (it may have arrived) is given up and the Undo goes, one in flight holds the Undo until its lease ends. An Accept and a later Reject of the same Follow, after a block, can overtake each
   other the same way; the Accept's id is not kept with the follow, so this is left open.) `PUT` and `DELETE /api/fed/requests/{id}` approve and
   decline a request (Accept or Reject, embedding the Follow as it came), `GET /api/fed/requests` lists them (200 at
   most), and `PUT`/`DELETE /api/fed/accounts/{id}/block` block a remote account: the follows go both ways in the
@@ -2818,16 +2818,28 @@ corrected:
   post's Delete names its Create; FWR 3's Undo names its Follow), and at no inbox does the second reach the server before
   the first's outcome there. The claim orders rows by when they are due, so without a rule a Create that met one 5xx (due
   again in minutes) would be overtaken by its Delete, and the post would stay on that server. The rule, inbox by inbox,
-  when the second is fanned out (`takeBackSQL`): where the first is queued and not claimed, nothing of it was sent, so it
-  is given up ("taken back before it was sent") and the second goes nowhere there; where the first is claimed (a request
-  may be in flight), the second is due no earlier than the end of the first's lease; where the first is gone (taken, or
-  given up), the second goes as any row. A first that still waits for its own fan-out (the queue was full) is dropped
-  with the second, which then goes nowhere at all. And at the second's send (`heldBackSQL`, in `deliver`): if the first
-  is still queued for that inbox and claimed, the second is given back until that lease ends (no attempt counted); if it
-  is queued and not claimed (its request failed meanwhile and waits for another attempt), the first is given up and the
-  second is sent, since the first may have arrived before its answer was lost. A second sent to a server that never got
-  the first is harmless (a Delete or an Undo of something unknown is ignored). `TestDBDeleteNeverOvertakesCreate` (failed
-  once, in flight, taken, and the hold at the send), `TestDBDeleteOfWaitingCreate`, `TestDBUndoNeverOvertakesFollow`.
+  when the second is fanned out (`takeBackSQL`): where the first is queued, not claimed and **never tried** (`attempts`
+  0: no request for it ever left), it is given up ("taken back before it was sent") and the second goes nowhere there;
+  where it is queued and not claimed **after an attempt** (a 5xx, a time out, a refusal, a redirect, an open circuit
+  holding it), that request may have arrived (a 504 from the other server's proxy after it stored the post, a slow
+  server), so the first is given up ("taken back after an attempt that may have arrived") and **the second goes** (after
+  the second review of FWR 4: it went nowhere, and the post stayed there for good; for an Undo, a phantom follower); where
+  the first is claimed (a request may be in flight), the second is due no earlier than the end of the first's lease;
+  where the first is gone (taken, or given up), the second goes as any row. A first that still waits for its own fan-out
+  (the queue was full) is dropped with the second, which then goes nowhere at all. `attempts` counts the claims that may
+  have sent a request: every path that gives a claimed row back unsent takes its attempt back (`giveBack`: another worker
+  sending to the host, the clock doubted, the origin or key not ready, a stop, the hold below, the fetcher's turn at the
+  host not had), and the pause, the clock guard, an open circuit and an unavailable host keep a row from being claimed;
+  a lease that runs out keeps its attempt (`takeBackSQL`'s comment lists them). At the second's send (`heldBackSQL`, in
+  `deliver`), with the first's row locked first, so a claim made by another worker meanwhile is seen as it is now (after
+  the second review: it read the row as it had been, and could mark a claimed Create failed and send the Delete beside
+  it): if the first is claimed, the second is given back until that lease ends (no attempt counted); if it is queued and
+  not claimed (its request failed meanwhile), the first is given up and the second is sent. A second sent to a server
+  that never got the first is harmless (a Delete or an Undo of something unknown is ignored).
+  `TestDBDeleteNeverOvertakesCreate` (never tried, failed once, in flight, taken, and the hold at the send),
+  `TestDBDeleteAfterAmbiguousFailure` (a Create answered 504, then its Delete sent), `TestDBHeldBackSeesLateClaim` and
+  `TestDBTakeBackSeesLateClaim` (another worker's claim committed while each statement waits for the row),
+  `TestDBDeleteOfWaitingCreate`, `TestDBUndoNeverOvertakesFollow`.
 - **Measured** (2.1 GHz Xeon, 4 cores, local Postgres in Docker): `BenchmarkClaimDelivery`, one claim with 50,000
   rows queued on 300 hosts, 4 being sent to and 25 with an open circuit, 0.75 to 0.85 ms, 1.8 KB and 41 allocations
   (budget 2 ms; 0.62 ms with no circuit open; 1.6 to 1.7 ms before the statement was prepared). `TestFederationMemory`:

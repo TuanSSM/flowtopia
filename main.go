@@ -17789,18 +17789,31 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 }
 
 // takeBackSQL is what the fan-out of activity $1, which takes back activity $2 ($3 the queue's clock), does to the
-// rows of both, so that at no inbox the second overtakes the first (8.8, "Taking back"; one still waiting for its own
-// fan-out was dropped with the second by enqueueUndo):
-//   - at an inbox where the first is queued and not claimed, nothing of it was sent: its row is given up ("taken back
-//     before it was sent") and the second's row for that inbox goes too, since there is nothing to take back there;
-//   - at an inbox where the first is claimed (a request may be in flight), the second is due no earlier than the end of
-//     the first's lease; deliver asks again at the send.
+// rows of both, so that at no inbox the second overtakes the first and none is lost (8.8, "Taking back"; one still
+// waiting for its own fan-out was dropped with the second by enqueueUndo). At each inbox of the second:
+//   - the first queued and not claimed, with attempts 0: no request for it ever left (below), so it is given up
+//     ("taken back before it was sent") and the second's row for that inbox goes too: there is nothing to take back;
+//   - the first queued and not claimed after an attempt (a 5xx, a time out, a refusal, a redirect, an open circuit
+//     holding it): that request may have arrived (a 504 from the other server's proxy after it stored the post), so the
+//     first is given up ("taken back after an attempt") and the second goes as any row;
+//   - the first claimed (a request may be in flight): the second is due no earlier than the end of its lease, and
+//     deliver asks again at the send (heldBackSQL).
 //
+// attempts counts the claims that may have sent a request. A claim counts one, and every path that gives a claimed row
+// back unsent takes it back (giveBack, attempts - 1): another worker of this process sending to the host, the clock
+// doubted, the origin or the member's key not ready, the pacer's wait cut by a stop, a row claimed as a stop came,
+// heldBackSQL's hold, and the fetcher's own hold-ups (failBusy: its turn at the host not had, no request made;
+// failCanceled: the request's context ended before it was sent, the send's context is never cancelled by a stop). A
+// second request in the other signature form after a 400 or 401 given back at a stop: the first was refused by the
+// other server, so nothing was stored. The pause, the clock guard, an open circuit and an unavailable host keep a row
+// from being claimed at all, and a policy refusal at the send gives the row up (failed, not queued). A lease that runs
+// out (a stop past its bounds, a crash) keeps its attempt: that request may have left.
 // It says how many rows of the second went.
-const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = 'taken back before it was sent'
+const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3,
+			last_error = CASE WHEN d.attempts = 0 THEN 'taken back before it was sent' ELSE 'taken back after an attempt that may have arrived' END
 		WHERE d.outbox_id = $2 AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)
-			AND EXISTS (SELECT 1 FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox = d.inbox) RETURNING d.inbox),
-	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM g) RETURNING n.id),
+			AND EXISTS (SELECT 1 FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox = d.inbox) RETURNING d.inbox, d.attempts),
+	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM g WHERE attempts = 0) RETURNING n.id),
 	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, d.locked_until) FROM ap_deliveries d
 		WHERE n.outbox_id = $1 AND d.outbox_id = $2 AND d.inbox = n.inbox AND d.state = 'queued' AND d.locked_until >= $3 RETURNING n.id)
 	SELECT (SELECT count(*) FROM x) + 0 * (SELECT count(*) FROM h)`
@@ -17810,7 +17823,7 @@ const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', loc
 // waits. Not claimed (it failed in flight and waits for another attempt): it is given up, and the second is sent, since
 // the first may have arrived before its answer was lost.
 const heldBackSQL = `WITH x AS (SELECT id, locked_until FROM ap_deliveries WHERE outbox_id = $1 AND inbox = $2 AND state = 'queued'),
-	g AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $3, last_error = 'taken back before it was sent again'
+	g AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $3, last_error = 'taken back after an attempt that may have arrived'
 		FROM x WHERE d.id = x.id AND (x.locked_until IS NULL OR x.locked_until < $3) RETURNING d.id)
 	SELECT (SELECT max(locked_until) FROM x WHERE locked_until >= $3), (SELECT count(*) FROM g)`
 

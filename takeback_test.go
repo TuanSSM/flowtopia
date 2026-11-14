@@ -1,11 +1,13 @@
 package main
 
 // Taking back (docs/federation.md 8.8, "Taking back"; the review of FWR 4): an activity that takes back another (a post's
-// Delete its Create, an Undo its Follow) never reaches an inbox before the first's outcome there. Four inboxes, each in
-// another state when the post is deleted: the Create failed once and waits for its next attempt (nothing reached that
-// server: the Create is given up and no Delete goes), claimed with a request in flight (the Delete waits for the end of
-// its lease, and at its send gives the Create up if that failed meanwhile), already taken (the Delete goes at once), and
-// the Create still waiting for its own fan-out because the queue was full (neither goes anywhere).
+// Delete its Create, an Undo its Follow) never reaches an inbox before the first's outcome there, and is never lost
+// where the first may have arrived. Inboxes, each in another state when the post is deleted: the Create never tried
+// (attempts 0: no request left, so it is given up and no Delete goes), the Create failed once and waits for its next
+// attempt (that request may have arrived, as a 504 from a proxy after the post was stored: the Create is given up and
+// the Delete goes), claimed with a request in flight (the Delete waits for the end of its lease, and at its send gives
+// the Create up if that failed meanwhile), already taken (the Delete goes at once), and the Create still waiting for
+// its own fan-out because the queue was full (neither goes anywhere).
 
 import (
 	"context"
@@ -31,7 +33,7 @@ func (e *notesEnv) rowOf(apID, inbox string) (state string, next time.Time, leas
 
 func TestDBDeleteNeverOvertakesCreate(t *testing.T) {
 	e := newNotesEnv(t)
-	for _, h := range []string{"failed", "flight", "taken"} {
+	for _, h := range []string{"never", "failed", "flight", "taken"} {
 		id, _ := e.remote("f", h+".fan.example", true)
 		e.follows(id)
 	}
@@ -42,18 +44,26 @@ func TestDBDeleteNeverOvertakesCreate(t *testing.T) {
 	del := fmt.Sprintf("https://here.example/users/ana/posts/%d#delete", p)
 	now := e.out.now()
 	lease := now.Add(deliveryLease)
-	// failed.fan.example: one 5xx, the next attempt in ten minutes. flight: claimed now. taken: answered 202, gone.
+	// never.fan.example: not tried yet (its host busy). failed: one 5xx, the next attempt in ten minutes. flight: claimed
+	// now. taken: answered 202, gone.
+	e.mustExec(`UPDATE ap_deliveries SET next_at = $2 WHERE inbox = $1`, in("never"), now.Add(time.Minute))
 	e.mustExec(`UPDATE ap_deliveries SET next_at = $2, attempts = 1 WHERE inbox = $1`, in("failed"), now.Add(10*time.Minute))
 	e.mustExec(`UPDATE ap_deliveries SET locked_until = $2, attempts = 1 WHERE inbox = $1`, in("flight"), lease)
 	e.mustExec(`DELETE FROM ap_deliveries WHERE inbox = $1`, in("taken"))
 	e.must(200, e.ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
 	e.produce()
 
-	if s, _, _, why := e.rowOf(create, in("failed")); s != "failed" || why != "taken back before it was sent" {
-		t.Errorf("failed.fan.example: the Create is %q (%s), want given up as taken back", s, why)
+	if s, _, _, why := e.rowOf(create, in("never")); s != "failed" || why != "taken back before it was sent" {
+		t.Errorf("never.fan.example: the Create is %q (%s), want given up as taken back before it was sent", s, why)
 	}
-	if s, _, _, _ := e.rowOf(del, in("failed")); s != "" {
-		t.Errorf("failed.fan.example: a Delete is queued (%s) for a server that never got the post", s)
+	if s, _, _, _ := e.rowOf(del, in("never")); s != "" {
+		t.Errorf("never.fan.example: a Delete is queued (%s) for a server no request ever reached", s)
+	}
+	if s, _, _, why := e.rowOf(create, in("failed")); s != "failed" || why != "taken back after an attempt that may have arrived" {
+		t.Errorf("failed.fan.example: the Create is %q (%s), want given up after an attempt that may have arrived", s, why)
+	}
+	if s, next, _, _ := e.rowOf(del, in("failed")); s != "queued" || next.After(now) {
+		t.Errorf("failed.fan.example: the Delete is %q, due %v: the Create may have arrived, so it must go now", s, next)
 	}
 	if s, next, _, _ := e.rowOf(del, in("flight")); s != "queued" || next.Before(lease) {
 		t.Errorf("flight.fan.example: the Delete is %q, due %v, before the Create's lease ends at %v", s, next, lease)
@@ -62,8 +72,8 @@ func TestDBDeleteNeverOvertakesCreate(t *testing.T) {
 		t.Errorf("taken.fan.example: the Delete is %q, due %v, want due now", s, next)
 	}
 
-	// The claim order holds it: stepping the queue sends the Delete to taken.fan.example only, while the Create to
-	// flight.fan.example is still claimed.
+	// The claim order holds it: stepping the queue sends the Deletes to failed.fan.example and taken.fan.example, not to
+	// flight.fan.example while its Create is still claimed.
 	var mu sync.Mutex
 	var got []string
 	e.out.fetch = deliveryStub(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +95,8 @@ func TestDBDeleteNeverOvertakesCreate(t *testing.T) {
 		}
 	}
 	step()
-	if !slices.Equal(got, []string{"taken.fan.example"}) {
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"failed.fan.example", "taken.fan.example"}) {
 		t.Fatalf("sent to %v while the Create to flight.fan.example is in flight", got)
 	}
 	// The Create's request in flight failed (its row is given back for a later attempt) and the lease is over: at its
@@ -94,7 +105,7 @@ func TestDBDeleteNeverOvertakesCreate(t *testing.T) {
 		create, now.Add(30*time.Minute), in("flight"))
 	e.clock.add(deliveryLease + time.Second)
 	step()
-	if !slices.Equal(got, []string{"taken.fan.example", "flight.fan.example"}) {
+	if !slices.Equal(got, []string{"failed.fan.example", "taken.fan.example", "flight.fan.example"}) {
 		t.Fatalf("sent to %v, want the Delete to flight.fan.example after the Create's lease", got)
 	}
 	if s, _, _, why := e.rowOf(create, in("flight")); s != "failed" || !strings.HasPrefix(why, "taken back") {
