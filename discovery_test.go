@@ -795,8 +795,19 @@ func TestDBWebFinger(t *testing.T) {
 		t.Errorf("after opting out: %d %s", w.Code, w.Body)
 	}
 
-	// The lookup is one statement on the unique username index, whoever is asked for.
-	rows, err := e.a.db.Query(`EXPLAIN (COSTS OFF) `+webFingerSQL, "ana", false)
+	// The lookup is one statement that the unique username index can answer, whoever is asked for. On a
+	// table of a few rows the planner may read the table whole instead, depending on when the statistics
+	// were last gathered, so the plan is asked for with whole-table reads priced out: it then names the
+	// index if the statement can use it at all, which is what must hold when the table is large.
+	tx, err := e.a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query(`EXPLAIN (COSTS OFF) `+webFingerSQL, "ana", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,6 +818,7 @@ func TestDBWebFinger(t *testing.T) {
 		plan = append(plan, l)
 	}
 	rows.Close()
+	tx.Rollback()
 	if p := strings.Join(plan, "\n"); !strings.Contains(p, "Index Scan using users_username_key") {
 		t.Errorf("the lookup does not use the username index:\n%s", p)
 	}
