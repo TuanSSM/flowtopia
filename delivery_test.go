@@ -491,8 +491,8 @@ func TestDBDeliveryQueue(t *testing.T) {
 		if e.count(`SELECT count(*) FROM ap_deliveries WHERE locked_until = $1`, third.lease) != 1 {
 			t.Error("the worker whose lease ran out during its request changed the row another worker holds")
 		}
-		if err := e.q.deliver(context.Background(), third); err != nil || e.count(`SELECT count(*) FROM ap_deliveries`) != 0 {
-			t.Errorf("the second worker's send: %v", err)
+		if err := e.q.deliver(context.Background(), third); err != nil || e.count(`SELECT count(*) FROM ap_deliveries`) != 0 || len(e.hits(id)) != 2 {
+			t.Errorf("the second worker's send: %v, %d requests in all", err, len(e.hits(id)))
 		}
 	})
 
@@ -1562,6 +1562,9 @@ func TestDBHealthzFederation(t *testing.T) {
 	if n := e.q.numbersRun.Load() - ran; n != 0 {
 		t.Errorf("remote probes asked the queue's numbers %d times", n)
 	}
+	e.a.healthMu.Lock()
+	e.a.fedHealthAt = time.Now().Add(time.Hour) // the last answer is fresh, whatever the wall clock does meanwhile
+	e.a.healthMu.Unlock()
 	probe(t, e.h, "127.0.0.1:4000", nil)
 	if n := e.q.numbersRun.Load() - ran; n != 0 {
 		t.Errorf("a local probe within %v of the last asked again (%d)", fedHealthEvery, n)
