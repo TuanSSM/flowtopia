@@ -2938,6 +2938,42 @@ func TestDBOneConnection(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the held fetch did not finish on one connection")
 	}
+	// The search by handle (FRD 8) on one connection: a member's lookup waiting on a WebFinger answer, then on
+	// the outbox, holds no connection, so the pool's one connection still answers meanwhile, and the lookup
+	// finishes once let go.
+	re.a.db.SetMaxOpenConns(8)
+	_, member := re.user("searcher", "user")
+	boActor := "https://social.example/users/one"
+	person(re.w, boActor, "one", nil)
+	outbox(re.w, boActor, noteItem(boActor, boActor+"/s/1", "<p>one connection</p>", []string{publicCollection}, nil, nil))
+	re.a.db.SetMaxOpenConns(1)
+	for _, at := range []string{wfURL("social.example", "acct:one@social.example"), boActor + "/outbox"} {
+		release := re.w.holdAt(at)
+		looked := make(chan int, 1)
+		go func() {
+			code, _ := re.do(member, "POST", "/api/fed/lookup", map[string]any{"q": "@one@social.example"})
+			looked <- code
+		}()
+		for got := ""; got != worldKey(at); {
+			select {
+			case got = <-re.w.arrived:
+			case <-ctx.Done():
+				t.Fatalf("the lookup never reached %s", at)
+			}
+		}
+		if err := re.a.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one); err != nil {
+			t.Fatalf("while a lookup waits at %s, the pool's one connection is taken: %v", at, err)
+		}
+		release()
+		select {
+		case code := <-looked:
+			if code != 200 {
+				t.Fatalf("the lookup held at %s: %d", at, code)
+			}
+		case <-ctx.Done():
+			t.Fatalf("the lookup held at %s did not finish on one connection", at)
+		}
+	}
 	re.a.db.SetMaxOpenConns(8)
 }
 

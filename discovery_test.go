@@ -349,7 +349,7 @@ func TestNodeInfo(t *testing.T) {
 	if hd := w.Result().Header; w.Code != 200 || hd.Get("Content-Type") != `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"` || hd.Get("Access-Control-Allow-Origin") != "*" || hd.Get("Cache-Control") != discoveryKeep {
 		t.Fatalf("the document: %d %v", w.Code, hd)
 	}
-	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo","actors","notes","outbox","collections"]}}`
+	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo","actors","notes","outbox","collections","lookup"]}}`
 	if w.Body.String() != want {
 		t.Errorf("the document:\n%s\nwant\n%s", w.Body, want)
 	}
@@ -1247,6 +1247,9 @@ func TestDBDefaultsUnchanged(t *testing.T) {
 		h := w.Result().Header
 		return answer{w.Code, w.Body.String(), h.Get("Access-Control-Allow-Origin"), h.Get("Allow"), h.Get("Content-Type"), fmt.Sprint(h)}
 	}
+	searcher := map[*tenv]string{}
+	_, searcher[l] = l.user("searcher", "user")
+	_, searcher[s] = s.user("searcher", "user")
 	for name, e := range map[string]*tenv{"local": l, "single without FLOWA_FEDERATE": s} {
 		for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"} {
 			for _, hdr := range []map[string]string{nil, {"Content-Type": "application/json"}, {"Accept": "application/activity+json"}, {"Accept": `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`}} {
@@ -1254,6 +1257,18 @@ func TestDBDefaultsUnchanged(t *testing.T) {
 				for _, p := range append([]string{"/.well-known/webfinger?resource=acct:ana@flowa.example.org", "/.well-known/nodeinfo", "/nodeinfo/2.1"}, publicAddresses...) {
 					if got := of(ask(e.h, m, p, "", hdr)); got != want {
 						t.Errorf("%s: %s %s %v answers %+v, an unknown address %+v", name, m, p, hdr, got, want)
+					}
+				}
+				// The search by handle (FRD 8), signed in or not, answers as an API address nobody has.
+				for _, signed := range []bool{false, true} {
+					h := maps.Clone(hdr)
+					if signed {
+						h = map[string]string{"Cookie": cookieName + "=" + searcher[e]}
+						maps.Copy(h, hdr)
+					}
+					wantAPI := of(ask(e.h, m, "/api/nobody-has-this-address", "", h))
+					if got := of(ask(e.h, m, "/api/fed/lookup", "", h)); got != wantAPI {
+						t.Errorf("%s: %s /api/fed/lookup %v answers %+v, an unknown API address %+v", name, m, h, got, wantAPI)
 					}
 				}
 			}

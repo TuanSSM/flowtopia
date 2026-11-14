@@ -10,10 +10,11 @@ and [PRT](epics.md#prt-portability), with checklists under `docs/epic-<code>/tod
 is in [roadmap.md](roadmap.md#third-cycle).
 
 **It is a proposal waiting for the owner's review.** Nothing in it was built when it was written; what has
-been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 7: the modes,
+been built since is marked "As built" in its section and listed in the epics' todos (as of FRD 8: the modes,
 the origin, the keys, the guarded fetcher, HTTP signatures, discovery, the actor documents and public
-pages with the post audience and retired names, the outboxes and collections, and remote accounts with the
-cache of remote actors, which nothing calls yet; a federating instance can be read, and has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
+pages with the post audience and retired names, the outboxes and collections, remote accounts with the
+cache of remote actors, and the search by handle that calls it; a federating instance can be read, its members
+can look up people elsewhere, and it has no inbox yet). The decisions come first, because the rest depends on them. Until the owner answers one, the plan
 proceeds on its recommendation, and each decision says what the plan assumes meanwhile.
 
 **One rule above all others: federation is off by default, and turning nothing on changes nothing.**
@@ -404,6 +405,10 @@ browser, with each member's outbox of Public posts and the counts of their follo
 inbox, so nobody can follow anyone yet, and nothing is delivered"), and the parts add `outbox` and
 `collections`.
 
+As built (FRD 8): the sentence adds the search by handle ("..., and lets members look up people on other servers
+by their handle and read their profiles and latest public posts; it has no inbox, ..."), and the parts add
+`lookup`.
+
 ### 4.2 What each mode means for every surface
 
 | Surface | `local` (default) | `federated` | `single` |
@@ -663,6 +668,49 @@ neither says, and one correction:
 to find WebFinger. Mastodon's WebFinger page describes the lookup going straight to
 `/.well-known/webfinger` and does not mention host-meta; whether Mastodon falls back to it when
 WebFinger fails is not in its documentation.
+
+**As built (FRD 8), the other direction:** Flowa as the server that asks, for a member's search by handle
+(section 11, `findRemote` in `main.go`), checked against Mastodon's WebFinger page and the SWICG report
+"ActivityPub and WebFinger" ("Forward discovery", "Reverse discovery"):
+
+- **Forward.** `acct:name@host` (the name percent-encoded where RFC 7565 7 asks, its case kept) is asked of
+  `https://host/.well-known/webfinger` through the fetcher's WebFinger kind (5 s, 64 KB, `application/jrd+json`
+  or `application/json`, up to 3 redirects to any https host, as RFC 7033 4.2 allows and Mastodon's
+  `WEB_DOMAIN` relies on, each checked again by the fetcher's rules and its dial guard). The answer is read
+  strictly (`parseJRD`: the decoder's scan first, so no member name twice and valid UTF-8; members by their
+  exact names): a `subject` is required (Mastodon checks it is present), and the first link whose `rel` is
+  `self` and whose type is `application/activity+json` or `application/ld+json` with the Activity Streams
+  profile, whose `href` passes `apIDOK` (the SWICG report: "Take the first matching entry").
+- **The actor** is fetched through `remoteActor` (7.4, as built in FRD 7: signed, same-origin redirects only,
+  its id where it came from). A gone actor is told as gone, a suspended one as suspended, and neither is shown.
+- **Reverse.** From the actor's `preferredUsername` and the host of its id, `acct:pref@host` is asked of that
+  host; its `self` link must be the actor. When its `subject` is another account (Mastodon: "if the subject
+  contains a different canonical account URI, then Mastodon will perform an additional WebFinger request for
+  that canonical account URI"; the SWICG report makes the same step optional), that account is asked of its own
+  host and must give the same actor and the same subject. A canonical account on this instance's own host is
+  refused unasked. A reverse lookup that finds nothing (404, 410) is "not an account": the actor was found,
+  its handle does not check out.
+- **The rule when the handle's host and the actor's host differ** (decided here; neither text says what to do
+  with the query's own subject): the handle shown is the one the reverse check proves (the canonical account),
+  and the subject of the query's own WebFinger answer must be that same account. So `alice@example.com`
+  answered by `example.com` (or by the host it redirects to) with subject `acct:alice@example.com` and an actor
+  on `ap.example.com` whose own host names `acct:alice@example.com` back is accepted and shown as
+  `alice@example.com`; a server that answers for `eve@its.host` with someone else's actor is refused (its
+  subject is not the account the actor's server proves), and one that answers with that account's own handle
+  as subject is simply shown that account. Accounts are compared as RFC 7565 section 4 asks: scheme and host
+  without case (and without a trailing dot), percent-encoding decoded, the name with its case (the SWICG
+  report: "SHOULD NOT assume case insensitivity for external usernames").
+- **A profile address** is first asked as an actor (Mastodon's page: the actor "may be provided directly,
+  without the initial WebFinger request"); one that redirects on its origin to the actor's id is that actor,
+  and the cache keeps it as one of the actor's names (7.4, as built after FRD 7's review), so asking it again
+  sends no request for the actor; an address that answers no actor Flowa can use (another type, not
+  an actor, a document of another id, a redirect to another origin) is asked of its host's WebFinger with the
+  address itself as the resource (RFC 7033 4.1 takes any URI; Mastodon's and Flowa's own WebFinger answer for a
+  profile's URL), and goes on as a handle. A handle or an address on this instance's own host is a local member,
+  found in the database with no connection.
+- **A WebFinger request already answered in the same lookup is not sent again** (the reverse lookup of a
+  handle asked exactly as the actor's server writes it is the forward one), so a plain lookup sends two requests
+  before the outbox.
 
 ### 5.4 NodeInfo 2.x
 
@@ -1339,6 +1387,26 @@ contents dropped, 10,000 nested tags, invalid UTF-8) and over the recorded fixtu
 | Announce of others | dropped (6.3) |
 | Unknown properties (`blurhash`, `focalPoint`, `memorial`, quote properties, ...) | ignored |
 
+As built (FRD 8), for the search by handle, which needed it before FWR 5 (the bio and posts of a remote account
+are shown; the order of 14.3 had it with the Home timeline): `htmlToText` as this section specifies, with these
+decisions and one correction. `<br>` and `</li>` are a line break and `</p>` a blank line, so paragraphs stay
+apart; a link whose text is its address already (Mastodon writes the whole URL with parts in hidden spans), or
+the address without its scheme or last slash, keeps its text alone, any other link gets its address after it in
+brackets, and only an http or https href is written; a link a Hashtag names keeps its text (`#poi`); comments,
+CDATA, `<!...>` and `<?...?>` are dropped; the marks that embed, override or isolate a text's direction
+(U+202A to U+202E, U+2066 to U+2069) and control characters are removed, and the page shows each text isolated
+(`dir="auto"`). Whatever is left open at the end (a tag, a quoted attribute, a comment, a script) is dropped,
+and for a text the decoder cut (`Cut`) an entity without its semicolon too. **Correction:** Mastodon's mention
+link goes to the profile page (`https://social.example/@bo`) while its Mention's `href` is the actor id
+(`https://social.example/users/bo`), as this note's own example of 6.5 shows, so matching links to Mentions by
+`href` alone finds none: a link is a Mention's when its `href` is the Mention's, or when its text is the short
+`@name` of the Mention's handle and its `href` is on the host of the Mention's `href`; it becomes the
+Mention's name when that carries a host, else the name with that host. `TestRemoteHTMLToText`,
+`TestRemoteHTMLFixtures` (every post and actor under `testdata/federation`, none recorded), `FuzzHTMLToText`
+(30 s, no failure) and `BenchmarkHTMLToText` (64 KB of each kind of markup in under 2 ms on a 2.1 GHz Xeon) hold
+it. Nothing converted is stored: the search shows and forgets it. Remote text is shown escaped as plain text,
+not through `richText`, which would still read `@bo@social.example` as the local `bo` until FWR 4 (finding 9).
+
 ### 6.7 Addressing
 
 The public collection is accepted in three forms: `https://www.w3.org/ns/activitystreams#Public`,
@@ -1734,8 +1802,8 @@ taken. An owner is never followed further than one key document.
 `TestDBRemoteActorFlight`, `TestDBRemoteActorBound`, `TestDBEvictionCoversReferences`,
 `TestDBRemoteActorNotReady`, `TestDBRemoteActorStop`, `TestDBRemoteActorStaleBound`):
 
-- **One way in for now:** `federation.remoteActor(ctx, id)`, which FRD 8's search by handle calls with the
-  id a WebFinger answer gave (or a profile address: an address that redirects to the actor's id answers with
+- **One way in for now:** `federation.remoteActor(ctx, id)`, which FRD 8's search by handle calls (as built, 11, and
+  nothing else does) with the id a WebFinger answer gave (or a profile address: an address that redirects to the actor's id answers with
   that actor). `remoteKey(ctx, keyID, use)` and `remoteKeyFailed(ctx, keyID)` are the two lookups FWR's inbox
   gives its verifier; nothing calls any of them in this version, no route reaches them, and the cache exists
   only in a mode that federates (`federation.actors`), with no goroutine until a fetch starts.
@@ -2251,6 +2319,11 @@ none (`comments_user`, `notifications_actor`, `reports_reporter`, `reports_resol
 ask whether anything points at an account one row at a time (7.4); each reads its table once when it is made. `fetched_at` and `expires_at` have no default: the cache writes them from its
 own clock.
 
+As built (FRD 8, migration 16, with `flowa-schema15.dump` for the restore drill): `ap_actors.outbox TEXT NOT
+NULL DEFAULT ''`, the outbox the actor names, which the search by handle reads (11); the decoder reads `outbox`
+(in each spelling of its name) and leaves out one it cannot use rather than refusing the actor (6.3), and a
+suspended actor keeps none, as it keeps no other address.
+
 ### 9.2 Why remote content joins the existing tables (F5)
 
 Remote accounts become `users` rows with `domain` set, `username` of the form `bo@social.example`
@@ -2493,6 +2566,40 @@ keyword filters.
   WebFinger names the handle as `subject`). The host is compared without regard to case; the name
   is kept as the remote server answered it, because the SWICG WebFinger report says implementers
   "SHOULD NOT assume case insensitivity for external usernames", even though Mastodon's are.
+- **As built (FRD 8), people elsewhere:** `POST /api/fed/lookup` (`handleLookup`, only in a mode that
+  federates, `testdata/routes-federated.txt`), and the card "People elsewhere" in the timeline's side column
+  (and in single mode with `FLOWA_FEDERATE=on`, where People is hidden), shown while `/api/me`'s `federation`
+  says `lookup`, which it does for every member while federation is not refused and the `community` flag is on
+  (the route answers only then, as the timeline does); looking someone up shares nothing of the member, so it
+  does not wait for the opt-in, **an open question for the owner** beside the unlisted posts below. An actor
+  whose server does not answer is shown as the cache kept it (7.4: at most 30 days), with "Its server did not
+  answer just now" and the date it was last fetched; a gone or suspended actor is told as such, with nothing
+  of it shown. It takes `@name@host`, `name@host`,
+  `acct:name@host` or an https address (`parseLookup`, strict: RFC 7565's userpart, an ASCII host with no
+  port, `http://` told that only https is asked); resolves it as 5.3's "As built (FRD 8)" says; shows the name,
+  the proven handle, the bio as plain text (`htmlToText`), whether the account approves followers by hand, a link
+  to its profile on its own server, and up to 20 of its latest posts from the first page of its outbox (the
+  outbox and the page on the actor's origin and each where it came from; each item a Create by the actor, the
+  Create and its Note on the actor's origin, the Note attributed to the actor alone and addressed to the public
+  collection in `to` or `cc`, which 6.7 calls public and unlisted, both posts their author let anyone read, as
+  Mastodon shows both on a profile, **an open question for the owner**; an item given by id only is left out rather than fetched; a Question,
+  Article or other type is left out: "only Notes" for now), each as text cut at 2,000 characters with a link to
+  the rest (6.6), its content warning folding it, its pictures counted and not shown. Nothing of the posts is
+  stored. **No remote picture is shown** (F6 and 9.4: the picture cache is FWR 5's, and hot-linking would tell
+  other servers each member's address and need `img-src` opened); **no Follow is offered**: the server's notice
+  says that following is not built because there is no inbox, and that pictures are not shown yet. The limits:
+  `limits.lookups` (30 an hour per member) counted before anything is read; a mistyped query and the answers
+  that cost no connection (a local member, this server's own state) give most of it back, a lookup that asked
+  another server and a query naming an address the fetcher refuses do not; at most 4 lookups at once on the
+  server (a fifth is told to try again); at most 7 requests through the fetcher (section 12), 15 s in all, ended
+  when the member's request ends (the actor's own fetch, shared with other callers, runs on to its 15 s and is
+  kept, as 7.4 says). A member is told one of nine fixed reasons and nothing else: not a handle, not found (no
+  answer, no such account, a name that does not resolve and a server that cannot be reached alike), refused (an
+  address Flowa does not connect to, whether refused before any connection or at connect time: the same words),
+  timed out, not an account, gone, suspended, busy, unavailable. No remote server's text, status or address
+  reaches the member or the log. Staff are answered as anyone else; visitors and suspended members have no
+  session; a page of another site cannot start one (POST behind `guard`, JSON only). No database connection or
+  lock is held while the network is waited on (`TestDBOneConnection`).
 - **Follow requests:** a member can approve followers by hand (`users.locked`); requests come as
   notifications with Approve and Decline.
 - **Home timeline** beside Community (F4). Remote posts show the handle (`@bo@social.example`), the
@@ -2535,6 +2642,7 @@ the budget, and the first measured value is written into the pull request that a
 | Database connections held by federation | at most 3 of 8 | `TestDBDeliveryQueue` reads `db.Stats().InUse` during a burst |
 | Queue rows | 50,000 in all, 2,000 per host | `TestDBDeliveryBackPressure` (**new**) |
 | Inbound queue | 5,000 rows; 503 above | `TestInboxRefusals` |
+| A search by handle | at most 7 requests through the fetcher, each with at most 3 redirects (28 requests at most), 15 s in all; 30 an hour per member, 4 at once on the server | `TestDBResolveHandle` counts the requests each case sends at the stub (4 for a plain handle, 6 for a handle domain apart from its server or a profile page that answers no actor, 5 for a profile address that redirects to its actor and 3 when it is asked again, 13 for a lookup that takes every step with redirects), and `spend` refuses the eighth; `TestDBLookupRoute` the allowance and the turns |
 | Remote actors cached | 20,000 rows, about 2 KB each | `TestDBRemoteActorCache` and `TestDBRemoteActorBound` (as built in FRD 7: 858 bytes for an actor with a 2048-bit key and short addresses, both rows, indexes apart; at most about 18 KB for one with a 2,048-byte summary and seven addresses of 2,048 bytes; `BenchmarkRemoteActorCached` about 0.8 ms, 6.2 KB and 79 allocations a lookup the cache answers, one query to a local Postgres; `BenchmarkRemoteActorFetch` about 7 ms, 50 KB and 586 allocations a fetch of an expired actor, signing, the local TLS stub and five queries counted, on a 2.1 GHz Xeon) |
 | Picture cache | 200 MB on disk | `TestMediaCacheBudget` (**new**) with a 2 MB budget |
 | Replay memory | 100,000 signatures, about 6 MB (5.2 to 5.6 MB measured: 52 to 56 bytes each; at most about 7 MB) | `TestReplayExpiry` |
@@ -2573,6 +2681,18 @@ Interoperability is shown in four ways, in rising order of trust, and the last i
    `test/federation.sh`, in `ALL` in `test/ci-plan.sh` and its self-test) runs two containers from
    the built image on a Docker network with `FLOWA_FEDERATION_ALLOW_PRIVATE`, drives them through
    their APIs, and checks each step arrived.
+   As built (FRD 8): the search by handle is shown against stubs in Go only. `TestDBResolveHandle` serves
+   WebFinger answers, actors and outboxes written from Mastodon's WebFinger page and the SWICG WebFinger report
+   (none recorded) through the fetcher's test-only `dialOverride`: forward and reverse lookups, a redirect to
+   another host, a handle domain apart from its server, a profile address, an actor whose reverse lookup names
+   another actor, finds nothing or names a canonical account that leads elsewhere, and every failure a member
+   can meet. The `federated` browser suite cannot reach a stub: its server refuses private addresses and no
+   setting may change that (`FLOWA_FEDERATION_ALLOW_PRIVATE` of 5.1 is the two-instance suite's, FWR 8, and is
+   not built). So it covers what needs no other server: a handle on its own host (answered from the database),
+   queries refused or failing at their first connection (a private address, localhost, another port, a name
+   that does not resolve), a visitor, another page's write and a GET; and in the browser, the card, its
+   keyboard path, a member found and an address refused, each said to a screen reader, at desktop and 420 px.
+   A remote profile on the page is not seen by any browser check until FWR 8's two instances.
    As built (FRD 7), the first step of it in Go: `TestDBTwoFlowaActors` starts
    two federated apps on their own databases; one fetches the actor of a member of the other, signed, through
    the real fetcher, over TLS to the other's real routes, which check the signature with `verifyRequest`
@@ -2621,7 +2741,7 @@ changes no running instance.
 | 10 | `feat(server): webfinger and nodeinfo` | FRD 4 | the first answers to other servers, so federated mode and `FLOWA_FEDERATE` become startable; discovery only |
 | 11 | `feat(server): actor documents and public pages` | FRD 5 | content negotiation, picture URLs, retired names (a name is public from here on) |
 | 12 | `feat(server): outbox and collections` | FRD 6 | |
-| 13 | `feat(server): remote actors by signed fetch, and search by handle` | FRD 7, 8 | fixtures land here; the first remote rows, so `-purge-remote` and the rollback warning too |
+| 13 | `feat(server): remote actors by signed fetch, and search by handle` | FRD 7, 8 | fixtures land here; the first remote rows, so `-purge-remote` and the rollback warning too. As built: two pull requests, FRD 8's adding `htmlToText` (planned with FWR 5) and the outbox column (migration 16) |
 | 14 | `feat(server): the inbox and its queue` | FWR 1, FMD 1 | guard exemption, limits, domain policies and the allowlist |
 | 15 | `feat(server): a delivery queue in postgres` | FWR 2 | workers, backoff, hosts |
 | 16 | `feat(server): follows across servers` | FWR 3 | |
@@ -2651,7 +2771,9 @@ changes no running instance.
   it removes nothing. It needs only `DATABASE_URL` and works in every mode. Like `-rotate-keys` it does not
   check whether the server runs: the image has no shell, so it runs beside the server with `docker exec`
   before `./deploy.sh --rollback`, and a server of this version fetches no actor by itself. A database backup
-  restored into an older build is the same case: purge first.
+  restored into an older build is the same case: purge first. As built (FRD 8): a member's search by handle
+  fetches and keeps the actor it finds, so from this version an instance in a mode that federates has remote
+  rows once anyone has looked someone up, and the purge before a rollback matters in practice.
 - **Social facts cannot be rolled back.** Activities delivered stay delivered; an actor id announced
   stays announced (section 4.3). A rollback to a build without federation leaves remote servers
   retrying for their own horizon, then giving up.
@@ -2738,6 +2860,11 @@ repository), FEP-2c59, FEP-8b32 and FEP-e2ce (codeberg.org is not reachable from
 `acct` scheme; the SWICG WebFinger report quotes its grammar), and any other server's documentation.
 
 **Still unverified, and what would settle each:**
+
+- Whether Mastodon answers its profile page address (`https://mastodon.social/@Gargron`) with the actor when
+  asked for Activity Streams, and with which id, and whether its WebFinger answers that address as a resource
+  (11, as built in FRD 8, tries the first and falls back to the second): its pages do not say. Settled by a
+  recording or the owner's trial.
 
 - The instance actor's WebFinger form, `acct:flowa.example.org@flowa.example.org` (5.3): not in
   Mastodon's documentation. Settled by Mastodon's WebFinger controller or by a WebFinger answer

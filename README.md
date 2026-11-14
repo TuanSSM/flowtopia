@@ -165,8 +165,8 @@ link cards for Instagram, TikTok and YouTube, next-trick suggestions from the ge
 customisable avatars. Each epic is described in [docs/epics.md](docs/epics.md) and tracked in a checklist
 under `docs/epic-<code>/todo.md`. A proposed third cycle would let Flowa run as a single-profile,
 federated or local-only instance over ActivityPub, off by default. Single-profile mode is built, and federation
-as far as discovery (WebFinger and NodeInfo, for the members who opt in; nothing is delivered yet); the design
-and plan are in [docs/federation.md](docs/federation.md).
+as far as reading (discovery, the profiles, Public posts and outboxes of the members who opt in, and a search
+by handle of people on other servers; no inbox, and nothing is delivered yet); the design and plan are in [docs/federation.md](docs/federation.md).
 
 ## Run
 
@@ -316,7 +316,8 @@ been: a community that lives on this server only, and nothing about a deployment
 changes. `single` is one person's own instance (below). `federated` is a community whose members can share
 their profiles with other servers; **this version of it can be read, and nothing more**: discovery (WebFinger
 and NodeInfo, under "Federation: discovery" below) and the profiles, Public posts and outboxes of the members who opted
-in ("Federation: profiles and Public posts"), but no inbox, so nobody can follow anyone yet, and nothing is
+in ("Federation: profiles and Public posts"), and members can look up people on other servers by their
+handle ("Federation: people elsewhere"), but no inbox, so nobody can follow anyone yet, and nothing is
 delivered. Any other word stops the server at start with a message that says so, before the database is
 opened. The admin dashboard shows the mode under the version, and in a mode that federates the origin and the
 same sentence about what is served.
@@ -388,9 +389,9 @@ as they were, and sign-up is again what Open sign-ups and Who can join say.
 ### Federation: the origin, the key secret and the keys
 
 These run in a mode that federates: `FLOWA_MODE=federated`, or `FLOWA_MODE=single` with `FLOWA_FEDERATE=on`
-(the plan is in [docs/federation.md](docs/federation.md)). Federation is built as far as discovery (below):
-there is no actor and no request to another server, and the HTTP signatures below sign and check nothing
-yet. The two settings it needs:
+(the plan is in [docs/federation.md](docs/federation.md)). Federation is built as far as reading (below):
+the only requests to other servers are a member's search by handle and the actors it fetches, signed by the
+instance's own actor, and nothing checks an incoming signature yet. The two settings it needs:
 
 - `FLOWA_ORIGIN`: the public address other servers will know the instance by, `https://` and its name, such
   as `https://flowa.example.org`, with a port only when it is not 443. Nothing else: no path, query, user
@@ -438,16 +439,18 @@ pick the new keys up when a signature next fails to verify.
 
 This version can keep accounts of other servers (docs/federation.md, F5 and 9.2): each is an account row with
 the other server's name beside it and a cached copy of its actor (name, inbox, key), fetched with a request
-the instance's own actor signs and kept for 24 hours. **Nothing in this version fetches one yet**: the search
-by handle of the next version is the first thing that will, so a deployment of this version has none. Such
+the instance's own actor signs and kept for 24 hours. The one thing that fetches one is a member's search by
+handle (below, "Federation: people elsewhere"), so an instance has remote accounts once a member has looked
+someone up. Such
 an account can never sign in, hold a session, a role, a password or a key, and no list or count of members
 shows it (people, Accounts, the dashboard, NodeInfo, mentions, follows and blocks all count local members
 only). Its name is the other server's name for it and that server's host, such as `Gargron@mastodon.social`,
 which no member's name can be.
 
-**Before `./deploy.sh --rollback` to a build older than this one, remove them**: an older build does not
-know which accounts are remote and would list them as members (and, from later versions on, show their posts
-as local ones). While this version still runs:
+**An instance that federates has remote accounts as soon as a member has looked someone up, so before
+`./deploy.sh --rollback` to a build older than the one that added them, you must remove them**: an older build
+does not know which accounts are remote and would list them as members (and, from later versions on, show
+their posts as local ones). While this version still runs:
 
 ```sh
 docker exec nunchaku /nunchaku -purge-remote   # removes every remote account and what hangs off it, then says what went
@@ -460,6 +463,32 @@ their posts, comments, likes, follows, blocks, notifications and reports). Local
 wrote stay as they were; an audit line about a removed account keeps its action with the account left empty.
 Run it again and it removes nothing. A backup taken before is the way back to them, if ever wanted. The
 same applies to a backup restored into an older build: purge first, or the older build lists them.
+
+### Federation: people elsewhere
+
+In a mode that federates (and while federation is not refused), the timeline has a card "People elsewhere"
+where a signed-in member looks someone up on another server by their handle (`@bo@social.example`) or the
+address of their profile ([docs/federation.md](docs/federation.md), section 11 and 5.3). Flowa asks that
+server's WebFinger over HTTPS, fetches the actor it names (signed by the instance's own actor, never by the
+member), and checks the handle the other way round, as Mastodon does: the actor's own server must name the
+same actor for the actor's name, so a server cannot pass someone else off under a handle of its own. It then
+shows the profile (name, handle, bio as plain text, whether the account approves followers by hand, a link to
+the original) and up to 20 of its latest public posts from its outbox, as plain text. Nothing of the posts is
+kept; the actor is kept in the cache of remote accounts (above). A handle on this server's own name is a
+member here, found in the database with no connection.
+
+What it does not do yet, and says so: there is no Follow (there is no inbox, so nothing the account posts
+could reach this server), and no picture from another server is shown (that needs the picture cache of a
+later version; showing them straight from the other server would tell it the member's address). There is no
+full-text search of anything.
+
+Limits: 30 lookups an hour per member (a mistyped query costs almost nothing; one that asked another server,
+or named an address Flowa refuses, costs its whole count), at most 4 running at once on the server, at most 7
+requests to other servers each (each following at most 3 redirects), 15 s in all, ended when the member's
+request ends. A failure is told in a few fixed words (not found, refused, timed out, not an account, gone,
+suspended, busy, unavailable), never with the other server's own text or an address. Visitors, suspended
+members and pages of other sites cannot start one (it is a POST behind the same-origin check of every write).
+In local mode, and in single mode without `FLOWA_FEDERATE=on`, none of this exists.
 
 ### Federation: discovery (WebFinger and NodeInfo)
 

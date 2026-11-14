@@ -521,6 +521,7 @@ type limits struct {
 	discovery                                   *limiter // WebFinger and NodeInfo requests, per address, in a mode that federates
 	public                                      *limiter // reads of actor documents, public pages and their pictures, per address, in a mode that federates
 	joins                                       *limiter // approvals and declines of requests to join, per admin
+	lookups                                     *limiter // searches by handle of people on other servers, per member, in a mode that federates
 }
 
 func newLimits() limits {
@@ -540,6 +541,9 @@ func newLimits() limits {
 		// posts; 2,400 an hour from one address is about a hundred such pages, and far more than a server
 		// that fetches each actor and post once and keeps it.
 		public: newLimiter(2400, time.Hour),
+		// A search by handle sends up to lookupFetches requests to other servers; 30 an hour is a person
+		// looking for the people they know, and at most 210 requests an hour from one member.
+		lookups: newLimiter(30, time.Hour),
 	}
 }
 
@@ -6175,6 +6179,8 @@ type federation struct {
 	// actors is the cache of remote actors (remoteActor), set by startFederation with the app's fetcher;
 	// nil in the federation -rotate-keys makes, which fetches nothing.
 	actors *actorCache
+	// lookups holds a turn for each search by handle running (lookupsAtOnce: handleLookup).
+	lookups chan struct{}
 
 	recordMu sync.Mutex  // one recordOrigin at a time from ensureOrigin
 	recorded atomic.Bool // the origin is recorded in instance_settings and is this one
@@ -6199,7 +6205,7 @@ var generateKey = func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.
 func newFederation(db *sql.DB, s fedSettings) *federation {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &federation{db: db, origin: s.origin, secret: s.secret, cache: map[keyOwner]cachedKey{}, gen: generateKey,
-		ask: make(chan keyOwner, keyQueue), ctx: ctx, cancel: cancel}
+		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), ctx: ctx, cancel: cancel}
 }
 
 // refuse stops federation for as long as the server runs, says why once in the log, and keeps the
@@ -7219,6 +7225,11 @@ func (a *app) fedView(u *user, optedIn bool) map[string]any {
 	// The composer offers the audience only to a member who may post publicly: opted in (or the owner of a
 	// single-profile instance), while federation is not refused. Its words are the server's, as the card's;
 	// the card then links the member's public page.
+	// The search by handle (handleLookup) is offered to every member while federation is not refused: looking
+	// someone up shares nothing of the member, so it does not wait for the opt-in.
+	if v["unavailable"] == nil && a.flagsCached()["community"] {
+		v["lookup"] = true // the route answers only with the community flag on, as the card is on the timeline
+	}
 	if v["optedIn"] == true && v["unavailable"] == nil {
 		v["audiences"] = audienceChoices
 		v["profile"] = "/users/" + u.Username // the public page people read (handleActor)
@@ -7283,11 +7294,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows; it has no inbox, so nobody can follow anyone yet, and nothing is delivered"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts; it has no inbox, so nobody can follow anyone yet, and nothing is delivered"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -14362,6 +14373,694 @@ func (c *actorCache) added(ctx context.Context, keep int64) {
 	n = have
 }
 
+/* ---------- federation: people elsewhere, found by their handle ----------
+
+A signed-in member of an instance that federates looks up a person on another server by handle
+(@bo@social.example, bo@social.example, acct:bo@social.example) or by the address of their profile, and is
+shown that person's profile and latest public posts (docs/federation.md, section 11 and 5.3). It is the first
+thing a member can do that makes Flowa connect to another server, so it is bounded on every side:
+
+  - POST /api/fed/lookup, registered only in a mode that federates, behind the write guard (same origin and
+    JSON, so no link, form or picture on another page can start one) and a session; a suspended member has
+    none. The allowance (limits.lookups, per member) is counted before anything else, and only a mistyped
+    query, which costs no connection, is mostly given back; at most lookupsAtOnce run on the server at once.
+  - A handle on this instance's own host, or any address on it, is a local member, answered from the
+    database with no connection: our own origin is never asked.
+  - A handle is resolved as Mastodon's WebFinger page and the SWICG WebFinger report describe: WebFinger
+    for acct:name@host asked of host over HTTPS (fetchWebFinger: 5 s, 64 KB, redirects to another https host
+    allowed, as RFC 7033 4.2 and Mastodon's WEB_DOMAIN rely on), the first self link of an Activity Streams
+    type, the actor fetched through the cache of remote actors (remoteActor: signed, same-origin redirects,
+    its id where it came from), then the reverse check below. A profile address is first asked as an actor;
+    an address that answers no actor (a page, another id) is asked of its host's WebFinger as a resource
+    (RFC 7033 4.1 takes any URI), and goes on as a handle would.
+  - The reverse check: from the actor's preferredUsername and the host of its id, acct:name@host is asked of
+    that host, and its self link must be the actor. When its subject names another account (the handle's
+    domain apart from the server's, as Mastodon's WEB_DOMAIN makes it), that canonical account is asked of
+    its own host too and must give the same actor and the same subject. The handle shown is the one so
+    proven, and a handle the member typed must be what its WebFinger answer named as subject: a server
+    cannot pass off someone else's account under a name of its own. A request already answered in this
+    lookup is not asked twice.
+  - At most lookupFetches requests through the fetcher (each following at most maxRedirects redirects), at
+    most lookupTime in all, ended when the member's request ends. What the member learns of a failure is
+    one of a few fixed reasons (lookupReason), never a remote server's words, a status or an address.
+  - Nothing is stored but the actor, by the cache, as any actor it fetches; the posts are read, shown and
+    forgotten. No remote picture is shown: the cache of pictures of F6 and 9.4 is FWR's, and hot-linking
+    would tell other servers the member's address and need the CSP opened. Following is not built (no
+    inbox), and the page says so.
+  - No database connection or lock is held while the network is waited on (TestDBOneConnection). */
+
+const (
+	lookupMax     = 2048             // bytes of what a member types: a profile address may be as long as a URL
+	lookupHandle  = 300              // bytes of a handle, as a WebFinger resource here (resourceMax)
+	lookupTime    = 15 * time.Second // the whole lookup, within the server's 30 s to write an answer
+	lookupsAtOnce = 4                // lookups running at once on the server; a fifth is told to try again
+	lookupPosts   = 20               // posts shown, as many as a page of Flowa's own outbox
+	// lookupFetches is the most requests one lookup sends through the fetcher, each with at most
+	// maxRedirects redirects (so at most 28 requests in all): a profile address asked as an actor, the
+	// WebFinger of the handle or of that address, the actor, the reverse WebFinger, the canonical account's
+	// WebFinger, the outbox and its first page.
+	lookupFetches = 7
+)
+
+// lookupReason is what a member is told when a lookup finds nobody. Each has fixed words, safe to show and
+// to log; the reasons do not tell a name that did not resolve from a server that did not answer, so the
+// answer says nothing about the network behind a host.
+type lookupReason uint8
+
+const (
+	lookupBadInput    lookupReason = iota + 1 // not a handle or a profile address
+	lookupNotFound                            // no such account, no answer, or an answer that is not a success
+	lookupRefused                             // an address Flowa does not connect to: before or at connect, the same
+	lookupTimeout                             // too slow
+	lookupNotAccount                          // an answer that is no account Flowa can show, or whose handle does not check out
+	lookupGone                                // the account was deleted on its server (410)
+	lookupSuspended                           // its server says it is suspended
+	lookupBusy                                // this server is running too many lookups or fetches
+	lookupUnavailable                         // this server cannot look anyone up now (federation refused, no key yet)
+)
+
+var lookupReasons = [...]struct{ code, words string }{
+	lookupBadInput:    {"badInput", "Enter a handle such as @name@server.example, or the address of a profile starting with https://."},
+	lookupNotFound:    {"notFound", "No account was found at that address, or its server did not answer."},
+	lookupRefused:     {"refused", "Flowa does not connect to that address."},
+	lookupTimeout:     {"timeout", "That server took too long to answer. Try again later."},
+	lookupNotAccount:  {"notAccount", "That address does not lead to an account Flowa can show."},
+	lookupGone:        {"gone", "That account was deleted on its server."},
+	lookupSuspended:   {"suspended", "That account is suspended on its server."},
+	lookupBusy:        {"busy", "Flowa is busy looking up other accounts. Try again in a minute."},
+	lookupUnavailable: {"unavailable", "Looking up people on other servers is not available right now. Try again later."},
+}
+
+// lookupHTTP is the status each reason is answered with.
+var lookupHTTP = [...]int{lookupBadInput: 400, lookupNotFound: 404, lookupRefused: 422, lookupTimeout: 504, lookupNotAccount: 422,
+	lookupGone: 410, lookupSuspended: 403, lookupBusy: 503, lookupUnavailable: 503}
+
+// lookupHTTPWord is said when http:// was typed: WebFinger is HTTPS only (RFC 7033 4, 9.1), and so is every
+// request Flowa sends to another server.
+const lookupHTTPWord = "Flowa asks other servers over https only: enter the address with https://, or the handle."
+
+// lookupError is a failed lookup: the reason, the step it failed at (for a test, never shown), and the cause.
+type lookupError struct {
+	Reason lookupReason
+	Step   string
+	err    error
+}
+
+func (e *lookupError) Error() string {
+	return "lookup: " + e.Step + ": " + lookupReasons[e.Reason].words
+}
+func (e *lookupError) Unwrap() error { return e.err }
+
+// lookupNotice is what the page says under a remote profile: what this version cannot do with it.
+const lookupNotice = "Following people on other servers is not built yet: this server has no inbox, so nothing they post could reach it. Pictures from other servers are not shown yet."
+
+// lookupNoPosts and lookupPostsFailed say why a remote profile shows no posts.
+const (
+	lookupNoPosts     = "This account shares no posts that Flowa can show."
+	lookupPostsFailed = "Its posts could not be read just now."
+)
+
+// lookupInput is what a member typed, read: a handle (name and host) or a profile address.
+type lookupInput struct {
+	name, host string // a handle: the name percent-decoded, case kept; the host lower case without a trailing dot
+	url        string // a profile address: https, its fragment taken off
+}
+
+// acctUserpart are the characters RFC 7565 (section 7) lets a userpart hold unescaped: RFC 3986's unreserved
+// and sub-delims.
+const acctUserpart = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,;="
+
+// parseLookup reads a query strictly. Accepted: @name@host, name@host and acct:name@host (the scheme in any
+// case, RFC 3986 3.1), and an https address. A name holds what RFC 7565 allows a userpart (unreserved and
+// sub-delims, percent-encoded octets decoded as RFC 7565 section 4 normalizes them, but never to an @, a
+// slash, a space or a control); the host is a DNS name in ASCII (a name in another script in its xn-- form:
+// the standard library cannot convert it, 7.8), with no port (RFC 7565 7: host, not authority). Whether the
+// host may be asked is decided after, by the fetcher's own rules (lookupHostOK); whether it is this
+// instance, by localTarget. It returns lookupBadInput with the words to show.
+func parseLookup(v string) (lookupInput, string) {
+	v = strings.TrimSpace(v)
+	bad := lookupReasons[lookupBadInput].words
+	if v == "" || len(v) > lookupMax {
+		return lookupInput{}, bad
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c <= ' ' || c >= 0x7f {
+			return lookupInput{}, bad
+		}
+	}
+	scheme, rest, hasScheme := strings.Cut(v, ":")
+	switch s := strings.ToLower(scheme); {
+	case hasScheme && s == "https" && strings.HasPrefix(rest, "//"):
+		u, err := url.Parse(v)
+		if err != nil || u.Host == "" || u.User != nil || u.Opaque != "" {
+			return lookupInput{}, bad
+		}
+		u.Scheme, u.Fragment, u.RawFragment = "https", "", ""
+		return lookupInput{url: u.String()}, ""
+	case hasScheme && s == "http" && strings.HasPrefix(rest, "//"):
+		return lookupInput{}, lookupHTTPWord
+	case hasScheme && s == "acct":
+		v = rest
+	case hasScheme && !strings.Contains(scheme, "@"):
+		return lookupInput{}, bad // another scheme, or a handle with a port
+	}
+	if len(v) > lookupHandle {
+		return lookupInput{}, bad
+	}
+	v = strings.TrimPrefix(v, "@")
+	name, host, ok := strings.Cut(v, "@")
+	if !ok || name == "" || host == "" || strings.Contains(host, "@") || strings.Trim(name, acctUserpart+"%") != "" ||
+		strings.Trim(host, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-") != "" {
+		return lookupInput{}, bad
+	}
+	dec, err := url.PathUnescape(name)
+	if err != nil || strings.ContainsAny(dec, "@/") || strings.IndexFunc(dec, func(r rune) bool { return r <= ' ' || r == 0x7f || r == utf8.RuneError }) >= 0 || !utf8.ValidString(dec) {
+		return lookupInput{}, bad
+	}
+	return lookupInput{name: dec, host: strings.TrimSuffix(strings.ToLower(host), ".")}, ""
+}
+
+// localTarget says whether a query names this instance, and then which member: a handle on its host, or
+// any address on it (never fetched: 7.8, our own origin is not asked). name is "" for one that can be
+// nobody's (the instance actor, a name usernameRE refuses, another path).
+func localTarget(in lookupInput, o publicOrigin) (name string, local bool) {
+	if in.url != "" {
+		u, err := url.Parse(in.url)
+		if err != nil || !sameHost(u.Hostname(), o.host) {
+			return "", false
+		}
+		if t, ok, _ := parseActorURL(in.url, o); ok && !t.actor {
+			return t.name, true
+		}
+		return "", true
+	}
+	if !sameHost(in.host, o.host) {
+		return "", false
+	}
+	if n := strings.ToLower(in.name); usernameRE.MatchString(n) && !sameHost(n, o.host) {
+		return n, true
+	}
+	return "", true
+}
+
+// lookupHostOK says whether the fetcher would ask a host at all (fedHost: a public DNS name, no IP address,
+// no private suffix) and on which port: a query that names another is refused before any connection, with
+// the same reason as an address refused at connect time.
+func lookupHostOK(in lookupInput) bool {
+	if in.url == "" {
+		_, why := fedHost(in.host)
+		return why == ""
+	}
+	u, err := url.Parse(in.url)
+	if err != nil {
+		return false
+	}
+	_, why := fedHost(u.Hostname())
+	return why == "" && (u.Port() == "" || u.Port() == "443")
+}
+
+// acctURI writes an acct URI (RFC 7565 7), percent-encoding what a userpart cannot hold as it is.
+func acctURI(name, host string) string {
+	var b strings.Builder
+	b.WriteString("acct:")
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; strings.IndexByte(acctUserpart, c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	b.WriteString("@" + host)
+	return b.String()
+}
+
+// parseAcct reads an acct URI as RFC 7565 section 4 compares them: the scheme and the host without case, a
+// trailing dot off the host, percent-encoding decoded; the name keeps its case (the SWICG WebFinger report:
+// "SHOULD NOT assume case insensitivity for external usernames").
+func parseAcct(s string) (name, host string, ok bool) {
+	if len(s) < 5 || !strings.EqualFold(s[:5], "acct:") {
+		return "", "", false
+	}
+	n, h, found := strings.Cut(s[5:], "@")
+	if !found || n == "" || strings.Contains(h, "@") {
+		return "", "", false
+	}
+	n, err := url.PathUnescape(n)
+	if err != nil || strings.ContainsAny(n, "@/") {
+		return "", "", false
+	}
+	h = strings.TrimSuffix(strings.ToLower(h), ".")
+	if _, why := fedHost(h); why != "" {
+		return "", "", false
+	}
+	return n, h, true
+}
+
+// sameAcct compares two acct URIs as parseAcct reads them.
+func sameAcct(a, b string) bool {
+	an, ah, ok1 := parseAcct(a)
+	bn, bh, ok2 := parseAcct(b)
+	return ok1 && ok2 && an == bn && ah == bh
+}
+
+// wfAnswer is what Flowa reads of a WebFinger answer: its subject, and the first link with rel self and an
+// Activity Streams type (Mastodon's WebFinger page; the SWICG report: "Take the first matching entry").
+type wfAnswer struct{ subject, self string }
+
+// parseJRD reads a WebFinger answer strictly: one JSON object passing the decoder's scan (well formed, valid
+// UTF-8, no name twice, the limits of 7.5), members read by their exact names, the subject a string, links a
+// list of objects whose rel, type and href are strings. A self link's href must be an id the fetcher may
+// ask (apIDOK); one without an Activity Streams type is not the actor's. No subject, or no such link, is no
+// account (Mastodon checks both).
+func parseJRD(b []byte) (wfAnswer, error) {
+	if r := apScan(b); r != 0 {
+		return wfAnswer{}, apFail(r)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return wfAnswer{}, err
+	}
+	var out wfAnswer
+	if json.Unmarshal(doc["subject"], &out.subject) != nil || out.subject == "" {
+		return wfAnswer{}, errors.New("no subject")
+	}
+	var links []map[string]json.RawMessage
+	if raw, ok := doc["links"]; ok && json.Unmarshal(raw, &links) != nil {
+		return wfAnswer{}, errors.New("links is not a list of objects")
+	}
+	for _, l := range links {
+		var rel, typ, href string
+		if json.Unmarshal(l["rel"], &rel) != nil || json.Unmarshal(l["type"], &typ) != nil || json.Unmarshal(l["href"], &href) != nil {
+			continue
+		}
+		mt, params, err := mime.ParseMediaType(typ)
+		as := err == nil && (mt == "application/activity+json" || mt == "application/ld+json" && slices.Contains(strings.Fields(params["profile"]), asNS[:len(asNS)-1]))
+		if rel == "self" && as && apIDOK(href) {
+			out.self = href
+			return out, nil
+		}
+	}
+	return wfAnswer{}, errors.New("no self link of an Activity Streams type")
+}
+
+// lookupReasonOf turns a fetcher's or the actor cache's failure into what the member is told.
+func lookupReasonOf(err error) lookupReason {
+	var le *lookupError
+	var ae *actorError
+	var fe *fetchError
+	switch {
+	case errors.As(err, &le):
+		return le.Reason
+	case errors.As(err, &ae):
+		switch ae.Reason {
+		case actorRefused:
+			return lookupRefused
+		case actorTimeout, actorCanceled:
+			return lookupTimeout
+		case actorUnreachable, actorNotFound:
+			return lookupNotFound
+		case actorGone:
+			return lookupGone
+		case actorBusy:
+			return lookupBusy
+		case actorFedRefused, actorNotReady, actorClock:
+			return lookupUnavailable
+		}
+		return lookupNotAccount // a bad or local id, too large, another type, not an actor, not where it came from
+	case errors.As(err, &fe):
+		switch fe.Fail {
+		case failRefused:
+			return lookupRefused
+		case failTimeout, failCanceled:
+			return lookupTimeout
+		case failGone:
+			return lookupGone
+		case failBusy:
+			return lookupBusy
+		case failTooLarge, failType:
+			return lookupNotAccount
+		}
+		return lookupNotFound // could not connect, 404, another status, a redirect not followed
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return lookupTimeout
+	}
+	return lookupUnavailable // this server's own trouble, the database among it: logged by the handler
+}
+
+// lookupProfile is the answer: a local member to open, or a remote account to show.
+type lookupProfile struct {
+	Kind      string       `json:"kind"`   // "local" or "remote"
+	Handle    string       `json:"handle"` // a local username; a remote account's proven handle, name@host
+	Name      string       `json:"name"`
+	Bio       string       `json:"bio,omitempty"` // plain text (htmlToText)
+	Locked    bool         `json:"locked,omitempty"`
+	Link      string       `json:"link,omitempty"` // the profile on its own server
+	Posts     []lookupPost `json:"posts,omitempty"`
+	PostsNote string       `json:"postsNote,omitempty"` // why no posts are shown, when they could not be
+	Notice    string       `json:"notice,omitempty"`    // what this version cannot do with the account (lookupNotice)
+	// Stale is when the profile was last fetched, set when fetching it again failed just now and the cache
+	// answered with what it kept (7.4: at most 30 days old); the page says so beside it.
+	Stale string `json:"stale,omitempty"`
+}
+
+// lookupPost is one public post, as text.
+type lookupPost struct {
+	Link      string `json:"link"`              // the post on its own server
+	Text      string `json:"text"`              // plain text, the first remoteTextMax characters
+	More      bool   `json:"more,omitempty"`    // the text was cut: the rest is on its server (6.6)
+	Summary   string `json:"summary,omitempty"` // the content warning, plain text: the page folds the post behind it
+	Sensitive bool   `json:"sensitive,omitempty"`
+	Pictures  int    `json:"pictures,omitempty"` // attachments, not shown (F6)
+	Published string `json:"published,omitempty"`
+}
+
+// lookupRun is one lookup's requests: how many were sent, and the WebFinger answers already had.
+type lookupRun struct {
+	f       *federation
+	fetches int
+	jrds    map[string]wfAnswer
+}
+
+// spend counts a request against lookupFetches; past it the lookup stops.
+func (r *lookupRun) spend(step string) error {
+	if r.fetches >= lookupFetches {
+		return &lookupError{Reason: lookupNotAccount, Step: step + ": too many requests"}
+	}
+	r.fetches++
+	return nil
+}
+
+func (r *lookupRun) refused() []string {
+	if c := r.f.actors; c != nil && c.refused != nil {
+		return c.refused()
+	}
+	return nil
+}
+
+// webfinger asks host for resource, once per lookup.
+func (r *lookupRun) webfinger(ctx context.Context, step, resource, host string) (wfAnswer, error) {
+	key := host + " " + resource
+	if j, ok := r.jrds[key]; ok {
+		return j, nil
+	}
+	if err := r.spend(step); err != nil {
+		return wfAnswer{}, err
+	}
+	res, err := r.f.actors.fetch.do(ctx, fetchReq{kind: fetchWebFinger, url: "https://" + host + "/.well-known/webfinger?resource=" + url.QueryEscape(resource), refused: r.refused()})
+	if err != nil {
+		return wfAnswer{}, &lookupError{Reason: lookupReasonOf(err), Step: step, err: err}
+	}
+	j, err := parseJRD(res.Body)
+	if err != nil {
+		return wfAnswer{}, &lookupError{Reason: lookupNotAccount, Step: step, err: err}
+	}
+	r.jrds[key] = j
+	return j, nil
+}
+
+// actor fetches an actor through the cache of remote actors.
+func (r *lookupRun) actor(ctx context.Context, step, id string) (*remoteActor, error) {
+	if err := r.spend(step); err != nil {
+		return nil, err
+	}
+	a, err := r.f.remoteActor(ctx, id)
+	if err != nil {
+		return nil, &lookupError{Reason: lookupReasonOf(err), Step: step, err: err}
+	}
+	return a, nil
+}
+
+// findRemote resolves a handle or a profile address on another server, proves the handle, and reads the
+// account's latest public posts.
+func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupProfile, error) {
+	if f.refusal() != "" || f.actors == nil {
+		return nil, &lookupError{Reason: lookupUnavailable, Step: "start"}
+	}
+	r := &lookupRun{f: f, jrds: map[string]wfAnswer{}}
+	var a *remoteActor
+	var actorID, subject string // subject: what the WebFinger of the query named; "" for an address that was an actor
+	if in.url != "" {
+		got, err := r.actor(ctx, "address as actor", in.url)
+		switch reason := lookupReasonOf(err); {
+		case err == nil:
+			a, actorID = got, got.ID
+		case reason == lookupNotAccount:
+			// Not an actor at that address (a profile page, a document of another id): its host's WebFinger
+			// may know the address as a resource.
+			u, _ := url.Parse(in.url)
+			j, err := r.webfinger(ctx, "webfinger of the address", in.url, strings.ToLower(u.Hostname()))
+			if err != nil {
+				return nil, err
+			}
+			actorID, subject = j.self, j.subject
+		default:
+			return nil, err
+		}
+	} else {
+		j, err := r.webfinger(ctx, "webfinger", acctURI(in.name, in.host), in.host)
+		if err != nil {
+			return nil, err
+		}
+		actorID, subject = j.self, j.subject
+	}
+	if a == nil {
+		var err error
+		if a, err = r.actor(ctx, "actor", actorID); err != nil {
+			return nil, err
+		}
+	}
+	switch a.State {
+	case "gone":
+		return nil, &lookupError{Reason: lookupGone, Step: "actor"}
+	case "suspended":
+		return nil, &lookupError{Reason: lookupSuspended, Step: "actor"}
+	}
+	handle, err := r.reverse(ctx, a, subject)
+	if err != nil {
+		return nil, err
+	}
+	name := a.Name
+	if name == "" {
+		name = a.PreferredUsername
+	}
+	link := a.URL
+	if link == "" {
+		link = a.ID
+	}
+	p := &lookupProfile{Kind: "remote", Handle: handle, Name: name, Bio: htmlToText(a.Summary, nil, nil, len(a.Summary) > remoteSummaryMax-utf8.UTFMax),
+		Locked: a.Locked, Link: link, Notice: lookupNotice}
+	if a.Stale {
+		p.Stale = a.FetchedAt.UTC().Format(time.RFC3339)
+	}
+	p.Posts, p.PostsNote = r.posts(ctx, a)
+	return p, nil
+}
+
+// reverse is the reverse check (Mastodon's WebFinger page, the SWICG report's "Reverse discovery"): the
+// account built from the actor's preferredUsername and the host of its id must lead back to the actor, and
+// so must the canonical account its subject names when that is another one. It returns the proven handle,
+// name@host. A query's own WebFinger subject, when there was one, must be that handle.
+func (r *lookupRun) reverse(ctx context.Context, a *remoteActor, subject string) (string, error) {
+	notAccount := func(why string) error { return &lookupError{Reason: lookupNotAccount, Step: "reverse: " + why} }
+	// A reverse lookup that finds nothing means the handle does not check out: the actor was found, so the
+	// member is told it is no account Flowa can show, not that nothing is there.
+	checked := func(err error) error {
+		if le, ok := err.(*lookupError); ok && (le.Reason == lookupNotFound || le.Reason == lookupGone) {
+			le.Reason = lookupNotAccount
+		}
+		return err
+	}
+	host := actorHost(a.ID)
+	if a.PreferredUsername == "" || host == "" {
+		return "", notAccount("no preferredUsername")
+	}
+	built := acctURI(a.PreferredUsername, host)
+	j, err := r.webfinger(ctx, "reverse webfinger", built, host)
+	if err != nil {
+		return "", checked(err)
+	}
+	if j.self != a.ID {
+		return "", notAccount("its self link is another actor")
+	}
+	canonical := built
+	if !sameAcct(j.subject, built) {
+		// The subject names the canonical account (the SWICG report: "the subject of the JRD denotes the
+		// expected canonical identifier"); Mastodon asks it too, and requires the same actor.
+		n, h, ok := parseAcct(j.subject)
+		if !ok || sameHost(h, r.f.origin.host) {
+			return "", notAccount("its subject is no account on another server")
+		}
+		c, err := r.webfinger(ctx, "canonical webfinger", acctURI(n, h), h)
+		if err != nil {
+			return "", checked(err)
+		}
+		if c.self != a.ID || !sameAcct(c.subject, j.subject) {
+			return "", notAccount("the canonical account leads elsewhere")
+		}
+		canonical = j.subject
+	}
+	if subject != "" && !sameAcct(subject, canonical) {
+		return "", notAccount("the handle asked for is not the account's")
+	}
+	n, h, _ := parseAcct(canonical)
+	return n + "@" + h, nil
+}
+
+// posts reads the first page of an actor's outbox, signed by the instance actor as an actor is fetched, and
+// keeps its Public Notes by the actor (7.3: the Create by the actor, the Create and its Note on the actor's
+// origin, the Note attributed to the actor alone, to the public collection in to or cc, which 6.7 reads as
+// public and unlisted: both are posts the author let anyone read, and Mastodon shows both on a profile).
+// Items given by id only are not fetched one by one: they are left out. Nothing is stored. A failure here
+// does not fail the lookup: the profile is shown with a sentence instead of posts.
+func (r *lookupRun) posts(ctx context.Context, a *remoteActor) ([]lookupPost, string) {
+	if a.Outbox == "" || !sameOrigin(a.Outbox, a.ID) {
+		return nil, lookupNoPosts
+	}
+	page, note := r.collection(ctx, "outbox", a.Outbox)
+	if page == nil {
+		return nil, note
+	}
+	if len(page.Items) == 0 {
+		switch first := page.First; {
+		case first.Obj != nil:
+			p, err := first.collection()
+			if err != nil {
+				return nil, lookupPostsFailed
+			}
+			page = p
+		case first.ID != "":
+			if !sameOrigin(first.ID, a.ID) {
+				return nil, lookupNoPosts
+			}
+			if page, note = r.collection(ctx, "outbox page", first.ID); page == nil {
+				return nil, note
+			}
+		}
+	}
+	var out []lookupPost
+	for _, it := range page.Items {
+		if len(out) == lookupPosts {
+			break
+		}
+		act, err := it.activity()
+		if err != nil || act.Kind != "Create" || act.Actor != a.ID || !sameOrigin(act.ID, a.ID) || len(act.Object) != 1 {
+			continue
+		}
+		n, err := act.Object[0].note()
+		if err != nil || !n.isNote() || !sameOrigin(n.ID, a.ID) || !n.by(a.ID) || !n.Audience.public() {
+			continue
+		}
+		text, more := cutText(htmlToText(n.text(), n.Mentions, n.Hashtags, n.Cut), remoteTextMax)
+		p := lookupPost{Link: n.ID, Text: text, More: more || n.Cut, Summary: htmlToText(n.Summary, nil, nil, false), Sensitive: n.Sensitive, Pictures: len(n.Attachments)}
+		if l := firstLink(n.URL); l != "" {
+			p.Link = l
+		}
+		if !n.Published.IsZero() {
+			p.Published = n.Published.UTC().Format(time.RFC3339)
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, lookupNoPosts
+	}
+	return out, ""
+}
+
+// collection fetches one collection or page of the actor's, signed, and checks that its id is where it came
+// from (7.3).
+func (r *lookupRun) collection(ctx context.Context, step, id string) (*apCollection, string) {
+	if r.spend(step) != nil {
+		return nil, lookupPostsFailed
+	}
+	res, err := r.f.actors.get(ctx, id)
+	if err != nil {
+		return nil, lookupPostsFailed
+	}
+	c, err := decodeCollection(res.Body, actorDocMax)
+	if err != nil || !sameID(c.ID, res.URL) {
+		return nil, lookupPostsFailed
+	}
+	return c, ""
+}
+
+// handleLookup is POST /api/fed/lookup: {"q": "@bo@social.example"} answers {"result": lookupProfile}, or
+// {"error": words, "reason": code} with the reason's status. Staff are answered as anyone else.
+func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
+	// Counted first, before the body is read or anything asked. The writer that gives most of the count
+	// back is used only for answers that cost no connection (a mistyped query, a local member, this
+	// server's own state); a lookup that asked another server, and a query naming an address Flowa refuses
+	// (so that trying addresses costs as much refused as asked), is answered through w and costs its count.
+	rw, ok := allowed(w, a.lim.lookups, u, "looks at other servers")
+	if !ok {
+		return
+	}
+	var body struct {
+		Q string `json:"q"`
+	}
+	if !readJSON(rw, r, 4096, &body) {
+		return
+	}
+	answer := func(w http.ResponseWriter, reason lookupReason, words string) {
+		if words == "" {
+			words = lookupReasons[reason].words
+		}
+		writeJSON(w, lookupHTTP[reason], map[string]string{"error": words, "reason": lookupReasons[reason].code})
+	}
+	in, bad := parseLookup(body.Q)
+	if bad != "" {
+		answer(rw, lookupBadInput, bad)
+		return
+	}
+	if a.fed.refusal() != "" {
+		answer(rw, lookupUnavailable, "")
+		return
+	}
+	if name, local := localTarget(in, a.fed.origin); local {
+		if name == "" {
+			answer(rw, lookupNotFound, "") // nobody can have it: the instance actor, another path
+			return
+		}
+		var p lookupProfile
+		err := a.db.QueryRowContext(r.Context(), `SELECT username, display_name FROM users WHERE username = $1 AND domain = ''`, name).Scan(&p.Handle, &p.Name)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			answer(rw, lookupNotFound, "")
+		case err != nil:
+			a.serverError(rw, err)
+		default:
+			p.Kind = "local"
+			writeJSON(rw, http.StatusOK, map[string]any{"result": p})
+		}
+		return
+	}
+	if !lookupHostOK(in) {
+		answer(w, lookupRefused, "")
+		return
+	}
+	select {
+	case a.fed.lookups <- struct{}{}:
+		defer func() { <-a.fed.lookups }()
+	default:
+		answer(rw, lookupBusy, "")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), lookupTime)
+	defer cancel()
+	p, err := a.fed.findRemote(ctx, in)
+	if err != nil {
+		reason := lookupReasonOf(err)
+		var ae *actorError
+		var fe *fetchError
+		var le *lookupError
+		if reason == lookupUnavailable && errors.As(err, &le) && le.err != nil && !errors.As(err, &ae) && !errors.As(err, &fe) {
+			log.Printf("error: %v: %v", err, le.err) // this server's own trouble, such as the database; never a remote server's words
+		}
+		answer(w, reason, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": p})
+}
+
 /* ---------- federation: removing every remote row ---------- */
 
 // purgeCounts are the rows that point at remote accounts, counted before they go with them: each
@@ -15393,6 +16092,7 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("GET /users/{name}", a.handleActor(st))
 		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st, false))
 		mux.HandleFunc("GET /users/{name}/posts/{id}/activity", a.handlePublicPost(st, true))
+		mux.HandleFunc("POST /api/fed/lookup", a.flagged("community", a.authed("", a.handleLookup)))
 		mux.HandleFunc("GET /actor/outbox", a.handleInstanceOutbox(st))
 		for _, kind := range memberCollections {
 			mux.HandleFunc("GET /users/{name}/"+kind, a.handleCollection(st, kind))
