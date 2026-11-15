@@ -1642,6 +1642,13 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   - **A notification is never lost to a failure** (`TestDBRemoteTalkNotifiedAfterFailure`): the notifications of a
     remote reply or like are written in the transaction that keeps it (`notifyFedTx`), so a failure rolls both back and
     the worker's retry keeps the reply and tells the member, where before the retry found a repeat and told nobody.
+  - **Local mode on a database that federated lists and counts alike** (`TestDBRemoteHiddenInLocalMode`): a start in
+    local mode asks once whether rows of other servers are kept (`remoteKept`); when they are, the statements over posts
+    and comments leave remote replies and likes out before their LIMIT and out of the counts (`hideRemote`, fixed
+    fragments of `postCols`, `commentCols` and `commentBlockFree`), so a page of comments is full and a post's counts
+    agree with what is listed. A database that never federated runs the statements as they always were. In a mode that
+    federates, a reply of an account its server suspended is left out of the counts as of the lists (`actorShown`);
+    its likes still count, as there is no list of likes to agree with.
   - **Switches that could not be read hold a comment's way out** (`TestDBCommentSwitchesUnread`): the record is written
     for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
     said off keeps the comment here.

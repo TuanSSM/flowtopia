@@ -192,20 +192,23 @@ type app struct {
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
 	mode      instanceMode // how the instance runs (FLOWA_MODE); local unless the operator says otherwise
 	fed       *federation  // the origin, the keys and whether federation is refused; nil unless the mode federates
-	fedHost   string       // the origin's host in a mode that federates, a name no account may take (takenName); "" otherwise
-	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
-	flagCache map[string]bool
-	flagsAt   time.Time
-	instMu    sync.Mutex    // guards instCache and instAt
-	instCache *instanceInfo // what instanceCached last read; nil after a save, so the next read asks the database
-	instAt    time.Time
-	pageMu    sync.Mutex   // guards page; held while the visitor's page is made, so a flood makes it once
-	page      *visitorPage // the visitor's page of a single-profile instance as last made; nil until asked, and after a save
-	sent      *onceStore   // posts and comments that named themselves, so a repeat is not a second one
-	reqLog    *requestLog  // one line per request; see logged
-	healthMu  sync.Mutex   // guards healthAt and healthWas
-	healthAt  time.Time    // when the database was last asked for GET /healthz
-	healthWas health       // what it said then
+	// remoteKept says, in local mode, that the database keeps rows of other servers from a time it federated (FWR 6):
+	// they are then left out of lists and counts (hidingRemote).
+	remoteKept bool
+	fedHost    string // the origin's host in a mode that federates, a name no account may take (takenName); "" otherwise
+	version    string // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
+	flagCache  map[string]bool
+	flagsAt    time.Time
+	instMu     sync.Mutex    // guards instCache and instAt
+	instCache  *instanceInfo // what instanceCached last read; nil after a save, so the next read asks the database
+	instAt     time.Time
+	pageMu     sync.Mutex   // guards page; held while the visitor's page is made, so a flood makes it once
+	page       *visitorPage // the visitor's page of a single-profile instance as last made; nil until asked, and after a save
+	sent       *onceStore   // posts and comments that named themselves, so a repeat is not a second one
+	reqLog     *requestLog  // one line per request; see logged
+	healthMu   sync.Mutex   // guards healthAt and healthWas
+	healthAt   time.Time    // when the database was last asked for GET /healthz
+	healthWas  health       // what it said then
 	// fedHealthAt and fedHealthWas are the delivery queue's part of /healthz, asked only for a local probe and at
 	// most once every fedHealthEvery (guarded by healthMu, never held while the database is asked).
 	fedHealthAt  time.Time
@@ -25492,6 +25495,12 @@ func (a *app) start(getenv func(string) string) error {
 	if fed.on {
 		return a.startFederation(fed)
 	}
+	// Local mode on a database that federated before: what other servers left stays until -purge-remote, and is left
+	// out of lists and counts (hidingRemote). No row of another server can be added in local mode, so asking once is
+	// enough.
+	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE domain <> '')`).Scan(&a.remoteKept); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -26759,7 +26768,8 @@ func postCols(staff string) string {
 	return `p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
-			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason, p.audience, p.alt,
+			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)
+			AND (c.ap_id IS NULL OR ` + actorShown("c.user_id") + `)), p.hidden_reason, p.audience, p.alt,
 		p.ap_id IS NOT NULL, p.ap_extra`
 }
 
@@ -26819,6 +26829,9 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) 
 // readPosts runs q, feedSQL or homeSQL with its arguments, and gives the page as the page reads it:
 // the posts with their comments and links, the users involved, and whether more follow.
 func (a *app) readPosts(viewer *user, q string, args ...any) (map[string]any, error) {
+	if a.hidingRemote() {
+		q = hideRemote(q)
+	}
 	rows, err := a.db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -27437,6 +27450,30 @@ var postShown = `p.ap_id IS NULL AND (p.hidden_at IS NULL OR p.user_id = $2 OR $
 // its author addressed, and Flowa keeps no audience narrower than Public for its own posts (F3).
 var postTalkShown = `(p.ap_id IS NULL OR p.audience IN ('public', 'unlisted') AND ` + remoteSeen("$2") + `) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND ` + blockFree("$2", "p.user_id", "$3")
 
+// hidingRemote says the instance runs in local mode on a database that federated before and still keeps rows of other
+// servers (remoteKept, read at the start): then what other servers left is neither listed nor counted (hideRemote).
+// A database that never federated has none, and its statements are the ones they always were.
+func (a *app) hidingRemote() bool { return a.fed == nil && a.remoteKept }
+
+// hideRemote is a statement over posts and comments (postCols, commentCols, commentBlockFree) that leaves out the
+// replies and likes of other servers, from lists and counts alike, so in local mode a page's counts agree with what it
+// lists and a page of comments is full (the filter is before the LIMIT). Each replacement is of a fixed fragment these
+// strings are built with; TestDBRemoteHiddenInLocalMode holds that each is found.
+func hideRemote(q string) string {
+	for _, r := range hideRemoteParts {
+		q = strings.ReplaceAll(q, r[0], r[1])
+	}
+	return q
+}
+
+var hideRemoteParts = [][2]string{
+	{`WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL`, `WHERE c.post_id = p.id AND c.ap_id IS NULL AND NOT c.deleted AND c.hidden_at IS NULL`},
+	{`(SELECT count(*) FROM likes l WHERE l.post_id = p.id)`, `(SELECT count(*) FROM likes l WHERE l.post_id = p.id AND l.ap_id IS NULL)`},
+	{`(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id)`, `(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id AND l.ap_id IS NULL)`},
+	{`FROM comments r WHERE r.parent_id = c.id AND`, `FROM comments r WHERE r.parent_id = c.id AND r.ap_id IS NULL AND`},
+	{commentBlockFree, commentBlockFree + ` AND c.ap_id IS NULL`},
+}
+
 // talkShown is the condition a like or a comment asks: postTalkShown in a mode that federates, postShown elsewhere,
 // so local mode answers as it always did (a post of another server, kept from a time the instance federated, is no
 // such post there).
@@ -27611,7 +27648,8 @@ var commentBlockFree = blockFree("$1", "c.user_id", "$2") + ` AND (c.deleted OR 
 
 var commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
 	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
-	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL AND ` + blockFree("$1", "r.user_id", "$2") + `), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL,
+	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL AND ` + blockFree("$1", "r.user_id", "$2") + `
+		AND (r.ap_id IS NULL OR r.deleted OR ` + actorShown("r.user_id") + `)), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL,
 	c.ap_id IS NOT NULL, c.ap_extra`
 
 var repliesSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
@@ -27628,7 +27666,11 @@ func commentsSQL(inner string) string {
 // A hidden comment is shown in full to its author and moderators; to everyone else it is left
 // out, or kept as an empty placeholder when it has replies that are still shown.
 func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment, error) {
-	rows, err := a.db.Query(commentsSQL(inner), append([]any{viewer.ID, can(viewer, permPostHide)}, args...)...)
+	q := commentsSQL(inner)
+	if a.hidingRemote() {
+		q = hideRemote(q)
+	}
+	rows, err := a.db.Query(q, append([]any{viewer.ID, can(viewer, permPostHide)}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -27644,7 +27686,8 @@ func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment
 		}
 		if remote {
 			// A reply from another server reaches no page of an instance in local mode (one that federated before keeps
-			// its rows until -purge-remote): it is left out here, where every list of comments is read.
+			// its rows until -purge-remote): the lists leave it out before their LIMIT (hideRemote); a comment asked for
+			// by its id alone is left out here.
 			if a.fed == nil {
 				continue
 			}
@@ -27803,8 +27846,12 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 		root = c.parentID
 	}
 	roots, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.id = $3`, root)
-	if err != nil || len(roots) == 0 {
+	if err != nil {
 		a.serverError(w, fmt.Errorf("thread %d: %v", root, err))
+		return
+	}
+	if len(roots) == 0 { // a thread begun by another server's account, in local mode
+		fail(w, http.StatusNotFound, "That comment is gone.")
 		return
 	}
 	reps, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.parent_id = $3 AND `+commentBlockFree+` ORDER BY c.id LIMIT $4`, root, maxThread)

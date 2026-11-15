@@ -346,6 +346,57 @@ func TestDBRemoteTalkNotifiedAfterFailure(t *testing.T) {
 	}
 }
 
+// Local mode on a database that federated (finding S1): replies and likes of other servers are left out of lists before
+// their LIMIT and out of counts, so a page of comments is full and its counts agree with it; in a mode that federates,
+// a reply of an account its server suspended is neither listed nor counted.
+func TestDBRemoteHiddenInLocalMode(t *testing.T) {
+	for _, part := range hideRemoteParts {
+		if !strings.Contains(postCols("$6")+commentCols+feedCommentsSQL+repliesSQL, part[0]) {
+			t.Errorf("hideRemote's fragment is in none of the statements it is for: %s", part[0])
+		}
+	}
+	e := newRepliesEnv(t)
+	for i := 0; i < commentPage+2; i++ {
+		e.mustExec(`INSERT INTO comments (post_id, user_id, body, ap_id) VALUES ($1, $2, 'r', $3)`, e.post, e.boUser, fmt.Sprintf("%s/statuses/x%d", boID, i))
+	}
+	e.mustExec(`INSERT INTO likes (post_id, user_id, ap_id) VALUES ($1, $2, $3), ($1, $4, $5)`, e.post, e.boUser, boID+"#l", e.catID, catID+"#l")
+	e.must(200, e.cy, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "local one"})
+	e.must(200, e.cy, "POST", fmt.Sprintf("/api/posts/%d/like", e.post), nil)
+	post := func() map[string]any {
+		return e.must(200, e.ana, "GET", fmt.Sprintf("/api/posts/%d", e.post), nil)["posts"].([]any)[0].(map[string]any)
+	}
+	if p := post(); num(p["commentCount"]) != commentPage+3 || num(p["likes"]) != 3 {
+		t.Fatalf("federated: %v comments, %v likes", p["commentCount"], p["likes"])
+	}
+	f := e.a.fed
+	e.a.fed, e.a.remoteKept = nil, true
+	res := e.must(200, e.ana, "GET", fmt.Sprintf("/api/posts/%d/comments", e.post), nil)
+	p := post()
+	e.a.fed, e.a.remoteKept = f, false
+	if got := bodies(func() []map[string]any {
+		var out []map[string]any
+		for _, c := range res["comments"].([]any) {
+			out = append(out, c.(map[string]any))
+		}
+		return out
+	}()); !slices.Equal(got, []string{"local one"}) || res["more"] != false {
+		t.Errorf("local mode, a page of comments: %q, more %v", got, res["more"])
+	}
+	if num(p["commentCount"]) != 1 || num(p["likes"]) != 1 || len(anyList(p["comments"])) != 1 {
+		t.Errorf("local mode, the post: %v comments, %v likes, %d previewed", p["commentCount"], p["likes"], len(anyList(p["comments"])))
+	}
+	// A start in local mode on this database finds that it keeps rows of other servers.
+	local := newApp(e.a.db, t.TempDir())
+	if err := local.start(func(string) string { return "" }); err != nil || !local.remoteKept || local.fed != nil {
+		t.Errorf("a start in local mode: %v, remote rows kept %v", err, local.remoteKept)
+	}
+	// A suspended account's replies: neither listed nor counted.
+	e.mustExec(`UPDATE ap_actors SET state = 'suspended' WHERE user_id = $1`, e.boUser)
+	if p := post(); num(p["commentCount"]) != 1 || len(anyList(p["comments"])) != 1 {
+		t.Errorf("a suspended account's replies: counted %v, previewed %d", p["commentCount"], len(anyList(p["comments"])))
+	}
+}
+
 // A full delivery queue refuses a comment's Create (finding S2): the record is held on the delivery schedule and tried
 // again, never removed with nothing sent.
 func TestDBCommentQueueFull(t *testing.T) {

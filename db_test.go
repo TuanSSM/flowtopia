@@ -4094,8 +4094,8 @@ func TestDBQueryPlans(t *testing.T) {
 	}
 	on = rtx2
 	plans([]planCase{
-		{"replies: the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 12000, ""},
-		{"replies: that post alone", postOneSQL, []any{viewer, flood, false, true}, 12000, ""},
+		{"replies: the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 15000, ""}, // about 4 rows a remote reply: its blocks and its account (actorShown); the cap keeps 300
+		{"replies: that post alone", postOneSQL, []any{viewer, flood, false, true}, 15000, ""},
 		{"replies: the preview of its comments", commentsSQL(feedCommentsSQL), []any{viewer, false, pq.Array([]int64{flood}), previewComments}, 1000, ""},
 		{"replies: a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
 			[]any{viewer, false, flood, 0, commentPage + 1}, 2000, ""},
