@@ -3,6 +3,9 @@
 // card only for a link this accepts, so a card that is offered is one the server will take.
 // test/links-fixtures.json holds the cases both must read the same way (go test and
 // node test/links.js check it); change the two together.
+// Also the page's copy of parseMentions in main.go (mentionsIn): which @names in a text are
+// members here and which are handles of other servers, held to test/mentions-fixtures.json by
+// TestMentions and node test/mentions.js.
 const linkCheck = (() => {
   const YT = /^[A-Za-z0-9_-]{11}$/, IG = /^[A-Za-z0-9_-]{5,40}$/, TT = /^[0-9]{8,25}$/,
     TT_USER = /^@[A-Za-z0-9._]{1,40}$/, TT_SHORT = /^[A-Za-z0-9]{5,20}$/;
@@ -81,6 +84,69 @@ const linkCheck = (() => {
     }
     return null;
   }
-  return { parseLink };
+  // mentionsIn finds the mentions in a text as the server's parseMentions does: [{ start, end,
+  // name, host, local }], start at the @ and end after the name or the host. @name is a member
+  // here (a letter or digit, then up to 23 more of letters, digits, dot, dash and underscore; the
+  // name in lower case); @name@host, the host an ASCII DNS name of two labels or more whose last
+  // label holds a letter (a full stop after it is not part of it) and that ends before anything
+  // but another @, an underscore or a letter, digit or mark, is an account elsewhere. Anything
+  // shaped @name@... is never a member here: with a host that is no such name it is plain text,
+  // whole. own is this server's host ('' when it has none): @name@own is the member here.
+  const MENTION = /(^|[^A-Za-z0-9._-])@([A-Za-z0-9._-]+)/g;
+  const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+  const hostOK = h => {
+    const labels = h.toLowerCase().split('.');
+    return h.length <= 253 && labels.length >= 2 && labels.every(l => LABEL.test(l)) && /[a-z]/.test(labels[labels.length - 1]);
+  };
+  const LOCAL = /^[a-z0-9][a-z0-9._-]{2,23}/;
+  function mentionsIn(text, own = '') {
+    const out = [], s = String(text);
+    for (const m of s.matchAll(MENTION)) {
+      const at = m.index + m[1].length, run = m[2], end = at + 1 + run.length;
+      if (s[end] === '@') {
+        let j = end + 1;
+        while (j < s.length && /[A-Za-z0-9.-]/.test(s[j])) j++;
+        const host = s.slice(end + 1, j).replace(/\.+$/, '');
+        if ((j < s.length && /[@_\p{L}\p{N}\p{M}]/u.test(String.fromCodePoint(s.codePointAt(j)))) || !hostOK(host)) continue;
+        if (own && host.toLowerCase() === own.toLowerCase()) {
+          const l = run.toLowerCase();
+          if ((LOCAL.exec(l) || [''])[0] === l) out.push({ start: at, end: end + 1 + host.length, name: l, host, local: true });
+        } else if (run.length <= 64) out.push({ start: at, end: end + 1 + host.length, name: run, host, local: false });
+        continue;
+      }
+      const l = LOCAL.exec(run.toLowerCase());
+      if (l) out.push({ start: at, end: at + 1 + l[0].length, name: l[0], host: '', local: true });
+    }
+    return out;
+  }
+  // linkRuns cuts a text into runs and links as the server's textParts reads a post (main.go, after markText): a
+  // link is http or https up to a space, a control character, a mark that turns the text's direction, <, > or ",
+  // less the punctuation that ends a sentence after it (.,;:!?)'). [{ text, url }], url '' for a run of text. The page
+  // links what the server links, and reads mentions only in the runs of text, as the server does.
+  const URL_RE = /https?:\/\/[^\x00-\x20\x7f-\x9f<>"\u202a-\u202e\u2066-\u2069]+/g;
+  function linkRuns(text) {
+    const s = String(text ?? ''), out = [];
+    let at = 0;
+    for (const m of s.matchAll(URL_RE)) {
+      let end = m.index + m[0].length;
+      while (end > m.index && ".,;:!?)'".includes(s[end - 1])) end--;
+      if (at < m.index) out.push({ text: s.slice(at, m.index), url: '' });
+      out.push({ text: s.slice(m.index, end), url: s.slice(m.index, end) });
+      at = end;
+    }
+    if (at < s.length) out.push({ text: s.slice(at), url: '' });
+    return out;
+  }
+  // textMentions is who a whole text tells here, as the server's mentionNames does: the members mentioned in its runs
+  // of text, in order, without repeats, at most 10.
+  function textMentions(text, own = '') {
+    const out = [];
+    for (const r of linkRuns(text)) {
+      if (r.url) continue;
+      for (const m of mentionsIn(r.text, own)) if (m.local && !out.includes(m.name) && out.length < 10) out.push(m.name);
+    }
+    return out;
+  }
+  return { parseLink, mentionsIn, linkRuns, textMentions };
 })();
 if (typeof module !== 'undefined') module.exports = linkCheck;

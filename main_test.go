@@ -67,13 +67,89 @@ func TestCleanLink(t *testing.T) {
 }
 
 func TestMentions(t *testing.T) {
-	got := mentions("Hey @Sam and @sam, @jo-2 did F7! mail me@example.com @x")
+	got := mentionNames("Hey @Sam and @sam, @jo-2 did F7! mail me@example.com @x", "")
 	want := []string{"sam", "jo-2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("mentions = %v, want %v", got, want)
 	}
-	if n := len(mentions("nobody here")); n != 0 {
+	if n := len(mentionNames("nobody here", "")); n != 0 {
 		t.Errorf("expected no mentions, got %d", n)
+	}
+	// FWR 4: @name@host is a handle of another server, never the member name here (finding 9); the page reads
+	// every case of test/mentions-fixtures.json the same way (node test/mentions.js).
+	raw, err := os.ReadFile("test/mentions-fixtures.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Cases []struct {
+			Text, Own     string
+			Local, Remote []string
+		}
+		Texts []struct {
+			Text, Own string
+			Local     []string
+		}
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil || len(fx.Cases) < 20 {
+		t.Fatalf("the fixtures look cut short: %d cases, %v", len(fx.Cases), err)
+	}
+	for _, c := range fx.Cases {
+		local, remote := []string{}, []string{}
+		for _, m := range parseMentions(c.Text, c.Own) {
+			want := "@" + m.name
+			if m.host != "" {
+				want += "@" + m.host
+			}
+			if m.local {
+				local = append(local, m.name)
+			} else {
+				remote = append(remote, m.name+"@"+m.host)
+			}
+			if got := c.Text[m.start:m.end]; !strings.EqualFold(got, want) {
+				t.Errorf("%q: the mention at %d to %d reads %q, want %q", c.Text, m.start, m.end, got, want)
+			}
+		}
+		if !slices.Equal(local, c.Local) || !slices.Equal(remote, c.Remote) {
+			t.Errorf("parseMentions(%q) = local %q, remote %q; want %q, %q", c.Text, local, remote, c.Local, c.Remote)
+		}
+	}
+	// Whole texts, links and all, as mentionNames reads them for notifications (and the page's textMentions).
+	if len(fx.Texts) < 10 {
+		t.Fatalf("the whole-text fixtures look cut short: %d", len(fx.Texts))
+	}
+	for _, c := range fx.Texts {
+		if got := mentionNames(c.Text, c.Own); !slices.Equal(got, c.Local) {
+			t.Errorf("mentionNames(%q, %q) = %q, want %q", c.Text, c.Own, got, c.Local)
+		}
+	}
+	// What is notified: local names only, without repeats; on this instance's own host a handle is a member here.
+	for text, want := range map[string][]string{
+		"@anna@social.example and @boo":      {"boo"},
+		"@anna@flowa.example.org and @Anna":  {"anna"},
+		"@ANNA@Flowa.Example.Org.":           {"anna"},
+		"@an@flowa.example.org":              {},
+		"@anna@flowa.example.org.evil.test":  {},
+		"@anna@social.example @anna@x.test!": {},
+	} {
+		if got := mentionNames(text, "flowa.example.org"); !slices.Equal(got, want) {
+			t.Errorf("mentionNames(%q) = %q, want %q", text, got, want)
+		}
+	}
+	if got := mentionNames("@anna@flowa.example.org", ""); len(got) != 0 {
+		t.Errorf("with no host of its own (local mode) a handle with a host is no member here: %q", got)
+	}
+	// After FWR 4's review: a name inside a link is no mention, as the Note's content and the page read it (in local
+	// mode too: https://x.example/@anna told anna before), and the text is read as written, not in lower case first.
+	for text, want := range map[string][]string{
+		"see https://x.example/@anna and @boo":           {"boo"},
+		"https://x.example/a?b=@anna, then (@cyd)":       {"cyd"},
+		"\u212a@anna and @\u212aboo":                     {"anna"},
+		"@anna@b\u00fccher.example and @anna@h..example": {},
+	} {
+		if got := mentionNames(text, ""); !slices.Equal(got, want) {
+			t.Errorf("mentionNames(%q) = %q, want %q", text, got, want)
+		}
 	}
 }
 

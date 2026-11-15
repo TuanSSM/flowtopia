@@ -106,6 +106,9 @@ func (e *followEnv) sent() []sentAct {
 		s.ID, _ = d["id"].(string)
 		s.Object, _ = d["object"].(string)
 		s.Inner, _ = d["object"].(map[string]any)
+		if !followKinds[s.Type] {
+			continue // a member's profile or post going out (FWR 4, notes_test.go), not a follow's activity
+		}
 		if d["@context"] != asContext {
 			e.t.Errorf("an activity without its context: %s", body)
 		}
@@ -362,6 +365,7 @@ func TestDBFollowsAcross(t *testing.T) {
 	// Unfollow sends the Undo of the Follow, embedded with its id.
 	e.must(200, ana, "PUT", fmt.Sprintf("/api/fed/accounts/%d/follow", bo), nil)
 	followID = e.sent()[0].ID
+	e.mustExec(`DELETE FROM ap_deliveries`) // the Follow was taken: an Undo has something to take back (8.8, "Taking back")
 	e.must(200, ana, "DELETE", fmt.Sprintf("/api/fed/accounts/%d/follow", bo), nil)
 	if s = e.sent(); e.state(anaID, bo) != "" || len(s) != 1 || s[0].Type != "Undo" || s[0].Inner["id"] != followID || s[0].Inner["type"] != "Follow" || s[0].Inbox != boInbox {
 		t.Errorf("the Unfollow: %+v", s)
@@ -372,6 +376,7 @@ func TestDBFollowsAcross(t *testing.T) {
 	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
 	e.must(200, ana, "PUT", fmt.Sprintf("/api/fed/accounts/%d/follow", bo), nil)
 	e.sent()
+	e.mustExec(`DELETE FROM ap_deliveries`) // taken, as above
 	e.must(200, ana, "PUT", fmt.Sprintf("/api/fed/accounts/%d/block", bo), nil)
 	types := map[string]int{}
 	for _, a := range e.sent() {

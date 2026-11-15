@@ -263,7 +263,7 @@ func TestMentionsAndRanks(t *testing.T) {
 	for i := 0; i < 15; i++ {
 		b.WriteString(" @user" + string(rune('a'+i)) + "x")
 	}
-	if got := mentions(b.String()); len(got) != maxMentions {
+	if got := mentionNames(b.String(), ""); len(got) != maxMentions {
 		t.Fatalf("mentions capped at %d, got %d", maxMentions, len(got))
 	}
 	if strings.Join(below("admin"), ",") != "moderator,user" || strings.Join(below("moderator"), ",") != "user" || len(below("user")) != 0 {

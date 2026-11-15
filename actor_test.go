@@ -111,7 +111,8 @@ func TestNoteHTML(t *testing.T) {
 		{"see https://example.com/a?b=1&c=2.", nil, `<p>see <a href="https://example.com/a?b=1&amp;c=2" rel="nofollow noopener">https://example.com/a?b=1&amp;c=2</a>.</p>`},
 		{"javascript:alert(1) http://x.example/\"><b>", nil, `<p>javascript:alert(1) <a href="http://x.example/" rel="nofollow noopener">http://x.example/</a>&#34;&gt;&lt;b&gt;</p>`},
 		{"x", []string{"Tricks: A (Poi)"}, "<p>x</p><p>Tricks: A (Poi)</p>"},
-		{"\u202eabc", nil, "<p>\u202eabc</p>"}, // escaping only: the page shows a post's text as the app does
+		// FWR 4: what turns a text's direction around on another server's page, and control characters, are dropped.
+		{"\u202eabc\u2066d\x07e\tf", nil, "<p>abcde f</p>"},
 	} {
 		if got := noteHTML(c.body, c.more); got != c.want {
 			t.Errorf("noteHTML(%q) = %q, want %q", c.body, got, c.want)

@@ -4,7 +4,7 @@
 
 // sending: the forms whose answer is still on its way; keys: the Idempotency-Key each unsent form
 // last used, so trying the very same thing again cannot make it twice.
-const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], draftAud: '', linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {}, lookQ: '', look: null, fedAcc: {}, requests: null });
+const socialBlank = () => ({ full: {}, fullReplies: {}, replyTo: null, editing: 0, focus: 0, posts: [], users: {}, more: false, loading: false, stale: true, key: '', openCmts: new Set(), draftBody: '', draftImg: '', draftAlt: '', draftStill: false, draftTags: [], draftCombo: null, draftLinks: [], draftAud: '', linkOffer: '', played: new Set(), refreshing: new Set(), pickOpen: false, pickQ: '', pickIdx: 0, notifs: [], nUsers: {}, unread: 0, nOpen: false, people: null, profile: {}, blocks: null, follows: null, sending: new Set(), keys: {}, lookQ: '', look: null, fedAcc: {}, requests: null });
 // owner: the account all of this belongs to (0 for a visitor); gen goes up each time it is thrown
 // away, so an answer that was asked for by the previous account is not shown to the next.
 const social = Object.assign(socialBlank(), { owner: 0, gen: 0 });
@@ -16,6 +16,7 @@ function resetSocial() {
 }
 function sameOwner() { if (social.owner !== (me?.id || 0)) resetSocial(); }
 const MAX_TAGS = 10;
+const MAX_ALT = 1500; // characters of a picture's description, as the server takes (maxAlt)
 const LINK_KINDS = {
   instagram: { name: 'Instagram', hint: 'instagram.com/…', url: h => `https://www.instagram.com/${h}/` },
   tiktok: { name: 'TikTok', hint: 'tiktok.com/@…', url: h => `https://www.tiktok.com/@${h}` },
@@ -32,11 +33,26 @@ function ago(t) {
   return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 // Escaped text with @mentions and links made clickable, and line breaks kept. Mentions
-// are only looked for outside links, so an @ inside a URL stays part of the URL.
+// are only looked for outside links, so an @ inside a URL stays part of the URL. A handle of
+// another server (@anna@social.example) is never read as the member anna here: it stays text
+// (linkCheck.mentionsIn reads mentions as the server does). On this server's own host, which a
+// server that federates names in the member's handle, @anna@host is the member here.
+const ownHost = () => { const h = (fed && fed.handle) || ''; return h.includes('@', 1) ? h.slice(h.lastIndexOf('@') + 1) : ''; };
+// The text is cut into runs and links as the server cuts it (linkCheck.linkRuns), and each piece is escaped as it is
+// written, so what is a link and what is a mention here is what the server notifies and sends.
 function richText(s) {
-  return esc(s).split(/(https?:\/\/[^\s<]+[^\s<.,)])/).map((part, i) => i % 2
-    ? `<a href="${part}" target="_blank" rel="noopener noreferrer">${part}</a>`
-    : part.replace(/(^|[^\w.-])@([a-z0-9][a-z0-9._-]{2,23})/gi, (m, pre, n) => `${pre}<a href="#/u/${n.toLowerCase()}">@${n}</a>`)).join('').replace(/\n/g, '<br>');
+  const own = ownHost();
+  return linkCheck.linkRuns(s).map(r => {
+    if (r.url) return `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.text)}</a>`;
+    const t = r.text;
+    let out = '', at = 0;
+    for (const m of linkCheck.mentionsIn(t, own)) {
+      if (!m.local) continue;
+      out += esc(t.slice(at, m.start)) + `<a href="#/u/${m.name}">${esc(t.slice(m.start, m.end))}</a>`;
+      at = m.end;
+    }
+    return out + esc(t.slice(at));
+  }).join('').replace(/\n/g, '<br>');
 }
 // A photo for a post: shrunk to fit the server's limit. Gives the picture as a data URL, its size in px,
 // and whether it had to be made smaller than the file was.
@@ -294,7 +310,7 @@ function postCard(p) {
     body = `<div class="ms ${stk ? 'has-sticker' : ''}">${stk}<div class="row" style="gap:10px"><span class="badge-ic on">${icon('trophy')}</span><b>Unlocked ${keys.length === 1 ? 'an achievement' : keys.length + ' achievements'}</b></div>
       <div class="chips" style="margin-top:10px">${keys.map(k => { const b = badgeByKey(k); return `<span class="chip ok" data-tip="${esc(b?.desc || '')}">${icon(b?.icon || 'medal')}${esc(b?.name || k)}</span>`; }).join('')}</div></div>`;
   } else {
-    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${(p.links || []).map(c => linkCardHTML(p, c)).join('')}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="Picture in ${esc(postBy(p))}" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
+    body = `${p.body ? `<p class="post-body">${richText(p.body)}</p>` : ''}${(p.links || []).map(c => linkCardHTML(p, c)).join('')}${combo}${p.image ? `<img class="post-img" src="${esc(p.image)}" alt="${p.alt ? esc(p.alt) : `Picture in ${esc(postBy(p))}`}" loading="lazy">` : ''}${chips ? `<div class="chips post-tags">${chips}</div>` : ''}`;
   }
   const thread = threadHTML(p);
   return `<article class="card post" data-post="${p.id}">
@@ -533,7 +549,8 @@ function composer() {
   const sugg = social.pickOpen ? [] : suggestedTags();
   return `<form class="card compose" id="compose-form" data-k="post"><div class="row" style="gap:10px;align-items:flex-start">${avatarHTML(me)}<div class="grow stack" style="gap:8px">
     <textarea name="body" ${countAttrs('compose-count', social.draftBody, 2000)} rows="2" placeholder="What did you work on today? Use @name to mention someone." aria-label="New post">${esc(social.draftBody)}</textarea>
-    ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt="The picture you attached"><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>${social.draftStill ? '<p class="tiny still-note">Animated pictures are kept as a still.</p>' : ''}` : ''}
+    ${social.draftImg ? `<div class="compose-img"><img src="${social.draftImg}" alt="The picture you attached"><button type="button" class="icon-btn" data-act="compose-img-rm" aria-label="Remove picture">${icon('x')}</button></div>${social.draftStill ? '<p class="tiny still-note">Animated pictures are kept as a still.</p>' : ''}
+    <div class="stack" style="gap:4px"><label class="field compose-alt" for="compose-alt">Describe the picture (optional)<input id="compose-alt" name="alt" type="text" ${countAttrs('compose-alt-count', social.draftAlt, MAX_ALT, true).replace('aria-describedby="compose-alt-count"', 'aria-describedby="compose-alt-hint compose-alt-count"')} autocomplete="off" value="${esc(social.draftAlt)}"></label><p class="tiny" id="compose-alt-hint">Read out to people who cannot see it, here and on other servers.</p>${countHTML('compose-alt-count', social.draftAlt, MAX_ALT, true)}</div>` : ''}
     <div class="row wrap link-offer" ${social.linkOffer ? '' : 'hidden'}><span class="tiny grow">${social.linkOffer ? `${esc(SITE_NAMES[siteOf(social.linkOffer)])} link found` : ''}</span><button type="button" class="btn sm" data-act="link-attach">${icon('link')}Attach as a card</button></div>
     <div class="chips draft-chips">${chips}<button type="button" class="chip add-trick ${social.pickOpen ? 'on' : ''}" data-act="pick-open" aria-expanded="${social.pickOpen}" aria-label="Tag a trick or combo">${icon('plus')}${chips ? 'Trick' : 'Tag a trick or combo'}</button></div>
     ${social.pickOpen ? picker() : sugg.length ? `<div class="row wrap sugg" style="gap:6px"><span class="tiny">${esc(sugg[0].why)}:</span>${sugg.map(t => `<button type="button" class="chip" data-act="sugg-add" data-prop="${t.prop}" data-skill="${esc(t.skill)}" data-tip="${esc(skillOf(t.prop, t.skill).name)}" aria-label="Tag ${esc(t.skill)}, ${esc(skillOf(t.prop, t.skill).name)}">${icon('plus')}${esc(t.skill)}</button>`).join('')}</div>` : ''}
@@ -847,7 +864,7 @@ document.addEventListener('click', async e => {
     case 'more-comments': moreComments(id); break;
     case 'more-replies': moreReplies(id); break;
     case 'more-posts': loadFeed(social.key, true); break;
-    case 'compose-img-rm': social.draftImg = ''; social.draftStill = false; leaveCompose(); render(); say('Picture removed.'); break;
+    case 'compose-img-rm': social.draftImg = ''; social.draftAlt = ''; social.draftStill = false; leaveCompose(); render(); say('Picture removed.'); break;
     case 'link-attach': {
       const u = social.linkOffer;
       if (!u) break;
@@ -881,6 +898,7 @@ document.addEventListener('input', e => {
   }
   if (e.target.id === 'pick-q') { social.pickQ = e.target.value; social.pickIdx = 0; refreshPicker(); }
   if (e.target.id === 'look-q') social.lookQ = e.target.value;
+  if (e.target.id === 'compose-alt') social.draftAlt = e.target.value;
 });
 document.addEventListener('keydown', e => {
   // Escape closes the notifications and hands the focus back to the bell, unless a dialog over them took the key.
@@ -939,13 +957,17 @@ document.addEventListener('submit', async e => {
     showErr('compose-err', '');
     const gen = social.gen, send = { body, image: social.draftImg, tags: social.draftTags, combo: social.draftCombo, links: social.draftLinks };
     if (audNow()) send.audience = audNow().value;
+    // The picture's description goes only with a picture, and only when one was written, so a post without one is sent as before.
+    if (social.draftImg && social.draftAlt.trim()) send.alt = social.draftAlt.trim();
+    const altLen = textLen(send.alt, true);
+    if (altLen > MAX_ALT) { const a = f.querySelector('#compose-alt'); showErr('compose-err', `The description of the picture holds ${MAX_ALT} characters. This one has ${altLen}.`, [a]); a.focus(); return; }
     setSending('post', true);
     const r = await api('posts', 'POST', send, { 'Idempotency-Key': onceKey('post', send) });
     if (social.gen !== gen) return; // signed out meanwhile: the draft and its answer are no longer this tab's
     setSending('post', false);
     if (!r.ok) { toast(r.error); return; }
     delete social.keys.post;
-    social.draftBody = ''; social.draftImg = ''; social.draftStill = false; social.draftTags = []; social.draftCombo = null; social.draftLinks = []; social.linkOffer = ''; social.pickOpen = false; leaveCompose();
+    social.draftBody = ''; social.draftImg = ''; social.draftAlt = ''; social.draftStill = false; social.draftTags = []; social.draftCombo = null; social.draftLinks = []; social.linkOffer = ''; social.pickOpen = false; leaveCompose();
     // With the cursor resting in a comment box the page is not redrawn, so the sent text is cleared here: left in place it invites a second Post.
     if (f.isConnected) { f.body.value = ''; recount(f.body); }
     Object.assign(social.users, r.data.users);

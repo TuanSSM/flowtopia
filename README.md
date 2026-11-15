@@ -518,7 +518,8 @@ In local mode, and in single mode without `FLOWA_FEDERATE=on`, none of this exis
 
 **What this version of federation does: it can be read.** Another server can ask who a member is and what
 this server is, and read the profiles and Public posts of the members who opted in (next section), and follow
-them ("Federation: follows across servers"); no post is sent yet. A
+them ("Federation: follows across servers"), and the Public posts of those members are sent to their followers
+there ("Federation: Public posts go out as notes"). A
 member's handle is `@name@host`, where host is the name in `FLOWA_ORIGIN`. Three addresses answer, only in a
 mode that federates (in local mode they are unknown addresses, as before):
 
@@ -548,7 +549,7 @@ every server shares the proxy's allowance.
 and Public posts beyond this server", off for everyone until they turn it on (members who were there before
 too), and the server's own sentence on what that does in this version (the handle can be found, the profile
 and the posts marked Public can be read by anyone, people there can follow them and they can follow people there,
-their posts are not sent yet), with a link to their public page, and, once on, the switch "Approve followers from
+their Public posts and profile changes are sent to their followers there), with a link to their public page, and, once on, the switch "Approve followers from
 other servers by hand" ("Federation: follows across servers"). On, WebFinger finds them, and the server makes their signing key in the background (a key that could not be made
 then, because many were waiting, is made after the next start); off, WebFinger answers 404 again (another
 server may keep the earlier answer for up to five minutes). While federation is refused the card says
@@ -795,6 +796,42 @@ members), a member follows people on other servers and is followed from them ([d
   was sent. `-purge-remote` removes the remote accounts' follows and requests with them.
 - **Not yet:** posts from followed accounts in Home (a later version), and the domain policy "limit" turning
   follows into requests.
+
+### Federation: Public posts go out as notes
+
+In a mode that federates, with the Federation switch and Follows both on under Admin, Features, a Public post of a
+member who shares their profile goes to their followers on other servers ([docs/federation.md](docs/federation.md),
+6.4, 6.5 and "Public posts out, as built (FWR 4)"):
+
+- **What a member sees.** Nothing new to do: a post marked Public in "Who can read it" is sent to their followers
+  elsewhere, as a note Mastodon and the like show with its text, links, mentions, the picture with its description,
+  and the tricks and the combo as a line of text ("Tricks: ...", "Combo: ...") with a hashtag for each prop
+  (`#nunchaku`); another Flowa can read the tricks back as chips. The composer's sentence under Public says it is
+  sent. This server posts and milestones are never sent, and neither is a post made while either switch was off.
+- **The picture's description.** In every mode, the composer has "Describe the picture (optional)" under a picture
+  once one is attached (at most 1,500 characters). It is the picture's text alternative on the post, here and on
+  other servers (as both `name` and `summary`). A post without a picture has no such field, and its answer is as
+  before.
+- **Mentions.** `@name` is a member here, and `@name@server.example` an account on another server, never the member
+  here with that name: nobody here is told of it, and the page shows it as text; so is anything shaped like a handle
+  whose server name is not one. A name inside a link is no mention, in every mode (it used to tell that member). A Public post that mentions an
+  account of another server sends it the post when Flowa already knows the account (it was looked up, or follows or
+  is followed); an account Flowa has never seen stays text and is not sent to. At most 10 mentions per post.
+- **Deleting and hiding.** Deleting a post that went out, or a moderator hiding it, sends a Delete to the servers it
+  went to (recorded when it was sent, so followers who came or left since do not change where it goes). A
+  moderator's restore sends nothing. Posts are not edited, so no edit is ever sent.
+- **Profile changes.** A change of the name, the bio, the picture, the props, the links or approving by hand goes to
+  the followers elsewhere at most once every five minutes, the newest state winning.
+- **What never leaves**: practice, progress, notes, stats, levels, badges, preferences, bookmarks, This server posts,
+  milestones, and anything of a member who does not share their profile (federation.md 14.5).
+- **What the admin sees.** Each post, Delete and profile change is a row of "Sending to other servers" on the
+  Federation tab, one per server's shared inbox; a server the domain policy refuses gets nothing. Each post goes to
+  at most 10,000 addresses; the server says in its log when a member has more, and the Federation tab counts how many
+  posts and profile changes since the last start reached only the first 10,000. It also counts the deleted or hidden posts whose Delete could not be queued for about 40 hours. The moderation queue shows a reported
+  post's picture with its description. `-purge-remote` also removes the
+  records of where each post went, after which a deletion is sent nowhere.
+- **Not yet:** posts from followed accounts in Home (a later version), and an Update of the profile after
+  `-rotate-keys`.
 
 ### What the server will connect to
 

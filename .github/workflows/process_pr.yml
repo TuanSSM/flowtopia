@@ -157,6 +157,9 @@ jobs:
       # The page reads a link the way the server does (the Go test runs the same fixtures).
       - name: Link reading matches the server
         run: node test/links.js
+      # The page reads @name and @name@host as the server does (TestMentions runs the same fixtures).
+      - name: Mention reading matches the server
+        run: node test/mentions.js
       - name: Merging progress from two devices
         run: node test/merge.js
       # An admin can only switch a feature the Features page lists.

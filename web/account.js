@@ -480,7 +480,8 @@ function showErr(id, msg, fields = []) {
 const errFields = (form, msg, rules) => (rules.find(([re]) => re.test(msg)) || [0, []])[1].map(n => form.elements[n]);
 // Whether what is in a field now could be sent: something in it when it is required, and within its lengths.
 // The browser's own check is not asked, because it only counts what a person typed, not a draft put back.
-const fieldOK = f => !(f.required && !f.value.trim()) && !(f.minLength > 0 && f.value.length < f.minLength) && !(f.maxLength > 0 && f.value.length > f.maxLength);
+const fieldOK = f => !(f.required && !f.value.trim()) && !(f.minLength > 0 && f.value.length < f.minLength) && !(f.maxLength > 0 && f.value.length > f.maxLength)
+  && !(f.dataset?.max && textLen(f.value, f.dataset.chars) > Number(f.dataset.max)); // a box that counts characters (countAttrs)
 
 /* ---------- the room left in a text box ---------- */
 // A box with a limit has a counter beside it, which it points at, so the count is read with the box. It
@@ -490,13 +491,16 @@ const COUNT_FROM = 100, COUNT_SAY = 20;
 const chars = n => `${n} ${n === 1 ? 'character' : 'characters'}`;
 const countWords = (len, max) => len > max ? `${chars(len - max)} too many` : len === max ? 'No characters left' : max - len <= COUNT_FROM ? `${chars(max - len)} left` : '';
 const countBand = (len, max) => len > max ? 'over' : len === max ? 'full' : max - len <= COUNT_SAY ? 'near' : '';
-// For a template: the attributes of the box, and the counter that goes beside it.
-const countAttrs = (id, text, max) => `maxlength="${max}" data-count="${id}" data-band="${countBand(String(text || '').length, max)}" aria-describedby="${id}"${String(text || '').length > max ? ' aria-invalid="true"' : ''}`;
-const countHTML = (id, text, max) => `<span class="count tiny num ${String(text || '').length > max ? 'over' : ''}" id="${id}">${countWords(String(text || '').length, max)}</span>`;
+// For a template: the attributes of the box, and the counter that goes beside it. With chars, the box counts characters
+// as the server does (code points: an emoji is one), so it has no maxlength, which counts UTF-16 units; the counter
+// says when the text is over, and the form refuses it before it is sent.
+const textLen = (s, chars) => chars ? [...String(s || '')].length : String(s || '').length;
+const countAttrs = (id, text, max, chars) => `${chars ? `data-max="${max}" data-chars="1"` : `maxlength="${max}"`} data-count="${id}" data-band="${countBand(textLen(text, chars), max)}" aria-describedby="${id}"${textLen(text, chars) > max ? ' aria-invalid="true"' : ''}`;
+const countHTML = (id, text, max, chars) => `<span class="count tiny num ${textLen(text, chars) > max ? 'over' : ''}" id="${id}">${countWords(textLen(text, chars), max)}</span>`;
 // Brings the counter of a box up to date. aloud says a change of band, which is what typing asks for and
 // what the page emptying a box after sending does not.
 function recount(f, aloud) {
-  const c = document.getElementById(f.dataset.count), max = f.maxLength, len = f.value.length, band = countBand(len, max);
+  const c = document.getElementById(f.dataset.count), max = f.dataset.max ? Number(f.dataset.max) : f.maxLength, len = textLen(f.value, f.dataset.chars), band = countBand(len, max);
   if (c) { c.textContent = countWords(len, max); c.classList.toggle('over', len > max); }
   if (len > max) f.setAttribute('aria-invalid', 'true');
   if (band !== f.dataset.band) { f.dataset.band = band; if (aloud) say(band ? countWords(len, max) + '.' : ''); }

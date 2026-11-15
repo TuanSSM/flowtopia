@@ -33,6 +33,7 @@ def get(o,path): return json.loads(o.open(BASE+'api/'+path,timeout=20).read())
 ROW=24      # px: how far above an earlier stop a later one may begin before the order counts as broken
 RING=2      # px: the thinnest ring that counts
 NEED=3      # the contrast a ring needs against what it is drawn on
+DOT_PNG='iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGOItu/BihiGlgQArCxJgbldUzEAAAAASUVORK5CYII='  # an 8 by 8 px PNG, a picture to describe
 # What counts as a control: the list a11y.py asks a name of.
 SEL='a[href],button,summary,label.btn,input,select,textarea,[contenteditable]:not([contenteditable=false]),[data-act],[tabindex]:not([tabindex="-1"]),[role=button],[role=tab],[role=link],[role=menuitem],[role=switch],[role=checkbox],[role=radio],[role=option]'
 # The colour arithmetic is the one of contrast.py, copied: a colour as the browser writes it, one colour over
@@ -416,10 +417,18 @@ try:
     wait_for("return location.hash==='#/timeline'&&!!document.querySelector('#compose-form .combo-chip')",'the composer to open with the combo')
     check('publish: the cursor is in the text of the post',lambda: on('#compose-form textarea'),active,timeout=3)
     type_text('By keyboard.')
+    # A picture and its description (FWR 4): the description field under the picture is a stop for Tab and takes typing.
+    # The picture is put on the hidden file input as a person choosing a file would; the click on Picture takes the
+    # cursor out of the text first, as here, so the composer is drawn again with the field.
+    js("document.activeElement.blur();const u=Uint8Array.from(atob(arguments[0]),c=>c.charCodeAt(0)),d=new DataTransfer();d.items.add(new File([u],'dot.png',{type:'image/png'}));const i=document.querySelector('[data-change=compose-img]');i.files=d.files;i.dispatchEvent(new Event('change',{bubbles:true}))",DOT_PNG)
+    wait_for("return !!document.querySelector('#compose-alt')",'the description field under the picture',20);idle()
+    if tab_to('#compose-alt',"the picture's description"): type_text('A dot.')
+    check("publish: the picture's description is typed with the keyboard",lambda: js("return document.querySelector('#compose-alt').value")=='A dot.',lambda: js("return document.querySelector('#compose-alt').value"))
     if tab_to('#compose-form button[type=submit]','Post'): key(ENTER)
     posted=lambda: [(p['body'],p['data']['combo']['name'],p['data']['combo']['seq']) for p in get(op,'posts')['posts'] if (p.get('data') or {}).get('combo')]
     check('publish: the post is on the server, with the combo and its skills',lambda: posted()==[('New combo: Keyboard loop. By keyboard.','Keyboard loop',made)],posted,timeout=20);idle()
     kept('publish: Post','#compose-form button[type=submit]')
+    check("publish: the picture went with its description",lambda: [p.get('alt') for p in get(op,'posts')['posts'] if (p.get('data') or {}).get('combo')]==['A dot.'],lambda: [p.get('alt') for p in get(op,'posts')['posts']][:3])
 
     # Reply to a comment.
     if js("return location.hash")!='#/timeline': go('#/timeline','Timeline')

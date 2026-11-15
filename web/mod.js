@@ -45,7 +45,7 @@ function targetHTML(it) {
   const t = it.target || {};
   if (t.gone) return '<p class="small muted">It has been deleted since it was reported.</p>';
   const hidden = t.hidden ? `<span class="chip warn">${icon('lock')}Hidden: ${esc(t.hiddenReason)}</span>` : '';
-  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body">${richText(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="Picture in the reported post">` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
+  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body">${richText(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="${t.alt ? esc(t.alt) : 'Picture in the reported post'}">${t.alt ? `<p class="small mq-alt">Description of the picture: ${esc(t.alt)}</p>` : ''}` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
   if (it.kind === 'comment') return `<div class="mq-target"><p class="small">${richText(t.body)}</p><div class="row wrap" style="gap:6px"><a class="small" href="#/post/${t.postId}/${it.id}">Open the comment</a>${hidden}</div></div>`;
   const a = it.author || {};
   return `<div class="mq-target"><p class="small">${a.bio ? richText(a.bio) : '<span class="muted">No bio.</span>'}</p><a class="small" href="#/u/${esc(a.username)}">Open the profile</a></div>`;
@@ -394,19 +394,22 @@ function fedInboxHTML(n) {
       <div><h3 class="small">Dropped, by type (not acted on in this version)</h3>${list(n.dropped, 'None yet.')}<h3 class="small">Refused, by reason</h3>${list(n.refused, 'None yet.')}</div></div></section>`;
 }
 // The delivery queue's numbers (docs/federation.md 8 and 14.2): what waits to be sent to other servers, what was
-// sent and given up, and the servers that do not answer. In this version what is sent is follows and their answers
-// (FWR 3); posts come later.
+// sent and given up, and the servers that do not answer. What is sent is follows and their answers (FWR 3), and Public
+// posts, their deletions and profile changes (FWR 4), with the activities that reached only the first 10,000
+// addresses of a member's followers counted, so that cut is not silent.
 function fedOutHTML(n) {
   if (!n) return '';
   const age = s => s < 120 ? `${s} seconds` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
   const since = n.since ? `since the last start, ${esc(fmtWhen(n.since))}` : 'in the last 24 hours';
   const c = n.counts || {}, num = v => `<span class="num">${(v || 0).toLocaleString()}</span>`;
-  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Follows and their answers in this version</span></div>
+  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Follows and their answers, Public posts, their deletions and profile changes</span></div>
     ${n.clockJumped ? '<p class="notice warn">Waiting for the clock: deliveries older than 4 days wait, which the retries cannot leave, so this server\'s clock may have jumped forward. They are held for an hour, and nothing is cleared meanwhile; if the clock is right (the server was off that long), they are then given up.</p>'
     : n.clockWaiting ? '<p class="notice warn">Waiting for the clock: this server\'s clock is earlier than its build or than the newest time its database holds, so nothing is signed or sent until it is set.</p>' : ''}
     ${n.paused ? `<p class="notice warn">Sending is off under Features: what waits stays queued${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
     <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'activity waits' : 'activities wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
-    <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p></section>`;
+    <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p>
+    ${n.cut ? `<p class="small notice warn">Since the last start, ${num(n.cut)} ${n.cut === 1 ? 'post or profile change' : 'posts or profile changes'} reached only the first 10,000 addresses of a member's followers.</p>` : ''}
+    ${n.notTakenBack ? `<p class="small notice warn">Since the last start, ${num(n.notTakenBack)} deleted or hidden ${n.notTakenBack === 1 ? 'post' : 'posts'} could not be taken back from other servers: the queue stayed full for about 40 hours.</p>` : ''}</section>`;
 }
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).
