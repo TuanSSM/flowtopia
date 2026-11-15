@@ -6482,13 +6482,14 @@ type federation struct {
 	forwardsFor, forwardsAll *limiter
 	forwardsSkipped          atomic.Int64
 	forwardsAsked            atomic.Int64 // the times forward asked the queue's counts (a test reads it)
+	forwardHook              func()       // when set by a test, called between forward's look at its allowances and their spending
 	repliesFull, likesFull   atomic.Bool
 	// commentsDue says a record of ap_comment_out may wait (commentWaits), commentsAt when the first one held back is
 	// due (a Delete the full queue refused), as postsDue and postsAt do for posts.
 	commentsDue atomic.Bool
 	commentsAt  atomic.Int64
-	// commentsNotSent counts the comments' Creates and Updates the full queue refused past the schedule's end, and the Creates under posts of other servers that someone named stopped allowing, since the
-	// start; commentHook, when set by a test, hears of the producer's steps ("read": the record is read).
+	// commentsNotSent counts the comments' Creates and Updates not sent: the full queue refused them past the schedule's
+	// end, or what they belong to stopped being shown beyond this server before they went; since the start; commentHook, when set by a test, hears of the producer's steps ("read": the record is read).
 	commentsNotSent atomic.Int64
 	// orphansAfter is where housekeeping's probe of comments gone without a Delete goes on from (talkOrphansSQL).
 	orphansAfter atomic.Int64
@@ -17596,11 +17597,14 @@ type deliveryQueue struct {
 	wake              chan struct{}
 	once              sync.Once
 	running           atomic.Bool // the workers were started (a test asks)
-	manual            bool        // set by a test, which then calls step itself: no worker starts
-	ctx               context.Context
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
-	stats             inboxStats // "sent" and "given up" by the hour, for the Federation tab
+	// enqueueHook, when set by a test, hears of an enqueue's steps: "lock" before it takes the queue's lock, "read"
+	// once it holds it and has read what the activity comes after (outOrder.afterTx).
+	enqueueHook func(stage, apID string)
+	manual      bool // set by a test, which then calls step itself: no worker starts
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	stats       inboxStats // "sent" and "given up" by the hour, for the Federation tab
 	// claimStmt is deliveryClaimSQL prepared once (claim): planning it took longer than running it (1.7 ms against
 	// 0.6 ms with 50,000 rows), and a prepared statement is planned once per connection.
 	claimStmt atomic.Pointer[sql.Stmt]
@@ -17886,6 +17890,9 @@ func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID
 	}
 	// One enqueue or fan-out at a time, so the counts below are the counts the rows are written against and the
 	// caps hold exactly (workers only take rows away meanwhile).
+	if q.enqueueHook != nil {
+		q.enqueueHook("lock", apID)
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
 		return out, err
 	}
@@ -17900,6 +17907,9 @@ func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID
 		if o.after, err = o.afterTx(tx); err != nil {
 			return out, err
 		}
+	}
+	if q.enqueueHook != nil {
+		q.enqueueHook("read", apID)
 	}
 	now := q.now()
 	var id int64
@@ -18684,9 +18694,14 @@ func (q *deliveryQueue) hostAnswered(host string, now time.Time, hold time.Durat
 }
 
 // inboxGoneSQL gives up every queued row of inbox $2 of host $1 not claimed ($3 the clock, $4 why): after a 410 for one,
-// each would be answered the same. hostHeldSQL moves the queued rows of host $1 not claimed to $2, the end of a 429's
-// Retry-After ($3 the clock). Both lock their rows in the order of their ids (deliveryLockOrder).
+// each would be answered the same. hostHeldSQL moves the queued rows of host $1 not claimed to $2 ($3 the clock): the
+// end of a 429's Retry-After, or of a circuit that opened. hostGoneSQL gives up every queued row of host $1, claimed or
+// not ($2 the clock), once the host is marked unavailable. All lock their rows in the order of their ids
+// (deliveryLockOrder).
 const (
+	hostGoneSQL = `UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $2, last_error = 'the host is unavailable'
+	FROM (SELECT id FROM ap_deliveries WHERE host = $1 AND state = 'queued' ORDER BY id FOR UPDATE) k
+	WHERE d.id = k.id AND d.state = 'queued'`
 	inboxGoneSQL = `UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = $4
 	FROM (SELECT id FROM ap_deliveries WHERE host = $1 AND inbox = $2 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $3)
 		ORDER BY id FOR UPDATE) k
@@ -18699,9 +18714,13 @@ const (
 
 // deliveryLockOrder: every statement that locks several rows of ap_deliveries takes them in the order of their ids
 // (a subquery with ORDER BY id FOR UPDATE: the rows are locked as the sorted rows come out): the 410 answer's rows of an
-// inbox, a 429's rows of a host, takeBackSQL's and heldBackSQL's rows of a line at an inbox. Two workers locking rows
-// they both want then never each hold one the other waits for (after the third review). The claim locks one row, and
-// SKIP LOCKED never waits.
+// inbox, a 429's or an opened circuit's rows of a host (hostHeldSQL), an unavailable host's rows (hostGoneSQL),
+// housekeeping's two pulls of rows dated by a clock that was ahead (deliveryPullDueSQL, deliveryPullAgeSQL),
+// takeBackSQL's and heldBackSQL's rows of a line at an inbox. Two workers locking rows they both want then never each
+// hold one the other waits for (after the third and fourth reviews; TestDBDeliveryLockOrder reads each plan). The
+// statements that touch one row by its id (the claim, which skips a locked row, the send's outcome, a give-back) take
+// one lock and cannot close a cycle; housekeeping's removals touch only failed rows, which nothing else locks; the rows
+// an enqueue or a fan-out writes or removes are its own activity's, which no one else holds yet.
 
 // fail gives a row up (8.3): kept deliveryKeep for the Federation tab, then removed by housekeeping.
 func (q *deliveryQueue) fail(c *claimedRow, why string) error {
@@ -18775,7 +18794,7 @@ func (q *deliveryQueue) hostFailed(host, why string, now time.Time) error {
 		if _, err := q.exec(ctx, `UPDATE ap_hosts SET state = 'open', until = $2, failures = 0, failing_since = NULL WHERE host = $1`, host, until); err != nil {
 			return err
 		}
-		_, err := q.exec(ctx, `UPDATE ap_deliveries SET next_at = $2 WHERE host = $1 AND state = 'queued' AND next_at < $2 AND (locked_until IS NULL OR locked_until < $3)`, host, until, now)
+		_, err := q.exec(ctx, hostHeldSQL, host, until, now)
 		return err
 	}
 	return nil
@@ -18794,7 +18813,7 @@ func (q *deliveryQueue) markUnavailable(ctx context.Context, host string, now ti
 	q.mu.Lock()
 	q.unavail[host] = true
 	q.mu.Unlock()
-	n, err := q.exec(ctx, `UPDATE ap_deliveries SET state = 'failed', locked_until = NULL, failed_at = $2, last_error = 'the host is unavailable' WHERE host = $1 AND state = 'queued'`, host, now)
+	n, err := q.exec(ctx, hostGoneSQL, host, now)
 	for range n {
 		q.stats.handled(time.Now(), "given up")
 	}
@@ -18885,7 +18904,7 @@ type deliveryNumbers struct {
 	FailedMax    int              `json:"failedMax"`              // Failed stops counting here: the page says "or more"
 	Cut          int64            `json:"cut,omitempty"`          // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
 	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts and comments whose Delete the full queue refused past the schedule's end, since the start (FWR 4, 6)
-	// CommentsNotSent are the comments' Creates and Updates the full queue refused past the schedule's end (and Creates under posts of other servers that could no longer go), and
+	// CommentsNotSent are the comments' Creates and Updates not sent (the full queue, or what they belong to no longer shown), and
 	// ForwardsSkipped the replies from other servers not forwarded for a bound, both since the start (FWR 6).
 	CommentsNotSent int64 `json:"commentsNotSent,omitempty"`
 	ForwardsSkipped int64 `json:"forwardsSkipped,omitempty"`
@@ -18932,10 +18951,12 @@ const (
 	deliveryRetainCapSQL    = `DELETE FROM ap_deliveries WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'failed' ORDER BY failed_at DESC OFFSET $1 LIMIT $2))`
 	deliveryRetainOutboxSQL = `DELETE FROM ap_outbox WHERE id = ANY(ARRAY(SELECT o.id FROM ap_outbox o WHERE o.fanned_out AND o.created_at < $1
 		AND NOT EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id) ORDER BY o.id LIMIT $2))`
-	deliveryPullDueSQL = `UPDATE ap_deliveries SET next_at = $2 WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND next_at > $2 ORDER BY next_at LIMIT $3))
-		AND $1::timestamptz IS NOT NULL`
-	deliveryPullAgeSQL = `UPDATE ap_deliveries SET created_at = $1 WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND created_at > $1 ORDER BY created_at LIMIT $3))
-		AND $2::timestamptz IS NOT NULL`
+	deliveryPullDueSQL = `UPDATE ap_deliveries d SET next_at = $2 FROM (SELECT id FROM ap_deliveries
+		WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND next_at > $2 ORDER BY next_at LIMIT $3)) ORDER BY id FOR UPDATE) k
+		WHERE d.id = k.id AND $1::timestamptz IS NOT NULL`
+	deliveryPullAgeSQL = `UPDATE ap_deliveries d SET created_at = $1 FROM (SELECT id FROM ap_deliveries
+		WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND created_at > $1 ORDER BY created_at LIMIT $3)) ORDER BY id FOR UPDATE) k
+		WHERE d.id = k.id AND $2::timestamptz IS NOT NULL`
 )
 
 // housekeep removes failed rows older than deliveryKeep and past the newest deliveryFailedKeep, and activities with
@@ -22916,15 +22937,29 @@ func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivit
 		f.forwardsSkipped.Add(1)
 		return
 	}
-	if !f.forwardsOut.add(s.Domain) || !f.forwardsAll.add("") {
-		f.forwardsSkipped.Add(1)
-		return
+	if f.forwardHook != nil {
+		f.forwardHook() // a test takes room here, as another reply's forward would between the look and the spend
 	}
+	// Spent one after the other; when one refuses (another reply took the last room since the look), those already
+	// spent are given back, so a forward that does not go costs no allowance (after the fourth review).
+	type spent struct {
+		l   *limiter
+		key string
+	}
+	var took []spent
+	want := []spent{{f.forwardsOut, s.Domain}, {f.forwardsAll, ""}}
 	for _, uid := range members {
-		if !f.forwardsFor.add(strconv.FormatInt(uid, 10)) {
+		want = append(want, spent{f.forwardsFor, strconv.FormatInt(uid, 10)})
+	}
+	for _, w := range want {
+		if !w.l.add(w.key) {
+			for _, b := range took {
+				b.l.addWeight(b.key, -tenths)
+			}
 			f.forwardsSkipped.Add(1)
 			return
 		}
+		took = append(took, w)
 	}
 	var to []deliveryTarget
 	from := actorHost(s.ID)
@@ -23311,7 +23346,7 @@ var commentOutSQL = `SELECT o.comment_id, o.post_id, o.user_id, o.state, o.targe
 			AND (p.ap_id IS NULL AND p.audience = 'public' AND p.hidden_at IS NULL AND p.kind = 'post' AND (pu.federates OR ($1 AND pu.owner)) AND (pu.suspended_until IS NULL OR pu.suspended_until <= now())
 				OR p.ap_id IS NOT NULL AND p.audience IN ('public', 'unlisted'))
 			AND (pc.id IS NULL OR pcu.domain <> '' OR (pcu.federates OR ($1 AND pcu.owner)) AND (pcu.suspended_until IS NULL OR pcu.suspended_until <= now()))
-			AND NOT (c.parent_id IS NOT NULL AND p.ap_id IS NULL AND EXISTS (SELECT 1 FROM users m WHERE m.domain = '' AND m.username = substring(lower(c.body) from '^@([a-z0-9][a-z0-9._-]{2,23})\M(?!@)')
+			AND NOT (c.parent_id IS NOT NULL AND p.ap_id IS NULL AND EXISTS (SELECT 1 FROM users m WHERE m.domain = '' AND m.username = substring(lower(c.body) from '` + leadNamePattern + `')
 				AND NOT ((m.federates OR ($1 AND m.owner)) AND (m.suspended_until IS NULL OR m.suspended_until <= now())))), false),
 		COALESCE(c.id IS NOT NULL AND NOT c.deleted AND c.hidden_at IS NULL, false),
 		COALESCE(p.audience, ''),
@@ -23393,12 +23428,12 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 	}
 	if !shown || !on {
 		// A Create that waits goes with nothing sent; an Update waiting is dropped, the record kept for its Delete.
-		// A comment under a post of another server, still there, whose Create the switches did not stop (its author,
-		// the author of its thread, or the post stopped being shown beyond this server since it was written), was
-		// accepted to go there: that it does not is said in the log and counted on the Federation tab (after the third
-		// review), never silent.
-		if state == "create" && on && kept && postAP != "" {
-			log.Printf("federation: comment %d under a post of another server is not sent: someone it names or answers no longer shares their profile", cid)
+		// A comment still there whose Create or Update the switches did not stop was accepted to go: that it does not
+		// (its author, its post, the author of its thread or the member it answers stopped being shown beyond this
+		// server since it was written) is said in the log and counted on the Federation tab, never silent (after the
+		// third and fourth reviews).
+		if on && kept {
+			log.Printf("federation: the %s of comment %d is not sent: the comment, its post, the first comment of its thread or the member it answers is no longer shown beyond this server", state, cid)
 			f.commentsNotSent.Add(1)
 		}
 		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
@@ -24161,7 +24196,9 @@ var migrations = []string{schema, schemaSocial,
 	// notifications from members here; notifications_fed, its narrower forerunner of migration 22, goes. The backfill
 	// marks the notifications remote accounts left before. Additive but for that index: an older build ignores the
 	// rest, but it would show remote replies as comments by local accounts, which is why /nunchaku -purge-remote must
-	// run before ./deploy.sh --rollback past this migration (14.4).
+	// run before ./deploy.sh --rollback past this migration (14.4). The columns ap_comment_out gained during its review
+	// are added again after its CREATE, so the statements run whole over a table an earlier draft made still give every
+	// column (TestDBMigration23OverDraft).
 	`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ap_id TEXT;
 	ALTER TABLE comments ADD COLUMN IF NOT EXISTS ap_updated TIMESTAMPTZ;
 	ALTER TABLE comments ADD COLUMN IF NOT EXISTS ap_extra JSONB NOT NULL DEFAULT '{}';
@@ -24184,6 +24221,8 @@ var migrations = []string{schema, schemaSocial,
 		due_at TIMESTAMPTZ,
 		sent_at TIMESTAMPTZ
 	);
+	ALTER TABLE ap_comment_out ADD COLUMN IF NOT EXISTS last_ap_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE ap_comment_out ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
 	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS comes_after TEXT;
 	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS undoes_chain BOOLEAN NOT NULL DEFAULT false;
 	CREATE TABLE IF NOT EXISTS ap_like_out (
@@ -28207,14 +28246,51 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 	a.writeComments(w, roots, 1, map[string]any{"postId": c.postID, "focus": id})
 }
 
-var leadMentionRE = regexp.MustCompile(`^@([a-z0-9][a-z0-9._-]{2,23})\b`)
+// leadNamePattern finds the name of a member here that opens a text, as Postgres reads it (commentOutSQL): @ and 3 to 24
+// name characters, the longest that ends a word (\M) and is not followed by more name characters and an @, so a handle
+// of another server (@name@host, @name.x@host, @name-x@host) names no member here. leadName reads it the same way in
+// Go, by construction: the longest such name, tried from the longest down, as the regular expression backtracks.
+// TestLeadNameAgrees runs one table of texts through both.
+const leadNamePattern = `^@([a-z0-9][a-z0-9._-]{2,23})\M(?![a-z0-9._-]*@)`
 
-// startsWithMention reports whether text opens with @name, a member here: a handle of another server that begins with
-// the same name (@name@host) is not theirs.
-func startsWithMention(text, name string) bool {
+func leadName(text string) string {
 	low := strings.ToLower(text)
-	m := leadMentionRE.FindStringSubmatchIndex(low)
-	return m != nil && low[m[2]:m[3]] == name && !strings.HasPrefix(low[m[1]:], "@")
+	if !strings.HasPrefix(low, "@") {
+		return ""
+	}
+	nameChar := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-'
+	}
+	wordChar := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' }
+	n := 0
+	for n < 24 && 1+n < len(low) && nameChar(low[1+n]) {
+		n++
+	}
+	if n == 0 || low[1] == '.' || low[1] == '_' || low[1] == '-' {
+		return ""
+	}
+	for l := n; l >= 3; l-- {
+		end := 1 + l
+		if !wordChar(low[end-1]) || end < len(low) && wordChar(low[end]) {
+			continue // \M: a word ends here
+		}
+		rest := end
+		for rest < len(low) && nameChar(low[rest]) {
+			rest++
+		}
+		if rest < len(low) && low[rest] == '@' {
+			continue // more name characters and an @: a handle of another server
+		}
+		return low[1:end]
+	}
+	return ""
+}
+
+// startsWithMention reports whether text opens with @name, a member here (leadName): a handle of another server that
+// begins with the same name is not theirs.
+func startsWithMention(text, name string) bool {
+	n := leadName(text)
+	return n != "" && n == name
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {

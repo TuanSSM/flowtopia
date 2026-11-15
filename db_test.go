@@ -3968,8 +3968,11 @@ func TestDBQueryPlans(t *testing.T) {
 		// the table (each read once by its index and counted again by the steps above it).
 		{"deliveries: failed rows past 7 days, a batch", deliveryRetainOldSQL, []any{time.Now(), deliveryBatch}, 4*deliveryBatch + 100, ""},
 		{"deliveries: failed rows past the cap, a batch", deliveryRetainCapSQL, []any{10000, deliveryBatch}, 3*(10000+deliveryBatch) + 100, ""},
-		{"deliveries: rows due too far ahead, a batch", deliveryPullDueSQL, []any{time.Now(), time.Now().Add(-2 * time.Hour), deliveryBatch}, 4*deliveryBatch + 100, ""},
-		{"deliveries: rows written in the future, a batch", deliveryPullAgeSQL, []any{time.Now().Add(-2 * time.Hour), time.Now(), deliveryBatch}, 4*deliveryBatch + 100, ""},
+		// The two pulls lock their batch in the order of the ids before they write it (deliveryLockOrder): each row is
+		// read by its index, sorted, locked and joined back, about 7 counted a row. They run only after a clock that was
+		// ahead.
+		{"deliveries: rows due too far ahead, a batch", deliveryPullDueSQL, []any{time.Now(), time.Now().Add(-2 * time.Hour), deliveryBatch}, 7*deliveryBatch + 100, ""},
+		{"deliveries: rows written in the future, a batch", deliveryPullAgeSQL, []any{time.Now().Add(-2 * time.Hour), time.Now(), deliveryBatch}, 7*deliveryBatch + 100, ""},
 		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedKeep, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_hosts"},
 		// A comment's longest line (FWR 6): each step down it is one look through ap_outbox's unique id index, and each
 		// activity's row at the inbox one look through (outbox_id, inbox). Once per row sent, and per Delete fanned out,

@@ -518,9 +518,13 @@ func TestDBCommentsNameNoNonSharer(t *testing.T) {
 	e.ne.produce()
 	toFay := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "hello fay", "parentId": fayCmt})["comment"].(map[string]any)["id"])
 	e.mustExec(`UPDATE users SET federates = false WHERE id = $1`, fayID)
+	notSent := e.a.fed.commentsNotSent.Load()
 	e.ne.produce()
 	if _, ok := e.queued(fmt.Sprintf("https://here.example/users/ana/comments/%d/activity", toFay)); ok {
 		t.Error("the answer to fay went out after fay stopped sharing")
+	}
+	if e.a.fed.commentsNotSent.Load() != notSent+1 {
+		t.Error("the answer to fay stayed here without being counted (point 1 of the fourth review)")
 	}
 	for _, r := range e.ne.outRows() {
 		if strings.Contains(r.body, "secret cy") || strings.Contains(r.body, fmt.Sprintf("/users/cyd/comments/%d", cyCmt)) {
@@ -806,6 +810,19 @@ func TestDBForwardBounds(t *testing.T) {
 	if got := try(nil); got != 3 {
 		t.Errorf("within the bounds again: %d forwards", got)
 	}
+	// Another reply takes the last room in all between this one's look and its spending (points 5 and 7 of the fourth
+	// review): this one does not go, the bound in all is not passed, and the room it took per server is given back.
+	f := e.a.fed
+	f.forwardsAll, f.forwardsOut = newLimiter(1, time.Hour), newLimiter(1, time.Hour)
+	var once sync.Once
+	f.forwardHook = func() { once.Do(func() { f.forwardsAll.add("") }) }
+	if got := try(nil); got != 3 {
+		t.Errorf("a reply was forwarded past the bound in all, taken meanwhile: %d forwards", got)
+	}
+	f.forwardHook = nil
+	if f.forwardsOut.over("social.example") { // bo's server
+		t.Error("the room per server a forward that did not go took was not given back")
+	}
 }
 
 // The small points of the review (C1, C2, C3, C5, C7).
@@ -1078,6 +1095,17 @@ func TestDBLeadingNames(t *testing.T) {
 	e.ne.produce()
 	if r, ok := sentOf(toFan); !ok || !strings.Contains(r.body, "@fan@third.example") {
 		t.Errorf("the answer to fan of third.example: sent %v %s", ok, r.body)
+	}
+	// And to fan-x and fan.art of third.example (point 1 of the fourth review): their handles name no member here either.
+	for _, name := range []string{"fan-x", "fan.art", "fan_x"} {
+		rid := e.remoteAccount(name, "third.example")
+		var rc int64
+		e.a.db.QueryRow(`INSERT INTO comments (post_id, user_id, body, ap_id) VALUES ($1, $2, 'from them', $3) RETURNING id`, e.post, rid, "https://third.example/users/"+name+"/statuses/9").Scan(&rc)
+		to := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "hi", "parentId": rc})["comment"].(map[string]any)["id"])
+		e.ne.produce()
+		if r, ok := sentOf(to); !ok || !strings.Contains(r.body, "@"+name+"@third.example") {
+			t.Errorf("the answer to %s of third.example: sent %v %s", name, ok, r.body)
+		}
 	}
 	// An answer to bob in ana's thread, bob stopping sharing before it goes: under bo's post it goes, bob's name plain.
 	bobID, bob := e.member("bob", false)

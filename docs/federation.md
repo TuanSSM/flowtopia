@@ -1765,11 +1765,35 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     of `ap_deliveries` takes them in the order of their ids: the rows of an inbox after a 410 (`inboxGoneSQL`), the rows
     of a host after a 429 (`hostHeldSQL`), and the rows of a comment's line at an inbox in the takeback and the send-time
     question (`takeBackSQL`, `heldBackSQL`). The test reads each plan and holds that every row lock is taken over rows in
-    that order.
+    that order. (The fourth review found more such statements; the full list is below.)
   - **Local mode's statements are pinned as text** (`TestPlainStatementsPinned`, `testdata/plain-local`). The feed, the
     preview of comments, its replies, and a page of comments and of replies, as local mode runs them on a database that
     never federated, are kept as files and compared word for word. They were checked against origin/main's statements of
     before this item: the same, but for the two columns `commentCols` added.
+- **After the fourth review of #116** (each with a test that fails without it):
+  - **Go and Postgres read a leading name alike** (`TestDBLeadNameAgrees`, `TestDBLeadingNames`). Postgres backtracked
+    around the old lookahead, so `@fan.x@third.example` or `@fan-x@third.example` read as a member here named `fan`.
+    The name is now one that ends a word and is not followed by more name characters and an `@` (`leadNamePattern`),
+    and Go's `leadName` reads it the same way by construction; one table of texts goes through both. A comment that
+    does not go though the switches are on (its author, its post, its thread's first comment or the member it answers
+    no longer shown beyond this server) is now always said in the log and counted on the Federation tab, under a post
+    here as under one of another server, and the log and the tab name every reason in general words.
+  - **Every multi-row lock on the queue is in id order** (`TestDBDeliveryLockOrder`, `TestDeliveryStatementsLockInOrder`).
+    An opened circuit now moves its host's rows with `hostHeldSQL`, an unavailable host's rows are given up by
+    `hostGoneSQL`, and housekeeping's two pulls of rows dated by a clock that was ahead lock their batch in id order (7
+    rows counted a row instead of 4, in `TestDBQueryPlans`; they run only after such a clock). The plan test accepts only
+    a sort on an id of `ap_deliveries` itself, and a second test reads `main.go` for any statement that changes rows of
+    `ap_deliveries` without naming one row, locking in order, or touching only failed rows.
+  - **A forward that does not go costs nothing**: when an allowance refuses after others were spent (another reply took
+    the last room since the look), the ones spent are given back (`TestDBForwardBounds`, with a hook between the look and
+    the spending that takes the room as another reply would). The read of the Undo a Like or an Undo comes after is
+    under the queue's lock (`TestDBLastUndoReadUnderTheLock`: the Undo held after its read, the Like waiting at the lock,
+    the Like then comes after that Undo).
+  - **The db suite's line says why a run failed** when go test names no running test (`test/go-summary.sh`, a self-test
+    run as its own process). Migration 23 adds again the columns `ap_comment_out` gained during the review, so the
+    statement run over tables an earlier draft made gives every column (`TestDBMigration23OverDraft`); a database that
+    recorded a draft as version 23 does not run it again by itself, so such a database (a test or stage one) is made
+    again or has the statement run by hand.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
