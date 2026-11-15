@@ -8,7 +8,7 @@ Commits title of the category's type. An item is checked only when its DoD holds
 
 **Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox (item 1), the delivery queue (item 2, its fan-out on the Pi left to the owner) and follows across servers (item 3, the recorded Mastodon fixtures left to the owner's trial) are built, each with the open points under it; Public posts go out as notes (item 4, done); posts from followed accounts come into Home (item 5, merged as #115, the open points under it); replies and likes cross servers (item 6, merged as #116, the open points under it); account deletion crosses servers
 both ways, with "Remove me from other servers" (item 7, built, the open points under it); two instances federate in CI
-(item 8, built: the `federation` suite, green locally, the open points under it). 1 of 9 items done. Federated mode is marked experimental in
+(item 8, done, merged as #118, the open points under it). 2 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -524,7 +524,7 @@ route and test named below is new unless the design note says it exists.
   yes), and the numbers: 2,000 servers per Delete(Person), 3 removals an hour per member, the copy of a key kept until
   its deliveries end (at most the queue's 48 hours), the newest 200 records of posts and of comments read for the
   servers that know a member.
-- [ ] **Two instances federating in CI.** `test/federation.sh`: two containers from the built image
+- [x] **Two instances federating in CI.** `test/federation.sh`: two containers from the built image
   and two databases on a Docker network, `FLOWA_FEDERATION_ALLOW_PRIVATE` set, driven through their
   APIs: follow, accept, post with a chip and a picture, like, reply, edit, delete, block, unfollow,
   delete the account; `docker stats` under 300 MB per app container. DoD: the `federation` suite in
@@ -579,8 +579,7 @@ route and test named below is new unless the design note says it exists.
   A step everything after needs (the lookup, a follow each way, the post's arrival, a stopped instance's return) stops the
   suite, with one SKIP line counting the checks not run against the 75 planned, so the totals add up; the whole run stops
   at 11 minutes (the CI step at 13, the job at 15) with a counted FAIL and the logs written.
-  **Open:** green in `process_pr`, which needs the pull request (the box stays unchecked until then and the owner's review);
-  the Pi's memory figures (the suite is too heavy for the Pi, and CI's runner is not a Pi); no browser looks at the two
+  **Open:** the Pi's memory figures (the suite is too heavy for the Pi, and CI's runner is not a Pi); no browser looks at the two
   instances (the `federated` browser suite still sees no remote profile drawn from a live server); a forwarded reply, a
   report crossing servers (FMD) and authorized fetch are not exercised; the retry is waited for on its real schedule (no
   setting may shorten it), which is most of the suite's time; a record that fails no longer holding the queue (item 7)
@@ -593,6 +592,9 @@ route and test named below is new unless the design note says it exists.
   `test/release.sh` (`SSL_CERT_FILE` and `SSL_CERT_DIR` beside the two settings) is right; whether a Go command under `test/`
   for the proxy is acceptable beside the one-file rule (built: yes, a second binary for tests only), rather than a pinned
   proxy image; and the 300 MB bound read from `docker stats`, which leaves out page cache the kernel can take back.
+  Done: merged as #118, its definition of done holding on main: the `federation` suite in `ALL` in `test/ci-plan.sh` with
+  its self-test, green in `process_pr` with 75 of 75, and `test/release.sh` failing when `compose.yml` names
+  `FLOWA_FEDERATION_ALLOW_PRIVATE`.
 - [ ] **The owner's trial against a real Mastodon server.** Not a pull request: the owner's item,
   because no session that builds Flowa can reach a fediverse server. On the stage instance with
   `FLOWA_MODE=federated` and the Mastodon server's domain on the allowlist: (1) find the stage
