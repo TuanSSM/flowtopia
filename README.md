@@ -334,7 +334,8 @@ across servers**: discovery (WebFinger and NodeInfo, under "Federation: discover
 and outboxes of the members who opted in ("Federation: profiles and Public posts"), members can look up people
 on other servers by their handle ("Federation: people elsewhere"), and other servers can deliver to its
 inboxes ("Federation: the inbox and domain policies"), where follows and an account deleting itself or changing
-its profile are acted on ("Federation: follows across servers"); posts are neither sent nor taken yet. Federated mode is
+its profile are acted on ("Federation: follows across servers"), and a deleted account is announced to the servers
+that know it ("Federation: deleting an account across servers"), beside posts, replies and likes (the sections after). Federated mode is
 experimental. Any other word stops the server at start with a message that says so, before the database is
 opened. The admin dashboard shows the mode under the version, and in a mode that federates the origin and the
 same sentence about what is served.
@@ -450,7 +451,9 @@ rotation changed at the same moment is skipped: the command says how many and ex
 it again replaces them. It needs a mode that federates and the
 two settings (otherwise it stops with a message, as the start would), and it is also the way back after
 a lost secret: set a new `FLOWA_KEY_SECRET` first. This version does not tell followers yet: other servers
-pick the new keys up when a signature next fails to verify.
+pick the new keys up when a signature next fails to verify. A deleted account's deletion that is still being sent
+cannot be given a new key (no server holds one for it): the command clears the key kept for it, says how many, and
+those deliveries are given up.
 
 ### Federation: remote accounts, and going back past them
 
@@ -761,6 +764,9 @@ activity. How it works (the design is [docs/federation.md](docs/federation.md), 
 - **Stopping:** a stop gives back what a worker had taken and not yet sent, lets a request already sent finish
   within the 5 seconds a stop waits, and anything still running then is sent again after the restart (receivers
   ignore a repeat).
+- **One that cannot be made holds nobody:** a post, a comment or a profile change whose activity cannot be made is
+  tried again on the same schedule and given up after it, counted on the Federation tab, while everything behind it
+  goes on being made and sent.
 - `-purge-remote` removes these rows too.
 
 ### Federation: follows across servers
@@ -930,6 +936,50 @@ With the same switches on, replies and likes cross servers both ways ([docs/fede
   server to a member's comment under a post of another server is not kept. Under a post here, a comment answering a
   member who does not share their profile, or in a thread one of them began, stays here; under a post of another
   server it is refused, with the reason.
+
+### Federation: deleting an account across servers
+
+In a mode that federates, other servers learn when an account is gone, both ways ([docs/federation.md](docs/federation.md),
+6.4, "Account deletion across servers, as built (FWR 7)"):
+
+- **An admin deletes an account** (Admin, Accounts) that shared its profile beyond this server at some time: in the
+  same step, a deletion of the account goes to every server this one has a record of (its followers' and the
+  accounts it follows, accounts that liked or answered it or that it liked or answered, the servers its posts and
+  comments went to), one delivery per server, at most 2,000 servers, signed with the member's own key, which is kept
+  with that delivery only until it is sent (or given up after 48 hours). Those servers remove the account, its posts,
+  comments and likes. The question before deleting says so, and the message after says how many servers are told,
+  or why none is: the profile was never shared, federation is unavailable, sending is paused (it goes when the
+  Federation switch is on again, within 48 hours), or more than 2,000 servers were known (the rest are left out).
+  When the queue to other servers is full the deletion is refused with the reason ("try again in a few minutes"),
+  so nothing is lost. Only a server that kept the member's key can check the deletion; the account's address
+  answers 410 with a Tombstone from then on, which tells the others when they ask (a browser there reads "Profile no
+  longer shared"). What the member had waiting to go
+  out goes with the account. In local mode deleting an account is exactly as before and tells no other server,
+  ever; its address answers "deleted" once the server federates again.
+- **"Remove me from other servers"**, in Settings under "Beyond this server", for a member whose profile was shared:
+  asks every server this one has a record of to delete the profile, its posts, comments and likes, turns sharing
+  off, and ends the follows with accounts of other servers. The account here stays, with its name, posts and
+  members' follows. The card says before, and asks again before anything is sent, that many servers remember a
+  deleted address for good, so sharing again later (allowed, with a new key) may be refused there. Sharing again
+  waits until the request has reached the servers (at most 48 hours, even while sending is paused; the card says until
+  when). The member's likes of posts of other servers stay here as likes of this server; taking one back then removes
+  it here only, and says so. (A member who only turned sharing off keeps their key, so taking back a like still
+  reaches its server, as deleting a post or a comment does.) If federation cannot work at that moment nothing is
+  changed and the member is told to try later. From then on nothing of the member goes to other servers and no key is
+  made for them until they share again. At most 3 times an hour per member. Not on a single-profile instance, where
+  `FLOWA_FEDERATE` is the owner's sharing.
+- **An account of another server deletes itself:** its posts and their pictures, its follows and requests both ways,
+  its replies (a reply a member answered stays as "deleted" so the answer stays), its likes, every notification it
+  left, its name, picture and bio, and the deliveries waiting for it are removed at once; it is shown as a deleted
+  account, its key is refused from then on, and its address is never fetched again. A member's block of it and the
+  reports about it stay. A deletion from an account this server never saw is answered and dropped with no request
+  and one look in the database.
+- **Going back:** an older build after `./deploy.sh --rollback` would send a deletion that is still waiting under
+  the wrong key, and other servers refuse it: let the Federation tab's queue drain first to keep it. A deleted
+  account is not brought back by a rollback.
+- **Not yet:** a server that only ever received something from the account whose record is gone (a follower who
+  left long ago) is not told; it learns the account is gone the next time it asks for it. A deletion is not sent
+  again after 48 hours of failures.
 
 ### What the server will connect to
 

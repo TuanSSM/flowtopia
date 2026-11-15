@@ -451,6 +451,11 @@ replies and likes from other servers to its members' Public posts and comments, 
 Public posts and their likes and comments on public posts of other servers, with an edit, a deletion and an unlike",
 and the parts add `replies` (6.4, "Replies and likes across servers, as built").
 
+As built (FWR 7): the sentence now ends "..., with an edit, a deletion and an unlike, and tells the servers that know a
+member when an admin deletes the account or the member asks to be removed from them, and removes everything of an
+account of another server that deletes itself", and the parts add `deletion` (6.4, "Account deletion across servers,
+as built").
+
 ### 4.2 What each mode means for every surface
 
 | Surface | `local` (default) | `federated` | `single` |
@@ -1311,7 +1316,9 @@ went to, and Update(Person) at most every five minutes, the newest state winning
 (FWR 6): the second row (a comment, to the commenter's followers, the post's author and, for a post here, its author's
 followers, and the accounts it mentions), the third (Update(Note) with `updated`), the forward of the fourth (signed by the
 instance actor, never to the sending server), and Like and Undo(Like) of a post of another server (below, "Replies and
-likes across servers, as built").
+likes across servers, as built"). As built (FWR 7): Delete(Person) on an admin's deletion of an account that has a key and
+on "Remove me from other servers", to one inbox per server this one has a record of, at most 2,000 servers, signed with
+the member's key kept with the activity (below, "Account deletion across servers, as built").
 
 #### Follows across servers, as built (FWR 3)
 
@@ -1450,9 +1457,10 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
 - **A member who stops sharing** their profile beyond this server keeps their remote followers' rows, and sends nothing
   (11: turning it off sends nothing). Their actor then answers 404, so remote followers' servers see the account as not
   found when they next fetch it, and new Follows of them are answered with Reject. Deleting an account goes out as
-  Delete(Person) with FWR 7; until then the rows go with the account and nothing is sent.
+  Delete(Person) since FWR 7 ("Account deletion across servers, as built (FWR 7)" below), and so does "Remove me from
+  other servers", which also removes these rows.
 - **Not built** (later items, or the owner's): posts from followed accounts (FWR 5), the domain policy `limit` turning
-  follows into requests (FMD), Move (PRT), Delete(Person) out on account deletion (FWR 7), removing a follower without
+  follows into requests (FMD), Move (PRT), removing a follower without
   blocking it, and approving pending requests when a member turns approval by hand off (they stay requests until
   answered). Recorded Mastodon fixtures: the ones in
   `testdata/federation/follows` are written from documentation (its README); recorded ones wait for the owner's trial.
@@ -1804,6 +1812,276 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   member's comment
   under a post of another server is not kept (it answers no post here); the likes of an account its server says is
   suspended still count; recorded Mastodon replies and likes to hold this to (the owner's trial, FWR 9).
+
+#### Account deletion across servers, as built (FWR 7)
+
+What was there before this item: an actor's own Delete (FWR 1) marked it gone, so its key verifies nothing more; FWR 5
+and 6 removed its posts, pictures, follows, replies, likes and the notifications it left about posts in the same
+statement; a Delete from an actor never seen was answered 202 with no fetch (7.4); retired names (FRD 5) and the 410
+Tombstone at a retired name's actor. What this item adds, in "federation: account deletion across servers" in
+`main.go` (migration 24, with `flowa-schema23.dump` for the restore drill):
+
+- **Out, when an admin deletes an account.** Only admins delete accounts (`DELETE /api/admin/users/{id}`; there is no
+  self-deletion, and single mode has no deletion at all, so "deleting the only profile" cannot happen). In a mode that
+  federates, an account that has a key (it shared its profile, or shared it and stopped, as FWR 4 decided for a post's
+  Delete) is deleted in the transaction that enqueues its Delete(Person) (`personGone`, through `enqueueThen`):
+  the account, its retired name, its audit line, the activity and every delivery commit together, or none does.
+- **Signed with the member's key after the key is gone.** `ap_keys` goes with the account, so the activity's row in
+  `ap_outbox` keeps a copy: `signer` (the id the account had, no foreign key), `signer_key` and `signer_sealed` (the
+  private key sealed as in `ap_keys`, bound to that key id and owner; `FLOWA_KEY_SECRET` is needed to open it, so a
+  backup holds no usable key). `actor_id` is NULL, so the account's deletion does not cascade to it. The workers sign
+  with the copy (`keptKey`), opened at each send and kept nowhere in memory; housekeeping clears it once no delivery of
+  the activity is queued (`deliveryForgetKeySQL`, through `ap_outbox_signer`), and `-rotate-keys` clears every copy and
+  says how many: a new key is no key any server holds for that account, and a rotation means the old ones may be known
+  to someone else. A row whose copy was cleared is given up at its send ("the key of the deleted account is no longer
+  kept"), never signed with another key. The key held in memory and the actor document are dropped after the commit.
+- **Who can verify it.** Only a server that kept the member's key. The actor answers 410 with a Tombstone from the
+  moment of the deletion (a retired name, 5.5), so a server that fetches the key learns the account is gone that way,
+  and one that never saw the account drops the Delete without fetching anything (Mastodon does, 7.4). A server whose
+  copy of the actor is old fetches it, meets the 410, and still verifies the Delete with the key it kept, as 6.3 says
+  and as Flowa's own inbox does (`TestDBTwoFlowaNotes`, which runs exactly that).
+- **To whom: every server this one has a record of, one inbox each.** `personKnownSQL` reads the accounts of other
+  servers that follow the member or that the member follows (accepted or pending), whose posts the member liked or
+  answered, and that liked or answered the member's posts or comments; the inboxes recorded in `ap_post_out` and
+  `ap_comment_out` (where the member's posts and comments went); and the inboxes of the member's activities still in
+  the queue or failed in the last 7 days. A Delete of an actor is about the actor, so a server acts on it at any of its
+  inboxes: one per server, its shared inbox when known. Gone accounts are left out, the domain policy and unavailable
+  hosts are left out by `enqueue` as always. "Every server that knows the account" can only mean every server this one
+  has a record of: a delivery that succeeded leaves no row, so a server that only received an activity whose record is
+  gone (a follower who left, a post deleted long ago) is not told, and learns the account is gone when it next fetches
+  the actor. **At most 2,000 servers** (`personDeleteHostsMax`, the bound of 6.4's table): past it the first 2,000 by
+  host name are told, the rest left out, logged, and said to the admin. This is under the queue's 10,000 inboxes per
+  activity and its 2,000 rows per host.
+- **What the member had waiting goes with the account.** The member's rows in `ap_outbox` (unsent Creates, Updates,
+  Likes, Undos, Deletes, Follows) and their deliveries, `ap_post_out`, `ap_comment_out`, `ap_like_out` and
+  `ap_person_out` reference the account and go in the deletion's own transaction, the delivery rows locked first in the
+  order of their ids (`memberRowsLockSQL`, as every statement over several rows of the queue locks since FWR 6's fourth
+  review). No separate Delete goes for each post, comment or like: a Delete(Person) removes them all (Mastodon's
+  ActivityPub page). Since FWR 6 a member's activity can be held at an inbox behind another of theirs
+  (`ap_outbox.comes_after`), so the Delete(Person) does not rely on the queue's order: nothing of the member is left
+  in it to come after. In each state (`TestDBDeletePersonOrder`): a row never tried, one tried and waiting for another
+  attempt, and one held behind another are removed and never sent; a request already in flight finishes first, since
+  the queue sends one request at a time per host, so the Delete(Person) to that server waits for it, and the in-flight
+  activity's outcome finds no row to write to, so it is never tried again. Making the Delete(Person) come after the
+  member's last activity per inbox was the other way; it would keep sending what the Delete takes back, so it is not
+  done.
+- **The answer the admin sees** (in a mode that federates only; local mode answers `{"ok":true}` as before): one
+  sentence in `federation`, shown in the toast after "Account deleted.": how many servers are being told, that the rest
+  were left out past 2,000, that the queue was full and it goes once there is room, that sending is paused and it goes
+  when the switch is on again (within the queue's 48 hours, then the deliveries are given up and counted as any), that
+  federation is unavailable so no server could be told, or that the profile was never shared so none was. The
+  confirmation question says other servers that know the account are told.
+- **Switched off, paused, full, refused.** In **local mode** the deletion is exactly what it was (the same 7
+  statements in one transaction, `TestDBDeleteUserLocalStatements`): nothing is recorded, so nothing is ever sent for
+  it; the name is retired, and once the server federates again its actor answers 410, which is how servers that ask
+  learn of it. This is lost by design, and said here and in the README. **Paused** (the Federation switch off): the
+  activity and its deliveries are written and wait, and go when the switch is turned on, within 48 hours. **The queue
+  full** (1,000 activities waiting for their fan-out): the deletion is refused with 503 and `Retry-After: 300`, "the
+  account was not deleted", so nothing is lost; the admin tries again. **Federation refused** (a moved origin, a
+  secret that opens no key): nothing can be signed under this origin, so the account is deleted alone, the name
+  retired, the answer and the log say no other server was told.
+- **A suspended member** who shared is told about like any other: the servers that hold the account must still learn
+  it is gone. A member who never shared (no key) sends nothing, and their name is free again, as before.
+- **"Remove me from other servers"** (section 11): `POST /api/me/federation/leave` with `{"confirm": true}`, the session
+  first, `limits.fedLeave` (3 an hour per member), in a mode that federates only (`testdata/routes-federated.txt`);
+  refused with the reason for the owner in single mode (the setting `FLOWA_FEDERATE` is the owner's sharing), while
+  federation is refused (503), unconfirmed (400), and for a member with no key (400: nothing to forget). In the
+  transaction of the Delete(Person), signed with the member's key as above (`leaveSQL`): sharing off; the name retired
+  (the member keeps the account and the name, but the actor answers 410 while they do not share, as a deleted
+  account's does); the key removed, so sharing again makes a new one, as section 11 says; the follows with accounts of
+  other servers, both ways and in any state, removed with their request notifications, since those servers drop them
+  on the Delete; the records of posts, comments and likes that went out and of a profile update, since the Delete removed them
+  there; and the member's activities in the queue with their deliveries, in every state, as a deletion removes them
+  (one in flight finishes first; `TestDBDeletePersonOrder`). Members here who
+  follow them keep following. The Settings card shows the button only to a member who has a key, outside single
+  mode, while federation is not refused, with the server's warning beside it (`leaveWarning`): other servers are
+  asked to delete the profile, posts, comments and likes, followers there lose the member, the account here stays,
+  and many servers remember a deleted address for good, so sharing again later may be refused there. The page asks
+  again with the same words before anything is sent. Afterwards the card says the member asked to be forgotten
+  (`left`, read from the retired name of an account that still exists). **Sharing again** is allowed, with a new key;
+  whether a server that processed the Delete takes the address back is that server's (believed refused by Mastodon,
+  whose documentation does not say), which is what the page warns of. No flag guards it: sharing is a member's own
+  setting behind no flag, the control exists only in a mode that federates, and a new flag would change what local
+  mode lists.
+- **In: an actor's own Delete** (its id as the object, or a Person or a Tombstone object with that id), from the actor
+  itself, after the origin rule: `actorGoneSQL` now also removes the follow, request and refusal notifications it left
+  (FWR 3's kinds, which it missed), the deletions of its posts remembered (`ap_deleted`: nothing more of a gone account
+  is taken anyway), its name, picture, bio and links here and the summary and picture of its cached actor (Mastodon
+  removes the account's record; the row stays so a block and the moderation record keep their account, shown as
+  deleted), and the deliveries of this server's activities queued for its own inbox (its server's shared inbox and
+  `ap_hosts` untouched; one in flight finishes). **Kept, on purpose:** a member's block of it (their choice, and harmless:
+  the account is refused anyway) and the reports about it (the moderators' record; a report of a removed post shows the
+  post as gone, as for a local deletion). A Delete whose object is another actor, a Delete of an actor by another
+  account, and one signed on another origin change nothing (the origin rule, 7.3, and `self` in the worker).
+- **A gone actor's id used again** by its server (Mastodon never does): it stays gone, for good (7.4): its key verifies
+  nothing, and a lookup answers "deleted" without a fetch. Its server must use a new id.
+- **A Delete from an actor never seen**, the cheapest path through the inbox, is bounded by a test:
+  `TestDBUnknownDeleteCheap` (202, no fetch, no row, one statement, the indexed lookup of `actorKnown`, for the bare id
+  and a Tombstone; past the address's allowance 429 with no statement).
+- **What each public address answers for a deleted member** (held in `TestDBDeletePerson`): `GET /users/{name}` 410
+  with the Tombstone to a server and to a browser the page "Profile no longer shared" (after the review: one page for a
+  deleted account and for a member who left, so it says no more than the Tombstone); WebFinger, the outbox, followers,
+  following, featured, a post's Note and page, its Create and every picture the one 404 of a name nobody shows; the
+  inbox at `/users/{name}/inbox` answers as for any name (it takes deliveries for the instance, not per name). Nothing
+  the member wrote is in any answer.
+- **Said where the rest is said:** the start log's and the dashboard's sentence (`fedBuilt`) now ends with what this
+  item does, and NodeInfo's `metadata.federationBuilt` adds `deletion` (4.1).
+- **Bounds.** No new table; the copy of a key lives as long as its deliveries (at most the queue's 48 hours, then
+  housekeeping). `-purge-remote` is unchanged and still complete: nothing new is about other servers' accounts.
+- **Rollback (14.4).** Migration 24 adds three columns without defaults and a partial index: an older build ignores
+  them, but it would sign a Delete(Person) that still waits with the instance actor's key, which other servers refuse;
+  those deliveries are then lost and nothing else is. Let the queue drain first (the Federation tab's count) to keep
+  them. An account deletion itself cannot be rolled back, as before.
+- Tests: `TestDBDeletePerson` (out: the activity, its signer and copy, the servers addressed and those not, nothing of
+  the member's left to go out, the servers verifying it with the member's key, the copy cleared, every public address,
+  a member who never shared, a full queue, a pause, a suspended member, `-rotate-keys`, federation refused),
+  `TestDBDeletePersonBound` (2,005 servers: 2,000 told, one inbox each, the cut said), `TestDBDeletePersonIn` (in:
+  everything above removed, the block and the report kept, the shared inbox's delivery and `ap_hosts` untouched, a
+  Person and a Tombstone object, the three refusals, the key refused after, no fetch for the gone id),
+  `TestDBUnknownDeleteCheap`, `TestDBLeaveOtherServers`, `TestDBDeletePersonOrder`, `TestDBDeleteUserLocalStatements`, `TestDBTwoFlowaNotes` (the
+  other Flowa verifies the Delete(Person) after its refetch met the 410), `TestDBQueryPlans` (the servers that know a
+  member with 1,000 followers on 300 servers, what leaving changes, the copies to clear); the `federated` browser
+  suite (the button, its warning, the question declined and confirmed, the card after, the actor's 410; picture
+  `federated-leave`).
+- **After the review** (each with a test that fails without it):
+  - **No key for a member who does not share** (`TestDBLeaveDropsWaitingKeyRequest`, `TestDBDeliverAsksNoKeyForNonSharer`).
+    `ensureKey` makes a key only for the instance actor, a member who shares, or the owner of a single-profile instance
+    that federates (`mayHaveKeySQL`), asked before the key is made and again in its transaction with the member's row
+    locked, so a request the key maker took before a member left (as `TestDBLeaveOtherServers` once met in a full run,
+    the key maker holding the request ana's sharing had asked) is dropped (`errNotSharing`), and a second leaving finds no
+    key and is refused, so no second Delete(Person) goes. The delivery worker asks for a key only for a member who shares;
+    a row of one who does not, with no key, is given up. The test holds the key maker with a hook (`beforeKey`) across
+    the leaving.
+  - **Nothing of a member goes out after they leave or are deleted** (`TestDBNothingGoesOutAfterLeaving`, a case per way
+    out: like, unlike, comment, editing a comment here and on a post of another server, deleting a comment, a Public and a
+    This server post, deleting a post, follow, unfollow, accept, reject, block, a profile change, `-rotate-keys`; after a
+    deletion each is 401). The queue itself refuses an activity of a member who has no key and does not share
+    (`enqueueOrdered`, under its lock), whatever a stale page or a leftover row asks. Leaving clears the ids of the Likes
+    the member sent (`likes.ap_id`, and `comment_likes.ap_id` on replies of other servers): the Delete removed those likes
+    there, and each stays here as a like of this server, so an unlike removes it here and sends nothing. An unlike that
+    would send an Undo asks what the queue asks (after the second review, below).
+  - **Not sharing again while the Delete(Person) is being sent** (`TestDBLeaveOtherServers`). The key sharing makes has
+    the same key id, so a server could take the new account and then remove it at the Delete's next attempt, or refuse
+    the Delete against the new key. While a row with the member as `signer` keeps the copy of their key (`leavingSQL`),
+    turning sharing on is refused with 409 and a sentence saying until when at most (48 hours after the Delete was
+    enqueued, the queue's horizon); the Settings card shows that sentence and the switch is disabled.
+  - **Leaving is all or nothing** (`TestDBLeaveAllOrNothing`, a hook that refuses federation between the handler's
+    check and the transaction): 503, and the key, the sharing, the name and the follows are as they were; the member can
+    leave once federation works again. A deletion by an admin still goes alone in that case, and says so.
+  - **Two leavings at once** (`TestDBTwoLeavingsAtOnce`): the one that finds the key gone (the other took it) changes
+    nothing and answers as a leaving with nothing to forget, never "N of them".
+  - **Bounded and filtered first** (`TestDBQueryPlans`, `TestDBDeletePersonPolicyBeforeCut`). `personKnownSQL` reads the
+    targets of the member's newest 200 records of posts and 200 of comments out (`personKnownRecords`): with 1,000 records
+    of 50 inboxes each the plan counts 73,662 rows where every list would be 320,302 (the reviewer measured 68 MB of JSON
+    and 1.46 s for 1,000 lists of 500). The domain policy and the queue's own rules (`collect`) are applied to each server
+    before the cut at 2,000, a page of 2,001 hosts at a time in the order of their names (at most 50 pages), so a refused
+    server never takes the place of one let in.
+  - **Leaving has its own words** (`TestDBLeaveOtherServers`, `TestDBLeftPageWords`): "Other servers that know your
+    profile are being asked to forget it: N of them. Your account here stays as it is." The browser's page at a retired
+    name now says "Profile no longer shared ... its account was deleted, or asked other servers to forget it", for both;
+    the Tombstone to servers is unchanged.
+  - **Measured** (`TestDBDeletePersonLockTime`, logged, not asserted): leaving with 10,000 queued deliveries of the member
+    took 166 ms in all and about 126 ms from taking the queue's lock to the answer, on the 2.1 GHz Xeon. The queue holds
+    at most 50,000 rows in all, so a member can own at most that many: about 0.6 s by the same measure (five times), under the
+    second the review set, so it is not batched. **Reports** about a remote account that deleted itself show nothing it
+    wrote or looked like: a reported post or reply is gone, and the account is its handle alone, its name, bio and
+    picture removed (`TestDBDeletePersonIn`).
+- **After the second review** (each with a test that fails without it):
+  - **No single record holds the queue** (`TestDBRefusedDeleteHoldsNobody`, `TestDBFailingRecordHoldsNobody`,
+    `TestDBProducerErrorStillSends`). The queue's refusal of a member with no key who does not share made the Delete of a
+    post or a comment of such a member (one who shared, posted before their key was made, stopped sharing and deleted
+    it) fail at the head of the producer's line for ever, and since a worker's step returned the producer's error before
+    it claimed, nothing was made or sent for anyone. Now: that refusal finishes the record (nothing of the member ever
+    went out without a key), said in the log and counted; any other failure of a record of a post, a comment or a
+    profile update puts it back on the delivery schedule (8.3), one step more each time (a profile update's tries kept in
+    memory), and gives it up after the schedule's last wait, said in the log and counted (`outNotMade`, a line on the
+    Federation tab "since the last start"); and a step whose fan-out or producer fails still claims and sends a row. The
+    producers audited: posts, comments, profile updates; likes, Undos, follows, answers and forwards are enqueued by the
+    request or the inbox worker that makes them, not by the producer, and a fan-out's error is a statement's, not a
+    record's.
+  - **Sharing again waits at most 48 hours whatever the queue's state** (`TestDBSharingAgainAfterHorizon`).
+    `leavingSQL` counts a Delete(Person) only while it, or its newest delivery still queued, is younger than the queue's
+    horizon: a row older than that is never signed, since `deliver` gives it up for its age before it opens the kept key
+    (the test makes the copy unopenable, so opening it first would be the failure the row records), and a Delete(Person)
+    that waited that long for its fan-out is dropped by `fanOutDue`, never fanned out. So with sending paused or
+    refused, the member may share again after 48 hours, and the page never names a time in the past. While the queue's
+    clock is doubted (a jump forward of more than 4 days, 8.3) there is no bound and the member waits: corrected after the
+    third review, below.
+  - **An unlike asks what the queue asks** (`TestDBUnlikeNeedsSharing`): a member who stopped sharing with the switch
+    keeps their key, so their unlike sends its Undo, as their posts' and comments' Deletes still go; a member with no key
+    who does not share (one who left, should a like have kept its id) has it removed here only, and is told "Nothing is
+    sent to the post's server". This replaces the refusal built after the first review.
+  - **The locked check in `ensureKey` is tested on purpose** (`TestDBKeyNotWrittenAfterStopping`): a hook between making
+    a key and writing it (`keyMade`) turns sharing off in that gap, and the key is not written, every time.
+  - **A takeback's cost no longer turns on statistics** (FWR 6's `takeBackSQL`, fixed here because its plan test failed
+    once in this item's runs). Its count of a line's queued rows per inbox was a correlated HAVING that the planner could
+    evaluate once per row of the outer side, depending on what ANALYZE's sample saw: 13,228 rows instead of 5,603 at 10
+    inboxes once in 300 ANALYZEs here, and, with the Delete's rows written after ANALYZE as in production, 208,373 rows
+    at 100 inboxes and 17,383,073 at 1,000 (the reviewer saw 8.6 million and 682 ms at 100), under the queue's lock. It
+    now groups the rows given up and the rows queued per inbox once each and joins them once (`gi`, MATERIALIZED), and
+    reaches the Delete's own rows from each of those inboxes through `(outbox_id, inbox)` (`x`, and `hl`, `h` for the
+    inboxes where one of the line is in flight) rather than testing each row against the list, which a full run here
+    once planned as 1,000 times 1,000. In `TestDBQueryPlans`, whose fixture holds the whole plan test's data, it reads
+    4,056 / 41,973 / 419,073 rows at 10 / 100 / 1,000 inboxes, about 23 a pair of activity and inbox. A scratch test with
+    the delivery queue's fixture alone, re-analysed 300 times, read the same 4,443 rows at 10 inboxes every time (the old
+    form 5,603, and 13,228 once), and the same 419,073 at 1,000 after each of 40. The plan test's three cases have a
+    budget of `takebackRowsPerPair` (35) rows a pair plus 500, which leaves room for a harmless change of plan in a minor
+    release of Postgres while the first form, about 116 a pair at 100 inboxes and 966 at 1,000, fails the two
+    production shapes by far; the semantics are those of before (the takeback, follow, like and comment-order tests pass
+    unchanged). `heldBackSQL` and `afterHeldSQL` ask about one inbox and have no such shape.
+- **After the third review** (each with a test that fails without it):
+  - **A record's tries start afresh** (`TestDBDeleteTriesAfresh`). A post's Create that failed put its count on the
+    record, and its success and the marks of a deletion or a hide did not reset it, so the post's Delete could be given
+    up at its first failure and the post left up elsewhere. The Create's success and every mark now reset the tries and
+    the wait, as the comments' already did, and a new change of a profile starts its update's tries afresh. The test: a
+    Create that fails through the schedule but for its last wait, then a Delete that fails once and goes after; and a
+    Delete that fails every time, which gets its whole schedule before it is given up.
+  - **A Delete given up is counted as not taken back** (`notTakenBack`, the same test), with the full queue's: the
+    content is left up on the servers it reached. "Could not be sent" (`outNotMade`) keeps Creates, Updates, profile
+    changes and the Deletes of a member who never had a key (nothing of theirs went out); the Federation tab's two
+    sentences say so.
+  - **A record that cannot be written does not spin the worker** (`TestDBFailingWriteDoesNotSpin`, the record's table
+    refusing every write through a trigger in the test's own schema, as a full disk would). The retry path reports work
+    only when its own write succeeded, and logs only after it; otherwise the step reports no work and its error, so the
+    loop waits its pause and logs once a minute.
+  - **This server's own state is no try** (`TestDBStopIsNoTry`): a stop (a context ended), federation refused meanwhile
+    and switches that could not be read leave the record as it was, with no try counted and nothing given up
+    (`outNotTried`).
+  - **The clock's doubt holds a member's Delete(Person) and their sharing again** (`TestDBLeavingUnderClockDoubt`). The
+    fan-out drops an old Delete(Person) only when the clock is believed; while it is doubted the Delete is fanned out as
+    any activity, and its rows, written then, keep the member waiting. And while the clock is doubted `leavingSince`
+    passes no bound and the page names no time ("this server is waiting for its clock to be confirmed first"), so a jump
+    that is undone never lets rows younger than 48 hours be signed with the old key after the member shared again.
+  - **An unlike while leaving** (`TestDBUnlikeWhileLeaving`): the queue's refusal of a member who left between the
+    question and the enqueue is answered as for a member with no key, not with a 500.
+  - **Said plainly.** A worker's step claims and sends a row whatever its producer said: when the switches cannot be
+    read, the pause check reads them as off (`flagsCached` gives no flags on a failed read) and nothing is claimed;
+    only in the 2 seconds a successful read is kept can rows already enqueued, which were made while the switches were
+    on, still go, which is what they were made for. A reply to a member's comment can go out before that comment's
+    Create when the Create was put back on the schedule or given up: the reply names the comment by id, and a receiver
+    that does not have it treats the reply as it treats any reply to a post it does not know. A profile update's tries
+    (`personTries`) are kept in memory, so a restart starts them afresh: at worst one more pass of the schedule.
+- **After the fourth review** (the tests named fail without their fix; where one covers only some branches, that is said):
+  - **Every producer writes before it logs or counts** (`TestDBFailingWriteDoesNotSpin`, now also the full queue's branches
+    for posts and comments, a Delete at its schedule's end and before it, a Create and a comment's Create, and a write
+    refused every other time). The full queue's branches, the too large Create, an Update dropped for a comment no longer
+    shown and `commentOutFull` now write first (of these the test runs the full queue's Delete and Create branches for posts
+    and comments; the too large Create, the dropped Update, the Update's full queue branch and the profile's are the same
+    change with no test of their own); a failed write is returned as `outWriteError`, which `outNotTried`
+    knows, so the retry path does not take it for a failure of the record, the producer reports no work, and nothing is
+    logged or counted until the write succeeds.
+  - **Every change of a record's state resets its tries** (`TestDBCommentTriesAfresh`, `TestOutStateChangesReset`): an
+    Update dropped because the comment is no longer shown, and an edit that turns a sent record into an Update, now
+    start afresh too. The statements that change a record's state are listed in one comment beside `outNotTried`, and
+    the test reads `main.go` and fails on one that neither resets the tries and the wait nor gives a reason.
+  - **A step says its producer's error while rows flow** (`TestDBProducerErrorStillSends`): the delivery's error, or else
+    the producer's or the fan-out's, under the loop's once-a-minute log.
+  - **Words for a time already past** (`TestDBLeavingSentences`): on a believed clock the sentence names neither a time
+    nor the clock; the clock's clause is kept for a doubted clock.
+- **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
+  it does when the address comes back; a server that only received an activity whose record is gone is not told (see
+  above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail
+  for 48 hours.
 
 ### 6.5 A Flowa post as a Note
 
@@ -3606,6 +3884,10 @@ writes it), and `actor_id` is indexed for the actor cache's bound (`userRefs`); 
 'failed'`; `ap_hosts` gains `failing_since`, `down_since`, `last_error`, `alive_at`, `probed_at`, `sig_learned` and `created_at`,
 checks `host` lower case and `sig`, leaves `software` to a later item, and has `ap_hosts_held (host) WHERE state <> 'ok'`.
 
+As built (FWR 7, migration 24, with `flowa-schema23.dump`): `ap_outbox` gains `signer BIGINT`, `signer_key TEXT` and
+`signer_sealed TEXT` (the copy of a deleted account's key its Delete(Person) is signed with, cleared once no delivery
+waits) and `ap_outbox_signer (id) WHERE signer_sealed IS NOT NULL` (6.4, "Account deletion across servers, as built").
+
 ### 9.2 Why remote content joins the existing tables (F5)
 
 Remote accounts become `users` rows with `domain` set, `username` of the form `bo@social.example`
@@ -3840,7 +4122,9 @@ page owes on authorized fetch (7.6) beyond the one it says now (that any server 
   the Delete may refuse the same address for good (believed of Mastodon; its ActivityPub page says
   only that a Delete of an account removes it "from the database, as well as all of their
   statuses", and what happens when the address comes back is in its code, which could not be
-  opened), and the page says so before the button sends anything.
+  opened), and the page says so before the button sends anything. As built (FWR 7): that button, under the switch in
+  "Beyond this server" for a member who has a key, with the warning beside it and asked again before anything is sent,
+  and a sentence in the card afterwards (6.4, "Account deletion across servers, as built").
 - **Audience per post:** Public or This server, defaulting to Public for members who opted in.
 - **As built (FRD 5), the switch:** the card's switch is now F2's "Share my profile and Public posts beyond this
   server", and the server's sentence says what this version does (found by the handle; the profile and the
@@ -4107,7 +4391,11 @@ changes no running instance.
   rows once anyone has looked someone up, and the purge before a rollback matters in practice. As built (FWR 5):
   the first version to keep remote posts, which an older build after `./deploy.sh --rollback` shows as local, in
   the Community timeline; the purge removes them, their pictures' rows and the files under `-data/media`. Turn the
-  Federation switch off before the purge, so that nothing is stored between it and the rollback.
+  Federation switch off before the purge, so that nothing is stored between it and the rollback. As built (FWR 7):
+  migration 24 adds columns an older build ignores, but it would sign a Delete(Person) that still waits with the
+  instance actor's key, which other servers refuse: those deliveries are lost, nothing else. Let the queue drain first
+  to keep them. An account deleted, or a member removed from other servers, is not brought back by a rollback, as
+  before.
 - **Social facts cannot be rolled back.** Activities delivered stay delivered; an actor id announced
   stays announced (section 4.3). A rollback to a build without federation leaves remote servers
   retrying for their own horizon, then giving up.

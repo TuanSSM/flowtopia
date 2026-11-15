@@ -57,6 +57,9 @@ func TestDBDeliveryLockOrder(t *testing.T) {
 		{"the pull of rows written in the future", deliveryPullAgeSQL, []any{now.Add(-time.Hour), now, deliveryBatch}, []string{"ap_deliveries.id"}},
 		{"a takeback's rows of a line", takeBackSQL, []any{1, 2, now}, []string{"d.id", "d_1.id"}},
 		{"the send-time question over a line", heldBackSQL, []any{1, "https://a.example/inbox", now, true}, []string{"d.id", "k.id"}},
+		// FWR 7: a member's rows before they go with the member, and a gone account's own inbox in its own Delete.
+		{"a member's rows before the account or its activities go", memberRowsLockSQL, []any{int64(1)}, []string{"ap_deliveries.id"}},
+		{"a gone account's own inbox", actorGoneSQL, []any{int64(1), "https://a.example/users/x/inbox", "a.example", now}, []string{"ap_deliveries.id"}},
 	} {
 		keys = c.keys
 		var raw []byte

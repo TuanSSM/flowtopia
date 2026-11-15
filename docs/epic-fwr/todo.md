@@ -6,7 +6,8 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox (item 1), the delivery queue (item 2, its fan-out on the Pi left to the owner) and follows across servers (item 3, the recorded Mastodon fixtures left to the owner's trial) are built, each with the open points under it; Public posts go out as notes (item 4, done); posts from followed accounts come into Home (item 5, in review); replies and likes cross servers (item 6, built on item 5, the open points under it). 1 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox (item 1), the delivery queue (item 2, its fan-out on the Pi left to the owner) and follows across servers (item 3, the recorded Mastodon fixtures left to the owner's trial) are built, each with the open points under it; Public posts go out as notes (item 4, done); posts from followed accounts come into Home (item 5, merged as #115, the open points under it); replies and likes cross servers (item 6, merged as #116, the open points under it); account deletion crosses servers
+both ways, with "Remove me from other servers" (item 7, built, the open points under it). 1 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -445,6 +446,80 @@ route and test named below is new unless the design note says it exists.
   a Delete from an actor never seen is answered 202 with no fetch. Retired names exist since FRD's
   actor item. DoD: `TestDBDeletePerson` (both directions; an unknown actor's Delete opens no
   connection).
+  Built (federation.md 6.4, "Account deletion across servers, as built (FWR 7)", says what and why; migration 24 with
+  `flowa-schema23.dump`): what was there (an actor's own Delete marking it gone and removing its posts, follows, replies,
+  likes and post notifications; the 202 with no fetch for an actor never seen; retired names and the actor's 410), and
+  now: Delete(Person) out when an admin deletes an account that has a key, enqueued in the deletion's own transaction
+  (`personGone` through `enqueueThen`) and signed with the member's key after the key is gone (a sealed copy in
+  `ap_outbox.signer_key`/`signer_sealed`, opened at each send by `keptKey`, cleared by housekeeping once no delivery
+  waits and by `-rotate-keys`, a cleared one given up, never signed with another key); one inbox per server this one has
+  a record of (`personKnownSQL`: follows both ways in any state, likes and replies both ways, `ap_post_out` and
+  `ap_comment_out` targets, `ap_like_out`, the member's queued and recently failed deliveries), at most 2,000 servers,
+  the rest left out, logged and said; what the member had waiting goes with the account (cascades, the delivery rows
+  locked first in id order, `memberRowsLockSQL`), whatever its state (never tried, retrying, held behind another of the
+  member's activities by `comes_after`), and a request in flight finishes before the Delete(Person) reaches that
+  server by the queue's one request per host (`TestDBDeletePersonOrder`, both for a deletion and for leaving); the admin's answer in a mode that federates says what became of it
+  (local mode answers `{"ok":true}` with the same 7 statements as before); a full queue refuses the deletion with 503 and
+  loses nothing; paused waits; federation refused deletes alone and says so. "Remove me from other servers"
+  (`POST /api/me/federation/leave`, `{"confirm": true}`, `limits.fedLeave` 3 an hour, the route in
+  `routes-federated.txt`): the Delete(Person) with sharing off, the name retired (the actor 410), the key removed, the
+  follows with other servers and their requests removed, the records out removed (`ap_comment_out` and `ap_like_out`
+  included), the member's activities in the queue removed in every state, in one transaction (`leaveSQL`); the button in the Settings card with the server's warning beside it, asked again,
+  and the card's sentence after (`left`); sharing again allowed with a new key; refused for single mode's owner and
+  while federation is refused. In: `actorGoneSQL` now also removes the follow, request and refusal notifications, the
+  remembered deletions, the account's name, picture, bio and links and its actor's summary and picture, and the
+  deliveries queued for its own inbox; a block and reports kept. Tests: `TestDBDeletePerson`, `TestDBDeletePersonBound`,
+  `TestDBDeletePersonIn`, `TestDBUnknownDeleteCheap` (202, no fetch, no row, one statement; past the address's allowance
+  429 with none), `TestDBLeaveOtherServers`, `TestDBDeletePersonOrder`, `TestDBDeleteUserLocalStatements`, `TestDBTwoFlowaNotes` (the other Flowa
+  verifies the Delete(Person) with the key it kept after its refetch met the 410), `TestDBQueryPlans`, with `-race
+  -count=3` on two cores; the `federated` browser suite (`federated-leave`). README "Federation: deleting an account
+  across servers"; `fedBuilt` (the start log and the dashboard) and NodeInfo's `deletion`.
+  After the review (federation.md 6.4, "After the review" under FWR 7's part): no key for a member who does not share
+  (`ensureKey` asks `mayHaveKeySQL` before and under the member's row lock; the delivery worker asks no key for one; a
+  request the key maker took before a leaving is dropped), and the queue refuses an activity of a member with no key
+  who does not share; leaving clears the ids of the member's Likes (each stays here as a local like) and an unlike that
+  would send an Undo asks that the member shares; sharing again refused while the Delete(Person) is sent (409, the card
+  says until when, at most 48 hours); leaving all or nothing (503 with federation refused meanwhile); two leavings at
+  once answer once; `personKnownSQL` reads the newest 200 records of posts and of comments out (`personKnownRecords`)
+  and the policy is applied before the cut at 2,000, a page of hosts at a time; leaving's own words, and one page
+  "Profile no longer shared" for a retired name. Tests `TestDBLeaveDropsWaitingKeyRequest` (the key maker held by a hook
+  across the leaving: fails without the fix as the full run did), `TestDBDeliverAsksNoKeyForNonSharer`,
+  `TestDBNothingGoesOutAfterLeaving` (one case per way out, after leaving and after a deletion), `TestDBLeaveAllOrNothing`,
+  `TestDBTwoLeavingsAtOnce`, `TestDBLeftPageWords`, `TestDBDeletePersonPolicyBeforeCut`, `TestDBDeletePersonLockTime`
+  (10,000 of the member's deliveries go in about 126 ms under the queue's lock: logged), `TestDBQueryPlans` (records out
+  with targets), `TestDBKeysGenerated` (its members now share before a key is made for them).
+  After the second review: a record the queue refuses for a member with no key who does not share is finished, any
+  other failing record of a post, a comment or a profile update goes back on the delivery schedule and is given up
+  after it (counted on the Federation tab), and a worker's step claims a row whatever its producer said, so no record
+  holds the queue (`TestDBRefusedDeleteHoldsNobody`, `TestDBFailingRecordHoldsNobody`, `TestDBProducerErrorStillSends`);
+  sharing again waits at most the queue's 48 hours whatever its state, and a Delete(Person) older than that is never
+  signed nor fanned out (`TestDBSharingAgainAfterHorizon`); an unlike sends its Undo for a member who keeps a key, and
+  for one without it removes the like here only (`TestDBUnlikeNeedsSharing`); the locked check of `ensureKey` held by a
+  hook (`TestDBKeyNotWrittenAfterStopping`). After the third review: a record's tries start afresh at the Create's
+  success and at every mark (`TestDBDeleteTriesAfresh`), a Delete given up counts as not taken back, a record that
+  cannot be written reports no work (`TestDBFailingWriteDoesNotSpin`), a stop or a refusal meanwhile is no try
+  (`TestDBStopIsNoTry`), the clock's doubt holds a member's Delete(Person) and their sharing again
+  (`TestDBLeavingUnderClockDoubt`), an unlike while leaving is answered as for a member with no key
+  (`TestDBUnlikeWhileLeaving`), and the takeback's plan budgets are a rule of 35 rows a pair (`takebackRowsPerPair`).
+  After the fourth review: every producer writes before it logs or counts, a failed write being no failure of the record
+  (`TestDBFailingWriteDoesNotSpin`); every change of a record's state resets its tries, held by a test that reads
+  `main.go` (`TestDBCommentTriesAfresh`, `TestOutStateChangesReset`); a step says its producer's error while rows flow;
+  and the sentence for a time already past names no clock (`TestDBLeavingSentences`).
+  **Open:** the owner's trial (item 9) should confirm Mastodon removes the account on this Delete(Person) and what it does
+  when the address comes back; a server that only ever received an activity whose record is gone is not told; a
+  deletion made in local mode is never sent; a Delete(Person) whose deliveries fail for 48 hours is not sent again; the
+  box stays unchecked until the
+  owner's review merges it. For the owner (defaults built): whether a deletion should wait for room rather than be
+  refused when the queue is full (built: refused with 503, nothing lost), whether "Remove me" should refuse sharing again
+  under the same name (built: allowed, with a new key, and warned, once the Delete(Person) has reached the servers),
+  whether a member who stopped sharing may still take back a like that went out (built, after the second review: yes,
+  with the key they keep, as their posts' and comments' Deletes go; a member with no key has it removed here only, and
+  is told so), whether a member's likes of posts of other servers stay here after leaving (built: yes, as likes of this
+  server), whether a member's block of a deleted remote account
+  and the reports about it should go too (built: kept), whether a suspended member's deletion should be sent (built:
+  yes), and the numbers: 2,000 servers per Delete(Person), 3 removals an hour per member, the copy of a key kept until
+  its deliveries end (at most the queue's 48 hours), the newest 200 records of posts and of comments read for the
+  servers that know a member.
 - [ ] **Two instances federating in CI.** `test/federation.sh`: two containers from the built image
   and two databases on a Docker network, `FLOWA_FEDERATION_ALLOW_PRIVATE` set, driven through their
   APIs: follow, accept, post with a chip and a picture, like, reply, edit, delete, block, unfollow,

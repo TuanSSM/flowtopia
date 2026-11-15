@@ -411,8 +411,9 @@ function fedOutHTML(n) {
     <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'activity waits' : 'activities wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
     <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p>
     ${n.cut ? `<p class="small notice warn">Since the last start, ${num(n.cut)} ${n.cut === 1 ? 'post or profile change' : 'posts or profile changes'} reached only the first 10,000 addresses of a member's followers.</p>` : ''}
-    ${n.notTakenBack ? `<p class="small notice warn">Since the last start, ${num(n.notTakenBack)} deleted or hidden ${n.notTakenBack === 1 ? 'post or comment' : 'posts and comments'} could not be taken back from other servers: the queue stayed full for about 40 hours.</p>` : ''}
+    ${n.notTakenBack ? `<p class="small notice warn">Since the last start, ${num(n.notTakenBack)} deleted or hidden ${n.notTakenBack === 1 ? 'post or comment' : 'posts and comments'} could not be taken back from other servers: the queue stayed full, or making their Delete failed again and again, for about 40 hours.</p>` : ''}
     ${n.commentsNotSent ? `<p class="small notice warn">Since the last start, ${num(n.commentsNotSent)} ${n.commentsNotSent === 1 ? 'comment or edit' : 'comments and edits'} could not be sent to other servers: the queue stayed full for about 40 hours, or what they belong to (the comment, its post, its thread or the member answered) stopped being shown beyond this server before they went (the log says which).</p>` : ''}
+    ${n.outNotMade ? `<p class="small notice warn">Since the last start, ${num(n.outNotMade)} ${n.outNotMade === 1 ? 'post, comment or profile change' : 'posts, comments and profile changes'} could not be sent to other servers: making them failed again and again for about 40 hours, or their author has no key and stopped sharing (the log says which).</p>` : ''}
     ${n.forwardsSkipped ? `<p class="small">Since the last start, ${num(n.forwardsSkipped)} ${n.forwardsSkipped === 1 ? 'reply' : 'replies'} from other servers ${n.forwardsSkipped === 1 ? 'was' : 'were'} not passed on to members' followers: the hourly bounds were reached, the queue was busy, or the reply was too large or addressed privately.</p>` : ''}</section>`;
 }
 // Filled in by the dashboard and skill map editor further down.
@@ -532,9 +533,10 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'user-del':
-      if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.`)) {
+      // Where the server federates, the answer says which other servers are told (FWR 7); elsewhere it is as before.
+      if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.${fed ? ' If they shared their profile, other servers that know them are told it is gone.' : ''}`)) {
         const r = await api('admin/users/' + d.id, 'DELETE');
-        toast(r.ok ? 'Account deleted.' : r.error); await loadUsers();
+        toast(r.ok ? (r.data.federation ? `Account deleted. ${r.data.federation}` : 'Account deleted.') : r.error); await loadUsers();
       }
       break;
     case 'user-pw': {

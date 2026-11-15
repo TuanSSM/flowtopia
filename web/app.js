@@ -649,12 +649,24 @@ function fedCard() {
   if (fed.unavailable) return `${head}<p class="small">${esc(fed.unavailable)}</p>${fed.refused ? `<p class="notice warn">${esc(fed.refused)}</p>` : ''}</div></div>`;
   return `${head}
     ${fed.implied ? '<p class="small">This Flowa is yours alone, and it is set up to share your profile and Public posts beyond it.</p>'
-    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>${esc(fed.label)}</span></label>`}
+    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''} ${fed.leaving && !on ? 'disabled aria-describedby="leaving-hint"' : ''}><span>${esc(fed.label)}</span></label>`}
+    ${fed.leaving ? `<p class="notice warn" id="leaving-hint" role="status">${esc(fed.leaving)}</p>` : ''}
     <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. ${esc(fed.built)}</p>
     ${on && fed.profile ? `<p class="small"><a href="${esc(fed.profile)}" target="_blank" rel="noopener">See your public page ${icon('ext')}</a></p>` : ''}
     ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}
     ${on && flags.follows && flags.community ? `<label class="check"><input type="checkbox" data-change="locked" ${fed.locked ? 'checked' : ''} aria-describedby="locked-hint"><span>Approve followers from other servers by hand</span></label>
-    <p class="tiny" id="locked-hint">${fed.locked ? 'Someone on another server who follows you waits until you approve them from your notifications.' : 'When it is on, someone on another server who follows you waits until you approve them from your notifications.'} Members of this Flowa follow you as before.</p>` : ''}</div></div>`;
+    <p class="tiny" id="locked-hint">${fed.locked ? 'Someone on another server who follows you waits until you approve them from your notifications.' : 'When it is on, someone on another server who follows you waits until you approve them from your notifications.'} Members of this Flowa follow you as before.</p>` : ''}
+    ${fed.left ? `<p class="notice" role="status">${esc(fed.left)}</p>` : ''}
+    ${fed.leave ? `<div class="fed-leave"><p class="small" id="leave-hint">${esc(fed.leave)}</p><button class="btn danger sm" data-act="fed-leave" aria-describedby="leave-hint">Remove me from other servers</button></div>` : ''}</div></div>`;
+}
+// "Remove me from other servers" (FWR 7). What it does is the server's words (fed.leave), shown in the card and asked
+// again before anything is sent: other servers delete the profile, and many refuse the same address later.
+async function fedLeave() {
+  if (!confirm(`Remove your profile from other servers?\n\n${fed.leave}`)) return;
+  const r = await api('me/federation/leave', 'POST', { confirm: true });
+  if (r.ok) { fed = r.data.federation || fed; toast(r.data.told || 'Other servers are asked to forget you.'); }
+  else toast(r.error);
+  render(); document.querySelector('[data-change="federates"]')?.focus();
 }
 const notFound = () => `<div class="empty">Page not found. <a href="#/">Go to the dashboard</a>.</div>`;
 const pageOff = what => `<div class="empty">${what} is turned off on this Flowa. An admin can turn it on under Admin, Features. <a href="#/">Go to the dashboard</a>.</div>`;
@@ -1071,6 +1083,7 @@ document.addEventListener('click', e => {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       break;
     }
+    case 'fed-leave': fedLeave(); break;
     case 'reset':
       if (confirm(`Erase all your ${curProp().name.toLowerCase()} progress, sessions and combos? The server keeps a daily backup.`)) { state = blank(); commit(); toast('Progress reset.'); }
       break;

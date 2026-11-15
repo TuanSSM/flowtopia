@@ -861,7 +861,8 @@ document.addEventListener('click', async e => {
       const r = await api(`posts/${id}/like`, 'POST');
       delete post.liking;
       // A like that did not go through (the post is gone, the connection dropped) is taken back.
-      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes ?? post.likes; } else { Object.assign(post, was); toast(r.error); }
+      // The server's notice, when it has one, says what else happened (an unlike that stays on this server: FWR 7).
+      if (r.ok) { post.liked = r.data.liked; post.likes = r.data.likes ?? post.likes; if (r.data.notice) toast(r.data.notice); } else { Object.assign(post, was); toast(r.error); }
       render(); break;
     }
     case 'cmt-toggle':

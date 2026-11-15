@@ -822,6 +822,25 @@ func TestDBTwoFlowaNotes(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM ap_deliveries`) + be.count(`SELECT count(*) FROM ap_deliveries`); n != 0 {
 		t.Errorf("%d deliveries left on the two queues", n)
 	}
+
+	// FWR 7: an admin deletes ana. b.example kept her key. Her actor answers 410 from now on, so b.example, whose copy is
+	// a day old and is fetched again, learns she is gone, and still verifies her Delete(Person) with the key it kept
+	// (6.3, keyForOwnDelete): bob's follow of her and her account there go.
+	e.clock.add(actorTTL + time.Minute)
+	hmu.Lock()
+	heard = nil
+	hmu.Unlock()
+	e.must(200, e.rootSession(), "DELETE", fmt.Sprintf("/api/admin/users/%d", e.anaID), nil)
+	pump()
+	if !slices.Equal(heardNow(), []inboxReason{inAccepted}) || dropped("Delete") != 0 {
+		t.Fatalf("b.example heard %v for ana's Delete(Person), dropped Deletes %d", heardNow(), dropped("Delete"))
+	}
+	if be.count(`SELECT count(*) FROM ap_actors WHERE user_id = $1 AND state = 'gone'`, anaThere) != 1 || be.count(`SELECT count(*) FROM follows WHERE followee_id = $1`, anaThere) != 0 {
+		t.Error("b.example still holds ana's account or bob's follow of her")
+	}
+	if n := e.count(`SELECT count(*) FROM ap_deliveries WHERE state = 'queued'`); n != 0 {
+		t.Errorf("%d deliveries left after ana's Delete(Person)", n)
+	}
 }
 
 // The post handler, a deletion, a hide, a profile change and the producer in a mode that federates on a pool of one

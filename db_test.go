@@ -3603,6 +3603,13 @@ func (n planNode) walk(f func(planNode)) {
 // which is what the time a query takes comes from. The tables with a row or a few per member
 // (users, sessions, progress) and the reports are read whole where the question is about all of
 // them; whole says which, and the bound still holds them.
+// takebackRowsPerPair is the budget of takeBackSQL's plans, in rows counted per pair of an activity of the line (its
+// Delete included) and an inbox, plus 500 (FWR 7, the third review). The statement reads about 23 a pair at 10, 100 and
+// 1,000 inboxes; 35 leaves room for a harmless change of plan in a minor release of Postgres, while its first form,
+// which grew with the square of the inboxes, read about 116 a pair at 100 and 966 at 1,000 and fails these by a wide
+// margin.
+const takebackRowsPerPair = 35
+
 func TestDBQueryPlans(t *testing.T) {
 	e := newEnv(t)
 	db := e.a.db
@@ -3980,10 +3987,42 @@ func TestDBQueryPlans(t *testing.T) {
 		// and writes them: about 30 rows counted a pair.
 		{"deliveries: the last Update held behind the longest line at an inbox", afterHeldSQL, []any{fmt.Sprintf("https://here.example/c#%d", commentUpdatesMax-1), "https://h12.fan.example/inbox", afterHeldDepth}, 300, ""},
 		{"deliveries: a Delete's question at the send, over the longest line", heldBackSQL, []any{lineEnd, "https://h12.fan.example/inbox", time.Now(), true}, 400, ""},
-		{"deliveries: a Delete's takeback over the longest line at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, float64((commentUpdatesMax+1)*10*30 + 500), ""},
+		{"deliveries: a Delete's takeback over the longest line at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, float64((commentUpdatesMax+2)*10*takebackRowsPerPair + 500), ""},
+		// The copies of deleted accounts' keys to clear (FWR 7), through ap_outbox_signer.
+		{"deliveries: the kept keys of deleted accounts to clear, a batch", deliveryForgetKeySQL, []any{time.Now(), deliveryBatch}, 100, ""},
 	})
 	on = db
 	tx.Rollback()
+	// A takeback as production meets it (the second review of FWR 7): a comment's longest line queued at 100 and at 1,000
+	// inboxes, with the Delete's rows written after the last ANALYZE, as a Delete's are, in a transaction rolled back.
+	// The cost grows with the pairs of activities and inboxes (about 23 rows counted a pair; the budget is
+	// takebackRowsPerPair) and does not turn on the statistics: the first form of takeBackSQL read 208,373 rows at 100
+	// inboxes and 17,383,073 at 1,000 here.
+	for _, inboxes := range []int{100, 1000} {
+		if tx, err = db.Begin(); err != nil {
+			t.Fatal(err)
+		}
+		line := fmt.Sprintf("https://here.example/l%d#", inboxes)
+		for _, q := range []string{
+			`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at, comes_after) SELECT $1 || g, '{}', true, now(), CASE WHEN g > 0 THEN $1 || (g - 1) END FROM generate_series(0, ` + fmt.Sprint(commentUpdatesMax) + `) g`,
+			`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at, undoes, undoes_chain) SELECT $1 || 'delete', '{}', true, now(), id, true FROM ap_outbox WHERE ap_id = $1 || ` + fmt.Sprint(commentUpdatesMax) + `::text`,
+			`INSERT INTO ap_deliveries (outbox_id, inbox, host, next_at, created_at) SELECT o.id, 'https://t' || k || '.fan.example/inbox', 't' || k || '.fan.example', now(), now()
+				FROM ap_outbox o, generate_series(1, ` + fmt.Sprint(inboxes) + `) k WHERE o.ap_id LIKE $1 || '%'`,
+		} {
+			if _, err := tx.Exec(q, line); err != nil {
+				t.Fatalf("%v\n%s", err, q)
+			}
+		}
+		var end, del int64
+		if err := tx.QueryRow(`SELECT (SELECT id FROM ap_outbox WHERE ap_id = $1 || $2::text), (SELECT id FROM ap_outbox WHERE ap_id = $1 || 'delete')`, line, fmt.Sprint(commentUpdatesMax)).Scan(&end, &del); err != nil {
+			t.Fatal(err)
+		}
+		on = tx
+		plans([]planCase{{fmt.Sprintf("deliveries: a Delete's takeback over the longest line at %d inboxes, written after ANALYZE", inboxes), takeBackSQL,
+			[]any{del, end, time.Now()}, float64((commentUpdatesMax+2)*inboxes*takebackRowsPerPair + 500), ""}})
+		on = db
+		tx.Rollback()
+	}
 	// Public posts out (FWR 4): member 11 has 1,000 followers on 300 other servers (a tenth of them with no shared
 	// inbox), beside 2,000 remote accounts following members 1 to 500; 5,000 posts went out and have their records,
 	// 20 wait, and 500 members have had their profile sent. The recipients of a post are one statement through
@@ -3997,6 +4036,11 @@ func TestDBQueryPlans(t *testing.T) {
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT 1000000 + g, 1 + g % 500, 'accepted' FROM generate_series(1, 2000) g WHERE 1 + g % 500 <> 11 ON CONFLICT DO NOTHING`,
 		`INSERT INTO ap_post_out (post_id, user_id, state, targets) SELECT g, 1 + g % 500, CASE WHEN g % 250 = 0 THEN 'create' ELSE 'sent' END, '[]' FROM generate_series(1, 5000) g`,
 		`INSERT INTO ap_person_out (user_id, due_at, sent_at, gen) SELECT g, CASE WHEN g = 7 THEN now() END, now() - interval '1 hour', 1 FROM generate_series(1, 500) g`,
+		// FWR 7, after the review: member 11's 1,000 posts that went out, each to 50 inboxes, so the servers that know the
+		// member read only the newest personKnownRecords lists (unbounded, every list would be parsed).
+		`INSERT INTO ap_post_out (post_id, user_id, state, targets, created_at) SELECT 200000 + g, 11, 'sent',
+			(SELECT json_agg(json_build_object('Actor', 'https://t' || k || '.example/u', 'Inbox', 'https://t' || k || '.example/u/inbox', 'SharedInbox', ''))::text FROM generate_series(1, 50) k),
+			now() - make_interval(secs => g) FROM generate_series(1, 1000) g`,
 		`ANALYZE`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -4012,7 +4056,25 @@ func TestDBQueryPlans(t *testing.T) {
 		{"notes: the mentions of a post, 10 of them", mentionLookupSQL, []any{pq.Array(names), false, 11}, 600, ""},
 		{"notes: the oldest record of a post that waits", postOutSQL, []any{false}, 100, ""},
 		{"notes: the profile due first", personOutSQL, []any{false}, 100, ""},
+		// Account deletion across servers (FWR 7): the servers that may know member 11, one per server, through the
+		// member's indexes (follows both ways, likes, comments, the records out, the queue) and the actors' keys; ap_like_out
+		// and ap_comment_out are empty here, so the planner reads them whole, and ap_actors (at most 20,000 rows, the cache's
+		// bound) whole when the member's followers are a third of it, as here: one pass, on an admin's rare action. Of the
+		// member's 1,000 records of posts out with 50 inboxes each, only the newest personKnownRecords lists are parsed:
+		// 73,662 rows counted on the 2.1 GHz Xeon, where every list would be 320,302 (after the review of FWR 7).
+		{"deletion: the servers that know a member, 1,000 followers on 300 servers", personKnownSQL, []any{11, personDeleteHostsMax + 1, "", personKnownRecords}, 90000, "ap_comment_out ap_actors ap_like_out"},
 	})
+	// "Remove me from other servers" writes: asked in a transaction rolled back.
+	if tx, err = db.Begin(); err != nil {
+		t.Fatal(err)
+	}
+	on = tx
+	plans([]planCase{
+		// ap_like_out and ap_comment_out are empty here, so read whole; with rows each is read through its member's index.
+		{"deletion: what leaving other servers changes for member 11", leaveSQL, []any{11}, 20000, "ap_comment_out ap_like_out"},
+	})
+	on = db
+	tx.Rollback()
 	// Posts from followed accounts (FWR 5): 20,000 remote posts, newer than every local one, by the 2,000 remote
 	// accounts (10 each), 5,000 pictures of them in the cache's index and 2,000 waiting, the reader following 100 of
 	// those accounts beside the 500 members, and 300 mentions and shares told to member 9 by them. The Community
@@ -4075,7 +4137,7 @@ func TestDBQueryPlans(t *testing.T) {
 		{"remote: remembering a deletion, under the account's cap", noteRememberSQL, []any{"https://h7.example/n/new", int64(1000008), time.Now(), remoteDeletedPerAccount}, 200, ""},
 		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, "ap_comment_out"},
 		// An account's own Delete: its posts, follows, notifications, replies and likes, each through its account's index.
-		{"remote: an account's own Delete", actorGoneSQL, []any{int64(1000008)}, 600, ""},
+		{"remote: an account's own Delete", actorGoneSQL, []any{int64(1000008), "https://h7.example/users/u8/inbox", "h7.example", time.Now()}, 600, ""},
 		{"remote: trimming a member's notifications, mentions and shares among them", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 6000, ""},
 	})
 	on = db
@@ -6262,6 +6324,7 @@ func TestDBKeysGenerated(t *testing.T) {
 
 	// Two goroutines ask for one member's key at once: one key, made by one of them, read by both.
 	anaID, _ := e.user("ana", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, anaID) // a key is made only for a member who shares (FWR 7)
 	f := newFederation(e.a.db, settings)
 	results := make(chan bool, 2)
 	var wg sync.WaitGroup
@@ -6284,6 +6347,7 @@ func TestDBKeysGenerated(t *testing.T) {
 
 	// Two servers, each making a key before either writes it: the unique index keeps one, both read it.
 	boID, _ := e.user("bo", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, boID)
 	var both sync.WaitGroup
 	both.Add(2)
 	race := func() (*rsa.PrivateKey, error) { k, err := generateKey(); both.Done(); both.Wait(); return k, err }
@@ -6320,6 +6384,7 @@ func TestDBKeysGenerated(t *testing.T) {
 	cyID, _ := e.user("cy", "user")
 	cy2, _ := e.user("cy2", "user")
 	cy3, _ := e.user("cy3", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id IN ($1, $2, $3)`, cyID, cy2, cy3)
 	e.a.db.SetMaxOpenConns(1)
 	held := make(chan string, 16)
 	var active, most atomic.Int32
@@ -6376,6 +6441,7 @@ func TestDBKeysGenerated(t *testing.T) {
 
 	// stop waits for a key being made, until its context ends, and a key made after stop is not written.
 	danID, _ := e.user("dan", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, danID)
 	entered, release := make(chan struct{}), make(chan struct{})
 	h := newFederation(e.a.db, settings)
 	h.gen = func() (*rsa.PrivateKey, error) { close(entered); <-release; return generateKey() }
