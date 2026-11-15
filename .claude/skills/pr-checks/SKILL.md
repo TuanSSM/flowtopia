@@ -21,7 +21,7 @@ line as it is, not a paraphrase.
 4. Integration, only when `web/`, `main.go` or `test/browser/` changed:
    `test/browser/run.sh combo.py` and `test/browser/run.sh demos.py`, both `0 failed`.
 5. Two instances, only when `main.go`, the `Dockerfile`, `build-image.sh`, `test/federation.sh` or `test/fedproxy`
-   changed and the machine has Docker with buildx (not the Pi: about 2.5 minutes and two app containers; CI runs it,
+   changed and the machine has Docker with buildx (not the Pi: about 3.5 minutes and two app containers; CI runs it,
    so say it was left to CI): `test/federation.sh`, expect `<n> passed, 0 failed, 0 skipped` and each app under
    300 MB. It removes its own containers, network and volumes.
 6. Remove the throwaway database when done: `docker rm -f flowa-test-db`.

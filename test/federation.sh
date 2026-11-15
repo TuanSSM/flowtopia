@@ -21,12 +21,23 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 export PATH="$HOME/.local/go/bin:$PATH"
 
+# planned is the number of checks a whole run makes. A run that stops early counts the ones it never reached as skipped,
+# with the reason, so the count at the end always adds up to it; a whole run that does not is a failure of the script.
+planned=75
+# The whole run's deadline, below the CI job's 15 minutes and the step's 13, so that the logs are always written.
+limit=${FLOWA_FED_LIMIT:-660}
 pass=0 fail=0 skip=0 last=$(date +%s.%N)
 took() { local now; now=$(date +%s.%N); echo "TIME $(awk -v a="$last" -v b="$now" 'BEGIN { printf "%.1f", b - a }') $1"; last=$now; }
 ok() { echo "PASS $1"; pass=$((pass + 1)); took "$1"; }
 bad() { echo "FAIL $1${2:+: $2}"; fail=$((fail + 1)); took "$1"; }
-skipped() { echo "SKIP $1: $2"; skip=$((skip + 1)); took "$1"; }
-finish() { echo "$pass passed, $fail failed, $skip skipped"; [ "$fail" -eq 0 ]; }
+finish() { echo "$pass passed, $fail failed, $skip skipped ($planned planned)"; [ "$fail" -eq 0 ]; }
+# stop <why>: the checks not reached are not run; one SKIP line says how many and why, and they count as skipped.
+stop() {
+  local rest=$((planned - pass - fail - skip))
+  [ "$rest" -gt 0 ] || rest=0
+  echo "SKIP $rest checks not run: $1"; skip=$((skip + rest)); took "$rest checks not run"
+  finish; exit
+}
 
 logs=""
 case "${1:-}" in
@@ -53,6 +64,7 @@ collected=false
 # looks is the only sleep here, and nothing waits for a guessed time.
 waitfor() {
   local end=$((SECONDS + $1)); shift
+  [ "$end" -le "$deadline" ] || end=$deadline   # never past the whole run's deadline
   until "$@"; do
     [ "$SECONDS" -lt "$end" ] || return 1
     sleep 0.25  # fixed: the pause between two looks at what is awaited
@@ -66,9 +78,13 @@ api() {
   local args=(-sS -m 20 --noproxy '*' --cacert "$work/ca.pem" --resolve "$n.flowa.test:${port[$n]}:127.0.0.1"
     -b "$work/jar-$n-$who" -c "$work/jar-$n-$who" -X "$m" -o "$work/answer" -w '%{http_code}')
   if [ "$m" != GET ]; then args+=(-H 'Content-Type: application/json' --data-binary "${data:-{\}}"); fi
+  : >"$work/answer"   # a failed request leaves no earlier answer behind to be read as this one's
   code=$(curl "${args[@]}" "https://$n.flowa.test:${port[$n]}$path" 2>"$work/curl.err") || code=000
   body=$(cat "$work/answer" 2>/dev/null)
 }
+# ok200 <jq test>: the last answer was a 200 and the test, which names the fields it reads, holds. Every condition below
+# goes through it or compares a status, so an unreachable server, an error object or an empty answer never passes.
+ok200() { [ "$code" = 200 ] && [ "$(jq -r "$1" <<<"$body" 2>/dev/null)" = true ]; }
 # j <jq filter>: reads the last answer.
 j() { jq -r "$1" <<<"$body" 2>/dev/null; }
 # health <instance>: the app's own /healthz asked from inside its container, the local probe that carries the
@@ -109,12 +125,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # ---- the image, the certificates, the network ----
-started_all=$SECONDS started=$SECONDS
+started_all=$SECONDS started=$SECONDS deadline=$((SECONDS + limit))
 if ./build-image.sh "$image" "$version" --load >"$work/build.log" 2>&1 && CGO_ENABLED=0 go build -trimpath -o "$work/fedproxy" ./test/fedproxy 2>>"$work/build.log"; then
   ok "the image builds as a release builds it (build-image.sh --load, $(since "$started")), and the TLS proxy"
 else
   bad "the image builds as a release builds it" "$(tail -3 "$work/build.log" | paste -sd' ' | cut -c1-300)"
-  finish; exit
+  stop "each needs it"
 fi
 # A certificate authority for this run alone, and a certificate for each name signed by it. The keys stay in the
 # temporary folder and go with it.
@@ -140,7 +156,7 @@ if tls >"$work/tls.log" 2>&1 && docker network create "$p" >/dev/null; then
   ok "a certificate authority and two certificates made for this run, and a network of its own ($subnet)"
 else
   bad "a certificate authority and two certificates made for this run, and a network of its own" "$(tail -3 "$work/tls.log" | paste -sd' ' | cut -c1-300)"
-  finish; exit
+  stop "each needs it"
 fi
 
 # db_up <instance>: its Postgres (left running when the app restarts) and its data volume, and its settings.
@@ -182,34 +198,42 @@ tls_up() {
 healthy() { api "$1" visitor GET /healthz && [ "$code" = 200 ] && [ "$(j .ok)" = true ]; }
 dbpw=$(openssl rand -hex 16)
 for n in "${names[@]}"; do
-  db_up "$n" || { bad "the database of $n.flowa.test starts" "$(docker logs --tail 3 "$p-$n-db" 2>&1 | paste -sd' ')"; finish; exit; }
+  db_up "$n" || { bad "the database of $n.flowa.test starts" "$(docker logs --tail 3 "$p-$n-db" 2>&1 | paste -sd' ')"; stop "each needs it"; }
 done
 # The image starts Postgres twice (once to set it up); only the second start listens on the network.
 dbready() { docker exec "$p-$1-db" psql -h 127.0.0.1 -U flowa -d flowa -Atqc 'select 1' >/dev/null 2>&1; }
 for n in "${names[@]}"; do
-  waitfor 60 dbready "$n" || { bad "the database of $n.flowa.test starts" "$(docker logs --tail 3 "$p-$n-db" 2>&1 | paste -sd' ')"; finish; exit; }
-  { app_up "$n" && tls_up "$n"; } || { bad "the app and the proxy of $n.flowa.test start" "see the logs"; finish; exit; }
+  waitfor 60 dbready "$n" || { bad "the database of $n.flowa.test starts" "$(docker logs --tail 3 "$p-$n-db" 2>&1 | paste -sd' ')"; stop "each needs it"; }
+  { app_up "$n" && tls_up "$n"; } || { bad "the app and the proxy of $n.flowa.test start" "see the logs"; stop "each needs them"; }
 done
 started=$SECONDS
 for n in "${names[@]}"; do
   if waitfor 60 healthy "$n"; then ok "$n.flowa.test answers over HTTPS through its proxy, healthy ($(since "$started"))"
-  else bad "$n.flowa.test answers over HTTPS through its proxy, healthy" "$code $(cut -c1-200 <<<"$body") $(docker logs --tail 5 "$p-$n-app" 2>&1 | paste -sd' ' | cut -c1-300)"; finish; exit; fi
+  else bad "$n.flowa.test answers over HTTPS through its proxy, healthy" "$code $(cut -c1-200 <<<"$body") $(docker logs --tail 5 "$p-$n-app" 2>&1 | paste -sd' ' | cut -c1-300)"; stop "each needs both instances"; fi
 done
 said=$(docker logs "$p-one-app" 2>&1)
-if grep -q 'FLOWA_FEDERATION_ALLOW_PRIVATE=on: FOR THE TWO-INSTANCE TEST ONLY' <<<"$said" && grep -q 'mode federated' <<<"$said"; then
-  ok "the app starts in federated mode and says loudly that private addresses are allowed for this test"
+if grep -q 'FLOWA_FEDERATION_ALLOW_PRIVATE=on: FOR THE TWO-INSTANCE TEST ONLY' <<<"$said" && grep -q 'mode federated' <<<"$said" &&
+  grep -q 'TLS roots: present, from SSL_CERT_FILE' <<<"$said"; then
+  ok "the app starts in federated mode, says loudly that private addresses are allowed for this test, and that its roots come from SSL_CERT_FILE"
 else bad "the app starts in federated mode and says loudly that private addresses are allowed for this test" "$(head -12 <<<"$said" | paste -sd' ' | cut -c1-400)"; fi
 
 # within <seconds> <check> <condition...>: asks the condition until it holds; PASS with the time it took, or FAIL
 # with the last answer. Every condition below is read on the instance where a person would look.
 within() {
   local secs=$1 name=$2 t0=$SECONDS; shift 2
-  if waitfor "$secs" "$@"; then ok "$name ($(since "$t0"))"
-  else bad "$name" "not within $secs s; last answer $code $(cut -c1-300 <<<"$body")"; return 1; fi
+  if waitfor "$secs" "$@"; then ok "$name ($(since "$t0"))"; return 0; fi
+  bad "$name" "not within $secs s; last answer $code $(cut -c1-300 <<<"$body")"
+  overtime
+  return 1
 }
-# stop <what>: the checks after this one all need what just failed, so they are not run (one SKIP says so), rather
-# than each waiting out its deadline for something that cannot come.
-stop() { skipped "every check after this one" "each needs $1, which failed"; finish; exit; }
+# overtime: past the whole run's deadline, a counted FAIL and the rest not run (the logs are written on the way out).
+overtime() {
+  [ "$SECONDS" -ge "$deadline" ] || return 0
+  bad "the whole run finishes within $limit s" "$(since "$started_all") so far"
+  stop "the run is past its deadline"
+}
+# need <what>: after a failed check that every later one needs, they are not run, rather than each waiting out its time.
+need() { stop "each needs $1, which failed"; }
 # all <check> <wanted> <got>: one PASS or FAIL for several statuses at once.
 all() { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1" "got $3, wanted $2; last answer $(cut -c1-300 <<<"$body")"; fi; }
 other() { if [ "$1" = one ]; then echo two; else echo one; fi; }
@@ -239,28 +263,28 @@ found() { api "$1" "$2" POST /api/fed/lookup "{\"q\":\"$3\"}" && [ "$code" = 200
 if found two bob ana@one.flowa.test && [ "$(j .result.handle)" = ana@one.flowa.test ] && [ "$(j .result.locked)" = true ]; then
   ana2=$(j .result.account)
   ok "bob finds ana by her handle from two (WebFinger, her actor and her outbox, signed, over HTTPS), and that she approves by hand"
-else bad "bob finds ana by her handle from two" "$code $(cut -c1-300 <<<"$body")"; stop "the lookup by handle"; fi
+else bad "bob finds ana by her handle from two" "$code $(cut -c1-300 <<<"$body")"; need "the lookup by handle"; fi
 s=""
 api two bob PUT "/api/fed/accounts/$ana2/follow"; s+="$code $(j .view.follow) "
 found two cyd ana@one.flowa.test; api two cyd PUT "/api/fed/accounts/$ana2/follow"; s+="$code $(j .view.follow) "
 all "bob and cyd follow her: requested until she answers" "200 requested 200 requested " "$s"
-requests() { api one ana GET /api/fed/requests && [ "$(j '[.requests[].user.remote.handle] | sort | join(",")')" = "bob@two.flowa.test,cyd@two.flowa.test" ]; }
+requests() { api one ana GET /api/fed/requests && ok200 '[.requests[].user.remote.handle] | sort | join(",") == "bob@two.flowa.test,cyd@two.flowa.test"'; }
 within 30 "both requests reach ana on one, waiting for her, with their handles" requests
 s="" ids=$(j '[.requests[] | .user.id] | join(" ")')
-for id in $ids; do api one ana PUT "/api/fed/requests/$id"; s+="$code$(j .approved) "; done
+for rid in $ids; do api one ana PUT "/api/fed/requests/$rid"; s+="$code$(j .approved) "; done
 all "ana approves both" "200true 200true " "$s"
-follows() { api two "$1" GET "/api/fed/accounts/$ana2" && [ "$(j .view.follow)" = following ]; }
-within 30 "her approval reaches two: bob follows her" follows bob || stop "a follow across the two servers"
+follows() { api two "$1" GET "/api/fed/accounts/$ana2" && ok200 '.view.follow == "following"'; }
+within 30 "her approval reaches two: bob follows her" follows bob || need "a follow across the two servers"
 within 30 "and cyd follows her" follows cyd
 api one ana GET /api/followers
-all "ana's followers on one are bob and cyd of two" "bob@two.flowa.test,cyd@two.flowa.test" "$(j '[.followers[].user.remote.handle] | sort | join(",")')"
+all "ana's followers on one are bob and cyd of two" "200 bob@two.flowa.test,cyd@two.flowa.test" "$code $(j '[.followers[].user.remote.handle] | sort | join(",")')"
 api one ana PUT /api/me '{"locked":false}'
 bob1=0
 if found one ana bob@two.flowa.test; then bob1=$(j .result.account); api one ana PUT "/api/fed/accounts/$bob1/follow"; fi
-anafollows() { api one ana GET "/api/fed/accounts/$bob1" && [ "$(j .view.follow)" = following ]; }
-within 30 "ana follows bob back, accepted at once by two" anafollows || stop "a follow both ways"
+anafollows() { api one ana GET "/api/fed/accounts/$bob1" && ok200 '.view.follow == "following"'; }
+within 30 "ana follows bob back, accepted at once by two" anafollows || need "a follow both ways"
 api two bob GET /api/followers
-all "bob's followers on two are ana of one" "ana@one.flowa.test" "$(j '[.followers[].user.remote.handle] | join(",")')"
+all "bob's followers on two are ana of one" "200 ana@one.flowa.test" "$code $(j '[.followers[].user.remote.handle] | join(",")')"
 
 # A delivery two's inbox must refuse, sent over the same HTTPS: unsigned, and signed in ana's name with a signature
 # that is not hers (her real key id, which two holds by now, the right digest and date, and bytes that are no
@@ -287,9 +311,9 @@ p1=$(j '.posts[0].id')
 all "ana posts Public on one with a trick chip and a picture with alt text" "200 public $alt" "$code $(j '.posts[0].audience') $(j '.posts[0].alt')"
 link1="https://one.flowa.test/users/ana/posts/$p1"
 inhome() {   # inhome <instance> <who> <link of the original>: the post is in that member's Home; leaves it in $post
-  api "$1" "$2" GET /api/home && post=$(j ".posts[] | select(.remote.link == \"$3\")") && [ -n "$post" ]
+  api "$1" "$2" GET /api/home && [ "$code" = 200 ] && post=$(j ".posts[] | select(.remote.link == \"$3\")") && [ -n "$post" ]
 }
-within 30 "the post reaches bob's Home on two, with ana's handle and the link to the original" inhome two bob "$link1" || stop "a post across the two servers"
+within 30 "the post reaches bob's Home on two, with ana's handle and the link to the original" inhome two bob "$link1" || need "a post across the two servers"
 p1two=$(jq -r .id <<<"$post")
 author=$(j ".users[\"$(jq -r .userId <<<"$post")\"].remote.handle")
 all "it is shown as ana@one.flowa.test's" "ana@one.flowa.test" "$author"
@@ -310,7 +334,7 @@ api two bob GET /api/posts
 all "the post is in no Community timeline on two" "200 0" "$code $(j '[.posts[] | select(.remote != null)] | length')"
 
 # ---- likes, both ways, and a reply with an edit and a deletion ----
-likes() { api one ana GET "/api/posts/$p1" && [ "$(j '.posts[0].likes')" = "$1" ]; }
+likes() { api one ana GET "/api/posts/$p1" && ok200 ".posts[0].likes == $1"; }
 api two bob POST "/api/posts/$p1two/like"
 within 30 "bob likes it on two, and one counts the like" likes 1
 api two bob POST "/api/posts/$p1two/like"
@@ -320,11 +344,11 @@ within 30 "bob likes it again, and one counts it again" likes 1
 api two bob POST "/api/posts/$p1two/comments" '{"body":"Clean indeed, from two"}'
 c1=$(j '.comment.id')
 replied() {   # replied <body>: the one remote answer under ana's post on one has this text
-  api one ana GET "/api/posts/$p1/comments" && [ "$(j '[.comments[] | select(.remote.link == "'"https://two.flowa.test/users/bob/comments/$c1"'")] | length')" = 1 ] &&
+  api one ana GET "/api/posts/$p1/comments" && ok200 '[.comments[] | select(.remote.link == "'"https://two.flowa.test/users/bob/comments/$c1"'")] | length == 1' &&
     [ "$(j '.comments[0].body')" = "$1" ]
 }
 within 30 "bob replies on two, and the reply is under ana's post on one" replied "Clean indeed, from two"
-told() { api one ana GET /api/notifications && [ "$(j "[.items[] | select(.kind == \"comment\" and .commentId == $c1)] | length")" = 1 ]; }
+told() { api one ana GET /api/notifications && ok200 "[.items[] | select(.kind == \"comment\" and .commentId == $c1)] | length == 1"; }
 within 30 "ana is told of the reply on one" told
 api two bob PUT "/api/comments/$c1" '{"body":"Clean indeed, from two (edited)"}'
 all "bob edits the reply within his 15 minutes" "200 true" "$code $(j .comment.edited)"
@@ -332,7 +356,7 @@ all "bob edits the reply within his 15 minutes" "200 true" "$code $(j .comment.e
 editarrived() { replied "Clean indeed, from two (edited)" && [ "$(j '.comments[0].edited')" = true ]; }
 within 100 "the edit reaches one, marked edited (a comment sends at most one Update a minute)" editarrived
 api two bob DELETE "/api/comments/$c1"
-gone() { api one ana GET "/api/posts/$p1/comments" && [ "$(j '.comments | length')" = 0 ]; }
+gone() { api one ana GET "/api/posts/$p1/comments" && ok200 '(.comments | type) == "array" and (.comments | length) == 0'; }
 within 30 "bob deletes the reply, and it is gone from ana's post on one" gone
 
 # ---- the other way: bob posts, ana comments and likes ----
@@ -343,9 +367,9 @@ p2one=$(jq -r .id <<<"$post")
 api one ana POST "/api/posts/$p2one/comments" '{"body":"Hello back from one"}'
 c2=$(j '.comment.id')
 api one ana POST "/api/posts/$p2one/like"
-answered() { api two bob GET "/api/posts/$p2/comments" && [ "$(j '.comments[0].body')" = "Hello back from one" ] && [ "$(j '.comments[0].remote.link')" = "https://one.flowa.test/users/ana/comments/$c2" ]; }
+answered() { api two bob GET "/api/posts/$p2/comments" && ok200 '.comments[0].body == "Hello back from one" and .comments[0].remote.link == "'"https://one.flowa.test/users/ana/comments/$c2"'"'; }
 within 30 "ana's comment from one is under bob's post on two" answered
-liked2() { api two bob GET "/api/posts/$p2" && [ "$(j '.posts[0].likes')" = 1 ]; }
+liked2() { api two bob GET "/api/posts/$p2" && ok200 '.posts[0].likes == 1'; }
 within 30 "and her like is counted there" liked2
 
 # ---- what only two real processes show ----
@@ -370,7 +394,8 @@ done
 # The Federation tab's counts of what was not sent: activities cut at the address cap, deletions not taken back,
 # comments not sent, forwards skipped and activities that could not be made. A clean run leaves each at 0.
 undropped() {   # undropped <instance>: says the counts in $dropped; true when every one is 0 (left out when 0)
-  api "$1" admin GET /api/admin/federation &&
+  dropped=""
+  api "$1" admin GET /api/admin/federation && ok200 '(.deliveries | type) == "object" and (.deliveries.queueMax | type) == "number"' &&
     dropped=$(j '.deliveries | "cut \(.cut // 0), not taken back \(.notTakenBack // 0), comments not sent \(.commentsNotSent // 0), forwards skipped \(.forwardsSkipped // 0), not made \(.outNotMade // 0)"') &&
     [ "$(j '.deliveries | [.cut, .notTakenBack, .commentsNotSent, .forwardsSkipped, .outNotMade] | map(. // 0) | add')" = 0 ]
 }
@@ -395,7 +420,7 @@ if waitfor 60 appup && [ "$(queued one)" = 1 ]; then ok "one restarts with the d
 else bad "one restarts with the delivery still waiting: nothing lost" "$(health one)"; fi
 docker start "$p-two-app" "$p-two-tls" >/dev/null
 port[two]=$(docker port "$p-two-tls" 443/tcp | head -1 | sed 's/.*://')
-within 60 "two comes back" healthy two || stop "two running again"
+within 60 "two comes back" healthy two || need "two running again"
 # The first retry is 1 minute after the failure, give or take 20% (federation.md 8.3).
 within 120 "one tries again on its schedule and the post reaches bob's Home on two" inhome two bob "https://one.flowa.test/users/ana/posts/$p3"
 within 30 "one's queue is empty again" drained one
@@ -403,50 +428,53 @@ echo "two was away and back, with one restarted, in $(since "$t0")"
 
 # ---- unfollow, block, leaving, and an account deleted ----
 api two bob DELETE "/api/fed/accounts/$ana2/follow"
-followers() { api one ana GET /api/followers && [ "$(j '[.followers[].user.remote.handle] | join(",")')" = "$1" ]; }
+followers() { api one ana GET /api/followers && ok200 '[.followers[].user.remote.handle] | join(",") == "'"$1"'"'; }
 within 30 "bob unfollows ana on two, and only cyd follows her on one" followers cyd@two.flowa.test
 api one ana PUT "/api/fed/accounts/$bob1/block"
-unfollowed() { api two bob GET /api/followers && [ "$(j '.total')" = 0 ] && api two bob GET "/api/fed/accounts/$ana2" && [ "$(j '.view.followsYou // false')" = false ]; }
+unfollowed() { api two bob GET /api/followers && ok200 '.total == 0' && api two bob GET "/api/fed/accounts/$ana2" && ok200 '(.view | type) == "object" and (.view.followsYou // false) == false'; }
 within 30 "ana blocks bob on one: on two her follow of him is gone" unfollowed
 api one ana GET /api/home
 all "and bob's posts are hidden from ana's Home on one" "200 0" "$code $(j '[.posts[] | select(.remote.link // "" | startswith("https://two.flowa.test/users/bob/"))] | length')"
+# Leaving, with one stopped first so that bob's removal waits in two's queue: the card says it is being sent, sharing
+# again is refused with that sentence, the address shows "Profile no longer shared", and an unlike stays on two. Once one
+# is back and two's queue is empty, the removal has reached one and bob may share again at once.
+docker stop -t 5 "$p-one-tls" "$p-one-app" >/dev/null
 api two bob POST /api/me/federation/leave '{"confirm":true}'
-all "bob asks to be removed from other servers on two, and one server is told" "200 false" "$code $(j .federation.optedIn)"
-bobgone() { api one ana GET "/api/fed/accounts/$bob1" && [ "$(j .account.state)" = gone ]; }
-within 30 "on one bob's account is gone" bobgone
-within 30 "and his like of ana's post is taken away there" likes 0
-# What leaving leaves on two: the card says the removal is still being sent, sharing again is refused with the
-# reason until it has been, the address shows "Profile no longer shared", and an unlike stays here.
+all "with one stopped, bob asks to be removed from other servers on two, and one server is to be told" "200 false" "$code $(j .federation.optedIn)"
 api two bob GET /api/me
 leaving=$(j '.federation.leaving // ""')
 if [ "$code" = 200 ] && [ -n "$leaving" ]; then ok "bob's card on two says the removal is being sent: $leaving"
 else bad "bob's card on two says the removal is being sent" "$code $(jq -c .federation <<<"$body")"; fi
 api two bob PUT /api/me '{"federates":true}'
-all "and sharing again is refused with that reason while it is" "409 $leaving" "$code $(j .error)"
+all "and sharing again is refused with that sentence while it is" "409 $leaving" "$code $(j .error)"
+: >"$work/page"
 got=$(curl -sS -m 20 --noproxy '*' --cacert "$work/ca.pem" --resolve "two.flowa.test:${port[two]}:127.0.0.1" -H 'Accept: text/html' \
-  -o "$work/page" -w '%{http_code}' "https://two.flowa.test:${port[two]}/users/bob" 2>&1)
-if grep -q 'Profile no longer shared' "$work/page"; then ok "bob's address on two shows \"Profile no longer shared\" ($got)"
+  -o "$work/page" -w '%{http_code}' "https://two.flowa.test:${port[two]}/users/bob" 2>/dev/null) || got=000
+if [ "$got" = 410 ] && grep -q 'Profile no longer shared' "$work/page"; then ok "bob's address on two shows \"Profile no longer shared\" (410)"
 else bad "bob's address on two shows \"Profile no longer shared\"" "$got $(head -c 300 "$work/page")"; fi
-within 30 "two's queue is empty once the removal has gone" drained two
 # Leaving cleared the ids of bob's likes, so his like of ana's post is a like of this server now: an unlike removes it
-# here and enqueues nothing (his removal took it back on one already).
+# here and enqueues nothing (his removal takes it back on one): two's queue holds the removal alone.
 api two bob POST "/api/posts/$p1two/like"
 liked=$code$(j .liked)
 api two cyd GET "/api/posts/$p1two"
-all "bob's unlike after leaving removes his like on two and sends nothing" "200false 200 0 0" "$liked $code $(j '.posts[0].likes') $(queued two)"
-# The removal's copy of bob's key is cleared by housekeeping, at the start and every hour, so sharing again waits
-# for that pass after the queue empties (said in the todo); a restart of two runs it.
+all "bob's unlike after leaving removes his like on two and sends nothing" "200false 200 0 1" "$liked $code $(j '.posts[0].likes') $(queued two)"
+docker start "$p-one-app" "$p-one-tls" >/dev/null
+port[one]=$(docker port "$p-one-tls" 443/tcp | head -1 | sed 's/.*://')
+within 60 "one comes back" healthy one || need "one running again"
+# The first retry is 1 minute after the failure, give or take 20% (federation.md 8.3).
+within 120 "two's queue sends the removal once one is back, and is empty" drained two
+bobgone() { api one ana GET "/api/fed/accounts/$bob1" && ok200 '.account.state == "gone"'; }
+within 30 "on one bob's account is gone" bobgone
+within 30 "and his like of ana's post is taken away there" likes 0
+api two bob GET /api/me
+all "with the removal sent, bob's card no longer says it is being sent" "200 none" "$code $(j '.federation.leaving // "none"')"
 api two bob PUT /api/me '{"federates":true}'
-echo "sharing again with two's queue empty, before housekeeping: $code $(j '.error // "allowed"')"
-docker restart -t 10 "$p-two-app" >/dev/null
-within 60 "two restarts" healthy two
-sharing() { api two bob PUT /api/me '{"federates":true}' && [ "$code" = 200 ] && [ "$(j .federation.optedIn)" = true ]; }
-within 30 "after housekeeping, bob may share his profile again" sharing
+all "and he may share his profile again at once" "200 true" "$code $(j .federation.optedIn)"
 api one admin GET /api/admin/users
 anaid=$(j '.users[] | select(.username == "ana") | .id')
 api one admin DELETE "/api/admin/users/$anaid"
 all "the admin of one deletes ana's account, and the servers that know her are told" "200 true" "$code $(j .ok)"
-anagone() { api two cyd GET /api/following && [ "$(j .total)" = 0 ]; }
+anagone() { api two cyd GET /api/following && ok200 '.total == 0'; }
 within 30 "on two cyd no longer follows her" anagone
 api two cyd GET /api/home
 all "and her posts are gone from cyd's Home there" "200 0" "$code $(j '[.posts[] | select(.remote.link // "" | startswith("https://one.flowa.test/users/ana/"))] | length')"
@@ -461,19 +489,30 @@ done
 # ---- memory, and what is kept ----
 # docker stats shows the container's memory as the kernel counts it for the cgroup, without the page cache it can
 # give back (inactive files): the process's resident memory and the files it is actively using.
+# It prints MiB (2^20 bytes); the budget is 300 MB (10^6 bytes), so the figure is turned into MB to be compared.
 for n in "${names[@]}"; do
   mem=$(docker stats --no-stream --format '{{.MemUsage}}' "$p-$n-app" | cut -d/ -f1 | tr -d ' ')
-  mb=$(awk -v m="$mem" 'BEGIN { v = m + 0; if (m ~ /GiB/) v *= 1024; else if (m ~ /KiB/) v /= 1024; else if (m ~ /B$/ && m !~ /iB/) v /= 1048576; printf "%.1f", v }')
-  if awk -v v="$mb" 'BEGIN { exit !(v > 0 && v < 300) }'; then ok "$n's app uses $mb MB after the whole run (docker stats), under 300 MB"
+  mib=$(awk -v m="$mem" 'BEGIN { v = m + 0; if (m ~ /GiB/) v *= 1024; else if (m ~ /KiB/) v /= 1024; else if (m ~ /[0-9]B$/) v /= 1048576; printf "%.1f", v }')
+  mb=$(awk -v v="$mib" 'BEGIN { printf "%.1f", v * 1.048576 }')
+  if awk -v v="$mb" 'BEGIN { exit !(v > 0 && v < 300) }'; then ok "$n's app uses $mib MiB ($mb MB) after the whole run (docker stats), under 300 MB"
   else bad "$n's app uses under 300 MB after the whole run (docker stats)" "$mem"; fi
 done
 collect
+# The secrets of the run: both key secrets, the databases' password, and each line of the certificate authority's key.
 leaked=""
 for n in "${names[@]}"; do
-  secret=$(sed -n 's/^FLOWA_KEY_SECRET=//p' "$work/$n.env")
-  grep -rqF "$secret" "$work/logs" && leaked+="$n "
+  grep -rqF "$(sed -n 's/^FLOWA_KEY_SECRET=//p' "$work/$n.env")" "$work/logs" && leaked+="$n's key secret, "
 done
-if [ -z "$leaked" ]; then ok "the logs and queue state kept for this run hold neither key secret"
-else bad "the logs and queue state kept for this run hold neither key secret" "the secret of $leaked appears"; fi
+grep -rqF "$dbpw" "$work/logs" && leaked+="the database password, "
+while IFS= read -r line; do
+  [[ "$line" == -----* ]] && continue
+  grep -rqF "$line" "$work/logs" && { leaked+="the CA key, "; break; }
+done <"$work/ca-key.pem"
+if [ -z "$leaked" ]; then ok "the logs and queue state kept for this run hold no secret of the run (key secrets, database password, CA key)"
+else bad "the logs and queue state kept for this run hold no secret of the run" "found ${leaked%, }"; fi
 echo "wall time $(since "$started_all")"
+# A whole run makes every planned check: if the count differs, the plan at the top is out of date.
+if [ "$((pass + fail + skip))" -ne "$planned" ]; then
+  echo "FAIL the run made $((pass + fail + skip)) checks, the plan at the top says $planned"; fail=$((fail + 1))
+fi
 finish

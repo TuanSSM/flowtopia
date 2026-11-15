@@ -4366,19 +4366,26 @@ Interoperability is shown in four ways, in rising order of trust, and the last i
      with its host failing and its retry time recorded, that instance restarted with the row still there, the first
      one started again and the post arriving on the retry schedule (1 minute, give or take 20%, so about 70 s: the
      suite waits for it rather than shortening it, since no setting may); an unfollow; a block ending the follow the
-     other way and hiding the posts; "Remove me from other servers" seen as a gone account with its like taken away,
-     and on its own server the card saying the removal is being sent, sharing again refused with that sentence, the
-     address answering "Profile no longer shared", an unlike afterwards removing the like there and sending nothing,
-     and sharing again allowed once housekeeping has cleared the kept key (a restart runs it); the Federation tab's
-     counts of what was not sent at 0 on both instances, mid-run and at the end;
+     other way and hiding the posts; "Remove me from other servers" with the other instance stopped, so the removal
+     waits: the card saying it is being sent, sharing again refused with that sentence, the address answering 410
+     "Profile no longer shared", an unlike afterwards removing the like there with nothing more queued; then the other
+     instance back, the removal sent on the retry schedule, the account gone there with its like, the card saying
+     nothing more and sharing again allowed at once; the Federation tab's counts of what was not sent at 0 on both
+     instances, mid-run and at the end;
      an admin's deletion seen as a gone account with its follow and posts removed; both queues empty at the end; each
-     app under 300 MB (section 12); and neither key secret in the logs and queue state it keeps.
+     app under 300 MB (section 12, `docker stats` in MiB turned into MB); and no secret of the run (key secrets, the
+     databases' password, the certificate authority's key) in the logs and queue state it keeps. Every condition asks
+     for a 200 and names the fields it reads, and every request starts from an empty answer, so a server that does not
+     answer or answers an error never passes a check (two faults show it: one stopped before the reply's deletion is
+     checked, the admin's session dropped before the counts).
    - **Waiting:** no fixed wait; each check polls what it needs every quarter second with a deadline and prints how
      long it took (`test/sleeps.sh` now reads this script too). A step everything after needs (the lookup, a follow each
-     way, the post's arrival, the stopped instance's return) stops the suite with one SKIP saying so when it fails. It prints `PASS`, `FAIL` and `SKIP` with `TIME` lines
+     way, the post's arrival, a stopped instance's return) stops the suite when it fails, with one SKIP line counting
+     the checks not run (the plan names 75), so the totals always add up to the plan; and the whole run stops at 11
+     minutes with a counted FAIL and the logs written. It prints `PASS`, `FAIL` and `SKIP` with `TIME` lines
      like the release and restore suites, so the summary and the slowest table pick it up.
-   - **In CI:** a matrix entry of the integration job like `release` and `restore`, 15 minutes at most, about 2.5
-     minutes measured here; its logs (both apps, both proxies, both queues' rows, hosts and inbox counts) are uploaded
+   - **In CI:** a matrix entry of the integration job like `release` and `restore`, 15 minutes at most and its run
+     step 13 (so a step that still hangs fails and its logs are uploaded), about 3.5 minutes measured here; its logs (both apps, both proxies, both queues' rows, hosts and inbox counts) are uploaded
      with the job, and the comment shows each app's memory. Names are `flowa-fed-<random>`, so it runs beside
      anything, and everything is removed on exit, on a failure and on Ctrl-C.
    - **What `docker stats` measures:** the cgroup's memory without the page cache it can give back (inactive files):

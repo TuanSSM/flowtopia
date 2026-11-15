@@ -338,6 +338,10 @@ jobs:
       # Firefox only gets WebGL (software, llvmpipe) when a display exists, so they run under Xvfb;
       # without it the 3D figure cannot be tested.
       - name: Run the ${{ matrix.suite }} suite
+        # The federation suite stops itself at 11 minutes; this step's own limit below the job's 15 makes a run that still
+        # hangs fail the step rather than cancel the job, so the logs below are still uploaded. Every other suite keeps
+        # the default (only the job's limit applies to it).
+        timeout-minutes: ${{ matrix.suite == 'federation' && 13 || 360 }}
         env:
           SUITE: ${{ matrix.suite }}
         run: |
@@ -356,7 +360,7 @@ jobs:
             args=(); [ "$SUITE" = federation ] && args=(--logs report/federation)
             "test/$SUITE.sh" "${args[@]}" | tee report/result.txt || code=$?
             # The two apps' memory after the whole run, for the pull request's comment.
-            [ "$SUITE" = federation ] && { grep -oE "^(PASS|FAIL) (one|two)'s app uses [0-9.]+ MB" report/result.txt | sed -E "s/^(PASS|FAIL) //; s/'s app uses / /" | paste -sd, - | sed 's/,/, /g' > report/memory.txt || true; }
+            [ "$SUITE" = federation ] && { grep -oE "^(PASS|FAIL) (one|two)'s app uses [0-9.]+ MiB \([0-9.]+ MB\)" report/result.txt | sed -E "s/^(PASS|FAIL) //; s/'s app uses / /" | paste -sd, - | sed 's/,/, /g' > report/memory.txt || true; }
             cp report/result.txt report/out.txt   # its TIME lines, for the slowest checks table
             grep -E '^[0-9]+ passed, ' report/result.txt | tail -1 > report/line.txt || true
             exit "${code:-0}"

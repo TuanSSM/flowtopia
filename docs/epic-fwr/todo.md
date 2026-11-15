@@ -539,20 +539,24 @@ route and test named below is new unless the design note says it exists.
   for the run. The apps trust that authority through `SSL_CERT_FILE`, which Go reads on Linux; no setting for a test
   authority was added. **One change to `main.go`:** `FLOWA_FEDERATION_ALLOW_PRIVATE`, which nothing read before: off
   unless `on`, read only in a mode that federates, refused unless the origin is under `.test`, logged at start ("FOR THE
-  TWO-INSTANCE TEST ONLY"), and narrower than 5.1 first wrote: private addresses only (`privateDialGuard`), still https,
-  port 443 and a verified certificate, never loopback or link-local; `TestAllowPrivateSetting`, `TestPrivateDialGuard`,
+  TWO-INSTANCE TEST ONLY"), and narrower than 5.1 first wrote: private IPv4 addresses only (`privateDialGuard`), for federation requests only
+  (a Transport of their own; link previews keep `dialGuard`), still https, port 443 and a verified certificate, never
+  unique local IPv6 (the metadata address `fd00:ec2::254`), loopback or link-local; `TestAllowPrivateSetting`, `TestPrivateDialGuard`,
   `TestDBLocalModeUnchanged` (a local start with it set ignores it). Driven through the APIs only, as members and admins,
-  over HTTPS through the proxies, each step checked on the other instance: 74 checks, among them a lookup by handle,
+  over HTTPS through the proxies, each step checked on the other instance: 75 checks, among them a lookup by handle,
   follows approved by hand and at once, a Public post with a trick chip and a picture with alt text in Home with the
   picture served from the receiving instance's cache, like, unlike and like again, a reply with its notification, edit and
   deletion, a comment and a like the other way, an unsigned delivery and one with a forged signature refused 401 over the
   same HTTPS, every other delivery verified (Federation tab) at the shared inbox and members' inboxes (the proxies' logs),
   both queues drained, one instance stopped while the other restarts with a delivery waiting and retried on its schedule
-  (about 70 s) with nothing lost, unfollow, block, "Remove me from other servers" (the card saying the removal is being
-  sent, sharing again refused with that sentence, the address showing "Profile no longer shared", an unlike afterwards
-  removing the like here with nothing sent, sharing again allowed once housekeeping has run), an admin's deletion, the
+  (about 70 s) with nothing lost, unfollow, block, "Remove me from other servers" with one stopped so the removal waits (the
+  card saying it is being sent, sharing again refused with that sentence, the address answering 410 "Profile no longer
+  shared", an unlike afterwards removing the like here with nothing more queued; then one back, the removal sent on the
+  retry schedule, the account gone there with its like, and sharing again allowed at once), an admin's deletion, the
   Federation tab's counts of what was not sent (cut, not taken back, comments not sent, forwards skipped, not made) at 0
-  on both instances mid-run and at the end, memory under 300 MB per app (`docker stats`), and no key secret in what is kept. No fixed waits: each check polls with a deadline and says how
+  on both instances mid-run and at the end, memory under 300 MB per app (`docker stats`, MiB turned into MB), and no secret of the run (key secrets, the
+  databases' password, the CA key) in what is kept. Every condition asks for a 200 and the fields it reads, and every
+  request starts from an empty answer. No fixed waits: each check polls with a deadline and says how
   long it took; `test/sleeps.sh` reads this script too. Unique names (`flowa-fed-<random>`), free ports on `127.0.0.1`
   only, everything removed on exit, failure and Ctrl-C (tried). CI: `federation` in `ALL` in `test/ci-plan.sh` (run by
   `main.go` and every Go file, the `Dockerfile`, `build-image.sh`, `compose.yml`, the script and its proxy, the
@@ -560,26 +564,30 @@ route and test named below is new unless the design note says it exists.
   both proxies, both queues) uploaded, the memory in the PR comment, under the `process_pr_result` gate as every suite is.
   `test/release.sh` counts a check that `compose.yml` names none of `FLOWA_FEDERATION_ALLOW_PRIVATE`, `FLOWA_PREVIEW_BASE`,
   `SSL_CERT_FILE` and `SSL_CERT_DIR`, and `test/release.sh --self-test` (lint) proves it fails on each. Measured here (three
-  runs in a row on main with item 7 merged, 2.1 GHz Xeon): 74 passed, 0 failed, 0 skipped each, in 136, 152 and 133 s
-  (the image already in the build cache; about 60 s of each is the edit's minute and about 60 s the retry's), the apps
-  at 33.5 and 30.6, 31.2 and 31.3, and 34.8 and 30.6 MB. Ten deliberate faults, one at a time, each failed the suite at the check meant for it: the
+  runs in a row after the review of #118, 2.1 GHz Xeon): 75 passed, 0 failed, 0 skipped of 75 planned each, in 215, 206 and 209 s, the apps at 33.6 and 32.0, 34.7 and 28.3, and 32.4 and 33.7 MiB (36.4 MB at most) (the image already in the build cache; about
+  60 s of each is the edit's minute and about 60 s each of the two retries). Twelve deliberate faults, one at a time, each failed the suite at the check meant for it: the
   signature left unchecked in a scratch build (the forged delivery answered 202, and the Federation tab's refusals), the
   picture route answering 404 (two serving the picture), a comment's Delete not sent (the reply still under the post),
   the queue never claiming a row (the requests never reaching ana), an admin's deletion sending no Delete(Person) (cyd
   still following her, her posts still in Home), a wrong origin (the app answering 421 to its name), two trusting a
   certificate authority that did not sign one's certificate (the lookup by handle), two never coming back (two's return,
   the rest skipped as one count), `FLOWA_FEDERATION_ALLOW_PRIVATE` left off on one (its start line, then the follow
-  requests), and `compose.yml` naming the setting (the `test_only` check of `test/release.sh` on a copy with that line).
-  A step everything after needs (the lookup, a follow each way, the post's arrival, two's return) stops the suite with one
-  SKIP that says so, rather than letting every later check wait out its deadline.
+  requests), `compose.yml` naming the setting (the `test_only` check of `test/release.sh` on a copy with that line), and after the
+  review of #118 one stopped before the reply's deletion is checked (that check, which read an empty list from a failed
+  request before, then the run's deadline at 300 s with 25 checks counted as not run) and the admin's session dropped
+  before the counts of what was not sent (both counts, which read an error object as 0 before).
+  A step everything after needs (the lookup, a follow each way, the post's arrival, a stopped instance's return) stops the
+  suite, with one SKIP line counting the checks not run against the 75 planned, so the totals add up; the whole run stops
+  at 11 minutes (the CI step at 13, the job at 15) with a counted FAIL and the logs written.
   **Open:** green in `process_pr`, which needs the pull request (the box stays unchecked until then and the owner's review);
   the Pi's memory figures (the suite is too heavy for the Pi, and CI's runner is not a Pi); no browser looks at the two
   instances (the `federated` browser suite still sees no remote profile drawn from a live server); a forwarded reply, a
   report crossing servers (FMD) and authorized fetch are not exercised; the retry is waited for on its real schedule (no
   setting may shorten it), which is most of the suite's time; a record that fails no longer holding the queue (item 7)
-  is not provoked here, since no API makes a record fail (the Go tests hold it); sharing again after "Remove me" waits
-  for housekeeping, up to an hour after the removal has been sent (the suite restarts two to run it; federation.md 6.4,
-  "After the last review", says why it is left so).
+  is not provoked here, since no API makes a record fail (the Go tests hold it). Found by the suite and fixed in item 7's
+  code after the review of #118: sharing again after "Remove me" waited for housekeeping, up to an hour after the removal
+  had been sent, while the card said it was still being sent; it now ends when the sending ends
+  (`TestDBSharingAgainWhenSent`, federation.md 6.4).
   For the owner (defaults built): whether `FLOWA_FEDERATION_ALLOW_PRIVATE` should stay as narrow as built (private
   addresses only, origin under `.test`) rather than the `http://` origin 5.1 first allowed; whether the test-only list in
   `test/release.sh` (`SSL_CERT_FILE` and `SSL_CERT_DIR` beside the two settings) is right; whether a Go command under `test/`

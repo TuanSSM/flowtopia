@@ -985,7 +985,7 @@ In a mode that federates, other servers learn when an account is gone, both ways
 
 `test/federation.sh` starts two Flowas from the image a release builds and has them federate, as two real servers
 would ([docs/federation.md](docs/federation.md), 13, "As built (FWR 8)"). It needs Docker with buildx, Go, Node,
-`jq`, `openssl` and `curl`, takes about two and a half minutes, and cleans up after itself, on a failure and on
+`jq`, `openssl` and `curl`, takes about three and a half minutes, and cleans up after itself, on a failure and on
 Ctrl-C too. CI runs it as the `federation` suite; it is too heavy to be worth running on the Pi.
 
 - **What runs:** on a Docker network of its own, for `one.flowa.test` and `two.flowa.test` each: a Postgres from the
@@ -1000,9 +1000,11 @@ Ctrl-C too. CI runs it as the `federation` suite; it is too heavy to be worth ru
   its edit and its deletion, a comment and a like the other way, every delivery verified at the shared or the
   member's inbox with none refused, the queues drained, one instance stopped while the other restarts with a delivery
   waiting (retried on its schedule, about a minute later, and nothing lost), an unfollow, a block, "Remove me from
-  other servers", an admin's deletion of an account, and each app under 300 MB in `docker stats` after the run.
+  other servers" while the other server is away (the card, sharing again refused until the removal is sent, then allowed
+  at once), an admin's deletion of an account, and each app under 300 MB in `docker stats` after the run.
 - **`FLOWA_FEDERATION_ALLOW_PRIVATE=on`** is the suite's own setting and nothing else's: it lets federation requests
-  connect to private addresses (the network's), still only over https on port 443 with a certificate the app trusts.
+  connect to private IPv4 addresses (the network's), still only over https on port 443 with a certificate the app
+  trusts; link previews never, and no IPv6 private or link-local address (where cloud metadata lives).
   The start refuses it unless `FLOWA_ORIGIN` is a name under `.test`, which no public server can have, and logs it
   loudly. Never set it on a server; `test/release.sh` fails when `compose.yml` names it, or `SSL_CERT_FILE`,
   `SSL_CERT_DIR` or `FLOWA_PREVIEW_BASE`.
@@ -1596,4 +1598,4 @@ be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/ph
 `TEST_DATABASE_URL` is set, as in CI's integration job, which runs them as `go test -race -count=1 -timeout 25m -run DB`:
 go test's own default of 10 minutes is about what they take under the race detector) and
 `test/browser/run.sh combo.py social.py`. `test/federation.sh` runs the two-instance suite on a machine with Docker
-(about two and a half minutes; CI runs it, and it is too heavy for the Pi).
+(about three and a half minutes; CI runs it, and it is too heavy for the Pi).
