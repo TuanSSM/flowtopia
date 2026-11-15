@@ -34,12 +34,22 @@ took() { local now; now=$(date +%s.%N); echo "TIME $(awk -v a="$last" -v b="$now
 ok() { echo "PASS $1"; pass=$((pass + 1)); took "$1"; }
 bad() { echo "FAIL $1${2:+: $2}"; fail=$((fail + 1)); took "$1"; }
 finish() { echo "$pass passed, $fail failed, $skip skipped ($planned planned)"; [ "$fail" -eq 0 ]; }
-# stop <why>: the checks not reached are not run; one SKIP line says how many and why, and they count as skipped.
+# stop <why> [how many]: the checks not reached are not run; one SKIP line says how many and why, and they count as
+# skipped. How many is what the plan leaves unless the caller counted it before a FAIL of its own (overtime).
 stop() {
-  local rest=$((planned - pass - fail - skip))
+  local rest=${2:-$((planned - pass - fail - skip))}
   [ "$rest" -gt 0 ] || rest=0
   echo "SKIP $rest checks not run: $1"; skip=$((skip + rest)); took "$rest checks not run"
   finish; exit
+}
+# overtime: past the whole run's deadline, a counted FAIL and the rest not run (the logs are written on the way out).
+# What is left is counted before that FAIL, which is the deadline's own and no check of the plan, so every planned
+# check not reached is counted as skipped.
+overtime() {
+  [ "$SECONDS" -ge "$deadline" ] || return 0
+  local rest=$((planned - pass - fail - skip))
+  bad "the whole run finishes within $limit s" "$(since "$started_all") so far"
+  stop "the run is past its deadline" "$rest"
 }
 
 logs=""
@@ -135,6 +145,8 @@ else
   bad "the image builds as a release builds it" "$(tail -3 "$work/build.log" | paste -sd' ' | cut -c1-300)"
   stop "each needs it"
 fi
+# A build that took the whole run's time stops here with the deadline as its reason, before any step waits on it.
+overtime
 # A certificate authority for this run alone, and a certificate for each name signed by it. The keys stay in the
 # temporary folder and go with it.
 tls() {
@@ -228,12 +240,6 @@ within() {
   bad "$name" "not within $secs s; last answer $code $(cut -c1-300 <<<"$body")"
   overtime
   return 1
-}
-# overtime: past the whole run's deadline, a counted FAIL and the rest not run (the logs are written on the way out).
-overtime() {
-  [ "$SECONDS" -ge "$deadline" ] || return 0
-  bad "the whole run finishes within $limit s" "$(since "$started_all") so far"
-  stop "the run is past its deadline"
 }
 # need <what>: after a failed check that every later one needs, they are not run, rather than each waiting out its time.
 need() { stop "each needs $1, which failed"; }

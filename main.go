@@ -27037,7 +27037,7 @@ func (a *app) start(getenv func(string) string) error {
 	}
 	if rootsPresent() {
 		if getenv("SSL_CERT_FILE") != "" {
-			log.Print("TLS roots: present, from SSL_CERT_FILE") // Go reads it before the roots compiled in (the federation suite's own authority)
+			log.Print("TLS roots: present, from SSL_CERT_FILE") // Go uses that file instead of the system roots when it is set (here the federation suite's own authority)
 		} else {
 			log.Print("TLS roots: present")
 		}
