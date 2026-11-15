@@ -3387,8 +3387,18 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 		a.fed.commentWaits()
 	}
 	a.notify(owner, u.ID, "moderation", 0, msg)
+	if in.Action == "restore" && a.fed != nil {
+		// The hide took it back from the servers it had gone to, and a restore sends nothing (FWR 4, 6): those servers
+		// keep the Delete, and would refuse the same id again. The moderator is told so.
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "note": restoredStaysHere})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// restoredStaysHere is what a restore answers in a mode that federates.
+const restoredStaysHere = "Restored here. If it had gone to other servers, it was taken back from them when it was hidden, and it stays on this server only."
+
 
 // handleResolve closes every open report about one thing, and tells each reporter.
 func (a *app) handleResolve(w http.ResponseWriter, r *http.Request, u *user) {

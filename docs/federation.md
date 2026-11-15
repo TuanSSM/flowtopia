@@ -1721,6 +1721,12 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     post here, an answer to a hidden comment or to a member who does not share stays here, which is right: the post is
     here too. Under a post of another server it would stay here where none of that post's people see it, so it is
     refused with the reason (`talkStaysHere`, 403), as `talkGate` refuses a member who does not share.
+  - **A restored comment stays here, and the moderator is told** (`TestDBRestoredCommentStaysHere`). A hide sends the
+    comment's Delete; a restore sends nothing, and an edit after it sends nothing either, since the servers it went to
+    keep the Delete and a receiver such as Mastodon keeps the deleted id and would refuse it again. Sending it anew
+    under another id would be another comment there, with its answers left under the old one, so it is not done. In
+    a mode that federates, the restore answers so (`restoredStaysHere`) and the moderator's page shows it, for a post
+    as for a comment.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a

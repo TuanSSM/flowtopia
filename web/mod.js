@@ -106,7 +106,7 @@ function openAction(d) {
 async function modAction(body) {
   const r = await api('mod/actions', 'POST', body);
   if (!r.ok) { toast(r.error); return false; }
-  return true;
+  return r.data?.note || true; // a note the moderator should read (a restore in a mode that federates)
 }
 function refreshAfterMod() { mod.queue = null; mod.history = null; mod.dash = null; social.stale = true; for (const k in social.profile) delete social.profile[k]; render(); if (ui.users) loadUsers(); }
 
@@ -480,7 +480,7 @@ document.addEventListener('click', async e => {
   switch (d.act) {
     case 'report': openReport(d.kind, Number(d.id), d.what); break;
     case 'mod-open': openAction({ ...d }); break;
-    case 'mod-do': if (await modAction({ action: d.do, kind: d.kind, id: Number(d.id) })) { toast('Done.'); refreshAfterMod(); } break;
+    case 'mod-do': { const done = await modAction({ action: d.do, kind: d.kind, id: Number(d.id) }); if (done) { toast(typeof done === 'string' ? done : 'Done.'); refreshAfterMod(); } break; }
     case 'mod-resolve': {
       const note = d.outcome === 'dismissed' ? prompt('Why leave it up? (optional, for the record)') : '';
       if (note === null) break;

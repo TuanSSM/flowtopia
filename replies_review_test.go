@@ -903,3 +903,29 @@ func TestDBCommentRecordsAfterRestart(t *testing.T) {
 		})
 	}
 }
+
+// A moderator's hide, then a restore (point 7 of the second review): the hide sends the Delete, the restore sends
+// nothing, and an edit after it sends nothing either; the moderator is told the comment stays on this server.
+func TestDBRestoredCommentStaysHere(t *testing.T) {
+	e := newTalkEnv(t)
+	cmt, note := e.comment("first")
+	e.ne.produce()
+	e.delivered(note + "/activity")
+	_, admin := e.user("boss", "admin")
+	e.must(200, admin, "POST", "/api/mod/actions", map[string]any{"action": "hide", "kind": "comment", "id": cmt, "reason": "test"})
+	e.ne.produce()
+	if d, _ := e.queued(note + "#delete"); d != 2 {
+		t.Fatalf("the hide's Delete: %d queued", d)
+	}
+	sent := func() int { return e.count(`SELECT count(*) FROM ap_outbox WHERE ap_id LIKE $1 || '%'`, note) }
+	before := sent()
+	if out := e.must(200, admin, "POST", "/api/mod/actions", map[string]any{"action": "restore", "kind": "comment", "id": cmt}); out["note"] != restoredStaysHere {
+		t.Errorf("the restore's answer: %v", out)
+	}
+	e.ne.produce()
+	e.edit(cmt, "first, edited after the restore")
+	e.ne.produce()
+	if n := sent(); n != before {
+		t.Errorf("%d activities went out after the restore", n-before)
+	}
+}
