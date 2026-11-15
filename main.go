@@ -538,6 +538,7 @@ type limits struct {
 	inbox                                       *limiter // verified deliveries per sender group (the last two labels of the key id's host), in a mode that federates
 	inboxHost                                   *limiter // verified deliveries per host of the key id, in a mode that federates
 	inboxAddr                                   *limiter // deliveries per address, before a signature is read, in a mode that federates
+	commentEdits                                *limiter // edits of comments per member, in a mode that federates (each may go out as an Update)
 }
 
 func newLimits() limits {
@@ -571,6 +572,9 @@ func newLimits() limits {
 		inbox:     newLimiter(inboxGroupRate, inboxGroupWindow),
 		inboxHost: newLimiter(inboxHostRate, inboxGroupWindow),
 		inboxAddr: newLimiter(inboxAddrRate, time.Hour),
+		// An edit of a comment that went out becomes an Update to the commenter's followers on other servers (FWR 6,
+		// after its third review): 120 an hour is a person fixing their words; local mode asks no allowance for an edit.
+		commentEdits: newLimiter(120, time.Hour),
 	}
 }
 
@@ -6480,7 +6484,7 @@ type federation struct {
 	// due (a Delete the full queue refused), as postsDue and postsAt do for posts.
 	commentsDue atomic.Bool
 	commentsAt  atomic.Int64
-	// commentsNotSent counts the comments' Creates and Updates the full queue refused past the schedule's end, since the
+	// commentsNotSent counts the comments' Creates and Updates the full queue refused past the schedule's end, and the Creates under posts of other servers that someone named stopped allowing, since the
 	// start; commentHook, when set by a test, hears of the producer's steps ("read": the record is read).
 	commentsNotSent atomic.Int64
 	// orphansAfter is where housekeeping's probe of comments gone without a Delete goes on from (talkOrphansSQL).
@@ -17493,6 +17497,13 @@ const (
 // wait moved by up to deliveryJitter either way, so even the longest stays within deliveryHorizon.
 var deliveryRetries = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 12 * time.Hour, 12 * time.Hour}
 
+// The bounds of a line of activities of one object that come after each other (FWR 6, after its third review).
+const (
+	afterHeldDepth    = 64                                   // the activities afterHeldSQL looks back through, at most
+	commentUpdateGap  = deliveryOwnWait                      // the least time between two activities of one comment: later edits fold into the next Update
+	commentUpdatesMax = int(editWindow/commentUpdateGap) + 1 // the most Updates a comment's line holds: one per gap over its edit window, and one more for the edits of the last gap
+)
+
 // errDeliveryFull is enqueue's answer while deliveryWaitingMax activities wait for their fan-out already: the caller
 // keeps what it would have sent (the post exists) and the activity is not written.
 var errDeliveryFull = errors.New("the delivery queue is full: too many activities wait to be sent")
@@ -17825,10 +17836,13 @@ func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID st
 // the one it takes back, after the one that must be settled at an inbox before it is sent there (afterHeldSQL: a
 // comment's Update after its Create or the Update before it, a Like after the Undo of the like before it), chain that
 // what it takes back is the last of such a line, which the takeback then covers whole at each inbox (a comment's
-// Delete: takeBackSQL). Each is an activity id, "" for none.
+// Delete: takeBackSQL). Each is an activity id, "" for none. afterTx, when set, gives after inside the enqueue's
+// transaction, once it holds the queue's lock: what a member's likes and unlikes of one post come after is read there,
+// so two of their clicks at once each read what the other wrote (ap_like_out).
 type outOrder struct {
 	undoes, after string
 	chain         bool
+	afterTx       func(*sql.Tx) (string, error)
 }
 
 // enqueueOrdered is enqueueThen for an activity with its place among those of its object (outOrder).
@@ -17878,6 +17892,11 @@ func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID
 	}
 	if waiting >= deliveryWaitingMax {
 		return out, errDeliveryFull
+	}
+	if o.afterTx != nil {
+		if o.after, err = o.afterTx(tx); err != nil {
+			return out, err
+		}
 	}
 	now := q.now()
 	var id int64
@@ -18098,8 +18117,12 @@ const heldBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_
 // enqueueOrdered marks those it drops). The one before is never given up for it: when it is given up for good at that
 // inbox (its attempts spent, its 48 hours past, the domain policy), this one is sent after it all the same. Nothing is
 // locked: a row that is no longer queued never is again.
-const afterHeldSQL = `WITH RECURSIVE c(id, after) AS (SELECT o.id, o.comes_after FROM ap_outbox o WHERE o.ap_id = $1
-		UNION ALL SELECT o.id, o.comes_after FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE o.id < c.id)
+//
+// The walk goes back at most afterHeldDepth ($3) activities: a comment's line is far shorter (commentUpdateGap), and a
+// member's likes and unlikes of one post reach that many only by a script toggling it while an early Undo still
+// retries, whose own like there may then end wrong.
+const afterHeldSQL = `WITH RECURSIVE c(id, after, depth) AS (SELECT o.id, o.comes_after, 1 FROM ap_outbox o WHERE o.ap_id = $1
+		UNION ALL SELECT o.id, o.comes_after, c.depth + 1 FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE o.id < c.id AND c.depth < $3)
 	SELECT (SELECT max(GREATEST(d.next_at, d.locked_until)) FROM c, LATERAL (SELECT next_at, locked_until FROM ap_deliveries
 			WHERE outbox_id = c.id AND inbox = $2 AND state = 'queued' OFFSET 0) d),
 		EXISTS (SELECT 1 FROM c, LATERAL (SELECT 1 FROM ap_outbox o WHERE o.id = c.id AND NOT o.fanned_out OFFSET 0) w)`
@@ -18391,7 +18414,7 @@ func (q *deliveryQueue) deliver(ctx context.Context, c *claimedRow) error {
 	if c.after != "" {
 		var until sql.NullTime
 		var waits bool
-		if err := q.row(ctx, []any{&until, &waits}, afterHeldSQL, c.after, c.inbox); err != nil {
+		if err := q.row(ctx, []any{&until, &waits}, afterHeldSQL, c.after, c.inbox, afterHeldDepth); err != nil {
 			return q.giveBack(c, q.ownWait(ctx))
 		}
 		if waits {
@@ -18838,7 +18861,7 @@ type deliveryNumbers struct {
 	FailedMax    int              `json:"failedMax"`              // Failed stops counting here: the page says "or more"
 	Cut          int64            `json:"cut,omitempty"`          // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
 	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts and comments whose Delete the full queue refused past the schedule's end, since the start (FWR 4, 6)
-	// CommentsNotSent are the comments' Creates and Updates the full queue refused past the schedule's end, and
+	// CommentsNotSent are the comments' Creates and Updates the full queue refused past the schedule's end (and Creates under posts of other servers that could no longer go), and
 	// ForwardsSkipped the replies from other servers not forwarded for a bound, both since the start (FWR 6).
 	CommentsNotSent int64 `json:"commentsNotSent,omitempty"`
 	ForwardsSkipped int64 `json:"forwardsSkipped,omitempty"`
@@ -23116,12 +23139,7 @@ func (a *app) likeRemote(w http.ResponseWriter, r *http.Request, u *user, id int
 	}
 	// A like taken back before: the Like comes after that Undo, so at the author's inbox it never overtakes it
 	// (afterHeldSQL), where the like would be taken back after it came.
-	var after string
-	if err := a.db.QueryRow(`SELECT undo_id FROM ap_like_out WHERE user_id = $1 AND post_id = $2`, u.ID, id).Scan(&after); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		a.serverError(w, err)
-		return
-	}
-	_, err = f.out.enqueueOrdered(r.Context(), keyOwner(u.ID), likeID, body, []deliveryTarget{t.to}, outOrder{after: after}, func(tx *sql.Tx) error {
+	_, err = f.out.enqueueOrdered(r.Context(), keyOwner(u.ID), likeID, body, []deliveryTarget{t.to}, outOrder{afterTx: a.lastUndo(r.Context(), u.ID, id)}, func(tx *sql.Tx) error {
 		return oneRow(tx.ExecContext(r.Context(), `INSERT INTO likes (post_id, user_id, ap_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, id, u.ID, likeID))
 	})
 	switch {
@@ -23168,7 +23186,12 @@ func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id i
 		a.serverError(w, err)
 		return true
 	}
-	_, err = f.out.enqueueUndo(r.Context(), keyOwner(u.ID), undoID, body, []deliveryTarget{{Actor: author, Inbox: inbox}}, likeID, drop)
+	// The Undo takes back its Like, and comes after the Undo before it, if any: each Undo of this member's likes of this
+	// post waits at the author's inbox for the one before, so a Like that comes after the last one never reaches the
+	// inbox ahead of an earlier Undo still retrying there, even where the Undo between them was dropped with the Like it
+	// took back (after the third review).
+	_, err = f.out.enqueueOrdered(r.Context(), keyOwner(u.ID), undoID, body, []deliveryTarget{{Actor: author, Inbox: inbox}},
+		outOrder{undoes: likeID, afterTx: a.lastUndo(r.Context(), u.ID, id)}, drop)
 	switch {
 	case errors.Is(err, errRefused):
 		if _, err := a.db.Exec(`DELETE FROM likes WHERE post_id = $1 AND user_id = $2 AND ap_id = $3`, id, u.ID, likeID); err != nil {
@@ -23184,6 +23207,19 @@ func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id i
 	}
 	a.likeCount(w, id, false)
 	return true
+}
+
+// lastUndo reads, in the enqueue's transaction, the Undo the member's last unlike of the post enqueued (ap_like_out),
+// which their next Like or Undo of it comes after.
+func (a *app) lastUndo(ctx context.Context, uid, post int64) func(*sql.Tx) (string, error) {
+	return func(tx *sql.Tx) (string, error) {
+		var id string
+		err := tx.QueryRowContext(ctx, `SELECT undo_id FROM ap_like_out WHERE user_id = $1 AND post_id = $2`, uid, post).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return id, err
+	}
 }
 
 // likeCount answers a like or an unlike with the post's count, when the post is shown to the member.
@@ -23229,16 +23265,21 @@ type outReplyActivity struct {
 // commentOutSQL reads the oldest record of ap_comment_out that waits, with what its activity needs: the comment (none
 // when it is gone) and whether it may still go out (shown, its author sharing, its post a Public post here of a member
 // who shares or a public post of another server, the top comment of its thread, when there is one, of an account of
-// another server or of a member who shares, and the member the comment answers, whose name opens it (startsWithMention),
-// one who shares: nothing names a member who does not, all asked again at each send), what it answers (the top comment of
+// another server or of a member who shares, and, for an answer under a post here, the member it answers, whose name
+// opens it (startsWithMention; never a handle of another server): one who shares. An answer under a post of another
+// server whose member answered stopped sharing since goes all the same, the name in it plain text as any name of a
+// member who does not share is (resolveMentions links only those who do): it was accepted to go there, and keeping it
+// here would leave it where none of that post's people see it (after the third review). All asked again at each send.
+// What it answers (the top comment of
 // its thread, else the post), the post's audience, and the authors' ids and names; $1 the gate's single mode.
-var commentOutSQL = `SELECT o.comment_id, o.post_id, o.user_id, o.state, o.targets, o.gen, o.tries, o.due_at, u.username, o.last_ap_id,
+var commentOutSQL = `SELECT o.comment_id, o.post_id, o.user_id, o.state, o.targets, o.gen, o.tries, o.due_at, o.sent_at, u.username, o.last_ap_id,
 		COALESCE(c.id IS NOT NULL AND NOT c.deleted AND c.hidden_at IS NULL AND ` + personShown + `
 			AND (p.ap_id IS NULL AND p.audience = 'public' AND p.hidden_at IS NULL AND p.kind = 'post' AND (pu.federates OR ($1 AND pu.owner)) AND (pu.suspended_until IS NULL OR pu.suspended_until <= now())
 				OR p.ap_id IS NOT NULL AND p.audience IN ('public', 'unlisted'))
 			AND (pc.id IS NULL OR pcu.domain <> '' OR (pcu.federates OR ($1 AND pcu.owner)) AND (pcu.suspended_until IS NULL OR pcu.suspended_until <= now()))
-			AND NOT EXISTS (SELECT 1 FROM users m WHERE m.domain = '' AND m.username = substring(lower(c.body) from '^@([a-z0-9][a-z0-9._-]{2,23})\M')
-				AND NOT ((m.federates OR ($1 AND m.owner)) AND (m.suspended_until IS NULL OR m.suspended_until <= now()))), false),
+			AND NOT (c.parent_id IS NOT NULL AND p.ap_id IS NULL AND EXISTS (SELECT 1 FROM users m WHERE m.domain = '' AND m.username = substring(lower(c.body) from '^@([a-z0-9][a-z0-9._-]{2,23})\M(?!@)')
+				AND NOT ((m.federates OR ($1 AND m.owner)) AND (m.suspended_until IS NULL OR m.suspended_until <= now())))), false),
+		COALESCE(c.id IS NOT NULL AND NOT c.deleted AND c.hidden_at IS NULL, false),
 		COALESCE(p.audience, ''),
 		COALESCE(c.body, ''), COALESCE(c.created_at, now()), c.edited_at,
 		COALESCE(p.ap_id, ''), COALESCE(pu.username, ''), COALESCE(pa.ap_id, ''), COALESCE(p.user_id, 0),
@@ -23260,10 +23301,10 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 	var cid, post, uid, gen, authorID, parentID int64
 	var state, targets, name, last, postAud, body, postAP, authorName, authorAP, parentAP, parentName, parentActor string
 	var tries int
-	var due, edited sql.NullTime
-	var shown bool
+	var due, sentAt, edited sql.NullTime
+	var shown, kept bool
 	var created time.Time
-	err := f.fedRow(ctx, []any{&cid, &post, &uid, &state, &targets, &gen, &tries, &due, &name, &last, &shown, &postAud, &body, &created, &edited,
+	err := f.fedRow(ctx, []any{&cid, &post, &uid, &state, &targets, &gen, &tries, &due, &sentAt, &name, &last, &shown, &kept, &postAud, &body, &created, &edited,
 		&postAP, &authorName, &authorAP, &authorID, &parentID, &parentAP, &parentName, &parentActor}, commentOutSQL, a.mode == modeSingle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -23318,11 +23359,26 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 	}
 	if !shown || !on {
 		// A Create that waits goes with nothing sent; an Update waiting is dropped, the record kept for its Delete.
+		// A comment under a post of another server, still there, whose Create the switches did not stop (its author,
+		// the author of its thread, or the post stopped being shown beyond this server since it was written), was
+		// accepted to go there: that it does not is said in the log and counted on the Federation tab (after the third
+		// review), never silent.
+		if state == "create" && on && kept && postAP != "" {
+			log.Printf("federation: comment %d under a post of another server is not sent: someone it names or answers no longer shares their profile", cid)
+			f.commentsNotSent.Add(1)
+		}
 		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
 		if state == "update" {
 			stmt = `UPDATE ap_comment_out SET state = 'sent' WHERE comment_id = $1 AND state = 'update'`
 		}
 		_, err := f.fedExec(ctx, stmt, cid)
+		return true, err
+	}
+	// At most one Update per commentUpdateGap: an edit sooner after the last activity waits for the gap's end, and the
+	// edits made meanwhile fold into it (the record stays update, its generation moved by each), so a comment's line is
+	// its Create, at most about editWindow / commentUpdateGap + 1 Updates, and its Delete (after the third review).
+	if state == "update" && sentAt.Valid && now.Before(sentAt.Time.Add(commentUpdateGap)) {
+		_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, sentAt.Time.Add(commentUpdateGap))
 		return true, err
 	}
 	// What it answers: the top comment of its thread (here, or another server's), else the post.
@@ -23388,8 +23444,8 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 			// The record leaves update only when no edit came meanwhile (gen); either way the Update just made is the
 			// last activity, which the next one comes after and the Delete takes back.
 			// A Delete marked meanwhile finds no row in update: everything rolls back, and the Delete goes next.
-			return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET last_ap_id = $3, tries = 0, due_at = NULL,
-				state = CASE WHEN gen = $2 THEN 'sent' ELSE state END WHERE comment_id = $1 AND state = 'update'`, cid, gen, id))
+			return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET last_ap_id = $3, tries = 0, due_at = NULL, sent_at = $4,
+				state = CASE WHEN gen = $2 THEN 'sent' ELSE state END WHERE comment_id = $1 AND state = 'update'`, cid, gen, id, now))
 		})
 		if errors.Is(err, errDeliveryFull) {
 			return a.commentOutFull(ctx, cid, "update", tries, now)
@@ -23430,8 +23486,8 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 		if len(to) == 0 {
 			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create' AND gen = $2`, cid, gen))
 		}
-		return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET state = 'sent', targets = $2, last_ap_id = $4, tries = 0, due_at = NULL
-			WHERE comment_id = $1 AND state = 'create' AND gen = $3`, cid, string(sent), gen, createID))
+		return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET state = 'sent', targets = $2, last_ap_id = $4, tries = 0, due_at = NULL, sent_at = $5
+			WHERE comment_id = $1 AND state = 'create' AND gen = $3`, cid, string(sent), gen, createID, now))
 	})
 	if errors.Is(err, errDeliveryFull) {
 		return a.commentOutFull(ctx, cid, "create", tries, now)
@@ -24061,7 +24117,7 @@ var migrations = []string{schema, schemaSocial,
 	// ap_post_out is a post's (state create, sent, update or delete; targets the inboxes the Create went to), with no
 	// foreign key to comments, since it outlives the comment until its Delete is enqueued; last_ap_id is the activity it
 	// enqueued last (its Create, then each Update), which its next Update names as the one before it and its Delete
-	// takes back. ap_outbox.comes_after is the id of the activity that must be settled at an inbox before this one is sent
+	// takes back; sent_at when that was, so the next Update waits commentUpdateGap after it. ap_outbox.comes_after is the id of the activity that must be settled at an inbox before this one is sent
 	// there (a comment's Update after its Create or the Update before, a Like after the Undo of the like before it), and
 	// undoes_chain says the activity taken back is the last of such a line, which the takeback covers whole at each inbox
 	// (a comment's Delete). ap_like_out keeps the Undo a member's unlike of a post of another server enqueued last, which
@@ -24091,7 +24147,8 @@ var migrations = []string{schema, schemaSocial,
 		gen BIGINT NOT NULL DEFAULT 0,
 		last_ap_id TEXT NOT NULL DEFAULT '',
 		tries INT NOT NULL DEFAULT 0,
-		due_at TIMESTAMPTZ
+		due_at TIMESTAMPTZ,
+		sent_at TIMESTAMPTZ
 	);
 	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS comes_after TEXT;
 	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS undoes_chain BOOLEAN NOT NULL DEFAULT false;
@@ -28111,10 +28168,12 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 
 var leadMentionRE = regexp.MustCompile(`^@([a-z0-9][a-z0-9._-]{2,23})\b`)
 
-// startsWithMention reports whether text opens with @name.
+// startsWithMention reports whether text opens with @name, a member here: a handle of another server that begins with
+// the same name (@name@host) is not theirs.
 func startsWithMention(text, name string) bool {
-	m := leadMentionRE.FindStringSubmatch(strings.ToLower(text))
-	return m != nil && m[1] == name
+	low := strings.ToLower(text)
+	m := leadMentionRE.FindStringSubmatchIndex(low)
+	return m != nil && low[m[2]:m[3]] == name && !strings.HasPrefix(low[m[1]:], "@")
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
@@ -28307,6 +28366,12 @@ func (a *app) writeComment(w http.ResponseWriter, u *user, id, cid int64) {
 func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user) {
 	if muted(w, u) {
 		return
+	}
+	if a.fed != nil {
+		var ok bool
+		if w, ok = allowed(w, a.lim.commentEdits, u, "edits of comments"); !ok {
+			return
+		}
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {

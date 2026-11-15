@@ -50,7 +50,15 @@ func (e *talkEnv) delivered(id string) {
 	e.mustExec(`DELETE FROM ap_deliveries WHERE state = 'queued' AND outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $1)`, id)
 }
 
+// edit edits ana's comment as if the least time between its activities (commentUpdateGap) had passed since the last one
+// went out, so the next pass makes its Update; editNow is the edit as it comes, which TestDBCommentLineBounded uses.
 func (e *talkEnv) edit(cmt int64, body string) {
+	e.t.Helper()
+	e.editNow(cmt, body)
+	e.mustExec(`UPDATE ap_comment_out SET sent_at = sent_at - make_interval(secs => $2) WHERE comment_id = $1`, cmt, commentUpdateGap.Seconds())
+}
+
+func (e *talkEnv) editNow(cmt int64, body string) {
 	e.t.Helper()
 	e.must(200, e.ana, "PUT", fmt.Sprintf("/api/comments/%d", cmt), map[string]any{"body": body})
 }
@@ -75,10 +83,11 @@ func (e *talkEnv) updates(note string) []outRow {
 // wired is the delivery queue pointed at a stub inbox server, which answers each host with the status set for it (202
 // when none is).
 type wired struct {
-	e     *talkEnv
-	stub  *inboxStub
-	mu    sync.Mutex
-	codes map[string]int
+	e       *talkEnv
+	stub    *inboxStub
+	mu      sync.Mutex
+	codes   map[string]int
+	answers []int // the status of each request the stub answered, in the order of stub.requests()
 }
 
 func (e *talkEnv) wire() *wired {
@@ -86,10 +95,12 @@ func (e *talkEnv) wire() *wired {
 	w.stub.answer = func(host, _, _ string) (int, string) {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		if c, ok := w.codes[host]; ok {
-			return c, ""
+		c, ok := w.codes[host]
+		if !ok {
+			c = 202
 		}
-		return 202, ""
+		w.answers = append(w.answers, c)
+		return c, ""
 	}
 	e.out.fetch = deliveryStub(e.t, w.stub)
 	e.out.fetch.origin = e.a.fed.origin
@@ -352,6 +363,53 @@ func TestDBCommentOrders(t *testing.T) {
 			t.Errorf("after the hide: Delete %d queued, Update %d queued", d, u)
 		}
 	})
+}
+
+// Clicks on the like of a post of another server while its author's inbox fails, then once it answers (S1 of the third
+// review): whatever the clicks, the last activity the inbox accepted says what the member sees here. An Undo comes after
+// the Undo before it, so a Like after an Undo dropped with the Like it took back still waits for an earlier Undo.
+func TestDBLikeClicksEndAsSeen(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		down, up int // clicks while the inbox answers 503, then while it answers 202
+	}{{"five clicks", 4, 1}, {"seven clicks", 6, 1}, {"six clicks", 5, 1}, {"four down, three up", 4, 3}} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTalkEnv(t)
+			w := e.wire()
+			e.send(e.bo(), boID, "Create", noteObj(40, "bo's post", nil))
+			p := e.remotePostID(boID + "/statuses/40")
+			click := func() { e.t.Helper(); e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil); w.drain() }
+			w.answer(inboxA, 503)
+			for range c.down {
+				click()
+			}
+			w.answer(inboxA, 202)
+			for range c.up {
+				click()
+			}
+			e.clock.add(deliveryRetries[len(deliveryRetries)-1] + time.Minute)
+			w.drain()
+			kinds := map[string]string{}
+			for _, r := range e.ne.outRows() {
+				kinds[r.id] = r.kind
+			}
+			last, all := "", []string{}
+			w.mu.Lock()
+			for i, r := range w.stub.requests() {
+				if r.path == "/users/bo/inbox" {
+					all = append(all, fmt.Sprintf("%s %d", kinds[r.id], w.answers[i]))
+					if w.answers[i] == 202 {
+						last = kinds[r.id]
+					}
+				}
+			}
+			w.mu.Unlock()
+			liked := e.count(`SELECT count(*) FROM likes WHERE post_id = $1 AND user_id = $2`, p, e.anaID) == 1
+			if liked != (last == "Like") || liked != ((c.down+c.up)%2 == 1) {
+				t.Errorf("liked here %v, the last activity the inbox took %q: %v", liked, last, all)
+			}
+		})
+	}
 }
 
 // A like, its Undo and a like again of a post of another server (point 8 of the second review): the second Like comes
@@ -942,5 +1000,104 @@ func TestDBReplyNotesInOrder(t *testing.T) {
 	e.a.db.QueryRow(`SELECT COALESCE((SELECT max(id) FROM notifications WHERE user_id = $1 AND fed), 0), COALESCE((SELECT max(id) FROM notifications WHERE user_id = $2 AND fed), 0)`, e.anaID, gusID).Scan(&toAna, &toGus)
 	if toAna == 0 || toGus == 0 || toAna > toGus {
 		t.Errorf("ana told as notification %d, gus %d (%s)", toAna, toGus, e.outcome())
+	}
+}
+
+// A comment's line is bounded (S2 of the third review): edits every 10 seconds through the whole edit window give at most
+// commentUpdatesMax Updates, the edits between two folding into the next, and the last text is what goes out last. In a
+// mode that federates an edit takes an allowance; local mode asks none.
+func TestDBCommentLineBounded(t *testing.T) {
+	e := newTalkEnv(t)
+	cmt, note := e.comment("v0")
+	e.ne.produce()
+	last := ""
+	for i := 1; time.Duration(i)*10*time.Second <= editWindow; i++ {
+		e.clock.add(10 * time.Second)
+		last = fmt.Sprintf("version %d", i)
+		e.editNow(cmt, last)
+		e.ne.produce()
+	}
+	e.clock.add(commentUpdateGap)
+	e.ne.produce()
+	ups := e.updates(note)
+	if len(ups) < 2 || len(ups) > commentUpdatesMax || !strings.Contains(ups[len(ups)-1].body, "<p>"+last+"</p>") {
+		t.Fatalf("%d Updates (at most %d), the last %s", len(ups), commentUpdatesMax, ups[len(ups)-1].body)
+	}
+	t.Logf("%d Updates for the edits of one window", len(ups))
+	// The allowance, in a mode that federates only.
+	e.a.lim.commentEdits = newLimiter(1, time.Hour)
+	e.editNow(cmt, "one more")
+	if code, _ := e.do(e.ana, "PUT", fmt.Sprintf("/api/comments/%d", cmt), map[string]any{"body": "and another"}); code != 429 {
+		t.Errorf("an edit past the allowance: %d", code)
+	}
+	f := e.a.fed
+	e.a.fed = nil
+	e.editNow(cmt, "in local mode")
+	e.a.fed = f
+}
+
+// Names at the start of a comment (S3 of the third review): only an answer's opening name of the member answered is
+// asked about, never a handle of another server, and under a post of another server a comment accepted never vanishes
+// without a word.
+func TestDBLeadingNames(t *testing.T) {
+	if startsWithMention("@cyd@elsewhere.example hello", "cyd") || !startsWithMention("@cyd, hello", "cyd") || !startsWithMention("@cyd hello", "cyd") {
+		t.Error("startsWithMention reads a handle of another server as a member's name, or misses a member's")
+	}
+	e := newTalkEnv(t)
+	e.send(e.bo(), boID, "Create", noteObj(41, "bo's post", nil))
+	p := e.remotePostID(boID + "/statuses/41")
+	sentOf := func(cmt int64) (outRow, bool) {
+		for _, r := range e.ne.outRows() {
+			if r.id == fmt.Sprintf("https://here.example/users/ana/comments/%d/activity", cmt) {
+				return r, true
+			}
+		}
+		return outRow{}, false
+	}
+	// cy, a member here who does not share, is named at the start, as a handle of another server, and mid-text: each
+	// goes, the name plain text.
+	for _, body := range []string{"plain words", "@cyd hello there", "@cyd@elsewhere.example hello", "hello @cyd"} {
+		cmt := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": body})["comment"].(map[string]any)["id"])
+		e.ne.produce()
+		if r, ok := sentOf(cmt); !ok || strings.Contains(r.body, "/users/cyd") {
+			t.Errorf("%q under bo's post: sent %v %s", body, ok, r.body)
+		}
+	}
+	// Under ana's own post, an answer to fan of third.example opens with fan's handle there: a member here also named
+	// fan, who does not share, is not the one answered, and the answer goes.
+	var fanID int64
+	e.a.db.QueryRow(`SELECT id FROM users WHERE username = 'fan@third.example'`).Scan(&fanID)
+	var fanCmt int64
+	e.a.db.QueryRow(`INSERT INTO comments (post_id, user_id, body, ap_id) VALUES ($1, $2, 'from fan', 'https://third.example/users/fan/statuses/9') RETURNING id`, e.post, fanID).Scan(&fanCmt)
+	e.user("fan", "user")
+	toFan := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "hi", "parentId": fanCmt})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	if r, ok := sentOf(toFan); !ok || !strings.Contains(r.body, "@fan@third.example") {
+		t.Errorf("the answer to fan of third.example: sent %v %s", ok, r.body)
+	}
+	// An answer to bob in ana's thread, bob stopping sharing before it goes: under bo's post it goes, bob's name plain.
+	bobID, bob := e.member("bob", false)
+	e.mustExec(`INSERT INTO follows (follower_id, followee_id, state) VALUES ($1, $2, 'accepted')`, bobID, e.boUser)
+	top := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "ana's thread"})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	bc := num(e.must(200, bob, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "bob here", "parentId": top})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	ans := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "hello", "parentId": bc})["comment"].(map[string]any)["id"])
+	e.mustExec(`UPDATE users SET federates = false WHERE id = $1`, bobID)
+	e.ne.produce()
+	if r, ok := sentOf(ans); !ok || !strings.Contains(r.body, "@bob") || strings.Contains(r.body, "/users/bob") {
+		t.Errorf("the answer to bob, who stopped sharing: sent %v %s", ok, r.body)
+	}
+	// An answer in a thread bob began, bob stopping sharing before it goes: his comment's id cannot go, so it is not
+	// sent, and that is counted, not silent.
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, bobID)
+	bt := num(e.must(200, bob, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "bob's thread"})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	in := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "in bob's thread", "parentId": bt})["comment"].(map[string]any)["id"])
+	e.mustExec(`UPDATE users SET federates = false WHERE id = $1`, bobID)
+	before := e.a.fed.commentsNotSent.Load()
+	e.ne.produce()
+	if _, ok := sentOf(in); ok || e.a.fed.commentsNotSent.Load() != before+1 {
+		t.Errorf("the answer in the thread of bob, who stopped sharing: sent %v, counted %d", ok, e.a.fed.commentsNotSent.Load()-before)
 	}
 }

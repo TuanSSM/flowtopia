@@ -1645,9 +1645,9 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   - **Nothing names a member who does not share** (`TestDBCommentsNameNoNonSharer`): a comment answering a member who
     does not share their profile, or in a thread one of them began, or answering a hidden comment, stays here, as the
     comments of members who do not share do, so neither the comment's id nor the name added before an answer leaves;
-    the producer asks again about the thread's first author and about the member answered, whose name opens the comment,
-    before each Create and Update (after the second review). A name of such a member in the text stays
-    text: `resolveMentions` finds only members who share, so it is no Mention tag and no link to their actor.
+    the producer asks again about the thread's first author before each Create and Update, and, for an answer under a
+    post here, about the member answered (after the second and third reviews, below). A name of such a member in the
+    text stays text: `resolveMentions` finds only members who share, so it is no Mention tag and no link to their actor.
   - **A notification is never lost to a failure** (`TestDBRemoteTalkNotifiedAfterFailure`): the notifications of a
     remote reply or like are written in the transaction that keeps it (`notifyFedTx`), so a failure rolls both back and
     the worker's retry keeps the reply and tells the member, where before the retry found a repeat and told nobody.
@@ -1708,9 +1708,9 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     Delete made while an Update still waits for its fan-out drops it and fans out at once, not one pass later. A like
     again after an unlike comes after that Undo the same way: `ap_like_out` keeps the Undo a member's unlike enqueued last
     (it goes with the Undo's row of `ap_outbox`), and the next Like of that post waits behind it at the author's inbox,
-    where it would otherwise be taken back by an Undo that arrived after it. Each step down a line is one lookup through
-    `ap_outbox`'s unique id index, one per Update the comment had; a comment is edited only in its first 15 minutes, and
-    edits made while its producer is busy fold into one Update.
+    where it would otherwise be taken back by an Undo that arrived after it; after the third review each Undo comes after
+    the Undo before it too (below). Each step down a line is one lookup through `ap_outbox`'s unique id index; a
+    comment's line is bounded (below).
   - **What is not sent is shown** (`TestDBForwardBounds`). The Federation tab's "Sending to other servers" says, beside
     the posts and comments whose Delete could not be taken back (`notTakenBack`, which counts comments too and now says
     so), the comments and edits the full queue refused past their last wait (`commentsNotSent`) and the replies not
@@ -1733,13 +1733,39 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     members it concerns in the order of their ids, so neither worker waits for a row the other holds while holding one
     the other wants. The test holds the order of the members; the order of the rows inside one trim cannot be forced
     into a race by a test, and rests on the statement (`remoteNotesTrimSQL`).
+- **After the third review of #116** (each with a test that fails without it):
+  - **Likes end as the member sees them** (`TestDBLikeClicksEndAsSeen`). An Undo of a like of a post of another server
+    now comes after the Undo before it, read with the Like's in the enqueue's own transaction once it holds the queue's
+    lock (`outOrder.afterTx`, `lastUndo`), so two clicks at once each see what the other wrote. Before, an Undo that took
+    back a Like never tried had its own row dropped, and the next Like came after it only, so it could reach the author's
+    inbox ahead of an earlier Undo still retrying there: liked here, unliked there. The test clicks five, six and seven
+    times with the inbox failing, then answering, and holds that the last activity the inbox accepted says what the
+    member sees. The hold looks back through at most 64 activities (`afterHeldDepth`): only a script toggling one post
+    that often while an early Undo still retries reaches it, and then only that member's like there may end wrong.
+  - **A comment's line is bounded** (`TestDBCommentLineBounded`). The producer makes at most one Update of a comment
+    per minute (`commentUpdateGap`, from `ap_comment_out.sent_at`): an edit sooner after the last activity waits for the
+    minute's end, and the edits meanwhile fold into that Update, which carries the newest text. A comment is edited only
+    in its first 15 minutes, so its line is its Create, at most 16 Updates (`commentUpdatesMax`) and its Delete; the test
+    edits every 10 seconds through the whole window and gets 15 Updates, the last with the last text. `TestDBQueryPlans`
+    reads the hold, the send-time question and the takeback over a line of that length. In a mode that federates an
+    edit takes an allowance (`limits.commentEdits`, 120 an hour per member); local mode asks none, as before.
+  - **Leading names are read as written** (`TestDBLeadingNames`). Only an answer's opening name, the member answered,
+    is asked about at the send, and only under a post here, where such an answer stays here as it would have at the
+    write; a handle of another server (`@name@host`) is never read as a member's name, in Go (`startsWithMention`) or in
+    SQL. A comment that opens with a name but answers nobody goes as any comment, the name plain text when it is a member
+    who does not share. Under a post of another server, an answer whose member answered stopped sharing after it was
+    written goes all the same, the name plain text, as a name in the middle of a comment already is: it was accepted to
+    go there, and keeping it here would leave it where none of that post's people see it. An answer there whose thread
+    was begun by a member who stopped sharing cannot go (it would carry that member's comment's id): it is not sent, said
+    in the log and counted on the Federation tab with the comments the full queue could not send (`commentsNotSent`).
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
   receiver does with an Update of an object it never had is its own (FWR 5 here takes one as new only when recent); a
   member's like of a remote reply stays here; a member who stops sharing after a comment that answers or names them
-  went out gets nothing taken back (the comment stays on the servers it reached; only its later edits stay here); a
-  remote reply to a member's comment
+  went out gets nothing taken back: the comment stays on the servers it reached, and its later edits go there too, the
+  name plain text, except an answer to that member under a post here, whose later edits stay here; a remote reply to a
+  member's comment
   under a post of another server is not kept (it answers no post here); the likes of an account its server says is
   suspended still count; recorded Mastodon replies and likes to hold this to (the owner's trial, FWR 9).
 

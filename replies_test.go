@@ -569,6 +569,7 @@ func TestDBCommentsOut(t *testing.T) {
 	// inboxes.
 	e.mustExec(`DELETE FROM ap_deliveries WHERE outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $1)`, noteID+"/activity")
 	e.must(200, e.ana, "PUT", fmt.Sprintf("/api/comments/%d", cmt), map[string]any{"body": "and a second one, edited"})
+	e.mustExec(`UPDATE ap_comment_out SET sent_at = sent_at - interval '1 minute'`) // the least time between two activities passed
 	produce()
 	up := last("Update")
 	if !strings.Contains(up.body, `"updated":"`) || !strings.Contains(up.body, "edited") || !strings.Contains(up.body, `"inReplyTo":"`+e.postID) || !slices.Equal(up.inboxes, cr.inboxes) {
@@ -788,6 +789,7 @@ func TestDBTwoFlowaReplies(t *testing.T) {
 	}
 	// Edit, inside bob's 15 minutes.
 	be.must(200, bob, "PUT", fmt.Sprintf("/api/comments/%d", bc), map[string]any{"body": "hello from b, edited"})
+	be.mustExec(`UPDATE ap_comment_out SET sent_at = sent_at - interval '1 minute'`) // the least time between two activities passed
 	pump()
 	if got := ne.thread(e.ana, p); len(got) != 1 || got[0]["body"] != "hello from b, edited" || got[0]["edited"] != true {
 		t.Errorf("after bob's edit ana's post shows %v", got)
