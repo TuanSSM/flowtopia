@@ -224,6 +224,8 @@ type app struct {
 	// (exportMaxTime and exportMaxBytes when zero); a test lowers them.
 	exportTime time.Duration
 	exportMax  int64
+	// exportSlots holds one token per download running now, at most exportsAtOnce across the server.
+	exportSlots chan struct{}
 	// exportHook, when set, is told of each step of a download ("write" before every write to the client, "page" after
 	// each page of rows is read and its connection given back), and an error from it stops the download as a failed
 	// write would. Tests only; nil in the server.
@@ -237,7 +239,8 @@ var buildVersion = "dev"
 
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: buildVersion, mode: modeLocal, sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard}}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: buildVersion, mode: modeLocal, sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard},
+		exportSlots: make(chan struct{}, exportsAtOnce)}
 }
 
 // instanceMode is how an instance runs (FLOWA_MODE; docs/federation.md, section 4). It is read once
@@ -505,6 +508,21 @@ func (l *limiter) addWeight(key string, w int) bool {
 	}
 	f.n = max(f.n+w, 0)
 	return true
+}
+
+// giveBack takes w tenths back from key's count in its current window and forgets the key once nothing is
+// left, so that the next event opens a window of its own instead of counting in one that began with an event
+// given back. Only the export's allowance uses it; addWeight with a negative weight keeps the window.
+func (l *limiter) giveBack(key string, w int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := l.m[key]
+	if f == nil || time.Now().After(f.reset) {
+		return
+	}
+	if f.n = max(f.n-w, 0); f.n == 0 {
+		delete(l.m, key)
+	}
 }
 
 // forget drops the count for key, as after a correct password.
@@ -30252,23 +30270,43 @@ const (
 	exportMaxBytes = 512 << 20        // the most an archive may hold, 512 MB; a larger one is refused before it starts
 	exportMaxTime  = 30 * time.Minute // the longest a download may run, from the request to the last byte
 	exportPage     = 500              // rows read at a time
+	// exportsAtOnce is how many downloads the server makes at the same time, whoever asks: each holds a database
+	// connection while it reads a page (of 8 on the Pi) and a picture in memory (of 384 MB). Another waits its turn.
+	exportsAtOnce = 2
 )
 
 var errExportTooBig = errors.New("the archive grew past its size cap while it was written")
 
-// exportSizeSQL estimates the archive of member $1 in bytes, before compression: pictures at their decoded size
-// (three quarters of the base64 text), text at its length, and a few hundred bytes of field names per row.
+// exportSizeSQL is an upper bound, in bytes, of the archive of member $1 as sent, held against the same cap as
+// the writer counts: a picture at its decoded size (three quarters of its base64 text) and 512 bytes for its
+// file's place in the zip, every piece of text six times its bytes (JSON writes <, > and & and each control
+// character as six bytes, \u003c; compression only makes it smaller), and 512 bytes per row for the field names,
+// the zip's own records and the manifest's line. octet_length reads the size a value is kept at without
+// unpacking it, which matters for pictures: length would unpack each one to count its characters.
 const exportSizeSQL = `SELECT
-	(SELECT coalesce(sum(length(image) * 3 / 4 + length(body) + length(alt) + length(data::text) + 400), 0) FROM posts WHERE user_id = $1)
-	+ (SELECT coalesce(sum(length(body) + 300), 0) FROM comments WHERE user_id = $1 AND NOT deleted)
-	+ (SELECT count(*) * 150 FROM follows WHERE follower_id = $1 OR followee_id = $1)
-	+ (SELECT count(*) * 150 FROM blocks WHERE user_id = $1)
-	+ (SELECT length(avatar) * 3 / 4 + length(bio) + length(links::text) + length(prefs::text) + 8192 FROM users WHERE id = $1)`
+	(SELECT coalesce(sum(octet_length(image) / 4 * 3 + 6 * (octet_length(body) + octet_length(alt) + octet_length(data::text) + octet_length(prop) + octet_length(skill) + octet_length(hidden_reason)) + 1024), 0) FROM posts WHERE user_id = $1)
+	+ (SELECT coalesce(sum(6 * (octet_length(body) + octet_length(hidden_reason)) + 512), 0) FROM comments WHERE user_id = $1 AND NOT deleted)
+	+ (SELECT count(*) * 512 FROM follows WHERE follower_id = $1)
+	+ (SELECT count(*) * 512 FROM follows WHERE followee_id = $1)
+	+ (SELECT count(*) * 512 FROM blocks WHERE user_id = $1)
+	+ (SELECT octet_length(avatar) / 4 * 3 + 6 * (octet_length(username) + octet_length(display_name) + octet_length(bio) + octet_length(links::text) + octet_length(props::text)
+		+ octet_length(prefs::text) + octet_length(avatar_cfg::text)) + 65536 FROM users WHERE id = $1)`
 
-const exportAgain = "You downloaded your data less than an hour ago. Wait a while and try again."
+const (
+	exportAgain = "You downloaded your data less than an hour ago. Wait a while and try again."
+	exportTries = "You have started several downloads in the last hour that did not finish. Wait a while and try again."
+	exportBusy  = "Flowa is making other people's downloads right now. Try again in a minute."
+)
 
 func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 	key := strconv.FormatInt(u.ID, 10)
+	// The mux gives HEAD to the GET route. A HEAD would make the whole archive only for its body to be thrown away,
+	// and spend the hour, so it is refused before anything is read; its headers depend on making the archive.
+	if r.Method == http.MethodHead {
+		w.Header().Set("Allow", "GET")
+		fail(w, http.StatusMethodNotAllowed, "Download your data with GET.")
+		return
+	}
 	// The session cookie goes with a link followed from another site, so such a link could start a download the
 	// member did not ask for and spend their hour. A browser says where a request came from; a download from
 	// Flowa's own page is same-origin.
@@ -30277,37 +30315,61 @@ func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusForbidden, "Download your data from the Settings page of this Flowa.")
 		return
 	}
+	// ?check says whether a download would start now, without starting one or counting it: the page asks first, so
+	// that a refusal is shown as words on the page rather than saved as a file. Both answer in the same order, the
+	// cheap refusals before the size is read.
+	check := r.URL.Query().Has("check")
+	busy := func() {
+		w.Header().Set("Retry-After", "60")
+		fail(w, http.StatusServiceUnavailable, exportBusy)
+	}
+	switch {
+	case a.lim.export.over(key):
+		fail(w, http.StatusTooManyRequests, exportAgain)
+		return
+	case a.lim.exportTries.over(key):
+		fail(w, http.StatusTooManyRequests, exportTries)
+		return
+	case check && len(a.exportSlots) == cap(a.exportSlots):
+		busy()
+		return
+	}
+	if !check {
+		// A place among the downloads running now, given back on every way out, an abort included (the deferred
+		// receive runs while the panic below unwinds). Waiting for one is not counted against the member.
+		select {
+		case a.exportSlots <- struct{}{}:
+			defer func() { <-a.exportSlots }()
+		default:
+			logRefusal(w, "a download of data while others are made", "by member "+key)
+			busy()
+			return
+		}
+	}
+	if a.exportHook != nil {
+		a.exportHook("size") // a test counts the reads of the size
+	}
 	var size int64
 	if err := a.db.QueryRowContext(r.Context(), exportSizeSQL, u.ID).Scan(&size); err != nil {
 		a.serverError(w, err)
 		return
 	}
 	capB := cmp.Or(a.exportMax, exportMaxBytes)
-	tooBig := fmt.Sprintf("Your data is larger than the %d MB this Flowa can put in one download. Ask an admin.", capB>>20)
-	// ?check says whether a download would start now, without starting one or counting it: the page asks first, so
-	// that a refusal is shown as words on the page rather than saved as a file.
-	if r.URL.Query().Has("check") {
-		switch {
-		case a.lim.export.over(key) || a.lim.exportTries.over(key):
-			fail(w, http.StatusTooManyRequests, exportAgain)
-		case size > capB:
-			fail(w, http.StatusRequestEntityTooLarge, tooBig)
-		default:
-			writeJSON(w, http.StatusOK, map[string]any{"bytes": size})
-		}
+	if size > capB {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("Your data is larger than the %d MB this Flowa can put in one download. Ask an admin.", capB>>20))
+		return
+	}
+	if check {
+		writeJSON(w, http.StatusOK, map[string]any{"bytes": size})
 		return
 	}
 	if !a.lim.exportTries.add(key) {
 		logRefusal(w, "too many downloads of data begun", "by member "+key)
-		fail(w, http.StatusTooManyRequests, exportAgain)
+		fail(w, http.StatusTooManyRequests, exportTries)
 		return
 	}
 	w, ok := allowed(w, a.lim.export, u, "downloads of your data")
 	if !ok {
-		return
-	}
-	if size > capB {
-		fail(w, http.StatusRequestEntityTooLarge, tooBig)
 		return
 	}
 	limit := cmp.Or(a.exportTime, exportMaxTime)
@@ -30324,6 +30386,8 @@ func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 	h.Set("Content-Disposition", `attachment; filename="flowa-`+u.Username+`-`+now.Format("2006-01-02")+`.zip"`)
 	w.WriteHeader(http.StatusOK)
 	x := &exporter{a: a, ctx: ctx, uid: u.ID, now: now, counts: map[string]int{}}
+	// The size was checked above with an upper bound, so the writer's cap, the same number, is met only by an
+	// archive that grew while it was written.
 	x.out = &exportWriter{w: w, max: capB, hook: a.exportHook}
 	x.z = zip.NewWriter(x.out)
 	err := x.run()
@@ -30331,9 +30395,11 @@ func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 		err = x.z.Close()
 	}
 	if err != nil {
-		// Not counted: the member may try again at once. The connection is dropped without the end of the answer,
-		// so the browser says the download failed, and the zip has no directory, so nothing opens it as whole.
-		a.lim.export.addWeight(key, -tenths)
+		// Not counted: the member may try again at once, in a window of their own. The connection is dropped without
+		// the end of the answer, so the browser says the download failed, and the zip has no directory, so nothing
+		// opens it as whole. The request log has only the status, sent already as 200, so its line says why instead.
+		a.lim.export.giveBack(key, tenths)
+		noteRefusal(w, "download of data stopped")
 		log.Printf("export: member %d, stopped after %d bytes: %v", u.ID, x.out.n, err)
 		panic(http.ErrAbortHandler)
 	}
@@ -30376,6 +30442,27 @@ type exporter struct {
 	counts map[string]int
 }
 
+// The lists of accounts, each a page after the account $2, $3 at a time. A follow across a block is left out as
+// the pages leave it out (followShown): a follow kept from before a block is not a follow anyone sees. Requests
+// that wait (pending) are listed, marked, as they are the member's to answer or to take back.
+var (
+	exportFollowingSQL = `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), f.created_at, f.state = 'pending'
+		FROM follows f JOIN users u ON u.id = f.followee_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
+		WHERE f.follower_id = $1 AND u.id > $2 AND ` + followShown("f.followee_id") + ` ORDER BY u.id LIMIT $3`
+	exportFollowersSQL = `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), f.created_at, f.state = 'pending'
+		FROM follows f JOIN users u ON u.id = f.follower_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
+		WHERE f.followee_id = $1 AND u.id > $2 AND ` + followShown("f.follower_id") + ` ORDER BY u.id LIMIT $3`
+	exportBlocksSQL = `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), b.created_at, false
+		FROM blocks b JOIN users u ON u.id = b.target_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
+		WHERE b.user_id = $1 AND u.id > $2 ORDER BY u.id LIMIT $3`
+	exportPostsSQL = `SELECT id, kind, body, prop, skill, data, audience, alt, created_at, hidden_at IS NOT NULL, hidden_reason, left(image, 32)
+		FROM posts WHERE user_id = $1 AND id > $2 ORDER BY id LIMIT $3`
+	exportCommentsSQL = `SELECT c.id, c.post_id, coalesce(p.ap_id, ''), c.parent_id, coalesce(pc.ap_id, ''), c.body, c.created_at, c.edited_at,
+			c.hidden_at IS NOT NULL, c.hidden_reason
+		FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments pc ON pc.id = c.parent_id
+		WHERE c.user_id = $1 AND NOT c.deleted AND c.id > $2 ORDER BY c.id LIMIT $3`
+)
+
 // exportPic is a picture to write after posts.json: the post it is read from and the name it gets.
 type exportPic struct {
 	id   int64
@@ -30411,17 +30498,7 @@ func (x *exporter) run() error {
 	if err := x.comments(); err != nil {
 		return err
 	}
-	for _, l := range []struct{ file, query string }{
-		{"following.json", `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), f.created_at, f.state = 'pending'
-			FROM follows f JOIN users u ON u.id = f.followee_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
-			WHERE f.follower_id = $1 AND u.id > $2 ORDER BY u.id LIMIT $3`},
-		{"followers.json", `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), f.created_at, f.state = 'pending'
-			FROM follows f JOIN users u ON u.id = f.follower_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
-			WHERE f.followee_id = $1 AND u.id > $2 ORDER BY u.id LIMIT $3`},
-		{"blocks.json", `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), b.created_at, false
-			FROM blocks b JOIN users u ON u.id = b.target_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
-			WHERE b.user_id = $1 AND u.id > $2 ORDER BY u.id LIMIT $3`},
-	} {
+	for _, l := range []struct{ file, query string }{{"following.json", exportFollowingSQL}, {"followers.json", exportFollowersSQL}, {"blocks.json", exportBlocksSQL}} {
 		if err := x.accounts(l.file, l.query); err != nil {
 			return err
 		}
@@ -30587,8 +30664,7 @@ func (x *exporter) profile() error {
 func (x *exporter) posts() ([]exportPic, error) {
 	var pics []exportPic
 	n, err := x.list("posts.json", func(after int64) ([]any, int64, error) {
-		rows, err := x.a.db.QueryContext(x.ctx, `SELECT id, kind, body, prop, skill, data, audience, alt, created_at, hidden_at IS NOT NULL, hidden_reason, left(image, 32)
-			FROM posts WHERE user_id = $1 AND id > $2 ORDER BY id LIMIT $3`, x.uid, after, exportPage)
+		rows, err := x.a.db.QueryContext(x.ctx, exportPostsSQL, x.uid, after, exportPage)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -30623,10 +30699,7 @@ func (x *exporter) posts() ([]exportPic, error) {
 
 func (x *exporter) comments() error {
 	n, err := x.list("comments.json", func(after int64) ([]any, int64, error) {
-		rows, err := x.a.db.QueryContext(x.ctx, `SELECT c.id, c.post_id, coalesce(p.ap_id, ''), c.parent_id, coalesce(pc.ap_id, ''), c.body, c.created_at, c.edited_at,
-				c.hidden_at IS NOT NULL, c.hidden_reason
-			FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments pc ON pc.id = c.parent_id
-			WHERE c.user_id = $1 AND NOT c.deleted AND c.id > $2 ORDER BY c.id LIMIT $3`, x.uid, after, exportPage)
+		rows, err := x.a.db.QueryContext(x.ctx, exportCommentsSQL, x.uid, after, exportPage)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -30729,13 +30802,16 @@ profile.json        Your profile: username, handle, display name, bio, links, pr
 profile-picture.*   Your profile picture, if you have one.
 posts.json          Your posts, oldest first: text, tags, combo, links, who could see each, and the file and
                     description of its picture. A post a moderator hid is marked hidden, with the reason given.
-pictures/           The pictures of your posts, named post-<number of the post>.jpg or .png.
+pictures/           The pictures of your posts, named post-<number of the post>.jpg or .png. A post deleted
+                    while the archive was made can be in posts.json with its picture's name but no file;
+                    manifest.json counts the pictures that are in the archive.
 comments.json       Your comments and replies, oldest first, each with the number of the post it is under (and
                     its address, for a post of another server) and of the comment it answers. The text of other
                     people's posts and comments is not included.
 following.json      The accounts you follow (or asked to follow: marked pending), by handle. An account of another
                     server is name@host, with the address of its profile.
-followers.json      The accounts that follow you, the same way.
+followers.json      The accounts that follow you, the same way. On a Flowa that shares with other servers, a
+                    request to follow you that waits for your answer is listed too, marked pending.
 blocks.json         The accounts you block, the same way.
 manifest.json       Written last: the format version, when the archive was made, how many of each thing it holds,
                     and the list of files. If manifest.json is missing, the download did not finish: download again.

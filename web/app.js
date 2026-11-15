@@ -627,7 +627,8 @@ function propXPCard() {
 
 // Everything a member wrote, as one zip file the server makes (GET /api/export). The link is a real address, so it
 // has a name and works by keyboard; a click asks first whether a download would start, so a refusal is said here
-// instead of being saved as a file, then goes to the address, which the browser saves without leaving the page.
+// instead of being saved as a file, then fetches the address as a download, which never leaves the page.
+let exportBusy = false; // a download is being asked about or has just begun (the export-all action)
 function dataCard() {
   return `<div class="card" id="data-card"><div class="card-h"><h2>Your data</h2></div>
     <p class="small muted">Download one zip file with your profile, your posts and their pictures, your comments, the accounts you follow, the accounts that follow you and the accounts you block. Other people appear only by their handle. Your likes, bookmarks, notifications and password are not in it.</p>
@@ -1094,14 +1095,21 @@ document.addEventListener('click', e => {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       break;
     }
-    case 'export-all':
+    case 'export-all': {
+      // One download per press: a second press while the first is asked about, or just after it began, does
+      // nothing. The file is fetched by a link with download, which the browser keeps as a download whatever the
+      // answer, so a refusal that comes after the check can never take the place of the page.
       e.preventDefault();
+      if (exportBusy) break;
+      exportBusy = true;
       api('export?check=1').then(r => {
-        if (!r.ok) { toast(r.error); return; }
-        location.assign('api/export');
+        if (!r.ok) { exportBusy = false; toast(r.error); return; }
+        const a = document.createElement('a'); a.href = 'api/export'; a.download = ''; a.click();
         toast('Your download has started. It can take a minute when you have many pictures.');
+        setTimeout(() => { exportBusy = false; }, 5000);
       });
       break;
+    }
     case 'fed-leave': fedLeave(); break;
     case 'reset':
       if (confirm(`Erase all your ${curProp().name.toLowerCase()} progress, sessions and combos? The server keeps a daily backup.`)) { state = blank(); commit(); toast('Progress reset.'); }

@@ -1136,10 +1136,13 @@ in the container's environment, when set, is shown instead.
   account of another server), a `README.txt` that says what each file is, and `manifest.json`, written last, with
   the format version, the counts and the list of files. Times are RFC 3339 in UTC. Likes, bookmarks,
   notifications, the password, sessions and keys are not in it; practice progress keeps its own Export JSON on
-  the same page. A member may download once an hour; a download that fails or is cut off is not counted, and at
-  most 6 may be begun in an hour. The archive is made while it is sent, a page of 500 rows or one picture at a
+  the same page. A member may download once an hour; a download that fails or is cut off is not counted (and
+  leaves no hour running), and at most 6 may be begun in an hour. At most 2 downloads are made at once across the
+  server (`exportsAtOnce`); another is answered 503 with `Retry-After: 60`, and not counted. A HEAD request is
+  answered 405. The archive is made while it is sent, a page of 500 rows or one picture at a
   time, with a database connection held only while a page is read; it may hold up to 512 MB and take up to
-  30 minutes (`exportMaxBytes` and `exportMaxTime` in `main.go`). A larger one is refused before it starts, and
+  30 minutes (`exportMaxBytes` and `exportMaxTime` in `main.go`). Its size is reckoned first as an upper bound
+  in bytes, without unpacking a picture; a larger one is refused before it starts, and
   one that runs out of time or is cut off is broken off without the zip's directory, so the browser reports a
   failed download and no zip program opens it as whole. A request from another site is refused, the answer is
   never cached, and the log gets one line per download with the member's number and the size, never content.

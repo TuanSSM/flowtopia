@@ -236,6 +236,8 @@ func TestDBExport(t *testing.T) {
 	e.must(200, bo, "PUT", "/api/users/cydsecret/follow", nil)
 	e.mustExec(`INSERT INTO follows (follower_id, followee_id, state) VALUES ($1, $2, 'accepted'), ($2, $1, 'accepted'), ($1, $3, 'pending'), ($4, $5, 'accepted')`, anaID, zedID, pendID, farID, boID)
 	e.must(200, ana, "PUT", "/api/users/dee/block", nil)
+	// Follows kept from before the block, both ways, which the pages no longer show (followShown).
+	e.mustExec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2), ($2, $1)`, anaID, deeID)
 	e.must(200, bo, "PUT", "/api/users/evesecret/block", nil)
 	_, _, _ = cydID, deeID, eveID
 
@@ -389,8 +391,10 @@ func TestDBExport(t *testing.T) {
 		if man.Format != "flowa-export" || man.Version != exportFormat || !man.Complete || !maps.Equal(man.Counts, wantCounts) || !slices.Equal(man.Files, names[:len(names)-1]) {
 			t.Errorf("manifest.json: %+v, files %v", man, names)
 		}
-		if !bytes.Contains(files["README.txt"], []byte("manifest.json")) {
-			t.Error("README.txt does not say what manifest.json is")
+		for _, words := range []string{"manifest.json", "waits for your answer is listed too, marked pending", "no file"} {
+			if !bytes.Contains(files["README.txt"], []byte(words)) {
+				t.Errorf("README.txt does not say %q", words)
+			}
 		}
 	}
 	// The downloads above were three in a row from one session: the limit is the next test's.
@@ -440,11 +444,24 @@ func unzipTest(t *testing.T, raw []byte) {
 func TestDBExportLimits(t *testing.T) {
 	e := newEnv(t)
 	var fail atomic.Bool
+	var sized atomic.Int64
 	e.a.exportHook = func(step string) error {
+		if step == "size" {
+			sized.Add(1)
+		}
 		if step == "write" && fail.Load() {
 			return errors.New("the test cut the download")
 		}
 		return nil
+	}
+	var logged bytes.Buffer
+	e.a.reqLog.mu.Lock()
+	e.a.reqLog.out = &logged
+	e.a.reqLog.mu.Unlock()
+	logText := func() string {
+		e.a.reqLog.mu.Lock()
+		defer e.a.reqLog.mu.Unlock()
+		return logged.String()
 	}
 	adminID, admin := e.user("boss", "admin")
 	e.mustExec(`UPDATE users SET owner = true WHERE id = $1`, adminID)
@@ -494,13 +511,49 @@ func TestDBExportLimits(t *testing.T) {
 	if code, body := e.exportCode(ana, "?check=1", nil); code != 200 || !strings.Contains(body, `"bytes"`) {
 		t.Fatalf("after two failed downloads the check says %d %s", code, body)
 	}
+	// A download given back leaves no window behind: the next one opens its own, so two whole archives are always an
+	// hour apart, not two minutes either side of the end of a window a failed one began.
+	if a := e.a.lim.export; func() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.m[fmt.Sprint(anaID)] != nil }() {
+		t.Fatal("a download given back left its window in the limiter")
+	}
+	// The request log says why a download that was sent as 200 stopped.
+	if !strings.Contains(logText(), `"refused":"download of data stopped"`) {
+		t.Errorf("the request log does not say the download stopped:\n%s", logText())
+	}
+	between := time.Now()
 	e.exportOf(ana, "")
-	// Used: the check and the download both say so, and say when.
+	if a := e.a.lim.export; func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		f := a.m[fmt.Sprint(anaID)]
+		return f == nil || !f.reset.After(between.Add(time.Hour))
+	}() {
+		t.Fatal("the whole download did not open a window of its own")
+	}
+	// Used: the check and the download both say so, and say when, before the size is read.
+	before := sized.Load()
 	for _, q := range []string{"?check=1", ""} {
-		if code, body := e.exportCode(ana, q, nil); code != 429 || !strings.Contains(body, "an hour") {
+		if code, body := e.exportCode(ana, q, nil); code != 429 || !strings.Contains(body, "less than an hour ago") {
 			t.Fatalf("a second download in the hour (%q): %d %s", q, code, body)
 		}
 	}
+	if n := sized.Load() - before; n != 0 {
+		t.Fatalf("a refused request read the size %d times", n)
+	}
+	// HEAD is refused before anything is read or counted.
+	cID, c := e.user("cai", "user")
+	r := httptest.NewRequest("HEAD", "/api/export", nil)
+	r.AddCookie(&http.Cookie{Name: cookieName, Value: c})
+	w := httptest.NewRecorder()
+	before = sized.Load()
+	e.h.ServeHTTP(w, r)
+	if w.Code != 405 || w.Header().Get("Allow") != "GET" || sized.Load() != before || w.Header().Get("Content-Type") == "application/zip" {
+		t.Fatalf("HEAD: %d, Allow %q, %d size reads", w.Code, w.Header().Get("Allow"), sized.Load()-before)
+	}
+	if code, body := e.exportCode(c, "?check=1", nil); code != 200 {
+		t.Fatalf("after a HEAD the check says %d %s", code, body)
+	}
+	_ = cID
 	// Downloads begun are bounded too, failed or not: six in an hour.
 	bID, b := e.user("bea", "user")
 	fail.Store(true)
@@ -511,8 +564,10 @@ func TestDBExportLimits(t *testing.T) {
 		}
 	}
 	fail.Store(false)
-	if code, _ := e.exportCode(b, "", nil); code != 429 {
-		t.Fatalf("a seventh download begun in the hour: %d, want 429", code)
+	for _, q := range []string{"?check=1", ""} {
+		if code, body := e.exportCode(b, q, nil); code != 429 || !strings.Contains(body, "did not finish") {
+			t.Fatalf("a seventh download begun in the hour (%q): %d %s, want 429 in its own words", q, code, body)
+		}
 	}
 	_ = bID
 
@@ -659,7 +714,7 @@ func manyPictures(t *testing.T, e *tenv, uid int64, n int) {
 	e.mustExec(`INSERT INTO posts (user_id, body, image) SELECT $1, 'post ' || g, $2 FROM generate_series(1, $3::int) g`, uid, noisePNG(t, 300), n)
 }
 
-// A member with many pictures: the archive (about 58 MB) is sent while the heap stays within a budget far under it,
+// A member with many pictures: the archive (about 51 MB) is sent while the heap stays within a budget far under it,
 // because the server holds one picture at a time.
 func TestDBExportManyPictures(t *testing.T) {
 	e := newEnv(t)
@@ -883,5 +938,197 @@ func TestDBExportModes(t *testing.T) {
 	host := f.a.fedHost
 	if host == "" || prof["handle"] != "ana@"+host || !bytes.Contains(files["following.json"], []byte(`"bo@`+host+`"`)) || !bytes.Contains(files["followers.json"], []byte(`"bo@`+host+`"`)) {
 		t.Errorf("federated mode: %v %s %s", prof, files["following.json"], files["followers.json"])
+	}
+}
+
+// The size is read without unpacking pictures: octet_length is the size a value is kept at, where length would
+// unpack every picture to count its characters (TestDBQueryPlans holds the plan to the indexes).
+func TestExportSizeReadsNoPicture(t *testing.T) {
+	if regexp.MustCompile(`(^|[^_])length\(`).MatchString(exportSizeSQL) {
+		t.Fatalf("exportSizeSQL counts characters with length(), which unpacks every picture:\n%s", exportSizeSQL)
+	}
+}
+
+// At most exportsAtOnce downloads run at once across the server: the next is refused in words with Retry-After and
+// not counted against the member, the check says so too, and a place is given back on every way out.
+func TestDBExportAtOnce(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("export", true)
+	hold, held := make(chan struct{}), make(chan struct{}, exportsAtOnce)
+	var release sync.Once
+	letGo := func() { release.Do(func() { close(hold) }) }
+	var fail atomic.Bool
+	e.a.exportHook = func(step string) error {
+		if step == "page" {
+			select {
+			case held <- struct{}{}:
+				<-hold
+			default:
+			}
+		}
+		if step == "write" && fail.Load() {
+			return errors.New("the test cut the download")
+		}
+		return nil
+	}
+	srv := httptest.NewServer(e.h)
+	defer srv.Close()
+	// Deferred after the server's Close, so it runs first: a failure below still lets the held downloads end, and
+	// the server's Close then finds none running, so the test fails instead of hanging.
+	defer letGo()
+	get := func(tok string) error {
+		req, _ := http.NewRequest("GET", srv.URL+"/api/export", nil)
+		req.Host = "example.com"
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			return err
+		}
+		defer res.Body.Close()
+		_, err = io.Copy(io.Discard, res.Body)
+		return err
+	}
+	var toks []string
+	for i := range exportsAtOnce + 1 {
+		_, tok := e.user(fmt.Sprint("member", i), "user")
+		toks = append(toks, tok)
+	}
+	done := make(chan error, exportsAtOnce)
+	for _, tok := range toks[:exportsAtOnce] {
+		go func() { done <- get(tok) }()
+	}
+	for range exportsAtOnce {
+		select {
+		case <-held:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the downloads did not start")
+		}
+	}
+	last := toks[exportsAtOnce]
+	for _, q := range []string{"?check=1", ""} {
+		code, body, hdr := func() (int, string, http.Header) {
+			r := httptest.NewRequest("GET", "/api/export"+q, nil)
+			r.AddCookie(&http.Cookie{Name: cookieName, Value: last})
+			w := httptest.NewRecorder()
+			e.h.ServeHTTP(w, r)
+			return w.Code, w.Body.String(), w.Result().Header
+		}()
+		if code != 503 || hdr.Get("Retry-After") != "60" || !strings.Contains(body, "other people's downloads") {
+			t.Fatalf("a download past %d at once (%q): %d %s, Retry-After %q", exportsAtOnce, q, code, body, hdr.Get("Retry-After"))
+		}
+	}
+	letGo()
+	for range exportsAtOnce {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The member who waited was not counted: a whole download now; then a cut-off one gives its place back too.
+	e.exportOf(last, "")
+	fail.Store(true)
+	for i := range exportsAtOnce + 1 {
+		_, tok := e.user(fmt.Sprint("cut", i), "user")
+		if err := get(tok); err == nil {
+			t.Fatal("a cut download read as complete")
+		}
+	}
+	fail.Store(false)
+	if n := len(e.a.exportSlots); n != 0 {
+		t.Fatalf("%d places still taken after every download ended", n)
+	}
+}
+
+// A post deleted between posts.json and the reading of its picture: the name stays in posts.json with no file, as
+// README.txt says, and manifest.json counts the pictures that are there.
+func TestDBExportPictureGone(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("export", true)
+	_, tok := e.user("ana", "user")
+	out := e.must(200, tok, "POST", "/api/posts", map[string]any{"body": "soon gone", "image": pngShade(t, 40)})
+	id := num(out["posts"].([]any)[0].(map[string]any)["id"])
+	var once sync.Once
+	e.a.exportHook = func(step string) error {
+		if step == "page" {
+			once.Do(func() { e.mustExec(`DELETE FROM posts WHERE id = $1`, id) })
+		}
+		return nil
+	}
+	z, _, _ := e.exportOf(tok, "")
+	names, files := zipFiles(t, z)
+	if !bytes.Contains(files["posts.json"], []byte(fmt.Sprintf(`"pictures/post-%d.png"`, id))) || slices.Contains(names, fmt.Sprintf("pictures/post-%d.png", id)) {
+		t.Fatalf("posts.json %s, files %v", files["posts.json"], names)
+	}
+	var man struct {
+		Counts map[string]int `json:"counts"`
+	}
+	mustJSON(t, files["manifest.json"], &man)
+	if man.Counts["pictures"] != 0 || man.Counts["posts"] != 1 || !bytes.Contains(files["README.txt"], []byte("no file")) {
+		t.Fatalf("manifest %v; README %s", man.Counts, files["README.txt"])
+	}
+}
+
+// The size estimate is an upper bound of the bytes the writer counts: with the cap set to the estimate exactly, a
+// member whose text is as large on the wire as text can be (four-byte characters at random, which compression
+// cannot shrink, and characters JSON writes as six bytes) gets a whole archive, and one byte less is refused
+// before it starts.
+func TestDBExportEstimateBound(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("export", true)
+	uid, tok := e.user("ana", "user")
+	_, bo := e.user("bo", "user")
+	r := rand.New(rand.NewPCG(3, 4))
+	wide := func(n int) string {
+		var b strings.Builder
+		for range n {
+			if r.IntN(4) == 0 {
+				b.WriteRune([]rune{'<', '>', '&', '\x01', '\x1f', '"', '\\'}[r.IntN(7)])
+			} else {
+				b.WriteRune(rune(0x1F300 + r.IntN(0x900)))
+			}
+		}
+		return b.String()
+	}
+	e.mustExec(`UPDATE users SET bio = $2, display_name = $3 WHERE id = $1`, uid, wide(300), wide(40))
+	p := e.post(bo, "a post")
+	for range 15 {
+		e.mustExec(`INSERT INTO posts (user_id, body, alt, image) VALUES ($1, $2, $3, $4)`, uid, wide(2000), wide(200), noisePNG(t, 40))
+		e.mustExec(`INSERT INTO comments (post_id, user_id, body) VALUES ($1, $2, $3)`, p, uid, wide(1000))
+	}
+	code, body := e.exportCode(tok, "?check=1", nil)
+	if code != 200 {
+		t.Fatalf("check: %d %s", code, body)
+	}
+	var est struct {
+		Bytes int64 `json:"bytes"`
+	}
+	mustJSON(t, []byte(body), &est)
+	// On a real connection, since a download past the cap is broken off.
+	e.a.exportMax = est.Bytes
+	srv := httptest.NewServer(e.h)
+	defer srv.Close()
+	req, _ := http.NewRequest("GET", srv.URL+"/api/export", nil)
+	req.Host = "example.com"
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
+	var raw []byte
+	res, err := srv.Client().Do(req)
+	if err == nil {
+		raw, err = io.ReadAll(res.Body)
+		res.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("with the cap at the estimate the download broke off after %d bytes: %v", len(raw), err)
+	}
+	z, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, files := zipFiles(t, z); !bytes.Contains(files["manifest.json"], []byte(`"complete": true`)) {
+		t.Fatal("the archive at the cap is not complete")
+	}
+	t.Logf("estimate %d bytes, archive %d bytes", est.Bytes, len(raw))
+	e.a.lim.export.forget(fmt.Sprint(uid))
+	e.a.exportMax = est.Bytes - 1
+	if code, _ := e.exportCode(tok, "", nil); code != 413 {
+		t.Fatalf("one byte under the estimate: %d, want 413", code)
 	}
 }

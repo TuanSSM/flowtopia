@@ -412,11 +412,20 @@ try:
     api(op,'flags',{'flags':{'export':True}},'PUT');load();nav('#/settings')
     check('Settings has Your data, saying what is in the archive and what is not, and where the practice progress is',lambda: 'your posts and their pictures' in (txt('#data-card') or '') and 'Export JSON' in txt('#data-card') and 'once an hour' in txt('#data-card') and txt('#data-card a[data-act=export-all]')=='Download my data')
     check('the link is a real address the browser saves',js("const a=document.querySelector('#data-card a[data-act=export-all]');return [a.getAttribute('href'),a.hasAttribute('download')]")==['api/export',True])
-    click('#data-card a[data-act=export-all]')
+    # Two presses in a row (a double click) ask once and download once.
+    js("window.__checks=0;const f=window.fetch;window.fetch=(u,...o)=>{if(String(u).includes('export?check'))window.__checks++;return f(u,...o)};const a=document.querySelector('#data-card a[data-act=export-all]');a.click();a.click()")
     check('Download my data starts the download, which the server then counts as the hour',lambda: http_code(sam,'export?check=1')==429,lambda: http_code(sam,'export?check=1'),timeout=SLOW)
+    check('a double click asks the server once',js("return window.__checks")==1,js("return window.__checks"))
     check('and the page says it started, and stays where it was',lambda: 'download has started' in (txt('#toast') or '') and js("return location.hash")=='#/settings',lambda: txt('#toast'))
-    click('#data-card a[data-act=export-all]')
-    check('a second download in the hour is refused in words on the page',lambda: 'less than an hour ago' in (txt('#toast') or ''),lambda: txt('#toast'))
+    js("window.__checks=0")
+    js("setTimeout(()=>document.querySelector('#data-card a[data-act=export-all]').click(),5100)")  # after the 5 s in which a press is taken as the same one
+    check('a second download in the hour is refused in words on the page',lambda: 'less than an hour ago' in (txt('#toast') or ''),lambda: txt('#toast'),timeout=15)
+    # A download that the server refuses after the check passed (here the check is made to pass while the hour is
+    # spent) is fetched by a link the browser keeps as a download, so the refusal never takes the place of the page.
+    js("const f=window.fetch;window.fetch=(u,...o)=>String(u).includes('export?check')?Promise.resolve(new Response('{\"bytes\":1}',{status:200,headers:{'Content-Type':'application/json'}})):f(u,...o);document.querySelector('#data-card a[data-act=export-all]').click()")
+    wait_for(lambda: 'download has started' in (txt('#toast') or ''),'the page to fetch the download after the check')
+    time.sleep(1)  # fixed: showing that the page is not replaced, which nothing on the page can report
+    check('a refused download does not replace the page',js("return location.hash")=='#/settings' and bool(js("return !!document.querySelector('#data-card')")))
     # The archive itself, for a member who posted: a zip with the files the README lists, and her post in it.
     import zipfile,io as _io
     ula=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))

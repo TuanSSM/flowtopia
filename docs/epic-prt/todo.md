@@ -19,12 +19,15 @@ is new.
     same page. One zip made while it is sent: `README.txt`, `profile.json`, the profile picture, `posts.json`
     and `pictures/`, `comments.json`, `following.json`, `followers.json`, `blocks.json`, and `manifest.json`
     last (format version 1, counts, the files). Once an hour per member through `limits`; a failed or
-    cut-off download is given back, and at most 6 may be begun in an hour. 512 MB and 30 minutes at most,
+    cut-off download is given back, and at most 6 may be begun in an hour; at most 2 are made at once across
+    the server, the next told to try again in a minute (503). 512 MB and 30 minutes at most,
     a page of 500 rows or one picture held at a time, a connection held only while a page is read. Checks:
     `TestDBExport` (the DoD, with markers on every row of anyone else, the secrets and the pictures'
     metadata), `TestDBExportLimits`, `TestDBExportOnlyOwn`, `TestDBExportCaps`,
     `TestDBExportManyPictures` (a 51 MB archive within a 24 MB heap budget), `TestDBExportClientGone`,
-    `TestDBExportOneConnection`, `TestDBExportModes`; the `social`, `keys`, `a11y` and `contrast` suites;
+    `TestDBExportOneConnection`, `TestDBExportModes`, `TestDBExportAtOnce`, `TestDBExportPictureGone`,
+    `TestDBExportEstimateBound`, `TestExportSizeReadsNoPicture`, the export's plans in `TestDBQueryPlans`;
+    the `social`, `keys`, `a11y` and `contrast` suites;
     the `settings-data` screenshots in `pages.py`. The box stays open until the pull request merges with
     `process_pr_result` passed (the roadmap's definition of done).
   - Open: a suspended member cannot sign in, so cannot download their data until the suspension ends;
@@ -33,7 +36,8 @@ is new.
     Mastodon's archive) can come with the Move items.
   - For the owner: likes and bookmarks are left out (the item names profile, posts, comments, follows and
     blocks); a hidden post or comment is included with the reason the member is already shown; the flag is
-    off by default; the numbers (one an hour, 6 begun an hour, 512 MB, 30 minutes) are constants in `main.go`.
+    off by default; the numbers (one an hour, 6 begun an hour, 2 at once, 512 MB, 30 minutes) are constants in
+    `main.go`.
 - [ ] **Move out.** The member sets `alsoKnownAs` on the new account; on Flowa, "I moved" sets
   `movedTo` and sends Move to followers after checking that the target lists this account (Mastodon
   checks the same before it accepts a Move: its ActivityPub page, "Account migration"). DoD:
