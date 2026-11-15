@@ -45,8 +45,10 @@ function targetHTML(it) {
   const t = it.target || {};
   if (t.gone) return '<p class="small muted">It has been deleted since it was reported.</p>';
   const hidden = t.hidden ? `<span class="chip warn">${icon('lock')}Hidden: ${esc(t.hiddenReason)}</span>` : '';
-  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body">${richText(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="${t.alt ? esc(t.alt) : 'Picture in the reported post'}">${t.alt ? `<p class="small mq-alt">Description of the picture: ${esc(t.alt)}</p>` : ''}` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
-  if (it.kind === 'comment') return `<div class="mq-target"><p class="small">${richText(t.body)}</p><div class="row wrap" style="gap:6px"><a class="small" href="#/post/${t.postId}/${it.id}">Open the comment</a>${hidden}</div></div>`;
+  // Text from another server (t.remote) is shown as text: no @name in it is a member here.
+  const text = s => t.remote ? esc(s).replace(/\n/g, '<br>') : richText(s);
+  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body" ${t.remote ? 'dir="auto"' : ''}>${text(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="${t.alt ? esc(t.alt) : 'Picture in the reported post'}">${t.alt ? `<p class="small mq-alt">Description of the picture: ${esc(t.alt)}</p>` : ''}` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
+  if (it.kind === 'comment') return `<div class="mq-target"><p class="small" ${t.remote ? 'dir="auto"' : ''}>${text(t.body)}</p><div class="row wrap" style="gap:6px"><a class="small" href="#/post/${t.postId}/${it.id}">Open the comment</a>${hidden}</div></div>`;
   const a = it.author || {};
   return `<div class="mq-target"><p class="small">${a.bio ? richText(a.bio) : '<span class="muted">No bio.</span>'}</p><a class="small" href="#/u/${esc(a.username)}">Open the profile</a></div>`;
 }
@@ -104,7 +106,7 @@ function openAction(d) {
 async function modAction(body) {
   const r = await api('mod/actions', 'POST', body);
   if (!r.ok) { toast(r.error); return false; }
-  return true;
+  return r.data?.note || true; // a note the moderator should read (a restore in a mode that federates)
 }
 function refreshAfterMod() { mod.queue = null; mod.history = null; mod.dash = null; social.stale = true; for (const k in social.profile) delete social.profile[k]; render(); if (ui.users) loadUsers(); }
 
@@ -402,14 +404,16 @@ function fedOutHTML(n) {
   const age = s => s < 120 ? `${s} seconds` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
   const since = n.since ? `since the last start, ${esc(fmtWhen(n.since))}` : 'in the last 24 hours';
   const c = n.counts || {}, num = v => `<span class="num">${(v || 0).toLocaleString()}</span>`;
-  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Follows and their answers, Public posts, their deletions and profile changes</span></div>
+  return `<section class="card fed-out" aria-labelledby="fed-out-h" style="margin-bottom:16px"><div class="card-h"><h2 class="grow" id="fed-out-h">Sending to other servers</h2><span class="sub">Follows and their answers, Public posts, comments and likes, their edits and deletions, profile changes</span></div>
     ${n.clockJumped ? '<p class="notice warn">Waiting for the clock: deliveries older than 4 days wait, which the retries cannot leave, so this server\'s clock may have jumped forward. They are held for an hour, and nothing is cleared meanwhile; if the clock is right (the server was off that long), they are then given up.</p>'
     : n.clockWaiting ? '<p class="notice warn">Waiting for the clock: this server\'s clock is earlier than its build or than the newest time its database holds, so nothing is signed or sent until it is set.</p>' : ''}
     ${n.paused ? `<p class="notice warn">Sending is off under Features: what waits stays queued${canDo('flags.edit') ? '' : ' (an admin turns it on)'}.</p>` : ''}
     <p class="small">${num(n.queued)} queued, of at most ${n.queueMax.toLocaleString()}${n.queued ? `; the oldest for ${age(n.oldestSeconds)}` : ''}${n.waiting ? `; ${num(n.waiting)} more ${n.waiting === 1 ? 'activity waits' : 'activities wait'} for room` : ''}. ${n.failedMax && n.failed >= n.failedMax ? `${num(n.failedMax)} or more` : num(n.failed)} given up in the last 7 days.</p>
     <p class="small">${since[0].toUpperCase() + since.slice(1)}: ${num(c.sent)} sent, ${num(c['given up'])} given up. Servers not answering: ${num(n.open)} paused for a few minutes after repeated failures, ${num(n.unavailable)} unavailable after 7 days without an answer.</p>
     ${n.cut ? `<p class="small notice warn">Since the last start, ${num(n.cut)} ${n.cut === 1 ? 'post or profile change' : 'posts or profile changes'} reached only the first 10,000 addresses of a member's followers.</p>` : ''}
-    ${n.notTakenBack ? `<p class="small notice warn">Since the last start, ${num(n.notTakenBack)} deleted or hidden ${n.notTakenBack === 1 ? 'post' : 'posts'} could not be taken back from other servers: the queue stayed full for about 40 hours.</p>` : ''}</section>`;
+    ${n.notTakenBack ? `<p class="small notice warn">Since the last start, ${num(n.notTakenBack)} deleted or hidden ${n.notTakenBack === 1 ? 'post or comment' : 'posts and comments'} could not be taken back from other servers: the queue stayed full for about 40 hours.</p>` : ''}
+    ${n.commentsNotSent ? `<p class="small notice warn">Since the last start, ${num(n.commentsNotSent)} ${n.commentsNotSent === 1 ? 'comment or edit' : 'comments and edits'} could not be sent to other servers: the queue stayed full for about 40 hours, or what they belong to (the comment, its post, its thread or the member answered) stopped being shown beyond this server before they went (the log says which).</p>` : ''}
+    ${n.forwardsSkipped ? `<p class="small">Since the last start, ${num(n.forwardsSkipped)} ${n.forwardsSkipped === 1 ? 'reply' : 'replies'} from other servers ${n.forwardsSkipped === 1 ? 'was' : 'were'} not passed on to members' followers: the hourly bounds were reached, the queue was busy, or the reply was too large or addressed privately.</p>` : ''}</section>`;
 }
 // Filled in by the dashboard and skill map editor further down.
 // What each instance mode means, in the words the dashboard shows (FLOWA_MODE, docs/federation.md).
@@ -476,7 +480,7 @@ document.addEventListener('click', async e => {
   switch (d.act) {
     case 'report': openReport(d.kind, Number(d.id), d.what); break;
     case 'mod-open': openAction({ ...d }); break;
-    case 'mod-do': if (await modAction({ action: d.do, kind: d.kind, id: Number(d.id) })) { toast('Done.'); refreshAfterMod(); } break;
+    case 'mod-do': { const done = await modAction({ action: d.do, kind: d.kind, id: Number(d.id) }); if (done) { toast(typeof done === 'string' ? done : 'Done.'); refreshAfterMod(); } break; }
     case 'mod-resolve': {
       const note = d.outcome === 'dismissed' ? prompt('Why leave it up? (optional, for the record)') : '';
       if (note === null) break;

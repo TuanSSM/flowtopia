@@ -187,7 +187,7 @@ try:
     check('the Federation tab: allowed servers only, no domain yet, and the deliveries refused counted',lambda: (lambda t: 'Allowed servers only' in t and 'No domain is allowed yet' in t and 'not signed' in t)(txt('#main') or ''),lambda: txt('#main')[:600])
     # The delivery queue (FWR 2): built and empty, since nothing in this version sends; its numbers come from the server.
     j=get_json(op,'admin/federation').get('deliveries') or {}
-    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Follows and their answers, Public posts, their deletions and profile changes' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
+    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Follows and their answers, Public posts, comments and likes, their edits and deletions, profile changes' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
     if tab_to('#fed-domain-form [name=domain]','the domain field'):
         check('the field shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
         type_text('Social.Example')
@@ -511,7 +511,7 @@ try:
       [...document.querySelectorAll('.fed-post .fed-media a')].map(a=>a.getAttribute('href'))]""")
     check('opened: its picture is loaded from this server only, its description is the alt text as written (escaped), and the video is a link to the original (answer supplied by the suite)',
       lambda: pic()==[True,'Two poi <script>x</script> in a fire circle',False,['https://files.social.example/c.mp4']],pic)
-    check('the remote post says what a member cannot do with it yet',lambda: 'Replies and likes for posts from other servers are not built yet' in (txt('.fed-post') or ''),lambda: txt('.fed-post'))
+    check('a remote post not marked public (no talk in the answer) says it cannot be liked or answered from here',lambda: 'Followers-only posts from other servers cannot be liked or answered from here' in (txt('.fed-post') or ''),lambda: txt('.fed-post'))
     for t in ('dark','light'):
         themed(t)
         n,p,d=js(A['NAMES'],'.fed-post'),js(A['PICTURES']),js(A['IDS'])
@@ -521,6 +521,51 @@ try:
     themed('dark')
     js("scrollTo(0,0)");frames()
     picture('federated-remote-post','Federated mode: a post of a followed account of another server in Home, opened past its content warning, its picture from this server (an answer supplied by the suite, no server asked)')
+    # Replies and likes across servers (FWR 6), drawn from an answer the suite supplies: a public post of another server
+    # offers Like and Comment; a post of this member holds a reply from another server (a hostile name and text, a
+    # content warning, an attachment) beside a member's comment, and likes counted with remote ones.
+    js("localStorage.removeItem('fl-tl')")
+    load(BASE)
+    ME=get_json(op,'me')['user']
+    js(STUB,'following')
+    js("""const bo={id:7,username:'bo@social.example',displayName:'Bo \\u202eexe <img src=x id=pwn9>',role:'user',avatar:'',remote:{id:7,handle:'bo@social.example',host:'social.example'}};
+      const me={id:arguments[0],username:arguments[1]};const mine={id:me.id,username:me.username,displayName:me.username,role:'admin',avatar:''};
+      const now=new Date().toISOString();
+      const rp={id:4243,userId:7,kind:'post',body:'A public post over there',prop:'',skill:'',image:'',data:{},created:now,likes:3,liked:false,comments:[],commentCount:0,
+        remote:{link:'https://social.example/@bo/2',kind:'Note',talk:true}};
+      const lp={id:4244,userId:me.id,kind:'post',body:'My figure 8 at last',prop:'',skill:'',image:'',data:{},created:now,likes:2,liked:false,commentCount:2,comments:[
+        {id:51,postId:4244,userId:7,body:'@admin <b id=pwn10>lovely</b> one, see https://social.example/@bo/9',created:now,likes:0,liked:false,replyCount:0,
+          remote:{link:'https://social.example/@bo/3',cw:'Spoilers \\u202e ahead',media:[{kind:'picture',link:'https://files.social.example/z.png',alt:'Two staffs'}]}},
+        {id:52,postId:4244,userId:me.id,body:'thanks @bo',created:now,likes:1,liked:false,replyCount:0}]};
+      const json=(d,st=200)=>Promise.resolve(new Response(JSON.stringify(d),{status:st,headers:{'Content-Type':'application/json'}}));
+      const prev=window.fetch;window.fetch=(u,o)=>{const p=String(u).replace(/^.*?api[/]/,'');
+        if(p==='posts'||p.startsWith('posts?'))return json({posts:[lp],users:{7:bo,[me.id]:mine},more:false});
+        if(p==='home'||p.startsWith('home?'))return json({posts:[rp,lp],users:{7:bo,[me.id]:mine},more:false});
+        return prev(u,o)};""",ME['id'],ME['username'])
+    js("localStorage.setItem('fl-tl','home')")
+    nav('#/timeline')
+    talk=lambda: js("""const c=document.querySelector('.fed-post');return c&&[c.querySelectorAll('[data-act=like],[data-act=cmt-toggle]').length,c.innerText.includes('cannot be liked'),(c.querySelector('[data-act=like] .num')||{}).textContent]""")
+    check('a public post of another server offers Like and Comment, with its likes counted (answer supplied by the suite)',lambda: talk()==[2,False,'3'],talk)
+    reply=lambda: js("""const c=document.querySelector('#c-51');if(!c)return null;return [(c.querySelector('.cmt-name bdi')||{}).textContent,(c.querySelector('.look-host')||{}).textContent,!!document.querySelector('[id^=pwn]'),
+      !!c.querySelector('a[href="#/u/admin"]'),!!c.querySelector('[data-act=cmt-edit]'),[...c.querySelectorAll('a[target=_blank]')].map(a=>a.getAttribute('href')).includes('https://social.example/@bo/3'),
+      (c.querySelector('.fed-cw summary')||{}).innerText||'',!!c.querySelector('[data-act=cmt-del]'),!!c.querySelector('[data-act=report]')]""")
+    check('a reply from another server under a post of this member: its name isolated with its host apart, its text as text with no @name linked, folded behind its warning, a link to the original, no Edit; Delete (the post is the member\'s) and Report',
+      lambda: (lambda v: bool(v) and v[0].startswith('Bo ‮exe') and v[1]=='social.example' and v[2] is False and v[3] is False and v[4] is False and v[5] and 'Spoilers' in v[6] and v[7] and v[8])(reply()),reply)
+    click('#c-51 .fed-cw summary')
+    opened=lambda: js("""const c=document.querySelector('#c-51');return [!!document.querySelector('[id^=pwn]'),(c.querySelector('.cmt-body')||{}).innerText,[...c.querySelectorAll('.fed-media a')].map(a=>a.getAttribute('href'))]""")
+    check('opened: the reply\'s words escaped, its web address linked, its attachment only a link to the original',
+      lambda: (lambda v: v[0] is False and '<b id=pwn10>lovely</b>' in v[1] and v[2]==['https://files.social.example/z.png'])(opened()),opened)
+    check('the member\'s own comment beside it keeps its Edit, and the post counts its likes from both servers',
+      lambda: js("return !!document.querySelector('#c-52 [data-act=cmt-edit]')&&document.querySelector('[data-post=\"4244\"] [data-act=like] .num').textContent==='2'"))
+    for t in ('dark','light'):
+        themed(t)
+        n,d=js(A['NAMES'],'[data-post="4244"]'),js(A['IDS'])
+        check(f'the reply from another server, {t}: every control and link has a name, no id repeats (a11y.py)',n['n']>0 and not n['bad'] and not d['bad'],lambda: (n,d))
+        r=js(C['CHECK'],'[data-post="4244"]',False,C['KNOWN'],'')
+        check(f'the reply from another server, {t}: text and the edges of controls stand out (contrast.py)',r['n']>0 and not r['bad'] and not r['unknown'],lambda: (r['n'],r['bad'][:4],r['unknown'][:4]))
+    themed('dark')
+    js("document.querySelector('[data-post=\"4244\"]').scrollIntoView()");frames()
+    picture('federated-remote-reply','Federated mode: a reply from another server under a post of this member, opened past its content warning, beside a member\'s comment, and a public post of another server with Like and Comment (answers supplied by the suite, no server asked)')
     js("localStorage.removeItem('fl-tl')")
     load(BASE)
     api(op,'me',{'federates':False},'PUT');api(op,'flags',{'flags':{'follows':False}},'PUT')
@@ -553,7 +598,7 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==17)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==18)
     else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.

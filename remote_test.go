@@ -1481,6 +1481,15 @@ func TestDBPurgeRemote(t *testing.T) {
 		`INSERT INTO ap_hosts (host, created_at) SELECT 'remote.example', now() FROM users WHERE id = %[2]d`,
 		// A local Public post's record of where it went (FWR 4): it names a remote inbox, so it goes too.
 		`INSERT INTO ap_post_out (post_id, user_id, state, targets) VALUES (%[3]d, %[2]d, 'sent', '[{"Actor":"https://remote.example/u/a","Inbox":"https://remote.example/inbox","SharedInbox":""}]')`,
+		// Replies and likes across servers (FWR 6): a remote reply under the local post with a member's answer to it
+		// (which goes with it), a remote like with its Like's id, a member's comment and like under the remote post (which
+		// go with it), and the record of a member's comment sent, which names a remote inbox.
+		`INSERT INTO comments (post_id, user_id, body, ap_id) VALUES (%[3]d, %[4]d, 'a remote reply', 'https://remote.example/r/1')`,
+		`INSERT INTO comments (post_id, user_id, body, parent_id) SELECT %[3]d, %[2]d, 'an answer', id FROM comments WHERE ap_id = 'https://remote.example/r/1'`,
+		`INSERT INTO likes (post_id, user_id, ap_id) VALUES (%[3]d, %[4]d, 'https://remote.example/l/1')`,
+		`INSERT INTO comments (post_id, user_id, body) SELECT id, %[2]d, 'under a remote post' FROM posts WHERE ap_id = 'https://remote.example/notes/1'`,
+		`INSERT INTO likes (post_id, user_id, ap_id) SELECT id, %[2]d, 'https://here.example/users/ana/activities/x' FROM posts WHERE ap_id = 'https://remote.example/notes/1'`,
+		`INSERT INTO ap_comment_out (comment_id, post_id, user_id, state, targets) SELECT id, post_id, user_id, 'sent', '[]' FROM comments WHERE body = 'under a remote post' AND user_id = %[2]d`,
 	} {
 		q = fmt.Sprintf(q, r0, anaID, p, r1, bossID)
 		if _, err := e.a.db.Exec(q); err != nil {
@@ -1511,7 +1520,7 @@ func TestDBPurgeRemote(t *testing.T) {
 	if err := purgeWith(e.a.db, media, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 3 follows, 1 blocks, 2 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records, 1 records of posts sent, 1 pictures of remote posts, 1 remembered deletions, and 1 cached picture files. Local accounts and their posts are as they were.\n"
+	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 2 comments, 2 likes, 0 comment likes, 3 follows, 1 blocks, 2 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records, 1 records of posts sent, 1 records of comments sent, 1 pictures of remote posts, 1 remembered deletions, and 1 cached picture files. Local accounts and their posts are as they were.\n"
 	if left, _ := os.ReadDir(media); len(left) != 1 || left[0].Name() != "README" {
 		t.Errorf("the media directory holds %v, want only the file the cache did not write", left)
 	}
@@ -1520,7 +1529,7 @@ func TestDBPurgeRemote(t *testing.T) {
 	}
 	if n := e.count(`SELECT count(*) FROM users WHERE domain <> ''`) + e.count(`SELECT count(*) FROM ap_actors`) + e.count(`SELECT count(*) FROM follows`) +
 		e.count(`SELECT count(*) FROM likes`) + e.count(`SELECT count(*) FROM comments`) + e.count(`SELECT count(*) FROM notifications`) + e.count(`SELECT count(*) FROM reports`) + e.count(`SELECT count(*) FROM blocks`) + e.count(`SELECT count(*) FROM ap_inbox`) +
-		e.count(`SELECT count(*) FROM ap_outbox`) + e.count(`SELECT count(*) FROM ap_deliveries`) + e.count(`SELECT count(*) FROM ap_hosts`) + e.count(`SELECT count(*) FROM ap_post_out`) +
+		e.count(`SELECT count(*) FROM ap_outbox`) + e.count(`SELECT count(*) FROM ap_deliveries`) + e.count(`SELECT count(*) FROM ap_hosts`) + e.count(`SELECT count(*) FROM ap_post_out`) + e.count(`SELECT count(*) FROM ap_comment_out`) +
 		e.count(`SELECT count(*) FROM ap_media`) + e.count(`SELECT count(*) FROM ap_deleted`); n != 0 {
 		t.Errorf("%d rows left behind", n)
 	}

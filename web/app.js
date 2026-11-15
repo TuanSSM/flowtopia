@@ -88,7 +88,7 @@ const FLAGS = [
 // The flags only a server that federates has (fedFlagDefaults in main.go), shown under Features only when the
 // server lists them, so a server that does not federate shows exactly the switches it always did.
 const FED_FLAGS = [
-  ['federation', 'Federation: take deliveries', 'Other servers can deliver to this Flowa\'s inboxes, from the domains the Federation tab lets in. It acts on follows and their answers, and on an account deleting itself or changing its profile; posts and likes are counted and dropped for now. When off, deliveries are answered "try again later", nothing waiting is handled, and nothing is sent.'],
+  ['federation', 'Federation: take deliveries', 'Other servers can deliver to this Flowa\'s inboxes, from the domains the Federation tab lets in. It acts on follows and their answers, on posts of the accounts members follow, on replies and likes of members\' posts, and on an account deleting itself or changing its profile. When off, deliveries are answered "try again later", nothing waiting is handled, and nothing is sent.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
 const ui = { graphView: localStorage.getItem('nf-view') || 'graph', draftFocus: [], palIdx: 0, prop: localStorage.getItem('fl-prop') || 'nunchaku', open: (localStorage.getItem('fl-groups') ?? localStorage.getItem('fl-prop') ?? 'nunchaku').split(',').filter(Boolean), users: null };

@@ -192,20 +192,23 @@ type app struct {
 	homeURL   string       // a link for admins to the machine's own start page (FLOWA_HOME_URL); "" means none
 	mode      instanceMode // how the instance runs (FLOWA_MODE); local unless the operator says otherwise
 	fed       *federation  // the origin, the keys and whether federation is refused; nil unless the mode federates
-	fedHost   string       // the origin's host in a mode that federates, a name no account may take (takenName); "" otherwise
-	version   string       // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
-	flagCache map[string]bool
-	flagsAt   time.Time
-	instMu    sync.Mutex    // guards instCache and instAt
-	instCache *instanceInfo // what instanceCached last read; nil after a save, so the next read asks the database
-	instAt    time.Time
-	pageMu    sync.Mutex   // guards page; held while the visitor's page is made, so a flood makes it once
-	page      *visitorPage // the visitor's page of a single-profile instance as last made; nil until asked, and after a save
-	sent      *onceStore   // posts and comments that named themselves, so a repeat is not a second one
-	reqLog    *requestLog  // one line per request; see logged
-	healthMu  sync.Mutex   // guards healthAt and healthWas
-	healthAt  time.Time    // when the database was last asked for GET /healthz
-	healthWas health       // what it said then
+	// remoteKept says, in local mode, that the database keeps rows of other servers from a time it federated (FWR 6):
+	// they are then left out of lists and counts (hidingRemote).
+	remoteKept bool
+	fedHost    string // the origin's host in a mode that federates, a name no account may take (takenName); "" otherwise
+	version    string // what this build is: buildVersion (a release tag, main.<commit>, or "dev"), or VERSION when set
+	flagCache  map[string]bool
+	flagsAt    time.Time
+	instMu     sync.Mutex    // guards instCache and instAt
+	instCache  *instanceInfo // what instanceCached last read; nil after a save, so the next read asks the database
+	instAt     time.Time
+	pageMu     sync.Mutex   // guards page; held while the visitor's page is made, so a flood makes it once
+	page       *visitorPage // the visitor's page of a single-profile instance as last made; nil until asked, and after a save
+	sent       *onceStore   // posts and comments that named themselves, so a repeat is not a second one
+	reqLog     *requestLog  // one line per request; see logged
+	healthMu   sync.Mutex   // guards healthAt and healthWas
+	healthAt   time.Time    // when the database was last asked for GET /healthz
+	healthWas  health       // what it said then
 	// fedHealthAt and fedHealthWas are the delivery queue's part of /healthz, asked only for a local probe and at
 	// most once every fedHealthEvery (guarded by healthMu, never held while the database is asked).
 	fedHealthAt  time.Time
@@ -535,6 +538,7 @@ type limits struct {
 	inbox                                       *limiter // verified deliveries per sender group (the last two labels of the key id's host), in a mode that federates
 	inboxHost                                   *limiter // verified deliveries per host of the key id, in a mode that federates
 	inboxAddr                                   *limiter // deliveries per address, before a signature is read, in a mode that federates
+	commentEdits                                *limiter // edits of comments per member, in a mode that federates (each may go out as an Update)
 }
 
 func newLimits() limits {
@@ -568,6 +572,9 @@ func newLimits() limits {
 		inbox:     newLimiter(inboxGroupRate, inboxGroupWindow),
 		inboxHost: newLimiter(inboxHostRate, inboxGroupWindow),
 		inboxAddr: newLimiter(inboxAddrRate, time.Hour),
+		// An edit of a comment that went out becomes an Update to the commenter's followers on other servers (FWR 6,
+		// after its third review): 120 an hour is a person fixing their words; local mode asks no allowance for an edit.
+		commentEdits: newLimiter(120, time.Hour),
 	}
 }
 
@@ -758,7 +765,9 @@ func pbkdf2Key(pw string, salt []byte, rounds, n int) []byte {
 	return key
 }
 
-func hashPassword(pw string) string { return hashWith(pw, pwRounds) }
+// hashPassword makes a new password's hash. A variable so the tests can keep the hash of their one admin password
+// (testhash_test.go) rather than make it again for every server they start.
+var hashPassword = func(pw string) string { return hashWith(pw, pwRounds) }
 
 // hashWith makes a hash with a given round count. The count is stored in the hash, so hashes
 // made before the count was raised still check.
@@ -3021,8 +3030,10 @@ func (a *app) targetOwner(kind string, id int64, viewer *user) (int64, error) {
 		err = a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`,
 			id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "comment":
+		// A comment under a post of another server only for who may read that post (FWR 6), as for the post.
 		err = a.db.QueryRow(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
-			AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+			AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)
+			AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "user":
 		err = a.db.QueryRow(`SELECT id FROM users WHERE id = $1`, id).Scan(&owner)
 	default:
@@ -3155,8 +3166,8 @@ func (a *app) fillQueueItem(it *queueItem) error {
 	case "post":
 		var body, image, reason, alt string
 		var data []byte
-		var hidden bool
-		err := a.db.QueryRow(`SELECT user_id, body, image, data, hidden_at IS NOT NULL, hidden_reason, alt FROM posts WHERE id = $1`, it.ID).Scan(&author, &body, &image, &data, &hidden, &reason, &alt)
+		var hidden, remote bool
+		err := a.db.QueryRow(`SELECT user_id, body, image, data, hidden_at IS NOT NULL, hidden_reason, alt, ap_id IS NOT NULL FROM posts WHERE id = $1`, it.ID).Scan(&author, &body, &image, &data, &hidden, &reason, &alt, &remote)
 		if errors.Is(err, sql.ErrNoRows) {
 			it.Target = map[string]any{"gone": true}
 			return nil
@@ -3165,14 +3176,17 @@ func (a *app) fillQueueItem(it *queueItem) error {
 			return err
 		}
 		it.Target = map[string]any{"body": body, "image": image, "data": json.RawMessage(data), "hidden": hidden, "hiddenReason": reason}
+		if remote { // another server's text, shown as text: no @name in it is a member here (FWR 5, 6)
+			it.Target["remote"] = true
+		}
 		if alt != "" { // the picture's description, which a moderator must see as written (FWR 4)
 			it.Target["alt"] = alt
 		}
 	case "comment":
 		var body, reason string
 		var post int64
-		var hidden, deleted bool
-		err := a.db.QueryRow(`SELECT user_id, post_id, body, hidden_at IS NOT NULL, hidden_reason, deleted FROM comments WHERE id = $1`, it.ID).Scan(&author, &post, &body, &hidden, &reason, &deleted)
+		var hidden, deleted, remote bool
+		err := a.db.QueryRow(`SELECT user_id, post_id, body, hidden_at IS NOT NULL, hidden_reason, deleted, ap_id IS NOT NULL FROM comments WHERE id = $1`, it.ID).Scan(&author, &post, &body, &hidden, &reason, &deleted, &remote)
 		if errors.Is(err, sql.ErrNoRows) || deleted {
 			it.Target = map[string]any{"gone": true}
 			return nil
@@ -3181,6 +3195,9 @@ func (a *app) fillQueueItem(it *queueItem) error {
 			return err
 		}
 		it.Target = map[string]any{"body": body, "postId": post, "hidden": hidden, "hiddenReason": reason}
+		if remote {
+			it.Target["remote"] = true
+		}
 	case "user":
 		author = it.ID
 		it.Target = map[string]any{}
@@ -3286,6 +3303,7 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 	detail := map[string]any{}
 	msg := ""
 	outMarked := false // a post's record of its way out was marked for a Delete (FWR 4)
+	cmtMarked := false // and a comment's (FWR 6)
 	table := map[string]string{"post": "posts", "comment": "comments"}[kind]
 	switch in.Action {
 	case "hide":
@@ -3298,6 +3316,14 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 			if mark, err = tx.Exec(`UPDATE ap_post_out SET state = 'delete' WHERE post_id = $1 AND state <> 'delete'`, in.ID); err == nil {
 				n, _ := mark.RowsAffected()
 				outMarked = n > 0
+			}
+		}
+		// A hidden comment is taken back the same way (FWR 6).
+		if err == nil && kind == "comment" && a.fed != nil {
+			var mark sql.Result
+			if mark, err = tx.Exec(`UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id = $1 AND state <> 'delete'`, in.ID); err == nil {
+				n, _ := mark.RowsAffected()
+				cmtMarked = n > 0
 			}
 		}
 	case "restore":
@@ -3363,9 +3389,21 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 	if outMarked {
 		a.fed.outWaits()
 	}
+	if cmtMarked {
+		a.fed.commentWaits()
+	}
 	a.notify(owner, u.ID, "moderation", 0, msg)
+	if in.Action == "restore" && a.fed != nil {
+		// The hide took it back from the servers it had gone to, and a restore sends nothing (FWR 4, 6): those servers
+		// keep the Delete, and would refuse the same id again. The moderator is told so.
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "note": restoredStaysHere})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// restoredStaysHere is what a restore answers in a mode that federates.
+const restoredStaysHere = "Restored here. If it had gone to other servers, it was taken back from them when it was hidden, and it stays on this server only."
 
 // handleResolve closes every open report about one thing, and tells each reporter.
 func (a *app) handleResolve(w http.ResponseWriter, r *http.Request, u *user) {
@@ -5843,14 +5881,14 @@ const dashOpenSQL = `SELECT count(DISTINCT (target_kind, target_id)) FROM report
 // comments_created (migration 6) answer it: asked as date_trunc('week', created_at) = week, every
 // week read every post and every comment, a third of a second for twelve weeks of 10,000 posts.
 // The practice sessions live inside the progress documents; they are unpacked once (MATERIALIZED),
-// not once per week.
+// not once per week. Posts and comments are this server's (FWR 5 and 6): what other servers send is not activity here.
 const dashWeeksSQL = `WITH weeks AS (SELECT generate_series(date_trunc('week', now()) - ($1 - 1) * interval '1 week', date_trunc('week', now()), interval '1 week') AS w),
 	sess AS MATERIALIZED (SELECT w, count(*) AS n FROM (SELECT CASE WHEN s->>'date' ~ '^\d{4}-\d{2}-\d{2}$' THEN date_trunc('week', (s->>'date')::date) END AS w
 		FROM progress, jsonb_array_elements(CASE WHEN jsonb_typeof(state->'sessions') = 'array' THEN state->'sessions' ELSE '[]' END) s) x GROUP BY w)
 	SELECT weeks.w,
 		COALESCE((SELECT n FROM sess WHERE sess.w = weeks.w), 0),
 		(SELECT count(*) FROM posts p WHERE p.created_at >= weeks.w AND p.created_at < weeks.w + interval '1 week' AND p.ap_id IS NULL),
-		(SELECT count(*) FROM comments c WHERE c.created_at >= weeks.w AND c.created_at < weeks.w + interval '1 week'),
+		(SELECT count(*) FROM comments c WHERE c.created_at >= weeks.w AND c.created_at < weeks.w + interval '1 week' AND c.ap_id IS NULL),
 		(SELECT count(*) FROM reports r WHERE r.created_at >= weeks.w AND r.created_at < weeks.w + interval '1 week')
 	FROM weeks ORDER BY weeks.w`
 
@@ -6014,7 +6052,7 @@ actor documents and public pages, and the inbox, further down; nothing is delive
 // get the member's Public posts and the changes of their profile (FWR 4).
 const (
 	fedSwitch      = "Share my profile and Public posts beyond this server"
-	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. People there can follow you, and you can follow them; your Public posts are sent to them, and so are changes to your profile. Practice, progress, notes, stats and badges never leave this server."
+	fedMemberBuilt = "Anyone, on other servers or in a browser, can read your profile and the posts you mark Public, without signing in. People there can follow you, and you can follow them; your Public posts are sent to them, and so are changes to your profile, your comments on Public posts and your likes of their public posts. Practice, progress, notes, stats and badges never leave this server."
 	fedUnavailable = "Sharing beyond this server is not available at the moment. Other servers cannot find anyone here."
 )
 
@@ -6414,7 +6452,8 @@ type federation struct {
 	postsDue atomic.Bool
 	postsAt  atomic.Int64 // when the first record held back (a Delete the full queue refused) is due; 0: none
 	cut      atomic.Int64 // activities that went only to the first deliveryTargetsMax addresses since the start
-	// notTakenBack counts the posts whose Delete the full queue refused past the delivery schedule's end, since the start.
+	// notTakenBack counts the posts and comments whose Delete the full queue refused past the delivery schedule's end,
+	// since the start (in memory, so a restart counts from nothing, as the tab says).
 	notTakenBack atomic.Int64
 	personAt     atomic.Int64
 	outBusy      atomic.Bool
@@ -6435,6 +6474,28 @@ type federation struct {
 	// test, hears of the steps where a Create holds its post's lock and a Delete is about to take it.
 	notesSince time.Time
 	noteHook   func(stage string)
+	// repliesIn, likesIn and forwardsOut count the remote replies and likes taken, and the replies forwarded, per sending
+	// host in an hour (FWR 6); repliesFull and likesFull say the caps in all were reached at housekeeping's last count.
+	repliesIn, likesIn, forwardsOut *limiter
+	// forwardsFor and forwardsAll bound the forwards per member and in all an hour; forwardsSkipped counts the replies
+	// not forwarded for a bound since the start.
+	forwardsFor, forwardsAll *limiter
+	forwardsSkipped          atomic.Int64
+	forwardsAsked            atomic.Int64 // the times forward asked the queue's counts (a test reads it)
+	forwardHook              func()       // when set by a test, called between forward's look at its allowances and their spending
+	repliesFull, likesFull   atomic.Bool
+	// commentsDue says a record of ap_comment_out may wait (commentWaits), commentsAt when the first one held back is
+	// due (a Delete the full queue refused), as postsDue and postsAt do for posts.
+	commentsDue atomic.Bool
+	commentsAt  atomic.Int64
+	// commentsNotSent counts the comments' Creates and Updates not sent: the full queue refused them past the schedule's
+	// end, or what they belong to stopped being shown beyond this server before they went; since the start; commentHook, when set by a test, hears of the producer's steps ("read": the record is read).
+	commentsNotSent atomic.Int64
+	// orphansAfter is where housekeeping's probe of comments gone without a Delete goes on from (talkOrphansSQL).
+	orphansAfter atomic.Int64
+	commentHook  func(stage string)
+	// notifyHook, when set by a test, may fail the notification of a reply or a like (notifyFedTx).
+	notifyHook func() error
 	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
 	// once in followAnswerEvery (followAnswerDue).
 	answersMu sync.Mutex
@@ -6464,7 +6525,10 @@ func newFederation(db *sql.DB, s fedSettings) *federation {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &federation{db: db, origin: s.origin, secret: s.secret, cache: map[keyOwner]cachedKey{}, gen: generateKey,
 		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupBy: map[int64]bool{}, lookupNow: time.Now, lookupPause: lookupWait,
-		conns: make(chan struct{}, fedConnsMax), notesIn: newLimiter(remoteNotesPerHostHour, time.Hour), deletesIn: newLimiter(remoteDeletedPerHostHour, time.Hour), ctx: ctx, cancel: cancel}
+		conns: make(chan struct{}, fedConnsMax), notesIn: newLimiter(remoteNotesPerHostHour, time.Hour), deletesIn: newLimiter(remoteDeletedPerHostHour, time.Hour),
+		repliesIn: newLimiter(remoteRepliesPerHostHour, time.Hour), likesIn: newLimiter(remoteLikesPerHostHour, time.Hour), forwardsOut: newLimiter(forwardsPerHostHour, time.Hour),
+		forwardsFor: newLimiter(forwardsPerMemberHour, time.Hour), forwardsAll: newLimiter(forwardsMaxHour, time.Hour),
+		ctx: ctx, cancel: cancel}
 }
 
 // lookupWait waits for d, or until ctx ends: lookupFloor's pause.
@@ -6868,6 +6932,7 @@ func (a *app) startFederation(s fedSettings) error {
 	f.out.produce = a.sendOut // FWR 4: Public posts, their deletions and profiles become activities in the workers
 	f.switches = a.outSwitches
 	f.postsDue.Store(true) // a record left by a stop is looked for at the first step
+	f.commentsDue.Store(true)
 	was, err := recordedOrigin(a.db)
 	if err != nil {
 		return err
@@ -6944,8 +7009,8 @@ func (a *app) startFederation(s fedSettings) error {
 		if err := f.out.readStart(a.db); err != nil {
 			return err
 		}
-		// A Public post's Create or Delete, or an Update of a profile, that waited for its worker at the stop (FWR 4):
-		// the workers start for it too.
+		// A Public post's Create or Delete, an Update of a profile (FWR 4), or a comment's Create, Update or Delete
+		// (FWR 6), that waited for its worker at the stop: the workers start for it too.
 		// A post that went out and was deleted or hidden while the server ran in local mode (where nothing marks it)
 		// is still on the servers it went to: its Delete goes now.
 		if _, err := a.db.Exec(`UPDATE ap_post_out o SET state = 'delete' WHERE o.state = 'sent'
@@ -6953,7 +7018,8 @@ func (a *app) startFederation(s fedSettings) error {
 			return err
 		}
 		var out bool
-		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_post_out WHERE state <> 'sent') OR EXISTS (SELECT 1 FROM ap_person_out WHERE due_at IS NOT NULL)`).Scan(&out); err != nil {
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_post_out WHERE state <> 'sent') OR EXISTS (SELECT 1 FROM ap_person_out WHERE due_at IS NOT NULL)
+			OR EXISTS (SELECT 1 FROM ap_comment_out WHERE state <> 'sent')`).Scan(&out); err != nil {
 			return err
 		}
 		if out {
@@ -7669,11 +7735,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows, and sends the Public posts of members who share their profile to their followers on other servers, with a post's deletion and a profile's changes, and keeps the posts of the accounts its members follow on other servers for those members' Home (their pictures copied into its own bounded cache, a member told when one mentions them or shares their post), while replies and likes sent to it are counted and dropped"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows, and sends the Public posts of members who share their profile to their followers on other servers, with a post's deletion and a profile's changes, and keeps the posts of the accounts its members follow on other servers for those members' Home (their pictures copied into its own bounded cache, a member told when one mentions them or shares their post), and takes replies and likes from other servers to its members' Public posts and comments, and sends its members' comments on Public posts and their likes and comments on public posts of other servers, with an edit, a deletion and an unlike"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows", "posts", "home"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows", "posts", "home", "replies"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -15065,7 +15131,7 @@ func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use ke
 var userRefs = []struct{ table, column string }{
 	{"achievements", "user_id"}, {"ap_inbox", "actor_id"}, {"ap_keys", "user_id"}, {"ap_outbox", "actor_id"}, {"ap_person_out", "user_id"}, {"ap_post_out", "user_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
 	{"blocks", "user_id"}, {"bookmarks", "user_id"}, {"catalog_revisions", "author_id"}, {"comment_likes", "user_id"},
-	{"comments", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
+	{"comments", "user_id"}, {"ap_comment_out", "user_id"}, {"ap_like_out", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
 	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"},
 	{"notifications", "user_id"}, {"posts", "user_id"}, {"progress", "user_id"}, {"reports", "reporter_id"},
 	{"reports", "resolver_id"}, {"sessions", "user_id"},
@@ -16993,6 +17059,19 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyI
 		if !known {
 			return inFlags, kind
 		}
+	case act.Kind == "Like":
+		// A Like (FWR 6): only of a post or a comment of this server (likeShaped), kept only with the switches on, as
+		// a Follow is; unread switches are a retry, never a drop.
+		if !f.likeShaped(act) {
+			return inDropped, kind
+		}
+		on, known := f.followsState()
+		if known && !on {
+			return inDropped, kind
+		}
+		if !known {
+			return inFlags, kind
+		}
 	case act.Kind == "Delete":
 		// A Delete of a post (FWR 5): only of an object on the actor's own origin (7.3, "only the origin may delete
 		// its objects"); the worker then removes it only when the actor wrote it.
@@ -17108,14 +17187,16 @@ const inboxClaimSQL = `UPDATE ap_inbox SET locked_until = $1::timestamptz + make
 		ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
 	RETURNING id, actor_id, kind, attempts`
 
-// actorGoneSQL marks account $1 gone, and removes its remote posts, its follows both ways and the share and mention
-// notifications it sent, giving the files of its posts' pictures.
-const actorGoneSQL = `WITH m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL) AND file <> ''),
+// actorGoneSQL marks account $1 gone, and removes its remote posts, its follows both ways, its replies and likes here
+// (FWR 6, remoteTalkGone) and the share, mention, comment, reply and like notifications it sent, giving the files of
+// its posts' pictures.
+var actorGoneSQL = `WITH m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL) AND file <> ''),
 	p AS (DELETE FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL RETURNING 1),
 	f AS (DELETE FROM follows WHERE follower_id = $1 OR followee_id = $1 RETURNING 1),
 	a AS (UPDATE ap_actors SET state = 'gone' WHERE user_id = $1 RETURNING 1),
-	n AS (DELETE FROM notifications WHERE actor_id = $1 AND kind IN ('share', 'mention') RETURNING 1)
-	SELECT COALESCE((SELECT array_agg(file) FROM m), '{}') FROM (SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM f) + (SELECT count(*) FROM a) + (SELECT count(*) FROM n)) x`
+	n AS (DELETE FROM notifications WHERE actor_id = $1 AND kind IN (` + remoteTalkKinds + `) RETURNING 1),` + remoteTalkGone("$1") + `
+	SELECT COALESCE((SELECT array_agg(file) FROM m), '{}') FROM (SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM f) + (SELECT count(*) FROM a) + (SELECT count(*) FROM n)
+		+ (SELECT count(*) FROM rk) + (SELECT count(*) FROM rd) + (SELECT count(*) FROM rl) + (SELECT count(*) FROM rcl) + (SELECT count(*) FROM rck)) x`
 
 // errRetry is a handling that failed for this server's reason, to be tried again later.
 type errRetry struct{ why string }
@@ -17220,13 +17301,15 @@ func (q *inboxQueue) handle(ctx context.Context, row, actor int64, kind string) 
 	// The stored activity, for every type that reads more than its actor: decoded again as the inbox decoded it.
 	var act *apActivity
 	var received time.Time
+	var raw []byte // the activity as it came, which a reply's forward sends on (FWR 6)
 	switch kind {
-	case "Delete", "Create", "Update", "Announce", "Follow", "Accept", "Reject", "Undo", "Block":
+	case "Delete", "Create", "Update", "Announce", "Like", "Follow", "Accept", "Reject", "Undo", "Block":
 		var body sql.NullString
 		if err := f.fedRow(ctx, []any{&body, &received}, `SELECT body, received_at FROM ap_inbox WHERE id = $1`, row); err != nil {
 			return "", &errRetry{"the database"}
 		}
-		act, err = decodeActivity([]byte(body.String), inboxBodyMax)
+		raw = []byte(body.String)
+		act, err = decodeActivity(raw, inboxBodyMax)
 		switch {
 		case err == nil && act.Actor == apID && len(act.Object) == 1:
 		case kind == "Update" || kind == "Delete" && received.Before(f.notesSince):
@@ -17244,9 +17327,11 @@ func (q *inboxQueue) handle(ctx context.Context, row, actor int64, kind string) 
 		// A post deleted by its author (FWR 5): removed with its pictures and notifications.
 		return f.noteDeleted(ctx, signer, act.Object[0].ID)
 	case (kind == "Create" || kind == "Update") && !self:
-		return f.noteIn(ctx, signer, act, received)
+		return f.noteIn(ctx, signer, act, received, raw)
 	case kind == "Announce":
 		return f.announced(ctx, signer, act.Object[0].ID)
+	case kind == "Like":
+		return f.likedIn(ctx, signer, act)
 	}
 	switch kind {
 	case "Delete":
@@ -17416,6 +17501,13 @@ const (
 // wait moved by up to deliveryJitter either way, so even the longest stays within deliveryHorizon.
 var deliveryRetries = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 12 * time.Hour, 12 * time.Hour}
 
+// The bounds of a line of activities of one object that come after each other (FWR 6, after its third review).
+const (
+	afterHeldDepth    = 64                                   // the activities afterHeldSQL looks back through, at most
+	commentUpdateGap  = deliveryOwnWait                      // the least time between two activities of one comment: later edits fold into the next Update
+	commentUpdatesMax = int(editWindow/commentUpdateGap) + 1 // the most Updates a comment's line holds: one per gap over its edit window, and one more for the edits of the last gap
+)
+
 // errDeliveryFull is enqueue's answer while deliveryWaitingMax activities wait for their fan-out already: the caller
 // keeps what it would have sent (the post exists) and the activity is not written.
 var errDeliveryFull = errors.New("the delivery queue is full: too many activities wait to be sent")
@@ -17504,11 +17596,15 @@ type deliveryQueue struct {
 	waiting           atomic.Bool          // activities may wait for their fan-out
 	wake              chan struct{}
 	once              sync.Once
-	manual            bool // set by a test, which then calls step itself: no worker starts
-	ctx               context.Context
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
-	stats             inboxStats // "sent" and "given up" by the hour, for the Federation tab
+	running           atomic.Bool // the workers were started (a test asks)
+	// enqueueHook, when set by a test, hears of an enqueue's steps: "lock" before it takes the queue's lock, "read"
+	// once it holds it and has read what the activity comes after (outOrder.afterTx).
+	enqueueHook func(stage, apID string)
+	manual      bool // set by a test, which then calls step itself: no worker starts
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	stats       inboxStats // "sent" and "given up" by the hour, for the Federation tab
 	// claimStmt is deliveryClaimSQL prepared once (claim): planning it took longer than running it (1.7 ms against
 	// 0.6 ms with 50,000 rows), and a prepared statement is planned once per connection.
 	claimStmt atomic.Pointer[sql.Stmt]
@@ -17740,6 +17836,24 @@ func (q *deliveryQueue) enqueueThen(ctx context.Context, actor keyOwner, apID st
 // before ("" for none): a post's Delete takes back its Create, an Undo its Follow. At each inbox the first is never
 // overtaken (takeBack, and deliver at the send).
 func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, undoes string, then func(*sql.Tx) error) (enqueued, error) {
+	return q.enqueueOrdered(ctx, actor, apID, body, to, outOrder{undoes: undoes}, then)
+}
+
+// outOrder is where an activity stands among the activities of its object that this server enqueued (FWR 6): undoes
+// the one it takes back, after the one that must be settled at an inbox before it is sent there (afterHeldSQL: a
+// comment's Update after its Create or the Update before it, a Like after the Undo of the like before it), chain that
+// what it takes back is the last of such a line, which the takeback then covers whole at each inbox (a comment's
+// Delete: takeBackSQL). Each is an activity id, "" for none. afterTx, when set, gives after inside the enqueue's
+// transaction, once it holds the queue's lock: what a member's likes and unlikes of one post come after is read there,
+// so two of their clicks at once each read what the other wrote (ap_like_out).
+type outOrder struct {
+	undoes, after string
+	chain         bool
+	afterTx       func(*sql.Tx) (string, error)
+}
+
+// enqueueOrdered is enqueueThen for an activity with its place among those of its object (outOrder).
+func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, o outOrder, then func(*sql.Tx) error) (enqueued, error) {
 	var out enqueued
 	f := q.f
 	switch {
@@ -17776,6 +17890,9 @@ func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID st
 	}
 	// One enqueue or fan-out at a time, so the counts below are the counts the rows are written against and the
 	// caps hold exactly (workers only take rows away meanwhile).
+	if q.enqueueHook != nil {
+		q.enqueueHook("lock", apID)
+	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
 		return out, err
 	}
@@ -17786,12 +17903,20 @@ func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID st
 	if waiting >= deliveryWaitingMax {
 		return out, errDeliveryFull
 	}
+	if o.afterTx != nil {
+		if o.after, err = o.afterTx(tx); err != nil {
+			return out, err
+		}
+	}
+	if q.enqueueHook != nil {
+		q.enqueueHook("read", apID)
+	}
 	now := q.now()
 	var id int64
 	var undo sql.NullInt64
-	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at, undoes)
-		VALUES ($1, $2, $3, $4, $5, (SELECT u.id FROM ap_outbox u WHERE u.ap_id = $6 AND $6 <> '')) ON CONFLICT (ap_id) DO NOTHING RETURNING id, undoes`,
-		apID, actor.arg(), string(body), pq.Array(inboxes), now, undoes).Scan(&id, &undo)
+	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at, undoes, undoes_chain, comes_after)
+		VALUES ($1, $2, $3, $4, $5, (SELECT u.id FROM ap_outbox u WHERE u.ap_id = $6 AND $6 <> ''), $7, NULLIF($8, '')) ON CONFLICT (ap_id) DO NOTHING RETURNING id, undoes`,
+		apID, actor.arg(), string(body), pq.Array(inboxes), now, o.undoes, o.chain, o.after).Scan(&id, &undo)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.Duplicate = true
 		if then == nil {
@@ -17806,13 +17931,19 @@ func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID st
 		return out, err
 	}
 	// The activity taken back still waits for its own fan-out (the queue was full): it never goes anywhere, so neither
-	// does this one (8.8, "Taking back").
+	// does this one (8.8, "Taking back"). Of a line (chain), each activity still waiting never goes; when its first
+	// waits too, nothing of the line went anywhere, and this one is dropped with them. Those no longer wait, so this
+	// one is fanned out now when nothing else waits.
 	if undo.Valid {
 		var never bool
-		if err := tx.QueryRowContext(ctx, `WITH c AS (UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1 AND NOT fanned_out RETURNING id)
-			SELECT EXISTS (SELECT 1 FROM c)`, undo.Int64).Scan(&never); err != nil {
+		var gone int
+		if err := tx.QueryRowContext(ctx, `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT $2 FROM ap_outbox o WHERE o.id = $1
+				UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
+			w AS (UPDATE ap_outbox o SET fanned_out = true, targets = NULL FROM c WHERE o.id = c.id AND NOT o.fanned_out RETURNING c.root)
+			SELECT COALESCE(bool_or(root), false), count(*) FROM w`, undo.Int64, o.chain).Scan(&never, &gone); err != nil {
 			return out, err
 		}
+		waiting -= gone
 		if never {
 			if _, err := tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id); err != nil {
 				return out, err
@@ -17934,15 +18065,23 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 
 // takeBackSQL is what the fan-out of activity $1, which takes back activity $2 ($3 the queue's clock), does to the
 // rows of both, so that at no inbox the second overtakes the first and none is lost (8.8, "Taking back"; one still
-// waiting for its own fan-out was dropped with the second by enqueueUndo). At each inbox of the second:
+// waiting for its own fan-out was dropped with the second by enqueueOrdered). When the second's undoes_chain says the
+// first is the last of a line (a comment's Update, whose comes_after names the Update or the Create before it), "the
+// first" below is every activity of that line back to its start (c), and the line's start is the one that has no
+// comes_after (the Create; a line whose start was removed by housekeeping has none, and is never taken as unsent). At
+// each inbox of the second:
 //   - the first queued and not claimed, with attempts 0: no request for it ever left (below), so it is given up
-//     ("taken back before it was sent") and the second's row for that inbox goes too: there is nothing to take back;
+//     ("taken back before it was sent"), and when the start of the line was among them, no row of the line is left
+//     queued there and none had an attempt, the second's row for that inbox goes too: there is nothing to take back
+//     (an activity of a line is never sent to an inbox while one before it is queued there, afterHeldSQL). Counting the
+//     rows queued against those given up covers a claim made after this statement's snapshot (g then waits for the row
+//     and, rechecked, leaves it alone): the second then stays;
 //   - the first queued and not claimed after an attempt (a 5xx, a time out, a refusal, a redirect, an open circuit
 //     holding it): that request may have arrived (a 504 from the other server's proxy after it stored the post), so the
 //     first is given up ("taken back after an attempt") and the second goes as any row;
 //   - the first claimed (a request may be in flight): the second is due no earlier than the end of its lease, and
-//     deliver asks again at the send (heldBackSQL), which also covers a claim made after this statement's snapshot (g
-//     then waits for the row and, rechecked, leaves it alone, and h does not see it).
+//     deliver asks again at the send (heldBackSQL), which also covers a claim made after this statement's snapshot (h
+//     does not see it).
 //
 // attempts counts the claims that may have sent a request. A claim counts one, and every path that gives a claimed row
 // back unsent takes it back (giveBack, attempts - 1): another worker of this process sending to the host, the clock
@@ -17954,25 +18093,54 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 // from being claimed at all, and a policy refusal at the send gives the row up (failed, not queued). A lease that runs
 // out (a stop past its bounds, a crash) keeps its attempt: that request may have left.
 // It says how many rows of the second went.
-const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3,
+const takeBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT k.undoes_chain
+			FROM ap_outbox o, ap_outbox k WHERE o.id = $2 AND k.id = $1
+		UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
+	r AS (SELECT p.id AS row_id, p.state, p.locked_until, p.attempts, c.root, p.inbox FROM c, ap_deliveries n, LATERAL (SELECT d.id, d.state, d.locked_until, d.attempts, d.inbox
+			FROM ap_deliveries d WHERE d.outbox_id = c.id AND d.inbox = n.inbox OFFSET 0) p WHERE n.outbox_id = $1 AND p.state = 'queued'),
+	k AS (SELECT d.id FROM ap_deliveries d WHERE d.id IN (SELECT row_id FROM r) AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)
+		ORDER BY d.id FOR UPDATE),
+	g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3,
 			last_error = CASE WHEN d.attempts = 0 THEN 'taken back before it was sent' ELSE 'taken back after an attempt that may have arrived' END
-		WHERE d.outbox_id = $2 AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)
-			AND EXISTS (SELECT 1 FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox = d.inbox) RETURNING d.inbox, d.attempts),
-	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM g WHERE attempts = 0) RETURNING n.id),
-	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, d.locked_until) FROM ap_deliveries d
-		WHERE n.outbox_id = $1 AND d.outbox_id = $2 AND d.inbox = n.inbox AND d.state = 'queued' AND d.locked_until >= $3 RETURNING n.id)
+		FROM r WHERE d.id = r.row_id AND d.id IN (SELECT id FROM k) AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3) RETURNING d.inbox, d.attempts, r.root),
+	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT g.inbox FROM g GROUP BY g.inbox
+			HAVING bool_or(g.root) AND max(g.attempts) = 0 AND count(*) = (SELECT count(*) FROM r WHERE r.inbox = g.inbox))
+		RETURNING n.id),
+	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, l.until) FROM (SELECT inbox, max(locked_until) AS until FROM r WHERE locked_until >= $3 GROUP BY inbox) l
+		WHERE n.outbox_id = $1 AND n.inbox = l.inbox RETURNING n.id)
 	SELECT (SELECT count(*) FROM x) + 0 * (SELECT count(*) FROM h)`
 
 // heldBackSQL is deliver's question, at the send of a row of an activity that takes back activity $1 to inbox $2 ($3
-// the queue's clock): is the first still queued for that inbox? Its row is locked first (FOR UPDATE: a claim by another
-// worker made after this statement began is waited for and then seen as it is now), and the conditions are the locked
-// row's. Claimed: the end of its lease, until which the second waits. Not claimed (it failed in flight and waits for
-// another attempt): it is given up, and the second is sent, since the first may have arrived before its answer was
-// lost.
-const heldBackSQL = `WITH x AS (SELECT id, locked_until FROM ap_deliveries WHERE outbox_id = $1 AND inbox = $2 AND state = 'queued' FOR UPDATE),
+// the queue's clock; $4 its undoes_chain, which makes the first the whole line, as in takeBackSQL): is the first still
+// queued for that inbox? Its rows are locked first (FOR UPDATE: a claim by another worker made after this statement
+// began is waited for and then seen as it is now), and the conditions are the locked rows'. Claimed: the end of its
+// lease, until which the second waits. Not claimed (it failed in flight and waits for another attempt, or it waits
+// behind one before it in its line): it is given up, and the second is sent, since the first may have arrived before
+// its answer was lost.
+const heldBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT $4 FROM ap_outbox o WHERE o.id = $1
+		UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
+	x AS (SELECT d.id, d.locked_until FROM c, LATERAL (SELECT id FROM ap_deliveries WHERE outbox_id = c.id AND inbox = $2 OFFSET 0) k, ap_deliveries d
+		WHERE d.id = k.id AND d.state = 'queued' ORDER BY d.id FOR UPDATE OF d),
 	g AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $3, last_error = 'taken back after an attempt that may have arrived'
 		FROM x WHERE d.id = x.id AND (x.locked_until IS NULL OR x.locked_until < $3) RETURNING d.id)
 	SELECT (SELECT max(locked_until) FROM x WHERE locked_until >= $3), (SELECT count(*) FROM g)`
+
+// afterHeldSQL is deliver's question, at the send of a row of an activity that comes after activity $1 (its
+// comes_after) to inbox $2: is that one, or one before it in its line, still queued there (in flight or waiting for
+// another attempt)? It answers when the last of them is due or its lease ends, until which the row waits; and whether
+// one of them still waits for its fan-out (it never does once this one is fanned out: the queue fans out in order, and
+// enqueueOrdered marks those it drops). The one before is never given up for it: when it is given up for good at that
+// inbox (its attempts spent, its 48 hours past, the domain policy), this one is sent after it all the same. Nothing is
+// locked: a row that is no longer queued never is again.
+//
+// The walk goes back at most afterHeldDepth ($3) activities: a comment's line is far shorter (commentUpdateGap), and a
+// member's likes and unlikes of one post reach that many only by a script toggling it while an early Undo still
+// retries, whose own like there may then end wrong.
+const afterHeldSQL = `WITH RECURSIVE c(id, after, depth) AS (SELECT o.id, o.comes_after, 1 FROM ap_outbox o WHERE o.ap_id = $1
+		UNION ALL SELECT o.id, o.comes_after, c.depth + 1 FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE o.id < c.id AND c.depth < $3)
+	SELECT (SELECT max(GREATEST(d.next_at, d.locked_until)) FROM c, LATERAL (SELECT next_at, locked_until FROM ap_deliveries
+			WHERE outbox_id = c.id AND inbox = $2 AND state = 'queued' OFFSET 0) d),
+		EXISTS (SELECT 1 FROM c, LATERAL (SELECT 1 FROM ap_outbox o WHERE o.id = c.id AND NOT o.fanned_out OFFSET 0) w)`
 
 // fanOutDue fans out the oldest waiting activity once the queue is under deliveryQueueResume (8.5). Workers call it
 // before a claim, at most once every deliveryPoll, and only while activities may wait.
@@ -18070,6 +18238,7 @@ func (q *deliveryQueue) enter() bool {
 
 // start starts the workers, each counted in the queue's own wait group, which the federation's stop waits for (8.6).
 func (q *deliveryQueue) start() {
+	q.running.Store(true)
 	for range q.workers {
 		if !q.enter() {
 			return
@@ -18118,7 +18287,8 @@ const deliveryClaimSQL = `UPDATE ap_deliveries d SET locked_until = $1::timestam
 		WHERE q.state = 'queued' AND q.next_at <= $1 AND (q.locked_until IS NULL OR q.locked_until < $1) AND q.host <> ALL($3::text[])
 			AND NOT EXISTS (SELECT 1 FROM ap_hosts h WHERE h.host = q.host AND h.state <> 'ok' AND (h.until > $1 OR h.state = 'unavailable'))
 		ORDER BY q.next_at, q.id LIMIT 1 FOR UPDATE OF q SKIP LOCKED)
-	RETURNING d.id, d.inbox, d.host, d.attempts, d.created_at, d.locked_until, o.actor_id, o.body, COALESCE((SELECT h.sig FROM ap_hosts h WHERE h.host = d.host), 'cavage'), o.undoes`
+	RETURNING d.id, d.inbox, d.host, d.attempts, d.created_at, d.locked_until, o.actor_id, o.body, COALESCE((SELECT h.sig FROM ap_hosts h WHERE h.host = d.host), 'cavage'), o.undoes,
+		o.undoes_chain, COALESCE(o.comes_after, '')`
 
 // claimedRow is a row a worker holds: lease is its locked_until, which every later statement about it names, so a
 // worker that lost its lease changes nothing.
@@ -18133,6 +18303,8 @@ type claimedRow struct {
 	body     []byte
 	sig      string
 	undoes   sql.NullInt64 // the activity this one takes back (8.8, "Taking back"), if any
+	chain    bool          // what it takes back is the last of a line (outOrder)
+	after    string        // the activity that must be settled at the inbox first (outOrder), "" for none
 }
 
 func (q *deliveryQueue) busyHosts() []string {
@@ -18184,7 +18356,7 @@ func (q *deliveryQueue) claim(ctx context.Context, busy []string) (*claimedRow, 
 		}
 	}
 	c := &claimedRow{}
-	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig, &c.undoes)
+	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig, &c.undoes, &c.chain, &c.after)
 	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -18252,11 +18424,26 @@ func (q *deliveryQueue) deliver(ctx context.Context, c *claimedRow) error {
 		// longer allowed, since then gets nothing (section 10).
 		return q.fail(c, "the domain policy refuses the host")
 	}
+	// An activity that comes after another of its object is never sent to an inbox while that one is still on its way
+	// there (FWR 6).
+	if c.after != "" {
+		var until sql.NullTime
+		var waits bool
+		if err := q.row(ctx, []any{&until, &waits}, afterHeldSQL, c.after, c.inbox, afterHeldDepth); err != nil {
+			return q.giveBack(c, q.ownWait(ctx))
+		}
+		if waits {
+			return q.giveBack(c, deliveryOwnWait)
+		}
+		if until.Valid {
+			return q.giveBack(c, max(until.Time.Sub(q.now()), 0)+time.Second)
+		}
+	}
 	// An activity that takes back another is never sent to an inbox before the first's outcome there (8.8).
 	if c.undoes.Valid {
 		var until sql.NullTime
 		var gaveUp int
-		if err := q.row(ctx, []any{&until, &gaveUp}, heldBackSQL, c.undoes.Int64, c.inbox, q.now()); err != nil {
+		if err := q.row(ctx, []any{&until, &gaveUp}, heldBackSQL, c.undoes.Int64, c.inbox, q.now(), c.chain); err != nil {
 			return q.giveBack(c, q.ownWait(ctx))
 		}
 		if until.Valid {
@@ -18455,8 +18642,7 @@ func (q *deliveryQueue) record(c *claimedRow, form sigForm, err error) error {
 		// Every other row for that inbox would be answered the same, and the followers whose inbox it was go (goneInbox).
 		ctx, cancel := own()
 		defer cancel()
-		if _, err := q.exec(ctx, `UPDATE ap_deliveries SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = $4
-			WHERE host = $1 AND inbox = $2 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $3)`, c.host, c.inbox, now, why); err != nil {
+		if _, err := q.exec(ctx, inboxGoneSQL, c.host, c.inbox, now, why); err != nil {
 			return err
 		}
 		if q.goneInbox != nil {
@@ -18503,9 +18689,38 @@ func (q *deliveryQueue) hostAnswered(host string, now time.Time, hold time.Durat
 	if _, err := q.exec(ctx, `UPDATE ap_hosts SET state = 'open', until = GREATEST(COALESCE(until, $2), $2) WHERE host = $1 AND state <> 'unavailable'`, host, until); err != nil {
 		return err
 	}
-	_, err := q.exec(ctx, `UPDATE ap_deliveries SET next_at = $2 WHERE host = $1 AND state = 'queued' AND next_at < $2 AND (locked_until IS NULL OR locked_until < $3)`, host, until, now)
+	_, err := q.exec(ctx, hostHeldSQL, host, until, now)
 	return err
 }
+
+// inboxGoneSQL gives up every queued row of inbox $2 of host $1 not claimed ($3 the clock, $4 why): after a 410 for one,
+// each would be answered the same. hostHeldSQL moves the queued rows of host $1 not claimed to $2 ($3 the clock): the
+// end of a 429's Retry-After, or of a circuit that opened. hostGoneSQL gives up every queued row of host $1, claimed or
+// not ($2 the clock), once the host is marked unavailable. All lock their rows in the order of their ids
+// (deliveryLockOrder).
+const (
+	hostGoneSQL = `UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $2, last_error = 'the host is unavailable'
+	FROM (SELECT id FROM ap_deliveries WHERE host = $1 AND state = 'queued' ORDER BY id FOR UPDATE) k
+	WHERE d.id = k.id AND d.state = 'queued'`
+	inboxGoneSQL = `UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = $4
+	FROM (SELECT id FROM ap_deliveries WHERE host = $1 AND inbox = $2 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $3)
+		ORDER BY id FOR UPDATE) k
+	WHERE d.id = k.id AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)`
+	hostHeldSQL = `UPDATE ap_deliveries d SET next_at = $2
+	FROM (SELECT id FROM ap_deliveries WHERE host = $1 AND state = 'queued' AND next_at < $2 AND (locked_until IS NULL OR locked_until < $3)
+		ORDER BY id FOR UPDATE) k
+	WHERE d.id = k.id AND d.state = 'queued' AND d.next_at < $2 AND (d.locked_until IS NULL OR d.locked_until < $3)`
+)
+
+// deliveryLockOrder: every statement that locks several rows of ap_deliveries takes them in the order of their ids
+// (a subquery with ORDER BY id FOR UPDATE: the rows are locked as the sorted rows come out): the 410 answer's rows of an
+// inbox, a 429's or an opened circuit's rows of a host (hostHeldSQL), an unavailable host's rows (hostGoneSQL),
+// housekeeping's two pulls of rows dated by a clock that was ahead (deliveryPullDueSQL, deliveryPullAgeSQL),
+// takeBackSQL's and heldBackSQL's rows of a line at an inbox. Two workers locking rows they both want then never each
+// hold one the other waits for (after the third and fourth reviews; TestDBDeliveryLockOrder reads each plan). The
+// statements that touch one row by its id (the claim, which skips a locked row, the send's outcome, a give-back) take
+// one lock and cannot close a cycle; housekeeping's removals touch only failed rows, which nothing else locks; the rows
+// an enqueue or a fan-out writes or removes are its own activity's, which no one else holds yet.
 
 // fail gives a row up (8.3): kept deliveryKeep for the Federation tab, then removed by housekeeping.
 func (q *deliveryQueue) fail(c *claimedRow, why string) error {
@@ -18579,7 +18794,7 @@ func (q *deliveryQueue) hostFailed(host, why string, now time.Time) error {
 		if _, err := q.exec(ctx, `UPDATE ap_hosts SET state = 'open', until = $2, failures = 0, failing_since = NULL WHERE host = $1`, host, until); err != nil {
 			return err
 		}
-		_, err := q.exec(ctx, `UPDATE ap_deliveries SET next_at = $2 WHERE host = $1 AND state = 'queued' AND next_at < $2 AND (locked_until IS NULL OR locked_until < $3)`, host, until, now)
+		_, err := q.exec(ctx, hostHeldSQL, host, until, now)
 		return err
 	}
 	return nil
@@ -18598,7 +18813,7 @@ func (q *deliveryQueue) markUnavailable(ctx context.Context, host string, now ti
 	q.mu.Lock()
 	q.unavail[host] = true
 	q.mu.Unlock()
-	n, err := q.exec(ctx, `UPDATE ap_deliveries SET state = 'failed', locked_until = NULL, failed_at = $2, last_error = 'the host is unavailable' WHERE host = $1 AND state = 'queued'`, host, now)
+	n, err := q.exec(ctx, hostGoneSQL, host, now)
 	for range n {
 		q.stats.handled(time.Now(), "given up")
 	}
@@ -18688,7 +18903,11 @@ type deliveryNumbers struct {
 	QueueMax     int              `json:"queueMax"`
 	FailedMax    int              `json:"failedMax"`              // Failed stops counting here: the page says "or more"
 	Cut          int64            `json:"cut,omitempty"`          // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
-	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts whose Delete the full queue refused past the schedule's end, since the start (FWR 4)
+	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts and comments whose Delete the full queue refused past the schedule's end, since the start (FWR 4, 6)
+	// CommentsNotSent are the comments' Creates and Updates not sent (the full queue, or what they belong to no longer shown), and
+	// ForwardsSkipped the replies from other servers not forwarded for a bound, both since the start (FWR 6).
+	CommentsNotSent int64 `json:"commentsNotSent,omitempty"`
+	ForwardsSkipped int64 `json:"forwardsSkipped,omitempty"`
 }
 
 // deliveryNumbersSQL reads the queue's state for the Federation tab, the dashboard and a local probe of /healthz
@@ -18704,7 +18923,8 @@ const deliveryNumbersSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_deliv
 // numbers reads the queue's numbers, under one of the federation's turns.
 func (q *deliveryQueue) numbers(ctx context.Context) (*deliveryNumbers, error) {
 	s := q.stats.numbers(time.Now())
-	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep, Cut: q.f.cut.Load(), NotTakenBack: q.f.notTakenBack.Load()}
+	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep, Cut: q.f.cut.Load(), NotTakenBack: q.f.notTakenBack.Load(),
+		CommentsNotSent: q.f.commentsNotSent.Load(), ForwardsSkipped: q.f.forwardsSkipped.Load()}
 	now := q.now()
 	q.numbersRun.Add(1)
 	done, err := q.f.dbTurn(ctx)
@@ -18731,10 +18951,12 @@ const (
 	deliveryRetainCapSQL    = `DELETE FROM ap_deliveries WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'failed' ORDER BY failed_at DESC OFFSET $1 LIMIT $2))`
 	deliveryRetainOutboxSQL = `DELETE FROM ap_outbox WHERE id = ANY(ARRAY(SELECT o.id FROM ap_outbox o WHERE o.fanned_out AND o.created_at < $1
 		AND NOT EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id) ORDER BY o.id LIMIT $2))`
-	deliveryPullDueSQL = `UPDATE ap_deliveries SET next_at = $2 WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND next_at > $2 ORDER BY next_at LIMIT $3))
-		AND $1::timestamptz IS NOT NULL`
-	deliveryPullAgeSQL = `UPDATE ap_deliveries SET created_at = $1 WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND created_at > $1 ORDER BY created_at LIMIT $3))
-		AND $2::timestamptz IS NOT NULL`
+	deliveryPullDueSQL = `UPDATE ap_deliveries d SET next_at = $2 FROM (SELECT id FROM ap_deliveries
+		WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND next_at > $2 ORDER BY next_at LIMIT $3)) ORDER BY id FOR UPDATE) k
+		WHERE d.id = k.id AND $1::timestamptz IS NOT NULL`
+	deliveryPullAgeSQL = `UPDATE ap_deliveries d SET created_at = $1 FROM (SELECT id FROM ap_deliveries
+		WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND created_at > $1 ORDER BY created_at LIMIT $3)) ORDER BY id FOR UPDATE) k
+		WHERE d.id = k.id AND $2::timestamptz IS NOT NULL`
 )
 
 // housekeep removes failed rows older than deliveryKeep and past the newest deliveryFailedKeep, and activities with
@@ -19057,6 +19279,11 @@ func (f *federation) followShaped(act *apActivity) bool {
 			return mine
 		case in.Kind == "Accept":
 			return true
+		case in.Kind == "Like":
+			// The signer takes back its Like of a post or a comment here (FWR 6).
+			_, _, post := f.localPostOf(in.Object.ID)
+			_, _, cmt := f.localCommentOf(in.Object.ID)
+			return post || cmt
 		}
 	}
 	return false
@@ -19127,6 +19354,8 @@ func (f *federation) followIn(ctx context.Context, s *remoteActor, act *apActivi
 				return " not acted on (its object cannot be read)", nil
 			}
 			return f.followAnswered(ctx, s, inner, false)
+		case in.Kind == "Like":
+			return f.unlikedIn(ctx, s, in)
 		}
 		return " not acted on in this version", nil
 	}
@@ -19312,10 +19541,9 @@ func (f *federation) forgetAnswer(follower, followee int64) {
 // What accounts of other servers leave in one member's notifications is bounded: the newest remoteNotesPerHost from one
 // server and remoteNotesMax from all of them are kept, older ones dropped (the newest are what a member reads, and a
 // server that floods pushes out only its own and other servers' notifications, never a local member's). The trim reads
-// the member's notifications of the kinds another server can leave through notifications_fed, each one's account by its
-// primary key.
+// the member's notifications other servers left through notifications_remote, each one's account by its primary key.
 func (f *federation) notifyFed(ctx context.Context, uid int64, s *remoteActor, kind string, oncePerDay bool) error {
-	n, err := f.fedExec(ctx, `INSERT INTO notifications (user_id, actor_id, kind) SELECT $1::bigint, $2::bigint, $3::text
+	n, err := f.fedExec(ctx, `INSERT INTO notifications (user_id, actor_id, kind, fed) SELECT $1::bigint, $2::bigint, $3::text, true
 		WHERE `+blockFree("$1::bigint", "$2::bigint", "false")+` AND NOT ($4 AND EXISTS (SELECT 1 FROM notifications
 			WHERE user_id = $1 AND actor_id = $2 AND kind = $3 AND created_at > now() - interval '1 day'))`, uid, s.UserID, kind, oncePerDay)
 	if err != nil || n == 0 {
@@ -19328,19 +19556,25 @@ func (f *federation) notifyFed(ctx context.Context, uid int64, s *remoteActor, k
 // remoteNotesTrimSQL drops member $1's notifications from accounts of host $2 past the newest $3, and from accounts of
 // other servers past the newest $4.
 //
-// Only the kinds an account of another server can leave are read (a follow, a request, an answer, and since FWR 5 a
-// share and a mention), through notifications_fed (migration 22), so the cost is the member's notifications of those
-// kinds, not every notification they have; mentions by members here are among them, each one's account read by its
-// primary key and left out. A follow_request whose request
+// Only the notifications accounts of other servers left are read (notifications.fed: a follow, a request, an answer,
+// since FWR 5 a share and a mention, and since FWR 6 a comment, a reply and a like), through notifications_remote
+// (migration 23), so the cost is the member's notifications from other servers, never the ones members here left,
+// each one's account read by its primary key. A follow_request whose request
 // still waits is spared: it is bounded by followRequestsMax already, and dropping it would hide a request a member
 // should answer behind a server that floods.
+//
+// The rows are locked in the order of their ids before they go (x): two workers trimming the same member's
+// notifications in the transactions that keep a reply or a like (notifyFedTx) take them in the same order, so neither
+// waits for a row the other holds while holding one it wants; replyNotesTx tells several members in the order of their
+// ids for the same reason.
 const remoteNotesTrimSQL = `WITH m AS (SELECT n.id, a.domain FROM notifications n
 		CROSS JOIN LATERAL (SELECT domain FROM users a WHERE a.id = n.actor_id AND a.domain <> '' OFFSET 0) a
-		WHERE n.user_id = $1 AND n.kind IN ('follow', 'follow_request', 'follow_rejected', 'share', 'mention')
+		WHERE n.user_id = $1 AND n.fed
 			AND NOT (n.kind = 'follow_request' AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = n.actor_id AND f.followee_id = $1 AND f.state = 'pending'))),
 	h AS (SELECT id FROM m WHERE domain = $2 ORDER BY id DESC OFFSET $3),
-	r AS (SELECT id FROM m ORDER BY id DESC OFFSET $4)
-	DELETE FROM notifications WHERE id IN (SELECT id FROM h UNION SELECT id FROM r)`
+	r AS (SELECT id FROM m ORDER BY id DESC OFFSET $4),
+	x AS (SELECT n.id FROM notifications n WHERE n.id IN (SELECT id FROM h UNION SELECT id FROM r) ORDER BY n.id FOR UPDATE)
+	DELETE FROM notifications WHERE id IN (SELECT id FROM x)`
 
 // followAnswered acts on an Accept (accept) or a Reject by s of o, which should be our Follow of s: embedded,
 // its actor our member and its object s, whatever its id; or by id only, the id we sent to s. An Accept makes the
@@ -19371,17 +19605,18 @@ func (f *federation) followAnswered(ctx context.Context, s *remoteActor, o idOrO
 		where, key = `f.ap_id = $1 AND f.ap_id <> ''`, in.ID
 	}
 	if accept {
-		n, err := f.fedExec(ctx, `UPDATE follows f SET state = 'accepted' WHERE `+where+` AND f.followee_id = $2 AND f.state = 'pending'`, key, s.UserID)
+		// The account is followed now: its posts kept for a mention are a follow's (FWR 5), so the cap of posts kept for
+		// a mention no longer trims what shows in that member's Home. One statement with the accept: were the mark cleared
+		// by a second one that failed, the retry would find no follow waiting and the mark would stay for good.
+		var n int64
+		err := f.fedRow(ctx, []any{&n}, `WITH a AS (UPDATE follows f SET state = 'accepted' WHERE `+where+` AND f.followee_id = $2 AND f.state = 'pending' RETURNING 1),
+			m AS (UPDATE posts SET ap_mention_only = false WHERE user_id = $2 AND ap_mention_only AND EXISTS (SELECT 1 FROM a) RETURNING 1)
+			SELECT (SELECT count(*) FROM a) + 0 * (SELECT count(*) FROM m)`, key, s.UserID)
 		switch {
 		case err != nil:
 			return "", &errRetry{"the database"}
 		case n == 0:
 			return " not acted on (no follow of ours waits for it)", nil
-		}
-		// The account is followed now: its posts kept for a mention are a follow's (FWR 5), so the cap of posts kept for
-		// a mention no longer trims what shows in that member's Home.
-		if _, err := f.fedExec(ctx, `UPDATE posts SET ap_mention_only = false WHERE user_id = $1 AND ap_mention_only`, s.UserID); err != nil {
-			return "", &errRetry{"the database"}
 		}
 		return "", nil
 	}
@@ -19428,7 +19663,8 @@ func (f *federation) undoByID(ctx context.Context, s *remoteActor, id string) (s
 	err := f.fedRow(ctx, []any{&uid}, `DELETE FROM follows WHERE follower_id = $1 AND ap_id = $2 AND ap_id <> '' RETURNING followee_id`, s.UserID, id)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return " not acted on (nothing it undoes is known here)", nil
+		// Not a follow: a like the signer made, by its Like's id (FWR 6).
+		return f.unlikedByID(ctx, s, id)
 	case err != nil:
 		return "", &errRetry{"the database"}
 	}
@@ -20229,12 +20465,13 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 	//
 	// Since FWR 5 the same statement removes the posts its accounts left here (kept for a follow or for a mention), with
 	// their pictures' rows and their notifications, and the share and mention notifications its accounts sent; the
-	// pictures' files go after the commit.
+	// pictures' files go after the commit. Since FWR 6 also their replies and likes here (remoteTalkGone) and the
+	// comment, reply and like notifications they left.
 	ended, removed := 0, 0
 	var files []string
 	if in.Policy == "suspend" {
 		if err := tx.QueryRow(`WITH s AS (SELECT id FROM users WHERE domain <> '' AND (domain = $1 OR right(domain, length($1) + 1) = '.' || $1)),
-			n AS (DELETE FROM notifications WHERE kind IN ('follow', 'follow_request', 'share', 'mention') AND actor_id IN (SELECT id FROM s)),
+			n AS (DELETE FROM notifications WHERE kind IN ('follow', 'follow_request', `+remoteTalkKinds+`) AND actor_id IN (SELECT id FROM s)),`+remoteTalkGone("SELECT id FROM s")+`,
 			g AS (DELETE FROM follows WHERE follower_id IN (SELECT id FROM s) OR followee_id IN (SELECT id FROM s) RETURNING 1),
 			m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM posts WHERE user_id IN (SELECT id FROM s) AND ap_id IS NOT NULL) AND file <> ''),
 			p AS (DELETE FROM posts WHERE user_id IN (SELECT id FROM s) AND ap_id IS NOT NULL RETURNING 1)
@@ -20483,6 +20720,37 @@ const postRecipientsSQL = `WITH r AS (
 	SELECT DISTINCT ON (k) ap_id, inbox, shared_inbox FROM (SELECT r.*, CASE WHEN r.shared_inbox <> '' AND split_part(r.shared_inbox, '/', 3) = split_part(r.ap_id, '/', 3)
 		THEN r.shared_inbox ELSE r.inbox END AS k FROM r) x ORDER BY k, user_id LIMIT $3`
 
+// postFollowersApartSQL is postRecipientsSQL's followers of member $1 alone ($2 empty), leaving out the accounts with a
+// block either way with member $4 (a commenter: the followers of the post's author that the comment goes to).
+var postFollowersApartSQL = strings.Replace(postRecipientsSQL, `WHERE f.followee_id = $1 AND f.state = 'accepted'`,
+	`WHERE f.followee_id = $1 AND f.state = 'accepted'
+			AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = $4 AND b.target_id = f.follower_id)
+			AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = f.follower_id AND b.target_id = $4)`, 1)
+
+// recipientsFor is the followers of member uid on other servers, as recipients gives them, but none with a block either
+// way with member apart.
+func (f *federation) recipientsFor(ctx context.Context, uid, apart int64) ([]deliveryTarget, error) {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	rows, err := f.db.QueryContext(ctx, postFollowersApartSQL, uid, pq.Array([]string{}), deliveryTargetsMax+1, apart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []deliveryTarget
+	for rows.Next() {
+		var t deliveryTarget
+		if err := rows.Scan(&t.Actor, &t.Inbox, &t.SharedInbox); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // recipients reads postRecipientsSQL for member uid and the actors mentioned: at most deliveryTargetsMax, the
 // queue's bound for one activity; past it the rest are left out (the first in the order of their addresses are
 // kept), and said in the log with the bound.
@@ -20581,6 +20849,9 @@ func (a *app) sendOut(ctx context.Context) (bool, error) {
 	}
 	defer f.outBusy.Store(false)
 	if did, err := a.postOut(ctx); did || err != nil {
+		return did, err
+	}
+	if did, err := a.commentOut(ctx); did || err != nil {
 		return did, err
 	}
 	return a.personOut(ctx)
@@ -20952,6 +21223,9 @@ type remoteView struct {
 	ReplyTo   string        `json:"replyTo,omitempty"`   // the post it answers (an https id, on any server: a reply may answer anyone; the page names its host); replies are FWR 6's
 	Kind      string        `json:"kind"`                // its type: Note, Question, Article, ...
 	Media     []remoteMedia `json:"media,omitempty"`
+	// Talk says it may be liked and answered from here (FWR 6): public or unlisted, in a mode that federates. Not
+	// stored: attachRemote sets it as the post is read.
+	Talk bool `json:"talk,omitempty"`
 }
 
 // remoteMedia is one attachment as the page shows it: a picture from this server when the cache holds it, and
@@ -21126,8 +21400,9 @@ const notePastCapSQL = `WITH old AS (SELECT id FROM posts WHERE user_id = $1 ORD
 
 // noteIn keeps the post of a Create or an Update from s (the section's comment says when and how). outcome is ""
 // when it was kept, or a short fixed note; an *errRetry is this server's own failure.
-// received is when the inbox took the delivery (ap_inbox.received_at): a time a remote server cannot move.
-func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity, received time.Time) (string, error) {
+// received is when the inbox took the delivery (ap_inbox.received_at): a time a remote server cannot move; raw is the
+// activity as it came, which the forward of a reply sends on (FWR 6).
+func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity, received time.Time, raw []byte) (string, error) {
 	on, known := f.followsState()
 	switch {
 	case !known:
@@ -21149,12 +21424,24 @@ func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity
 		return " ignored (an Update without updated)", nil
 	}
 	aud, addressed := noteAudience(n, act, s.Followers)
+	// A reply to a post or a comment here, or to a remote reply kept under one, is a comment (FWR 6, repliedIn), which
+	// also takes out a kept reply that an edit narrows.
+	if reply, err := f.replyAnswers(ctx, n); err != nil {
+		return "", &errRetry{"the database"}
+	} else if reply {
+		return f.repliedIn(ctx, s, act, n, aud, addressed, received, raw)
+	}
 	if aud == "" {
 		if update {
 			// An edit that makes a kept post direct takes it out of who may read it here: removed (never widened).
 			return f.noteRemoved(ctx, s, n.ID, n.Updated, " removed (an edit made it a direct message)")
 		}
 		return " dropped (a direct message)", nil
+	}
+	// A Create of a post published longer ago than a remote post is kept (remoteKeep) is not kept at all: retention
+	// would remove it within the hour, after it had cost the host's allowance and told the members it names.
+	if !update && !n.Published.IsZero() && received.Sub(n.Published) > remoteKeep {
+		return " dropped (published before the time posts are kept here)", nil
 	}
 	// The members the Mention tags name by a local actor id (never the text: a short @anna is not the anna here).
 	var names []string
@@ -21314,6 +21601,7 @@ func (f *federation) keepNote(ctx context.Context, s *remoteActor, id string, up
 // kept at all, and the files of its pictures.
 const noteDeleteSQL = `WITH p AS (SELECT id, user_id FROM posts WHERE ap_id = $1),
 	m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM p WHERE user_id = $2) AND file <> ''),
+	o AS (UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE post_id IN (SELECT id FROM p WHERE user_id = $2) AND state <> 'delete' RETURNING 1),
 	d AS (DELETE FROM posts WHERE id IN (SELECT id FROM p WHERE user_id = $2) RETURNING 1)
 	SELECT (SELECT count(*) FROM d), (SELECT count(*) FROM p), COALESCE((SELECT array_agg(file) FROM m), '{}')`
 
@@ -21350,6 +21638,9 @@ func (f *federation) noteDeleted(ctx context.Context, s *remoteActor, id string)
 	if err != nil {
 		return "", &errRetry{"the database"}
 	}
+	if outcome == "" {
+		f.commentWaits() // the members' comments under a post that went, which went out, are taken back too (FWR 6)
+	}
 	return outcome, nil
 }
 
@@ -21370,10 +21661,19 @@ func (f *federation) deleteNote(ctx context.Context, s *remoteActor, id string, 
 		return "", nil, err
 	}
 	outcome := ""
+	found, other := false, false
+	if gone > 0 || kept == 0 {
+		// A reply kept as a comment (FWR 6): removed as its author's own deletion here removes one, in this transaction.
+		if found, other, err = deleteReplyTx(ctx, tx, s.UserID, id); err != nil {
+			return "", nil, err
+		}
+	}
 	switch {
-	case gone > 0:
+	case gone > 0 || found && !other:
 	case kept > 0:
 		outcome = " refused (the post is another account's)"
+	case other:
+		outcome = " refused (the reply is another account's)"
 	case !remember:
 		outcome = " of a post never kept"
 	case !f.deletesIn.add(s.Domain):
@@ -21440,6 +21740,47 @@ func (f *federation) deleteNoteOlder(ctx context.Context, s *remoteActor, id str
 	return "", files, tx.Commit()
 }
 
+// deleteReplyTx removes the remote reply id of account uid in tx, as deleteCommentTx does a comment. found says a reply
+// with that id is kept, other that it is another account's (and nothing was removed).
+func deleteReplyTx(ctx context.Context, tx *sql.Tx, uid int64, id string) (found, other bool, err error) {
+	var author, cid, parent int64
+	err = tx.QueryRowContext(ctx, `SELECT user_id, id, COALESCE(parent_id, 0) FROM comments WHERE ap_id = $1 FOR UPDATE`, id).Scan(&author, &cid, &parent)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, false, nil
+	case err != nil:
+		return false, false, err
+	case author != uid:
+		return true, true, nil
+	}
+	return true, false, deleteCommentTx(ctx, tx, cid, parent)
+}
+
+// deleteCommentTx removes comment id in tx: kept as a placeholder with no text, its likes gone, while it has replies;
+// else removed, and its parent with it when that was a placeholder left with no reply. handleDeleteComment does the
+// same in its own transaction.
+func deleteCommentTx(ctx context.Context, tx *sql.Tx, id, parent int64) error {
+	var hasReplies bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM comments WHERE parent_id = $1)`, id).Scan(&hasReplies); err != nil {
+		return err
+	}
+	if hasReplies {
+		if _, err := tx.ExecContext(ctx, `UPDATE comments SET deleted = true, body = '', edited_at = NULL, ap_extra = '{}' WHERE id = $1`, id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM comment_likes WHERE comment_id = $1`, id)
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM comments WHERE id = $1`, id); err != nil {
+		return err
+	}
+	if parent != 0 {
+		_, err := tx.ExecContext(ctx, `DELETE FROM comments WHERE id = $1 AND deleted AND NOT EXISTS (SELECT 1 FROM comments WHERE parent_id = $1)`, parent)
+		return err
+	}
+	return nil
+}
+
 // announced acts on an Announce by s of a post of this server: a share notification to its author when the post is
 // a Public one of a member who shares their profile, and no block stands between them; never twice for one post.
 func (f *federation) announced(ctx context.Context, s *remoteActor, object string) (string, error) {
@@ -21475,13 +21816,51 @@ func (f *federation) announced(ctx context.Context, s *remoteActor, object strin
 // across a block and never twice for one post, account and kind; then the trim of what other servers leave
 // (remoteNotesTrimSQL), as for a follow.
 func (f *federation) notifyFedPost(ctx context.Context, uid int64, s *remoteActor, kind string, postID int64) error {
-	n, err := f.fedExec(ctx, `INSERT INTO notifications (user_id, actor_id, kind, post_id) SELECT $1::bigint, $2::bigint, $3::text, $4::bigint
-		WHERE `+blockFree("$1::bigint", "$2::bigint", "false")+` AND NOT EXISTS (SELECT 1 FROM notifications
-			WHERE user_id = $1 AND actor_id = $2 AND kind = $3 AND post_id = $4)`, uid, s.UserID, kind, postID)
+	return f.notifyFedAt(ctx, uid, s, kind, postID, 0)
+}
+
+// notifyFedSQL writes member $1's notification of kind $3 from the remote account $2 about post $4 and comment $5 (NULL for
+// none), unless a block stands between them or the same one is there already.
+var notifyFedSQL = `INSERT INTO notifications (user_id, actor_id, kind, post_id, comment_id, fed) SELECT $1::bigint, $2::bigint, $3::text, $4::bigint, $5::bigint, true
+	WHERE ` + blockFree("$1::bigint", "$2::bigint", "false") + ` AND NOT EXISTS (SELECT 1 FROM notifications
+		WHERE user_id = $1 AND actor_id = $2 AND kind = $3 AND post_id = $4 AND comment_id IS NOT DISTINCT FROM $5::bigint)`
+
+// notifyFedAt is notifyFedPost about a comment too (commentID, 0 for none): a reply, a comment, a mention in one, a
+// like of one (FWR 6). Never twice for one post, comment, account and kind, so liking, unliking and liking again tells
+// the member once, as a local like does (handleLike).
+func (f *federation) notifyFedAt(ctx context.Context, uid int64, s *remoteActor, kind string, postID, commentID int64) error {
+	var cmt any
+	if commentID != 0 {
+		cmt = commentID
+	}
+	n, err := f.fedExec(ctx, notifyFedSQL, uid, s.UserID, kind, postID, cmt)
 	if err != nil || n == 0 {
 		return err
 	}
 	_, err = f.fedExec(ctx, remoteNotesTrimSQL, uid, s.Domain, remoteNotesPerHost, remoteNotesMax)
+	return err
+}
+
+// notifyFedTx is notifyFedAt in the caller's transaction (a reply's or a like's), so the notification and what it tells of
+// commit together; the hook, when a test sets one, may fail it.
+func (f *federation) notifyFedTx(ctx context.Context, tx *sql.Tx, uid int64, s *remoteActor, kind string, postID, commentID int64) error {
+	if f.notifyHook != nil {
+		if err := f.notifyHook(); err != nil {
+			return err
+		}
+	}
+	var cmt any
+	if commentID != 0 {
+		cmt = commentID
+	}
+	res, err := tx.ExecContext(ctx, notifyFedSQL, uid, s.UserID, kind, postID, cmt)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, remoteNotesTrimSQL, uid, s.Domain, remoteNotesPerHost, remoteNotesMax)
 	return err
 }
 
@@ -21494,6 +21873,26 @@ func remoteSeen(viewer string) string {
 		OR ` + viewer + ` = ANY(p.ap_to) AND EXISTS (SELECT 1 FROM users mu WHERE mu.id = ` + viewer + ` AND (mu.federates OR mu.owner)
 			AND (mu.suspended_until IS NULL OR mu.suspended_until <= now())))
 		AND ` + actorShown("p.user_id")
+}
+
+// remoteTalkKinds are the notifications an account of another server leaves about posts (FWR 5 and 6): what goes with
+// it when it deletes itself or its domain is suspended.
+const remoteTalkKinds = `'share', 'mention', 'comment', 'reply', 'like', 'comment_like'`
+
+// remoteTalkGone is the part of a WITH that removes the replies and likes of the accounts in ids (an expression
+// written in this file: one account's id, or a SELECT of them) for actorGoneSQL and a domain's suspension: each reply
+// removed, or kept as a placeholder with no text where a member here answered it (so the answer stays), and every like
+// of a post or a comment and every like of a reply kept as a placeholder. Its parts are rk, rd, rl, rcl and rck, each
+// through its own index (an OR between two of them would read a table whole).
+func remoteTalkGone(ids string) string {
+	return `
+	rc AS (SELECT id FROM comments WHERE user_id IN (` + ids + `) AND ap_id IS NOT NULL),
+	rk AS (UPDATE comments k SET deleted = true, body = '', edited_at = NULL, ap_extra = '{}' WHERE k.id IN (SELECT id FROM rc)
+		AND EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = k.id AND r.user_id NOT IN (` + ids + `)) RETURNING k.id),
+	rd AS (DELETE FROM comments WHERE id IN (SELECT id FROM rc) AND id NOT IN (SELECT id FROM rk) RETURNING 1),
+	rl AS (DELETE FROM likes WHERE user_id IN (` + ids + `) RETURNING 1),
+	rcl AS (DELETE FROM comment_likes WHERE user_id IN (` + ids + `) RETURNING 1),
+	rck AS (DELETE FROM comment_likes WHERE comment_id IN (SELECT id FROM rk) RETURNING 1)`
 }
 
 // actorShown is the SQL condition that the account id (an expression written in this file) is not a remote account
@@ -21531,6 +21930,7 @@ func (a *app) attachRemote(posts []*post) error {
 			if json.Unmarshal(p.extra, v) != nil {
 				v = &remoteView{}
 			}
+			v.Talk = a.fed != nil && (p.aud == "public" || p.aud == "unlisted")
 			p.Remote = v
 			ids = append(ids, p.ID)
 			byID[p.ID] = p
@@ -22058,6 +22458,1182 @@ func purgeMedia(dir string) (int64, error) {
 	return n, nil
 }
 
+/* ---------- federation: replies and likes across servers ----------
+
+FWR 6 (docs/federation.md 6.3, 6.4, 9.1, 11; "As built (FWR 6)" under 6.4 says what and why). Remote replies to posts
+here become comments under them, remote likes count with local ones, a member's comments on Public posts go out as
+notes, and a member's likes and comments on public posts of other servers go to them.
+
+  - In. A Create of a post whose inReplyTo is a Public post here, a comment under one, or a remote reply kept under one
+    (repliedIn): the origin rule on the object as for any post (noteShaped), the switches a follow needs, the account
+    well, no block between it and the post's author or the author of what it answers, public or unlisted (a reply
+    addressed to fewer people is not shown under a post anyone may read), and the caps below. It becomes a comment,
+    its text through htmlToText, cut at maxComment characters with the link to the rest; a reply to a reply joins the
+    thread of the top comment, starting with a mention of the person answered, as a member's reply does (RPL). An
+    Update only by the same account with a newer updated time; a Delete only by the same account (noteDeleted). A
+    reply to a post of another server stays FWR 5's remote post (kept when its author is followed, else dropped).
+  - A Like of a Public post or a comment here (likedIn), and its Undo (embedded or by id): a likes or comment_likes row
+    for the account, once per account, its notification once per post and account as a member's like.
+  - Forward (ActivityPub 7.1.2, 6.4): a reply first kept here whose addressing names the followers collection of the
+    post's author, or of the member answered, goes to that collection's followers on other servers as it came, the
+    bytes received, signed by the instance actor (no Linked Data signature), never to the sending server, at most
+    forwardsPerHostHour an hour per sending host; one activity per reply (ap_outbox is unique by its id), so it is
+    sent once.
+  - Out. A member's comment on a Public post here by a member who shares, or on a public post of another server, by a
+    member who shares (refused otherwise, since the answer would reach nobody there), goes as Create(Note) with
+    inReplyTo, to the public collection and cc the commenter's followers, the post's author and the accounts it
+    mentions; to the commenter's and the post's author's followers on other servers and the remote accounts it
+    names; an edit inside the 15 minutes as Update(Note) carrying updated, to the same inboxes; a deletion, a
+    moderator's hide or the post's deletion as Delete(Tombstone) after its Create (ap_outbox.undoes). Made by the
+    delivery queue's producer from ap_comment_out, as posts are (commentOut). A like of a public post of another
+    server by a member who shares goes to its author as Like, an unlike as Undo(Like) after it (enqueueUndo).
+  - Bounds: per post, account and host in the statement that keeps one, in all from housekeeping's count, and an
+    allowance an hour per sending host in memory. Notifications from other servers stay under FWR 3's trim.
+  - Every statement takes one of the federation's turns, never across a fetch or another statement's wait. */
+
+const (
+	remoteRepliesPerPost     = 300      // replies from other servers kept under one post; more are dropped and counted
+	remoteRepliesPerAccount  = 200      // replies kept from one remote account
+	remoteRepliesPerHost     = 2000     // replies kept from the accounts of one server
+	remoteRepliesMax         = 50000    // replies from other servers kept in all (housekeeping's count)
+	remoteRepliesPerHostHour = 300      // new replies taken from one server in an hour
+	remoteLikesPerObject     = 2000     // likes from other servers kept for one post or comment
+	remoteLikesPerAccount    = 2000     // likes kept from one remote account, of posts and of comments each
+	remoteLikesPerHost       = 10000    // likes kept from the accounts of one server, of posts and of comments each
+	remoteLikesMax           = 200000   // likes with an activity id kept in all, of posts and of comments each (housekeeping's count)
+	remoteLikesPerHostHour   = 600      // new likes taken from one server in an hour
+	forwardsPerHostHour      = 60       // replies forwarded for one sending server in an hour (7.1.2)
+	forwardsPerMemberHour    = 30       // replies forwarded to one member's followers in an hour
+	forwardsMaxHour          = 300      // replies forwarded in all in an hour
+	forwardTargetsMax        = 1000     // addresses one forward goes to, after shared inboxes
+	forwardBodyMax           = 64 << 10 // bytes of an activity forwarded as it came
+)
+
+// The words a member is told when a like or a comment cannot reach another server.
+const (
+	talkNotShared   = "Only members who share their profile beyond this server can like or answer posts from other servers. Turn that on in Settings."
+	talkOff         = "Liking and answering posts from other servers is not available at the moment."
+	talkUnreachable = "That post's server cannot be reached from here."
+	talkFull        = "Too much waits to be sent to other servers just now. Try again in a few minutes."
+	talkSwitches    = "The server could not read its settings just now. Try again in a minute."
+	// talkStaysHere refuses an answer under a post of another server that could not go there: it answers a comment
+	// that stays on this server (FWR 6, after its second review).
+	talkStaysHere = "This answers a comment that stays on this server (it is hidden, or its author does not share their profile beyond it), and an answer under a post from another server goes to that server, so it cannot be posted here."
+)
+
+// localCommentOf reads the id of a comment of this server (origin/users/{name}/comments/{id}, the id its Note goes out
+// with): its author's name and its number.
+func (f *federation) localCommentOf(id string) (string, int64, bool) {
+	rest, ok := strings.CutPrefix(id, f.origin.url+"/users/")
+	if !ok {
+		return "", 0, false
+	}
+	name, num, ok := strings.Cut(rest, "/comments/")
+	if !ok || !usernameRE.MatchString(name) {
+		return "", 0, false
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || strconv.FormatInt(n, 10) != num {
+		return "", 0, false
+	}
+	return name, n, true
+}
+
+// commentNoteID is the id a member's comment goes out with.
+func (f *federation) commentNoteID(name string, id int64) string {
+	return f.memberActor(name) + "/comments/" + strconv.FormatInt(id, 10)
+}
+
+// likeShaped says whether a Like can be about a post or a comment of this server, from the activity alone.
+func (f *federation) likeShaped(act *apActivity) bool {
+	id := act.Object[0].ID
+	_, _, post := f.localPostOf(id)
+	_, _, cmt := f.localCommentOf(id)
+	return post || cmt
+}
+
+// replyTarget is what a remote reply answers, as repliedIn reads it.
+type replyTarget struct {
+	post, author, root, answered int64
+	answeredName, answeredDomain string
+	authorName                   string
+}
+
+// replyTargetSQL finds what a reply answers, in two forms: a post ($1 its number, $2 its author's name), or a
+// comment (replyCommentSQL: $1 a comment of this server and $2 its author's name, or $3 the id of a remote reply kept
+// here), shown (not deleted, not hidden), under a Public post of a member who shares ($4 the gate's single mode); a
+// member's comment answered only when that member shares their profile and is not suspended (a member who never opted
+// in gets nothing from other servers, FWR 5's rule for mentions). Both lock what they found against its deletion until
+// the reply is written, and give the post, its author and name, the
+// top comment of the thread (0 for none), and who is answered (0 for the post's author alone).
+var replyTargetSQL = `SELECT p.id, p.user_id, u.username, 0, 0, '', '' FROM posts p JOIN users u ON u.id = p.user_id
+	WHERE p.id = $1 AND u.username = $2 AND u.domain = '' AND $3 = '' AND ` + publicPost + ` AND ` + strings.ReplaceAll(publicMember, "$2", "$4") + ` FOR SHARE OF p`
+
+func replyCommentSQL(byID bool) string {
+	which := `c.id = $1 AND cu.username = $2 AND cu.domain = '' AND c.ap_id IS NULL AND $3 = ''`
+	if !byID {
+		which = `c.ap_id = $3 AND $1 = 0 AND $2 = ''`
+	}
+	return `SELECT p.id, p.user_id, u.username, COALESCE(c.parent_id, c.id), c.user_id, cu.username, cu.domain
+	FROM comments c JOIN users cu ON cu.id = c.user_id JOIN posts p ON p.id = c.post_id JOIN users u ON u.id = p.user_id
+	WHERE ` + which + ` AND NOT c.deleted AND c.hidden_at IS NULL AND u.domain = '' AND ` + publicPost + ` AND ` + strings.ReplaceAll(publicMember, "$2", "$4") + `
+		AND (cu.domain <> '' OR ` + strings.ReplaceAll(strings.ReplaceAll(publicMember, "u.", "cu."), "$2", "$4") + `)
+	FOR SHARE OF c, p`
+}
+
+// replyKeepSQL keeps a remote reply unless its id is kept already, the same account deleted it before it came or a
+// moderator or the post's author deleted it here (ap_deleted, as for posts), its domain ($10) is suspended as stored
+// (a domain suspended after the worker read the policy keeps nothing), or one of its caps is reached ($8 a post's, $9
+// an account's, $11 a server's, each count stopping at its cap), and gives the counts. created_at ($12) is the reply's
+// own published time, never later than it arrived, as for posts. A
+// server's count reads its accounts through users_remote_domain and each one's comments through comments_user (OFFSET
+// 0 holds the planner to that), never every remote reply.
+const replyKeepSQL = `WITH c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM comments WHERE post_id = $1 AND ap_id IS NOT NULL LIMIT $8) a) AS post,
+		(SELECT count(*) FROM (SELECT 1 FROM comments WHERE user_id = $2 LIMIT $9) b) AS acct,
+		(SELECT count(*) FROM (SELECT 1 FROM users u CROSS JOIN LATERAL (SELECT 1 FROM comments x WHERE x.user_id = u.id AND x.ap_id IS NOT NULL OFFSET 0) x
+			WHERE u.domain = $10 LIMIT $11) h) AS host),
+	ins AS (INSERT INTO comments (post_id, user_id, body, parent_id, ap_id, ap_updated, ap_extra, created_at)
+		SELECT $1, $2, $3, $4, $5, $6, $7, $12 FROM c WHERE c.post < $8 AND c.acct < $9 AND c.host < $11
+			AND NOT EXISTS (SELECT 1 FROM ap_deleted WHERE ap_id = $5 AND user_id = $2)
+			AND NOT EXISTS (SELECT 1 FROM domain_policies dp WHERE dp.policy = 'suspend' AND ($10 = dp.domain OR right($10, length(dp.domain) + 1) = '.' || dp.domain))
+		ON CONFLICT (ap_id) WHERE ap_id IS NOT NULL DO NOTHING RETURNING id)
+	SELECT c.post, c.acct, c.host, COALESCE((SELECT id FROM ins), 0) FROM c`
+
+// replyText is a remote reply as a comment shows it: htmlToText of its content, cut at maxComment characters with the
+// link to the rest; its content warning; its attachments as links to the original.
+func replyText(n *apNote, author string) (string, commentRemote) {
+	extra := commentRemote{Link: remoteLink(n, author)}
+	text := htmlToText(n.text(), n.Mentions, n.Hashtags, n.Cut)
+	text, cut := cutText(text, maxComment)
+	if cut {
+		text += "…"
+	}
+	if cut || n.Cut {
+		text = strings.TrimSpace(text + "\n\n" + remoteReadRest + " " + extra.Link)
+	}
+	extra.CW, _ = cutText(htmlToText(n.Summary, nil, nil, n.Cut), remoteCWMax)
+	for _, t := range n.Attachments {
+		if len(extra.Media) == remoteMediaMax || len(t.URL) == 0 {
+			continue
+		}
+		m := remoteMedia{Kind: mediaKind(t), Link: t.URL[0].Href}
+		m.Alt, _ = cutText(plainLines(t.alt()), remoteAltMax)
+		extra.Media = append(extra.Media, m)
+	}
+	return text, extra
+}
+
+// replyAnswers says which held thing a post answers, so noteIn can hand it to repliedIn: a post or a comment of this
+// server by its id, or a remote reply kept here (by its id, as its own Update is too).
+//
+// An id stays the kind of thing it was first kept as (after the review of #116): a reply kept is a reply whatever its
+// edit says it answers, and a post kept is a post even when an edit adds inReplyTo.
+func (f *federation) replyAnswers(ctx context.Context, n *apNote) (bool, error) {
+	var asReply, asPost bool
+	if err := f.fedRow(ctx, []any{&asReply, &asPost}, `SELECT EXISTS (SELECT 1 FROM comments WHERE ap_id = $1), EXISTS (SELECT 1 FROM posts WHERE ap_id = $1)`, n.ID); err != nil {
+		return false, err
+	}
+	if asReply || asPost {
+		return asReply, nil
+	}
+	if n.InReplyTo != "" {
+		if _, _, ok := f.localPostOf(n.InReplyTo); ok {
+			return true, nil
+		}
+		if _, _, ok := f.localCommentOf(n.InReplyTo); ok {
+			return true, nil
+		}
+	}
+	var held bool
+	err := f.fedRow(ctx, []any{&held}, `SELECT EXISTS (SELECT 1 FROM comments WHERE ap_id = $1) OR $2 <> '' AND EXISTS (SELECT 1 FROM comments WHERE ap_id = $2)`, n.ID, n.InReplyTo)
+	return held, err
+}
+
+// repliedIn keeps a remote reply as a comment, or a newer version of one (the section's comment says when). raw is the
+// activity as it came, for the forward.
+func (f *federation) repliedIn(ctx context.Context, s *remoteActor, act *apActivity, n *apNote, aud string, addressed []string, received time.Time, raw []byte) (string, error) {
+	update := act.Kind == "Update"
+	if aud != "public" && aud != "unlisted" {
+		if update {
+			// An edit that narrows a kept reply takes it out (never widened), only when newer than the version kept.
+			return f.replyNarrowed(ctx, s, n)
+		}
+		return " dropped (a reply addressed to fewer people than the post)", nil
+	}
+	text, extra := replyText(n, s.ID)
+	if update {
+		b, _ := json.Marshal(extra)
+		var row int64
+		err := f.fedRow(ctx, []any{&row}, `UPDATE comments SET body = $3, ap_extra = $4, ap_updated = $5, edited_at = now()
+			WHERE ap_id = $1 AND user_id = $2 AND NOT deleted AND (ap_updated IS NULL OR ap_updated < $5) RETURNING id`, n.ID, s.UserID, text, string(b), n.Updated)
+		switch {
+		case err == nil:
+			return "", nil // an edit tells nobody, as for a remote post (FWR 5)
+		case !errors.Is(err, sql.ErrNoRows):
+			return "", &errRetry{"the database"}
+		}
+		var author int64
+		err = f.fedRow(ctx, []any{&author}, `SELECT user_id FROM comments WHERE ap_id = $1`, n.ID)
+		switch {
+		case err == nil && author != s.UserID:
+			return " refused (the reply is another account's)", nil
+		case err == nil:
+			return " ignored (not newer than the version kept)", nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return "", &errRetry{"the database"}
+		}
+		// An Update of a reply never kept is taken as its Create would be, only when it is recent (FWR 5's rule): an old
+		// reply whose deletion was forgotten does not come back with its author's next edit.
+		if n.Published.IsZero() || received.Sub(n.Published) > remoteDeletedKeep {
+			return " dropped (an edit of a reply never kept, not published recently)", nil
+		}
+	}
+	var postNum, cmtNum int64
+	var postName, cmtName, heldID string
+	if name, num, ok := f.localPostOf(n.InReplyTo); ok {
+		postNum, postName = num, name
+	} else if name, num, ok := f.localCommentOf(n.InReplyTo); ok {
+		cmtNum, cmtName = num, name
+	} else if n.InReplyTo != "" {
+		heldID = n.InReplyTo
+	} else {
+		return " dropped (not a reply to a post here)", nil
+	}
+	if f.repliesFull.Load() {
+		return " dropped (as many replies from other servers are kept as may be)", nil
+	}
+	if !f.repliesIn.add(s.Domain) {
+		return " dropped (its server sent more replies this hour than are kept)", nil
+	}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", &errRetry{"no turn at the database"}
+	}
+	at := received
+	if !n.Published.IsZero() && n.Published.Before(received) {
+		at = n.Published
+	}
+	outcome, made, t, err := f.keepReply(ctx, s, n, postNum, postName, cmtNum, cmtName, heldID, text, extra, at)
+	done()
+	if err != nil {
+		return "", &errRetry{"the database"}
+	}
+	if made == 0 {
+		return outcome, nil
+	}
+	// The forward comes last, once the reply and its notifications have committed, and only for its first sight: an
+	// Update is never forwarded. A failure to forward is said in the log; the reply stays kept.
+	if !update {
+		f.forward(ctx, s, act, n, addressed, t, raw)
+	}
+	return "", nil
+}
+
+// replyNotesTx tells, in tx, the members a reply concerns: the member it answers, the post's author, and the members
+// who share whom its Mention tags name, each once. They are told in the order of their ids, so two workers keeping
+// replies that concern the same members trim those members' notifications in the same order (remoteNotesTrimSQL).
+func (f *federation) replyNotesTx(ctx context.Context, tx *sql.Tx, s *remoteActor, n *apNote, t replyTarget, made int64) error {
+	told := map[int64]string{} // each member told, with the kind of what they are told
+	if t.answered != 0 && t.answeredDomain == "" {
+		told[t.answered] = "reply"
+	}
+	if told[t.author] == "" {
+		told[t.author] = "comment"
+	}
+	tell := func() error {
+		for _, uid := range slices.Sorted(maps.Keys(told)) {
+			if err := f.notifyFedTx(ctx, tx, uid, s, told[uid], t.post, made); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var names []string
+	for _, m := range n.Mentions {
+		if name, inst, ok := f.memberOfID(m.Href); ok && !inst && !slices.Contains(names, name) && len(names) < maxMentions {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return tell()
+	}
+	var ids []int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(array_agg(u.id), '{}') FROM users u WHERE u.username = ANY($1) AND u.domain = '' AND `+publicMember, pq.Array(names), f.single).Scan(pq.Array(&ids)); err != nil {
+		return err
+	}
+	for _, uid := range ids {
+		if told[uid] == "" {
+			told[uid] = "mention"
+		}
+	}
+	return tell()
+}
+
+// replyNarrowed takes out the kept reply n of s whose edit addresses fewer people than Public, under its lock and only
+// when the edit is newer than the version kept; nothing is remembered.
+func (f *federation) replyNarrowed(ctx context.Context, s *remoteActor, n *apNote) (string, error) {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", &errRetry{"no turn at the database"}
+	}
+	defer done()
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", &errRetry{"the database"}
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, noteLock, n.ID); err != nil {
+		return "", &errRetry{"the database"}
+	}
+	var cid, parent int64
+	var stored sql.NullTime
+	err = tx.QueryRowContext(ctx, `SELECT id, COALESCE(parent_id, 0), ap_updated FROM comments WHERE ap_id = $1 AND user_id = $2 AND NOT deleted FOR UPDATE`, n.ID, s.UserID).Scan(&cid, &parent, &stored)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return " dropped (a reply addressed to fewer people than the post)", nil
+	case err != nil:
+		return "", &errRetry{"the database"}
+	case stored.Valid && !stored.Time.Before(n.Updated):
+		return " ignored (not newer than the version kept)", nil
+	}
+	if err := deleteCommentTx(ctx, tx, cid, parent); err != nil {
+		return "", &errRetry{"the database"}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", &errRetry{"the database"}
+	}
+	return " removed (an edit addressed it to fewer people than the post)", nil
+}
+
+// keepReply resolves what a reply answers and keeps it, in one transaction under the caller's turn.
+func (f *federation) keepReply(ctx context.Context, s *remoteActor, n *apNote, postNum int64, postName string, cmtNum int64, cmtName, heldID, text string, extra commentRemote, at time.Time) (string, int64, replyTarget, error) {
+	var t replyTarget
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, t, err
+	}
+	defer tx.Rollback()
+	// A Create and a Delete of one reply take turns on its id, as a post's do (noteLock).
+	if _, err := tx.ExecContext(ctx, noteLock, n.ID); err != nil {
+		return "", 0, t, err
+	}
+	q, num, name := replyTargetSQL, postNum, postName
+	if postNum == 0 {
+		q, num, name = replyCommentSQL(cmtNum != 0), cmtNum, cmtName
+	}
+	err = tx.QueryRowContext(ctx, q, num, name, heldID, f.single).Scan(&t.post, &t.author, &t.authorName, &t.root, &t.answered, &t.answeredName, &t.answeredDomain)
+	if errors.Is(err, sql.ErrNoRows) {
+		return " dropped (it answers no Public post here, or one not shown)", 0, t, nil
+	}
+	if err != nil {
+		return "", 0, t, err
+	}
+	// Nobody answers a post, or a thread, across a block: the post's author, the member answered and the thread's
+	// first author, whichever blocked whom (as handleComment refuses a member).
+	var rootAuthor int64
+	if t.root != 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT user_id FROM comments WHERE id = $1`, t.root).Scan(&rootAuthor); err != nil {
+			return "", 0, t, err
+		}
+	}
+	var blocked bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = ANY($2)) OR EXISTS (SELECT 1 FROM blocks WHERE target_id = $1 AND user_id = ANY($2))`,
+		s.UserID, pq.Array([]int64{t.author, t.answered, rootAuthor})).Scan(&blocked); err != nil {
+		return "", 0, t, err
+	}
+	if blocked {
+		return " dropped (a block stands between the account and the post or the thread)", 0, t, nil
+	}
+	// A reply to a reply starts with a mention of the person answered, as a member's does (handleComment).
+	if t.answered != 0 && t.answered != s.UserID {
+		lead := "@" + t.answeredName
+		if low := strings.ToLower(text); !strings.HasPrefix(low, strings.ToLower(lead)) {
+			text = lead + " " + text
+		}
+	}
+	var parent any
+	if t.root != 0 {
+		parent = t.root
+	}
+	var updated any
+	if !n.Updated.IsZero() {
+		updated = n.Updated
+	}
+	b, err := json.Marshal(extra)
+	if err != nil {
+		return "", 0, t, err
+	}
+	var post, acct, host, made int64
+	if err := tx.QueryRowContext(ctx, replyKeepSQL, t.post, s.UserID, text, parent, n.ID, updated, string(b),
+		remoteRepliesPerPost, remoteRepliesPerAccount, s.Domain, remoteRepliesPerHost, at).Scan(&post, &acct, &host, &made); err != nil {
+		return "", 0, t, err
+	}
+	switch {
+	case made != 0:
+		// Who is told: the member answered, the post's author unless answered, the members the Mention tags name (never
+		// the text), each once, never across a block, in the transaction that keeps the reply (after the review of #116):
+		// a failure rolls the reply back too, so the retry keeps it and tells them, never finds it a repeat with nobody
+		// told.
+		if err := f.replyNotesTx(ctx, tx, s, n, t, made); err != nil {
+			return "", 0, t, err
+		}
+	case post >= remoteRepliesPerPost:
+		return " dropped (the post holds as many replies from other servers as are kept)", 0, t, nil
+	case acct >= remoteRepliesPerAccount:
+		return " dropped (as many replies of the account are kept as may be)", 0, t, nil
+	case host >= remoteRepliesPerHost:
+		return " dropped (as many replies from its server are kept as may be)", 0, t, nil
+	default:
+		return " a repeat, deleted before it came, or its domain suspended", 0, t, nil
+	}
+	return "", made, t, tx.Commit()
+}
+
+// forward sends a reply first kept here on to the followers on other servers of each member here whose followers
+// collection it names, of the post's author and the member answered (ActivityPub 7.1.2: the collection is this
+// server's, and the reply is about an object of this server): the activity as it came, signed by the instance actor,
+// never to the server that sent it. One activity per reply (its id here is made from the reply's), so it goes once.
+// A failure is said in the log and not tried again: the reply is kept either way.
+func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivity, n *apNote, addressed []string, t replyTarget, raw []byte) {
+	if f.out == nil || len(raw) == 0 {
+		return
+	}
+	// Never the bytes of an activity addressed to anyone in bto or bcc: those are not to be passed on (ActivityPub 6.1:
+	// the server removes them before delivery), and Flowa forwards the body as it came. Never more than forwardBodyMax.
+	if len(raw) > forwardBodyMax || len(act.Audience.Bto)+len(act.Audience.Bcc)+len(n.Audience.Bto)+len(n.Audience.Bcc) > 0 {
+		f.forwardsSkipped.Add(1)
+		return
+	}
+	all := slices.Concat(addressed, act.Audience.To, act.Audience.Cc, act.Audience.Audience)
+	var members []int64
+	for _, m := range []struct {
+		id     int64
+		name   string
+		remote bool
+	}{{t.author, t.authorName, false}, {t.answered, t.answeredName, t.answeredDomain != ""}} {
+		if m.id != 0 && !m.remote && !slices.Contains(members, m.id) && slices.Contains(all, f.memberActor(m.name)+"/followers") {
+			members = append(members, m.id)
+		}
+	}
+	if len(members) == 0 {
+		return
+	}
+	// The bounds (after the review of #116): per sending server, in all, and per member whose followers it goes to, an
+	// hour each; and none while the delivery queue is past its resume mark or an activity waits for its fan-out, so the
+	// members' own posts and comments always come first and a few hosts cannot fill the queue with forwards. The
+	// allowances are looked at first without being spent (a reply past one costs no statement), then the queue is asked,
+	// and only then are they spent, so a forward the queue refuses takes none (after the third review).
+	over := f.forwardsOut.over(s.Domain) || f.forwardsAll.over("")
+	for _, uid := range members {
+		over = over || f.forwardsFor.over(strconv.FormatInt(uid, 10))
+	}
+	if over {
+		f.forwardsSkipped.Add(1)
+		return
+	}
+	f.forwardsAsked.Add(1)
+	var queued, waiting int
+	if err := f.fedRow(ctx, []any{&queued, &waiting}, deliveryCountsSQL, deliveryQueueResume, 1); err != nil || queued >= deliveryQueueResume || waiting > 0 {
+		f.forwardsSkipped.Add(1)
+		return
+	}
+	if f.forwardHook != nil {
+		f.forwardHook() // a test takes room here, as another reply's forward would between the look and the spend
+	}
+	// Spent one after the other; when one refuses (another reply took the last room since the look), those already
+	// spent are given back, so a forward that does not go costs no allowance (after the fourth review).
+	type spent struct {
+		l   *limiter
+		key string
+	}
+	var took []spent
+	want := []spent{{f.forwardsOut, s.Domain}, {f.forwardsAll, ""}}
+	for _, uid := range members {
+		want = append(want, spent{f.forwardsFor, strconv.FormatInt(uid, 10)})
+	}
+	for _, w := range want {
+		if !w.l.add(w.key) {
+			for _, b := range took {
+				b.l.addWeight(b.key, -tenths)
+			}
+			f.forwardsSkipped.Add(1)
+			return
+		}
+		took = append(took, w)
+	}
+	var to []deliveryTarget
+	from := actorHost(s.ID)
+	for _, uid := range members {
+		ts, err := f.recipients(ctx, uid, nil)
+		if err != nil {
+			log.Printf("federation: a reply is not forwarded: %v", err)
+			return
+		}
+		for _, x := range ts {
+			if actorHost(x.Actor) != from {
+				to = append(to, x)
+			}
+		}
+	}
+	if len(to) > forwardTargetsMax {
+		to = to[:forwardTargetsMax]
+	}
+	sum := sha256.Sum256([]byte(act.ID))
+	id := f.origin.url + "/actor/forwards/" + hex.EncodeToString(sum[:16])
+	if _, err := f.out.enqueue(ctx, instanceActor, id, raw, to); err != nil {
+		log.Printf("federation: a reply is not forwarded: %v", err)
+	}
+}
+
+// likePostKeepSQL keeps a Like by the account $4 (its id $5) of the post $1 of the member named $2, a Public post of a
+// member who shares ($3 the gate's single mode) with no block between its author and the account, unless one of its
+// caps is reached ($6 the post's, $7 the account's, $9 its server's $8), each count stopping at its cap. It gives the
+// post, its author, the comment liked (0), the three counts and whether it wrote a row. likeCommentKeepSQL is the same
+// for a comment of this server shown under such a post ($1 the comment, $2 its author's name).
+var (
+	likePostKeepSQL = `WITH t AS (SELECT p.id AS post, p.user_id AS author, 0::bigint AS cmt FROM posts p JOIN users u ON u.id = p.user_id
+			WHERE p.id = $1 AND u.username = $2 AND u.domain = '' AND ` + publicPost + ` AND ` + strings.ReplaceAll(publicMember, "$2", "$3") + ` AND ` + blockFree("p.user_id", "$4::bigint", "false") + `),
+		c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM likes WHERE post_id = $1 AND ap_id IS NOT NULL LIMIT $6) a) AS obj,
+			(SELECT count(*) FROM (SELECT 1 FROM likes WHERE user_id = $4 LIMIT $7) b) AS acct,
+			(SELECT count(*) FROM (SELECT 1 FROM users u CROSS JOIN LATERAL (SELECT 1 FROM likes l WHERE l.user_id = u.id OFFSET 0) l WHERE u.domain = $8 LIMIT $9) h) AS host),
+		ins AS (INSERT INTO likes (post_id, user_id, ap_id) SELECT t.post, $4, $5 FROM t, c WHERE c.obj < $6 AND c.acct < $7 AND c.host < $9 AND ` + likeDomainOK + `
+			ON CONFLICT DO NOTHING RETURNING 1)` + likeKeepTail
+	likeCommentKeepSQL = `WITH t AS (SELECT p.id AS post, x.user_id AS author, x.id AS cmt FROM comments x JOIN users xu ON xu.id = x.user_id JOIN posts p ON p.id = x.post_id JOIN users u ON u.id = p.user_id
+			WHERE x.id = $1 AND xu.username = $2 AND xu.domain = '' AND x.ap_id IS NULL AND NOT x.deleted AND x.hidden_at IS NULL AND ` + publicPost + ` AND ` + strings.ReplaceAll(publicMember, "$2", "$3") + `
+				AND ` + strings.ReplaceAll(strings.ReplaceAll(publicMember, "u.", "xu."), "$2", "$3") + `
+				AND ` + blockFree("x.user_id", "$4::bigint", "false") + `),
+		c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM comment_likes WHERE comment_id = $1 AND ap_id IS NOT NULL LIMIT $6) a) AS obj,
+			(SELECT count(*) FROM (SELECT 1 FROM comment_likes WHERE user_id = $4 LIMIT $7) b) AS acct,
+			(SELECT count(*) FROM (SELECT 1 FROM users u CROSS JOIN LATERAL (SELECT 1 FROM comment_likes l WHERE l.user_id = u.id OFFSET 0) l WHERE u.domain = $8 LIMIT $9) h) AS host),
+		ins AS (INSERT INTO comment_likes (comment_id, user_id, ap_id) SELECT t.cmt, $4, $5 FROM t, c WHERE c.obj < $6 AND c.acct < $7 AND c.host < $9 AND ` + likeDomainOK + `
+			ON CONFLICT DO NOTHING RETURNING 1)` + likeKeepTail
+)
+
+// likeDomainOK is the stored domain policy's word on the sending server ($8): not suspended, as noteInsertSQL asks.
+const likeDomainOK = `NOT EXISTS (SELECT 1 FROM domain_policies dp WHERE dp.policy = 'suspend' AND ($8 = dp.domain OR right($8, length(dp.domain) + 1) = '.' || dp.domain))`
+
+const likeKeepTail = ` SELECT COALESCE((SELECT post FROM t), 0), COALESCE((SELECT author FROM t), 0), COALESCE((SELECT cmt FROM t), 0), c.obj, c.acct, c.host, (SELECT count(*) FROM ins) FROM c`
+
+// likedIn keeps a Like of a post or a comment of this server by s (likeShaped held its object to one): a Public post
+// of a member who shares, or a comment shown under one, with no block between the account and its author.
+func (f *federation) likedIn(ctx context.Context, s *remoteActor, act *apActivity) (string, error) {
+	on, known := f.followsState()
+	switch {
+	case !known:
+		return "", &errRetry{"the switches could not be read"}
+	case !on:
+		return " dropped (follows are off here)", nil
+	case s.State != "ok":
+		return " dropped (the account is suspended or gone)", nil
+	case f.likesFull.Load():
+		return " dropped (as many likes from other servers are kept as may be)", nil
+	}
+	obj := act.Object[0].ID
+	stmt, kind := likePostKeepSQL, "like"
+	name, num, ok := f.localPostOf(obj)
+	if !ok {
+		if name, num, ok = f.localCommentOf(obj); !ok {
+			return " dropped (not a post or a comment of this server)", nil
+		}
+		stmt, kind = likeCommentKeepSQL, "comment_like"
+	}
+	if !f.likesIn.add(s.Domain) {
+		return " dropped (its server sent more likes this hour than are kept)", nil
+	}
+	args := []any{num, name, f.single, s.UserID, act.ID, remoteLikesPerObject, remoteLikesPerAccount, s.Domain, remoteLikesPerHost}
+	var post, author, cmt, objN, acct, host, made int64
+	// The like and its notification commit together (after the review of #116), so a failure is tried again whole.
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", &errRetry{"no turn at the database"}
+	}
+	err = func() error {
+		tx, err := f.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := tx.QueryRowContext(ctx, stmt, args...).Scan(&post, &author, &cmt, &objN, &acct, &host, &made); err != nil {
+			return err
+		}
+		if made > 0 {
+			if err := f.notifyFedTx(ctx, tx, author, s, kind, post, cmt); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	}()
+	done()
+	if err != nil {
+		return "", &errRetry{"the database"}
+	}
+	switch {
+	case post == 0:
+		return " dropped (not a Public post here or a comment shown under one, or a block between them)", nil
+	case made == 0 && objN >= remoteLikesPerObject:
+		return " dropped (as many likes from other servers are kept for it as may be)", nil
+	case made == 0 && acct >= remoteLikesPerAccount:
+		return " dropped (as many likes of the account are kept as may be)", nil
+	case made == 0 && host >= remoteLikesPerHost:
+		return " dropped (as many likes from its server are kept as may be)", nil
+	case made == 0:
+		return " a repeat", nil
+	}
+	return "", nil
+}
+
+// unlikedIn acts on an Undo of a Like by s: embedded (its actor s, held by followIn), matched by the Like's id or by
+// its object; the like goes, its notification stays (told once, as a member's unlike leaves it).
+func (f *federation) unlikedIn(ctx context.Context, s *remoteActor, in apInner) (string, error) {
+	post, cmt := int64(0), int64(0)
+	if _, num, ok := f.localPostOf(in.Object.ID); ok {
+		post = num
+	} else if _, num, ok := f.localCommentOf(in.Object.ID); ok {
+		cmt = num
+	}
+	var n int64
+	err := f.fedRow(ctx, []any{&n}, `WITH a AS (DELETE FROM likes WHERE user_id = $1 AND (post_id = $2 OR ap_id = $4) RETURNING 1),
+		b AS (DELETE FROM comment_likes WHERE user_id = $1 AND (comment_id = $3 OR ap_id = $4) RETURNING 1)
+		SELECT (SELECT count(*) FROM a) + (SELECT count(*) FROM b)`, s.UserID, post, cmt, in.ID)
+	if err != nil {
+		return "", &errRetry{"the database"}
+	}
+	if n == 0 {
+		return " not acted on (nothing it undoes is known here)", nil
+	}
+	return "", nil
+}
+
+// unlikedByID is undoByID's second look: a like the signer made, by its Like's id.
+func (f *federation) unlikedByID(ctx context.Context, s *remoteActor, id string) (string, error) {
+	return f.unlikedIn(ctx, s, apInner{ID: id})
+}
+
+/* Out: a member's comments, likes and their takebacks. */
+
+// commentWaits tells the producer that a record of ap_comment_out may wait, and wakes a worker.
+func (f *federation) commentWaits() {
+	f.commentsDue.Store(true)
+	f.out.kick()
+}
+
+// talkGate says whether a member may like or answer a post of another server, or whose comment on a Public post here
+// goes out: the switches a post needs, and the member sharing their profile beyond this server. status is 0 when they
+// may, else the answer and its words.
+//
+// The member's sharing is asked before the switches, so 503 (talkSwitches: the switches could not be read) is said only
+// of a member who shares: a comment on a Public post here then still gets its way out, which the producer holds until the
+// switches read (FWR 6, after its review).
+func (a *app) talkGate(q queryRower, u *user) (int, string, error) {
+	if !a.federating() {
+		return http.StatusForbidden, talkOff, nil
+	}
+	var shares bool
+	if err := q.QueryRow(`SELECT `+strings.ReplaceAll(publicMember, "$2", "$1")+` FROM users u WHERE u.id = $2`, a.mode == modeSingle, u.ID).Scan(&shares); err != nil {
+		return 0, "", err
+	}
+	if !shares {
+		return http.StatusForbidden, talkNotShared, nil
+	}
+	on, known := a.fed.switches()
+	switch {
+	case !known:
+		return http.StatusServiceUnavailable, talkSwitches, nil
+	case !on:
+		return http.StatusForbidden, talkOff, nil
+	}
+	return 0, "", nil
+}
+
+// remotePostTarget is a post of another server as a like or a comment sent to it needs it: its id there and its
+// author's cached actor. ok is false for a post of this server.
+type remotePostTarget struct {
+	apID string
+	to   deliveryTarget
+	well bool // the author's actor is well and its inbox on its own origin
+}
+
+func (a *app) remotePostOf(id int64) (remotePostTarget, bool, error) {
+	var t remotePostTarget
+	var state string
+	err := a.db.QueryRow(`SELECT p.ap_id, ac.ap_id, ac.inbox, ac.state FROM posts p JOIN ap_actors ac ON ac.user_id = p.user_id WHERE p.id = $1 AND p.ap_id IS NOT NULL`, id).
+		Scan(&t.apID, &t.to.Actor, &t.to.Inbox, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return t, false, nil
+	}
+	if err != nil {
+		return t, false, err
+	}
+	t.well = state == "ok" && inboxOwn(&remoteActor{ID: t.to.Actor, Inbox: t.to.Inbox})
+	if t.well {
+		if ins, _, _ := a.fed.out.collect([]deliveryTarget{t.to}); len(ins) == 0 {
+			t.well = false // the domain policy refuses its server, or its inbox is no address another server can have
+		}
+	}
+	return t, true, nil
+}
+
+// outLike is a Like or the Undo of one as Flowa sends it (6.4): the Like's object the post's id there; the Undo's the
+// Like, embedded.
+type outLike struct {
+	Context string   `json:"@context,omitempty"`
+	ID      string   `json:"id"`
+	Type    string   `json:"type"`
+	Actor   string   `json:"actor"`
+	Object  any      `json:"object"`
+	To      []string `json:"to,omitempty"`
+}
+
+// likeRemote likes the post id of another server for u: the Like enqueued and the like written in one transaction
+// (enqueueThen), so neither is ever there without the other. It answers the request.
+func (a *app) likeRemote(w http.ResponseWriter, r *http.Request, u *user, id int64, t remotePostTarget) {
+	if status, msg, err := a.talkGate(a.db, u); err != nil {
+		a.serverError(w, err)
+		return
+	} else if status != 0 {
+		fail(w, status, msg)
+		return
+	}
+	if !t.well {
+		fail(w, http.StatusNotFound, talkUnreachable)
+		return
+	}
+	f := a.fed
+	actor := f.memberActor(u.Username)
+	likeID := f.activityID(u.Username)
+	body, err := apJSON(outLike{Context: asContext, ID: likeID, Type: "Like", Actor: actor, Object: t.apID, To: []string{t.to.Actor}})
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	// A like taken back before: the Like comes after that Undo, so at the author's inbox it never overtakes it
+	// (afterHeldSQL), where the like would be taken back after it came.
+	_, err = f.out.enqueueOrdered(r.Context(), keyOwner(u.ID), likeID, body, []deliveryTarget{t.to}, outOrder{afterTx: a.lastUndo(r.Context(), u.ID, id)}, func(tx *sql.Tx) error {
+		return oneRow(tx.ExecContext(r.Context(), `INSERT INTO likes (post_id, user_id, ap_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, id, u.ID, likeID))
+	})
+	switch {
+	case errors.Is(err, errDeliveryFull):
+		fail(w, http.StatusServiceUnavailable, talkFull)
+		return
+	case err != nil && !errors.Is(err, errOutChanged): // errOutChanged: liked by another click meanwhile, which stays
+		a.serverError(w, err)
+		return
+	}
+	a.likeCount(w, id, true)
+}
+
+// unlikeRemote takes back u's like of a post of another server, when there is one that went out: the Undo enqueued
+// after its Like (enqueueUndo: a Like never tried is given up and nothing goes) and the like removed in one
+// transaction. It reports whether it answered the request. With federation refused or the mode no longer federating,
+// nothing can be sent, and the like is only removed here.
+func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id int64) bool {
+	var likeID, postAP, author, inbox string
+	err := a.db.QueryRow(`SELECT l.ap_id, p.ap_id, ac.ap_id, ac.inbox FROM likes l JOIN posts p ON p.id = l.post_id JOIN ap_actors ac ON ac.user_id = p.user_id
+		WHERE l.post_id = $1 AND l.user_id = $2 AND l.ap_id IS NOT NULL AND p.ap_id IS NOT NULL`, id, u.ID).Scan(&likeID, &postAP, &author, &inbox)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	f := a.fed
+	actor := f.memberActor(u.Username)
+	undoID := f.activityID(u.Username)
+	drop := func(tx *sql.Tx) error {
+		if err := oneRow(tx.ExecContext(r.Context(), `DELETE FROM likes WHERE post_id = $1 AND user_id = $2 AND ap_id = $3`, id, u.ID, likeID)); err != nil {
+			return err
+		}
+		// The Undo the next Like of this post comes after (likeRemote), when one was enqueued.
+		_, err := tx.ExecContext(r.Context(), `INSERT INTO ap_like_out (user_id, post_id, undo_id) SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM ap_outbox WHERE ap_id = $3)
+			ON CONFLICT (user_id, post_id) DO UPDATE SET undo_id = EXCLUDED.undo_id`, u.ID, id, undoID)
+		return err
+	}
+	body, err := apJSON(outLike{Context: asContext, ID: undoID, Type: "Undo", Actor: actor, To: []string{author},
+		Object: outLike{ID: likeID, Type: "Like", Actor: actor, Object: postAP}})
+	if err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	// The Undo takes back its Like, and comes after the Undo before it, if any: each Undo of this member's likes of this
+	// post waits at the author's inbox for the one before, so a Like that comes after the last one never reaches the
+	// inbox ahead of an earlier Undo still retrying there, even where the Undo between them was dropped with the Like it
+	// took back (after the third review).
+	_, err = f.out.enqueueOrdered(r.Context(), keyOwner(u.ID), undoID, body, []deliveryTarget{{Actor: author, Inbox: inbox}},
+		outOrder{undoes: likeID, afterTx: a.lastUndo(r.Context(), u.ID, id)}, drop)
+	switch {
+	case errors.Is(err, errRefused):
+		if _, err := a.db.Exec(`DELETE FROM likes WHERE post_id = $1 AND user_id = $2 AND ap_id = $3`, id, u.ID, likeID); err != nil {
+			a.serverError(w, err)
+			return true
+		}
+	case errors.Is(err, errDeliveryFull):
+		fail(w, http.StatusServiceUnavailable, talkFull)
+		return true
+	case err != nil && !errors.Is(err, errOutChanged):
+		a.serverError(w, err)
+		return true
+	}
+	a.likeCount(w, id, false)
+	return true
+}
+
+// lastUndo reads, in the enqueue's transaction, the Undo the member's last unlike of the post enqueued (ap_like_out),
+// which their next Like or Undo of it comes after.
+func (a *app) lastUndo(ctx context.Context, uid, post int64) func(*sql.Tx) (string, error) {
+	return func(tx *sql.Tx) (string, error) {
+		var id string
+		err := tx.QueryRowContext(ctx, `SELECT undo_id FROM ap_like_out WHERE user_id = $1 AND post_id = $2`, uid, post).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return id, err
+	}
+}
+
+// likeCount answers a like or an unlike with the post's count, when the post is shown to the member.
+func (a *app) likeCount(w http.ResponseWriter, id int64, liked bool) {
+	out := map[string]any{"liked": liked}
+	var likes int
+	if err := a.db.QueryRow(`SELECT count(*) FROM likes WHERE post_id = $1`, id).Scan(&likes); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["likes"] = likes
+	writeJSON(w, http.StatusOK, out)
+}
+
+// outReplyNote is a member's comment as the Note of 6.4 and 6.5: inReplyTo the post or the comment it answers, to the
+// public collection, cc the commenter's followers, the post's author and the accounts it mentions; updated on an edit
+// (Mastodon applies an Update only with it).
+type outReplyNote struct {
+	ID           string   `json:"id"`
+	Type         string   `json:"type"`
+	AttributedTo string   `json:"attributedTo"`
+	InReplyTo    string   `json:"inReplyTo"`
+	Published    string   `json:"published"`
+	Updated      string   `json:"updated,omitempty"`
+	To           []string `json:"to"`
+	Cc           []string `json:"cc"`
+	Sensitive    bool     `json:"sensitive"`
+	Content      string   `json:"content"`
+	Tag          []outTag `json:"tag,omitempty"`
+}
+
+type outReplyActivity struct {
+	Context   []any        `json:"@context"`
+	ID        string       `json:"id"`
+	Type      string       `json:"type"`
+	Actor     string       `json:"actor"`
+	Published string       `json:"published,omitempty"`
+	To        []string     `json:"to"`
+	Cc        []string     `json:"cc"`
+	Object    outReplyNote `json:"object"`
+}
+
+// commentOutSQL reads the oldest record of ap_comment_out that waits, with what its activity needs: the comment (none
+// when it is gone) and whether it may still go out (shown, its author sharing, its post a Public post here of a member
+// who shares or a public post of another server, the top comment of its thread, when there is one, of an account of
+// another server or of a member who shares, and, for an answer under a post here, the member it answers, whose name
+// opens it (startsWithMention; never a handle of another server): one who shares. An answer under a post of another
+// server whose member answered stopped sharing since goes all the same, the name in it plain text as any name of a
+// member who does not share is (resolveMentions links only those who do): it was accepted to go there, and keeping it
+// here would leave it where none of that post's people see it (after the third review). All asked again at each send.
+// What it answers (the top comment of
+// its thread, else the post), the post's audience, and the authors' ids and names; $1 the gate's single mode.
+var commentOutSQL = `SELECT o.comment_id, o.post_id, o.user_id, o.state, o.targets, o.gen, o.tries, o.due_at, o.sent_at, u.username, o.last_ap_id,
+		COALESCE(c.id IS NOT NULL AND NOT c.deleted AND c.hidden_at IS NULL AND ` + personShown + `
+			AND (p.ap_id IS NULL AND p.audience = 'public' AND p.hidden_at IS NULL AND p.kind = 'post' AND (pu.federates OR ($1 AND pu.owner)) AND (pu.suspended_until IS NULL OR pu.suspended_until <= now())
+				OR p.ap_id IS NOT NULL AND p.audience IN ('public', 'unlisted'))
+			AND (pc.id IS NULL OR pcu.domain <> '' OR (pcu.federates OR ($1 AND pcu.owner)) AND (pcu.suspended_until IS NULL OR pcu.suspended_until <= now()))
+			AND NOT (c.parent_id IS NOT NULL AND p.ap_id IS NULL AND EXISTS (SELECT 1 FROM users m WHERE m.domain = '' AND m.username = substring(lower(c.body) from '` + leadNamePattern + `')
+				AND NOT ((m.federates OR ($1 AND m.owner)) AND (m.suspended_until IS NULL OR m.suspended_until <= now())))), false),
+		COALESCE(c.id IS NOT NULL AND NOT c.deleted AND c.hidden_at IS NULL, false),
+		COALESCE(p.audience, ''),
+		COALESCE(c.body, ''), COALESCE(c.created_at, now()), c.edited_at,
+		COALESCE(p.ap_id, ''), COALESCE(pu.username, ''), COALESCE(pa.ap_id, ''), COALESCE(p.user_id, 0),
+		COALESCE(pc.id, 0), COALESCE(pc.ap_id, ''), COALESCE(pcu.username, ''), COALESCE(pca.ap_id, '')
+	FROM (SELECT * FROM ap_comment_out WHERE state <> 'sent' ORDER BY COALESCE(due_at, '-infinity'), comment_id LIMIT 1) o
+		JOIN users u ON u.id = o.user_id LEFT JOIN comments c ON c.id = o.comment_id LEFT JOIN posts p ON p.id = c.post_id
+		LEFT JOIN users pu ON pu.id = p.user_id LEFT JOIN ap_actors pa ON pa.user_id = p.user_id
+		LEFT JOIN comments pc ON pc.id = c.parent_id LEFT JOIN users pcu ON pcu.id = pc.user_id LEFT JOIN ap_actors pca ON pca.user_id = pc.user_id`
+
+// commentOut handles the oldest record of ap_comment_out that waits: a comment's Create, its Update or its Delete,
+// as postOut does a post's.
+func (a *app) commentOut(ctx context.Context) (bool, error) {
+	f, now := a.fed, a.fed.out.now()
+	at := f.commentsAt.Load()
+	if !f.commentsDue.Swap(false) && (at == 0 || now.UnixNano() < at) {
+		return false, nil
+	}
+	f.commentsAt.Store(0)
+	var cid, post, uid, gen, authorID, parentID int64
+	var state, targets, name, last, postAud, body, postAP, authorName, authorAP, parentAP, parentName, parentActor string
+	var tries int
+	var due, sentAt, edited sql.NullTime
+	var shown, kept bool
+	var created time.Time
+	err := f.fedRow(ctx, []any{&cid, &post, &uid, &state, &targets, &gen, &tries, &due, &sentAt, &name, &last, &shown, &kept, &postAud, &body, &created, &edited,
+		&postAP, &authorName, &authorAP, &authorID, &parentID, &parentAP, &parentName, &parentActor}, commentOutSQL, a.mode == modeSingle)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		f.commentsDue.Store(true)
+		return false, err
+	}
+	if due.Valid && due.Time.After(now) {
+		f.commentsAt.Store(due.Time.UnixNano())
+		return false, nil
+	}
+	f.commentsDue.Store(true) // another may wait behind it
+	if f.commentHook != nil {
+		f.commentHook("read") // a test holds the producer here, between its read of the record and its write
+	}
+	actor := f.memberActor(name)
+	noteID := f.commentNoteID(name, cid)
+	createID := noteID + "/activity"
+	if last == "" {
+		last = createID
+	}
+	var to []deliveryTarget
+	if targets != "" {
+		json.Unmarshal([]byte(targets), &to)
+	}
+	if state == "delete" {
+		b, err := apJSON(outDelete{Context: asContext, ID: noteID + "#delete", Type: "Delete", Actor: actor, To: []string{publicCollection},
+			Cc: []string{actor + "/followers"}, Object: outTombstoned{ID: noteID, Type: "Tombstone"}})
+		if err != nil {
+			return false, err
+		}
+		_, err = f.out.enqueueOrdered(ctx, keyOwner(uid), noteID+"#delete", b, to, outOrder{undoes: last, chain: true}, func(tx *sql.Tx) error {
+			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'delete'`, cid))
+		})
+		if errors.Is(err, errDeliveryFull) {
+			if tries >= len(deliveryRetries) {
+				log.Printf("federation: the Delete of comment %d is not sent: %v, %d times over the schedule", cid, err, tries+1)
+				f.notTakenBack.Add(1)
+				_, err := f.fedExec(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'delete'`, cid)
+				return true, err
+			}
+			_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = 'delete'`, cid, now.Add(deliveryRetries[tries]))
+			return true, err
+		}
+		return a.commentOutDone(err)
+	}
+	on, known := f.switches()
+	if shown && !known {
+		f.commentsDue.Store(true)
+		return false, errSwitchesUnread
+	}
+	if !shown || !on {
+		// A Create that waits goes with nothing sent; an Update waiting is dropped, the record kept for its Delete.
+		// A comment still there whose Create or Update the switches did not stop was accepted to go: that it does not
+		// (its author, its post, the author of its thread or the member it answers stopped being shown beyond this
+		// server since it was written) is said in the log and counted on the Federation tab, never silent (after the
+		// third and fourth reviews).
+		if on && kept {
+			log.Printf("federation: the %s of comment %d is not sent: the comment, its post, the first comment of its thread or the member it answers is no longer shown beyond this server", state, cid)
+			f.commentsNotSent.Add(1)
+		}
+		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
+		if state == "update" {
+			stmt = `UPDATE ap_comment_out SET state = 'sent' WHERE comment_id = $1 AND state = 'update'`
+		}
+		_, err := f.fedExec(ctx, stmt, cid)
+		return true, err
+	}
+	// At most one Update per commentUpdateGap: an edit sooner after the last activity waits for the gap's end, and the
+	// edits made meanwhile fold into it (the record stays update, its generation moved by each), so a comment's line is
+	// its Create, at most about editWindow / commentUpdateGap + 1 Updates, and its Delete (after the third review).
+	if state == "update" && sentAt.Valid && now.Before(sentAt.Time.Add(commentUpdateGap)) {
+		_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, sentAt.Time.Add(commentUpdateGap))
+		return true, err
+	}
+	// What it answers: the top comment of its thread (here, or another server's), else the post.
+	inReply := postAP
+	switch {
+	case parentID != 0 && parentAP != "":
+		inReply = parentAP
+	case parentID != 0:
+		inReply = f.commentNoteID(parentName, parentID)
+	case postAP == "":
+		inReply = f.memberActor(authorName) + "/posts/" + strconv.FormatInt(post, 10)
+	}
+	authorActor := authorAP
+	if postAP == "" {
+		authorActor = f.memberActor(authorName)
+	}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return false, err
+	}
+	ms, err := a.resolveMentions(ctx, body, uid)
+	done()
+	if err != nil {
+		return false, err
+	}
+	mentions := noteMentionsOf(ms)
+	n := outReplyNote{ID: noteID, Type: "Note", AttributedTo: actor, InReplyTo: inReply, Published: created.UTC().Format(time.RFC3339),
+		To: []string{publicCollection}, Cc: []string{actor + "/followers"}}
+	if postAud == "unlisted" {
+		// Addressed as the post it answers is, never wider (after the review of #116): the public collection in cc only.
+		n.To, n.Cc = []string{actor + "/followers"}, []string{publicCollection}
+	}
+	if authorActor != actor {
+		n.Cc = append(n.Cc, authorActor)
+	}
+	byKey := map[string]noteMention{}
+	var named []string
+	for _, m := range mentions {
+		byKey[m.Key] = m
+		n.Tag = append(n.Tag, outTag{Type: "Mention", Href: m.ID, Name: m.Name})
+		if m.ID != actor && !slices.Contains(n.Cc, m.ID) {
+			n.Cc = append(n.Cc, m.ID)
+		}
+		if !sameOrigin(m.ID, f.origin.url) {
+			named = append(named, m.ID)
+		}
+	}
+	n.Content = noteHTMLWith(body, nil, byKey, f.origin.host, nil)
+	if state == "update" {
+		// The Update comes after the last activity of the comment (its Create, or the Update before): at each inbox it
+		// is held while that one is still on its way there (afterHeldSQL), and the Delete takes the line back whole.
+		if edited.Valid {
+			n.Updated = edited.Time.UTC().Format(time.RFC3339)
+		} else {
+			n.Updated = now.UTC().Format(time.RFC3339)
+		}
+		id := noteID + "#update-" + strconv.FormatInt(gen, 10)
+		b, err := apJSON(outReplyActivity{Context: noteContext, ID: id, Type: "Update", Actor: actor, To: n.To, Cc: n.Cc, Object: n})
+		if err != nil {
+			return false, err
+		}
+		_, err = f.out.enqueueOrdered(ctx, keyOwner(uid), id, b, to, outOrder{after: last}, func(tx *sql.Tx) error {
+			// The record leaves update only when no edit came meanwhile (gen); either way the Update just made is the
+			// last activity, which the next one comes after and the Delete takes back.
+			// A Delete marked meanwhile finds no row in update: everything rolls back, and the Delete goes next.
+			return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET last_ap_id = $3, tries = 0, due_at = NULL, sent_at = $4,
+				state = CASE WHEN gen = $2 THEN 'sent' ELSE state END WHERE comment_id = $1 AND state = 'update'`, cid, gen, id, now))
+		})
+		if errors.Is(err, errDeliveryFull) {
+			return a.commentOutFull(ctx, cid, "update", tries, now)
+		}
+		return a.commentOutDone(err)
+	}
+	// The Create: to the commenter's followers on other servers, the post's author's when it is a member here, the
+	// post's author when it is another server's and the remote accounts the comment names.
+	if postAP != "" && authorAP != "" {
+		named = append(named, authorAP)
+	}
+	if parentActor != "" {
+		named = append(named, parentActor)
+	}
+	to, err = f.recipients(ctx, uid, named)
+	if err != nil {
+		return false, err
+	}
+	if postAP == "" && authorID != uid {
+		// The post's author's followers, but none across a block with the commenter, as a post's mentions are.
+		more, err := f.recipientsFor(ctx, authorID, uid)
+		if err != nil {
+			return false, err
+		}
+		to = append(to, more...)
+		if len(to) > deliveryTargetsMax {
+			to = to[:deliveryTargetsMax]
+		}
+	}
+	b, err := apJSON(outReplyActivity{Context: noteContext, ID: noteID + "/activity", Type: "Create", Actor: actor, Published: n.Published, To: n.To, Cc: n.Cc, Object: n})
+	if err != nil {
+		return false, err
+	}
+	sent, _ := json.Marshal(to)
+	_, err = f.out.enqueueThen(ctx, keyOwner(uid), createID, b, to, func(tx *sql.Tx) error {
+		// gen is what was read: an edit made since changes it, the whole step rolls back, and the next pass makes the
+		// Create with the text as it is then (an edit while the record is create sends no Update of its own).
+		if len(to) == 0 {
+			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create' AND gen = $2`, cid, gen))
+		}
+		return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET state = 'sent', targets = $2, last_ap_id = $4, tries = 0, due_at = NULL, sent_at = $5
+			WHERE comment_id = $1 AND state = 'create' AND gen = $3`, cid, string(sent), gen, createID, now))
+	})
+	if errors.Is(err, errDeliveryFull) {
+		return a.commentOutFull(ctx, cid, "create", tries, now)
+	}
+	return a.commentOutDone(err)
+}
+
+// commentOutDone reads enqueueThen's answer for a comment's Create or Delete: a record changed meanwhile is read again on
+// the next pass.
+func (a *app) commentOutDone(err error) (bool, error) {
+	if err == nil || errors.Is(err, errOutChanged) {
+		return true, nil
+	}
+	return false, err
+}
+
+// commentOutFull holds a comment's Create or Update that the full queue refused (errDeliveryFull): tried again on the
+// delivery schedule (8.3), each wait one step more, as a post's Delete is, and given up, said in the log and counted,
+// after the schedule's last wait. Nothing is lost silently.
+func (a *app) commentOutFull(ctx context.Context, cid int64, state string, tries int, now time.Time) (bool, error) {
+	f := a.fed
+	if tries >= len(deliveryRetries) {
+		log.Printf("federation: the %s of comment %d is not sent: the delivery queue stayed full, %d times over the schedule", state, cid, tries+1)
+		f.commentsNotSent.Add(1)
+		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
+		if state == "update" {
+			stmt = `UPDATE ap_comment_out SET state = 'sent', tries = 0, due_at = NULL WHERE comment_id = $1 AND state = 'update'`
+		}
+		_, err := f.fedExec(ctx, stmt, cid)
+		return true, err
+	}
+	log.Printf("federation: the %s of comment %d waits: the delivery queue is full; tried again in %s", state, cid, deliveryRetries[tries])
+	_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = $3`, cid, now.Add(deliveryRetries[tries]), state)
+	return true, err
+}
+
+// talkCountSQL counts the replies kept from other servers up to $1, and the likes with an activity id up to $2, of posts
+// and of comments, each through its partial unique index. talkOrphansSQL looks at the next $1 records of comments that went
+// out, after the record $2 (a cursor through the table), marks for a Delete those whose comment is gone, each comment
+// asked by its primary key, and gives the last record it looked at, how many and how many it marked.
+const (
+	talkCountSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM comments WHERE ap_id IS NOT NULL LIMIT $1) a),
+		(SELECT count(*) FROM (SELECT 1 FROM likes WHERE ap_id IS NOT NULL LIMIT $2) b), (SELECT count(*) FROM (SELECT 1 FROM comment_likes WHERE ap_id IS NOT NULL LIMIT $2) c)`
+	talkOrphansSQL = `WITH s AS (SELECT o.comment_id, k.kept FROM (SELECT comment_id FROM ap_comment_out WHERE state IN ('sent', 'update') AND comment_id > $2
+			ORDER BY comment_id LIMIT $1) o CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM comments c WHERE c.id = o.comment_id) AS kept OFFSET 0) k),
+		u AS (UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id IN (SELECT comment_id FROM s WHERE NOT kept) RETURNING 1)
+		SELECT COALESCE(max(comment_id), 0), count(*), (SELECT count(*) FROM u) FROM s`
+)
+
+// remoteTalkHousekeep counts the replies and likes kept from other servers against their caps in all (repliesFull,
+// likesFull: the inbox takes no more while one is reached), and marks for a Delete the records of comments that went
+// out and are gone without one (a post removed by retention or by its server, an account removed), a batch at a time.
+func (a *app) remoteTalkHousekeep(ctx context.Context) error {
+	f := a.fed
+	var replies, likes, cmtLikes int64
+	if err := f.fedRow(ctx, []any{&replies, &likes, &cmtLikes}, talkCountSQL, remoteRepliesMax, remoteLikesMax); err != nil {
+		return err
+	}
+	f.repliesFull.Store(replies >= remoteRepliesMax)
+	f.likesFull.Store(likes >= remoteLikesMax || cmtLikes >= remoteLikesMax)
+	// One batch a pass, from where the last pass stopped (orphansAfter), back to the start at the end: the records of
+	// comments that went out are kept while their comments are, so this probe is bounded by the batch, not the table
+	// (after the review of #116).
+	var last, looked, marked int64
+	if err := f.fedRow(ctx, []any{&last, &looked, &marked}, talkOrphansSQL, remoteBatch, f.orphansAfter.Load()); err != nil {
+		return err
+	}
+	if looked < remoteBatch {
+		last = 0
+	}
+	f.orphansAfter.Store(last)
+	if marked > 0 {
+		f.commentWaits()
+	}
+	return nil
+}
+
 /* ---------- federation: removing every remote row ---------- */
 
 // purgeCounts are the rows that point at remote accounts, counted before they go with them: each
@@ -22080,6 +23656,9 @@ var purgeCounts = []struct{ what, sql string }{
 	// The records of Public posts sent (FWR 4) name the inboxes they went to: they go too, and a post deleted after
 	// the purge is taken back nowhere.
 	{"records of posts sent", `SELECT count(*) FROM ap_post_out`},
+	// The records of members' comments sent (FWR 6) name the inboxes they went to too. Remote replies and likes go with
+	// their accounts, above; so do the members' comments and likes under the remote posts and replies that go.
+	{"records of comments sent", `SELECT count(*) FROM ap_comment_out`},
 	// The posts of remote accounts (FWR 5) go with them, above, and with each its pictures' rows; their files under
 	// -data/media go after the commit (purgeMedia). The ids of deletions remembered go with their accounts.
 	{"pictures of remote posts", `SELECT count(*) FROM ap_media`},
@@ -22112,7 +23691,7 @@ func purgeRemote(ctx context.Context, db *sql.DB) ([]int64, error) {
 		out = append(out, n)
 	}
 	// The delivery queue: the activities (their rows go with them) and what is kept of each host.
-	for _, q := range []string{`DELETE FROM ap_outbox`, `DELETE FROM ap_hosts`, `DELETE FROM ap_post_out`} {
+	for _, q := range []string{`DELETE FROM ap_outbox`, `DELETE FROM ap_hosts`, `DELETE FROM ap_post_out`, `DELETE FROM ap_comment_out`} {
 		if _, err := tx.ExecContext(ctx, q); err != nil {
 			return nil, err
 		}
@@ -22595,6 +24174,71 @@ var migrations = []string{schema, schemaSocial,
 	CREATE INDEX IF NOT EXISTS ap_deleted_at ON ap_deleted (at);
 	CREATE INDEX IF NOT EXISTS notifications_fed ON notifications (user_id, id DESC) WHERE kind IN ('follow', 'follow_request', 'follow_rejected', 'share', 'mention');
 	CREATE INDEX IF NOT EXISTS reports_target ON reports (target_kind, target_id)`,
+	// 23: replies and likes across servers (docs/federation.md 6.3, 6.4, 9.1 and "As built (FWR 6)" under 6.4; FWR 6). A
+	// remote reply to a post here is a comments row (F5) whose ap_id is its id on its server (NULL is local, which every
+	// row there is keeps), ap_updated the updated time of the version kept, ap_extra what is shown beside its text (the
+	// link to the original, a content warning, its attachments as links). comments_ap_id finds one by its id and keeps
+	// one row per id; comments_remote counts a post's remote replies for its cap and gives its newest for the preview
+	// (its newest comments of this server come through comments_post, past at most the post's 300 remote replies).
+	// likes.ap_id and comment_likes.ap_id
+	// are the id of the Like that made the row: another server's Like here (so its Undo can name it by id), or a member's
+	// Like of a post of another server (so the Undo sent names it). ap_comment_out is a member's comment's way out, as
+	// ap_post_out is a post's (state create, sent, update or delete; targets the inboxes the Create went to), with no
+	// foreign key to comments, since it outlives the comment until its Delete is enqueued; last_ap_id is the activity it
+	// enqueued last (its Create, then each Update), which its next Update names as the one before it and its Delete
+	// takes back; sent_at when that was, so the next Update waits commentUpdateGap after it. ap_outbox.comes_after is the id of the activity that must be settled at an inbox before this one is sent
+	// there (a comment's Update after its Create or the Update before, a Like after the Undo of the like before it), and
+	// undoes_chain says the activity taken back is the last of such a line, which the takeback covers whole at each inbox
+	// (a comment's Delete). ap_like_out keeps the Undo a member's unlike of a post of another server enqueued last, which
+	// the next Like of that post comes after; it goes with its Undo's row of ap_outbox. notifications.fed marks a
+	// notification an account of another server left, and notifications_remote serves the trim of those (FWR 3's bound
+	// of 50 per server and 500 in all), which now covers comments, replies and likes too without reading a member's
+	// notifications from members here; notifications_fed, its narrower forerunner of migration 22, goes. The backfill
+	// marks the notifications remote accounts left before. Additive but for that index: an older build ignores the
+	// rest, but it would show remote replies as comments by local accounts, which is why /nunchaku -purge-remote must
+	// run before ./deploy.sh --rollback past this migration (14.4). The columns ap_comment_out gained during its review
+	// are added again after its CREATE, so the statements run whole over a table an earlier draft made still give every
+	// column (TestDBMigration23OverDraft).
+	`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ap_id TEXT;
+	ALTER TABLE comments ADD COLUMN IF NOT EXISTS ap_updated TIMESTAMPTZ;
+	ALTER TABLE comments ADD COLUMN IF NOT EXISTS ap_extra JSONB NOT NULL DEFAULT '{}';
+	CREATE UNIQUE INDEX IF NOT EXISTS comments_ap_id ON comments (ap_id) WHERE ap_id IS NOT NULL;
+	CREATE INDEX IF NOT EXISTS comments_remote ON comments (post_id, id) WHERE ap_id IS NOT NULL;
+	ALTER TABLE likes ADD COLUMN IF NOT EXISTS ap_id TEXT;
+	CREATE UNIQUE INDEX IF NOT EXISTS likes_ap_id ON likes (ap_id) WHERE ap_id IS NOT NULL;
+	ALTER TABLE comment_likes ADD COLUMN IF NOT EXISTS ap_id TEXT;
+	CREATE UNIQUE INDEX IF NOT EXISTS comment_likes_ap_id ON comment_likes (ap_id) WHERE ap_id IS NOT NULL;
+	CREATE TABLE IF NOT EXISTS ap_comment_out (
+		comment_id BIGINT PRIMARY KEY,
+		post_id BIGINT NOT NULL,
+		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		state TEXT NOT NULL CHECK (state IN ('create', 'sent', 'update', 'delete')),
+		targets TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		gen BIGINT NOT NULL DEFAULT 0,
+		last_ap_id TEXT NOT NULL DEFAULT '',
+		tries INT NOT NULL DEFAULT 0,
+		due_at TIMESTAMPTZ,
+		sent_at TIMESTAMPTZ
+	);
+	ALTER TABLE ap_comment_out ADD COLUMN IF NOT EXISTS last_ap_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE ap_comment_out ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS comes_after TEXT;
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS undoes_chain BOOLEAN NOT NULL DEFAULT false;
+	CREATE TABLE IF NOT EXISTS ap_like_out (
+		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		post_id BIGINT NOT NULL,
+		undo_id TEXT NOT NULL REFERENCES ap_outbox(ap_id) ON DELETE CASCADE,
+		PRIMARY KEY (user_id, post_id)
+	);
+	CREATE INDEX IF NOT EXISTS ap_like_out_undo ON ap_like_out (undo_id);
+	CREATE INDEX IF NOT EXISTS ap_comment_out_due ON ap_comment_out (comment_id) WHERE state <> 'sent';
+	CREATE INDEX IF NOT EXISTS ap_comment_out_user ON ap_comment_out (user_id);
+	CREATE INDEX IF NOT EXISTS ap_comment_out_post ON ap_comment_out (post_id);
+	ALTER TABLE notifications ADD COLUMN IF NOT EXISTS fed BOOLEAN NOT NULL DEFAULT false;
+	UPDATE notifications SET fed = true WHERE NOT fed AND actor_id IN (SELECT id FROM users WHERE domain <> '');
+	CREATE INDEX IF NOT EXISTS notifications_remote ON notifications (user_id, id DESC) WHERE fed;
+	DROP INDEX IF EXISTS notifications_fed`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -22671,6 +24315,9 @@ func (a *app) housekeep() (map[string]int64, error) {
 		out["inbox"] = n
 		if out["remote"], err = a.remoteHousekeep(); err != nil {
 			return out, fmt.Errorf("housekeeping remote posts: %w", err)
+		}
+		if err := a.remoteTalkHousekeep(context.Background()); err != nil {
+			return out, fmt.Errorf("housekeeping remote replies and likes: %w", err)
 		}
 		if q := a.fed.out; q != nil {
 			rows, acts, err := q.housekeep(q.ctx)
@@ -24168,6 +25815,12 @@ func (a *app) start(getenv func(string) string) error {
 	if fed.on {
 		return a.startFederation(fed)
 	}
+	// Local mode on a database that federated before: what other servers left stays until -purge-remote, and is left
+	// out of lists and counts (hidingRemote). No row of another server can be added in local mode, so asking once is
+	// enough.
+	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM users WHERE domain <> '')`).Scan(&a.remoteKept); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -25226,6 +26879,16 @@ func (a *app) notifyAt(userID, actorID int64, kind string, postID, commentID int
 	if !quietKinds[kind] {
 		q += ` WHERE ` + blockFree("$1::bigint", "$2::bigint", "false")
 	}
+	// In a mode that federates, an account of another server is told nothing here (FWR 6: a member answers, likes
+	// or hides a remote account's reply); its own server tells it what reaches it there.
+	if a.fed != nil {
+		if quietKinds[kind] {
+			q += ` WHERE `
+		} else {
+			q += ` AND `
+		}
+		q += `EXISTS (SELECT 1 FROM users WHERE id = $1 AND domain = '')`
+	}
 	if _, err := a.db.Exec(q, userID, actor, kind, post, cmt, text); err != nil {
 		log.Printf("notify: %v", err)
 	}
@@ -25340,6 +27003,18 @@ type comment struct {
 	Liked      bool      `json:"liked"`
 	ReplyCount int       `json:"replyCount"`
 	Replies    []comment `json:"replies,omitempty"`
+	// Remote is set for a reply from another server (FWR 6): what the page draws beside its text. Left out for a
+	// comment of this server, so every answer about one is as it always was.
+	Remote *commentRemote `json:"remote,omitempty"`
+}
+
+// commentRemote is what the page shows of a remote reply besides its text, as comments.ap_extra holds it: the link to
+// the original, its content warning, and its attachments, each only a link to the original (no picture of a reply is
+// copied here).
+type commentRemote struct {
+	Link  string        `json:"link"`
+	CW    string        `json:"cw,omitempty"`
+	Media []remoteMedia `json:"media,omitempty"`
 }
 
 type post struct {
@@ -25413,9 +27088,15 @@ func postCols(staff string) string {
 	return `p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
-			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)), p.hidden_reason, p.audience, p.alt,
+			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)` + postCountShown + `), p.hidden_reason, p.audience, p.alt,
 		p.ap_id IS NOT NULL, p.ap_extra`
 }
+
+// postCountShown is what FWR 6 added to postCols' count of comments: a reply of an account its server says is suspended
+// is not counted, as it is not listed, nor an answer in a thread such a reply began (its thread is not listed; a
+// deleted one is, as a placeholder). plainLocal takes it out again.
+var postCountShown = `
+			AND (c.ap_id IS NULL OR ` + actorShown("c.user_id") + `) AND (pc.ap_id IS NULL OR pc.deleted OR ` + actorShown("pc.user_id") + `)`
 
 // homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
 // first. $1 is the viewer, $2 "older than this post" (0 for the first page), $3 how many, $4 whether the
@@ -25441,8 +27122,25 @@ var homeSQL = `SELECT ` + postCols("$4") + ` FROM (SELECT h.id FROM
 // of each); repliesSQL the newest replies under each of those comments. Both go through queryComments.
 // A thread begun by someone across a block is left out whole, its replies with it, because they answer
 // a comment the viewer is not shown.
-var feedCommentsSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
-	FROM comments c WHERE c.post_id = ANY($3) AND c.parent_id IS NULL AND ` + commentBlockFree + `) c WHERE c.rn <= $4 ORDER BY c.id`
+//
+// The comments of this server come first (FWR 6): replies from other servers, however many, never push a member's
+// comment out of the preview; they are read with the rest of the post's comments when it is opened. Each post gives
+// its newest comments of this server (through comments_post, passing over at most the post's remoteRepliesPerPost
+// remote replies) and its newest replies from other servers (through comments_remote), each at most $4, and the first
+// $4 of those are kept, so the preview of a post costs at most its cap of remote replies more than one with none
+// (TestDBQueryPlans). A post with no remote reply shows what it always showed.
+//
+// feedCommentsLocalSQL is the statement as it was before FWR 6, which local mode on a database that never federated
+// runs (plainLocal): it has no remote reply to put after the others.
+var feedCommentsLocalSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
+	FROM comments c WHERE c.post_id = ANY($3) AND c.parent_id IS NULL AND ` + commentBlockFreeLocal + `) c WHERE c.rn <= $4 ORDER BY c.id`
+
+var feedCommentsSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.ap_id IS NULL DESC, c.id DESC) AS rn
+	FROM (SELECT x.* FROM unnest($3::bigint[]) AS q(pid) CROSS JOIN LATERAL (
+		(SELECT c.* FROM comments c WHERE c.post_id = q.pid AND c.parent_id IS NULL AND c.ap_id IS NULL AND ` + commentBlockFree + ` ORDER BY c.id DESC LIMIT $4)
+		UNION ALL
+		(SELECT c.* FROM comments c WHERE c.post_id = q.pid AND c.parent_id IS NULL AND c.ap_id IS NOT NULL AND ` + commentBlockFree + ` ORDER BY c.id DESC LIMIT $4)) x) c) c
+	WHERE c.rn <= $4 ORDER BY c.id`
 
 // loadPosts reads a page of posts newest first, with like counts, whether the viewer
 // liked each one, every comment, and the users involved. With ids, it reads those posts
@@ -25462,6 +27160,7 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) 
 // readPosts runs q, feedSQL or homeSQL with its arguments, and gives the page as the page reads it:
 // the posts with their comments and links, the users involved, and whether more follow.
 func (a *app) readPosts(viewer *user, q string, args ...any) (map[string]any, error) {
+	q = a.localStatements(q)
 	rows, err := a.db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -25930,9 +27629,10 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 		del = `WITH d AS (DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
 			AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.id, p.user_id, p.ap_id),
 			o AS (UPDATE ap_post_out SET state = 'delete' WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING post_id),
+			oc AS (UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING comment_id),
 			r AS (INSERT INTO ap_deleted (ap_id, user_id, at, by_staff) SELECT ap_id, user_id, now(), true FROM d WHERE ap_id IS NOT NULL
 				ON CONFLICT (ap_id, user_id) DO UPDATE SET by_staff = true, at = EXCLUDED.at)
-			SELECT d.user_id, (SELECT count(*) FROM o) FROM d`
+			SELECT d.user_id, (SELECT count(*) FROM o) + (SELECT count(*) FROM oc) FROM d`
 		dest = append(dest, &out)
 	}
 	err := a.db.QueryRow(del, id, u.ID, can(u, permContentDelete), pq.Array(below(u.Role))).Scan(dest...)
@@ -25947,6 +27647,7 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 	a.dropVisitorPage()
 	if out > 0 {
 		a.fed.outWaits()
+		a.fed.commentWaits() // the comments under it that went out are taken back too (FWR 6)
 	}
 	if author != u.ID {
 		if err := a.audit(a.db, u.ID, "delete_post", "post", id, author, "", nil); err != nil {
@@ -25961,8 +27662,13 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 // cannot. A hidden post is "gone" to everyone but its author and moderators, and a post across a
 // block (blockFree) is gone in the same words, so the answer does not say that there is a block.
 func (a *app) postOwner(w http.ResponseWriter, id int64, viewer *user) (int64, bool) {
+	return a.postOwnerIn(w, id, viewer, postShown)
+}
+
+// postOwnerIn is postOwner with the condition shown (postShown, or talkShown for a like or a comment).
+func (a *app) postOwnerIn(w http.ResponseWriter, id int64, viewer *user, shown string) (int64, bool) {
 	var owner int64
-	err := a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND `+postShown,
+	err := a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND `+shown,
 		id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "No such post.")
@@ -26009,16 +27715,32 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	// A like of a post of another server that went out is taken back with Undo (FWR 6).
+	if a.fed != nil && a.unlikeRemote(w, r, u, id) {
+		return
+	}
 	// Taking one's own like back always works: across a block, either way, and on a post a moderator
 	// hid. It is decided by the like alone, so the answer says only what the member knew, that they had
 	// liked the post; the count comes with it only when the post is shown to them (unliked).
 	if done := a.unliked(w, `DELETE FROM likes WHERE post_id = $1 AND user_id = $2`,
-		`SELECT (SELECT count(*) FROM likes WHERE post_id = $1) FROM posts p WHERE p.id = $1 AND `+postShown, id, u); done {
+		`SELECT (SELECT count(*) FROM likes WHERE post_id = $1) FROM posts p WHERE p.id = $1 AND `+a.talkShown(), id, u); done {
 		return
 	}
-	owner, ok := a.postOwner(w, id, u)
+	owner, ok := a.postOwnerIn(w, id, u, a.talkShown())
 	if !ok || a.across(a.db, w, "No such post.", u.ID, owner) {
 		return
+	}
+	if a.fed != nil {
+		// A post of another server is liked there too, or not at all (likeRemote).
+		t, remote, err := a.remotePostOf(id)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if remote {
+			a.likeRemote(w, r, u, id, t)
+			return
+		}
 	}
 	// One statement, so two quick clicks cannot race into a duplicate key; a like that is there
 	// already was made by the other click, and stays.
@@ -26047,11 +27769,85 @@ func (a *app) handleLike(w http.ResponseWriter, r *http.Request, u *user) {
 }
 
 // postShown is the condition that post p is shown to the viewer ($2, and $3 whether they may hide
-// posts), as postOwner asks it.
-//
-// A post of another server is not shown here (ap_id IS NULL): nobody here likes, comments on or bookmarks one
-// until replies and likes cross servers (FWR 6), so each of those answers it as no such post.
+// posts), as postOwner asks it for a bookmark. A post of another server is not shown here (ap_id IS NULL): the
+// bookmarks list reads local posts only (feedSQL), so one could never be found again there.
 var postShown = `p.ap_id IS NULL AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND ` + blockFree("$2", "p.user_id", "$3")
+
+// postTalkShown is postShown for a like or a comment (FWR 6): in a mode that federates, a post of another server is
+// shown too when the viewer may read it (remoteSeen) and it is public or unlisted. A followers-only post of another
+// server is read by its followers here but neither liked nor answered: an answer would go out to more people than
+// its author addressed, and Flowa keeps no audience narrower than Public for its own posts (F3).
+var postTalkShown = `(p.ap_id IS NULL OR p.audience IN ('public', 'unlisted') AND ` + remoteSeen("$2") + `) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND ` + blockFree("$2", "p.user_id", "$3")
+
+// hidingRemote says the instance runs in local mode on a database that federated before and still keeps rows of other
+// servers (remoteKept, read at the start): then what other servers left is neither listed nor counted (hideRemote).
+func (a *app) hidingRemote() bool { return a.fed == nil && a.remoteKept }
+
+// plainLocal says the instance runs in local mode on a database that never federated (no account of another server):
+// then the statements over posts and comments are the ones they were before FWR 6 (plainStatements), with nothing of
+// what only rows of other servers need. TestDBQueryPlans reads them in that mode.
+func (a *app) plainLocal() bool { return a.fed == nil && !a.remoteKept }
+
+// localStatements is q as this mode runs it: hideRemote on a database that federated and runs in local mode,
+// plainStatements on one that never federated, q itself in a mode that federates.
+func (a *app) localStatements(q string) string {
+	switch {
+	case a.hidingRemote():
+		return hideRemote(q)
+	case a.plainLocal():
+		return plainStatements(q)
+	}
+	return q
+}
+
+// plainStatements takes out of q what FWR 6 added to the statements over posts and comments for rows of other servers:
+// the look at a reply's account in the counts and the lists (postCountShown, commentAccountShown, replyCountShown), and the
+// preview's two branches (feedCommentsSQL, back to feedCommentsLocalSQL). Only the two columns commentCols added stay,
+// read from the row the statement holds anyway. TestDBRemoteHiddenInLocalMode holds that each fragment is found.
+func plainStatements(q string) string {
+	for _, r := range plainParts {
+		q = strings.ReplaceAll(q, r[0], r[1])
+	}
+	return q
+}
+
+var plainParts = [][2]string{
+	{feedCommentsSQL, feedCommentsLocalSQL},
+	{postCountShown, ""},
+	{commentAccountShown, ""},
+	{replyCountShown, ""},
+}
+
+// hideRemote is a statement over posts and comments (postCols, commentCols, commentBlockFree) that leaves out the
+// replies and likes of other servers, from lists and counts alike, so in local mode a page's counts agree with what it
+// lists and a page of comments is full (the filter is before the LIMIT). Each replacement is of a fixed fragment these
+// strings are built with; TestDBRemoteHiddenInLocalMode holds that each is found.
+func hideRemote(q string) string {
+	for _, r := range hideRemoteParts {
+		q = strings.ReplaceAll(q, r[0], r[1])
+	}
+	return q
+}
+
+var hideRemoteParts = [][2]string{
+	{`WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL`, `WHERE c.post_id = p.id AND c.ap_id IS NULL AND NOT c.deleted AND c.hidden_at IS NULL`},
+	// A member's answer in a thread a reply of another server began is not listed (its thread is not), so not counted.
+	{`AND (pc.id IS NULL OR NOT EXISTS`, `AND (pc.id IS NULL OR pc.ap_id IS NULL AND NOT EXISTS`},
+	{`(SELECT count(*) FROM likes l WHERE l.post_id = p.id)`, `(SELECT count(*) FROM likes l WHERE l.post_id = p.id AND l.ap_id IS NULL)`},
+	{`(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id)`, `(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id AND l.ap_id IS NULL)`},
+	{`FROM comments r WHERE r.parent_id = c.id AND`, `FROM comments r WHERE r.parent_id = c.id AND r.ap_id IS NULL AND`},
+	{commentBlockFree, commentBlockFree + ` AND c.ap_id IS NULL`},
+}
+
+// talkShown is the condition a like or a comment asks: postTalkShown in a mode that federates, postShown elsewhere,
+// so local mode answers as it always did (a post of another server, kept from a time the instance federated, is no
+// such post there).
+func (a *app) talkShown() string {
+	if a.fed == nil {
+		return postShown
+	}
+	return postTalkShown
+}
 
 // unliked is the first half of a like toggle: del removes the member's own like ($1 the post or
 // comment, $2 the member), whatever stands between them and the author. When there was one it answers
@@ -26209,11 +28005,31 @@ func (a *app) handleBookmarks(w http.ResponseWriter, _ *http.Request, u *user) {
 
 // commentBlockFree is blockFree for a comment c in the queries queryComments runs, where $1 is the
 // viewer and $2 whether they may hide posts. Each of those queries says it inside, before its LIMIT.
-var commentBlockFree = blockFree("$1", "c.user_id", "$2")
+//
+// Since FWR 6 it also leaves out the replies of an account its server says is suspended (actorShown, one primary key
+// look; true for a member here), as Home leaves out that account's posts; a placeholder stays, so the answers of members
+// here under a gone account's reply still read.
+var commentBlockFree = commentBlockFreeLocal + commentAccountShown
+
+// commentBlockFreeLocal is commentBlockFree as it was before FWR 6, and commentAccountShown what FWR 6 added to it.
+var commentBlockFreeLocal = blockFree("$1", "c.user_id", "$2")
+var commentAccountShown = ` AND (c.deleted OR ` + actorShown("c.user_id") + `)`
 
 var commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
 	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
-	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL AND ` + blockFree("$1", "r.user_id", "$2") + `), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL`
+	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL AND ` + blockFree("$1", "r.user_id", "$2") + replyCountShown + `), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL,
+	c.ap_id IS NOT NULL, c.ap_extra`
+
+// replyCountShown is what FWR 6 added to commentCols' count of replies (plainLocal takes it out again).
+var replyCountShown = `
+		AND (r.ap_id IS NULL OR r.deleted OR ` + actorShown("r.user_id") + `)`
+
+// commentPageSQL is a page of a post's top-level comments ($3 the post, $4 after this one, $5 how many), replyPageSQL a
+// page of a thread's replies ($3 the comment), both through queryComments.
+var (
+	commentPageSQL = `SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`
+	replyPageSQL   = `SELECT * FROM comments c WHERE c.parent_id = $3 AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`
+)
 
 var repliesSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
 		FROM comments c WHERE c.parent_id = ANY($3) AND ` + commentBlockFree + `) c WHERE c.rn <= $4`
@@ -26229,7 +28045,8 @@ func commentsSQL(inner string) string {
 // A hidden comment is shown in full to its author and moderators; to everyone else it is left
 // out, or kept as an empty placeholder when it has replies that are still shown.
 func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment, error) {
-	rows, err := a.db.Query(commentsSQL(inner), append([]any{viewer.ID, can(viewer, permPostHide)}, args...)...)
+	q := a.localStatements(commentsSQL(inner))
+	rows, err := a.db.Query(q, append([]any{viewer.ID, can(viewer, permPostHide)}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -26238,9 +28055,22 @@ func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment
 	for rows.Next() {
 		c := &comment{}
 		var reason string
-		var hidden bool
-		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.ParentID, &c.Body, &c.Created, &c.Edited, &c.Deleted, &c.Likes, &c.Liked, &c.ReplyCount, &reason, &hidden); err != nil {
+		var hidden, remote bool
+		var extra []byte
+		if err := rows.Scan(&c.ID, &c.PostID, &c.UserID, &c.ParentID, &c.Body, &c.Created, &c.Edited, &c.Deleted, &c.Likes, &c.Liked, &c.ReplyCount, &reason, &hidden, &remote, &extra); err != nil {
 			return nil, err
+		}
+		if remote {
+			// A reply from another server reaches no page of an instance in local mode (one that federated before keeps
+			// its rows until -purge-remote): the lists leave it out before their LIMIT (hideRemote); a comment asked for
+			// by its id alone is left out here.
+			if a.fed == nil {
+				continue
+			}
+			c.Remote = &commentRemote{}
+			if json.Unmarshal(extra, c.Remote) != nil {
+				c.Remote = &commentRemote{}
+			}
 		}
 		if hidden {
 			if c.UserID == viewer.ID || can(viewer, permPostHide) {
@@ -26253,6 +28083,11 @@ func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment
 		}
 		if c.Deleted {
 			c.Body, c.Likes, c.Liked, c.Edited = "", 0, false, false
+			// A removed reply of another server (its author's deletion, its account's, its domain's suspension) leaves
+			// nothing readable of its author: no account, no link to the original (FWR 6, after the review of #116).
+			if c.Remote != nil {
+				c.UserID, c.Remote = 0, nil
+			}
 		}
 		out = append(out, c)
 	}
@@ -26313,10 +28148,10 @@ func (a *app) writeComments(w http.ResponseWriter, list []*comment, page int, ex
 // newest replies.
 func (a *app) handleGetComments(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if _, ok := a.postOwner(w, id, u); !ok {
+	if _, ok := a.postOwnerIn(w, id, u, a.talkShown()); !ok {
 		return
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND `+commentBlockFree+` ORDER BY c.id LIMIT $5`, id, queryID(r, "after"), commentPage+1)
+	list, err := a.queryComments(u, commentPageSQL, id, queryID(r, "after"), commentPage+1)
 	if err == nil {
 		err = a.attachReplies(u, list)
 	}
@@ -26336,10 +28171,12 @@ type commentRow struct {
 }
 
 // commentShown is comment c with its post p, when it is shown to the viewer ($1 the comment, $2 the
-// viewer, $3 whether they may hide posts), as commentRow asks it.
+// viewer, $3 whether they may hide posts), as commentRow asks it. A comment under a post of another server (FWR 6)
+// is shown to who may read that post (remoteSeen), as the post itself is.
 var commentShown = `comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments rc ON rc.id = c.parent_id WHERE c.id = $1
 		AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)
-		AND ` + blockFree("$2", "c.user_id", "$3") + ` AND ` + blockFree("$2", "p.user_id", "$3") + ` AND (rc.id IS NULL OR ` + blockFree("$2", "rc.user_id", "$3") + `)`
+		AND ` + blockFree("$2", "c.user_id", "$3") + ` AND ` + blockFree("$2", "p.user_id", "$3") + ` AND (rc.id IS NULL OR ` + blockFree("$2", "rc.user_id", "$3") + `)
+		AND (p.ap_id IS NULL OR $3 OR ` + remoteSeen("$2") + `)`
 
 func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (commentRow, bool) {
 	var c commentRow
@@ -26370,7 +28207,7 @@ func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) 
 	if c.parentID != 0 {
 		id = c.parentID
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.parent_id = $3 AND c.id > $4 AND `+commentBlockFree+` ORDER BY c.id LIMIT $5`, id, queryID(r, "after"), replyPage+1)
+	list, err := a.queryComments(u, replyPageSQL, id, queryID(r, "after"), replyPage+1)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -26390,8 +28227,12 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 		root = c.parentID
 	}
 	roots, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.id = $3`, root)
-	if err != nil || len(roots) == 0 {
+	if err != nil {
 		a.serverError(w, fmt.Errorf("thread %d: %v", root, err))
+		return
+	}
+	if len(roots) == 0 { // a thread begun by another server's account, in local mode
+		fail(w, http.StatusNotFound, "That comment is gone.")
 		return
 	}
 	reps, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.parent_id = $3 AND `+commentBlockFree+` ORDER BY c.id LIMIT $4`, root, maxThread)
@@ -26405,12 +28246,53 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 	a.writeComments(w, roots, 1, map[string]any{"postId": c.postID, "focus": id})
 }
 
-var leadMentionRE = regexp.MustCompile(`^@([a-z0-9][a-z0-9._-]{2,23})\b`)
+// leadNamePattern finds the name of a member here that opens a text, as Postgres reads it (commentOutSQL): @ and 3 to 24
+// name characters, the longest that ends in a letter, a digit or _ with none of those after it, and is not followed by
+// more name characters and an @, so a handle of another server (@name@host, @name.x@host, @name-x@host) names no
+// member here. The end of the name is spelled out in ASCII and not left to \M, which in Postgres also counts letters
+// and digits of other scripts: "@aliceさん" opens with alice on both sides. leadName reads it the same way in Go, by
+// construction: the longest such name, tried from the longest down, as the regular expression backtracks.
+// TestDBLeadNameAgrees runs one table of texts through both.
+const leadNamePattern = `^@([a-z0-9][a-z0-9._-]{1,22}[a-z0-9_])(?![a-z0-9_])(?![a-z0-9._-]*@)`
 
-// startsWithMention reports whether text opens with @name.
+func leadName(text string) string {
+	low := strings.ToLower(text)
+	if !strings.HasPrefix(low, "@") {
+		return ""
+	}
+	nameChar := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-'
+	}
+	wordChar := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' }
+	n := 0
+	for n < 24 && 1+n < len(low) && nameChar(low[1+n]) {
+		n++
+	}
+	if n == 0 || low[1] == '.' || low[1] == '_' || low[1] == '-' {
+		return ""
+	}
+	for l := n; l >= 3; l-- {
+		end := 1 + l
+		if !wordChar(low[end-1]) || end < len(low) && wordChar(low[end]) {
+			continue // \M: a word ends here
+		}
+		rest := end
+		for rest < len(low) && nameChar(low[rest]) {
+			rest++
+		}
+		if rest < len(low) && low[rest] == '@' {
+			continue // more name characters and an @: a handle of another server
+		}
+		return low[1:end]
+	}
+	return ""
+}
+
+// startsWithMention reports whether text opens with @name, a member here (leadName): a handle of another server that
+// begins with the same name is not theirs.
 func startsWithMention(text, name string) bool {
-	m := leadMentionRE.FindStringSubmatch(strings.ToLower(text))
-	return m != nil && m[1] == name
+	n := leadName(text)
+	return n != "" && n == name
 }
 
 func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
@@ -26445,9 +28327,32 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusBadRequest, "A comment needs 1 to 1000 characters.")
 		return
 	}
-	owner, ok := a.postOwner(w, id, u)
+	owner, ok := a.postOwnerIn(w, id, u, a.talkShown())
 	if !ok || a.across(a.db, w, "No such post.", u.ID, owner) {
 		return
+	}
+	// In a mode that federates (FWR 6): a comment on a post of another server needs the member to share their profile
+	// and the switches on (talkGate), since it goes there; one on a Public post here goes out when they share.
+	goesOut, remote := false, false
+	if a.fed != nil {
+		var public bool
+		if err := a.db.QueryRow(`SELECT p.ap_id IS NOT NULL, `+publicPost+` AND `+publicMember+` FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1`,
+			id, a.mode == modeSingle).Scan(&remote, &public); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		status, msg, err := a.talkGate(a.db, u)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if remote && status != 0 {
+			fail(w, status, msg)
+			return
+		}
+		// Switches that could not be read are not "off": the record is written and the producer waits for them to read
+		// (errSwitchesUnread), as a post's way out does; only a read that said off keeps the comment here.
+		goesOut = (status == 0 || status == http.StatusServiceUnavailable) && (remote || public)
 	}
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -26490,6 +28395,23 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		if parent != 0 {
 			root = parent // one level of threading: a reply to a reply joins the same thread
 		}
+		// Nothing that names a member who does not share their profile leaves this server (FWR 6, after its review): an
+		// answer to their comment, or in a thread they began, would carry their comment's id and their name. Such a
+		// comment, and an answer to a hidden comment, stays here, as the comments of members who do not share do.
+		if goesOut {
+			if hidden {
+				goesOut = false
+			} else if err := tx.QueryRow(`SELECT COALESCE(bool_and(u.domain <> '' OR `+publicMember+`), true) FROM users u WHERE u.id = ANY($1)`,
+				pq.Array([]int64{answered, rootOwner}), a.mode == modeSingle).Scan(&goesOut); err != nil {
+				a.serverError(w, err)
+				return
+			}
+			// Under a post of another server it would stay here unseen by that post's people: refused, with why.
+			if remote && !goesOut {
+				fail(w, http.StatusForbidden, talkStaysHere)
+				return
+			}
+		}
 		if answered != u.ID {
 			var name string
 			if err := tx.QueryRow(`SELECT username FROM users WHERE id = $1`, answered).Scan(&name); err != nil {
@@ -26510,9 +28432,19 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
+	if goesOut {
+		// Its way out (FWR 6), in the comment's own transaction: a worker makes the Create (commentOut).
+		if _, err := tx.Exec(`INSERT INTO ap_comment_out (comment_id, post_id, user_id, state) VALUES ($1, $2, $3, 'create')`, cid, id, u.ID); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		a.serverError(w, err)
 		return
+	}
+	if goesOut {
+		a.fed.commentWaits()
 	}
 	// The person answered hears about a reply; the post owner hears about a comment unless they
 	// were the one answered; anyone else @mentioned hears once.
@@ -26554,6 +28486,12 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 	if muted(w, u) {
 		return
 	}
+	if a.fed != nil {
+		var ok bool
+		if w, ok = allowed(w, a.lim.commentEdits, u, "edits of comments"); !ok {
+			return
+		}
+	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Body string `json:"body"`
@@ -26586,6 +28524,19 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 		a.serverError(w, err)
 		return
 	}
+	if a.fed != nil {
+		// A comment that went out is sent again as Update(Note) (FWR 6); one whose Create waits goes with the new text.
+		// Every edit moves the generation, so a producer that read the record before it does not write what it read.
+		n, err := a.db.Exec(`UPDATE ap_comment_out SET gen = gen + 1, state = CASE WHEN state = 'sent' THEN 'update' ELSE state END
+			WHERE comment_id = $1 AND state <> 'delete'`, id)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if k, _ := n.RowsAffected(); k > 0 {
+			a.fed.commentWaits()
+		}
+	}
 	before := map[string]bool{}
 	for _, n := range mentionNames(c.body, a.ownHost()) {
 		before[n] = true
@@ -26617,8 +28568,9 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 	defer tx.Rollback()
 	var author, owner, parent int64
 	var authorRole string
-	err = tx.QueryRow(`SELECT c.user_id, p.user_id, COALESCE(c.parent_id, 0), au.role FROM comments c JOIN posts p ON p.id = c.post_id JOIN users au ON au.id = c.user_id
-		WHERE c.id = $1 FOR UPDATE OF c`, id).Scan(&author, &owner, &parent, &authorRole)
+	var apID sql.NullString
+	err = tx.QueryRow(`SELECT c.user_id, p.user_id, COALESCE(c.parent_id, 0), au.role, c.ap_id FROM comments c JOIN posts p ON p.id = c.post_id JOIN users au ON au.id = c.user_id
+		WHERE c.id = $1 FOR UPDATE OF c`, id).Scan(&author, &owner, &parent, &authorRole, &apID)
 	// The author and the post's owner may delete; anyone else needs the permission and a higher role.
 	if err == nil && author != u.ID && owner != u.ID && !(can(u, permContentDelete) && outranks(u.Role, authorRole)) {
 		err = sql.ErrNoRows
@@ -26652,12 +28604,29 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 	if err == nil && author != u.ID && owner != u.ID {
 		err = a.audit(tx, u.ID, "delete_comment", "comment", id, author, "", nil)
 	}
+	if err == nil && apID.Valid {
+		// A remote reply deleted here (by the post's author or a moderator) is remembered as a moderator's delete of a
+		// remote post is (by_staff: a year, outside the caps), so its author's next edit does not bring it back (FWR 6).
+		_, err = tx.Exec(`INSERT INTO ap_deleted (ap_id, user_id, at, by_staff) VALUES ($1, $2, now(), true)
+			ON CONFLICT (ap_id, user_id) DO UPDATE SET by_staff = true, at = EXCLUDED.at`, apID.String, author)
+	}
+	marked := int64(0)
+	if err == nil && a.fed != nil {
+		// A comment that went out is taken back where it went (FWR 6), marked in the deletion's transaction.
+		var res sql.Result
+		if res, err = tx.Exec(`UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id = $1 AND state <> 'delete'`, id); err == nil {
+			marked, _ = res.RowsAffected()
+		}
+	}
 	if err == nil {
 		err = tx.Commit()
 	}
 	if err != nil {
 		a.serverError(w, err)
 		return
+	}
+	if marked > 0 {
+		a.fed.commentWaits()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "placeholder": how == "kept"})
 }

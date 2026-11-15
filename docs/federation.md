@@ -446,6 +446,11 @@ the accounts its members follow on other servers for those members' Home (their 
 cache, a member told when one mentions them or shares their post), while replies and likes sent to it are counted and
 dropped", and the parts add `home` (6.6, "Remote content in, as built").
 
+As built (FWR 6): the sentence now ends "..., a member told when one mentions them or shares their post), and takes
+replies and likes from other servers to its members' Public posts and comments, and sends its members' comments on
+Public posts and their likes and comments on public posts of other servers, with an edit, a deletion and an unlike",
+and the parts add `replies` (6.4, "Replies and likes across servers, as built").
+
 ### 4.2 What each mode means for every surface
 
 | Surface | `local` (default) | `federated` | `single` |
@@ -1302,7 +1307,11 @@ the outbox and at its id (`/users/{name}/posts/{id}/activity`, 5.2's correction)
 the author's followers, as 6.7 says; FWR 4 adds the mentioned actors to `cc` of the Create and its Note
 together, in that one function. As built (FWR 4): the first row (Create(Note), to the followers one per shared inbox
 and the remote accounts mentioned), Delete(Tombstone) on a deletion and on a moderator's hide, to the inboxes the Create
-went to, and Update(Person) at most every five minutes, the newest state winning (6.5, "Public posts out, as built").
+went to, and Update(Person) at most every five minutes, the newest state winning (6.5, "Public posts out, as built"). As built
+(FWR 6): the second row (a comment, to the commenter's followers, the post's author and, for a post here, its author's
+followers, and the accounts it mentions), the third (Update(Note) with `updated`), the forward of the fourth (signed by the
+instance actor, never to the sending server), and Like and Undo(Like) of a post of another server (below, "Replies and
+likes across servers, as built").
 
 #### Follows across servers, as built (FWR 3)
 
@@ -1452,6 +1461,349 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   `TestTwoInstances`), `TestDBLockedOnlyFederating`, `TestDBFollowsOneConnection`, `TestDBQueryPlans` (a Follow in at
   845 and 258 rows read, a member's requests at 1,400), `TestDBPurgeRemote` and `TestDBInboxHandlers` updated; the
   `federated` browser suite (the switch, the remote profile, the button's states, a request with Approve and Decline).
+
+#### Replies and likes across servers, as built (FWR 6)
+
+"federation: replies and likes across servers" in `main.go`, migration 23 (with `flowa-schema22.dump` for the restore
+drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
+
+- **The data** (9.1, 9.2, F5). A remote reply is a `comments` row with `ap_id` its id on its server (unique,
+  `comments_ap_id`), `ap_updated` the `updated` of the version kept and `ap_extra` what is shown beside its text (the
+  link to the original, a content warning, its attachments as links). A remote like is a `likes` or `comment_likes`
+  row of the remote account, with `ap_id` the Like's id, so an Undo naming it by id finds it; a member's like of a
+  post of another server keeps the id of the Like sent in the same column, so its Undo can name it. `ap_comment_out`
+  is a member's comment's way out, as `ap_post_out` is a post's. `notifications.fed` marks what an account of another
+  server left (the backfill marks the rows FWR 3 and 5 wrote), `notifications_remote` serves FWR 3's trim through it
+  and replaces `notifications_fed` (migration 22): the trim now covers comments, replies and likes without reading
+  the notifications members here left. `comments_remote (post_id, id)` gives a post's newest remote replies and counts
+  them for its cap; its newest local comments come through `comments_post`, past at most its 300 remote replies (the
+  index of local comments alone that an earlier draft added cost a write for every comment here, also in local mode,
+  and was dropped after the review of #116).
+- **In: a reply** (`repliedIn`). A Create whose Note passes the origin rule on the object (`noteShaped`, as for any
+  post) and whose `inReplyTo` is a post of this server (`localPostOf`), a member's comment (`localCommentOf`, the id a
+  comment goes out with, `/users/{name}/comments/{id}`), or a remote reply kept here (by `ap_id`). The post must be
+  Public, not hidden, not a milestone, of a member who shares their profile (`publicPost` and `publicMember`); the
+  comment answered shown (not deleted, not hidden); the account well; the switches a follow needs on (`followsState`:
+  off drops, unread is 503 and a retry); no block, whichever blocked whom, between the account and the post's author,
+  the member answered or the thread's first author. **Decided: only a public or unlisted reply is kept**: one
+  addressed to its author's followers or to some accounts alone would be shown under a post anyone may read, which
+  widens it. Its text is `htmlToText` cut at 1,000 characters (the comment's length here) with "Read the rest on its
+  server" and the link; a content warning folds it; attachments are links only (no picture of a reply is copied). A
+  reply to a reply joins the thread of the top comment, its text starting with a mention of the person answered when it
+  does not already, as a member's reply does (RPL); the top comment is the `parent_id`, as for a member's. **A reply
+  to a post of another server stays FWR 5's remote post** (kept when its author is followed or it names a member here,
+  else dropped): it answers nothing here.
+- **Update and Delete of a reply.** Only by the same account, decided by the row's `user_id` (7.3), and only with an
+  `updated` newer than the one kept: the text replaced, the comment marked edited, nobody told. Another account's
+  Update or Delete is refused. A Delete removes the reply, or keeps it as a placeholder with no text while it has
+  answers, and removes a placeholder left with none, as a member's deletion does (`deleteCommentTx`), in FWR 5's
+  transaction for a Delete, under the same lock on the object's id (`noteLock`, which a reply's Create takes too). A
+  Delete of an id never kept is remembered by FWR 5's rule (`noteRememberSQL`, whoever follows the account), and a reply
+  deleted here by the post's author or a moderator is remembered as a moderator's delete of a remote post is
+  (`ap_deleted.by_staff`, a year): the statement that keeps a reply asks that memory for its id and account, so a late
+  Create or the author's next edit does not bring it back. An edit of a reply never kept is taken as new only when the
+  reply was published within 7 days (FWR 5's rule); an edit that addresses a kept reply to fewer people than Public takes
+  it out, only when newer than the version kept. A reply is dated by its own `published`, never later than the inbox
+  took it.
+- **In: a like** (`likedIn`). A Like of a Public post of a member who shares, or of a member's comment shown under
+  one, from an account with no block between it and the author: one row per account and post (or comment), a repeat
+  or an emoji reaction (a Like with content) counted as the like it is. The notification is told once per post (or
+  comment) and account, so liking, unliking and liking again tells the member once, as a local like does. An Undo of a
+  Like (embedded, its actor the signer, matched by the Like's id or its object; or by id alone, `undoByID` looking for
+  a follow first) removes the row; the notification stays, as a member's unlike leaves it. The inbox takes a Like only
+  of a post or comment of this server (`likeShaped`) and with the switches on; an Undo of a Like whatever the switches
+  (it only removes, as an Undo of a Follow).
+- **Notifications.** `comment` to the post's author, `reply` to the member answered, `mention` to the members the
+  Note's Mention tags name (local actor ids, never the text, at most 10), `like` and `comment_like`; each once, never
+  across a block, marked `fed` and under FWR 3's bound (50 from one server, 500 from all, per member). **A remote
+  account is told nothing here** (decided): `notifyAt` writes nothing for an account of another server in a mode that
+  federates, so a member answering, liking or hiding a remote reply leaves no row nobody reads.
+- **Forward** (6.4, ActivityPub 7.1.2). A reply kept for the first time (the statement that keeps it wrote a row; a
+  repeat, at the inbox by its activity id or at the worker by its Note's id, forwards nothing) whose addressing names
+  the followers collection of the post's author or of the member answered goes to that collection's followers on
+  other servers (the post's recipients' statement, `postRecipientsSQL`, one per shared inbox), **never to the sending
+  server's host**, with the body as received, signed by the instance actor, no Linked Data signature (6.4 says so; a
+  receiver that wants the actor's own signature fetches the reply from its origin). A collection the reply names that
+  is neither of those (another member's followers) is not forwarded to. One activity per reply: its id here is made
+  from the reply's (`/actor/forwards/<hash>`), and `ap_outbox` is unique by id, so it is sent once. At most 60 replies
+  forwarded an hour per sending server (`forwardsPerHostHour`); after the review of #116 also 30 an hour per member whose
+  followers it goes to and 300 in all, at most 1,000 addresses and 64 KB each, never a body addressed to anyone in `bto`
+  or `bcc`, and none while the delivery queue is past its resume mark or an activity waits for its fan-out, so the
+  members' own posts and comments always come first (`TestDBForwardBounds`). A forward that fails (a full queue) is
+  said in the log and not tried again; the reply is kept either way.
+
+  **What a forward achieves is not shown.** Flowa's own inbox answers a delivery signed by anyone but the activity's
+  actor as a forward and does not act on it (7.10, `inForward`, 202), so a forward between two Flowa servers is taken
+  and dropped. For Mastodon, the reading of its documentation recorded in Sources (12 November 2026) is that its
+  security page advises against implementing Linked Data signatures and uses them for relays and for the Deletes of a
+  server that shuts down, and that how it treats an activity forwarded by a server that is not its actor and carries no
+  Linked Data signature is not on its pages; that is not verified. docs.joinmastodon.org could not be read again from the
+  session that built this (its host is not among the session's allowed hosts). If such forwards are dropped by the
+  servers they are for, forwarding costs deliveries and achieves nothing; keeping it or removing it is the owner's. The Update and
+  Delete of a reply are not forwarded (decided: 7.1.2 is about ghost replies; an edit or a deletion that reaches only
+  some followers leaves the version they saw).
+- **Out: a member's comment** (`commentOut`, the delivery queue's producer after posts). A comment of a member who
+  shares their profile beyond this server, on a Public post here, made while the switches a post needs are on: its
+  record is written in the comment's transaction, and a worker makes the Create, as for a post (FWR 4's rules on
+  switches, a full queue and a crash hold). Its Note: id `/users/{name}/comments/{id}`, `inReplyTo` the top comment of
+  its thread (a member's by that id, a remote reply by its own id) else the post, `to` the public collection, `cc` the
+  commenter's followers, the post's author and the accounts it mentions (resolved from the cache alone, as a post's);
+  the HTML of 6.5 (`noteHTMLWith`). Sent to the commenter's followers on other servers, the post's author's followers
+  when the author is a member here (so the thread reaches those who have the post, as a forward would), and the remote
+  accounts named (the author of a post or reply of another server answered among them). An edit inside the 15 minutes
+  turns the record to `update` (`gen` counts edits, so one made while the Update is made is sent too) and goes as
+  Update(Note) with `updated` (Mastodon applies an edit only with it) to the inboxes the Create went to, with a new
+  activity id. A deletion, a moderator's hide, the post's deletion (here, or by its author's server for a post of
+  another server) and housekeeping finding a sent comment gone (removed with its post by retention, say) turn it to
+  `delete`: Delete(Tombstone) to the same inboxes, after its Create (`ap_outbox.undoes`, 8.8's "Taking back": a Create
+  never tried is given up and nothing goes). **A comment of a member who does not share stays here** (decided: 11 says
+  comments on Public posts go out for members who opted in). **Comments are not served at their ids** in this version
+  (decided: the Note is embedded in each activity, which Mastodon takes from its signer's origin; an id that answers
+  404 is said under Open).
+- **Out: likes and comments on a post of another server.** A public or unlisted post of another server that the member
+  may read (they follow its author, or it names them) can be liked and answered by a member who shares their profile;
+  one who does not is told why ("Only members who share their profile beyond this server can like or answer posts
+  from other servers"), so no like or answer stays here unseen by its author. The Like goes to the author's own inbox
+  (6.4) with the like written in the same transaction (`enqueueThen`); the unlike is Undo(Like), embedding the Like,
+  taking it back (`enqueueUndo`: a Like never tried is given up and nothing goes), with the like removed in the same
+  transaction; a full queue answers 503 and changes nothing. A comment there goes as above, to the author and the
+  member's followers. **A followers-only post of another server is neither liked nor answered** (decided: the answer
+  would go to more people than its author addressed), and the page says so; a server the domain policy refuses or an
+  author whose inbox is not on its own origin is "cannot be reached from here".
+- **Bounds** (section 12). Replies: 300 from other servers under one post, 200 from one account, 2,000 from one
+  server's accounts, each counted in the statement that keeps one and stopping at its cap (the server's through
+  `users_remote_domain` and `comments_user`, never every remote reply); 300 new an hour from one server (in memory);
+  50,000 in all, from housekeeping's hourly count (`talkCountSQL`). Likes: 2,000 from other servers for one post or
+  comment, 2,000 from one account and 10,000 from one server (of posts and of comments each), 600 new an hour from one
+  server, 200,000 in all (counting every like with an activity id). **Retention: a remote reply or like is kept while
+  the post it is about exists**, as a member's comment is (decided: removing replies after a time would cut threads
+  members answered), bounded by the caps; `-purge-remote` removes them with their accounts, the members' comments and
+  likes under remote posts and remote replies with those, and every `ap_comment_out` record.
+- **A flood under one post** does not push the members' comments out of the preview: `feedCommentsSQL` takes each
+  post's newest comments of this server and newest remote replies through their own indexes, each at most the
+  preview's size, local ones first (`TestDBQueryPlans`: 37 to 57 rows for a post holding 3,000 remote replies, ten
+  times the cap). The post's counts (its comments, its likes) are read per post and grow with them, bounded by the
+  caps: about 8,000 rows for the page with that post, under 1,000 at the cap.
+- **Following FWR 5's review.** A member is told of a mention, and a member's comment is answered or liked, only when
+  that member shares their profile and is not suspended (`publicMember`): a member who never opted in gets nothing
+  from other servers. An account that deletes itself (`actorGoneSQL`) or whose domain is suspended loses, in the
+  statement that removes its posts, its replies (each removed, or kept as a placeholder where a member here answered
+  it, so the answer stays), its likes and the comment, reply, mention, share and like notifications it left
+  (`remoteTalkGone`, `remoteTalkKinds`). The statements that keep a reply or a like ask the stored domain policy, as
+  FWR 5's insert does. A reply of an account its server says is suspended is not listed (`actorShown` in
+  `commentBlockFree`; a placeholder stays). In local mode no remote reply is shown, as no remote post is.
+- **Privacy and authority.** The origin rule on activity and object; a Note attributed to a member here or with an id on
+  this server is dropped at the inbox; a remote account cannot comment under, or like, a This server, hidden or
+  milestone post, a post of a member who does not share, or a comment it cannot see; it cannot edit or delete another
+  account's reply. A member who cannot read a post of another server cannot read its comments either (`commentShown`,
+  `targetOwner` hold remote posts to `remoteSeen`). **Local mode**: no inbox takes one; in an instance that federated
+  before, the rows stay until `-purge-remote`, and the lists and counts of comments and likes leave them out alike
+  (`hideRemote`, the bullet on local mode under "After the review of #116").
+- **Moderation.** A remote reply is reported, hidden, restored and deleted by staff as a member's comment is, and the
+  post's author deletes one under their post; the queue shows a remote post's or reply's text as text (no `@name`
+  linked, fixing the same for FWR 5's remote posts). Nothing is sent for it: it is its server's.
+- **Pre-existing queries that can now meet a remote reply or like**, and what was done: the timeline's and Home's
+  comment counts and like counts (`postCols`): counted, as 11 says ("remote likes count with local ones"); a post's
+  comments, replies and thread (`queryComments` and its queries): shown in a mode that federates, left out in local
+  mode; the preview (`feedCommentsSQL`): local first; `commentShown`, `commentRow`, `handleLikeComment`: a member may
+  like a remote reply, counted here and sent nowhere; `handleDeleteComment`: the author's and the post's author's
+  right as before; the profile's "likes" count (likes of the member's posts): counts remote likes, as 11 says; the
+  admin dashboard's weeks: narrowed to comments of this server (`c.ap_id IS NULL`), as FWR 5 narrowed posts; NodeInfo:
+  counts users and local posts only, unchanged; the moderation queue and reports (`targetOwner`, `fillQueueItem`):
+  remote replies reportable, shown as text; the bell (`notificationsSQL`, `unreadSQL`): shown, with the account's handle
+  and host; FWR 5's remote post retention (`remoteUntouched`): a member's like or comment keeps a remote post, as 9.3
+  says; the actor cache's bound (`userRefs`): comments, likes and `ap_comment_out` keep their accounts; `purgeCounts`:
+  counts them. There is no export of comments or likes to change.
+- **Pages.** `web/social.js` draws a remote reply with its author's name isolated and handle and host apart, its text
+  through `remoteText` (no `@name` linked), its content warning as a fold, its attachments as links, "Open on its
+  server", and no Edit; a public or unlisted post of another server gets Like and Comment, a followers-only one the
+  sentence that it cannot be liked or answered from here. Nothing changes in local mode.
+- **Rollback (14.4).** An older build after `./deploy.sh --rollback` would show remote replies as comments of local
+  accounts: run `-purge-remote` first. The migration drops `notifications_fed`, which an older build only reads
+  through (it would be slower, not wrong).
+- Tests: `TestDBRemoteReplies` (the reply kept and shown, the forward once, only for the first sight and only to the
+  collection named, never to the sending server, a reply to a reply and to a member's comment, edits by the same
+  account only with a newer `updated`, a forged author, what is not answered, blocks, the switches, the caps, staff,
+  the post's author, deletions with placeholders, local mode), `TestDBRemoteLikes`, `TestDBCommentsOut`,
+  `TestDBTalkToRemotePosts`, `TestDBTwoFlowaReplies` (two instances over the real fetcher, signer, inbox and queue:
+  reply, edit, like, unlike and deletion; FWR 8's container suite is the DoD's `TestTwoInstances`),
+  `TestDBRepliesOneConnection`, `TestDBRemoteTalkNotesBounded`, `TestDBRemoteTalkFollowsItem5`, `TestDBQueryPlans` (a post holding 3,000 remote
+  replies and 2,000 remote likes), `TestDBPurgeRemote`, `TestDBInboxHandlers` and `TestDBRemoteNotes` updated; the
+  `federated` browser suite (`federated-remote-reply`).
+- **After the review of #116** (each with a test that fails without it):
+  - **A comment's activities stay in order at each inbox, and nothing deleted goes out after its Delete**
+    (`TestDBCommentOrders`; reworked after the second review, below). Updates have ids the record names
+    (`<comment>#update-<generation>`, kept in `ap_comment_out.last_ap_id`), and each comes after the activity before it
+    (its Create, or the Update before), so the Delete takes back the comment's whole line. Posts send no Update(Note)
+    (they are not edited), so they have no such case.
+  - **An edit while the Create is being made is not lost** (`TestDBCommentEditWhileProduced`): every edit moves the
+    record's generation, and the Create's step checks the generation it read, so it rolls back and the next pass sends the
+    text as edited.
+  - **A full queue holds a comment, never drops it** (`TestDBCommentQueueFull`): a Create or an Update the full queue
+    refuses waits on the delivery schedule, as a post's Delete does, and is given up, said in the log and counted, only
+    past its last wait.
+  - **Nothing names a member who does not share** (`TestDBCommentsNameNoNonSharer`): a comment answering a member who
+    does not share their profile, or in a thread one of them began, or answering a hidden comment, stays here, as the
+    comments of members who do not share do, so neither the comment's id nor the name added before an answer leaves;
+    the producer asks again about the thread's first author before each Create and Update, and, for an answer under a
+    post here, about the member answered (after the second and third reviews, below). A name of such a member in the
+    text stays text: `resolveMentions` finds only members who share, so it is no Mention tag and no link to their actor.
+  - **A notification is never lost to a failure** (`TestDBRemoteTalkNotifiedAfterFailure`): the notifications of a
+    remote reply or like are written in the transaction that keeps it (`notifyFedTx`), so a failure rolls both back and
+    the worker's retry keeps the reply and tells the member, where before the retry found a repeat and told nobody.
+  - **Local mode on a database that federated lists and counts alike** (`TestDBRemoteHiddenInLocalMode`): a start in
+    local mode asks once whether rows of other servers are kept (`remoteKept`); when they are, the statements over posts
+    and comments leave remote replies and likes out before their LIMIT and out of the counts (`hideRemote`, fixed
+    fragments of `postCols`, `commentCols` and `commentBlockFree`), so a page of comments is full and a post's counts
+    agree with what is listed; a member's answer in a thread a remote reply began is neither listed nor counted (after
+    the second review). On a database that never federated, local mode runs the statements over posts and comments as
+    they were before this item (`plainLocal`, `plainStatements`): the look at a reply's account in the counts and
+    the lists is taken out, and the preview is its old single statement, not the two branches that put remote replies
+    after the others. Only the two columns `commentCols` added (`c.ap_id IS NOT NULL, c.ap_extra`) stay, read from the
+    row the statement holds anyway. `TestDBQueryPlans` reads them in that mode within the old budgets: the timeline 894
+    rows, one post 42, the preview of a page 484, its replies 124, and with 5,000 blocks the preview 218, the same as
+    before this item. In a mode that federates, a reply of an account its server suspended is left out of the counts as
+    of the lists (`actorShown`), and so are the answers in its thread unless it is a placeholder; its likes still count,
+    as there is no list of likes to agree with.
+  - **Forwards are bounded and come last** (`TestDBForwardBounds`, the bullet on the forward above), and the note says
+    plainly what one is known to achieve.
+  - **Small points** (`TestDBRemoteTalkSmallPoints`). A removed remote reply (its author's deletion, its account's, its
+    domain's suspension) is a placeholder that names nobody: the page gets no account and no link for it. A member's
+    comment on an unlisted post of another server is addressed as that post is, the public collection in `cc` only. An
+    id stays the kind of thing it was first kept as: an Update that adds `inReplyTo` to a kept post leaves it a post, and
+    a Delete removes whatever carries its id. Housekeeping's probe for comments gone without a Delete walks the records a
+    batch a pass, on from where it stopped (`orphansAfter`), so its cost is the batch, not the table, which keeps a
+    record while its comment exists. The followers of a post's author that a comment goes to leave out the accounts
+    with a block either way with the commenter (`postFollowersApartSQL`), as a post's mentions do; a shared inbox still
+    serves every follower on its server.
+  - **The caps are counted without a lock.** Each count (per post, per account, per server) is read in the statement
+    that writes, under READ COMMITTED, so the two inbox workers can each pass a cap by one at the same moment: a cap is
+    exceeded by at most one row (`inboxWorkers` minus one). The hourly allowances are counted in memory under a lock
+    and hold exactly; the caps in all are read by housekeeping each hour, so they can be passed by what one hour lets in
+    (at most the hourly allowance of each sending server).
+  - **Switches that could not be read hold a comment's way out** (`TestDBCommentSwitchesUnread`): the record is written
+    for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
+    said off keeps the comment here.
+- **After the second review of #116** (each with a test that fails without it):
+  - **A restart forgets no comment** (`TestDBCommentRecordsAfterRestart`): the start marks the comments' records due, as
+    it does the posts', and starts the workers when one waits, in each state a record waits in: a Create, a Create held
+    while the switches could not be read, and an Update or a Delete the full queue held back. The other flags this item
+    keeps in memory need nothing at a start: housekeeping counts the caps in all (`repliesFull`, `likesFull`) in its first
+    pass, which runs at the start, and the orphan probe's place (`orphansAfter`) starts again from the first record.
+  - **One slow server holds nobody else's edits** (`TestDBCommentOrders`, `TestDBLikeAgainAfterUndo`). An Update is
+    enqueued at once, naming the activity it comes after (`ap_outbox.comes_after`), and the queue holds its row at an
+    inbox while that activity, or one before it in the comment's line, is still queued at the same inbox, in flight or
+    waiting for another attempt (`afterHeldSQL`, asked at the send as `heldBackSQL` is, the row given back until the last
+    of them is due or its lease ends; no worker sleeps, and the one before is never given up for it). At every other inbox
+    it goes at once. The queue fans out in order, so the one before always has its rows first; one that a Delete drops
+    before its fan-out is marked, and nothing waits for it. Where the one before is given up for good at an inbox (its 11
+    attempts or 48 hours spent, the domain policy, the host's cap that dropped its row), the Update is sent there after it
+    all the same: it carries the whole Note as edited, so a receiver either ignores an Update of an object it never had
+    (Mastodon does) or takes the edited text, which is the comment as it is; holding it longer would hold it for nothing,
+    since the one before will not come. The Delete takes back the comment's line whole at each inbox
+    (`ap_outbox.undoes_chain`, `takeBackSQL`): every row of the line queued there and not claimed is given up; the Delete's
+    own row goes only where the Create itself was among them untried, none had an attempt and none was left queued
+    (counted, so a claim made after the statement's snapshot keeps the Delete), since then nothing of the comment ever
+    left for that inbox; a row in flight holds the Delete past its lease, and the send asks again over the whole line. A
+    Delete made while an Update still waits for its fan-out drops it and fans out at once, not one pass later. A like
+    again after an unlike comes after that Undo the same way: `ap_like_out` keeps the Undo a member's unlike enqueued last
+    (it goes with the Undo's row of `ap_outbox`), and the next Like of that post waits behind it at the author's inbox,
+    where it would otherwise be taken back by an Undo that arrived after it; after the third review each Undo comes after
+    the Undo before it too (below). Each step down a line is one lookup through `ap_outbox`'s unique id index; a
+    comment's line is bounded (below).
+  - **What is not sent is shown** (`TestDBForwardBounds`). The Federation tab's "Sending to other servers" says, beside
+    the posts and comments whose Delete could not be taken back (`notTakenBack`, which counts comments too and now says
+    so), the comments and edits the full queue refused past their last wait (`commentsNotSent`) and the replies not
+    forwarded for a bound (`forwardsSkipped`), each when it is not zero. All three are counted in memory: a restart
+    counts from nothing, and the tab says "since the last start". A forward asks the queue first, so one the queue
+    refuses takes nothing from the hourly allowances.
+  - **An answer that could not go is refused, not kept unseen** (`TestDBRemoteAnswerThatWouldStay`). Under a Public
+    post here, an answer to a hidden comment or to a member who does not share stays here, which is right: the post is
+    here too. Under a post of another server it would stay here where none of that post's people see it, so it is
+    refused with the reason (`talkStaysHere`, 403), as `talkGate` refuses a member who does not share.
+  - **A restored comment stays here, and the moderator is told** (`TestDBRestoredCommentStaysHere`). A hide sends the
+    comment's Delete; a restore sends nothing, and an edit after it sends nothing either, since the servers it went to
+    keep the Delete and a receiver such as Mastodon keeps the deleted id and would refuse it again. Sending it anew
+    under another id would be another comment there, with its answers left under the old one, so it is not done. In
+    a mode that federates, the restore answers so (`restoredStaysHere`) and the moderator's page shows it, for a post
+    as for a comment.
+  - **Notifications are trimmed in one order** (`TestDBReplyNotesInOrder`). Two inbox workers keeping replies or likes
+    that concern the same members trim those members' notifications from other servers inside their keeping
+    transactions; the trim now locks its rows in the order of their ids before it removes them, and a reply tells the
+    members it concerns in the order of their ids, so neither worker waits for a row the other holds while holding one
+    the other wants. The test holds the order of the members; the order of the rows inside one trim cannot be forced
+    into a race by a test, and rests on the statement (`remoteNotesTrimSQL`).
+- **After the third review of #116** (each with a test that fails without it):
+  - **Likes end as the member sees them** (`TestDBLikeClicksEndAsSeen`). An Undo of a like of a post of another server
+    now comes after the Undo before it, read with the Like's in the enqueue's own transaction once it holds the queue's
+    lock (`outOrder.afterTx`, `lastUndo`), so two clicks at once each see what the other wrote. Before, an Undo that took
+    back a Like never tried had its own row dropped, and the next Like came after it only, so it could reach the author's
+    inbox ahead of an earlier Undo still retrying there: liked here, unliked there. The test clicks five, six and seven
+    times with the inbox failing, then answering, and holds that the last activity the inbox accepted says what the
+    member sees. The hold looks back through at most 64 activities (`afterHeldDepth`): only a script toggling one post
+    that often while an early Undo still retries reaches it, and then only that member's like there may end wrong.
+  - **A comment's line is bounded** (`TestDBCommentLineBounded`). The producer makes at most one Update of a comment
+    per minute (`commentUpdateGap`, from `ap_comment_out.sent_at`): an edit sooner after the last activity waits for the
+    minute's end, and the edits meanwhile fold into that Update, which carries the newest text. A comment is edited only
+    in its first 15 minutes, so its line is its Create, at most 16 Updates (`commentUpdatesMax`) and its Delete; the test
+    edits every 10 seconds through the whole window and gets 15 Updates, the last with the last text. `TestDBQueryPlans`
+    reads the hold, the send-time question and the takeback over a line of that length. In a mode that federates an
+    edit takes an allowance (`limits.commentEdits`, 120 an hour per member); local mode asks none, as before.
+  - **Leading names are read as written** (`TestDBLeadingNames`). Only an answer's opening name, the member answered,
+    is asked about at the send, and only under a post here, where such an answer stays here as it would have at the
+    write; a handle of another server (`@name@host`) is never read as a member's name, in Go (`startsWithMention`) or in
+    SQL. A comment that opens with a name but answers nobody goes as any comment, the name plain text when it is a member
+    who does not share. Under a post of another server, an answer whose member answered stopped sharing after it was
+    written goes all the same, the name plain text, as a name in the middle of a comment already is: it was accepted to
+    go there, and keeping it here would leave it where none of that post's people see it. An answer there whose thread
+    was begun by a member who stopped sharing cannot go (it would carry that member's comment's id): it is not sent, said
+    in the log and counted on the Federation tab with the comments the full queue could not send (`commentsNotSent`).
+  - **A forward looks before it asks** (`TestDBForwardBounds`). The hourly allowances are looked at first without being
+    spent, so a reply past one costs no statement; then the queue's counts are asked; only then are the allowances spent,
+    so a forward the queue refuses still takes none.
+  - **Rows of the queue are locked in one order** (`TestDBDeliveryLockOrder`). Every statement that locks several rows
+    of `ap_deliveries` takes them in the order of their ids: the rows of an inbox after a 410 (`inboxGoneSQL`), the rows
+    of a host after a 429 (`hostHeldSQL`), and the rows of a comment's line at an inbox in the takeback and the send-time
+    question (`takeBackSQL`, `heldBackSQL`). The test reads each plan and holds that every row lock is taken over rows in
+    that order. (The fourth review found more such statements; the full list is below.)
+  - **Local mode's statements are pinned as text** (`TestPlainStatementsPinned`, `testdata/plain-local`). The feed, the
+    preview of comments, its replies, and a page of comments and of replies, as local mode runs them on a database that
+    never federated, are kept as files and compared word for word. They were checked against origin/main's statements of
+    before this item: the same, but for the two columns `commentCols` added.
+- **After the fourth review of #116** (each with a test that fails without it):
+  - **Go and Postgres read a leading name alike** (`TestDBLeadNameAgrees`, `TestDBLeadingNames`). Postgres backtracked
+    around the old lookahead, so `@fan.x@third.example` or `@fan-x@third.example` read as a member here named `fan`.
+    The name is now one that ends in a letter, a digit or `_` of ASCII with none of those after it, and is not followed by more name characters and an `@` (`leadNamePattern`; a letter of another script straight after the name does not hide it),
+    and Go's `leadName` reads it the same way by construction; one table of texts goes through both. A comment that
+    does not go though the switches are on (its author, its post, its thread's first comment or the member it answers
+    no longer shown beyond this server) is now always said in the log and counted on the Federation tab, under a post
+    here as under one of another server, and the log and the tab name every reason in general words.
+  - **Every multi-row lock on the queue is in id order** (`TestDBDeliveryLockOrder`, `TestDeliveryStatementsLockInOrder`).
+    An opened circuit now moves its host's rows with `hostHeldSQL`, an unavailable host's rows are given up by
+    `hostGoneSQL`, and housekeeping's two pulls of rows dated by a clock that was ahead lock their batch in id order (7
+    rows counted a row instead of 4, in `TestDBQueryPlans`; they run only after such a clock). The plan test accepts only
+    a sort on an id of `ap_deliveries` itself, and a second test reads `main.go` for any statement that changes rows of
+    `ap_deliveries` without naming one row, locking in order, or touching only failed rows.
+  - **A forward that does not go costs nothing**: when an allowance refuses after others were spent (another reply took
+    the last room since the look), the ones spent are given back (`TestDBForwardBounds`, with a hook between the look and
+    the spending that takes the room as another reply would). The read of the Undo a Like or an Undo comes after is
+    under the queue's lock (`TestDBLastUndoReadUnderTheLock`: the Undo held after its read, the Like waiting at the lock,
+    the Like then comes after that Undo).
+  - **The db suite's line says why a run failed** when go test names no running test (`test/go-summary.sh`, a self-test
+    run as its own process). Migration 23 adds again the columns `ap_comment_out` gained during the review, so the
+    statement run over tables an earlier draft made gives every column (`TestDBMigration23OverDraft`); a database that
+    recorded a draft as version 23 does not run it again by itself, so such a database (a test or stage one) is made
+    again or has the statement run by hand.
+- **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
+  as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
+  Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
+  receiver does with an Update of an object it never had is its own (FWR 5 here takes one as new only when recent); a
+  member's like of a remote reply stays here; a member who stops sharing after a comment that answers or names them
+  went out gets nothing taken back: the comment stays on the servers it reached, and its later edits go there too, the
+  name plain text, except an answer to that member under a post here, whose later edits stay here; a remote reply to a
+  member's comment
+  under a post of another server is not kept (it answers no post here); the likes of an account its server says is
+  suspended still count; recorded Mastodon replies and likes to hold this to (the owner's trial, FWR 9).
 
 ### 6.5 A Flowa post as a Note
 
@@ -1916,6 +2268,16 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
     member reads the post only while they share their profile (or own the instance) and are not suspended. The cap in
     all reads `posts_remote_followed`. `-purge-remote` says when the Federation switch is still on: turn it off, wait 5
     seconds, and run it.
+  - **After the last review** (with FWR 6). The accept of a follow clears the mark of the posts kept for a mention in
+    the same statement (`followAnswered`), so a failure cannot leave the follow accepted and the mark set for good. The
+    mark is not set back when a follow ends: a post kept for a follow stays counted as one until its next Update, which
+    reads who follows the account then. An Update without `published` of a post never kept is dropped, as one published
+    longer ago than 7 days is (an edit is taken as new only for a recent post). A Create of a post published longer ago
+    than the time remote posts are kept (30 days) is dropped at intake and counted ("published before the time posts are
+    kept here"): stored, it would have spent the host's hourly allowance and told the members it names, then gone with
+    housekeeping within the hour. The check of the stored domain policy in the statement that keeps a post covers a
+    suspension only: a domain taken off the allowlist while a worker holds a post is still kept, as the policy in memory
+    said when the inbox took it.
   - **Local mode on a database that federated.** The remote accounts stay and the follow lists show them as before
     (FWR 3), but their posts are not shown (`homeSQL`'s `$5`, `postOneSQL`'s `$4`), the picture route is not there and
     housekeeping does not touch them; they show again when the mode federates again, and `-purge-remote` removes
@@ -2835,6 +3197,15 @@ id, so a second send is harmless. `TestDeliveryShutdown` (**new**).
 The tables are additive. An older build without the workers leaves them untouched; going forward
 again resumes the queue, and rows past 48 hours are given up at the first claim. Nothing is lost that
 a 48-hour outage would not lose anyway.
+
+**Past FWR 6 (migration 23), the queue must be empty first.** Before `./deploy.sh --rollback` past this version, let
+the delivery queue empty (Admin, Federation, "Sending to other servers" shows 0 queued and nothing waiting), then
+turn **Federation** off under Admin, Features, wait 5 seconds, run `docker exec nunchaku /nunchaku -purge-remote`,
+and only then roll back. An older build ignores `comes_after` and `undoes_chain` on rows already queued, so it could
+send a comment's Update before its Create, or its Delete while its Create is in flight. There is no switch that
+stops only what is sent: Federation stops the inbox and the sending together. The purge removes the delivery queue
+with the records of where each post and comment went, so a Delete of a post or a comment still queued at the purge
+is never sent, and a post or comment deleted after it is not taken back from other servers.
 
 ### 8.8 The delivery queue, as built (FWR 2)
 

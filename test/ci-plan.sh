@@ -61,6 +61,8 @@ plan() {
       # (actionlint, the git-cliff preview, shellcheck, the scripts' own self-tests); nothing the tests
       # run reads them.
       .github/*|cliff.toml|test/docs.sh|test/sleeps.sh|test/slowest.sh) lint=true ;;
+      # The db suite's one-line result: lint runs its self-test, and the db suite writes its line with it.
+      test/go-summary.sh) lint=true; suites db ;;
       # Go tests only: the unit job runs them, and the db suite the ones that need Postgres.
       *_test.go) lint=true; unit=true; suites db ;;
       *.go|go.mod|go.sum) everything ;;
@@ -115,6 +117,7 @@ self_test() {
   expect "Dockerfile,.dockerignore,.env.example" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
+  expect "test/go-summary.sh" 'code=true lint=true unit=false screenshots=false suites=["db"]'
   expect "test/physics.js,test/catalog-fixtures/bad-cycle.json" 'code=true lint=true unit=true screenshots=false suites=[]'
   expect "figure/src/body.js" 'code=true lint=true unit=true screenshots=false suites=[]'
   expect "web/figure3d.js,figure/src/body.js" 'code=true lint=true unit=true screenshots=true suites=["combo","demos","suggest","avatar","touch","a11y","demos-avatars","combo-avatars"]'

@@ -253,13 +253,10 @@ func TestDBRemoteMentionOnlyCap(t *testing.T) {
 	if e.count(`SELECT count(*) FROM posts WHERE ap_mention_only`) != 1 || e.count(`SELECT count(*) FROM posts WHERE ap_id = $1 AND NOT ap_mention_only`, boID+"/statuses/1") != 1 {
 		t.Fatal("which post was kept for a mention")
 	}
-	var danUser int64
-	e.a.db.QueryRow(`SELECT user_id FROM ap_actors WHERE ap_id = $1`, danID).Scan(&danUser)
 	// 11 hosts, each within its share of remoteMentionPerHost, pass the cap in all.
 	e.mustExec(`INSERT INTO users (username, pw_hash, domain) SELECT 'm@h' || g || '.example', '!', 'h' || g || '.example' FROM generate_series(1, 11) g`)
 	e.mustExec(`INSERT INTO posts (user_id, body, ap_id, ap_mention_only) SELECT u.id, 'm', 'https://' || u.domain || '/m/' || g, true
 		FROM users u CROSS JOIN generate_series(1, $1) g WHERE u.username LIKE 'm@h%'`, remoteMentionPerHost)
-	_ = danUser
 	if _, err := e.a.remoteHousekeep(); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +293,7 @@ func TestDBRemoteCreateDeleteRace(t *testing.T) {
 	}
 	defer releaseOnce.Do(func() { close(release) })
 	created := make(chan string, 1)
-	go func() { out, _ := f.noteIn(ctx, s, act, time.Now()); created <- out }()
+	go func() { out, _ := f.noteIn(ctx, s, act, time.Now(), nil); created <- out }()
 	<-held
 	deleted := make(chan string, 1)
 	go func() { out, _ := f.noteDeleted(ctx, s, boID+"/statuses/1"); deleted <- out }()

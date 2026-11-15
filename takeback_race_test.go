@@ -119,7 +119,7 @@ func TestDBHeldBackSeesLateClaim(t *testing.T) {
 	ch := make(chan res, 1)
 	go func() {
 		var r res
-		r.err = e.a.db.QueryRow(heldBackSQL, oid, "https://race.fan.example/inbox", e.out.now()).Scan(&r.until, &r.gaveUp)
+		r.err = e.a.db.QueryRow(heldBackSQL, oid, "https://race.fan.example/inbox", e.out.now(), false).Scan(&r.until, &r.gaveUp)
 		ch <- r
 	}()
 	e.waitLock()

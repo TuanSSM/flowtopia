@@ -308,7 +308,9 @@ const MEDIA_WORDS = { picture: 'Picture', video: 'Video', audio: 'Sound', file: 
 // A post from an account on another server (p.remote), in Home or opened from a notification: the author's name
 // isolated with the handle and host apart, the time and a link to the original; a content warning folds it; its
 // pictures come from this server only (the server's copy), each with its description, else a link to the original.
-// No like, comment or bookmark: those cross servers in a later version, and the footer says so.
+// A public or unlisted one (r.talk) can be liked and answered: the like and the comment go to its server too, and the
+// server refuses them, with the reason, to a member who does not share their profile beyond this server. A
+// followers-only one cannot, and the footer says so. No bookmark: the bookmarks list holds posts of this server.
 function remoteCard(p) {
   const u = social.users[p.userId] || {}, r = p.remote, link = httpsOnly(r.link), staff = canDo('content.delete');
   const who = u.remote ? `<a class="post-name" href="#/fed/${u.remote.id}"><bdi>${esc(whoName(u))}</bdi></a><span class="tiny">${u.remote.handle ? handleHTML(u.remote.handle) : `on <span class="look-host">${esc(u.remote.host)}</span>`}` : `<b class="post-name">Someone</b><span class="tiny">`;
@@ -322,7 +324,8 @@ function remoteCard(p) {
     <header class="row" style="gap:10px">${avatarHTML(u)}<span class="grow" style="display:grid">${who} · <a class="muted" href="#/post/${p.id}">${ago(r.published || p.created)}</a></span></span>${staff ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}${canReport(p.userId) ? `<button class="icon-btn" data-act="report" data-kind="post" data-id="${p.id}" data-what="this post" aria-label="Report post" data-tip="Report">${icon('flag')}</button>` : ''}</header>
     ${p.hidden ? `<p class="notice warn">${icon('lock')} Hidden by a moderator: ${esc(p.hidden)}${canDo('post.hide') ? ` <button class="btn sm" data-act="mod-do" data-do="restore" data-kind="post" data-id="${p.id}">Restore</button>` : ''}</p>` : ''}
     ${body}
-    <footer class="post-acts fed-acts">${link ? `<span class="small">${outLink(link, `Open on its server ${icon('ext')}`)}</span>` : ''}<span class="tiny muted">Replies and likes for posts from other servers are not built yet.</span></footer></article>`;
+    <footer class="post-acts fed-acts">${r.talk ? `<button class="act ${p.liked ? 'on' : ''}" data-act="like" data-id="${p.id}" aria-pressed="${p.liked}" aria-label="Like">${icon('heart')}<span class="num">${p.likes || ''}</span></button><button class="act" data-act="cmt-toggle" data-id="${p.id}" aria-label="Comment">${icon('comment')}<span class="num">${p.commentCount || ''}</span></button>` : ''}${link ? `<span class="small">${outLink(link, `Open on its server ${icon('ext')}`)}</span>` : ''}${r.talk ? '' : '<span class="tiny muted">Followers-only posts from other servers cannot be liked or answered from here.</span>'}</footer>
+    ${r.talk ? threadHTML(p) : ''}</article>`;
 }
 function postCard(p) {
   if (p.remote) return remoteCard(p);
@@ -386,15 +389,27 @@ function socialDraft() {
   if (social.draftBody.trim() || social.draftImg || social.draftTags.length || social.draftCombo || social.draftLinks.length) return true;
   return [...document.querySelectorAll('.cmt-form, .cmt-edit')].some(f => f.body && f.body.value.trim() !== f.body.defaultValue.trim());
 }
+// A reply from another server (c.remote) shows its author's name with the handle and host apart, its text as remoteText
+// shows a remote post's (no @name linked), folded behind its content warning, its attachments as links and a link to
+// the original; it has no edit, since only its own server changes it.
+function remoteCmtBody(c) {
+  const r = c.remote, link = httpsOnly(r.link);
+  const media = (r.media || []).map(m => httpsOnly(m.link) ? `<span class="small fed-media">${icon('ext')}${outLink(httpsOnly(m.link), `${MEDIA_WORDS[m.kind] || 'File'} on its server`)}${m.alt ? ` <span class="muted" dir="auto">${esc(m.alt)}</span>` : ''}</span>` : '').join('');
+  const inner = `<span class="small cmt-body" dir="auto">${remoteText(c.body)}</span>${media}${link ? `<span class="tiny">${outLink(link, 'Open on its server')}</span>` : ''}`;
+  return r.cw ? `<details class="fed-cw"><summary><span dir="auto">${esc(r.cw)}</span> <span class="tiny">Show the reply</span></summary>${inner}</details>` : inner;
+}
 function commentHTML(p, c, reply) {
   const cu = social.users[c.userId] || {}, mine = c.userId === me.id, canDel = !c.deleted && (mine || p.userId === me.id || canDo('content.delete'));
-  const canEdit = mine && !c.deleted && Date.now() - new Date(c.created) < EDIT_MS;
+  const canEdit = mine && !c.deleted && !c.remote && Date.now() - new Date(c.created) < EDIT_MS;
   const editing = social.editing === c.id;
   const body = c.deleted ? `<span class="small cmt-gone">${c.removed ? 'Comment removed by a moderator' : 'Comment deleted'}</span>`
+    : c.remote ? remoteCmtBody(c)
     : editing ? `<form class="cmt-edit" data-k="e:${c.id}" data-id="${c.id}" data-post="${p.id}"><textarea name="body" ${countAttrs(`count-e${c.id}`, c.body, 1000)} rows="2" aria-label="Edit comment" required>${esc(c.body)}</textarea><span class="row" style="gap:6px"><button class="btn sm primary" type="submit" ${sendOff(`e:${c.id}`)}>Save</button><button class="btn sm" type="button" data-act="cmt-edit-cancel">Cancel</button><span class="grow"></span>${countHTML(`count-e${c.id}`, c.body, 1000)}</span></form>`
     : `<span class="small cmt-body">${richText(c.body)}</span>`;
   const acts = c.deleted || editing ? '' : `<span class="cmt-acts"><button class="cmt-a ${c.liked ? 'on' : ''}" data-act="cmt-like" data-id="${c.id}" aria-pressed="${c.liked}" aria-label="Like comment">${icon('heart')}${c.likes ? `<span class="num">${c.likes}</span>` : ''}</button><button class="cmt-a" data-act="cmt-reply" data-id="${c.id}" data-post="${p.id}" data-root="${reply ? c.parentId : c.id}">Reply</button>${canEdit ? `<button class="cmt-a" data-act="cmt-edit" data-id="${c.id}">Edit</button>` : ''}${canDel ? `<button class="cmt-a" data-act="cmt-del" data-id="${c.id}" data-post="${p.id}">Delete</button>` : ''}${canReport(c.userId) ? `<button class="cmt-a" data-act="report" data-kind="comment" data-id="${c.id}" data-what="this comment">Report</button>` : ''}${c.hidden && canDo('post.hide') && !mine ? `<button class="cmt-a" data-act="mod-do" data-do="restore" data-kind="comment" data-id="${c.id}">Restore</button>` : ''}</span>${c.hidden ? `<span class="tiny cmt-hidden">${icon('lock')} Hidden by a moderator: ${esc(c.hidden)}</span>` : ''}`;
-  return `<div class="cmt ${reply ? 'reply' : ''} ${social.focus === c.id ? 'focus' : ''}" id="c-${c.id}">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row" style="gap:6px"><a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a><span class="tiny">${ago(c.created)}${c.edited ? ' · edited' : ''}</span></span>${body}${acts}</div></div>`;
+  const name = cu.remote ? `<a class="cmt-name" href="#/fed/${cu.remote.id}"><bdi>${esc(whoName(cu))}</bdi></a><span class="tiny cmt-handle">${cu.remote.handle ? handleHTML(cu.remote.handle) : `on <span class="look-host">${esc(cu.remote.host)}</span>`}</span>`
+    : `<a class="cmt-name" href="#/u/${esc(cu.username)}">${esc(cu.displayName || cu.username || 'Someone')}</a>`;
+  return `<div class="cmt ${reply ? 'reply' : ''} ${c.remote ? 'fed-cmt' : ''} ${social.focus === c.id ? 'focus' : ''}" id="c-${c.id}">${avatarHTML(cu, 'sm')}<div class="grow"><span class="row wrap" style="gap:6px">${name}<span class="tiny">${ago(c.created)}${c.edited ? ' · edited' : ''}</span></span>${body}${acts}</div></div>`;
 }
 function replyForm(p, root) {
   const r = social.replyTo;
@@ -680,7 +695,7 @@ function pageTimeline(single, focus) {
   if (single && focus && social.focus !== Number(focus)) loadThread(Number(single), Number(focus));
   if (!focus) social.focus = 0;
   const tabs = single || !flags.follows ? '' : `<div class="seg tl-tabs" role="group" aria-label="Timeline">${[['all', 'Community'], ['home', 'Home']].map(([k, n]) => `<button class="${tab === k ? 'on' : ''}" data-act="tl-tab" data-v="${k}" aria-pressed="${tab === k}">${n}</button>`).join('')}</div>`;
-  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? `Posts from the people you follow, and your own.${fed ? ' Posts of people you follow on other servers show here from when you follow them; to reply or like, open them on their server.' : ''}` : oneProfile ? 'Your posts. Only you see them, signed in: this Flowa holds your profile alone. Your milestones post themselves; turn that off in your profile.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
+  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? `Posts from the people you follow, and your own.${fed ? ' Posts of people you follow on other servers show here from when you follow them; you can like and answer the public ones.' : ''}` : oneProfile ? 'Your posts. Only you see them, signed in: this Flowa holds your profile alone. Your milestones post themselves; turn that off in your profile.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
   const empty = single ? 'That post is gone.' : tab === 'home' ? 'Your Home is empty. Follow someone from the People list or from their profile, and their posts show here with yours.' : 'Nothing here yet. Share what you worked on today.';
   return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${lead}</p></div>${tabs}</div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, empty)}</div>
