@@ -3399,7 +3399,6 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 // restoredStaysHere is what a restore answers in a mode that federates.
 const restoredStaysHere = "Restored here. If it had gone to other servers, it was taken back from them when it was hidden, and it stays on this server only."
 
-
 // handleResolve closes every open report about one thing, and tells each reporter.
 func (a *app) handleResolve(w http.ResponseWriter, r *http.Request, u *user) {
 	var in struct {
@@ -19495,13 +19494,19 @@ func (f *federation) notifyFed(ctx context.Context, uid int64, s *remoteActor, k
 // each one's account read by its primary key. A follow_request whose request
 // still waits is spared: it is bounded by followRequestsMax already, and dropping it would hide a request a member
 // should answer behind a server that floods.
+//
+// The rows are locked in the order of their ids before they go (x): two workers trimming the same member's
+// notifications in the transactions that keep a reply or a like (notifyFedTx) take them in the same order, so neither
+// waits for a row the other holds while holding one it wants; replyNotesTx tells several members in the order of their
+// ids for the same reason.
 const remoteNotesTrimSQL = `WITH m AS (SELECT n.id, a.domain FROM notifications n
 		CROSS JOIN LATERAL (SELECT domain FROM users a WHERE a.id = n.actor_id AND a.domain <> '' OFFSET 0) a
 		WHERE n.user_id = $1 AND n.fed
 			AND NOT (n.kind = 'follow_request' AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = n.actor_id AND f.followee_id = $1 AND f.state = 'pending'))),
 	h AS (SELECT id FROM m WHERE domain = $2 ORDER BY id DESC OFFSET $3),
-	r AS (SELECT id FROM m ORDER BY id DESC OFFSET $4)
-	DELETE FROM notifications WHERE id IN (SELECT id FROM h UNION SELECT id FROM r)`
+	r AS (SELECT id FROM m ORDER BY id DESC OFFSET $4),
+	x AS (SELECT n.id FROM notifications n WHERE n.id IN (SELECT id FROM h UNION SELECT id FROM r) ORDER BY n.id FOR UPDATE)
+	DELETE FROM notifications WHERE id IN (SELECT id FROM x)`
 
 // followAnswered acts on an Accept (accept) or a Reject by s of o, which should be our Follow of s: embedded,
 // its actor our member and its object s, whatever its id; or by id only, the id we sent to s. An Accept makes the
@@ -22648,29 +22653,32 @@ func (f *federation) repliedIn(ctx context.Context, s *remoteActor, act *apActiv
 	if made == 0 {
 		return outcome, nil
 	}
-	// The forward first: a notification that fails is tried again, and then the reply is a repeat, which forwards nothing.
+	// The forward comes last, once the reply and its notifications have committed, and only for its first sight: an
+	// Update is never forwarded. A failure to forward is said in the log; the reply stays kept.
 	if !update {
 		f.forward(ctx, s, act, n, addressed, t, raw)
 	}
 	return "", nil
 }
 
-// keepReply resolves what a reply answers and keeps it, in one transaction under the caller's turn.
-
-// replyNotesTx tells, in tx, the members a reply made concerns (keepReply's comment says who).
+// replyNotesTx tells, in tx, the members a reply concerns: the member it answers, the post's author, and the members
+// who share whom its Mention tags name, each once. They are told in the order of their ids, so two workers keeping
+// replies that concern the same members trim those members' notifications in the same order (remoteNotesTrimSQL).
 func (f *federation) replyNotesTx(ctx context.Context, tx *sql.Tx, s *remoteActor, n *apNote, t replyTarget, made int64) error {
-	told := map[int64]bool{}
+	told := map[int64]string{} // each member told, with the kind of what they are told
 	if t.answered != 0 && t.answeredDomain == "" {
-		told[t.answered] = true
-		if err := f.notifyFedTx(ctx, tx, t.answered, s, "reply", t.post, made); err != nil {
-			return err
-		}
+		told[t.answered] = "reply"
 	}
-	if !told[t.author] {
-		told[t.author] = true
-		if err := f.notifyFedTx(ctx, tx, t.author, s, "comment", t.post, made); err != nil {
-			return err
+	if told[t.author] == "" {
+		told[t.author] = "comment"
+	}
+	tell := func() error {
+		for _, uid := range slices.Sorted(maps.Keys(told)) {
+			if err := f.notifyFedTx(ctx, tx, uid, s, told[uid], t.post, made); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
 	var names []string
 	for _, m := range n.Mentions {
@@ -22679,21 +22687,18 @@ func (f *federation) replyNotesTx(ctx context.Context, tx *sql.Tx, s *remoteActo
 		}
 	}
 	if len(names) == 0 {
-		return nil
+		return tell()
 	}
 	var ids []int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(array_agg(u.id), '{}') FROM users u WHERE u.username = ANY($1) AND u.domain = '' AND `+publicMember, pq.Array(names), f.single).Scan(pq.Array(&ids)); err != nil {
 		return err
 	}
 	for _, uid := range ids {
-		if !told[uid] {
-			told[uid] = true
-			if err := f.notifyFedTx(ctx, tx, uid, s, "mention", t.post, made); err != nil {
-				return err
-			}
+		if told[uid] == "" {
+			told[uid] = "mention"
 		}
 	}
-	return nil
+	return tell()
 }
 
 // replyNarrowed takes out the kept reply n of s whose edit addresses fewer people than Public, under its lock and only
@@ -22731,6 +22736,8 @@ func (f *federation) replyNarrowed(ctx context.Context, s *remoteActor, n *apNot
 	}
 	return " removed (an edit addressed it to fewer people than the post)", nil
 }
+
+// keepReply resolves what a reply answers and keeps it, in one transaction under the caller's turn.
 func (f *federation) keepReply(ctx context.Context, s *remoteActor, n *apNote, postNum int64, postName string, cmtNum int64, cmtName, heldID, text string, extra commentRemote, at time.Time) (string, int64, replyTarget, error) {
 	var t replyTarget
 	tx, err := f.db.BeginTx(ctx, nil)

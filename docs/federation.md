@@ -1727,6 +1727,12 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     under another id would be another comment there, with its answers left under the old one, so it is not done. In
     a mode that federates, the restore answers so (`restoredStaysHere`) and the moderator's page shows it, for a post
     as for a comment.
+  - **Notifications are trimmed in one order** (`TestDBReplyNotesInOrder`). Two inbox workers keeping replies or likes
+    that concern the same members trim those members' notifications from other servers inside their keeping
+    transactions; the trim now locks its rows in the order of their ids before it removes them, and a reply tells the
+    members it concerns in the order of their ids, so neither worker waits for a row the other holds while holding one
+    the other wants. The test holds the order of the members; the order of the rows inside one trim cannot be forced
+    into a race by a test, and rests on the statement (`remoteNotesTrimSQL`).
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a

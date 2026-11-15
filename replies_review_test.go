@@ -929,3 +929,18 @@ func TestDBRestoredCommentStaysHere(t *testing.T) {
 		t.Errorf("%d activities went out after the restore", n-before)
 	}
 }
+
+// The members a remote reply concerns are told in the order of their ids (point 10 of the second review), so two
+// workers trimming the same members' notifications take them in the same order: here ana, the post's author, before
+// gus, the member answered, who came later, though the member answered was told first before.
+func TestDBReplyNotesInOrder(t *testing.T) {
+	e := newTalkEnv(t)
+	gusID, gus := e.member("gus", false)
+	gc := num(e.must(200, gus, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "gus here"})["comment"].(map[string]any)["id"])
+	e.deliver(activity(boID, "Create", reply(boID, 90, fmt.Sprintf("https://here.example/users/gus/comments/%d", gc), "hi gus", "https://here.example/users/gus"), nil), e.bo())
+	var toAna, toGus int64
+	e.a.db.QueryRow(`SELECT COALESCE((SELECT max(id) FROM notifications WHERE user_id = $1 AND fed), 0), COALESCE((SELECT max(id) FROM notifications WHERE user_id = $2 AND fed), 0)`, e.anaID, gusID).Scan(&toAna, &toGus)
+	if toAna == 0 || toGus == 0 || toAna > toGus {
+		t.Errorf("ana told as notification %d, gus %d (%s)", toAna, toGus, e.outcome())
+	}
+}
