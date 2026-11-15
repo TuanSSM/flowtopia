@@ -3981,6 +3981,8 @@ func TestDBQueryPlans(t *testing.T) {
 		{"deliveries: the last Update held behind the longest line at an inbox", afterHeldSQL, []any{fmt.Sprintf("https://here.example/c#%d", commentUpdatesMax-1), "https://h12.fan.example/inbox", afterHeldDepth}, 300, ""},
 		{"deliveries: a Delete's question at the send, over the longest line", heldBackSQL, []any{lineEnd, "https://h12.fan.example/inbox", time.Now(), true}, 400, ""},
 		{"deliveries: a Delete's takeback over the longest line at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, float64((commentUpdatesMax+1)*10*30 + 500), ""},
+		// The copies of deleted accounts' keys to clear (FWR 7), through ap_outbox_signer.
+		{"deliveries: the kept keys of deleted accounts to clear, a batch", deliveryForgetKeySQL, []any{time.Now(), deliveryBatch}, 100, ""},
 	})
 	on = db
 	tx.Rollback()
@@ -4012,7 +4014,23 @@ func TestDBQueryPlans(t *testing.T) {
 		{"notes: the mentions of a post, 10 of them", mentionLookupSQL, []any{pq.Array(names), false, 11}, 600, ""},
 		{"notes: the oldest record of a post that waits", postOutSQL, []any{false}, 100, ""},
 		{"notes: the profile due first", personOutSQL, []any{false}, 100, ""},
+		// Account deletion across servers (FWR 7): the servers that may know member 11, one per server, through the
+		// member's indexes (follows both ways, likes, comments, the records out, the queue) and the actors' keys; ap_like_out
+		// and ap_comment_out are empty here, so the planner reads them whole, and ap_actors (at most 20,000 rows, the cache's
+		// bound) whole when the member's followers are a third of it, as here: one pass, on an admin's rare action.
+		{"deletion: the servers that know a member, 1,000 followers on 300 servers", personKnownSQL, []any{11, personDeleteHostsMax + 1}, 20000, "ap_comment_out ap_actors ap_like_out"},
 	})
+	// "Remove me from other servers" writes: asked in a transaction rolled back.
+	if tx, err = db.Begin(); err != nil {
+		t.Fatal(err)
+	}
+	on = tx
+	plans([]planCase{
+		// ap_like_out and ap_comment_out are empty here, so read whole; with rows each is read through its member's index.
+		{"deletion: what leaving other servers changes for member 11", leaveSQL, []any{11}, 20000, "ap_comment_out ap_like_out"},
+	})
+	on = db
+	tx.Rollback()
 	// Posts from followed accounts (FWR 5): 20,000 remote posts, newer than every local one, by the 2,000 remote
 	// accounts (10 each), 5,000 pictures of them in the cache's index and 2,000 waiting, the reader following 100 of
 	// those accounts beside the 500 members, and 300 mentions and shares told to member 9 by them. The Community
@@ -4075,7 +4093,7 @@ func TestDBQueryPlans(t *testing.T) {
 		{"remote: remembering a deletion, under the account's cap", noteRememberSQL, []any{"https://h7.example/n/new", int64(1000008), time.Now(), remoteDeletedPerAccount}, 200, ""},
 		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, "ap_comment_out"},
 		// An account's own Delete: its posts, follows, notifications, replies and likes, each through its account's index.
-		{"remote: an account's own Delete", actorGoneSQL, []any{int64(1000008)}, 600, ""},
+		{"remote: an account's own Delete", actorGoneSQL, []any{int64(1000008), "https://h7.example/users/u8/inbox", "h7.example", time.Now()}, 600, ""},
 		{"remote: trimming a member's notifications, mentions and shares among them", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 6000, ""},
 	})
 	on = db

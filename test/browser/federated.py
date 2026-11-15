@@ -7,7 +7,9 @@
 #   - WebFinger: 404 for a member who has not opted in, 200 with the self link once they have, 404 again after,
 #     the CORS header on every answer, HEAD with no body, 405 with Allow for any other method;
 #   - Settings: "Beyond this server" with the switch, reached with Tab and turned with Space, saved (read back
-#     through the API), the focus kept on it; the warning for a name that ends with a dot;
+#     through the API), the focus kept on it; the warning for a name that ends with a dot; "Remove me from other
+#     servers" (FWR 7) with its warning in view, asked again before anything is sent, declined and then confirmed,
+#     the card saying so after, and the actor's 410;
 #   - the composer: "Who can read it", Public first, reached with Tab, a Public post marked as such; the actor
 #     document, the Note and the two public pages over HTTP, a This server post their 404; the outbox, its
 #     first page, the post's Create at its own id, followers, following and featured over HTTP, and a browser
@@ -571,6 +573,36 @@ try:
     api(op,'me',{'federates':False},'PUT');api(op,'flags',{'flags':{'follows':False}},'PUT')
     load(BASE)
 
+    # "Remove me from other servers" (FWR 7): the admin shared the profile before, so has a key, and the card offers it
+    # with the server's warning in view; the question asks again before anything is sent, and declining sends nothing.
+    # No other server knows this one, so nothing goes out; the Delete itself is Go's (TestDBLeaveOtherServers).
+    nav('#/settings')
+    leave=lambda: js("const c=document.querySelector('.fed-card');const b=c&&c.querySelector('[data-act=fed-leave]');return b&&[b.innerText.trim(),(document.getElementById(b.getAttribute('aria-describedby'))||{}).innerText||'']")
+    check('the card offers "Remove me from other servers", described by the server\'s warning that servers may refuse the address later',
+      lambda: (lambda v: bool(v) and v[0]=='Remove me from other servers' and 'may refuse you' in v[1] and 'Your account here stays' in v[1])(leave()),leave)
+    card_rules('the card, with Remove me from other servers')
+    themed('dark')
+    js("document.querySelector('.fed-leave').scrollIntoView({block:'center'})");frames()
+    picture('federated-leave','Federated mode: Settings, "Remove me from other servers" with the warning shown before anything is sent')
+    if tab_to('[data-act=fed-leave]','Remove me from other servers'):
+        for t in ('dark','light'):
+            themed(t)
+            check(f'the button shows a ring of 2 px or more at 3:1, {t}, and nothing covers it (keys.py)',not ring_ok(),ring_ok)
+        themed('dark')
+        js("window.__confirm=window.confirm;window.__asked=[];window.confirm=m=>{window.__asked.push(m);return false}")
+        key(ENTER)
+        check('Enter asks first, with the same warning, and declining sends nothing',
+          lambda: js("return window.__asked.length===1&&window.__asked[0].includes('may refuse you')") and 'leave' in get_json(op,'me').get('federation',{}),lambda: (js("return window.__asked"),get_json(op,'me').get('federation')))
+        js("window.confirm=m=>{window.__asked.push(m);return true}")
+        key(ENTER)
+        check('confirmed: the server has it, and the card says the member asked other servers to forget them, with no button',
+          lambda: (lambda f: f.get('left') and 'leave' not in f and f.get('optedIn') is False)(get_json(op,'me').get('federation',{})) and js("return !document.querySelector('[data-act=fed-leave]')&&document.querySelector('.fed-card').innerText.includes('You asked other servers to forget you')"),
+          lambda: (get_json(op,'me').get('federation'),txt('.fed-card')))
+        check('the focus is on the switch, so the keyboard is not lost',lambda: on('[data-change=federates]'),active)
+        js("window.confirm=window.__confirm")
+    s,h,b=ask('users/admin',headers={'Accept':'application/activity+json'})
+    check('the actor of a member who left answers 410 with a Tombstone, so servers that fetch it learn the account is gone',s==410 and json.loads(b).get('type')=='Tombstone',lambda: (s,b[:200]))
+
     # A member whose name ends with a dot is warned when they opt in.
     jar=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     api(jar,'signup',{'username':'spin.','password':'flowa-test-only'})
@@ -598,7 +630,7 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==18)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==19)
     else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.

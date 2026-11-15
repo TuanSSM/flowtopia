@@ -363,6 +363,7 @@ a.chip:hover, button.chip:hover { background: var(--hover); text-decoration: non
 .fed-counts { margin: 4px 0 10px; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 13px; }
 .fed-counts li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 2px 0; }
 .fed-lists h3 { margin: 6px 0 2px; }
+.fed-leave { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 8px; justify-items: start; }
 .req { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-s); }
 .req-who { min-width: 0; flex: 1 1 240px; }
 .req-reason, .req-taken { margin-top: 4px; }

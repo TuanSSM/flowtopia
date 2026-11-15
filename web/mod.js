@@ -532,9 +532,10 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'user-del':
-      if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.`)) {
+      // Where the server federates, the answer says which other servers are told (FWR 7); elsewhere it is as before.
+      if (confirm(`Delete @${d.name} and all their progress? This cannot be undone.${fed ? ' If they shared their profile, other servers that know them are told it is gone.' : ''}`)) {
         const r = await api('admin/users/' + d.id, 'DELETE');
-        toast(r.ok ? 'Account deleted.' : r.error); await loadUsers();
+        toast(r.ok ? (r.data.federation ? `Account deleted. ${r.data.federation}` : 'Account deleted.') : r.error); await loadUsers();
       }
       break;
     case 'user-pw': {

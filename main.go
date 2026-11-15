@@ -535,6 +535,7 @@ type limits struct {
 	lookups                                     *limiter // searches by handle of people on other servers, per member, in a mode that federates
 	domains                                     *limiter // changes to domain policies, per admin, in a mode that federates
 	fedFollows                                  *limiter // follows, unfollows, approvals and declines across servers, per member, in a mode that federates
+	fedLeave                                    *limiter // "Remove me from other servers", per member, in a mode that federates (FWR 7)
 	inbox                                       *limiter // verified deliveries per sender group (the last two labels of the key id's host), in a mode that federates
 	inboxHost                                   *limiter // verified deliveries per host of the key id, in a mode that federates
 	inboxAddr                                   *limiter // deliveries per address, before a signature is read, in a mode that federates
@@ -567,6 +568,9 @@ func newLimits() limits {
 		// Each of these sends an activity to another server: 100 an hour is a member going through their
 		// requests or following the people they know, and a stolen session sends no more.
 		fedFollows: newLimiter(100, time.Hour),
+		// "Remove me from other servers" sends a Delete(Person) to every server that knows the member (up to 2,000):
+		// a person does it once, and 3 an hour bound what a stolen session can make other servers do with it.
+		fedLeave: newLimiter(3, time.Hour),
 		// 7.5: 300 deliveries in 5 minutes from one server; and per address a bound a server's own traffic stays
 		// under, so a flood of requests that are not even signed is turned away for the cost of a counter.
 		inbox:     newLimiter(inboxGroupRate, inboxGroupWindow),
@@ -1657,12 +1661,12 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 	// In a mode that federates, the member's handle and whether they share it (fedView); in any other
 	// mode the answer is as before, with no word of it.
 	if a.fed != nil && u != nil {
-		var on, locked bool
-		if err := a.db.QueryRow(`SELECT federates, locked FROM users WHERE id = $1`, u.ID).Scan(&on, &locked); err != nil {
+		var s fedState
+		if err := a.db.QueryRow(fedStateSQL, u.ID).Scan(&s.on, &s.locked, &s.left, &s.keyed); err != nil {
 			a.serverError(w, err)
 			return
 		}
-		out["federation"] = a.fedView(u, on, locked)
+		out["federation"] = a.fedView(u, s)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2426,9 +2430,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	// The opt-in is its own column, outside userCols: it is read only in a mode that federates, so no
 	// other answer about a member carries it. It is not part of profileRev either: it is a switch saved
 	// on its own, not text edited against an older copy. was is what it was before, for the key below.
-	var fedOn, fedWas, lockedNow, personMarked bool
+	var fedOn, fedWas, lockedNow, personMarked, fedLeft, fedKeyed bool
 	if a.fed != nil {
-		if err := tx.QueryRow(`SELECT federates, locked FROM users WHERE id = $1`, u.ID).Scan(&fedWas, &lockedNow); err != nil {
+		if err := tx.QueryRow(fedStateSQL, u.ID).Scan(&fedWas, &lockedNow, &fedLeft, &fedKeyed); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -2484,7 +2488,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	out := map[string]any{"user": cur}
 	if a.fed != nil {
-		out["federation"] = a.fedView(cur, fedOn, lockedNow)
+		out["federation"] = a.fedView(cur, fedState{on: fedOn, locked: lockedNow, left: fedLeft, keyed: fedKeyed})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2750,34 +2754,55 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	a.backup()
+	// The name of an account that had opted in, whose actor id other servers may hold, is retired in the
+	// same transaction (retireSQL), before the row and its key go, in every mode: 4.3 says retired names
+	// stay retired whatever the mode, and an instance back in local mode may still hold such accounts. A
+	// delete refused below rolls it back with the rest. The name's lock is held until the commit, so no
+	// account can be made under the name in between (nameLockSQL).
+	del := func(tx *sql.Tx) error {
+		if _, err := tx.Exec(nameLockSQL, name); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(retireSQL, id); err != nil {
+			return err
+		}
+		res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND domain = '' AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return errLastAdmin
+		}
+		return a.audit(tx, u.ID, "delete_user", "user", id, 0, "", map[string]any{"username": name})
+	}
+	// In a mode that federates, an account with a key is deleted in the transaction of its Delete(Person), which
+	// goes to every server known to have heard of it (FWR 7, personGone), and the answer says what became of it.
+	// Elsewhere the deletion is what it always was, statement for statement (TestDBDeleteUserLocalStatements).
+	if a.fed != nil {
+		told, err := a.personGone(r.Context(), id, name, del)
+		switch {
+		case errors.Is(err, errLastAdmin):
+			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
+		case errors.Is(err, errDeliveryFull):
+			w.Header().Set("Retry-After", "300")
+			fail(w, http.StatusServiceUnavailable, "The queue to other servers is full just now, so they could not be told and the account was not deleted. Try again in a few minutes.")
+		case err != nil:
+			a.serverError(w, err)
+		default:
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "federation": told.sentence(!a.flagsCached()[fedFlag])})
+		}
+		return
+	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		a.serverError(w, err)
 		return
 	}
 	defer tx.Rollback()
-	// The name of an account that had opted in, whose actor id other servers may hold, is retired in the
-	// same transaction (retireSQL), before the row and its key go, in every mode: 4.3 says retired names
-	// stay retired whatever the mode, and an instance back in local mode may still hold such accounts. A
-	// delete refused below rolls it back with the rest. The name's lock is held until the commit, so no
-	// account can be made under the name in between (nameLockSQL).
-	if _, err := tx.Exec(nameLockSQL, name); err != nil {
-		a.serverError(w, err)
+	err = del(tx)
+	if errors.Is(err, errLastAdmin) {
+		fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
 		return
-	}
-	if _, err := tx.Exec(retireSQL, id); err != nil {
-		a.serverError(w, err)
-		return
-	}
-	res, err := tx.Exec(`DELETE FROM users WHERE id = $1 AND domain = '' AND (role <> 'admin' OR (SELECT count(*) FROM users WHERE role = 'admin') > 1)`, id)
-	if err == nil {
-		if n, _ := res.RowsAffected(); n == 0 {
-			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
-			return
-		}
-	}
-	if err == nil {
-		err = a.audit(tx, u.ID, "delete_user", "user", id, 0, "", map[string]any{"username": name})
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -2788,6 +2813,9 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// errLastAdmin is a deletion refused because the account is the last admin's.
+var errLastAdmin = errors.New("the last admin")
 
 func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request, u *user) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -6418,6 +6446,8 @@ type federation struct {
 	cache   map[keyOwner]cachedKey
 	docs    map[keyOwner]keptDoc // actor documents as made (actorDoc), by owner
 	docsGen uint64               // moves at every dropActor, so a document made meanwhile is not kept
+	// keptCleared is how many copies of deleted accounts' keys the last rotateKeys cleared (FWR 7), for its message.
+	keptCleared int
 
 	// actors is the cache of remote actors (remoteActor), set by startFederation with the app's fetcher;
 	// nil in the federation -rotate-keys makes, which fetches nothing.
@@ -6765,6 +6795,26 @@ func (f *federation) privateKey(ctx context.Context, o keyOwner) (*rsa.PrivateKe
 	return k, keyID, nil
 }
 
+// keptKey opens the copy of a deleted account's key that its Delete(Person) row keeps (FWR 7, migration 24): sealed as
+// in ap_keys, for that key id and the id the account had. It is opened at each send and kept nowhere in memory: such
+// rows are few and short-lived, and the account's cached key was dropped with it.
+func (f *federation) keptKey(c *claimedRow) (*rsa.PrivateKey, string, error) {
+	if c.signerKey == "" || c.signerSealed == "" {
+		return nil, "", errNoKey
+	}
+	der, err := f.secret.open(c.signerSealed, c.signerKey, keyOwner(c.signer.Int64))
+	if err != nil {
+		return nil, "", err
+	}
+	defer clear(der)
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
+	k, isRSA := parsed.(*rsa.PrivateKey)
+	if err != nil || !isRSA {
+		return nil, "", errOpenKey
+	}
+	return k, c.signerKey, nil
+}
+
 // errRefused is what ensureKey answers while federation is refused.
 var errRefused = errors.New("federation is refused, so no key is made")
 
@@ -7079,6 +7129,15 @@ func (f *federation) rotateKeys(ctx context.Context) (replaced, skipped int, err
 		f.mu.Unlock()
 		f.dropActor(r.owner) // its document names the key
 	}
+	// The copies of deleted accounts' keys that their Delete(Person) still waits to be signed with (FWR 7) cannot be
+	// renewed: a new key is no key any server holds for that account. A rotation is made because the secret or a key
+	// may be known to someone else, so the copies are cleared too, and those deliveries are given up at their send.
+	res, err := f.db.ExecContext(ctx, `UPDATE ap_outbox SET signer_sealed = NULL WHERE signer_sealed IS NOT NULL`)
+	if err != nil {
+		return replaced, skipped, err
+	}
+	n, _ := res.RowsAffected()
+	f.keptCleared = int(n)
 	return replaced, skipped, nil
 }
 
@@ -7124,6 +7183,9 @@ func rotateWith(db *sql.DB, mode instanceMode, getenv func(string) string, out i
 	if skipped > 0 {
 		// Exits non-zero (main's log.Fatal): not every key is new, and the operator should know.
 		return fmt.Errorf("-rotate-keys: rotated %d keys and skipped %d that changed or went while this ran (another rotation at the same time, or a deleted account); run it again to replace them", n, skipped)
+	}
+	if f.keptCleared > 0 {
+		fmt.Fprintf(out, "cleared the kept keys of %d deleted accounts whose deletion was still being sent to other servers; those deliveries are given up.\n", f.keptCleared)
 	}
 	fmt.Fprintf(out, "rotated %d keys. Restart the server so that it reads them. This version does not send Update to followers yet: other servers pick the new keys up when a signature next fails to verify.\n", n)
 	return nil
@@ -7642,10 +7704,11 @@ const hostNameRefusal = "Your username is this server's own name, which other se
 // mode the owner's opt-in is FLOWA_FEDERATE=on (implied), and there is no switch. The words the card
 // shows about what is built come from here (label, built), so they change with the server. While
 // federation is refused the member is told it is unavailable (unavailable), and staff why (refused).
-func (a *app) fedView(u *user, optedIn, locked bool) map[string]any {
+func (a *app) fedView(u *user, s fedState) map[string]any {
 	if a.fed == nil || u == nil {
 		return nil
 	}
+	optedIn, locked := s.on, s.locked
 	v := map[string]any{"handle": "@" + u.Username + "@" + a.fed.origin.host, "optedIn": optedIn || a.mode == modeSingle, "label": fedSwitch, "built": fedMemberBuilt}
 	if a.mode == modeSingle {
 		v["implied"] = true
@@ -7675,8 +7738,29 @@ func (a *app) fedView(u *user, optedIn, locked bool) map[string]any {
 	// that federates only, so /api/me elsewhere has no such key; the switch shows while the member can be
 	// followed from other servers (opted in, federation not refused).
 	v["locked"] = locked
+	// "Remove me from other servers" (FWR 7, 11): offered to a member who has a key, so whose profile another server
+	// may have, outside single mode (where the setting is the owner's sharing), while federation is not refused. The
+	// warning the page shows before it sends anything is the server's (leaveWarning). left says the member used it
+	// before: their name is retired while their account stays, which nothing else does.
+	if s.keyed && a.mode != modeSingle && v["unavailable"] == nil {
+		v["leave"] = leaveWarning
+	}
+	if s.left && a.mode != modeSingle {
+		v["left"] = leftSentence
+	}
 	return v
 }
+
+// fedState is what fedView is told of a member: sharing on, approving by hand, whether they asked other servers to
+// forget them before (left), and whether they have a key (keyed).
+type fedState struct{ on, locked, left, keyed bool }
+
+// fedStateSQL reads fedState for member $1: one row of users, one look in retired_usernames' and ap_keys' keys.
+const fedStateSQL = `SELECT u.federates, u.locked, EXISTS (SELECT 1 FROM retired_usernames r WHERE r.username = u.username),
+	EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) FROM users u WHERE u.id = $1`
+
+// leftSentence is shown beside the switch to a member who asked other servers to forget them (FWR 7).
+const leftSentence = "You asked other servers to forget you. If you share your profile again, it gets a new key, and servers that processed that request may still refuse your address."
 
 // audienceChoice is one audience as the composer offers it, Public first (chosen at first: federation.md 11).
 type audienceChoice struct {
@@ -7735,11 +7819,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows, and sends the Public posts of members who share their profile to their followers on other servers, with a post's deletion and a profile's changes, and keeps the posts of the accounts its members follow on other servers for those members' Home (their pictures copied into its own bounded cache, a member told when one mentions them or shares their post), and takes replies and likes from other servers to its members' Public posts and comments, and sends its members' comments on Public posts and their likes and comments on public posts of other servers, with an edit, a deletion and an unlike"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows, and sends the Public posts of members who share their profile to their followers on other servers, with a post's deletion and a profile's changes, and keeps the posts of the accounts its members follow on other servers for those members' Home (their pictures copied into its own bounded cache, a member told when one mentions them or shares their post), and takes replies and likes from other servers to its members' Public posts and comments, and sends its members' comments on Public posts and their likes and comments on public posts of other servers, with an edit, a deletion and an unlike, and tells the servers that know a member when an admin deletes the account or the member asks to be removed from them, and removes everything of an account of another server that deletes itself"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows", "posts", "home", "replies"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows", "posts", "home", "replies", "deletion"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -17187,15 +17271,27 @@ const inboxClaimSQL = `UPDATE ap_inbox SET locked_until = $1::timestamptz + make
 		ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
 	RETURNING id, actor_id, kind, attempts`
 
-// actorGoneSQL marks account $1 gone, and removes its remote posts, its follows both ways, its replies and likes here
-// (FWR 6, remoteTalkGone) and the share, mention, comment, reply and like notifications it sent, giving the files of
-// its posts' pictures.
+// actorGoneSQL marks account $1 gone, and removes its remote posts, its follows both ways and its requests, its replies
+// and likes here (FWR 6, remoteTalkGone) and every notification it left (follows, requests and refusals, shares,
+// mentions, comments, replies and likes), giving the files of its posts' pictures. Since FWR 7 also: the deletions of
+// its posts remembered (ap_deleted: a gone account sends nothing more that is taken), its name, picture, bio and links
+// here (the row stays, so a block of it and the moderation record keep their account, shown as deleted), and the
+// deliveries of this server's activities that wait for its own inbox ($2, in the queue's spelling, on host $3), given
+// up unless one is in flight ($4 the queue's clock). A block of it is kept (a member's own choice, and the account
+// stays refused anyway), and so are the reports about it, which are the moderators' record.
 var actorGoneSQL = `WITH m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL) AND file <> ''),
 	p AS (DELETE FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL RETURNING 1),
 	f AS (DELETE FROM follows WHERE follower_id = $1 OR followee_id = $1 RETURNING 1),
-	a AS (UPDATE ap_actors SET state = 'gone' WHERE user_id = $1 RETURNING 1),
-	n AS (DELETE FROM notifications WHERE actor_id = $1 AND kind IN (` + remoteTalkKinds + `) RETURNING 1),` + remoteTalkGone("$1") + `
+	a AS (UPDATE ap_actors SET state = 'gone', summary = '', icon = '' WHERE user_id = $1 RETURNING 1),
+	u AS (UPDATE users SET display_name = '', bio = '', avatar = '', links = '{}' WHERE id = $1 AND domain <> '' RETURNING 1),
+	n AS (DELETE FROM notifications WHERE actor_id = $1 AND kind IN ('follow', 'follow_request', 'follow_rejected', ` + remoteTalkKinds + `) RETURNING 1),
+	dd AS (DELETE FROM ap_deleted WHERE user_id = $1 RETURNING 1),
+	q AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $4, locked_until = NULL, last_error = 'the account was deleted on its server'
+		FROM (SELECT id FROM ap_deliveries WHERE host = $3 AND inbox = $2 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $4)
+			ORDER BY id FOR UPDATE) k
+		WHERE d.id = k.id AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $4) RETURNING 1),` + remoteTalkGone("$1") + `
 	SELECT COALESCE((SELECT array_agg(file) FROM m), '{}') FROM (SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM f) + (SELECT count(*) FROM a) + (SELECT count(*) FROM n)
+		+ (SELECT count(*) FROM u) + (SELECT count(*) FROM dd) + (SELECT count(*) FROM q)
 		+ (SELECT count(*) FROM rk) + (SELECT count(*) FROM rd) + (SELECT count(*) FROM rl) + (SELECT count(*) FROM rcl) + (SELECT count(*) FROM rck)) x`
 
 // errRetry is a handling that failed for this server's reason, to be tried again later.
@@ -17340,7 +17436,8 @@ func (q *inboxQueue) handle(ctx context.Context, row, actor int64, kind string) 
 		// do the follows both ways (FWR 5): nothing of a deleted account stays readable in a Home. FWR 7 purges the
 		// rest. Every key of it kept in memory goes too.
 		var files []string
-		if err := f.fedRow(ctx, []any{pq.Array(&files)}, actorGoneSQL, actor); err != nil {
+		inbox, host, _ := inboxAddress(signer.Inbox) // "" when it is none: no delivery has it
+		if err := f.fedRow(ctx, []any{pq.Array(&files)}, actorGoneSQL, actor, inbox, host, f.outNow()); err != nil {
 			return "", &errRetry{"the database"}
 		}
 		removeMedia(f.mediaDir(), files)
@@ -18288,7 +18385,7 @@ const deliveryClaimSQL = `UPDATE ap_deliveries d SET locked_until = $1::timestam
 			AND NOT EXISTS (SELECT 1 FROM ap_hosts h WHERE h.host = q.host AND h.state <> 'ok' AND (h.until > $1 OR h.state = 'unavailable'))
 		ORDER BY q.next_at, q.id LIMIT 1 FOR UPDATE OF q SKIP LOCKED)
 	RETURNING d.id, d.inbox, d.host, d.attempts, d.created_at, d.locked_until, o.actor_id, o.body, COALESCE((SELECT h.sig FROM ap_hosts h WHERE h.host = d.host), 'cavage'), o.undoes,
-		o.undoes_chain, COALESCE(o.comes_after, '')`
+		o.undoes_chain, COALESCE(o.comes_after, ''), o.signer, COALESCE(o.signer_key, ''), COALESCE(o.signer_sealed, '')`
 
 // claimedRow is a row a worker holds: lease is its locked_until, which every later statement about it names, so a
 // worker that lost its lease changes nothing.
@@ -18305,6 +18402,11 @@ type claimedRow struct {
 	undoes   sql.NullInt64 // the activity this one takes back (8.8, "Taking back"), if any
 	chain    bool          // what it takes back is the last of a line (outOrder)
 	after    string        // the activity that must be settled at the inbox first (outOrder), "" for none
+	// A deleted account's Delete(Person) (FWR 7): the id the account had, and the copy of its key the activity's row
+	// keeps (migration 24), which signs it in place of an owner's key in ap_keys. signer is NULL for every other row.
+	signer       sql.NullInt64
+	signerKey    string
+	signerSealed string
 }
 
 func (q *deliveryQueue) busyHosts() []string {
@@ -18356,7 +18458,8 @@ func (q *deliveryQueue) claim(ctx context.Context, busy []string) (*claimedRow, 
 		}
 	}
 	c := &claimedRow{}
-	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig, &c.undoes, &c.chain, &c.after)
+	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig, &c.undoes, &c.chain, &c.after,
+		&c.signer, &c.signerKey, &c.signerSealed)
 	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -18457,8 +18560,17 @@ func (q *deliveryQueue) deliver(ctx context.Context, c *claimedRow) error {
 	if err := f.ensureOrigin(ctx); err != nil {
 		return q.giveBack(c, q.ownWait(ctx))
 	}
-	key, keyID, err := f.privateKey(ctx, owner)
-	if err != nil {
+	var key *rsa.PrivateKey
+	var keyID string
+	var err error
+	if c.signer.Valid {
+		// A deleted account's Delete(Person) is signed with the copy of its key the row keeps (FWR 7): the account and
+		// its key in ap_keys are gone. A copy cleared (by -rotate-keys) or one that does not open cannot sign, and
+		// nothing else may sign in its place, so the row is given up.
+		if key, keyID, err = f.keptKey(c); err != nil {
+			return q.fail(c, "the key of the deleted account is no longer kept")
+		}
+	} else if key, keyID, err = f.privateKey(ctx, owner); err != nil {
 		if errors.Is(err, errNoKey) {
 			f.requestKey(owner)
 		}
@@ -18951,6 +19063,11 @@ const (
 	deliveryRetainCapSQL    = `DELETE FROM ap_deliveries WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'failed' ORDER BY failed_at DESC OFFSET $1 LIMIT $2))`
 	deliveryRetainOutboxSQL = `DELETE FROM ap_outbox WHERE id = ANY(ARRAY(SELECT o.id FROM ap_outbox o WHERE o.fanned_out AND o.created_at < $1
 		AND NOT EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id) ORDER BY o.id LIMIT $2))`
+	// deliveryForgetKeySQL clears the copy of a deleted account's key (FWR 7) from the rows of activities fanned out
+	// with no delivery left queued: nothing will be signed with it again. Found through ap_outbox_signer ($1, the
+	// queue's clock, only types the statement as the loop's other ones).
+	deliveryForgetKeySQL = `UPDATE ap_outbox SET signer_sealed = NULL WHERE id = ANY(ARRAY(SELECT o.id FROM ap_outbox o WHERE o.signer_sealed IS NOT NULL AND o.fanned_out
+		AND NOT EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued') ORDER BY o.id LIMIT $2)) AND $1::timestamptz IS NOT NULL`
 	deliveryPullDueSQL = `UPDATE ap_deliveries d SET next_at = $2 FROM (SELECT id FROM ap_deliveries
 		WHERE id = ANY(ARRAY(SELECT id FROM ap_deliveries WHERE state = 'queued' AND next_at > $2 ORDER BY next_at LIMIT $3)) ORDER BY id FOR UPDATE) k
 		WHERE d.id = k.id AND $1::timestamptz IS NOT NULL`
@@ -18984,6 +19101,7 @@ func (q *deliveryQueue) housekeep(ctx context.Context) (rows, activities int64, 
 	if stale && q.doubt() {
 		return 0, 0, nil
 	}
+	var keysForgotten int64 // copies of deleted accounts' keys cleared (FWR 7); not reported, only bounded
 	// Rows dated by a clock that was ahead, once it is right again: due no later than the schedule can make a row due,
 	// and written no later than now, so they are claimed and their 48 hours count from now.
 	for _, stmt := range []string{deliveryPullDueSQL, deliveryPullAgeSQL} {
@@ -19005,6 +19123,7 @@ func (q *deliveryQueue) housekeep(ctx context.Context) (rows, activities int64, 
 		{&rows, deliveryRetainOldSQL, before},
 		{&rows, deliveryRetainCapSQL, deliveryFailedKeep},
 		{&activities, deliveryRetainOutboxSQL, before},
+		{&keysForgotten, deliveryForgetKeySQL, now},
 	} {
 		for {
 			n, err := q.exec(ctx, s.stmt, s.arg, deliveryBatch)
@@ -21082,6 +21201,310 @@ func (a *app) personOut(ctx context.Context) (bool, error) {
 const personChangedSQL = `INSERT INTO ap_person_out (user_id, due_at, gen) VALUES ($1, $2, 1)
 	ON CONFLICT (user_id) DO UPDATE SET gen = ap_person_out.gen + 1,
 		due_at = COALESCE(ap_person_out.due_at, GREATEST($2, ap_person_out.sent_at + make_interval(secs => $3)))`
+
+/* ---------- federation: account deletion across servers ----------
+
+FWR 7 (docs/federation.md 6.3, 6.4 and 11; "Account deletion across servers, as built (FWR 7)" under 6.4 says what
+and why). When an account that has a key is deleted by an admin, or its member asks other servers to forget it
+("Remove me from other servers"), one Delete(Person) goes to every server this one knows to have heard of it, signed
+with the member's own key:
+
+  - The activity and its deliveries are written in the same transaction that deletes the account (or turns its
+    sharing off), through enqueueThen. The account's key goes with the account, so the activity's row keeps a copy,
+    sealed as in ap_keys (migration 24), which the workers sign with and housekeeping clears once no delivery waits.
+  - Which servers: one inbox per server (a Delete of an actor is about the actor, so a server acts on it at any of
+    its inboxes), its shared inbox when known, from what is recorded: accounts that follow the member or that the
+    member follows (in any state), accounts whose posts the member liked or answered and accounts that liked or
+    answered the member, the inboxes the member's posts and comments went to (ap_post_out, ap_comment_out), and the
+    inboxes of the member's activities still in the queue or failed in the last 7 days. Deliveries that succeeded
+    leave no row, so a server that only ever received an activity whose record is gone is not known. At most
+    personDeleteHostsMax servers; the rest are left out and logged.
+  - Only a server that kept the member's key can verify the Delete: the actor answers 410 from now on, so a server
+    that fetches the key to verify it learns the account is gone that way instead (and Mastodon drops a Delete from an
+    actor it never saw without fetching anything).
+  - The member's posts, comments and likes need no Delete each: a Delete(Person) removes all of them (Mastodon's
+    ActivityPub page). What of the member still waits to go out goes with the account (its rows reference it); a
+    request already in flight to a server finishes before the Delete reaches that server, since the queue sends one
+    request at a time per server. */
+
+// personDeleteHostsMax is how many servers one Delete(Person) goes to at most (docs/federation.md 6.4's bound).
+const personDeleteHostsMax = 2000
+
+// personKnownSQL lists the servers that may know member $1, one inbox per server (its shared inbox first), at most $2:
+// the doc comment above says from what. Each part reads through an index that starts with the member or the post.
+const personKnownSQL = `WITH a AS (SELECT a.ap_id, a.inbox, a.shared_inbox FROM (
+		SELECT follower_id FROM follows WHERE followee_id = $1
+		UNION SELECT followee_id FROM follows WHERE follower_id = $1
+		UNION SELECT p.user_id FROM likes l JOIN posts p ON p.id = l.post_id WHERE l.user_id = $1 AND p.ap_id IS NOT NULL
+		UNION SELECT p.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.user_id = $1 AND p.ap_id IS NOT NULL
+		UNION SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE p.user_id = $1 AND c.ap_id IS NOT NULL
+		UNION SELECT l.user_id FROM likes l JOIN posts p ON p.id = l.post_id WHERE p.user_id = $1 AND l.ap_id IS NOT NULL
+		UNION SELECT l.user_id FROM comment_likes l JOIN comments c ON c.id = l.comment_id WHERE c.user_id = $1 AND l.ap_id IS NOT NULL
+		UNION SELECT p.user_id FROM ap_like_out k JOIN posts p ON p.id = k.post_id WHERE k.user_id = $1 AND p.ap_id IS NOT NULL) i(id)
+		CROSS JOIN LATERAL (SELECT * FROM ap_actors x WHERE x.user_id = i.id) a WHERE a.state <> 'gone' AND a.inbox <> ''),
+	t AS (SELECT e->>'Actor' AS ap_id, e->>'Inbox' AS inbox, COALESCE(e->>'SharedInbox', '') AS shared_inbox
+		FROM (SELECT targets FROM ap_post_out WHERE user_id = $1 UNION ALL SELECT targets FROM ap_comment_out WHERE user_id = $1) o,
+			jsonb_array_elements(CASE WHEN left(o.targets, 1) = '[' THEN o.targets::jsonb ELSE '[]'::jsonb END) e),
+	q AS (SELECT DISTINCT d.inbox AS ap_id, d.inbox, '' AS shared_inbox FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.actor_id = $1),
+	r AS (SELECT * FROM a UNION ALL SELECT * FROM t WHERE ap_id IS NOT NULL AND inbox IS NOT NULL UNION ALL SELECT * FROM q),
+	k AS (SELECT ap_id, shared_inbox <> '' AND split_part(shared_inbox, '/', 3) = split_part(ap_id, '/', 3) AS sh,
+		CASE WHEN shared_inbox <> '' AND split_part(shared_inbox, '/', 3) = split_part(ap_id, '/', 3) THEN shared_inbox ELSE inbox END AS addr FROM r)
+	SELECT DISTINCT ON (lower(split_part(addr, '/', 3))) ap_id, addr FROM k ORDER BY lower(split_part(addr, '/', 3)), sh DESC, addr LIMIT $2`
+
+// outPersonDelete is a member's Delete(Person) (6.4): a new activity id, the actor's id as its object, to the public
+// collection, as Mastodon sends one.
+type outPersonDelete struct {
+	Context string   `json:"@context"`
+	ID      string   `json:"id"`
+	Type    string   `json:"type"`
+	Actor   string   `json:"actor"`
+	To      []string `json:"to"`
+	Object  string   `json:"object"`
+}
+
+// personKnown reads personKnownSQL for member uid: the servers to tell, and how many more there were past
+// personDeleteHostsMax (only "some": the statement stops at one past the bound).
+func (f *federation) personKnown(ctx context.Context, uid int64) ([]deliveryTarget, bool, error) {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	rows, err := f.db.QueryContext(ctx, personKnownSQL, uid, personDeleteHostsMax+1)
+	if err != nil {
+		done()
+		return nil, false, err
+	}
+	var out []deliveryTarget
+	for rows.Next() {
+		var t deliveryTarget
+		if err = rows.Scan(&t.Actor, &t.Inbox); err != nil {
+			break
+		}
+		out = append(out, t)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	done()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(out) > personDeleteHostsMax {
+		log.Printf("federation: member %d is known to more than %d servers; their deletion is sent to the first %d of them", uid, personDeleteHostsMax, personDeleteHostsMax)
+		return out[:personDeleteHostsMax], true, nil
+	}
+	return out, false, nil
+}
+
+// personTold is what became of a Delete(Person): whether the account had a key (and so may be known elsewhere),
+// why nothing could be sent (federation refused), and what was written for how many servers.
+type personTold struct {
+	Keyed   bool
+	Refused string
+	Servers int  // servers it was addressed to, before enqueue's own refusals
+	Cut     bool // more servers were known than personDeleteHostsMax
+	Out     enqueued
+}
+
+// sentence says it to the admin or the member, in the page's words.
+func (t personTold) sentence(paused bool) string {
+	switch {
+	case !t.Keyed:
+		return "The account has no key for other servers (its profile was never shared, or it asked them to forget it already), so no other server was told."
+	case t.Refused != "":
+		return "Other servers could not be told: federation is unavailable on this server."
+	case t.Out.Queued == 0 && !t.Out.Waiting:
+		return "No other server is known to have the account, so none was told."
+	}
+	s := fmt.Sprintf("Other servers that know the account are being told it is gone: %d of them.", t.Out.Queued)
+	if t.Cut {
+		s += fmt.Sprintf(" At most %d servers are told; the rest were left out.", personDeleteHostsMax)
+	}
+	if t.Out.Waiting {
+		s = fmt.Sprintf("Other servers that know the account will be told it is gone, once the queue has room: %d of them.", t.Servers)
+	}
+	if paused {
+		s += " Sending to other servers is paused: it goes when it is turned on again, within 48 hours."
+	}
+	return s
+}
+
+// personGone runs then, which deletes the account uid (named name) or turns its sharing off, in one transaction with
+// the account's Delete(Person) and its deliveries when the account has a key and federation is not refused; in a
+// transaction of its own otherwise. Nothing is committed when it returns an error (errDeliveryFull: the queue cannot
+// take the activity now, and the caller says so rather than lose it). After the commit the account's key and actor
+// document are dropped from memory.
+func (a *app) personGone(ctx context.Context, uid int64, name string, then func(*sql.Tx) error) (personTold, error) {
+	f := a.fed
+	var told personTold
+	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id = $1)`, uid).Scan(&told.Keyed); err != nil {
+		return told, err
+	}
+	told.Refused = f.refusal()
+	err := errRefused
+	if told.Keyed && told.Refused == "" && f.out != nil {
+		var to []deliveryTarget
+		var body []byte
+		if to, told.Cut, err = f.personKnown(ctx, uid); err != nil {
+			return told, err
+		}
+		told.Servers = len(to)
+		actor := f.memberActor(name)
+		apID := f.activityID(name)
+		if body, err = apJSON(outPersonDelete{Context: asContext, ID: apID, Type: "Delete", Actor: actor, To: []string{publicCollection}, Object: actor}); err != nil {
+			return told, err
+		}
+		told.Out, err = f.out.enqueueThen(ctx, instanceActor, apID, body, to, func(tx *sql.Tx) error {
+			// The copy of the key the workers sign with, taken before then removes the key. Should the key have gone
+			// meanwhile, the activity goes too: nothing else may sign it.
+			if _, err := tx.ExecContext(ctx, `UPDATE ap_outbox o SET signer = k.user_id, signer_key = k.key_id, signer_sealed = k.private_sealed
+				FROM ap_keys k WHERE o.ap_id = $1 AND k.user_id = $2`, apID, uid); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM ap_outbox WHERE ap_id = $1 AND signer_sealed IS NULL`, apID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, memberRowsLockSQL, uid); err != nil {
+				return err
+			}
+			return then(tx)
+		})
+		if errors.Is(err, errRefused) {
+			told.Refused = f.refusal()
+		}
+	}
+	if errors.Is(err, errRefused) {
+		// Nothing can be sent (no key, federation refused): the change alone, as it would be without federation.
+		told.Out = enqueued{}
+		var tx *sql.Tx
+		if tx, err = a.db.BeginTx(ctx, nil); err != nil {
+			return told, err
+		}
+		defer tx.Rollback()
+		if _, err = tx.ExecContext(ctx, memberRowsLockSQL, uid); err == nil {
+			err = then(tx)
+		}
+		if err == nil {
+			err = tx.Commit()
+		}
+	}
+	if err != nil {
+		return told, err
+	}
+	if told.Keyed && told.Refused != "" {
+		log.Printf("federation: member %d was removed while federation is refused; no other server was told", uid)
+	}
+	f.forgetOwner(keyOwner(uid))
+	return told, nil
+}
+
+// outNow is the delivery queue's clock, on which its leases are written; the wall clock when there is no queue.
+func (f *federation) outNow() time.Time {
+	if f.out != nil {
+		return f.out.now()
+	}
+	return time.Now()
+}
+
+// memberRowsLockSQL locks the delivery rows of member $1's activities in the order of their ids (deliveryLockOrder),
+// before then removes those activities with them (the account's deletion cascades to them; leaving removes them):
+// a worker's statements over the rows of a line lock in that order too, so the two never each hold a row the other
+// waits for. Nothing of the member is left to go after their Delete(Person): rows untried, tried and waiting for another
+// attempt, and held behind another activity all go; a row in flight finishes first, since the queue sends one request
+// at a time per host, and its outcome finds no row to write to. Through ap_outbox_actor and the (outbox_id, inbox)
+// index.
+const memberRowsLockSQL = `SELECT count(*) FROM (SELECT id FROM ap_deliveries WHERE outbox_id IN (SELECT id FROM ap_outbox WHERE actor_id = $1)
+	ORDER BY id FOR UPDATE) k`
+
+// forgetOwner drops a member's key and actor document from memory, after the account or its key went.
+func (f *federation) forgetOwner(o keyOwner) {
+	f.mu.Lock()
+	delete(f.cache, o)
+	f.mu.Unlock()
+	f.dropActor(o)
+}
+
+// leaveSQL is what "Remove me from other servers" changes for member $1, in the transaction of
+// the Delete(Person): sharing off; the name retired (a server that processed the Delete may refuse the address for
+// good, and the actor answers 410 while the member does not share); the key removed, so sharing again makes a new
+// one; the follows with accounts of other servers, both ways and in any state, removed with their request
+// notifications, since those servers drop them on the Delete; the records of posts, comments and likes that went out
+// and of a profile update, since the Delete removed them there; and the member's activities in the queue with their
+// deliveries, whatever their state (memberRowsLockSQL locked those rows first), as a deletion of the account removes
+// them: nothing of the member goes after the Delete(Person). It says how many follows it removed.
+const leaveSQL = `WITH u AS (UPDATE users SET federates = false WHERE id = $1 RETURNING username),
+	r AS (INSERT INTO retired_usernames (username) SELECT username FROM u ON CONFLICT DO NOTHING RETURNING 1),
+	k AS (DELETE FROM ap_keys WHERE user_id = $1 RETURNING 1),
+	f AS (DELETE FROM follows w WHERE (w.follower_id = $1 AND EXISTS (SELECT 1 FROM users x WHERE x.id = w.followee_id AND x.domain <> ''))
+		OR (w.followee_id = $1 AND EXISTS (SELECT 1 FROM users x WHERE x.id = w.follower_id AND x.domain <> '')) RETURNING 1),
+	n AS (DELETE FROM notifications WHERE user_id = $1 AND kind = 'follow_request' AND fed RETURNING 1),
+	po AS (DELETE FROM ap_post_out WHERE user_id = $1 RETURNING 1),
+	co AS (DELETE FROM ap_comment_out WHERE user_id = $1 RETURNING 1),
+	pe AS (DELETE FROM ap_person_out WHERE user_id = $1 RETURNING 1),
+	lo AS (DELETE FROM ap_like_out WHERE user_id = $1 RETURNING 1),
+	w AS (DELETE FROM ap_outbox WHERE actor_id = $1 RETURNING 1)
+	SELECT (SELECT count(*) FROM f) + 0 * ((SELECT count(*) FROM u) + (SELECT count(*) FROM r) + (SELECT count(*) FROM k) + (SELECT count(*) FROM n)
+		+ (SELECT count(*) FROM po) + (SELECT count(*) FROM co) + (SELECT count(*) FROM pe) + (SELECT count(*) FROM lo) + (SELECT count(*) FROM w))`
+
+// leaveWarning is said on the page before the member confirms, and is what the design asks the page to say (11).
+const leaveWarning = "Other servers are asked to delete your profile, your posts, comments and likes there, and your followers there lose you. Your account here stays as it is. Many servers remember a deleted address for good, so if you share your profile again later, servers that processed this may refuse you."
+
+// handleLeave is POST /api/me/federation/leave, "Remove me from other servers" (11): the member's Delete(Person),
+// sent with their key, and sharing turned off, in one transaction. It asks for {"confirm": true}, so a page or a
+// script that did not show leaveWarning cannot send it by accident; it is held to limits.fedLeave. In single mode the
+// owner's sharing is the setting FLOWA_FEDERATE, which the page cannot change.
+func (a *app) handleLeave(w http.ResponseWriter, r *http.Request, u *user) {
+	var in struct {
+		Confirm bool `json:"confirm"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	switch {
+	case a.mode == modeSingle && u.Owner:
+		fail(w, http.StatusBadRequest, "This Flowa shares your profile by its setting FLOWA_FEDERATE. To stop, the setting is turned off where the server is set up.")
+		return
+	case !in.Confirm:
+		fail(w, http.StatusBadRequest, "Confirm that other servers should be asked to forget you.")
+		return
+	case a.fed.refusal() != "":
+		fail(w, http.StatusServiceUnavailable, fedUnavailable)
+		return
+	}
+	w, ok := allowed(w, a.lim.fedLeave, u, "requests to be forgotten by other servers")
+	if !ok {
+		return
+	}
+	var keyed bool
+	if err := a.db.QueryRowContext(r.Context(), `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id = $1)`, u.ID).Scan(&keyed); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if !keyed {
+		fail(w, http.StatusBadRequest, "Your profile is not shared beyond this server now, so there is nothing for other servers to forget.")
+		return
+	}
+	told, err := a.personGone(r.Context(), u.ID, u.Username, func(tx *sql.Tx) error {
+		var ended int
+		return tx.QueryRowContext(r.Context(), leaveSQL, u.ID).Scan(&ended)
+	})
+	if errors.Is(err, errDeliveryFull) {
+		w.Header().Set("Retry-After", "300")
+		fail(w, http.StatusServiceUnavailable, "The queue to other servers is full just now, so nothing was sent and your profile is still shared. Try again in a few minutes.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var locked bool
+	if err := a.db.QueryRowContext(r.Context(), `SELECT locked FROM users WHERE id = $1`, u.ID).Scan(&locked); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"told": told.sentence(!a.flagsCached()[fedFlag]), "federation": a.fedView(u, fedState{locked: locked, left: true})})
+}
 
 /* ---------- federation: posts from followed accounts ----------
 
@@ -24239,6 +24662,19 @@ var migrations = []string{schema, schemaSocial,
 	UPDATE notifications SET fed = true WHERE NOT fed AND actor_id IN (SELECT id FROM users WHERE domain <> '');
 	CREATE INDEX IF NOT EXISTS notifications_remote ON notifications (user_id, id DESC) WHERE fed;
 	DROP INDEX IF EXISTS notifications_fed`,
+	// 24: account deletion across servers (docs/federation.md 6.4 and "Account deletion across servers, as built (FWR 7)"
+	// under it; FWR 7). A member's Delete(Person) must still be signed with the member's key after the account and its
+	// key are gone, so the activity's row carries a copy of that key: signer is the id the account had (no foreign key:
+	// the account is deleted in the same transaction), signer_key its key id and signer_sealed the private key sealed as
+	// in ap_keys, bound to that key id and owner. The copy is cleared by housekeeping once no delivery of the activity
+	// waits (ap_outbox_signer finds the few rows that still hold one), and by -rotate-keys. Columns without defaults and
+	// a partial index: no row is rewritten, and an older build ignores them; but an older build after ./deploy.sh
+	// --rollback would sign a Delete(Person) that still waits with the instance actor's key, which other servers refuse
+	// (the key is not the activity's actor's), so the rollback loses those deliveries and nothing else (14.4).
+	`ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS signer BIGINT;
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS signer_key TEXT;
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS signer_sealed TEXT;
+	CREATE INDEX IF NOT EXISTS ap_outbox_signer ON ap_outbox (id) WHERE signer_sealed IS NOT NULL`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -25015,6 +25451,8 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("GET /users/{name}/posts/{id}", a.handlePublicPost(st, false))
 		mux.HandleFunc("GET /users/{name}/posts/{id}/activity", a.handlePublicPost(st, true))
 		mux.HandleFunc("POST /api/fed/lookup", a.flagged("community", a.authed("", a.handleLookup)))
+		// "Remove me from other servers" (FWR 7): sharing is a member's own setting, behind no flag, so this is too.
+		mux.HandleFunc("POST /api/me/federation/leave", a.authed("", a.handleLeave))
 		// Follows across servers (FWR 3): a remote profile and blocks behind the community flag, as the local ones
 		// are; following and the requests behind the follows flag too, as local follows are.
 		fedSocial := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
