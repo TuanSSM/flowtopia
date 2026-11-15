@@ -1677,6 +1677,11 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
     said off keeps the comment here.
 - **After the second review of #116** (each with a test that fails without it):
+  - **A restart forgets no comment** (`TestDBCommentRecordsAfterRestart`): the start marks the comments' records due, as
+    it does the posts', and starts the workers when one waits, in each state a record waits in: a Create, a Create held
+    while the switches could not be read, and an Update or a Delete the full queue held back. The other flags this item
+    keeps in memory need nothing at a start: housekeeping counts the caps in all (`repliesFull`, `likesFull`) in its first
+    pass, which runs at the start, and the orphan probe's place (`orphansAfter`) starts again from the first record.
   - **One slow server holds nobody else's edits** (`TestDBCommentOrders`, `TestDBLikeAgainAfterUndo`). An Update is
     enqueued at once, naming the activity it comes after (`ap_outbox.comes_after`), and the queue holds its row at an
     inbox while that activity, or one before it in the comment's line, is still queued at the same inbox, in flight or

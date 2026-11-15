@@ -6914,6 +6914,7 @@ func (a *app) startFederation(s fedSettings) error {
 	f.out.produce = a.sendOut // FWR 4: Public posts, their deletions and profiles become activities in the workers
 	f.switches = a.outSwitches
 	f.postsDue.Store(true) // a record left by a stop is looked for at the first step
+	f.commentsDue.Store(true)
 	was, err := recordedOrigin(a.db)
 	if err != nil {
 		return err
@@ -6990,8 +6991,8 @@ func (a *app) startFederation(s fedSettings) error {
 		if err := f.out.readStart(a.db); err != nil {
 			return err
 		}
-		// A Public post's Create or Delete, or an Update of a profile, that waited for its worker at the stop (FWR 4):
-		// the workers start for it too.
+		// A Public post's Create or Delete, an Update of a profile (FWR 4), or a comment's Create, Update or Delete
+		// (FWR 6), that waited for its worker at the stop: the workers start for it too.
 		// A post that went out and was deleted or hidden while the server ran in local mode (where nothing marks it)
 		// is still on the servers it went to: its Delete goes now.
 		if _, err := a.db.Exec(`UPDATE ap_post_out o SET state = 'delete' WHERE o.state = 'sent'
@@ -6999,7 +7000,8 @@ func (a *app) startFederation(s fedSettings) error {
 			return err
 		}
 		var out bool
-		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_post_out WHERE state <> 'sent') OR EXISTS (SELECT 1 FROM ap_person_out WHERE due_at IS NOT NULL)`).Scan(&out); err != nil {
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_post_out WHERE state <> 'sent') OR EXISTS (SELECT 1 FROM ap_person_out WHERE due_at IS NOT NULL)
+			OR EXISTS (SELECT 1 FROM ap_comment_out WHERE state <> 'sent')`).Scan(&out); err != nil {
 			return err
 		}
 		if out {
@@ -17569,7 +17571,8 @@ type deliveryQueue struct {
 	waiting           atomic.Bool          // activities may wait for their fan-out
 	wake              chan struct{}
 	once              sync.Once
-	manual            bool // set by a test, which then calls step itself: no worker starts
+	running           atomic.Bool // the workers were started (a test asks)
+	manual            bool        // set by a test, which then calls step itself: no worker starts
 	ctx               context.Context
 	cancel            context.CancelFunc
 	wg                sync.WaitGroup
@@ -18187,6 +18190,7 @@ func (q *deliveryQueue) enter() bool {
 
 // start starts the workers, each counted in the queue's own wait group, which the federation's stop waits for (8.6).
 func (q *deliveryQueue) start() {
+	q.running.Store(true)
 	for range q.workers {
 		if !q.enter() {
 			return

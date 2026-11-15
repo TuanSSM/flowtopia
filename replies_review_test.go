@@ -754,3 +754,65 @@ func TestDBCommentQueueFull(t *testing.T) {
 		t.Errorf("after its wait: made %v, %d queued", ok, n)
 	}
 }
+
+// A restart (point 1 of the second review): a comment's record left waiting at the stop is looked for at the first
+// step of the next process, which starts its workers for it, in each state the record can wait in.
+func TestDBCommentRecordsAfterRestart(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		make func(e *talkEnv) string // leaves a record waiting and says the activity the next process makes of it
+	}{
+		{"a Create", func(e *talkEnv) string {
+			_, note := e.comment("made before the stop")
+			return note + "/activity"
+		}},
+		{"a Create held while the switches could not be read", func(e *talkEnv) string {
+			keep := e.a.fed.switches
+			e.a.fed.switches = func() (bool, bool) { return false, false }
+			_, note := e.comment("held")
+			e.a.sendOut(context.Background())
+			e.a.fed.switches = keep
+			return note + "/activity"
+		}},
+		{"an Update the full queue held back", func(e *talkEnv) string {
+			cmt, note := e.comment("first")
+			e.ne.produce()
+			e.edit(cmt, "edited before the stop")
+			e.mustExec(`UPDATE ap_comment_out SET tries = 1, due_at = now() - interval '1 second' WHERE state = 'update'`)
+			return note + "#update-1"
+		}},
+		{"a Delete the full queue held back", func(e *talkEnv) string {
+			cmt, note := e.comment("first")
+			e.ne.produce()
+			e.del(cmt)
+			e.mustExec(`UPDATE ap_comment_out SET tries = 1, due_at = now() - interval '1 second' WHERE state = 'delete'`)
+			return note + "#delete"
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTalkEnv(t)
+			want := c.make(e)
+			if n := e.count(`SELECT count(*) FROM ap_comment_out WHERE state <> 'sent'`); n != 1 {
+				t.Fatalf("%d records wait at the stop", n)
+			}
+			// Nothing else for the workers: the rows sent, the switch off so the next process's workers do nothing on
+			// their own while the test asks its producer.
+			e.mustExec(`DELETE FROM ap_deliveries`)
+			e.setFlag("federation", false)
+			b := e.again()
+			if err := b.fedStart(map[string]string{"FLOWA_ORIGIN": "https://here.example"}); err != nil {
+				t.Fatal(err)
+			}
+			if !b.a.fed.out.running.Load() {
+				t.Error("the workers did not start for the record")
+			}
+			b.a.fed.switches = func() (bool, bool) { return true, true }
+			if did, err := b.a.commentOut(context.Background()); !did || err != nil {
+				t.Errorf("the producer after the start: %v %v", did, err)
+			}
+			if _, ok := e.queued(want); !ok {
+				t.Errorf("%s was not made after the start", want)
+			}
+		})
+	}
+}
