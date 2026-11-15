@@ -187,7 +187,7 @@ try:
     check('the Federation tab: allowed servers only, no domain yet, and the deliveries refused counted',lambda: (lambda t: 'Allowed servers only' in t and 'No domain is allowed yet' in t and 'not signed' in t)(txt('#main') or ''),lambda: txt('#main')[:600])
     # The delivery queue (FWR 2): built and empty, since nothing in this version sends; its numbers come from the server.
     j=get_json(op,'admin/federation').get('deliveries') or {}
-    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Follows and their answers, Public posts, their deletions and profile changes' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
+    check('the Federation tab says what waits to be sent: nothing queued, nothing sent yet, as the server says',lambda: (lambda t: 'Sending to other servers' in t and 'Follows and their answers, Public posts, comments and likes, their edits and deletions, profile changes' in t and '0 queued, of at most 50,000' in t and '0 sent, 0 given up' in t)(txt('.fed-out') or '') and j.get('queued')==0 and j.get('queueMax')==50000,lambda: (txt('.fed-out'),j))
     if tab_to('#fed-domain-form [name=domain]','the domain field'):
         check('the field shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
         type_text('Social.Example')
