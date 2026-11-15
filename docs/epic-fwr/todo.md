@@ -330,12 +330,21 @@ route and test named below is new unless the design note says it exists.
   (a pending follow, an unfollow, a member who never opted in, a suspended one), `TestDBRemoteMentionOnlyCap`,
   `TestDBRemoteCreateDeleteRace`, `TestDBRemoteNotesTakenAway`, `TestDBMediaWriteFails`, `TestDBRemoteNotesEdges` (the
   public addresses with a remote post's id answer 404), `TestDBRemoteNotesInLocalMode`, and `TestDBMediaCacheBudget`
-  extended.
-  **Open:** a post given by id only is not fetched from its origin, Undo of a share is not acted on, the domain
+  extended. After the second review: a moderator's delete remembered a year apart from the cap, an old post's edit not
+  taken as new, posts dated by their own `published` clamped to `received_at`, removals compared under the post's lock,
+  a deleted account's shares removed, a share of 500 per host of the posts kept for a mention and the mark cleared at an
+  accepted follow, staff seeing pictures, the stored domain policy checked by a Create, evicted pictures asked again only
+  when due, a named member's right re-checked, `posts_remote_followed`, and `-purge-remote`'s warning (tests
+  `TestDBRemoteStaffDeleteHolds`, `TestDBRemoteRemoveLosesToNewer`, `TestDBRemoteGoneSharesAndStaffPictures`,
+  `TestDBRemoteMentionShare`, `TestDBRemoteSuspendedWhileStoring`, `TestDBRemoteReadsCostAndRights`,
+  `TestDBPurgeRemoteSwitchOn`).
+  **Open:** suspending a domain removes its posts in the admin's one request and statement (up to 50,000 posts and
+  their pictures' rows): kept so, since a suspension must take effect at once and is rare, but on a Pi with a full
+  store it may take seconds; a post given by id only is not fetched from its origin, Undo of a share is not acted on, the domain
   policy's `reject_media` and remote avatars wait for FMD; recorded Mastodon posts (the owner's trial, item 9) to hold
   the fixtures to; the box stays unchecked until those and the owner's review. For the owner (defaults built): whether
   a post naming a member from an account nobody follows should be kept (built: yes, read by that member alone), the
-  numbers (200 posts per account, 600 an hour per host, 50,000 in all and 5,000 of them kept for a mention, 30 days,
+  numbers (200 posts per account, 600 an hour per host, 50,000 in all and 5,000 of them kept for a mention with 500 per host, a moderator's delete remembered a year, 30 days,
   deletions remembered 7 days, 100 per account, 600 an hour per host and 20,000 in all, 200 MB and 4,000 pictures down
   to 160 MB and 3,200, 1,280 px and 200 KB a picture, 4 pictures a post, 2,000 waiting, an evicted picture asked for
   again at most once an hour, a minute's hold after a failed write), whether a remote account that deletes itself

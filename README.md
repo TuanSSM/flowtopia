@@ -470,7 +470,9 @@ which no member's name can be.
 does not know which accounts are remote and would list them as members (and, from later versions on, show
 their posts as local ones). While this version still runs, first turn **Federation** off under Admin, Features
 (deliveries are then refused with 503 and nothing more is stored: a post that names a member needs no follow, so
-one could arrive between the purge and the rollback otherwise), then:
+one could arrive between the purge and the rollback otherwise) and wait 5 seconds (the server reads the switch every
+2 seconds, and a delivery already in hand finishes or fails against the purge), then run the purge. It says so in
+its output when it finds the switch still on:
 
 ```sh
 docker exec nunchaku /nunchaku -purge-remote   # removes every remote account and what hangs off it, then says what went
@@ -868,7 +870,10 @@ content in, as built (FWR 5)"):
   here reported; housekeeping removes the rest every hour. An account its server says is suspended is not shown
   until that is lifted; one that deletes itself loses its posts and follows here at once; suspending a domain under
   Federation removes its accounts' posts, their pictures and their mentions and shares. A moderator's delete of such
-  a post is remembered 7 days, so an edit from its server does not bring it back.
+  a post is remembered a year (apart from the bound on deletions other servers send), and an edit of a post not kept
+  is taken as new only when the post was published within the last 7 days, so its server's edit does not bring it
+  back. A post that arrives late is dated by its own published time (never later than its arrival), but Home lists
+  posts in the order they arrived.
 - **The picture cache.** `-data/media` (`/data/media` in the container), the one new directory: one JPEG per
   picture, at most 1,280 px and 200 KB, made again from the pixels so nothing of the remote file is served as sent.
   At most 200 MB and 4,000 files; past either, the least recently shown go until 160 MB and 3,200 files are left,

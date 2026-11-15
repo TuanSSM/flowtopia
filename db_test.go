@@ -3997,6 +3997,8 @@ func TestDBQueryPlans(t *testing.T) {
 		`INSERT INTO ap_media (post_id, n, kind, url, state, file, bytes, used_at) SELECT p.id, 0, 'picture', 'https://m.example/' || p.id, CASE WHEN p.id % 4 = 0 THEN 'ok' WHEN p.id % 4 = 1 THEN 'link' ELSE 'failed' END,
 			CASE WHEN p.id % 4 = 0 THEN md5(p.id::text) || '.jpg' ELSE '' END, 50000, now() - p.id * interval '1 second' FROM posts p WHERE p.ap_id IS NOT NULL AND p.id % 4 <> 3`,
 		`INSERT INTO ap_media (post_id, n, kind, url, state) SELECT p.id, 1, 'picture', 'https://m.example/w/' || p.id, 'wanted' FROM posts p WHERE p.ap_id IS NOT NULL AND p.id % 10 = 0`,
+		// A fifth of them kept only for a mention, spread among the others: the cap in all must not read through them.
+		`UPDATE posts SET ap_mention_only = true WHERE ap_id IS NOT NULL AND id % 5 = 0`,
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT 5, 1000000 + g, 'accepted' FROM generate_series(1, 100) g ON CONFLICT DO NOTHING`,
 		`INSERT INTO notifications (user_id, actor_id, kind, post_id) SELECT 9, 1000001 + g % 2000, CASE WHEN g % 2 = 0 THEN 'mention' ELSE 'share' END, (SELECT min(id) FROM posts WHERE ap_id IS NOT NULL) + g FROM generate_series(1, 300) g`,
 		`INSERT INTO ap_deleted (ap_id, user_id, at) SELECT 'https://h1.example/d/' || g, 1000001 + g % 2000, now() - (g % 10) * interval '1 day' FROM generate_series(1, 2000) g`,
@@ -4035,8 +4037,11 @@ func TestDBQueryPlans(t *testing.T) {
 		{"remote: the cap per account", notePastCapSQL, []any{remoteFollowed, remotePostsPerAccount}, 200, ""},
 		{"remote: the picture worker's claim", mediaClaimSQL, []any{time.Now(), 60.0}, 100, ""},
 		{"remote: retention, a batch of 1,000 past their time", remoteKeepSQL, []any{time.Now().Add(48 * time.Hour), remoteBatch}, 15000, ""},
-		{"remote: the cap in all, a batch", remoteCapSQL, []any{15000, remoteBatch}, 3 * (15000 + remoteBatch + 5000), ""},
-		{"remote: the cap of posts kept for a mention, a batch", remoteMentionCapSQL, []any{remoteMentionOnlyMax, remoteBatch}, 200, ""},
+		// The cap in all reads posts_remote_followed (the posts not kept for a mention) up to its offset, and a batch.
+		{"remote: the cap in all, a batch", remoteCapSQL, []any{15000, remoteBatch}, 15000 + 3*remoteBatch, ""},
+		// Each host's share and the cap of posts kept for a mention read those 4,000 posts (each one's account by its key).
+		{"remote: each host's share of the posts kept for a mention", remoteMentionHostSQL, []any{remoteMentionPerHost, remoteBatch}, 8 * 4000, ""},
+		{"remote: the cap of posts kept for a mention, a batch", remoteMentionCapSQL, []any{remoteMentionOnlyMax, remoteBatch}, 3 * 4000, ""},
 		{"remote: the cap of remembered deletions", remoteDeletedCapSQL, []any{1500}, 6000, "ap_deleted"},
 		{"remote: remembering a deletion, under the account's cap", noteRememberSQL, []any{"https://h7.example/n/new", int64(1000008), time.Now(), remoteDeletedPerAccount}, 200, ""},
 		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, ""},

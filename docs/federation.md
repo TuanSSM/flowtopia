@@ -1837,8 +1837,9 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
 - **Announce** of a member's Public post (of a member who shares their profile): a `share` notification to its author,
   once per post and account, never across a block; of anything else, dropped. The bell's notifications from other
   servers stay bounded by FWR 3's trim (50 per server, 500 in all, per member), which now reads shares and mentions too.
-- **Home and everything else.** Home (`homeSQL`) is unchanged: a remote account followed is one more account, read a
-  page at a time through `posts_user`. `feedSQL` (the Community timeline, a member's page and the bookmarks) reads
+- **Home and everything else.** Home (`homeSQL`) reads a remote account followed as one more account, a page at a
+  time through `posts_user`, and since the review of #115 leaves out an account whose server says it is suspended or
+  gone (`actorShown`) and, outside a mode that federates, every remote post (`$5`); it orders by arrival (the row's id). `feedSQL` (the Community timeline, a member's page and the bookmarks) reads
   local posts only through `posts_local`; a post opened alone (`postOneSQL`) is a remote one only for a follower of its
   author, a member it names (`ap_to`), or staff; `postShown` (likes, comments, bookmarks) refuses remote posts until
   FWR 6; a report of a remote post needs the same right to read it; `publicPost` (the public pages, the outbox, the
@@ -1902,6 +1903,19 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
   - Links: the original is on the author's host (`remoteLink`); a reply's `inReplyTo` and an attachment's address are
     https addresses on any host, by nature (a reply may answer anyone; Mastodon serves files from a host of its own),
     and the page names the host beside each. A `published` later than the time received is shown as that time.
+  - **After the second review.** A moderator's delete is remembered a year (`ap_deleted.by_staff`), outside the 7
+    days and the 20,000 of the others, and goes with its account or by `-purge-remote`; an edit of a post never kept is
+    taken as new only when the post was published within 7 days; a post is dated by its own `published`, never later
+    than the inbox took it (`received_at`), which retention counts from, while Home lists by arrival. An edit that
+    would remove a post compares the version kept inside the transaction that holds the post's lock. A self-deleted
+    account's shares go with it. Posts kept for a mention have a share per host of 500 (a tenth of the 5,000), trimmed
+    first, and stop counting as kept for a mention when a follow of their account is accepted. Staff see the pictures of
+    the posts they may open, a suspended account's too. A Create checks the stored domain policy in the statement that
+    keeps it, so a domain suspended while a worker holds the post keeps nothing. A page asks again for an evicted
+    picture only when one is due, with no statement otherwise, and wakes the worker only when one changed. A named
+    member reads the post only while they share their profile (or own the instance) and are not suspended. The cap in
+    all reads `posts_remote_followed`. `-purge-remote` says when the Federation switch is still on: turn it off, wait 5
+    seconds, and run it.
   - **Local mode on a database that federated.** The remote accounts stay and the follow lists show them as before
     (FWR 3), but their posts are not shown (`homeSQL`'s `$5`, `postOneSQL`'s `$4`), the picture route is not there and
     housekeeping does not touch them; they show again when the mode federates again, and `-purge-remote` removes
@@ -1914,6 +1928,12 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
   `TestDBRemoteNotesBounds`, `TestMediaCacheBudget`, `TestDBMediaCacheBudget`, `TestDBRemoteNotesOneConnection`,
   `TestDBQueryPlans`, `TestDBPurgeRemote`, `TestDBTwoFlowaNotes` (one Flowa's post through the real fan-out reaches the
   other's follower's Home, and its Delete removes it), and the `federated` browser suite (`federated-remote-post`).
+  After the first review of #115: `TestDBRemoteActorSuspendedOrGone`, `TestDBRemoteDomainSuspended`,
+  `TestDBRemoteDeletedMemory`, `TestDBMediaWorkerAtStart`, `TestDBRemoteNotesWhoReads`, `TestDBRemoteMentionOnlyCap`,
+  `TestDBRemoteCreateDeleteRace`, `TestDBRemoteNotesTakenAway`, `TestDBMediaWriteFails`, `TestDBRemoteNotesEdges`,
+  `TestDBRemoteNotesInLocalMode`. After the second: `TestDBRemoteStaffDeleteHolds`, `TestDBRemoteRemoveLosesToNewer`,
+  `TestDBRemoteGoneSharesAndStaffPictures`, `TestDBRemoteMentionShare`, `TestDBRemoteSuspendedWhileStoring`,
+  `TestDBRemoteReadsCostAndRights`, `TestDBPurgeRemoteSwitchOn`.
 
 ### 6.7 Addressing
 

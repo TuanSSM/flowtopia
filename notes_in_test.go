@@ -149,7 +149,7 @@ func TestDBRemoteNotes(t *testing.T) {
 	}
 
 	// The same post again under another activity id: one row.
-	if e.send(e.bo(), boID, "Create", noteObj(1, "<p>Hello again</p>", nil)); kept() != 1 || e.outcome() != "done: a repeat, or deleted before it came" {
+	if e.send(e.bo(), boID, "Create", noteObj(1, "<p>Hello again</p>", nil)); kept() != 1 || e.outcome() != "done: a repeat, deleted before it came, or of a domain suspended meanwhile" {
 		t.Errorf("a repeat: %d kept, %s", kept(), e.outcome())
 	}
 
@@ -235,8 +235,8 @@ func TestDBRemoteNotes(t *testing.T) {
 	if e.last() != inDropped {
 		t.Errorf("an Update of bo's post from another origin: %v", e.last())
 	}
-	// An Update of a post never kept is taken as its Create would be.
-	if e.send(e.bo(), boID, "Update", noteObj(7, "<p>first seen edited</p>", map[string]any{"updated": t0.Format(time.RFC3339)})); e.count(`SELECT count(*) FROM posts WHERE ap_id = $1`, boID+"/statuses/7") != 1 {
+	// An Update of a recent post never kept is taken as its Create would be.
+	if e.send(e.bo(), boID, "Update", noteObj(7, "<p>first seen edited</p>", map[string]any{"updated": t0.Format(time.RFC3339), "published": e.clock.now().Add(-time.Hour).Format(time.RFC3339)})); e.count(`SELECT count(*) FROM posts WHERE ap_id = $1`, boID+"/statuses/7") != 1 {
 		t.Errorf("an Update of a post never kept, of a followed account: %s", e.outcome())
 	}
 

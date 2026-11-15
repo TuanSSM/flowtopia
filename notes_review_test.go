@@ -255,7 +255,11 @@ func TestDBRemoteMentionOnlyCap(t *testing.T) {
 	}
 	var danUser int64
 	e.a.db.QueryRow(`SELECT user_id FROM ap_actors WHERE ap_id = $1`, danID).Scan(&danUser)
-	e.mustExec(`INSERT INTO posts (user_id, body, ap_id, ap_mention_only) SELECT $1, 'm', $2 || '/m/' || g, true FROM generate_series(1, $3) g`, danUser, danID, remoteMentionOnlyMax+10)
+	// 11 hosts, each within its share of remoteMentionPerHost, pass the cap in all.
+	e.mustExec(`INSERT INTO users (username, pw_hash, domain) SELECT 'm@h' || g || '.example', '!', 'h' || g || '.example' FROM generate_series(1, 11) g`)
+	e.mustExec(`INSERT INTO posts (user_id, body, ap_id, ap_mention_only) SELECT u.id, 'm', 'https://' || u.domain || '/m/' || g, true
+		FROM users u CROSS JOIN generate_series(1, $1) g WHERE u.username LIKE 'm@h%'`, remoteMentionPerHost)
+	_ = danUser
 	if _, err := e.a.remoteHousekeep(); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +296,7 @@ func TestDBRemoteCreateDeleteRace(t *testing.T) {
 	}
 	defer releaseOnce.Do(func() { close(release) })
 	created := make(chan string, 1)
-	go func() { out, _ := f.noteIn(ctx, s, act); created <- out }()
+	go func() { out, _ := f.noteIn(ctx, s, act, time.Now()); created <- out }()
 	<-held
 	deleted := make(chan string, 1)
 	go func() { out, _ := f.noteDeleted(ctx, s, boID+"/statuses/1"); deleted <- out }()
@@ -304,7 +308,9 @@ func TestDBRemoteCreateDeleteRace(t *testing.T) {
 			return true
 		default:
 		}
-		return e.count(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`) > 0
+		// Only this database's wait on a post's lock (noteLock's class), not another test database's migration or lock.
+		return e.count(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = 7130655 AND objsubid = 2
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`) > 0
 	})
 	releaseOnce.Do(func() { close(release) })
 	<-created
