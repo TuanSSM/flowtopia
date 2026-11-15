@@ -608,6 +608,41 @@ func TestDBRemoteHiddenInLocalMode(t *testing.T) {
 	}
 }
 
+// An answer under a post of another server that could not go there (point 4 of the second review): it answers a member
+// here who no longer shares their profile, or a hidden comment. It is refused with the reason, never kept here unseen by
+// that post's people.
+func TestDBRemoteAnswerThatWouldStay(t *testing.T) {
+	e := newTalkEnv(t)
+	e.send(e.bo(), boID, "Create", noteObj(70, "bo's post", nil))
+	p := e.remotePostID(boID + "/statuses/70")
+	comment := func(parent int64) map[string]any { return map[string]any{"body": "an answer", "parentId": parent} }
+	bobID, bob := e.member("bob", false)
+	adminID, admin := e.member("boss", false)
+	e.mustExec(`UPDATE users SET role = 'admin' WHERE id = $1`, adminID)
+	e.mustExec(`INSERT INTO follows (follower_id, followee_id, state) VALUES ($1, $3, 'accepted'), ($2, $3, 'accepted')`, bobID, adminID, e.boUser)
+	bobCmt := num(e.must(200, bob, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "bob here"})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	e.mustExec(`UPDATE users SET federates = false WHERE id = $1`, bobID)
+	if out := e.must(403, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), comment(bobCmt)); out["error"] != talkStaysHere {
+		t.Errorf("an answer to a member who stopped sharing: %v", out)
+	}
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, bobID)
+	e.must(200, admin, "POST", "/api/mod/actions", map[string]any{"action": "hide", "kind": "comment", "id": bobCmt, "reason": "test"})
+	e.ne.produce()
+	if out := e.must(403, admin, "POST", fmt.Sprintf("/api/posts/%d/comments", p), comment(bobCmt)); out["error"] != talkStaysHere {
+		t.Errorf("an answer to a hidden comment: %v", out)
+	}
+	if n := e.count(`SELECT count(*) FROM comments WHERE post_id = $1 AND body LIKE '%an answer'`, p); n != 0 {
+		t.Errorf("%d refused answers kept", n)
+	}
+	// An answer that can go still goes.
+	e.must(200, admin, "POST", "/api/mod/actions", map[string]any{"action": "restore", "kind": "comment", "id": bobCmt, "reason": "test"})
+	e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), comment(bobCmt))
+	if n := e.count(`SELECT count(*) FROM ap_comment_out o JOIN comments c ON c.id = o.comment_id WHERE c.post_id = $1 AND c.body LIKE '%an answer'`, p); n != 1 {
+		t.Errorf("the answer that can go has %d records", n)
+	}
+}
+
 // The forward's bounds (finding S2): never a body that names anyone in bto or bcc, never one larger than forwardBodyMax,
 // none while an activity waits for its fan-out (the members' own deliveries first), and an hourly bound per member and
 // in all beside the one per sending server.

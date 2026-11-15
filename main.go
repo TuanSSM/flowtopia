@@ -22433,6 +22433,9 @@ const (
 	talkUnreachable = "That post's server cannot be reached from here."
 	talkFull        = "Too much waits to be sent to other servers just now. Try again in a few minutes."
 	talkSwitches    = "The server could not read its settings just now. Try again in a minute."
+	// talkStaysHere refuses an answer under a post of another server that could not go there: it answers a comment
+	// that stays on this server (FWR 6, after its second review).
+	talkStaysHere = "This answers a comment that stays on this server (it is hidden, or its author does not share their profile beyond it), and an answer under a post from another server goes to that server, so it cannot be posted here."
 )
 
 // localCommentOf reads the id of a comment of this server (origin/users/{name}/comments/{id}, the id its Note goes out
@@ -28083,9 +28086,9 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	// In a mode that federates (FWR 6): a comment on a post of another server needs the member to share their profile
 	// and the switches on (talkGate), since it goes there; one on a Public post here goes out when they share.
-	goesOut := false
+	goesOut, remote := false, false
 	if a.fed != nil {
-		var remote, public bool
+		var public bool
 		if err := a.db.QueryRow(`SELECT p.ap_id IS NOT NULL, `+publicPost+` AND `+publicMember+` FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1`,
 			id, a.mode == modeSingle).Scan(&remote, &public); err != nil {
 			a.serverError(w, err)
@@ -28154,6 +28157,11 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 			} else if err := tx.QueryRow(`SELECT COALESCE(bool_and(u.domain <> '' OR `+publicMember+`), true) FROM users u WHERE u.id = ANY($1)`,
 				pq.Array([]int64{answered, rootOwner}), a.mode == modeSingle).Scan(&goesOut); err != nil {
 				a.serverError(w, err)
+				return
+			}
+			// Under a post of another server it would stay here unseen by that post's people: refused, with why.
+			if remote && !goesOut {
+				fail(w, http.StatusForbidden, talkStaysHere)
 				return
 			}
 		}

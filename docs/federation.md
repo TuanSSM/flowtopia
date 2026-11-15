@@ -1709,6 +1709,10 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     forwarded for a bound (`forwardsSkipped`), each when it is not zero. All three are counted in memory: a restart
     counts from nothing, and the tab says "since the last start". A forward asks the queue first, so one the queue
     refuses takes nothing from the hourly allowances.
+  - **An answer that could not go is refused, not kept unseen** (`TestDBRemoteAnswerThatWouldStay`). Under a Public
+    post here, an answer to a hidden comment or to a member who does not share stays here, which is right: the post is
+    here too. Under a post of another server it would stay here where none of that post's people see it, so it is
+    refused with the reason (`talkStaysHere`, 403), as `talkGate` refuses a member who does not share.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
