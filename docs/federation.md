@@ -2016,9 +2016,12 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     evaluate once per row of the outer side, depending on what ANALYZE's sample saw: 13,228 rows instead of 5,603 at 10
     inboxes once in 300 ANALYZEs here, and, with the Delete's rows written after ANALYZE as in production, 208,373 rows
     at 100 inboxes and 17,383,073 at 1,000 (the reviewer saw 8.6 million and 682 ms at 100), under the queue's lock. It
-    now groups the rows given up and the rows queued per inbox once each and joins them once (`gi`, MATERIALIZED): 4,038
-    / 43,573 / 435,073 rows at 10 / 100 / 1,000 inboxes, about 25 a pair of activity and inbox, and the same 4,423 rows
-    after each of 300 ANALYZEs. `TestDBQueryPlans` holds the two production shapes at 30 rows a pair, which the first form
+    now groups the rows given up and the rows queued per inbox once each and joins them once (`gi`, MATERIALIZED), and
+    reaches the Delete's own rows from each of those inboxes through `(outbox_id, inbox)` (`x`, and `hl`, `h` for the
+    inboxes where one of the line is in flight) rather than testing each row against the list, which a full run here
+    once planned as 1,000 times 1,000: 4,056 / 41,973 / 419,073 rows at 10 / 100 / 1,000 inboxes, about 25 a pair of
+    activity and inbox, the same 4,443 rows after each of 300 ANALYZEs at 10 and the same 419,073 after each of 40 at
+    1,000. `TestDBQueryPlans` holds the two production shapes at 30 rows a pair, which the first form
     fails; the semantics are those of before (the takeback, follow, like and comment-order tests pass unchanged).
     `heldBackSQL` and `afterHeldSQL` ask about one inbox and have no such shape.
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
