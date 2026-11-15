@@ -7,7 +7,8 @@ Commits title of the category's type. An item is checked only when its DoD holds
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
 **Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox (item 1), the delivery queue (item 2, its fan-out on the Pi left to the owner) and follows across servers (item 3, the recorded Mastodon fixtures left to the owner's trial) are built, each with the open points under it; Public posts go out as notes (item 4, done); posts from followed accounts come into Home (item 5, merged as #115, the open points under it); replies and likes cross servers (item 6, merged as #116, the open points under it); account deletion crosses servers
-both ways, with "Remove me from other servers" (item 7, built, the open points under it). 1 of 9 items done. Federated mode is marked experimental in
+both ways, with "Remove me from other servers" (item 7, built, the open points under it); two instances federate in CI
+(item 8, built: the `federation` suite, green locally, the open points under it). 1 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -204,9 +205,10 @@ route and test named below is new unless the design note says it exists.
   `TestDBFollowsSwitchUnread`, `TestDBFollowsAnswerAndPort`, the subdomain case of `TestDBFollowsHeld`, and the golden
   `actor-ana-follows-off.json`.
   **Open:** the DoD's recorded Mastodon Follow and Accept fixtures (the fixtures are written from documentation, as their
-  README says, since no session can reach a Mastodon server: the owner's trial, item 9, records them); `TestTwoInstances`
-  is item 8's container suite (here `TestDBTwoFlowaFollow` covers the same steps in Go); the box stays unchecked until
-  both hold and the owner's review merges it. For the owner (defaults built): whether approval by hand should hold back
+  README says, since no session can reach a Mastodon server: the owner's trial, item 9, records them); the box stays
+  unchecked until they and the owner's review hold. `TestTwoInstances` of the DoD is item 8's `federation` suite
+  (`test/federation.sh`): follow, accept (by hand and at once) and unfollow between two real processes over HTTPS, beside
+  `TestDBTwoFlowaFollow` in Go. For the owner (defaults built): whether approval by hand should hold back
   local followers too (the design is silent; built: remote only), whether a public follower count should count every local follower
   (F10, unchanged), and the caps' numbers.
 - [x] **Public posts go out as notes.** Create(Note) for Public posts of members who opted in, the
@@ -425,8 +427,10 @@ route and test named below is new unless the design note says it exists.
   post vanishes silently (`TestDBLeadingNames`); a forward looks at its allowances before it asks the queue
   (`TestDBForwardBounds`); rows of the queue are locked in id order (`TestDBDeliveryLockOrder`); local mode's
   statements are pinned as text (`TestPlainStatementsPinned`); 8.7 says how to roll back past this item.
-  **Open:** `TestTwoInstances` is item 8's container suite (here `TestDBTwoFlowaReplies` covers the same steps in Go);
-  a comment's id is not served (the Note is embedded in every activity); an Update reaches an inbox where the
+  `TestTwoInstances` of the DoD is item 8's `federation` suite (`test/federation.sh`): reply, edit, like, unlike, like
+  again and deletion between two real processes over HTTPS, and a comment and a like the other way, beside
+  `TestDBTwoFlowaReplies` in Go.
+  **Open:** a comment's id is not served (the Note is embedded in every activity); an Update reaches an inbox where the
   Create failed for good alone (it never overtakes a Create there, and at other inboxes it goes at once); a member who
   stops sharing after a comment that names them went out gets nothing taken back; a member's like of a remote reply
   stays here; a remote reply to a member's
@@ -526,6 +530,55 @@ route and test named below is new unless the design note says it exists.
   delete the account; `docker stats` under 300 MB per app container. DoD: the `federation` suite in
   `ALL` in `test/ci-plan.sh` and its self-test, green in `process_pr`; `test/release.sh` fails when
   `compose.yml` names `FLOWA_FEDERATION_ALLOW_PRIVATE`.
+  Built (federation.md 5.1 and 13, "As built (FWR 8)", say what and why): `test/federation.sh`, the `federation` suite.
+  The image is built once by `build-image.sh --load`, as a release builds it; on a Docker network of its own each of
+  `one.flowa.test` and `two.flowa.test` has a Postgres from the image `compose.yml` pins, the app as `compose.yml` runs it
+  (read-only, no capabilities, 384 MB) in federated mode with its own origin and a key secret drawn for the run (in a file
+  of the run's temporary folder, never on a command line or in a log), and `test/fedproxy`, a TLS proxy of the standard
+  library run from the same image, answering for the name on port 443 with a certificate from a certificate authority made
+  for the run. The apps trust that authority through `SSL_CERT_FILE`, which Go reads on Linux; no setting for a test
+  authority was added. **One change to `main.go`:** `FLOWA_FEDERATION_ALLOW_PRIVATE`, which nothing read before: off
+  unless `on`, read only in a mode that federates, refused unless the origin is under `.test`, logged at start ("FOR THE
+  TWO-INSTANCE TEST ONLY"), and narrower than 5.1 first wrote: private addresses only (`privateDialGuard`), still https,
+  port 443 and a verified certificate, never loopback or link-local; `TestAllowPrivateSetting`, `TestPrivateDialGuard`,
+  `TestDBLocalModeUnchanged` (a local start with it set ignores it). Driven through the APIs only, as members and admins,
+  over HTTPS through the proxies, each step checked on the other instance: 63 checks, among them a lookup by handle,
+  follows approved by hand and at once, a Public post with a trick chip and a picture with alt text in Home with the
+  picture served from the receiving instance's cache, like, unlike and like again, a reply with its notification, edit and
+  deletion, a comment and a like the other way, an unsigned delivery and one with a forged signature refused 401 over the
+  same HTTPS, every other delivery verified (Federation tab) at the shared inbox and members' inboxes (the proxies' logs),
+  both queues drained, one instance stopped while the other restarts with a delivery waiting and retried on its schedule
+  (about 70 s) with nothing lost, unfollow, block, "Remove me from other servers", an admin's deletion, memory under 300 MB
+  per app (`docker stats`), and no key secret in what is kept. No fixed waits: each check polls with a deadline and says how
+  long it took; `test/sleeps.sh` reads this script too. Unique names (`flowa-fed-<random>`), free ports on `127.0.0.1`
+  only, everything removed on exit, failure and Ctrl-C (tried). CI: `federation` in `ALL` in `test/ci-plan.sh` (run by
+  `main.go` and every Go file, the `Dockerfile`, `build-image.sh`, `compose.yml`, the script and its proxy, the
+  workflow) and its self-test; a matrix entry of the integration job with Node for `build-image.sh`, its logs (both apps,
+  both proxies, both queues) uploaded, the memory in the PR comment, under the `process_pr_result` gate as every suite is.
+  `test/release.sh` counts a check that `compose.yml` names none of `FLOWA_FEDERATION_ALLOW_PRIVATE`, `FLOWA_PREVIEW_BASE`,
+  `SSL_CERT_FILE` and `SSL_CERT_DIR`, and `test/release.sh --self-test` (lint) proves it fails on each. Measured here (three
+  runs in a row, 2.1 GHz Xeon): 63 passed, 0 failed, 0 skipped each, in 135, 141 and 148 s (the image already in the
+  build cache; about 60 s of each is the edit's minute and about 60 s the retry's), the apps at 36.7 and 29.0, 37.5 and
+  29.0, and 31.6 and 33.9 MB (a fourth run with `--logs` after the last commit: 63 passed in 141 s, 39.4 and 35.4 MB). Ten deliberate faults, one at a time, each failed the suite at the check meant for it: the
+  signature left unchecked in a scratch build (the forged delivery answered 202, and the Federation tab's refusals), the
+  picture route answering 404 (two serving the picture), a comment's Delete not sent (the reply still under the post),
+  the queue never claiming a row (the requests never reaching ana), an admin's deletion sending no Delete(Person) (cyd
+  still following her, her posts still in Home), a wrong origin (the app answering 421 to its name), two trusting a
+  certificate authority that did not sign one's certificate (the lookup by handle), two never coming back (two's return,
+  the rest skipped as one count), `FLOWA_FEDERATION_ALLOW_PRIVATE` left off on one (its start line, then the follow
+  requests), and `compose.yml` naming the setting (the `test_only` check of `test/release.sh` on a copy with that line).
+  A step everything after needs (the lookup, a follow each way, the post's arrival, two's return) stops the suite with one
+  SKIP that says so, rather than letting every later check wait out its deadline.
+  **Open:** green in `process_pr`, which needs the pull request (the box stays unchecked until then and the owner's review);
+  the Pi's memory figures (the suite is too heavy for the Pi, and CI's runner is not a Pi); no browser looks at the two
+  instances (the `federated` browser suite still sees no remote profile drawn from a live server); a forwarded reply, a
+  report crossing servers (FMD) and authorized fetch are not exercised; the retry is waited for on its real schedule (no
+  setting may shorten it), which is most of the suite's time.
+  For the owner (defaults built): whether `FLOWA_FEDERATION_ALLOW_PRIVATE` should stay as narrow as built (private
+  addresses only, origin under `.test`) rather than the `http://` origin 5.1 first allowed; whether the test-only list in
+  `test/release.sh` (`SSL_CERT_FILE` and `SSL_CERT_DIR` beside the two settings) is right; whether a Go command under `test/`
+  for the proxy is acceptable beside the one-file rule (built: yes, a second binary for tests only), rather than a pinned
+  proxy image; and the 300 MB bound read from `docker stats`, which leaves out page cache the kernel can take back.
 - [ ] **The owner's trial against a real Mastodon server.** Not a pull request: the owner's item,
   because no session that builds Flowa can reach a fediverse server. On the stage instance with
   `FLOWA_MODE=federated` and the Mastodon server's domain on the allowlist: (1) find the stage

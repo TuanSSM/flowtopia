@@ -568,7 +568,19 @@ one written form (actor ids are compared as text). It can change freely until it
 is frozen from then on (4.3, as built in FRD 4; the instance actor's id follows it until then). A test-only setting,
 `FLOWA_FEDERATION_ALLOW_PRIVATE` (**new**), lets an `http://` origin and private addresses through
 for the two-instance test, as `FLOWA_PREVIEW_BASE` does for the preview stub; the server logs it at
-start, and `test/release.sh` fails if `compose.yml` names it.
+start, and `test/release.sh` fails if `compose.yml` names it. As built (FWR 8), narrower than written here: it
+lets private addresses through and nothing else. The origin stays `https://`, requests stay on port 443 with the
+certificate verified, and every rule of the URL (a DNS name, the domain policy, never this instance's own name)
+stays. `on` is refused at start unless the origin is a name under `.test` (RFC 6761 keeps it for testing, so no
+public authority signs a certificate for it and no server others reach can have it); unset, empty or `off` is off,
+anything else stops the start; a mode that does not federate never reads it. Under it the dial guard is
+`privateDialGuard`: RFC 1918 and unique local IPv6 addresses beside public ones, still never loopback, link-local
+(the metadata address), the reserved ranges or a port other than 443. The start logs "FOR THE TWO-INSTANCE TEST
+ONLY". The test's apps trust its own certificate authority through `SSL_CERT_FILE`, which Go reads on Linux before
+the roots compiled into the binary, so no setting for a test authority was needed. `test/release.sh` fails when
+`compose.yml` names it, `SSL_CERT_FILE`, `SSL_CERT_DIR` or `FLOWA_PREVIEW_BASE` (its `TEST_ONLY`, with a
+`--self-test` in the lint job). Tests: `TestAllowPrivateSetting`, `TestPrivateDialGuard`, `TestDBLocalModeUnchanged`
+(a local start with it set ignores it).
 
 ### 5.2 Ids and URLs
 
@@ -1465,8 +1477,8 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   answered). Recorded Mastodon fixtures: the ones in
   `testdata/federation/follows` are written from documentation (its README); recorded ones wait for the owner's trial.
 - Tests: `TestDBFollowsAcross`, `TestDBTwoFlowaFollow` (two instances over the real fetcher, signer, inbox and delivery
-  queue: follow, accept and unfollow both ways, and approval by hand; FWR 8's container suite is the DoD's
-  `TestTwoInstances`), `TestDBLockedOnlyFederating`, `TestDBFollowsOneConnection`, `TestDBQueryPlans` (a Follow in at
+  queue: follow, accept and unfollow both ways, and approval by hand; the DoD's `TestTwoInstances` is FWR 8's
+  `federation` suite, `test/federation.sh`, which takes the same steps between two real processes, section 13), `TestDBLockedOnlyFederating`, `TestDBFollowsOneConnection`, `TestDBQueryPlans` (a Follow in at
   845 and 258 rows read, a member's requests at 1,400), `TestDBPurgeRemote` and `TestDBInboxHandlers` updated; the
   `federated` browser suite (the switch, the remote profile, the button's states, a request with Approve and Decline).
 
@@ -1634,7 +1646,8 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   account only with a newer `updated`, a forged author, what is not answered, blocks, the switches, the caps, staff,
   the post's author, deletions with placeholders, local mode), `TestDBRemoteLikes`, `TestDBCommentsOut`,
   `TestDBTalkToRemotePosts`, `TestDBTwoFlowaReplies` (two instances over the real fetcher, signer, inbox and queue:
-  reply, edit, like, unlike and deletion; FWR 8's container suite is the DoD's `TestTwoInstances`),
+  reply, edit, like, unlike and deletion; the DoD's `TestTwoInstances` is FWR 8's `federation` suite,
+  `test/federation.sh`, which takes the same steps between two real processes, section 13),
   `TestDBRepliesOneConnection`, `TestDBRemoteTalkNotesBounded`, `TestDBRemoteTalkFollowsItem5`, `TestDBQueryPlans` (a post holding 3,000 remote
   replies and 2,000 remote likes), `TestDBPurgeRemote`, `TestDBInboxHandlers` and `TestDBRemoteNotes` updated; the
   `federated` browser suite (`federated-remote-reply`).
@@ -4241,7 +4254,7 @@ the budget, and the first measured value is written into the pull request that a
 | Budget | Value | Held by |
 | --- | --- | --- |
 | Extra memory with federation on, at peak | 32 MB of Go heap with 50,000 queued rows, 4 workers sending and the inbox at its concurrency | `TestFederationMemory` (**new**): `runtime.ReadMemStats` after the load, `HeapInuse` growth under the budget |
-| Container memory | `mem_limit: 384m` unchanged | the `federation` CI suite reads `docker stats` after its scenario and fails above 300 MB |
+| Container memory | `mem_limit: 384m` unchanged | the `federation` CI suite reads `docker stats` after its scenario and fails above 300 MB (as built in FWR 8: 29 to 40 MB per app on a 2.1 GHz Xeon; the Pi not measured) |
 | Inbox request, key cached | under 2 ms CPU on the runner, under 10 ms on the Pi; at most 400 allocations | `BenchmarkInboxVerify` (`-benchmem`; about 35 µs and 56 allocations on the runner, the signature check alone) |
 | Inbox request, key not cached | under 5 s wall, bounded by the fetch timeout | `TestInboxRefusals` (**new**) with a slow stub |
 | Signing one delivery | under 15 ms on the Pi | `BenchmarkSignDelivery` (about 0.8 ms on the runner; the Pi not measured yet) |
@@ -4301,6 +4314,51 @@ Interoperability is shown in four ways, in rising order of trust, and the last i
    that does not resolve), a visitor, another page's write and a GET; and in the browser, the card, its
    keyboard path, a member found and an address refused, each said to a screen reader, at desktop and 420 px.
    A remote profile on the page is not seen by any browser check until FWR 8's two instances.
+   As built (FWR 8): `TestTwoInstances` is not a Go test. The Go tests that put two Flowas side by side in one
+   process (`TestDBTwoFlowaActors`, `TestDBTwoFlowaInbox`, `TestDBTwoFlowaDelivery`, `TestDBTwoFlowaFollow`,
+   `TestDBTwoFlowaNotes`, `TestDBTwoFlowaReplies`) already cover those steps on the test's clocks through the real
+   fetcher, signer, inbox and queue, reaching each other through `dialOverride`. What only two real processes can
+   show is the `federation` suite, `test/federation.sh`, in `ALL` in `test/ci-plan.sh` and its self-test, which is
+   what the DoD's `TestTwoInstances` names:
+   - **Set up:** the image built once by `build-image.sh --load`, as a release builds it; on a Docker network of its
+     own, for `one.flowa.test` and `two.flowa.test` each: a Postgres from the image `compose.yml` pins (on tmpfs, left
+     running when the app restarts), the app as `compose.yml` runs it (read-only, no capabilities, 384 MB, user 1000,
+     a volume for `-data`) in federated mode with its own origin, a key secret drawn for the run and kept in a file of
+     the run's temporary folder, `FLOWA_FEDERATION_ALLOW_PRIVATE=on`, `FLOWA_TRUSTED_PROXIES` set to the network's
+     range and `SSL_CERT_FILE` at the run's authority; and `test/fedproxy`, a TLS proxy of 60 lines of the standard
+     library, run from the same image with its own binary mounted, answering for the name on the network (an alias)
+     on port 443 with a certificate the run's authority signed, passing requests to the app with the path and Host
+     unchanged and `X-Forwarded-For` and `X-Forwarded-Proto` added, and logging one line per request. Each proxy is
+     also published on a free port of `127.0.0.1`, which is where the test, as members and admins, reaches each
+     origin over HTTPS (`curl --resolve`, the run's authority). No TLS in the app, no proxy in `compose.yml`.
+   - **What it proves**, each step checked on the other instance through the API its page uses: the switches and the
+     allowlist set by each admin; a lookup by handle (WebFinger, the actor and the outbox, signed, over HTTPS); two
+     follows requested of a member who approves by hand, the requests listed there, approved, and the follows seen
+     as accepted; a follow back accepted at once; an unsigned delivery and one signed under a member's real key id
+     with bytes that are no signature, both refused 401 over the same HTTPS (only a verifier that checks the signature
+     itself refuses the second); a Public post with a trick chip (its text fallback and hashtag) and
+     a picture with alt text in the follower's Home, the picture copied into the receiving instance's cache and
+     served from there as a JPEG, in no Community timeline; a like, an unlike and a like again counted; a reply under
+     the post with its notification, its edit arriving marked edited (at most one Update a minute, 6.4), its deletion;
+     a post, a comment and a like the other way; both queues drained to 0 on `/healthz`; on the Federation tab every
+     other delivery in verified with none refused and none failed, out and in; deliveries at the shared inbox and at
+     members' own inboxes answered 202 (the proxies' logs); one instance stopped, a post waiting in the other's queue
+     with its host failing and its retry time recorded, that instance restarted with the row still there, the first
+     one started again and the post arriving on the retry schedule (1 minute, give or take 20%, so about 70 s: the
+     suite waits for it rather than shortening it, since no setting may); an unfollow; a block ending the follow the
+     other way and hiding the posts; "Remove me from other servers" seen as a gone account with its like taken away;
+     an admin's deletion seen as a gone account with its follow and posts removed; both queues empty at the end; each
+     app under 300 MB (section 12); and neither key secret in the logs and queue state it keeps.
+   - **Waiting:** no fixed wait; each check polls what it needs every quarter second with a deadline and prints how
+     long it took (`test/sleeps.sh` now reads this script too). A step everything after needs (the lookup, a follow each
+     way, the post's arrival, the stopped instance's return) stops the suite with one SKIP saying so when it fails. It prints `PASS`, `FAIL` and `SKIP` with `TIME` lines
+     like the release and restore suites, so the summary and the slowest table pick it up.
+   - **In CI:** a matrix entry of the integration job like `release` and `restore`, 15 minutes at most, about 2.5
+     minutes measured here; its logs (both apps, both proxies, both queues' rows, hosts and inbox counts) are uploaded
+     with the job, and the comment shows each app's memory. Names are `flowa-fed-<random>`, so it runs beside
+     anything, and everything is removed on exit, on a failure and on Ctrl-C.
+   - **What `docker stats` measures:** the cgroup's memory without the page cache it can give back (inactive files):
+     the process's resident memory and the files it is actively using; 29 to 40 MB per app after the run here.
    As built (FRD 7), the first step of it in Go: `TestDBTwoFlowaActors` starts
    two federated apps on their own databases; one fetches the actor of a member of the other, signed, through
    the real fetcher, over TLS to the other's real routes, which check the signature with `verifyRequest`
