@@ -19426,17 +19426,18 @@ func (f *federation) followAnswered(ctx context.Context, s *remoteActor, o idOrO
 		where, key = `f.ap_id = $1 AND f.ap_id <> ''`, in.ID
 	}
 	if accept {
-		n, err := f.fedExec(ctx, `UPDATE follows f SET state = 'accepted' WHERE `+where+` AND f.followee_id = $2 AND f.state = 'pending'`, key, s.UserID)
+		// The account is followed now: its posts kept for a mention are a follow's (FWR 5), so the cap of posts kept for
+		// a mention no longer trims what shows in that member's Home. One statement with the accept: were the mark cleared
+		// by a second one that failed, the retry would find no follow waiting and the mark would stay for good.
+		var n int64
+		err := f.fedRow(ctx, []any{&n}, `WITH a AS (UPDATE follows f SET state = 'accepted' WHERE `+where+` AND f.followee_id = $2 AND f.state = 'pending' RETURNING 1),
+			m AS (UPDATE posts SET ap_mention_only = false WHERE user_id = $2 AND ap_mention_only AND EXISTS (SELECT 1 FROM a) RETURNING 1)
+			SELECT (SELECT count(*) FROM a) + 0 * (SELECT count(*) FROM m)`, key, s.UserID)
 		switch {
 		case err != nil:
 			return "", &errRetry{"the database"}
 		case n == 0:
 			return " not acted on (no follow of ours waits for it)", nil
-		}
-		// The account is followed now: its posts kept for a mention are a follow's (FWR 5), so the cap of posts kept for
-		// a mention no longer trims what shows in that member's Home.
-		if _, err := f.fedExec(ctx, `UPDATE posts SET ap_mention_only = false WHERE user_id = $1 AND ap_mention_only`, s.UserID); err != nil {
-			return "", &errRetry{"the database"}
 		}
 		return "", nil
 	}
@@ -21226,6 +21227,11 @@ func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity
 			return f.noteRemoved(ctx, s, n.ID, n.Updated, " removed (an edit made it a direct message)")
 		}
 		return " dropped (a direct message)", nil
+	}
+	// A Create of a post published longer ago than a remote post is kept (remoteKeep) is not kept at all: retention
+	// would remove it within the hour, after it had cost the host's allowance and told the members it names.
+	if !update && !n.Published.IsZero() && received.Sub(n.Published) > remoteKeep {
+		return " dropped (published before the time posts are kept here)", nil
 	}
 	// The members the Mention tags name by a local actor id (never the text: a short @anna is not the anna here).
 	var names []string

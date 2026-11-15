@@ -4045,6 +4045,8 @@ func TestDBQueryPlans(t *testing.T) {
 		{"remote: the cap of remembered deletions", remoteDeletedCapSQL, []any{1500}, 6000, "ap_deleted"},
 		{"remote: remembering a deletion, under the account's cap", noteRememberSQL, []any{"https://h7.example/n/new", int64(1000008), time.Now(), remoteDeletedPerAccount}, 200, ""},
 		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, "ap_comment_out"},
+		// An account's own Delete: its posts, follows, notifications, replies and likes, each through its account's index.
+		{"remote: an account's own Delete", actorGoneSQL, []any{int64(1000008)}, 600, ""},
 		{"remote: trimming a member's notifications, mentions and shares among them", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 6000, ""},
 	})
 	on = db

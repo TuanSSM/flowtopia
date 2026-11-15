@@ -2086,6 +2086,16 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
     member reads the post only while they share their profile (or own the instance) and are not suspended. The cap in
     all reads `posts_remote_followed`. `-purge-remote` says when the Federation switch is still on: turn it off, wait 5
     seconds, and run it.
+  - **After the last review** (with FWR 6). The accept of a follow clears the mark of the posts kept for a mention in
+    the same statement (`followAnswered`), so a failure cannot leave the follow accepted and the mark set for good. The
+    mark is not set back when a follow ends: a post kept for a follow stays counted as one until its next Update, which
+    reads who follows the account then. An Update without `published` of a post never kept is dropped, as one published
+    longer ago than 7 days is (an edit is taken as new only for a recent post). A Create of a post published longer ago
+    than the time remote posts are kept (30 days) is dropped at intake and counted ("published before the time posts are
+    kept here"): stored, it would have spent the host's hourly allowance and told the members it names, then gone with
+    housekeeping within the hour. The check of the stored domain policy in the statement that keeps a post covers a
+    suspension only: a domain taken off the allowlist while a worker holds a post is still kept, as the policy in memory
+    said when the inbox took it.
   - **Local mode on a database that federated.** The remote accounts stay and the follow lists show them as before
     (FWR 3), but their posts are not shown (`homeSQL`'s `$5`, `postOneSQL`'s `$4`), the picture route is not there and
     housekeeping does not touch them; they show again when the mode federates again, and `-purge-remote` removes
