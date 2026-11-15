@@ -317,22 +317,34 @@ func TestDBDeletePersonLockTime(t *testing.T) {
 	}
 }
 
-// An unlike that would send an Undo asks first that the member shares, as a like does (B): a member who stopped sharing
-// (and keeps their key) is refused with the reason, and nothing is enqueued.
+// An unlike asks what the queue asks (3 of the second review): a member who stopped sharing with the switch keeps their
+// key, so their Undo still goes, as their posts' and comments' Deletes do; a member with no key who does not share has
+// the like removed here only, is told nothing is sent, and nothing is enqueued.
 func TestDBUnlikeNeedsSharing(t *testing.T) {
 	e := newNotesEnv(t)
 	e.setFlag("community", true)
 	bo, _ := e.remote("bo", "h1.fan.example", true)
-	var pid int64
-	if err := e.a.db.QueryRow(`INSERT INTO posts (user_id, body, audience, ap_id) VALUES ($1, 'remote', 'public', 'https://h1.fan.example/notes/1') RETURNING id`, bo).Scan(&pid); err != nil {
-		t.Fatal(err)
+	like := func(n int) int64 {
+		var pid int64
+		if err := e.a.db.QueryRow(`INSERT INTO posts (user_id, body, audience, ap_id) VALUES ($1, 'remote', 'public', $2) RETURNING id`, bo, fmt.Sprintf("https://h1.fan.example/notes/%d", n)).Scan(&pid); err != nil {
+			t.Fatal(err)
+		}
+		e.mustExec(`INSERT INTO likes (post_id, user_id, ap_id) VALUES ($1, $2, $3)`, pid, e.anaID, fmt.Sprintf("https://here.example/users/ana/activities/like%d", n))
+		return pid
 	}
-	e.mustExec(`INSERT INTO likes (post_id, user_id, ap_id) VALUES ($1, $2, 'https://here.example/users/ana/activities/like1')`, pid, e.anaID)
+	p1, p2 := like(1), like(2)
 	e.must(200, e.ana, "PUT", "/api/me", map[string]any{"federates": false})
-	if code, out := e.do(e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", pid), nil); code != 403 || !strings.Contains(fmt.Sprint(out["error"]), "share their profile") {
-		t.Errorf("an unlike by a member who stopped sharing: %d %v", code, out["_raw"])
+	out := e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", p1), nil)
+	if out["liked"] != false || out["notice"] != nil || e.count(`SELECT count(*) FROM ap_outbox WHERE body LIKE '%"type":"Undo"%'`) != 1 {
+		t.Errorf("an unlike by a member who stopped sharing and keeps their key: %v, %d Undos", out["_raw"], e.count(`SELECT count(*) FROM ap_outbox WHERE body LIKE '%"type":"Undo"%'`))
+	}
+	e.mustExec(`DELETE FROM ap_outbox`)
+	e.mustExec(`DELETE FROM ap_keys WHERE user_id = $1`, e.anaID) // as after leaving, had the like kept its id
+	out = e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", p2), nil)
+	if out["liked"] != false || !strings.Contains(fmt.Sprint(out["notice"]), "Nothing is sent") || e.count(`SELECT count(*) FROM likes WHERE post_id = $1`, p2) != 0 {
+		t.Errorf("an unlike by a member with no key: %v", out["_raw"])
 	}
 	if n := e.count(`SELECT count(*) FROM ap_outbox`); n != 0 {
-		t.Errorf("%d activities enqueued", n)
+		t.Errorf("%d activities enqueued for a member with no key", n)
 	}
 }

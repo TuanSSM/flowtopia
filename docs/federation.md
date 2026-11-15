@@ -1959,7 +1959,7 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     (`enqueueOrdered`, under its lock), whatever a stale page or a leftover row asks. Leaving clears the ids of the Likes
     the member sent (`likes.ap_id`, and `comment_likes.ap_id` on replies of other servers): the Delete removed those likes
     there, and each stays here as a like of this server, so an unlike removes it here and sends nothing. An unlike that
-    would send an Undo asks first that the member shares, as a like does.
+    would send an Undo asks what the queue asks (after the second review, below).
   - **Not sharing again while the Delete(Person) is being sent** (`TestDBLeaveOtherServers`). The key sharing makes has
     the same key id, so a server could take the new account and then remove it at the Delete's next attempt, or refuse
     the Delete against the new key. While a row with the member as `signer` keeps the copy of their key (`leavingSQL`),
@@ -1986,6 +1986,31 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     second the review set, so it is not batched. **Reports** about a remote account that deleted itself show nothing it
     wrote or looked like: a reported post or reply is gone, and the account is its handle alone, its name, bio and
     picture removed (`TestDBDeletePersonIn`).
+- **After the second review** (each with a test that fails without it):
+  - **No single record holds the queue** (`TestDBRefusedDeleteHoldsNobody`, `TestDBFailingRecordHoldsNobody`,
+    `TestDBProducerErrorStillSends`). The queue's refusal of a member with no key who does not share made the Delete of a
+    post or a comment of such a member (one who shared, posted before their key was made, stopped sharing and deleted
+    it) fail at the head of the producer's line for ever, and since a worker's step returned the producer's error before
+    it claimed, nothing was made or sent for anyone. Now: that refusal finishes the record (nothing of the member ever
+    went out without a key), said in the log and counted; any other failure of a record of a post, a comment or a
+    profile update puts it back on the delivery schedule (8.3), one step more each time (a profile update's tries kept in
+    memory), and gives it up after the schedule's last wait, said in the log and counted (`outNotMade`, a line on the
+    Federation tab "since the last start"); and a step whose fan-out or producer fails still claims and sends a row. The
+    producers audited: posts, comments, profile updates; likes, Undos, follows, answers and forwards are enqueued by the
+    request or the inbox worker that makes them, not by the producer, and a fan-out's error is a statement's, not a
+    record's.
+  - **Sharing again waits at most 48 hours whatever the queue's state** (`TestDBSharingAgainAfterHorizon`).
+    `leavingSQL` counts a Delete(Person) only while it, or its newest delivery still queued, is younger than the queue's
+    horizon: a row older than that is never signed, since `deliver` gives it up for its age before it opens the kept key
+    (the test makes the copy unopenable, so opening it first would be the failure the row records), and a Delete(Person)
+    that waited that long for its fan-out is dropped by `fanOutDue`, never fanned out. So with sending paused, refused or
+    the clock in doubt, the member may share again after 48 hours, and the page never names a time in the past.
+  - **An unlike asks what the queue asks** (`TestDBUnlikeNeedsSharing`): a member who stopped sharing with the switch
+    keeps their key, so their unlike sends its Undo, as their posts' and comments' Deletes still go; a member with no key
+    who does not share (one who left, should a like have kept its id) has it removed here only, and is told "Nothing is
+    sent to the post's server". This replaces the refusal built after the first review.
+  - **The locked check in `ensureKey` is tested on purpose** (`TestDBKeyNotWrittenAfterStopping`): a hook between making
+    a key and writing it (`keyMade`) turns sharing off in that gap, and the key is not written, every time.
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail

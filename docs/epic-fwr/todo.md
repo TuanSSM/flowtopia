@@ -488,6 +488,14 @@ route and test named below is new unless the design note says it exists.
   `TestDBTwoLeavingsAtOnce`, `TestDBLeftPageWords`, `TestDBDeletePersonPolicyBeforeCut`, `TestDBDeletePersonLockTime`
   (10,000 of the member's deliveries go in about 126 ms under the queue's lock: logged), `TestDBQueryPlans` (records out
   with targets), `TestDBKeysGenerated` (its members now share before a key is made for them).
+  After the second review: a record the queue refuses for a member with no key who does not share is finished, any
+  other failing record of a post, a comment or a profile update goes back on the delivery schedule and is given up
+  after it (counted on the Federation tab), and a worker's step claims a row whatever its producer said, so no record
+  holds the queue (`TestDBRefusedDeleteHoldsNobody`, `TestDBFailingRecordHoldsNobody`, `TestDBProducerErrorStillSends`);
+  sharing again waits at most the queue's 48 hours whatever its state, and a Delete(Person) older than that is never
+  signed nor fanned out (`TestDBSharingAgainAfterHorizon`); an unlike sends its Undo for a member who keeps a key, and
+  for one without it removes the like here only (`TestDBUnlikeNeedsSharing`); the locked check of `ensureKey` held by a
+  hook (`TestDBKeyNotWrittenAfterStopping`).
   **Open:** the owner's trial (item 9) should confirm Mastodon removes the account on this Delete(Person) and what it does
   when the address comes back; a server that only ever received an activity whose record is gone is not told; a
   deletion made in local mode is never sent; a Delete(Person) whose deliveries fail for 48 hours is not sent again; the
@@ -495,8 +503,9 @@ route and test named below is new unless the design note says it exists.
   owner's review merges it. For the owner (defaults built): whether a deletion should wait for room rather than be
   refused when the queue is full (built: refused with 503, nothing lost), whether "Remove me" should refuse sharing again
   under the same name (built: allowed, with a new key, and warned, once the Delete(Person) has reached the servers),
-  whether a member who stopped sharing may still take back a like that went out (built: refused, with the reason, as a
-  like is), whether a member's likes of posts of other servers stay here after leaving (built: yes, as likes of this
+  whether a member who stopped sharing may still take back a like that went out (built, after the second review: yes,
+  with the key they keep, as their posts' and comments' Deletes go; a member with no key has it removed here only, and
+  is told so), whether a member's likes of posts of other servers stay here after leaving (built: yes, as likes of this
   server), whether a member's block of a deleted remote account
   and the reports about it should go too (built: kept), whether a suspended member's deletion should be sent (built:
   yes), and the numbers: 2,000 servers per Delete(Person), 3 removals an hour per member, the copy of a key kept until

@@ -764,6 +764,9 @@ activity. How it works (the design is [docs/federation.md](docs/federation.md), 
 - **Stopping:** a stop gives back what a worker had taken and not yet sent, lets a request already sent finish
   within the 5 seconds a stop waits, and anything still running then is sent again after the restart (receivers
   ignore a repeat).
+- **One that cannot be made holds nobody:** a post, a comment or a profile change whose activity cannot be made is
+  tried again on the same schedule and given up after it, counted on the Federation tab, while everything behind it
+  goes on being made and sent.
 - `-purge-remote` removes these rows too.
 
 ### Federation: follows across servers
@@ -958,8 +961,10 @@ In a mode that federates, other servers learn when an account is gone, both ways
   off, and ends the follows with accounts of other servers. The account here stays, with its name, posts and
   members' follows. The card says before, and asks again before anything is sent, that many servers remember a
   deleted address for good, so sharing again later (allowed, with a new key) may be refused there. Sharing again
-  waits until the request has reached the servers (at most 48 hours; the card says until when). The member's likes
-  of posts of other servers stay here as likes of this server. If federation cannot work at that moment nothing is
+  waits until the request has reached the servers (at most 48 hours, even while sending is paused; the card says until
+  when). The member's likes of posts of other servers stay here as likes of this server; taking one back then removes
+  it here only, and says so. (A member who only turned sharing off keeps their key, so taking back a like still
+  reaches its server, as deleting a post or a comment does.) If federation cannot work at that moment nothing is
   changed and the member is told to try later. From then on nothing of the member goes to other servers and no key is
   made for them until they share again. At most 3 times an hour per member. Not on a single-profile instance, where
   `FLOWA_FEDERATE` is the owner's sharing.
