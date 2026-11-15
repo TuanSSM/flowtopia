@@ -5367,6 +5367,12 @@ func (f *fetcher) answer(ctx, parent context.Context, rule *fetchRule, limit int
 		return nil, tooLarge
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err == nil && ctx.Err() != nil {
+		// A body whose read ended at or after the deadline is not taken. When the deadline closes the connection, the
+		// TLS close tells the server first; a server that then ends its body cleanly (as Go's own does when its request's
+		// context ends) can have that end read as a plain end of the body, which the transport reports with no error.
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, f.failure(ctx, parent, host, err)
 	}

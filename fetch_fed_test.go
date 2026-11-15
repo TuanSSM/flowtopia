@@ -420,6 +420,28 @@ func TestFederationFetcherSlowBody(t *testing.T) {
 	}
 }
 
+// A body whose read ended at or after the deadline is a timeout, even when the transport reports a clean end: the
+// TLS close at the deadline tells the server first, and a server that then ends its body cleanly (Go's own does) can
+// have that end read as the body's end (TestFederationFetcherSlowBody failed so under load, about 1 run in 15).
+func TestAnswerAfterDeadline(t *testing.T) {
+	f := newFetcher("", false)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the kind's deadline, passed
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/activity+json"}}, ContentLength: -1,
+		Body: io.NopCloser(strings.NewReader(`{"id":"x"}`))}
+	u, _ := url.Parse("https://remote.example/doc")
+	_, err := f.answer(ctx, context.Background(), &fetchRules[fetchDocument], 1<<20, "remote.example", u, resp)
+	var fe *fetchError
+	if !errors.As(err, &fe) || fe.Fail != failTimeout {
+		t.Fatalf("a body read after the deadline: %v", err)
+	}
+	// Within the deadline the same answer is taken.
+	resp.Body = io.NopCloser(strings.NewReader(`{"id":"x"}`))
+	if res, err := f.answer(context.Background(), context.Background(), &fetchRules[fetchDocument], 1<<20, "remote.example", u, resp); err != nil || string(res.Body) != `{"id":"x"}` {
+		t.Fatalf("a body read in time: %v", err)
+	}
+}
+
 func TestFederationFetcherStatus(t *testing.T) {
 	f, _ := fedStub(t, fedHandler())
 	_, err := f.do(context.Background(), fetchReq{kind: fetchDocument, url: "https://remote.example/busy"})
