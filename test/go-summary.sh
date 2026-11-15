@@ -17,7 +17,8 @@ summary() {
     if grep -q '^panic: test timed out after' "$file"; then
       why="timed out after $(sed -nE 's/^panic: test timed out after ([^ ]+).*/\1/p' "$file" | head -1)"
       local running
-      running=$(grep -A2 '^running tests:' "$file" | sed -nE '2s/^[[:space:]]+([^ ]+).*/\1/p')
+      # A timeout names the tests running then in a "running tests:" block; an older go, or a cut log, has none.
+      running=$( (grep -A2 '^running tests:' "$file" || true) | sed -nE '2s/^[[:space:]]+([^ ]+).*/\1/p')
       [ -n "$running" ] && why+=" in $running"
     elif grep -q '^panic:' "$file"; then
       why="a panic: $(grep -m1 '^panic:' "$file" | cut -c8-120)"
@@ -42,6 +43,10 @@ self_test() {
   expect "a test that failed" "$(summary "$t/failed" 1)" "1 passed, 1 failed, 0 skipped"
   printf -- '--- PASS: TestDBOne (1.00s)\n=== RUN   TestDBRemoteRowsStayRemote\npanic: test timed out after 10m0s\nrunning tests:\n\tTestDBRemoteRowsStayRemote (4s)\n\ngoroutine 1 [running]:\nFAIL\tnunchaku\t601.244s\nFAIL\n' > "$t/timeout"
   expect "a run past its timeout" "$(summary "$t/timeout" 1)" "1 passed, 1 failed, 0 skipped (timed out after 10m0s in TestDBRemoteRowsStayRemote)"
+  printf -- '--- PASS: TestDBOne (1.00s)\npanic: test timed out after 25m0s\n\ngoroutine 1 [running]:\nFAIL\tnunchaku\t1501.2s\n' > "$t/timeout-bare"
+  # Run as the workflow runs it, as its own process under set -e and pipefail, where a grep that finds nothing ends it.
+  expect "a timeout with no list of the tests running" "$(bash "$0" "$t/timeout-bare" 1)" "1 passed, 1 failed, 0 skipped (timed out after 25m0s)"
+  expect "a run past its timeout, as its own process" "$(bash "$0" "$t/timeout" 1)" "1 passed, 1 failed, 0 skipped (timed out after 10m0s in TestDBRemoteRowsStayRemote)"
   printf -- '--- PASS: TestDBOne (1.00s)\npanic: runtime error: index out of range [0] with length 0\nFAIL\tnunchaku\t3.1s\n' > "$t/panic"
   expect "a panic outside a test's report" "$(summary "$t/panic" 2)" "1 passed, 1 failed, 0 skipped (a panic: runtime error: index out of range [0] with length 0)"
   printf -- '# nunchaku\n./main.go:1:1: syntax error\nFAIL\tnunchaku [build failed]\n' > "$t/build"
