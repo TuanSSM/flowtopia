@@ -2061,11 +2061,13 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     Create when the Create was put back on the schedule or given up: the reply names the comment by id, and a receiver
     that does not have it treats the reply as it treats any reply to a post it does not know. A profile update's tries
     (`personTries`) are kept in memory, so a restart starts them afresh: at worst one more pass of the schedule.
-- **After the fourth review** (each with a test that fails without it):
+- **After the fourth review** (the tests named fail without their fix; where one covers only some branches, that is said):
   - **Every producer writes before it logs or counts** (`TestDBFailingWriteDoesNotSpin`, now also the full queue's branches
     for posts and comments, a Delete at its schedule's end and before it, a Create and a comment's Create, and a write
     refused every other time). The full queue's branches, the too large Create, an Update dropped for a comment no longer
-    shown and `commentOutFull` now write first; a failed write is returned as `outWriteError`, which `outNotTried`
+    shown and `commentOutFull` now write first (of these the test runs the full queue's Delete and Create branches for posts
+    and comments; the too large Create, the dropped Update, the Update's full queue branch and the profile's are the same
+    change with no test of their own); a failed write is returned as `outWriteError`, which `outNotTried`
     knows, so the retry path does not take it for a failure of the record, the producer reports no work, and nothing is
     logged or counted until the write succeeds.
   - **Every change of a record's state resets its tries** (`TestDBCommentTriesAfresh`, `TestOutStateChangesReset`): an
