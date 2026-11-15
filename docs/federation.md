@@ -1668,7 +1668,7 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   and nothing in the design ties it to federation). It appears only once a picture is attached, so a composer without
   a picture is as it was; a post without a picture sends no `alt`, and the API answers `alt` only for a post that has
   one, so every answer about a post without alt text is byte for byte as before; routes and headers are unchanged. At
-  most 1,500 characters (`maxAlt`), with what `visibleText` takes out of a bio taken out, line breaks joined into
+  most 1,500 characters (`maxAlt`, counted as sent: the characters of the trimmed text, before anything is taken out, as the composer counts them), with what `visibleText` takes out of a bio taken out, line breaks joined into
   spaces, and a direction override refused with the reason; a description sent without a picture is dropped. It is the
   picture's `alt` on the post in the app and on the public pages (else the words there were), and `name` and `summary`
   in the Note. Posts are not edited (1.2), so it is written once, with the post. The field has a counter as the post's

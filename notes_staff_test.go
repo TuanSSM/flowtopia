@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +43,20 @@ func TestDBNotesForStaff(t *testing.T) {
 	}
 	if n.Cut != 1 {
 		t.Errorf("the tab's count of cut activities: %d", n.Cut)
+	}
+}
+
+// The picture's description is counted as the composer counts it: the characters sent, trimmed, before inner spaces
+// are joined for keeping (the second review of FWR 4).
+func TestDBAltCountedAsSent(t *testing.T) {
+	e := newEnv(t)
+	_, ana := e.user("ana", "user")
+	pic := jpegData(t, 8, 8)
+	over := strings.Repeat("a", 1498) + "   b" // 1502 characters as typed, 1500 once the spaces are joined
+	e.must(400, ana, "POST", "/api/posts", map[string]any{"body": "x", "image": pic, "alt": over})
+	full := strings.Repeat("a", 1496) + "   b" // 1500 as typed
+	out := e.must(200, ana, "POST", "/api/posts", map[string]any{"body": "x", "image": pic, "alt": " " + full + " "})
+	if got := out["posts"].([]any)[0].(map[string]any)["alt"]; got != strings.Repeat("a", 1496)+" b" {
+		t.Errorf("kept as %v", got)
 	}
 }

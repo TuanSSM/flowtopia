@@ -1153,6 +1153,8 @@ func (a *app) handlePutFlags(w http.ResponseWriter, r *http.Request, u *user) {
 	// on (FWR 4: nothing made or waiting while a switch is off goes out later); a post's Delete stays, since it only
 	// takes back what already left.
 	off := func(k string) bool { on, ok := in.Flags[k]; return ok && !on }
+	// This runs once the flags' write has committed (setFlags above): a write that failed returned before it, and nothing
+	// waiting was dropped with the switch still on.
 	if a.fed != nil && (off(fedFlag) || off("follows") || off("community")) {
 		if _, err := a.db.Exec(`WITH c AS (DELETE FROM ap_post_out WHERE state = 'create') UPDATE ap_person_out SET due_at = NULL WHERE due_at IS NOT NULL`); err != nil {
 			a.serverError(w, err)
@@ -24246,15 +24248,17 @@ func (a *app) handleCreatePost(w http.ResponseWriter, r *http.Request, u *user) 
 	in.Image = img
 	alt := ""
 	if in.Alt != nil && in.Image != "" { // a description without a picture describes nothing, and is dropped
+		// Counted as sent, as the composer counts it (characters of the trimmed text), before anything is taken out.
+		if len([]rune(strings.TrimSpace(*in.Alt))) > maxAlt {
+			fail(w, http.StatusBadRequest, "Keep the description of the picture under 1500 characters.")
+			return
+		}
 		t, ok := visibleText(*in.Alt)
 		if !ok {
 			fail(w, http.StatusBadRequest, "The description of the picture cannot hold characters that change the direction of the text.")
 			return
 		}
-		if alt = strings.TrimSpace(strings.Join(strings.Fields(t), " ")); len([]rune(alt)) > maxAlt {
-			fail(w, http.StatusBadRequest, "Keep the description of the picture under 1500 characters.")
-			return
-		}
+		alt = strings.TrimSpace(strings.Join(strings.Fields(t), " "))
 	}
 	tags, ok := cleanTags(in.Tags)
 	if !ok {
