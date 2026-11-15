@@ -912,7 +912,8 @@ With the same switches on, replies and likes cross servers both ways ([docs/fede
   other servers, each told once, within the bounds above (50 from one server, 500 from all, per member).
 - **Forwarding.** A reply from another server that names a member's followers is passed on once, as it came, to
   that member's followers on other servers but the sender's (ActivityPub's rule against replies only some followers
-  see), at most 60 an hour per sending server.
+  see), at most 60 an hour per sending server. The Federation tab counts, since the last start, the replies not passed
+  on and the comments and edits the full queue could not send.
 - **Bounds.** 300 replies from other servers kept under one post, 200 from one account, 2,000 from one server, 300
   new an hour from one server and 50,000 in all; 2,000 likes from other servers for one post or comment, 2,000 from
   one account, 10,000 from one server, 600 new an hour and 200,000 in all. They are kept while the post is.

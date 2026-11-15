@@ -6437,7 +6437,8 @@ type federation struct {
 	postsDue atomic.Bool
 	postsAt  atomic.Int64 // when the first record held back (a Delete the full queue refused) is due; 0: none
 	cut      atomic.Int64 // activities that went only to the first deliveryTargetsMax addresses since the start
-	// notTakenBack counts the posts whose Delete the full queue refused past the delivery schedule's end, since the start.
+	// notTakenBack counts the posts and comments whose Delete the full queue refused past the delivery schedule's end,
+	// since the start (in memory, so a restart counts from nothing, as the tab says).
 	notTakenBack atomic.Int64
 	personAt     atomic.Int64
 	outBusy      atomic.Bool
@@ -18827,7 +18828,11 @@ type deliveryNumbers struct {
 	QueueMax     int              `json:"queueMax"`
 	FailedMax    int              `json:"failedMax"`              // Failed stops counting here: the page says "or more"
 	Cut          int64            `json:"cut,omitempty"`          // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
-	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts whose Delete the full queue refused past the schedule's end, since the start (FWR 4)
+	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts and comments whose Delete the full queue refused past the schedule's end, since the start (FWR 4, 6)
+	// CommentsNotSent are the comments' Creates and Updates the full queue refused past the schedule's end, and
+	// ForwardsSkipped the replies from other servers not forwarded for a bound, both since the start (FWR 6).
+	CommentsNotSent int64 `json:"commentsNotSent,omitempty"`
+	ForwardsSkipped int64 `json:"forwardsSkipped,omitempty"`
 }
 
 // deliveryNumbersSQL reads the queue's state for the Federation tab, the dashboard and a local probe of /healthz
@@ -18843,7 +18848,8 @@ const deliveryNumbersSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_deliv
 // numbers reads the queue's numbers, under one of the federation's turns.
 func (q *deliveryQueue) numbers(ctx context.Context) (*deliveryNumbers, error) {
 	s := q.stats.numbers(time.Now())
-	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep, Cut: q.f.cut.Load(), NotTakenBack: q.f.notTakenBack.Load()}
+	n := &deliveryNumbers{Counts: s.Handled, Since: s.Since, Started: s.Started, Paused: q.paused(), ClockWaiting: !q.clockOK() || q.doubting(), ClockJumped: q.doubting(), QueueMax: deliveryQueueMax, FailedMax: deliveryFailedKeep, Cut: q.f.cut.Load(), NotTakenBack: q.f.notTakenBack.Load(),
+		CommentsNotSent: q.f.commentsNotSent.Load(), ForwardsSkipped: q.f.forwardsSkipped.Load()}
 	now := q.now()
 	q.numbersRun.Add(1)
 	done, err := q.f.dbTurn(ctx)
@@ -22824,9 +22830,15 @@ func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivit
 	if len(members) == 0 {
 		return
 	}
-	// The bounds (after the review of #116): per sending server, per member whose followers it goes to, and in all, an
-	// hour each; and none while the delivery queue is past its resume mark or an activity waits for its fan-out, so the
-	// members' own posts and comments always come first and a few hosts cannot fill the queue with forwards.
+	// The bounds (after the review of #116): none while the delivery queue is past its resume mark or an activity waits
+	// for its fan-out, so the members' own posts and comments always come first and a few hosts cannot fill the queue
+	// with forwards; that is asked first, so a forward the queue refuses takes no allowance. Then per sending server,
+	// in all, and per member whose followers it goes to, an hour each.
+	var queued, waiting int
+	if err := f.fedRow(ctx, []any{&queued, &waiting}, deliveryCountsSQL, deliveryQueueResume, 1); err != nil || queued >= deliveryQueueResume || waiting > 0 {
+		f.forwardsSkipped.Add(1)
+		return
+	}
 	if !f.forwardsOut.add(s.Domain) || !f.forwardsAll.add("") {
 		f.forwardsSkipped.Add(1)
 		return
@@ -22836,11 +22848,6 @@ func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivit
 			f.forwardsSkipped.Add(1)
 			return
 		}
-	}
-	var queued, waiting int
-	if err := f.fedRow(ctx, []any{&queued, &waiting}, deliveryCountsSQL, deliveryQueueResume, 1); err != nil || queued >= deliveryQueueResume || waiting > 0 {
-		f.forwardsSkipped.Add(1)
-		return
 	}
 	var to []deliveryTarget
 	from := actorHost(s.ID)

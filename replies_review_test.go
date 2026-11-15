@@ -635,26 +635,39 @@ func TestDBForwardBounds(t *testing.T) {
 	if got := try(map[string]any{"padding": strings.Repeat("x", forwardBodyMax)}); got != 1 {
 		t.Errorf("a reply larger than %d bytes was forwarded", forwardBodyMax)
 	}
+	// The queue is asked before any allowance is taken (point 3 of the second review): with room for one forward in
+	// all, a reply refused while an activity waits leaves that room to the next.
+	e.a.fed.forwardsAll = newLimiter(1, time.Hour)
 	e.mustExec(`INSERT INTO ap_outbox (ap_id, actor_id, body, fanned_out, created_at) VALUES ('https://here.example/actor/w/1', $1, '{}', false, now())`, e.anaID)
 	if got := try(nil); got != 1 {
 		t.Errorf("a reply was forwarded while an activity waits for its fan-out")
 	}
 	e.mustExec(`DELETE FROM ap_outbox WHERE ap_id = 'https://here.example/actor/w/1'`)
+	if got := try(nil); got != 2 {
+		t.Errorf("the reply refused by the queue took the allowance: %d forwards", got)
+	}
+	// The Federation tab reads the counts kept since the start.
+	e.a.fed.commentsNotSent.Add(2)
+	nums, err := e.out.numbers(context.Background())
+	if err != nil || nums.ForwardsSkipped != 3 || nums.CommentsNotSent != 2 {
+		t.Errorf("the numbers: %+v %v", nums, err)
+	}
+	e.a.fed.forwardsAll = newLimiter(forwardsMaxHour, time.Hour)
 	for range forwardsPerMemberHour {
 		e.a.fed.forwardsFor.add(fmt.Sprint(e.anaID))
 	}
-	if got := try(nil); got != 1 {
+	if got := try(nil); got != 2 {
 		t.Errorf("a reply was forwarded past the member's hourly bound")
 	}
 	e.a.fed.forwardsFor = newLimiter(forwardsPerMemberHour, time.Hour)
 	for range forwardsMaxHour {
 		e.a.fed.forwardsAll.add("")
 	}
-	if got := try(nil); got != 1 {
+	if got := try(nil); got != 2 {
 		t.Errorf("a reply was forwarded past the bound in all")
 	}
 	e.a.fed.forwardsAll = newLimiter(forwardsMaxHour, time.Hour)
-	if got := try(nil); got != 2 {
+	if got := try(nil); got != 3 {
 		t.Errorf("within the bounds again: %d forwards", got)
 	}
 }

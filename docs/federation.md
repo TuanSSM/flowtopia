@@ -1703,6 +1703,12 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     where it would otherwise be taken back by an Undo that arrived after it. Each step down a line is one lookup through
     `ap_outbox`'s unique id index, one per Update the comment had; a comment is edited only in its first 15 minutes, and
     edits made while its producer is busy fold into one Update.
+  - **What is not sent is shown** (`TestDBForwardBounds`). The Federation tab's "Sending to other servers" says, beside
+    the posts and comments whose Delete could not be taken back (`notTakenBack`, which counts comments too and now says
+    so), the comments and edits the full queue refused past their last wait (`commentsNotSent`) and the replies not
+    forwarded for a bound (`forwardsSkipped`), each when it is not zero. All three are counted in memory: a restart
+    counts from nothing, and the tab says "since the last start". A forward asks the queue first, so one the queue
+    refuses takes nothing from the hourly allowances.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
