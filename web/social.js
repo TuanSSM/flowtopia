@@ -272,6 +272,7 @@ function pageFedAccount(id) {
         <p class="muted">${p.handle ? handleHTML(p.handle) : `An account on <span class="look-host">${esc(p.host)}</span>`}${v.followsYou ? ' · follows you' : ''}</p>
         ${state ? `<p class="notice warn">${state}</p>` : ''}
         ${p.stale ? `<p class="notice warn">Its server did not answer lately. This is the profile as Flowa last saw it, ${esc(fmtWhen(p.stale))}.</p>` : ''}
+        ${p.limited ? `<p class="notice warn fed-limited">${esc(p.limited)}</p>` : ''}
         ${p.locked ? '<p class="tiny">This account approves its followers by hand.</p>' : ''}
         ${p.bio ? `<p class="prof-bio look-text" dir="auto">${esc(p.bio)}</p>` : ''}
         ${link ? `<p class="small">${outLink(link, `See the profile on its server ${icon('ext')}`)}</p>` : ''}
@@ -680,6 +681,7 @@ function lookResult() {
   return `<div class="look-prof">
     <p class="look-name"><b><bdi>${esc(p.name || p.handle)}</bdi></b><span class="tiny">${handleHTML(p.handle)}</span></p>
     ${p.stale ? `<p class="notice warn">Its server did not answer just now. This is the profile as Flowa last saw it, ${esc(fmtWhen(p.stale))}.</p>` : ''}
+    ${p.limited ? `<p class="notice warn fed-limited">${esc(p.limited)}</p>` : ''}
     ${p.locked ? '<p class="tiny">This account approves its followers by hand.</p>' : ''}
     ${p.bio ? `<p class="small look-text" dir="auto">${esc(p.bio)}</p>` : ''}
     ${link ? `<p class="small">${outLink(link, `See the profile on its server ${icon('ext')}`)}</p>` : ''}

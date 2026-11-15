@@ -362,14 +362,31 @@ function signupRules(ask) {
 // The about page: what the admins wrote, the rules and how to reach them. A member reads it in every mode,
 // whatever has been saved; a visitor only once there is a description, and before that the page is as unknown
 // as its address on the server. It is read again each time it is opened.
-const about = { data: null, busy: false, failed: '' };
-window.addEventListener('hashchange', () => { about.data = null; about.failed = ''; });
+// In a mode that federates, while an admin publishes it, the page also lists the limited and suspended servers with
+// their public comments (moderatedServers), read a page at a time.
+const about = { data: null, busy: false, failed: '', servers: null, next: '' };
+window.addEventListener('hashchange', () => { about.data = null; about.failed = ''; about.servers = null; about.next = ''; });
 async function loadAbout() {
   about.busy = true;
   const r = await api(me ? 'instance' : 'about');
+  if (r.ok && r.data.moderatedServers) await loadAboutServers(false);
   about.busy = false;
   if (r.ok) about.data = r.data; else about.failed = r.status === 404 ? 'gone' : r.error;
   render();
+}
+async function loadAboutServers(more) {
+  const r = await api('about/servers' + (more && about.next ? '?after=' + encodeURIComponent(about.next) : ''));
+  if (!r.ok) { if (!more) about.servers = []; toast(r.error); return; }
+  about.servers = more ? (about.servers || []).concat(r.data.servers) : r.data.servers;
+  about.next = r.data.next;
+}
+function aboutServersHTML() {
+  if (!about.data?.moderatedServers || !about.servers) return '';
+  const row = s => `<li><b style="font-weight:560">${esc(s.domain)}</b> <span class="chip warn">${s.policy === 'suspend' ? 'Suspended' : 'Limited'}</span>${s.comment ? `<br><span class="small plain-text">${esc(s.comment)}</span>` : ''}</li>`;
+  return `<div class="card about-servers"><div class="card-h"><h2>Moderated servers</h2></div>
+    <p class="tiny">Nothing is taken from a suspended server and nothing is sent to it. The accounts of a limited server are shown here only to the members who follow them.</p>
+    ${about.servers.length ? `<ul class="about-server-list">${about.servers.map(row).join('')}</ul>` : '<p class="small">No server is limited or suspended.</p>'}
+    ${about.next ? '<button class="btn sm" data-act="about-servers-more">Show more</button>' : ''}</div>`;
 }
 function contactHTML(c, kind) {
   // The server lets only letters, digits and . _ + - before the @; the address is still written as a code in the
@@ -384,11 +401,12 @@ function pageAbout() {
   if (about.failed) return `<div class="empty">${esc(about.failed)}</div>`;
   if (!about.data) { if (!about.busy) loadAbout(); return '<div class="empty small">Loading…</div>'; }
   const d = about.data, rules = d.rules || [];
-  if (!d.description && !d.contact && !rules.length) return `<div class="page-h"><div><h1>About this Flowa</h1></div></div><div class="empty">The admins have not written anything about this Flowa yet.</div>`;
+  if (!d.description && !d.contact && !rules.length) return `<div class="page-h"><div><h1>About this Flowa</h1></div></div><div class="empty">The admins have not written anything about this Flowa yet.</div>${aboutServersHTML() ? `<div class="stack about" style="margin-top:16px">${aboutServersHTML()}</div>` : ''}`;
   return `<div class="page-h"><div><h1>About this Flowa</h1></div></div><div class="stack about">
     ${d.description ? `<div class="card"><p class="plain-text about-desc">${esc(d.description)}</p></div>` : ''}
     ${rules.length ? `<div class="card"><div class="card-h"><h2>Rules</h2></div>${rulesHTML(rules)}</div>` : ''}
-    ${d.contact ? `<div class="card"><div class="card-h"><h2>Contact</h2></div><p class="small about-contact">${contactHTML(d.contact, d.contactKind)}</p></div>` : ''}</div>`;
+    ${d.contact ? `<div class="card"><div class="card-h"><h2>Contact</h2></div><p class="small about-contact">${contactHTML(d.contact, d.contactKind)}</p></div>` : ''}
+    ${aboutServersHTML()}</div>`;
 }
 // What a visitor is told on a page that needs an account: one sentence, about that page.
 const WALLS = { practice: 'Sign in to log your practice.', combos: 'Sign in to build combos.', plan: 'Sign in to follow the plan.', profile: 'Sign in to see your profile.', timeline: 'Sign in to use the timeline.',
@@ -522,6 +540,14 @@ document.addEventListener('click', async e => {
   const d = t.dataset;
   switch (d.act) {
     case 'prop': switchProp(d.v); break;
+    case 'about-servers-more': {
+      const n = about.servers?.length || 0;
+      await loadAboutServers(true); render();
+      // The keyboard goes on to the first server added, where the list was cut.
+      const li = document.querySelectorAll('.about-server-list li')[n];
+      if (li) { li.tabIndex = -1; li.focus(); }
+      break;
+    }
     case 'nav-toggle':
       ui.open = ui.open.includes(d.id) ? ui.open.filter(x => x !== d.id) : [...ui.open, d.id];
       localStorage.setItem('fl-groups', ui.open.join(',')); render(); break;

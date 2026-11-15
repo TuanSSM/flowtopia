@@ -1476,8 +1476,7 @@ What was built, and the decisions where 6.3, 6.4, 9.1 and 11 were silent:
   found when they next fetch it, and new Follows of them are answered with Reject. Deleting an account goes out as
   Delete(Person) since FWR 7 ("Account deletion across servers, as built (FWR 7)" below), and so does "Remove me from
   other servers", which also removes these rows.
-- **Not built** (later items, or the owner's): posts from followed accounts (FWR 5), the domain policy `limit` turning
-  follows into requests (FMD), Move (PRT), removing a follower without
+- **Not built** (later items, or the owner's): posts from followed accounts (FWR 5), Move (PRT), removing a follower without
   blocking it, and approving pending requests when a member turns approval by hand off (they stay requests until
   answered). Recorded Mastodon fixtures: the ones in
   `testdata/federation/follows` are written from documentation (its README); recorded ones wait for the owner's trial.
@@ -2535,8 +2534,8 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
   is read. `GET /api/fed/media/{id}.jpg` serves the copy to a member who may read the post, with the headers of a
   picture (`private, max-age=86400`, `nosniff`); the CSP's `img-src 'self' data: blob:` is unchanged. A time out, a
   refused connection or a server error is tried again after 1 minute, 10 minutes and 1 hour; anything else fails at
-  once. Housekeeping removes files no row names, older than 10 minutes. Not built: the domain policy's `reject_media`
-  (FMD's), avatars and headers of remote accounts.
+  once. Housekeeping removes files no row names, older than 10 minutes. The domain policy's `reject_media` came with
+  FMD 1 (section 10, "As built (FMD 1, the rest)"). Not built: avatars and headers of remote accounts.
 - **Rollback (14.4).** This is the first version to keep remote posts: an older build after `./deploy.sh --rollback`
   shows them as local, in the Community timeline, so `/nunchaku -purge-remote` must run first, with the Federation
   switch off (the inbox then answers 503 and its workers take no row, so nothing is stored between the purge and the
@@ -4125,9 +4124,97 @@ WebFinger request leaves for an unlisted host, and a member's search by handle f
 (`lookupNotAllowed`, 403, most of its allowance given back; a redirect to an unlisted host mid-lookup is the one "not
 found" of FRD 8's review). A fresh federating instance therefore reaches no other server until an admin allows a domain
 or chooses open, which the README and the Admin page say; a change of policy forgets the cache's remembered refusals at
-once. As 7.6 says, neither mode makes the public pages private. **Not built yet** (FMD's todo): the effect of `limit` (follows across servers are FWR 3; the API takes allow and suspend only), reject media and
-reject reports (no remote media or Flag is taken yet), the public comment on the about page, and the sentence the
-page owes on authorized fetch (7.6) beyond the one it says now (that any server can still read public pages).
+once. As 7.6 says, neither mode makes the public pages private. What this first part left open was built with the
+rest of the item, below.
+
+As built (FMD 1, the rest; after FWR 3 to 7, so follows, posts, replies, likes and pictures cross servers): no
+migration (migration 17 had every column), "federation: domain policies and the allowlist" in `main.go`.
+
+- **The fan-out passes the policy, proven path by path.** Every activity leaves through the delivery queue: a follow,
+  its answers and Undo (`sendTakingBack`), a post's Create and Delete (`postOut`), Update(Person) (`personOut`),
+  Delete(Person) (`personGone`), a forward (`forward`), a like and its Undo (`likeRemote`, `unlikeRemote`) and a
+  comment's Create, Update and Delete (`commentOut`) each call an enqueue function, all of which end in
+  `enqueueOrdered`, which collects the inboxes through `collect` (asking `admits`) before the one statement that
+  writes `ap_outbox`; the rows of `ap_deliveries` are written by `fanOut` alone, after `collect` or, for an activity
+  that waited for room, after asking `admits` again (`fanOutDue`); each row asks `admits` at the send (`deliver`) and
+  the fetcher a last time. Every other request (keys, actors, WebFinger, NodeInfo, pictures) is a `fetchReq` carrying
+  `admits`. Nothing was missing; `TestFanOutPassesAdmits` reads the code and fails when a new path skips a step, and
+  `TestDBFanOutDueAsksPolicy` adds the one step no test ran (a host suspended while an activity waited for room).
+- **Limit.** `PUT /api/admin/federation/domains/{domain}` takes `limit`. A domain matches its subdomains, and the
+  strictest row on the way up wins (`fedPolicy.limited`; a subdomain of a limited domain stays limited even when
+  allowed). A limited domain is listed, so let in by the allowlist and by the fetcher both ways, and members' activities
+  still go to it (as Mastodon's Limit federates). **What is hidden** from every member but those who follow the account
+  (accepted; `limitFree`, one look in the primary key of users, the walk, one look in follows): its replies under
+  posts here, from the lists and the counts alike (`commentAccountShown`, `postCountShown`, `replyCountShown`, asked only
+  for a reply of another server; local mode's plain statements take these fragments out as before); the notifications
+  it left (`notifFedShown`, in a mode that federates only, on the rows marked `fed`, except `follow` and
+  `follow_request`), the bell's count agreeing with its list; a post of its that only names a member (`remoteSeen`'s
+  branch for a post's addressing; its posts reach a member's Home only when the member follows it anyway); its bio on
+  its profile here (`limited` with the notice). **Decided: a search by handle still answers** with the profile, the
+  notice and no posts read from its server and no bio unless the member follows it: Flowa has no search that lists
+  remote accounts (its search is by exact handle; the table above has full-text search "never"), so "not in search" leaves nothing to leave
+  out but the posts and the bio, and refusing the handle outright would make the account impossible to follow, which
+  Mastodon allows. Its likes stay counted (a count names nobody, as `feedSQL` says), its notification hidden. Hidden
+  rows stay, so lifting the limit, or following the account, shows them. **A Follow** from an account of a limited
+  domain becomes a request whatever the member's own setting (`followInSQL`'s `lk`, asking the stored policy in the
+  statement, so a limit set while the Follow waited in the inbox holds it); FWR 3's caps on requests and notifications
+  hold for it. **Follows that exist stay** when a domain is limited and requests stay requests when it is lifted, as
+  Mastodon's Limit does (only a suspension removes follows). The admin page explains each policy in one sentence.
+  **Cost.** While no domain is limited (most instances), the statements run without the look (`limitStatements`,
+  from the policy in memory, which each admin change reloads before its answer), so nothing is read that was not read
+  before. With a limit, each remote reply a page lists or counts costs a look in users, the walk through
+  domain_policies and a look in follows: `TestDBQueryPlans`'s "limited:" cases read a post holding 3,000 remote
+  replies (ten times the cap) at about 130,000 rows against 11,000 without a limit (about 40 rows a reply, 25 of them
+  the small domain_policies read whole in the test; so about a tenth of that at the cap of 300, not measured); the bell
+  and a page of comments stay under 1,000 rows. The look a Follow and a picture take ask the stored policy always.
+- **Reject media.** A row with `reject_media` (any policy but suspend, which stores both switches off, since it rejects
+  everything): the pictures of its accounts' posts are kept as links (`mediaInsertSQL`, asking the stored policy as
+  the post is kept), a picture wanted before the policy was set is claimed and turned into a link without a fetch
+  (`mediaClaimSQL` says whether the author's domain rejects media now), and setting it turns every kept, wanted or
+  evicted picture of the domain's accounts (and its subdomains') into a link in the admin's transaction, locked
+  first so a picture the worker writes at the same moment is either seen with its file or removes its own; the files
+  go after the commit (`picturesRemoved` in the audit). The page shows each as the link to the original 9.4 gives,
+  never a picture from that server. **Lifting it fetches nothing again**: the rows stay links, and a post edited
+  after that brings its pictures again with the edit (decided: re-fetching every old picture of a server at once would
+  be a burst of requests nobody asked for). Rollback: the files removed are a cache (9.4): nothing in the backup is
+  lost, and an older build reads the `link` rows as it always did. Remote accounts have no picture here (their avatar
+  is not fetched or shown), so there is no avatar to reject.
+- **Reject reports** is stored, audited and shown on the admin page with "it does nothing yet": what it gates, a Flag
+  from that domain, is FMD item 3, not built.
+- **Public and private comments.** `public_comment` and `private_note`, each plain visible text of at most 500
+  characters (`domainText`: no direction override), escaped wherever shown, each change audited (the comment in the
+  audit's detail, the note as its reason). The note is shown only on the admin page (`federation.read`). **Decided:
+  the list is not published unless an admin chooses to**: the instance setting `federation_publish_blocks` (off when
+  nothing is saved; `PUT /api/admin/federation/publish`, audited as `federation_publish`) makes the about page say
+  `moderatedServers` and list, from `GET /api/about/servers`, the limited and suspended domains with their public
+  comments (never allowed ones, never the note), 200 at a time, to who may read the about page (a member, or a visitor
+  once a description is saved, counted by address as the about page is). In local mode neither the route nor the
+  field exists, and the about page is unchanged.
+- **The admin page.** The domains come 100 at a time (`?after=`), narrowed by part of the name (`?q=`) and by policy
+  (`?policy=`), with the counts of each policy, so 10,000 domains are neither one answer nor one drawing; each row has
+  Change (every value, in the same form) and Remove. The mode switch asks before it changes, saying what each mode
+  means. The page says that the allowlist alone does not stop a server that is not listed from reading public actors
+  and posts, and that authorized fetch, which would, is not built yet (7.6, FMD item 4). The `federated` browser suite
+  checks it by keyboard and takes its picture with one domain of each kind.
+- **Not built** (by the design, later items): reject reports' effect (FMD 3), authorized fetch (FMD 4); and import and
+  export of the list, which section 10 marks "later".
+- Tests: `TestPolicyDecide` (limit and reject media walk up), `TestDBPolicyWalkSQL` (the stored walk is the same),
+  `TestDBDomainPolicies` with its parts (values, pages and the about page; limit in and out with a Follow from a limited
+  domain waiting for approval, also under a limit not yet read into memory; reject media in and out),
+  `TestFanOutPassesAdmits`, `TestDBFanOutDueAsksPolicy`, `TestLimitFragments`, `TestDBFederatedRoutes` (the two new
+  routes), `TestDBQueryPlans` ("limited:"), the `federated` browser suite, and 20 checks of the `federation` suite
+  (`test/federation.sh`, 95 planned in all) between the two real instances: one's admin limits two's domain, and a
+  Follow from two waits on one for a member who approves nobody by hand, while a reply from two is read on one by a
+  follower of its author and neither listed nor counted for the member who does not follow it, both shown once the
+  limit is lifted; with two's media rejected, a picture of two's comes to one as a link, kept as one, and two's proxy
+  shows no request for it; with two suspended, a delivery that waited in one's queue is refused at its send with the
+  policy's reason and two's proxy gets nothing, two's next delivery is answered 403 (recorded on two, counted on one),
+  and once lifted a new follow from one is accepted by two. Faults tried in scratch builds: the limit ignored by the
+  Follow, caught by the request check; the suspension not asked at the send, caught by the reason on the refused row
+  (the fetcher's own check still kept the request from two); reject media ignored at the keep and the claim, caught by
+  the picture check; reject media ignored by the claim alone is not seen end to end (the keep already makes the
+  picture a link, and the race the claim covers cannot be made between two real instances), and is
+  `TestDBDomainPolicies`'s.
 
 ## 11. The member's side
 

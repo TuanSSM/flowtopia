@@ -6,11 +6,11 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)); part of item 1 is built with FWR's inbox. The first item ships together with FWR's inbox, because the allowlist is how
-the experimental mode starts (F8). 0 of 8 items done. Every admin action below goes through `audit`.
+**Status:** in progress (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)); item 1 is done. The first item shipped in two parts, the first with FWR's inbox, because the allowlist is how
+the experimental mode starts (F8). 1 of 8 items done. Every admin action below goes through `audit`.
 Every setting, table, route and test named below is new unless the design note says it exists.
 
-- [ ] **Domain policies and the allowlist.** `domain_policies` (allow, limit, suspend, reject media,
+- [x] **Domain policies and the allowlist.** `domain_policies` (allow, limit, suspend, reject media,
   reject reports, public and private comments); the `policy` setting (allowlist or open); an Admin
   page; the permissions `federation.read` and `federation.manage` in `rolePerms`. Checked in the
   fetcher, the inbox and the fan-out. A limited domain's follows become follow requests, as
@@ -27,10 +27,28 @@ Every setting, table, route and test named below is new unless the design note s
   key, actor or search by handle reaches an unlisted server in allowlist mode); `TestPolicyDecide`,
   `TestDBDomainPolicies`, `TestDBPolicyRefusesFetch`, `TestDBPolicyBothWays`, `TestPermissionTable` updated, the
   inbox's cases in `TestInboxRefusals`, and the page in the `federated` browser suite with its screenshot.
-  **Open:** the fan-out (FWR 4) must pass `admits` when it builds its requests, as every federation request
-  does now; `limit` (the API refuses it until follows cross servers, FWR 3, so
-  a Follow from a limited domain waiting for approval is not testable yet); reject media and reject reports;
-  the public comment on the about page; the Admin page's sentence on authorized fetch (7.6).
+  Built with the rest (federation.md section 10, "As built (FMD 1, the rest)"): the fan-out proven to pass `admits`
+  on every path (it did already: `TestFanOutPassesAdmits` reads every producer, enqueue, fan-out and request from the
+  code, and `TestDBFanOutDueAsksPolicy` covers an activity that waited for room); `limit` (its accounts shown only to
+  their followers: replies listed and counted, notifications, posts only naming a member, bio, posts in a search by
+  handle; a Follow from it a request whatever the member's setting, asked of the stored policy; follows kept, requests
+  left waiting when lifted); reject media (pictures kept as links, the kept files removed, never fetched after);
+  reject reports stored and shown with what it does not do yet; the public comment and the note for staff, the about
+  page's list of limited and suspended domains when an admin publishes it (off by default); the Admin page paged with
+  a search, every value editable, the mode switch asking first, the sentence on authorized fetch. DoD: each policy in
+  and out in `TestDBDomainPolicies` (allow and suspend, and its parts for limit with a Follow from a limited domain
+  waiting for approval, and reject media), the allowlist both ways in `TestDBPolicyBothWays`, `TestPermissionTable`
+  (it lists both permissions since the first part; nothing new to add), the screenshot `federated-admin-federation`
+  with one domain of each kind; and between two real instances, 20 checks of the `federation` suite (a Follow from a
+  limited domain waiting, a reply hidden, a picture kept as a link and never fetched, a suspension refusing both ways and
+  lifted). No migration.
+  **Not in this item, by the design:** what reject reports gates (a Flag from that domain) is item 3, and authorized
+  fetch is item 4, as the Admin page says; import and export of the list are "later" in section 10, not built.
+  **For the owner (defaults built):** whether an exact-handle search should find an account of a limited domain at
+  all (built: it answers with the profile and a notice, no posts and no bio, so the account can still be followed);
+  whether likes of limited accounts should stop counting (built: they count, as counts name nobody); whether lifting
+  reject media should fetch the old pictures again (built: no, only an edited post brings them back); whether the
+  about page should list the moderated servers by default (built: off until an admin ticks it).
 - [ ] **Actions on remote accounts.** `mute` and `suspend` in `handleModAction` act as limit and
   suspend on a remote account (limit: hidden from all but its followers, its follows become
   requests; suspend: its follows removed and not restored on unsuspend, as in Mastodon); a new

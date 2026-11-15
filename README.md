@@ -669,13 +669,33 @@ the name exists, makes no difference to the answer.
 - **Two switches, both off by default.** The `federation` flag under Admin, Features ("Federation: take
   deliveries"; it exists only in a mode that federates) pauses the inbox: while off, every delivery is answered
   503 "try again later" and nothing waiting is handled. Admin, Federation chooses **whom** to take deliveries
-  from: "Allowed servers only" (what nothing saved means) takes them only from the domains allowed there, and
-  "Every server not suspended" from any server but those suspended. The same choice holds the other way:
-  in allowlist mode Flowa connects to no server that is not allowed (no key, no profile, no member's search by
+  from: "Allowed servers only" (what nothing saved means) takes them only from the domains allowed or limited
+  there, and "Every server not suspended" from any server but those suspended; the page asks before it switches,
+  saying what each means. The same choice holds the other way:
+  in allowlist mode Flowa connects to no server that is not listed (no key, no profile, no member's search by
   handle, which says so), so **on a fresh federating instance nothing reaches another server, and nothing is
-  taken from one, until an admin allows a domain or chooses open**. A domain covers its subdomains; a
-  suspended domain is never fetched from in either mode. Moderators read the page; admins change it, and every change is
-  in the audit log. Neither choice stops anyone reading the public profiles and posts, as a browser can.
+  taken from one, until an admin allows a domain or chooses open**. A domain covers its subdomains, and the strictest
+  policy on the way up wins; a suspended domain is never fetched from in either mode. Moderators read the page; admins
+  change it, and every change is in the audit log. **Neither choice stops anyone reading the public profiles and
+  posts**, as a browser can: the allowlist alone does not stop a server that is not listed from fetching them without
+  a signature. Authorized fetch, which would ask for one, is not built yet (FMD item 4), and the page says so.
+- **What an admin sets per domain** (Admin, Federation, Domains; each change audited, at most 300 changes an hour per
+  admin, at most 10,000 domains, listed 100 at a time with a search by part of the name and by policy):
+  - **Allow**: listed, so let in by the allowlist.
+  - **Limit** (Mastodon's domain Limit): let in, but its accounts are shown here only to the members who follow them.
+    Their replies under posts here (listed and counted alike), the notifications they leave, a post of theirs that
+    only names a member, and their profile text are hidden from everyone else; a search by their handle answers
+    with the profile and a notice but reads none of their posts. A Follow from one of them becomes a request the
+    member approves, even a member who does not approve followers by hand. Follows that exist stay; lifting the
+    limit shows what was hidden and leaves the requests waiting.
+  - **Suspend**: nothing in or out; follows with its accounts end and what they left here is removed (next sections).
+  - **Reject media**: none of its pictures is fetched or kept; its posts show a link to each picture instead. Turning
+    it on removes the pictures already kept (their files are gone; lifting it does not fetch them again, and a post
+    edited after that brings its pictures again). Its accounts have no picture to reject: Flowa shows no remote avatar.
+  - **Reject reports**: saved and shown, but it does nothing yet: reports from other servers come with FMD item 3.
+  - **A public comment** (500 characters) and **a note for staff** (500 characters). The about page lists the limited
+    and suspended domains with their public comments only while an admin ticks "List the limited and suspended domains
+    on the about page" (off unless turned on); the note is shown only on the admin page.
 - **What a delivery must pass**, in this order, cheapest first, and nothing a sender has not proven is charged
   to anyone but the address it came from:
   1. before the body is read: at most 3,600 deliveries an hour per address, an Activity Streams content type, a
@@ -810,8 +830,8 @@ members), a member follows people on other servers and is followed from them ([d
 - **Stopping sharing** keeps remote followers but sends them nothing; their servers then find the profile gone.
 - **What the admin sees.** Admin, Federation counts follows taken by type, and "Sending to other servers" what
   was sent. `-purge-remote` removes the remote accounts' follows and requests with them.
-- **Not yet:** posts from followed accounts in Home (a later version), and the domain policy "limit" turning
-  follows into requests.
+- **A limited server's** Follows become requests (Admin, Federation, "Limit", above), with the same caps.
+- **Not yet:** approving the waiting requests at once when a member turns approval by hand off.
 
 ### Federation: Public posts go out as notes
 
@@ -892,8 +912,8 @@ content in, as built (FWR 5)"):
   `./deploy.sh --rollback` would show them as local posts in the Community timeline, so run
   `docker exec nunchaku /nunchaku -purge-remote` first, with the Federation switch off ("remote accounts, and going
   back past them", above). It removes those posts, their pictures' rows and the files under `-data/media` too.
-- **Not yet:** Undo of a share, a post given by its id only (fetched from its server), and the domain policy's
-  "reject media".
+- **Not yet:** Undo of a share and a post given by its id only (fetched from its server). A domain whose media an
+  admin rejects has its pictures kept as links (Admin, Federation).
 
 ### Federation: replies and likes across servers
 

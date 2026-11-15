@@ -11,7 +11,10 @@
 #     trust that authority through SSL_CERT_FILE, as any Go program on Linux does, and FLOWA_FEDERATION_ALLOW_PRIVATE
 #     lets their requests reach the network's private addresses (still https, port 443 and a verified certificate);
 #   - every step through the apps' own APIs, over HTTPS through the proxies, as members and admins would, each step
-#     checked on the other instance: what a person would see there.
+#     checked on the other instance: what a person would see there;
+#   - near the end, one's admin limits, then rejects the media of, then suspends two's domain (FMD 1), and lifts each:
+#     a Follow from two waits for approval and a reply from two is hidden from who does not follow its author, a
+#     picture from two stays a link one never fetches, and a delivery either way is refused while two is suspended.
 # No fixed waits: each check polls what it needs with a deadline and says how long it took. Nothing here uses the
 # names or the port of the real service: every container, network and volume is named flowa-fed-<random>, the
 # proxies are published on free ports of 127.0.0.1 only, and everything is removed at the end, on a failure and on
@@ -23,7 +26,7 @@ export PATH="$HOME/.local/go/bin:$PATH"
 
 # planned is the number of checks a whole run makes. A run that stops early counts the ones it never reached as skipped,
 # with the reason, so the count at the end always adds up to it; a whole run that does not is a failure of the script.
-planned=75
+planned=95
 # The whole run's deadline, below the CI job's 15 minutes and the step's 13, so that the logs are always written.
 limit=${FLOWA_FED_LIMIT:-660}
 pass=0 fail=0 skip=0 last=$(date +%s.%N)
@@ -485,6 +488,94 @@ for n in "${names[@]}"; do
   if undropped "$n"; then ok "$n's Federation tab still counts nothing left unsent since its last start ($dropped)"
   else bad "$n's Federation tab still counts nothing left unsent since its last start" "$code ${dropped:-$(cut -c1-300 <<<"$body")}"; fi
 done
+
+# ---- domain policies between the two (FMD 1): limit, reject media, suspend ----
+# One's admin limits, then rejects the media of, then suspends two's domain, lifting each in turn; each step is checked
+# where a person would see it. dee joins one for this, and one's admin shares their profile to follow accounts of two.
+policy() { api one admin PUT /api/admin/federation/domains/two.flowa.test "$1"; }
+s=""
+api one dee POST /api/signup '{"username":"dee","password":"flowa-test-only"}'; s+="$code "
+api one dee PUT /api/me '{"federates":true}'; s+="$code$(j '.federation.optedIn') "
+policy '{"policy":"limit","comment":"Testing a limit."}'; s+="$code $(j '[.domains[] | select(.domain == "two.flowa.test") | .policy] | join(",")')"
+all "dee joins one and shares her profile, and one's admin limits two.flowa.test" "200 200true 200 limit" "$s"
+dee2=0
+# Her key is made in the background as she starts sharing; until then her actor answers 503, so the lookup waits for it.
+actorup() { [ "$(curl -sS -m 10 --noproxy '*' --cacert "$work/ca.pem" --resolve "one.flowa.test:${port[one]}:127.0.0.1" -H 'Accept: application/activity+json' \
+  -o /dev/null -w '%{http_code}' "https://one.flowa.test:${port[one]}/users/$1" 2>/dev/null)" = 200 ]; }
+waitfor 30 actorup dee
+if found two cyd dee@one.flowa.test; then dee2=$(j .result.account); api two cyd PUT "/api/fed/accounts/$dee2/follow"; fi
+all "cyd follows dee from two: requested" "200 requested" "$code $(j .view.follow)"
+deereq() { api one dee GET /api/fed/requests && ok200 '[.requests[].user.remote.handle] | join(",") == "cyd@two.flowa.test"'; }
+within 30 "on one cyd's Follow waits for dee's approval though she approves nobody by hand: two's domain is limited" deereq || need "a request from a limited server"
+api one dee PUT "/api/fed/requests/$(j '.requests[0].user.id')"
+cydfollows() { api two cyd GET "/api/fed/accounts/$dee2" && ok200 '.view.follow == "following"'; }
+within 30 "dee approves it, and cyd follows dee on two" cydfollows || need "cyd following dee"
+# One's admin follows cyd, so a reply of cyd's has a reader on one and cyd's posts come to one (bob left above, so
+# one knows his account as gone).
+s="" cyd1=0
+api one admin PUT /api/me '{"federates":true}'; s+="$code$(j '.federation.optedIn') "
+waitfor 30 actorup admin
+if found one admin cyd@two.flowa.test; then cyd1=$(j .result.account); api one admin PUT "/api/fed/accounts/$cyd1/follow"; s+="$code"; fi
+all "one's admin shares their profile and follows cyd of two" "200true 200" "$s"
+adminfollows() { api one admin GET "/api/fed/accounts/$cyd1" && ok200 '.view.follow == "following"'; }
+within 30 "two accepts it at once: one's admin follows cyd" adminfollows || need "a follow of cyd from one"
+api one dee POST /api/posts '{"body":"A limit, tested","audience":"public"}'
+pd=$(j '.posts[0].id')
+within 30 "dee's Public post reaches cyd's Home on two" inhome two cyd "https://one.flowa.test/users/dee/posts/$pd" || need "dee's post on two"
+api two cyd POST "/api/posts/$(jq -r .id <<<"$post")/comments" '{"body":"From a limited server"}'
+cc=$(j '.comment.id')
+cydreply() { api one admin GET "/api/posts/$pd/comments" && ok200 '[.comments[] | select(.remote.link == "'"https://two.flowa.test/users/cyd/comments/$cc"'")] | length == 1'; }
+within 30 "cyd's reply reaches one: one's admin, who follows cyd, reads it under dee's post" cydreply || need "cyd's reply on one"
+api one dee GET "/api/posts/$pd"; s="$code $(j '.posts[0].commentCount') "
+api one dee GET "/api/posts/$pd/comments"; s+="$code $(j '.comments | length')"
+all "dee, who does not follow cyd, neither reads cyd's reply under her own post nor counts it" "200 0 200 0" "$s"
+policy '{"policy":"allow"}'; s="$code "
+api one dee GET "/api/posts/$pd"; s+="$code $(j '.posts[0].commentCount') "
+api one dee GET "/api/posts/$pd/comments"; s+="$code $(j '.comments | length')"
+all "the limit lifted, dee reads cyd's reply and counts it" "200 200 1 200 1" "$s"
+
+# Reject media: a new post of cyd's comes to one with its picture as a link to two, and one fetches nothing.
+policy '{"policy":"allow","rejectMedia":true}'; s="$code $(j '[.domains[] | select(.domain == "two.flowa.test") | .rejectMedia] | join(",")') "
+api two cyd POST /api/posts "{\"body\":\"A picture one will not keep\",\"audience\":\"public\",\"image\":\"data:image/png;base64,$png\",\"alt\":\"$alt\"}"
+pb=$(j '.posts[0].id'); s+="$code"
+all "one's admin rejects two's media, and cyd posts a picture on two" "200 true 200" "$s"
+aslink() { inhome one admin "https://two.flowa.test/users/cyd/posts/$pb" && [ "$(jq -r '.remote.media[0].src // "none"' <<<"$post")" = none ] &&
+  [ "$(jq -r '.remote.media[0].link' <<<"$post")" = "https://two.flowa.test/users/cyd/posts/$pb/picture.png" ]; }
+within 30 "cyd's post reaches one's admin's Home with its picture as a link to the original on two, no copy" aslink || need "cyd's post on one"
+kept=$(sql one "SELECT string_agg(state, ',') FROM ap_media m JOIN posts p ON p.id = m.post_id WHERE p.ap_id = 'https://two.flowa.test/users/cyd/posts/$pb'")
+asked=$(docker logs "$p-two-tls" 2>&1 | grep -c " GET /users/cyd/posts/$pb/picture")
+all "one keeps the picture as a link and its picture worker asked two for nothing (two's proxy)" "link 0" "$kept $asked"
+
+# Suspend: a delivery that waited in one's queue is refused at its send, two's deliveries are refused 403 at one's
+# inbox, and lifting the suspension lets a new follow through. Two's proxy stops first, so dee's next post waits.
+docker stop -t 2 "$p-two-tls" >/dev/null
+api one dee POST /api/posts '{"body":"Waiting for two","audience":"public"}'
+pw=$(j '.posts[0].id')
+towait() { [ "$(sql one "SELECT count(*) FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = 'https://one.flowa.test/users/dee/posts/$pw/activity' AND d.state = 'queued' AND d.attempts >= 1")" = 1 ]; }
+within 30 "with two's proxy stopped, dee's post waits in one's queue for cyd on two" towait || need "a delivery waiting for two"
+policy '{"policy":"suspend","comment":"Testing a suspension."}'; s="$code $(j '[.domains[] | select(.domain == "two.flowa.test") | .policy] | join(",")') "
+posts2=$(docker logs "$p-two-tls" 2>&1 | grep -c ' POST /')
+docker start "$p-two-tls" >/dev/null
+port[two]=$(docker port "$p-two-tls" 443/tcp | head -1 | sed 's/.*://')
+waitfor 30 healthy two; s+="$code"
+all "one's admin suspends two.flowa.test, and two's proxy is back" "200 suspend 200" "$s"
+# The row waits for its next try (a minute after the failure); it is made due now, as if that minute had passed.
+sql one "UPDATE ap_deliveries SET next_at = now() WHERE state = 'queued'" >/dev/null
+refusedsend() { [ "$(sql one "SELECT d.state || ':' || d.last_error FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = 'https://one.flowa.test/users/dee/posts/$pw/activity'")" = "failed:the domain policy refuses the host" ]; }
+within 30 "at its send one refuses the waiting delivery to the suspended server" refusedsend
+all "and two's proxy took nothing from one" "$posts2" "$(docker logs "$p-two-tls" 2>&1 | grep -c ' POST /')"
+api two cyd POST /api/posts '{"body":"Two does not know it is suspended","audience":"public"}'
+pc=$(j '.posts[0].id')
+# Two's own row for that post records one's answer, and one's Federation tab counts the refusal by its reason.
+refused403() { [ "$(sql two "SELECT d.state || ':' || d.last_error FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = 'https://two.flowa.test/users/cyd/posts/$pc/activity'")" = "failed:one.flowa.test answered 403" ] &&
+  api one admin GET /api/admin/federation && ok200 '(.inbox.refused["this server'"'"'s domain is suspended here"] // 0) >= 1'; }
+within 30 "two delivers cyd's post to one, which refuses it with 403: its domain is suspended" refused403
+policy '{"policy":"allow"}'; s="$code "
+cyd1c=0
+if found one dee cyd@two.flowa.test; then cyd1c=$(j .result.account); api one dee PUT "/api/fed/accounts/$cyd1c/follow"; s+="$code"; fi
+all "the suspension lifted, dee follows cyd from one" "200 200" "$s"
+deefollows() { api one dee GET "/api/fed/accounts/$cyd1c" && ok200 '.view.follow == "following"'; }
+within 30 "and two accepts it: dee follows cyd" deefollows
 
 # ---- memory, and what is kept ----
 # docker stats shows the container's memory as the kernel counts it for the cgroup, without the page cache it can

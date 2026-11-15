@@ -351,6 +351,8 @@ a.chip:hover, button.chip:hover { background: var(--hover); text-decoration: non
 .signup-rules { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--side); }
 .signup-rules h2 { font-size: 14px; }
 .about { max-width: 720px; }
+.about-server-list { margin: 6px 0 10px; padding: 0; list-style: none; display: grid; gap: 8px; }
+.about-server-list li { overflow-wrap: anywhere; }
 .about-contact { overflow-wrap: anywhere; } /* a long link breaks anywhere rather than run off a phone */
 /* The admin's editor: one box per rule, with its buttons under it. */
 .inst-rules { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
@@ -364,6 +366,9 @@ a.chip:hover, button.chip:hover { background: var(--hover); text-decoration: non
 .fed-counts li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 2px 0; }
 .fed-lists h3 { margin: 6px 0 2px; }
 .fed-leave { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 8px; justify-items: start; }
+.fed-switches { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 6px; }
+.fed-switches legend { padding: 0; margin-bottom: 4px; }
+.fed-flags { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
 .req { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-s); }
 .req-who { min-width: 0; flex: 1 1 240px; }
 .req-reason, .req-taken { margin-top: 4px; }

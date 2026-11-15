@@ -27,7 +27,10 @@
 #     signed delivery needs another server for its key,
 #     so verifying, queueing and handling are Go's (TestInboxRefusals, TestDBInboxQueue, TestDBTwoFlowaInbox);
 #   - the Federation tab of the Admin page (FMD 1): a domain allowed with the keyboard, read back through the
-#     API and the audit log, the policy chosen with Space, the inbox's numbers showing the refusals, held to
+#     API and the audit log; one domain of each kind (limit with a public comment and reject reports, suspend,
+#     allow with reject media) shown with its switches, comment and note; a row changed by keyboard; the search;
+#     the list published on the about page without the notes; the sentence on authorized fetch; the mode switch
+#     asking first (declined, then accepted) with the arrow keys; the inbox's numbers showing the refusals, held to
 #     the a11y and contrast walks;
 #   - the admin dashboard's mode line, and the start log, say what this version serves (the inbox acts only on
 #     an account deleting itself or changing its profile, nothing delivered) and that taking deliveries is off
@@ -193,11 +196,41 @@ try:
     if tab_to('#fed-domain-form [name=domain]','the domain field'):
         check('the field shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
         type_text('Social.Example')
-        key(TAB);key(TAB);type_text('friends of the house');key(ENTER)
+        # Past the policy, the two switches and the public comment to the note for staff.
+        for _ in range(5): key(TAB)
+        check('five Tabs on, the note for staff has the focus',lambda: on('#fed-domain-form [name=note]'),active)
+        type_text('friends of the house');key(ENTER)
         check('Enter saves it: the row is there, allowed, with the reason, and the server has it',lambda: js("const r=document.querySelector('tr[data-domain=\"social.example\"]');return !!r&&r.innerText.includes('Allowed')&&r.innerText.includes('friends of the house')") and any(d['domain']=='social.example' and d['policy']=='allow' for d in get_json(op,'admin/federation').get('domains',[])),lambda: txt('#main')[:600])
         check('the focus is back in the domain field for the next one',lambda: on('#fed-domain-form [name=domain]'),active)
     j=get_json(op,'admin/audit?action=domain_policy')
     check('the change is in the audit log',any(i.get('action')=='domain_policy' for i in j.get('items',[])),lambda: j)
+    # One domain of each kind (FMD 1): a limit with a public comment, a suspension, an allow that rejects media.
+    api(op,'admin/federation/domains/loud.example',{'policy':'limit','comment':'Too many unsolicited replies.','note':'reports from three members','rejectReports':True},'PUT')
+    api(op,'admin/federation/domains/spam.example',{'policy':'suspend','comment':'Spam.','note':'spam waves'},'PUT')
+    api(op,'admin/federation/domains/pics.example',{'policy':'allow','rejectMedia':True,'note':'pictures we cannot moderate'},'PUT')
+    load(BASE);nav('#/admin/federation')
+    check('the list shows each kind with its switches, its public comment and its note',lambda: js("""const t=s=>document.querySelector(`tr[data-domain="${s}"]`)?.innerText||'';
+      return t('loud.example').includes('Limited')&&t('loud.example').includes('Reports rejected')&&t('loud.example').includes('Too many unsolicited replies.')&&t('loud.example').includes('reports from three members')
+        &&t('spam.example').includes('Suspended')&&t('pics.example').includes('Media rejected')&&t('social.example').includes('Allowed')"""),lambda: txt('#main')[:900])
+    check('the page says the allowlist alone does not stop public reading, and that authorized fetch is not built yet',lambda: (lambda t: 'The allowlist alone does not stop a server that is not listed from reading' in t and 'Authorized fetch' in t and 'is not built yet' in t)(txt('.fed-fetch') or ''),lambda: txt('.fed-fetch'))
+    check('reject reports says it does nothing yet',lambda: 'it does nothing yet' in (txt('#fed-domain-form') or ''),lambda: txt('#fed-domain-form'))
+    # Change, by keyboard: the form takes the row's values, with the domain fixed, and saves the change.
+    js("document.querySelector('[data-act=fed-domain-edit][data-domain=\"loud.example\"]').focus()");key(ENTER)
+    check('Change fills the form with the row and the keyboard is on its policy',lambda: js("const f=document.getElementById('fed-domain-form');return f.domain.value==='loud.example'&&f.domain.readOnly&&f.policy.value==='limit'&&f.rejectReports.checked&&!f.rejectMedia.checked&&f.comment.value==='Too many unsolicited replies.'") and on('#fed-domain-form [name=policy]'),lambda: (txt('#fed-domain-form'),active()))
+    js("const f=document.getElementById('fed-domain-form');f.rejectMedia.checked=true;f.comment.focus()");key(ENTER)
+    check('saving the change: the server has reject media on loud.example, its limit and comment kept',lambda: any(d['domain']=='loud.example' and d['policy']=='limit' and d['rejectMedia'] and d['comment']=='Too many unsolicited replies.' for d in get_json(op,'admin/federation').get('domains',[])))
+    # The search: part of a name and a policy narrow the list, and Show all gives it back.
+    js("const f=document.getElementById('fed-search');f.q.value='example';f.kind.value='suspend';f.q.focus()");key(ENTER)
+    check('the search narrows the list to the suspended domain',lambda: js("return [...document.querySelectorAll('tr[data-domain]')].map(r=>r.dataset.domain).join()")=='spam.example',lambda: txt('#main')[:600])
+    click('[data-act=fed-search-clear]')
+    check('Show all lists the four domains again',lambda: js("return document.querySelectorAll('tr[data-domain]').length")==4)
+    # Publishing the list on the about page: off until an admin ticks it; then the about page lists the limited and
+    # suspended domains with their public comments, never the note.
+    js("document.querySelector('[data-change=fed-publish]').focus()");key(SPACE)
+    check('ticking publish: the server has it',lambda: get_json(op,'admin/federation').get('publish') is True)
+    nav('#/about')
+    check('the about page lists the limited and suspended domains with their comments, no allowed one and no note',lambda: (lambda t: 'Moderated servers' in t and 'loud.example' in t and 'Too many unsolicited replies.' in t and 'spam.example' in t and 'pics.example' not in t and 'social.example' not in t and 'reports from three members' not in t)(txt('#main') or ''),lambda: txt('#main')[:600])
+    nav('#/admin/federation')
     for t in ('dark','light'):
         themed(t)
         n,f,d=js(A['NAMES'],'#main'),js(A['FIELDS'],'#main'),js(A['IDS'])
@@ -206,14 +239,21 @@ try:
         check(f'the Federation tab, {t}: text and the edges of controls stand out (contrast.py)',r['n']>0 and not r['bad'] and not r['unknown'],lambda: (r['n'],r['bad'][:4],r['unknown'][:4]))
     themed('dark')
     js("scrollTo(0,0)");frames()
-    picture('federated-admin-federation','Federated mode: the Federation tab, a domain allowed and the deliveries refused')
-    # A group of radio buttons is one stop for Tab, on the chosen one; an arrow key chooses the next.
+    picture('federated-admin-federation','Federated mode: the Federation tab, one domain of each kind, the list published and the deliveries refused')
+    # A group of radio buttons is one stop for Tab, on the chosen one; an arrow key chooses the next, which asks first
+    # what it means: declined, nothing changes and the choice held is checked again; accepted, the server has it.
     if tab_to('[data-change=fed-policy][value=allowlist]','the chosen policy, "Allowed servers only"'):
+        js("window.__confirm=window.confirm;window.__asked=[];window.confirm=m=>{window.__asked.push(m);return false}")
         key(DOWN)
-        check('the arrow key chooses "Every server not suspended", and the server has it',lambda: get_json(op,'admin/federation').get('policy')=='open')
+        check('the arrow key asks first, saying what "Every server not suspended" means; declined, nothing changes',lambda: js("return window.__asked.length===1&&window.__asked[0].includes('any server except the domains suspended')&&document.querySelector('[data-change=fed-policy][value=allowlist]').checked") and get_json(op,'admin/federation').get('policy')=='allowlist',lambda: js('return window.__asked'))
+        js("window.confirm=m=>{window.__asked.push(m);return true}")
+        key(DOWN)
+        check('accepted, the server has it',lambda: get_json(op,'admin/federation').get('policy')=='open')
         check('the focus stays on the choice made',lambda: on('[data-change=fed-policy][value=open]'),active)
+        js("window.confirm=window.__confirm")
     api(op,'admin/federation/policy',{'policy':'allowlist'},'PUT')
-    api(op,'admin/federation/domains/social.example',None,'DELETE')
+    api(op,'admin/federation/publish',{'publish':False},'PUT')
+    for d in ('social.example','loud.example','spam.example','pics.example'): api(op,'admin/federation/domains/'+d,None,'DELETE')
 
     # The composer offers the audience once the member shares; a Public post is marked, and is public.
     api(op,'me',{'federates':True},'PUT')
