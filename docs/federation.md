@@ -4162,7 +4162,9 @@ migration (migration 17 had every column), "federation: domain policies and the 
   Mastodon's Limit does (only a suspension removes follows). The admin page explains each policy in one sentence.
   **Cost.** While no domain is limited (most instances), the statements run without the look (`limitStatements`,
   from the policy in memory, which each admin change reloads before its answer), byte for byte the statements of before
-  this item (`TestUnlimitedIsBefore`), so nothing is read that was not read before; local mode likewise. With a limit,
+  this item for posts and comment lists (`TestUnlimitedIsBefore`); local mode likewise, for every statement. Three
+  smaller looks keep the walk in a mode that federates even with no domain limited, where it is always true and costs
+  one index look: the count behind a like or a comment on a post, the picture served from the cache, and the bell. With a limit,
   each remote reply a page lists or counts costs a look in users, the walk through domain_policies and a look in
   follows. The walk looks up the domain and each domain above it in domain_policies' primary key (`policyWalk`, the
   names made into an array: compared with IN and a subquery over the row, the planner read the whole table for each
@@ -4174,8 +4176,8 @@ migration (migration 17 had every column), "federation: domain policies and the 
   always, by the same primary key. **A trailing dot** names the same server but another id: an actor whose id has one
   is refused (`actorCache.lead`, as an id not where it came from), so no account is stored under such a domain and the
   same person cannot be kept twice, with and without it; `actorHost` leaves the dot out, as `fedHost` does, and the walk
-  reads a domain without it (`rtrim`, on the names looked up, not on the index). No instance has federated yet, so none
-  holds such an account.
+  reads a domain without it (`rtrim`, on the names looked up, not on the index). An account stored under such a domain
+  before this item, if any instance holds one, is still read rightly by the walk; its refresh is refused.
   **The inbox's queue** asks again, when a row is handled, only whether the sender's domain is suspended (as before
   this item): in allowlist mode, a host whose allow row is removed while its activities wait in the queue still has
   them handled.

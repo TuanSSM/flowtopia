@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -435,6 +436,14 @@ func testDomainLimit(t *testing.T) {
 	e.deliver(activity(boID, "Follow", "https://here.example/users/ana", nil), e.bo())
 	if e.state(e.boUser, e.anaID) != "pending" || e.a.fed.policyNow().limited("social.example") {
 		t.Errorf("a Follow under a stored limit not yet in memory: %q", e.state(e.boUser, e.anaID))
+	}
+	// An admin's change is read into memory though the admin's request ended before the answer (the connection
+	// dropped after the change was committed): the request's own context is not what the reading waits on.
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	e.a.fedPolicyChanged(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/admin/federation", nil).WithContext(gone), nil)
+	if !e.a.fed.policyNow().limited("social.example") {
+		t.Error("a change whose request ended early was not read into memory")
 	}
 }
 

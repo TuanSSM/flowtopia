@@ -75,8 +75,10 @@ func TestDBOwnWritesAreNoTries(t *testing.T) {
 				f.followsOn = func() (bool, bool) { return true, false }
 				t.Cleanup(func() { f.followsOn = keep })
 			case "no key yet":
-				// The key maker is held first: a request for ana's key still waiting would make it again after the
-				// delete, and the update would then be sent, not put off.
+				// The key maker is left to finish what it has, then held: a request for ana's key still waiting, or one
+				// it had just taken, would make the key again after the delete, and the update would then be sent,
+				// not put off.
+				settleKeys(t, f)
 				hold := make(chan struct{})
 				f.mu.Lock()
 				f.beforeKey = func(keyOwner) { <-hold }

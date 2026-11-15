@@ -21225,7 +21225,11 @@ func (a *app) handleAboutServers(w http.ResponseWriter, r *http.Request) {
 
 // fedPolicyChanged reads the policy into memory again after a change, and answers with the admin page's data.
 func (a *app) fedPolicyChanged(w http.ResponseWriter, r *http.Request, u *user) {
-	if err := a.fed.loadPolicy(r.Context()); err != nil {
+	// The change is committed already, so the policy in memory is read again whatever became of the request: an admin
+	// whose connection dropped just now must not leave this server deciding by the policy of before.
+	ctx, cancel := own()
+	defer cancel()
+	if err := a.fed.loadPolicy(ctx); err != nil {
 		a.serverError(w, err)
 		return
 	}
