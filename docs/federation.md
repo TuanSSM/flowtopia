@@ -456,6 +456,10 @@ member when an admin deletes the account or the member asks to be removed from t
 account of another server that deletes itself", and the parts add `deletion` (6.4, "Account deletion across servers,
 as built").
 
+As built (PRT 2): the sentence now ends "..., and removes everything of an account of another server that deletes itself,
+and lets a member move their profile to an account on another server (with the moves flag on), telling their followers
+there with a Move", and the parts add `move` (6.4, "Moving to another server, as built").
+
 ### 4.2 What each mode means for every surface
 
 | Surface | `local` (default) | `federated` | `single` |
@@ -1045,7 +1049,9 @@ above is silent:
   key refetch the actor (section 7.4). This is what the SWICG report calls a "signed" rotation ("Key
   rotation"), and its verification steps refetch the key once on a failure, as 7.4 does. Also used
   after a lost secret.
-- `alsoKnownAs` and `movedTo`: PRT (Move).
+- `alsoKnownAs` and `movedTo`: PRT (Move). As built (PRT 2): a member's document names `alsoKnownAs` (the accounts they move
+  here from) and `movedTo` (the account they moved to) only when it has them, with the two terms added to its context
+  (`actorContextMoving`), so every other document is byte for byte as before (6.4, "Moving to another server, as built").
 
 ## 6. The protocol surface
 
@@ -1320,7 +1326,7 @@ above.
 | Accept, Reject | a follow request is answered (or answered at once for open accounts) | the follower's inbox |
 | Like, Undo(Like) | a member likes or unlikes a remote post | the post author's inbox |
 | Flag | a moderator chooses to forward a report about remote content | the remote instance's shared inbox, signed by the instance actor, with no reporter named; in Mastodon's shape: `actor` the instance actor, `object` the reported account then the reported posts, `content` the moderator's comment, `to` the reported account |
-| Move | PRT | followers |
+| Move | a member moves to an account on another server (PRT 2: "Moving to another server, as built" below) | followers, after an Update(Person) that names `movedTo` |
 | Block | not sent: the block removes follows with Undo and Reject, which says less about the member (F3 follows Flowa's privacy defaults), and ActivityPub 6.9 says servers SHOULD NOT deliver a Block to its object. Mastodon does send one ("Remote blocking"), so Flowa receives Blocks (6.3) but does not send them | |
 | Announce | never in the first cut (no boosts) | |
 
@@ -2114,6 +2120,134 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail
   for 48 hours.
+
+#### Moving to another server, as built (PRT 2)
+
+What was there before this item: the decoder read `movedTo` and `alsoKnownAs` of remote actors (6.3) and the cache kept
+`movedTo` only; a Move received was counted and dropped at the inbox. What this item adds, in "portability: moving to an
+account on another server" in `main.go` (migration 25, with `flowa-schema24.dump` for the restore drill), only in a mode
+that federates and behind the `moves` flag (off by default; a flag of a mode that federates, `fedFlagDefaults`, so local
+mode lists exactly the flags it did):
+
+- **The contract, from Mastodon's pages** (opened 15 November 2026). Its ActivityPub page ("Account migration"): Mastodon
+  "uses the Move activity to signal that an account has migrated", and "for the migration to be considered valid,
+  Mastodon checks that the new account has defined an alias pointing to the old account (via the alsoKnownAs
+  property)"; its example has `actor` and `object` the old account, `target` the new one, `to` the old account's
+  followers, and an id under the actor. Its "Moving or leaving accounts" page: the new account first creates an alias
+  ("Moving from a different account" under Preferences, Account); the old account then asks for its password and "Move
+  followers"; a redirect "disables posting from that account and displays a profile moved notice", "following redirected
+  accounts is not possible", the redirect "can be canceled at any time"; a move is a redirect that also makes everyone
+  follow the new account, which cannot be undone for them; "a 30-day cooldown period in which you cannot migrate again".
+  **Not in those pages, so unverified until the owner's trial (FWR 9):** that Mastodon sends an Update(Person) before
+  the Move (Flowa does, so a server that fetches or reads the old actor sees `movedTo`); whether Mastodon, receiving a
+  Move, checks the old actor's `movedTo` as well as the target's `alsoKnownAs`; whether it reads `to` as a string or a
+  list (Flowa writes a list of one, which AS2 Core makes the same); the context terms for `movedTo` and `alsoKnownAs` as
+  ids (`as:movedTo`, `as:alsoKnownAs` with `@type: @id`: the ActivityPub page lists `movedTo` among the `as:` terms and
+  `alsoKnownAs` as "required for Move", 5.5; their `@type` is Flowa's reading of the Activity Streams namespace); and how
+  long Mastodon caches an alias ("You may need to wait up to 24 hours and try again" suggests its copy of the new account
+  can be that old; Flowa fetches the target again at every move, below).
+- **Naming the accounts a member moves here from** (`PUT /api/me/aliases` with `{"account": handle or address}`, `DELETE`
+  with `{"id": actor id}`; `limits.aliases`, 30 an hour). The account is resolved as a search by handle is (5.3, 11:
+  WebFinger, the actor, the reverse check, the domain policy first, the lookup's turns and its 15 s and 8 requests,
+  its floor for a name not found), from the cache's copy when fresh (the account only has to exist); one of this
+  server's own accounts is refused with its words. At most 5 (`aliasesMax`), in `users.also_known_as`, in the order
+  named, and the actor names them in `alsoKnownAs`. Each change marks the member's Update(Person) due (at most one in five
+  minutes, as a profile change) when the member shares. Mastodon calls aliases "harmless and reversible", and so they
+  are here: no password.
+- **The move** (`POST /api/me/move` with `{"target": handle or address, "password": ...}`; `limits.moves`, 5 an hour,
+  shared with taking it back). In order: federation not refused (503); the member's own password (`passwordAgain`, as
+  changing the password asks it: a wrong one counts in `limits.password`, 5 in 10 minutes, then 429); the member shares
+  and has a key (400, "Share your profile beyond this server first", since followers elsewhere know the account by its
+  shared actor and the new account checks that actor); the 30 days since the last move (409, with the date it is
+  possible from); the target resolved as above but **fetched again whatever the cache holds** (`lookupOpts.fresh`, which
+  also skips a failure remembered within its 10 minutes and refuses a stale copy; a gone actor stays gone): the alias may
+  have been added a minute ago; then its `alsoKnownAs` must hold this member's actor id exactly (422, `noAlias`, with
+  the handle to add and where Mastodon keeps the setting), and its inbox must be on its own origin (422). The cache now
+  keeps a remote actor's `alsoKnownAs` (`ap_actors.also_known_as`): the first 16 entries (`actorAliasesKept`) of at most
+  2,048 bytes each, without repeats, and nothing of an actor that says it is suspended. So a target listing more than 16
+  accounts with this member's after them is refused; noted for the owner.
+- **One transaction** (`enqueueSeq`, which `enqueueOrdered` is now a case of): an Update(Person) whose object is the
+  member's actor with `movedTo` (and the activity's context with the two terms), and a Move in Mastodon's shape (id under
+  the actor, `actor` and `object` the member, `target` the new account, `to` the member's followers collection), both to
+  the member's followers on other servers as any post's recipients (one inbox per server, its shared inbox when on the
+  actor's host; at most 10,000), and `users.moved_to` and `moved_at` written only if the member still shares, has a key
+  and moved no sooner than 30 days ago (`moveSetSQL`, checked in the transaction, so a change since the checks above
+  rolls everything back: 409 "Your profile changed while the move was being made"). The Move names the Update as the
+  activity it comes after (`ap_outbox.comes_after`), so at each inbox it is held while the Update is queued there, in
+  flight or waiting for another attempt (`afterHeldSQL`, FWR 6), and goes after the Update's outcome; where the Update
+  is given up for good (its 11 attempts or 48 hours, a 400 in both forms, the domain policy, the host's cap) the Move goes
+  after it all the same, as a comment's Update does after its Create given up (FWR 6). Every other rule of the queue
+  is the queue's: retries on its schedule and the 48 hours, the per-host turn and circuit, an unavailable host, the
+  pause (both written and waiting; the member is told sending is paused), a full queue (503 with `Retry-After: 300`,
+  "nothing was changed"), the queue's lock, its refusal of a member with no key who does not share, and the producers'
+  own-write rules are not involved: the activities are written by the request, as follows and likes are.
+- **The members here who follow the member** are moved by this server itself, as Mastodon's page says followers "will
+  be automatically switched": after the commit, each local follower (accepted, at most 10,000, `moveFollowersSQL`)
+  who may follow the new account (`followViewOf`: they share their profile, no block either way, the target's server
+  allowed, the `follows` flag on) follows it through the queue (`followRemote`, a Follow of theirs, pending until the
+  other server accepts) and stops following the member; one who already follows or asked to follow the new account
+  only stops following the member; the others keep their follow and see on the profile where the member went. The
+  answer says how many of each. A failure for one follower is logged and counted as not moved.
+- **After the move the profile is a redirect** (Mastodon's words: posting disabled, a "profile moved" notice, following
+  not possible): the actor names `movedTo`; the public page and the visitor page of a single-profile instance say
+  "This profile has moved to" with a link to the new account (its handle as cached, or its address); the profile in the
+  app says it to every member (`GET /api/users/{name}` adds `moved` in a mode that federates) and offers no Follow; a
+  Public post is refused with words (`audMoved`), and the composer offers no audience; a new follower is refused here
+  (403, `moveTakesNoFollowers`) and from other servers (a Follow is answered with a Reject, "refused (the account moved
+  to another server)"), while a follower already following keeps its follow until its server moves it; following anyone
+  on another server is refused (`moveFollowsNobody`). **Decided, for the owner:** posts to this server, comments, likes,
+  practice, the export, sharing settings and deleting the account stay possible (Mastodon makes the old account
+  read-mostly; here those never claim to be the new account, and the member's data stays theirs); comments and likes
+  on posts of other servers still go out as the old account; nobody here is told by a notification (the profile says it).
+- **Taking the redirect back** (`DELETE /api/me/move` with the password): `moved_to` is cleared, an Update(Person)
+  without `movedTo` is marked due (at most one in five minutes), followers who moved stay moved, and `moved_at` stays,
+  so the 30 days still count from the move (a new move to the same or another account waits for them). Mastodon allows
+  cancelling a redirect at any time; it is said in its page for a redirect, and for a move only that the followers'
+  switch cannot be undone. **Decided, for the owner:** a second move after 30 days is allowed while still redirecting, and
+  replaces `movedTo`; the same account again is allowed too.
+- **Single-profile mode** (`FLOWA_FEDERATE=on`): the owner moves the one profile the same way (their sharing is the
+  setting, their key the owner's); the instance stays, the page at `/` says where the profile went, and taking it back
+  works the same. Without `FLOWA_FEDERATE=on` nothing of this exists, as no route of a mode that federates does.
+- **The target on this server** is refused, with no request ("Moving between two accounts here is not built"), and so is
+  naming one of this server's accounts as an alias: a move here would need no Move at all, and is not part of this item.
+- **Domain policies:** the policy is asked before any request (a suspended server, or one not allowed in allowlist mode,
+  is refused with no connection: 403), at the fetch (redirects included) and at every delivery as always. A server
+  under "limit" may be moved to: limit (FMD) narrows what is shown here and is not a refusal; noted for the owner.
+- **Logged** (7.9): one line per move ("member N moved to an account on HOST: K inboxes to tell, M members here moved with
+  them, J not") and per redirect taken back; no profile text, no password, no address beyond the host.
+- **Local mode:** none of it. The four routes are registered only in a mode that federates (`testdata/routes-federated.txt`),
+  `/api/me` and the profile carry no new key, the local follow asks nothing more, and the actor document of a member
+  with no alias and no move is byte for byte as before (`TestActorDocument`'s golden files unchanged). The start log's and
+  the dashboard's sentence (`fedBuilt`) now ends with the move, and NodeInfo's `metadata.federationBuilt` adds `move`.
+- **Rollback (14.4).** Migration 25 adds three columns to `users` and one to `ap_actors` with constant defaults or none:
+  no row is rewritten and an older build ignores them; after `./deploy.sh --rollback` a moved member's actor stops
+  naming `movedTo` and takes followers again until this build is back. A Move already queued is sent by an older build
+  as any activity (its `comes_after` is ignored there, so let the queue empty first, as 8.7 says).
+- **Measured** (`TestDBQueryPlans`, 2.1 GHz Xeon): the members here who follow a member with 1,000 followers on 300
+  servers and 49 here, 3,257 rows counted (about three a follower, through `follows_followee` and each follower's
+  primary key; a plain join read `users` whole, 12,806 rows, and is not used); what Settings and a move read of a member
+  with five aliases, 46 rows; where a member moved, 5; the move's own write, 3.
+- Tests: `TestDBMoveOut` (the definition of done on this side: the alias check refusing and then passing, a wrong
+  password, nothing typed, the transaction's rows and their order, the bodies, local followers moved and kept, the
+  deliveries in order, the actor, the public page and the profile after, what a moved profile cannot do, the 30 days, taking
+  it back, moving again after 30 days), `TestDBMoveOutAliases` (the other side of the check: naming, the bound, this
+  server refused, removing, the Update(Person) with `alsoKnownAs`, the cache's bound), `TestDBMoveOutOrder` (a server that
+  fails the Update twice, one that refuses it for good, one down for the whole horizon: the Move never before the Update's
+  outcome, both given up on the schedule), `TestDBMoveOutPolicy` (suspended, not allowed, limited),
+  `TestDBMoveOutMidway` (stopping sharing, leaving and the account deleted between the check and the transaction; deleted
+  after the move; stopping sharing after it), `TestDBMoveOutAtOnce` (two moves at once: one made, the other refused with
+  nothing written; a full queue), `TestDBMoveOutTarget` (an address that redirects to the actor, a document over 1 MB, a
+  gone account, a server that does not answer before the request ends, this server's own accounts by handle and by
+  address), `TestDBMoveOutFollowIn` (a Follow from another server refused), `TestDBMoveOutFlagAndModes` (the flag off,
+  local mode), the moves' plans in `TestDBQueryPlans`; the `federation` suite (dee of one moves to gil of two: refused
+  before gil names her, then made, her actor naming `movedTo`, eli moved by one and following gil on two, two taking the
+  Move without an error, a second move refused); the `federated` browser suite (the card, its names and contrast in both
+  themes, the keyboard path and the ring, the question, the refusals' words; picture `federated-move`).
+- **Open.** Receiving a Move (local followers of a remote account that moved follow its target) is PRT 3, so another
+  Flowa does not yet move its members when one of its followed accounts moves; the federation suite shows the members
+  of the server the move comes from moving, and the other server taking the Move. A member who cannot follow the new
+  account is not told by a notification. Moving the member's follows, blocks and mutes is the import (PRT 4) and the
+  export (PRT 1). The owner's trial should confirm how Mastodon receives this Move and that its followers switch.
 
 ### 6.5 A Flowa post as a Note
 
@@ -4819,7 +4953,7 @@ every running version; that date is given where the page shows one.
 | Mastodon: Configuring your environment | https://docs.joinmastodon.org/admin/config/ | 12 November 2026 (page last updated 8 October 2026), the federation and encryption settings | `LOCAL_DOMAIN`, `WEB_DOMAIN`, `ALLOWED_PRIVATE_ADDRESSES`, `AUTHORIZED_FETCH`, `LIMITED_FEDERATION_MODE`, `SINGLE_USER_MODE`, Active Record Encryption |
 | Mastodon: Moderation actions | https://docs.joinmastodon.org/admin/moderation/ | 12 November 2026 (page last updated 15 January 2026) | account and domain Limit and Suspend, reject media, blocklists, announcements, IP and e-mail blocks |
 | Mastodon: Dealing with unwanted content | https://docs.joinmastodon.org/user/moderating/ | 12 November 2026 (page last updated 21 November 2025) | blocking, muting, hiding a server, forwarding a report |
-| Mastodon: Moving or leaving accounts | https://docs.joinmastodon.org/user/moving/ | 12 November 2026 (page last updated 27 November 2025) | aliases before Move, export and import as CSV, the post archive |
+| Mastodon: Moving or leaving accounts | https://docs.joinmastodon.org/user/moving/ | 12 November 2026, and again 15 November 2026 for PRT 2 (page last updated 27 November 2025) | aliases before Move, export and import as CSV, the post archive; a redirect disables posting and shows "profile moved", following a redirected account is not possible, a redirect can be cancelled at any time, a move is a redirect plus the followers and cannot be undone for them, the 30-day cooldown, the old account's password asked, "Moving from a different account" under Preferences, Account |
 | Mastodon: Scaling up your server | https://docs.joinmastodon.org/admin/scaling/ | 14 November 2026 (page last updated 20 July 2026), the Sidekiq section | delivery runs in background workers (the `push` queue), each thread holding a database connection; nothing on retries or their schedule (8.8) |
 | Mastodon: Using the admin CLI | https://docs.joinmastodon.org/admin/tootctl/ | 14 November 2026 (page last updated 15 April 2026), `accounts cull`, `domains purge` and `domains crawl` | an unreachable domain is reported and its accounts kept; nothing on delivery retries or unavailable domains |
 | Mastodon: Troubleshooting errors | https://docs.joinmastodon.org/admin/troubleshooting/ | 14 November 2026 (page last updated 21 November 2025) | nothing on delivery failures |

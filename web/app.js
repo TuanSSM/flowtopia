@@ -90,6 +90,7 @@ const FLAGS = [
 // server lists them, so a server that does not federate shows exactly the switches it always did.
 const FED_FLAGS = [
   ['federation', 'Federation: take deliveries', 'Other servers can deliver to this Flowa\'s inboxes, from the domains the Federation tab lets in. It acts on follows and their answers, on posts of the accounts members follow, on replies and likes of members\' posts, and on an account deleting itself or changing its profile. When off, deliveries are answered "try again later", nothing waiting is handled, and nothing is sent.'],
+  ['moves', 'Moving to another server', 'Members can move their profile to an account on another server: their followers there are asked to follow the new account, and the profile here points to it. Members can also name the accounts they move here from. When off, Settings offers neither and the server takes neither.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
 const ui = { graphView: localStorage.getItem('nf-view') || 'graph', draftFocus: [], palIdx: 0, prop: localStorage.getItem('fl-prop') || 'nunchaku', open: (localStorage.getItem('fl-groups') ?? localStorage.getItem('fl-prop') ?? 'nunchaku').split(',').filter(Boolean), users: null };
@@ -669,7 +670,57 @@ function fedCard() {
     ${on && flags.follows && flags.community ? `<label class="check"><input type="checkbox" data-change="locked" ${fed.locked ? 'checked' : ''} aria-describedby="locked-hint"><span>Approve followers from other servers by hand</span></label>
     <p class="tiny" id="locked-hint">${fed.locked ? 'Someone on another server who follows you waits until you approve them from your notifications.' : 'When it is on, someone on another server who follows you waits until you approve them from your notifications.'} Members of this Flowa follow you as before.</p>` : ''}
     ${fed.left ? `<p class="notice" role="status">${esc(fed.left)}</p>` : ''}
-    ${fed.leave ? `<div class="fed-leave"><p class="small" id="leave-hint">${esc(fed.leave)}</p><button class="btn danger sm" data-act="fed-leave" aria-describedby="leave-hint">Remove me from other servers</button></div>` : ''}</div></div>`;
+    ${fed.leave ? `<div class="fed-leave"><p class="small" id="leave-hint">${esc(fed.leave)}</p><button class="btn danger sm" data-act="fed-leave" aria-describedby="leave-hint">Remove me from other servers</button></div>` : ''}
+    ${fed.move ? moveParts(fed.move) : ''}</div></div>`;
+}
+// Moving to an account on another server, and the accounts the member moves here from (PRT 2), with the moves flag
+// on. What a move does is the server's words (m.warning), shown before the form; the password is asked again, and
+// the server checks that the new account names this one before anything is sent.
+const dayOf = t => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+function moveParts(m) {
+  const after = m.next ? `Another move is possible from ${esc(dayOf(m.next))}, 30 days after the last one.` : '';
+  let move;
+  if (m.moved) {
+    move = `<p class="notice" role="status">Your profile points to <a href="${esc(m.moved.link)}" target="_blank" rel="noopener noreferrer">${esc(m.moved.handle)}</a>${m.at ? ` since ${esc(dayOf(m.at))}` : ''}. It takes no new followers and makes no Public posts. ${after}</p>
+      <form id="move-back-form" class="stack" style="gap:8px"><p class="small" id="move-back-hint">Stopping the redirect makes this profile your own again. Followers who moved stay with the new account.</p>
+      <label class="field">Your password<input type="password" name="password" autocomplete="current-password" required aria-describedby="move-back-hint"></label>
+      <div><button class="btn sm" type="submit">Stop the redirect</button></div></form>`;
+  } else if (m.cannot) {
+    move = `<p class="small">${esc(m.cannot)}</p>`;
+  } else if (m.next) {
+    move = `<p class="small">You moved on ${esc(dayOf(m.at))}. ${after}</p>`;
+  } else {
+    move = `<form id="move-form" class="stack" style="gap:8px"><p class="small" id="move-hint">${esc(m.warning)}</p>
+      <p class="small" id="move-first">First, on the new account, add <b>${esc(m.handle)}</b> as an alias (on Mastodon: Preferences, Account, Moving from a different account).</p>
+      <label class="field">New account<input type="text" name="target" placeholder="@name@server.example" autocapitalize="none" spellcheck="false" maxlength="300" required aria-describedby="move-first"></label>
+      <label class="field">Your password<input type="password" name="password" autocomplete="current-password" required></label>
+      <div><button class="btn danger sm" type="submit" aria-describedby="move-hint">Move my profile</button></div></form>`;
+  }
+  const aliases = m.aliases.length ? `<ul class="fed-aliases">${m.aliases.map(x => `<li class="row wrap"><span class="grow">${esc(x.handle)}</span><button class="btn sm" type="button" data-act="alias-rm" data-id="${esc(x.id)}" aria-label="Remove ${esc(x.handle)}">Remove</button></li>`).join('')}</ul>` : '';
+  return `<div class="fed-move stack" style="gap:8px"><h3>Move to another server</h3>${move}</div>
+    <div class="fed-move stack" style="gap:8px"><h3>Moving here from another account</h3>
+      <p class="small" id="alias-hint">To bring your followers here from an account on another server, name it here first, then start the move there. You can name up to 5.</p>
+      ${aliases}
+      <form id="alias-form" class="row wrap" style="align-items:flex-end;gap:8px"><label class="field grow">Old account<input type="text" name="account" placeholder="@name@server.example" autocapitalize="none" spellcheck="false" maxlength="300" required aria-describedby="alias-hint"></label><button class="btn sm" type="submit">Add</button></form></div>`;
+}
+// The forms of moveParts: each asks the server and shows what it said; the card is drawn again from its answer.
+async function moveForm(f) {
+  let r;
+  if (f.id === 'move-form') {
+    if (!confirm(`Move your profile to ${f.target.value.trim()}?\n\n${fed.move.warning}`)) return;
+    r = await api('me/move', 'POST', { target: f.target.value.trim(), password: f.password.value });
+  } else if (f.id === 'move-back-form') {
+    r = await api('me/move', 'DELETE', { password: f.password.value });
+  } else {
+    r = await api('me/aliases', 'PUT', { account: f.account.value.trim() });
+  }
+  if (r.ok) { fed = r.data.federation || fed; if (r.data.told) toast(r.data.told); render(); $('.fed-move h3')?.closest('.fed-move')?.querySelector('input, button')?.focus(); }
+  else toast(r.error);
+}
+async function aliasRemove(id) {
+  const r = await api('me/aliases', 'DELETE', { id });
+  if (r.ok) { fed = r.data.federation || fed; toast('The account is no longer named.'); render(); $('#alias-form input')?.focus(); }
+  else toast(r.error);
 }
 // "Remove me from other servers" (FWR 7). What it does is the server's words (fed.leave), shown in the card and asked
 // again before anything is sent: other servers delete the profile, and many refuse the same address later.
@@ -1111,6 +1162,7 @@ document.addEventListener('click', e => {
       break;
     }
     case 'fed-leave': fedLeave(); break;
+    case 'alias-rm': aliasRemove(d.id); break;
     case 'reset':
       if (confirm(`Erase all your ${curProp().name.toLowerCase()} progress, sessions and combos? The server keeps a daily backup.`)) { state = blank(); commit(); toast('Progress reset.'); }
       break;
@@ -1178,7 +1230,7 @@ document.addEventListener('submit', e => {
     const made = { id: uid(), name, role: f.role.value, seq: [], reps: [], tr: {}, runs: 0, clean: 0 };
     state.combos.unshift(made); ui.comboOpen = made.id;
     document.activeElement?.blur?.(); commit(); $('#combo-form')?.reset();
-  }
+  } else if (f.id === 'move-form' || f.id === 'move-back-form' || f.id === 'alias-form') moveForm(f);
 });
 document.addEventListener('input', e => { if (e.target.id === 'pal-q') { ui.palIdx = 0; drawPal(); } });
 document.addEventListener('keydown', e => {

@@ -1010,6 +1010,21 @@ In a mode that federates, other servers learn when an account is gone, both ways
   changed and the member is told to try later. From then on nothing of the member goes to other servers and no key is
   made for them until they share again. At most 3 times an hour per member. Not on a single-profile instance, where
   `FLOWA_FEDERATE` is the owner's sharing.
+- **Moving to an account on another server**, with the `moves` flag on (off by default; it exists only in a mode
+  that federates), in Settings under "Beyond this server", for a member who shares their profile. First the new
+  account names this one as an old account (on Mastodon: Preferences, Account, Moving from a different account);
+  then the member types the new account's handle or address and their password. Flowa fetches the new account
+  again, through the domain policy, and moves only if it names this member; otherwise it says what to do. Then
+  the member's followers on other servers are sent an Update of the profile, which now points to the new account,
+  and a Move, in that order at each server (Mastodon's followers then follow the new account; another Flowa does so
+  from PRT 3). Members here who follow them and share their profile follow the new account and stop following the
+  old one; the others keep their follow and see where the member went. From then on the profile here points to the
+  new account: it takes no new followers, makes no Public posts and follows nobody new; posts, comments and
+  practice stay. The redirect can be stopped later with the password (followers who moved stay moved), and another
+  move is possible 30 days after the last one. At most 5 moves or stops an hour per member. The same card names
+  the accounts a member moves here from (up to 5), which their profile then lists as `alsoKnownAs`. On a
+  single-profile instance with `FLOWA_FEDERATE=on` the owner can move the one profile the same way, and the page at
+  `/` says where it went. Local mode has none of this.
 - **An account of another server deletes itself:** its posts and their pictures, its follows and requests both ways,
   its replies (a reply a member answered stays as "deleted" so the answer stays), its likes, every notification it
   left, its name, picture and bio, and the deliveries waiting for it are removed at once; it is shown as a deleted
@@ -1224,8 +1239,9 @@ is [docs/hardening-plan.md](docs/hardening-plan.md).
 ## Feature flags
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
-on the Admin page. No restart is needed. Every flag but `follows`, `export` and `federation` is on by default
-(`federation` exists only in a mode that federates: it pauses the inbox, [above](#federation-the-inbox-and-domain-policies)); an admin turns off what
+on the Admin page. No restart is needed. Every flag but `follows`, `export`, `federation` and `moves` is on by default
+(`federation` and `moves` exist only in a mode that federates: the first pauses the inbox, [above](#federation-the-inbox-and-domain-policies), the
+second is moving to an account on another server); an admin turns off what
 gets in the way, and a flag an admin has set keeps that setting. `follows` and `export` are off by default, on an instance
 that ran before them as on a new one, so that adding them changes nothing until an admin turns them on. A flag that is off turns off the feature's API as
 well as its pages: with `community` off the timeline, comments, likes, people and notifications answer

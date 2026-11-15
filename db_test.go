@@ -4089,6 +4089,34 @@ func TestDBQueryPlans(t *testing.T) {
 		// 73,662 rows counted on the 2.1 GHz Xeon, where every list would be 320,302 (after the review of FWR 7).
 		{"deletion: the servers that know a member, 1,000 followers on 300 servers", personKnownSQL, []any{11, personDeleteHostsMax + 1, "", personKnownRecords}, 90000, "ap_comment_out ap_actors ap_like_out"},
 	})
+	// Moving to another server (PRT 2): member 11, with its 1,000 followers on 300 servers and 49 members here among its
+	// followers, names five accounts it moves here from and has moved to one. The members here who follow it are read
+	// through follows_followee and each follower's primary key (about three rows counted per follower, the remote ones passed
+	// over); what Settings and a move read of it, and where it went, through the primary key of users and the unique
+	// index of ap_actors, a row or two per account named.
+	for _, q := range []string{
+		`INSERT INTO follows (follower_id, followee_id, state) SELECT g, 11, 'accepted' FROM generate_series(12, 60) g ON CONFLICT DO NOTHING`,
+		`UPDATE users SET moved_to = 'https://p1.out.example/users/3000001', moved_at = now(),
+			also_known_as = ARRAY(SELECT 'https://' || domain || '/users/' || id FROM users WHERE id BETWEEN 3000002 AND 3000006 ORDER BY id) WHERE id = 11`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	plans([]planCase{
+		{"moves: the members here who follow a member with 1,000 followers elsewhere", moveFollowersSQL, []any{11, moveFollowersMax}, 4500, ""},
+		{"moves: what Settings and a move read of a member", moveStateSQL, []any{11, false}, 60, ""},
+		{"moves: where a member moved", movedSQL, []any{11}, 10, ""},
+	})
+	if tx, err := db.Begin(); err == nil {
+		on = tx
+		plans([]planCase{{"moves: a move recorded", moveSetSQL, []any{9, "https://p1.out.example/users/3000001", time.Now(), moveCooldown.Seconds(), false}, 10, ""}})
+		on = db
+		tx.Rollback()
+	} else {
+		t.Fatal(err)
+	}
 	// "Remove me from other servers" writes: asked in a transaction rolled back.
 	if tx, err = db.Begin(); err != nil {
 		t.Fatal(err)

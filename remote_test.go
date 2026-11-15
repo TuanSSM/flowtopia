@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -723,9 +724,9 @@ func TestDBRemoteActorCache(t *testing.T) {
 	want := remoteActor{UserID: got.UserID, ID: gid, Kind: "Person", Username: "Gargron@mastodon.social", Domain: "mastodon.social", Name: "Gargron",
 		PreferredUsername: "Gargron", Summary: "<p>Founder</p>", URL: "https://mastodon.social/@Gargron", Icon: "https://mastodon.social/avatar.png",
 		Inbox: gid + "/inbox", SharedInbox: "https://mastodon.social/inbox", Outbox: gid + "/outbox", Followers: gid + "/followers", Locked: true, KeyID: gid + "#main-key",
-		State: "ok", FetchedAt: r.clock.now(), ExpiresAt: r.clock.now().Add(actorTTL), keyPEM: pemOf(&a.PublicKey)}
+		State: "ok", FetchedAt: r.clock.now(), ExpiresAt: r.clock.now().Add(actorTTL), keyPEM: pemOf(&a.PublicKey), AlsoKnownAs: []string{}}
 	got.FetchedAt, got.ExpiresAt = got.FetchedAt.UTC(), got.ExpiresAt.UTC()
-	if *got != want {
+	if !reflect.DeepEqual(*got, want) {
 		t.Errorf("stored:\n%+v\nwant\n%+v", *got, want)
 	}
 	if k, err := got.publicKey(keyToVerify); err != nil || !k.Equal(&a.PublicKey) {

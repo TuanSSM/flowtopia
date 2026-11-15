@@ -574,6 +574,8 @@ type limits struct {
 	export                                      *limiter // downloads of a member's own data that ran to the end, per member (PRT 1)
 	exportTries                                 *limiter // downloads of a member's own data begun, finished or not, per member
 	exportChecks                                *limiter // asks whether a download would start (?check), per member
+	moves                                       *limiter // moves to another account and their undoing, per member, in a mode that federates (PRT 2)
+	aliases                                     *limiter // changes to the accounts a member moves here from, per member, in a mode that federates
 }
 
 func newLimits() limits {
@@ -623,6 +625,12 @@ func newLimits() limits {
 		// Each ask reads the size of the member's archive, a few thousand index lookups for a member with long lists;
 		// 60 an hour is a person pressing the button again and again, and a script gets no more.
 		exportChecks: newLimiter(60, time.Hour),
+		// A move fetches the new account again (its WebFinger, its actor and the reverse check: at most lookupFetches
+		// requests) and then tells every server that follows the member: a person does it once, and retries a few
+		// times while the new account is being set up; 5 an hour bound what a stolen session can make others do.
+		moves: newLimiter(5, time.Hour),
+		// Naming an account resolves it as a search by handle does (up to lookupFetches requests); 30 an hour, as lookups.
+		aliases: newLimiter(30, time.Hour),
 	}
 }
 
@@ -1119,11 +1127,12 @@ func below(r string) []string {
 
 // fedFlagDefaults are the flags of a mode that federates, and their defaults: a list of their own, so that an
 // instance that does not federate lists exactly the flags it always did (knownFlag), and the page keeps them in a
-// list of its own too (FED_FLAGS in web/app.js; test/flags.js compares each list with its counterpart). The one
-// flag is fedFlag (docs/federation.md, F1 and 14.1): the admin's pause switch, off by default, so an instance that
+// list of its own too (FED_FLAGS in web/app.js; test/flags.js compares each list with its counterpart). The first
+// is fedFlag (docs/federation.md, F1 and 14.1): the admin's pause switch, off by default, so an instance that
 // upgrades takes no delivery until an admin turns it on. While off, the inbox answers 503 with Retry-After
-// (senders try again later) and its workers handle nothing.
-var fedFlagDefaults = map[string]bool{"federation": false}
+// (senders try again later) and its workers handle nothing. The second, moves (PRT 2), lets members move their
+// profile to an account on another server and name the accounts they move here from; off by default.
+var fedFlagDefaults = map[string]bool{"federation": false, "moves": false}
 
 const fedFlag = "federation"
 
@@ -1722,8 +1731,8 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 	// In a mode that federates, the member's handle and whether they share it (fedView); in any other
 	// mode the answer is as before, with no word of it.
 	if a.fed != nil && u != nil {
-		var s fedState
-		if err := a.db.QueryRow(fedStateSQL, u.ID, a.fed.leavingSince()).Scan(&s.on, &s.locked, &s.left, &s.keyed, &s.leaving); err != nil {
+		s, err := a.fedStateOf(r.Context(), u)
+		if err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -2565,7 +2574,12 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	out := map[string]any{"user": cur}
 	if a.fed != nil {
-		out["federation"] = a.fedView(cur, fedState{on: fedOn, locked: lockedNow, left: fedLeft, keyed: fedKeyed, leaving: fedLeaving})
+		mv, err := a.moveViewOf(r.Context(), cur)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		out["federation"] = a.fedView(cur, fedState{on: fedOn, locked: lockedNow, left: fedLeft, keyed: fedKeyed, leaving: fedLeaving, move: mv})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -6640,6 +6654,8 @@ type federation struct {
 	lookups  chan struct{}
 	lookupMu sync.Mutex
 	lookupBy map[int64]bool
+	// moveHook, when set (by a test), hears a move's steps (PRT 2): "enqueue" just before its transaction.
+	moveHook func(step string)
 	// lookupNow and lookupPause are the clock of lookupFloor; a test sets its own, so nothing waits in a test.
 	lookupNow   func() time.Time
 	lookupPause func(ctx context.Context, d time.Duration)
@@ -8012,6 +8028,15 @@ func (a *app) fedView(u *user, s fedState) map[string]any {
 	if s.leaving.Valid && !optedIn {
 		v["leaving"] = a.fed.leavingSentenceAt(s.leaving.Time.Add(deliveryHorizon))
 	}
+	// Moving to an account on another server, and the accounts the member moves here from (PRT 2): with the moves
+	// flag on, while federation is not refused. A member who moved makes no Public posts, so the composer offers
+	// no audience to them.
+	if s.move != nil && v["unavailable"] == nil {
+		v["move"] = s.move
+		if s.move.Moved != nil {
+			delete(v, "audiences")
+		}
+	}
 	return v
 }
 
@@ -8021,6 +8046,7 @@ func (a *app) fedView(u *user, s fedState) map[string]any {
 type fedState struct {
 	on, locked, left, keyed bool
 	leaving                 sql.NullTime
+	move                    *moveView // moving to another server (PRT 2), with the moves flag on; nil otherwise
 }
 
 // fedStateSQL reads fedState for member $1: one row of users, one look in retired_usernames' and ap_keys' keys, and
@@ -8134,11 +8160,11 @@ const (
 // fedBuilt says what this version of federation does. The start logs it once (fedBuiltLog), the admin
 // dashboard shows it as the server sends it, and the README and the design note say the same; NodeInfo's
 // metadata.federationBuilt lists the same parts (fedBuiltParts). Change all three here, together.
-const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows, and sends the Public posts of members who share their profile to their followers on other servers, with a post's deletion and a profile's changes, and keeps the posts of the accounts its members follow on other servers for those members' Home (their pictures copied into its own bounded cache, a member told when one mentions them or shares their post), and takes replies and likes from other servers to its members' Public posts and comments, and sends its members' comments on Public posts and their likes and comments on public posts of other servers, with an edit, a deletion and an unlike, and tells the servers that know a member when an admin deletes the account or the member asks to be removed from them, and removes everything of an account of another server that deletes itself"
+const fedBuilt = "this version answers discovery (WebFinger and NodeInfo) and serves the profiles and Public posts of the members who opted in, to other servers and to people in a browser, with each member's outbox of Public posts and the counts of their followers and follows, and lets members look up people on other servers by their handle and read their profiles and latest public posts, and takes deliveries from other servers at its inboxes (only from the servers the admin's domain policy lets in, and only while the Federation switch is on) and acts on follows and their answers and on an account deleting itself or changing its profile, so members can follow people on other servers and be followed from them (approving each follower by hand when they choose), and sends those follows, answers and unfollows, and sends the Public posts of members who share their profile to their followers on other servers, with a post's deletion and a profile's changes, and keeps the posts of the accounts its members follow on other servers for those members' Home (their pictures copied into its own bounded cache, a member told when one mentions them or shares their post), and takes replies and likes from other servers to its members' Public posts and comments, and sends its members' comments on Public posts and their likes and comments on public posts of other servers, with an edit, a deletion and an unlike, and tells the servers that know a member when an admin deletes the account or the member asks to be removed from them, and removes everything of an account of another server that deletes itself, and lets a member move their profile to an account on another server (with the moves flag on), telling their followers there with a Move"
 
 const fedBuiltLog = "federation: " + fedBuilt
 
-var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows", "posts", "home", "replies", "deletion"}
+var fedBuiltParts = []string{"webfinger", "nodeinfo", "actors", "notes", "outbox", "collections", "lookup", "inbox", "follows", "posts", "home", "replies", "deletion", "move"}
 
 /* The Accept header (RFC 9110, 12.5.1), read only to choose between the ActivityStreams document and the
 HTML page. */
@@ -8342,6 +8368,10 @@ type actorTerms struct {
 	Value                     string `json:"value"`
 	Schema                    string `json:"schema"`
 	Flowa                     string `json:"flowa"`
+	// The two terms of a move (PRT 2), written only in the document of a member who names one: Activity Streams
+	// terms whose values are ids, as Mastodon's context gives them.
+	MovedTo     *idTerm `json:"movedTo,omitempty"`
+	AlsoKnownAs *idTerm `json:"alsoKnownAs,omitempty"`
 }
 
 type idTerm struct {
@@ -8356,6 +8386,14 @@ var actorContext = []any{asContext, secContext, actorTerms{
 	Discoverable: "toot:discoverable", Indexable: "toot:indexable", Featured: idTerm{"toot:featured", "@id"},
 	PropertyValue: "schema:PropertyValue", Value: "schema:value", Schema: "http://schema.org#", Flowa: flowaNS,
 }}
+
+// actorContextMoving is actorContext with the terms of a move (PRT 2), for the document of a member who names the
+// accounts they move here from or the one they moved to.
+var actorContextMoving = func() []any {
+	t := actorContext[2].(actorTerms)
+	t.MovedTo, t.AlsoKnownAs = &idTerm{"as:movedTo", "@id"}, &idTerm{"as:alsoKnownAs", "@id"}
+	return []any{asContext, secContext, t}
+}()
 
 // flowaNS is the one namespace of Flowa's own terms, the same on every Flowa (F14).
 const flowaNS = "https://github.com/TuanSSM/flowtopia/ns#"
@@ -8385,6 +8423,9 @@ type outActor struct {
 	Icon                      *outImage     `json:"icon,omitempty"`
 	Attachment                []outProperty `json:"attachment,omitempty"`
 	PublicKey                 outKey        `json:"publicKey"`
+	// PRT 2: the accounts the member moves here from, and the account they moved to.
+	AlsoKnownAs []string `json:"alsoKnownAs,omitempty"`
+	MovedTo     string   `json:"movedTo,omitempty"`
 }
 
 // outEndpoints names the shared inbox (ActivityPub 4.1 and 7.1.3), which every member's actor names since the
@@ -8877,19 +8918,21 @@ const actorGateSQL = `SELECT (SELECT u.id FROM users u WHERE u.username = $1 AND
 // actorDocSQL reads what an actor document says of the member $1 (the gate has let them through): the
 // profile, the first bytes of the picture and a hash of it for its address, and the public key.
 const actorDocSQL = `SELECT u.username, u.display_name, u.bio, u.links, u.props, u.created_at, left(u.avatar, 64),
-	CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END, COALESCE(k.public_key, ''), u.locked
+	CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END, COALESCE(k.public_key, ''), u.locked, u.moved_to, u.also_known_as
 	FROM users u LEFT JOIN ap_keys k ON k.user_id = u.id WHERE u.id = $1`
 
 // profilePageSQL is a member's public page in one statement: the member, if they may be shown, with a page
 // of their Public posts newest first ($3: older than this post, 0 for the first page; $4 how many), and
 // whether the name is retired. posts_public serves the posts. $3 is a bigint like the ids it is compared
-// with: written as "$3 = 0" alone, Postgres would take it for an integer and fail on a cursor past 2^31.
-const profilePageSQL = `SELECT r.retired, m.id, m.username, m.display_name, m.bio, m.links, m.head, m.tag, m.pid, m.body, m.image, m.alt, m.ap_mentions, m.data, m.created_at
+// with: written as "$3 = 0" alone, Postgres would take it for an integer and fail on a cursor past 2^31. The
+// last three columns say where a member who moved went (PRT 2): the actor id, and its name and host as cached.
+const profilePageSQL = `SELECT r.retired, m.id, m.username, m.display_name, m.bio, m.links, m.head, m.tag, m.pid, m.body, m.image, m.alt, m.ap_mentions, m.data, m.created_at, m.moved_to, m.moved_pref, m.moved_host
 	FROM (SELECT ` + retiredSQL + ` AS retired) r LEFT JOIN (
-		SELECT u.id, u.username, u.display_name, u.bio, u.links, left(u.avatar, 64) AS head, CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END AS tag,
+		SELECT u.id, u.username, u.display_name, u.bio, u.links, left(u.avatar, 64) AS head, CASE WHEN u.avatar = '' THEN '' ELSE left(md5(u.avatar), 12) END AS tag, u.moved_to, COALESCE(mv.preferred_username, '') AS moved_pref, COALESCE(mv.domain, '') AS moved_host,
 			p.id AS pid, p.body, left(p.image, ` + pictureHead + `) AS image, p.alt, p.ap_mentions, p.data, p.created_at
 		FROM users u LEFT JOIN LATERAL (SELECT p.id, p.body, p.image, p.alt, p.ap_mentions, p.data, p.created_at FROM posts p WHERE p.user_id = u.id AND ` + publicPost + `
 			AND ($3::bigint = 0 OR p.id < $3) ORDER BY p.id DESC LIMIT $4) p ON true
+		LEFT JOIN LATERAL (SELECT a.preferred_username, x.domain FROM ap_actors a JOIN users x ON x.id = a.user_id WHERE a.ap_id = u.moved_to AND u.moved_to <> '') mv ON true
 		WHERE u.username = $1 AND ` + publicMember + `) m ON true ORDER BY m.pid DESC`
 
 // publicPostSQL reads a Public post $3 by the member $1, with what its page and its Note say of the author.
@@ -9062,6 +9105,8 @@ type pubData struct {
 type pubWho struct {
 	Name, Username, Handle, Initial, Bio, Picture, Profile, App string
 	Links                                                       []visitorLink
+	// Moved is the address of the account the member moved to and MovedName its handle (PRT 2), on the profile page.
+	Moved, MovedName string
 }
 
 type pubPost struct {
@@ -9091,7 +9136,8 @@ var pubTmpl = template.Must(template.New("pub").Parse(`<!doctype html>
 {{else}}{{with .Who}}<article class="card pub-card" aria-labelledby="pub-name">
 <div class="pub-who">{{if .Picture}}<img class="pub-pic" src="{{.Picture}}" alt="" width="72" height="72">{{else}}<span class="pub-pic pub-initial" aria-hidden="true">{{.Initial}}</span>{{end}}
 <div class="pub-names">{{if eq $.Kind "post"}}<p class="pub-title" id="pub-name"><a href="{{.Profile}}">{{.Name}}</a></p>{{else}}<h1 id="pub-name">{{.Name}}</h1>{{end}}<p class="pub-handle">{{.Handle}}</p></div></div>
-{{if ne $.Kind "post"}}{{with .Bio}}<p class="pub-text">{{.}}</p>
+{{if ne $.Kind "post"}}{{if .Moved}}<p class="notice pub-moved">This profile has moved to <a href="{{.Moved}}" rel="nofollow noopener ugc">{{.MovedName}}</a>.</p>
+{{end}}{{with .Bio}}<p class="pub-text">{{.}}</p>
 {{end}}{{if .Links}}<ul class="pub-links" aria-label="Links">{{range .Links}}<li><a class="btn sm" href="{{.URL}}" rel="nofollow noopener ugc">{{.Name}}</a></li>{{end}}</ul>
 {{end}}{{end}}</article>
 {{end}}{{if eq .Kind "profile"}}<section class="pub-posts" aria-labelledby="pub-posts-h"><h2 id="pub-posts-h">Public posts</h2>
@@ -9202,7 +9248,9 @@ func (a *app) actorOf(ctx context.Context, uid int64) (outActor, bool, error) {
 	var links, props []byte
 	var created time.Time
 	var locked bool
-	if err := a.db.QueryRowContext(ctx, actorDocSQL, uid).Scan(&name, &display, &bio, &links, &props, &created, &head, &tag, &pubPEM, &locked); err != nil {
+	var movedTo string
+	var aka []string
+	if err := a.db.QueryRowContext(ctx, actorDocSQL, uid).Scan(&name, &display, &bio, &links, &props, &created, &head, &tag, &pubPEM, &locked, &movedTo, pq.Array(&aka)); err != nil {
 		return outActor{}, false, err
 	}
 	if pubPEM == "" {
@@ -9243,6 +9291,11 @@ func (a *app) actorOf(ctx context.Context, uid int64) (outActor, bool, error) {
 			doc.Attachment = append(doc.Attachment, outProperty{Type: "PropertyValue", Name: visitorLinkNames[k],
 				Value: `<a href="` + html.EscapeString(href) + `" rel="me nofollow noopener" target="_blank">` + html.EscapeString(handle) + `</a>`})
 		}
+	}
+	// A move (PRT 2): the accounts the member moves here from and the one they moved to, with their two terms in the
+	// context. A document that names neither is byte for byte what it was before (testdata/federation/actor-ana.json).
+	if movedTo != "" || len(aka) > 0 {
+		doc.MovedTo, doc.AlsoKnownAs, doc.Context = movedTo, aka, actorContextMoving
 	}
 	return doc, known, nil
 }
@@ -9434,10 +9487,10 @@ func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite
 	// database again (skillNames), and a request must never hold one connection while it waits for another,
 	// or a few at once could take the whole pool and stop every request (TestDBOneConnection).
 	type profileRow struct {
-		uid, pid                                           sql.NullInt64
-		uname, display, bio, head, tag, body, img, alt, ms sql.NullString
-		links, data                                        []byte
-		created                                            sql.NullTime
+		uid, pid                                                              sql.NullInt64
+		uname, display, bio, head, tag, body, img, alt, ms, mto, mpref, mhost sql.NullString
+		links, data                                                           []byte
+		created                                                               sql.NullTime
 	}
 	var retired bool
 	var got []profileRow
@@ -9448,7 +9501,7 @@ func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite
 	}
 	for rows.Next() {
 		var x profileRow
-		if err = rows.Scan(&retired, &x.uid, &x.uname, &x.display, &x.bio, &x.links, &x.head, &x.tag, &x.pid, &x.body, &x.img, &x.alt, &x.ms, &x.data, &x.created); err != nil {
+		if err = rows.Scan(&retired, &x.uid, &x.uname, &x.display, &x.bio, &x.links, &x.head, &x.tag, &x.pid, &x.body, &x.img, &x.alt, &x.ms, &x.data, &x.created, &x.mto, &x.mpref, &x.mhost); err != nil {
 			break
 		}
 		got = append(got, x)
@@ -9470,6 +9523,7 @@ func (a *app) serveProfile(w http.ResponseWriter, r *http.Request, site *pubSite
 		}
 		if d.Who == nil {
 			d.Who = a.whoOf(x.uname.String, x.display.String, x.bio.String, x.links, x.head.String, x.tag.String)
+			d.Who.Moved, d.Who.MovedName = movedLink(x.mto.String, x.mpref.String, x.mhost.String)
 		}
 		if !x.pid.Valid {
 			continue
@@ -9793,10 +9847,10 @@ func (a *app) serveOutboxPage(w http.ResponseWriter, r *http.Request, site *pubS
 	for rows.Next() {
 		var retired bool
 		var uid, pid sql.NullInt64
-		var un, display, bio, head, tag, body, image, alt, ms sql.NullString
+		var un, display, bio, head, tag, body, image, alt, ms, mto, mpref, mhost sql.NullString
 		var links, data []byte
 		var created sql.NullTime
-		if err := rows.Scan(&retired, &uid, &un, &display, &bio, &links, &head, &tag, &pid, &body, &image, &alt, &ms, &data, &created); err != nil {
+		if err := rows.Scan(&retired, &uid, &un, &display, &bio, &links, &head, &tag, &pid, &body, &image, &alt, &ms, &data, &created, &mto, &mpref, &mhost); err != nil {
 			rows.Close()
 			pubFailed(w, "an outbox page", err)
 			return
@@ -14488,9 +14542,10 @@ type remoteActor struct {
 	Outbox            string // the actor's outbox, read by the search by handle (FRD 8); "" when it names none Flowa can use
 	Followers         string
 	MovedTo           string
-	Locked            bool   // manuallyApprovesFollowers: a Follow shows as requested until Accept (6.3)
-	KeyID             string // the one key kept; "" when the actor names none Flowa can use
-	State             string // ok, suspended (the actor says so: nothing new is stored) or gone (410)
+	AlsoKnownAs       []string // alsoKnownAs as last fetched, at most actorAliasesKept: what a move to it checks (PRT 2)
+	Locked            bool     // manuallyApprovesFollowers: a Follow shows as requested until Accept (6.3)
+	KeyID             string   // the one key kept; "" when the actor names none Flowa can use
+	State             string   // ok, suspended (the actor says so: nothing new is stored) or gone (410)
 	FetchedAt         time.Time
 	ExpiresAt         time.Time
 	// Stale says the row is past its 24 hours and fetching it again failed, just now or within actorFailFor,
@@ -14537,7 +14592,7 @@ func (r *remoteActor) keyUsable(use keyUse) error {
 }
 
 const actorCols = `a.user_id, a.ap_id, a.kind, u.username, u.domain, u.display_name, a.preferred_username, a.summary, a.url, a.icon,
-	a.inbox, a.shared_inbox, a.outbox, a.followers_url, a.moved_to, a.locked, a.key_id, a.public_key, a.state, a.fetched_at, a.expires_at`
+	a.inbox, a.shared_inbox, a.outbox, a.followers_url, a.moved_to, a.locked, a.key_id, a.public_key, a.state, a.fetched_at, a.expires_at, a.also_known_as`
 
 // actorByIDSQL reads a cached actor by its id, through ap_actors' unique index.
 const actorByIDSQL = `SELECT ` + actorCols + ` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.ap_id = $1`
@@ -14550,7 +14605,7 @@ const actorByKeySQL = `SELECT ` + actorCols + ` FROM ap_actors a JOIN users u ON
 func scanActor(row scanner) (*remoteActor, error) {
 	var r remoteActor
 	err := row.Scan(&r.UserID, &r.ID, &r.Kind, &r.Username, &r.Domain, &r.Name, &r.PreferredUsername, &r.Summary, &r.URL, &r.Icon,
-		&r.Inbox, &r.SharedInbox, &r.Outbox, &r.Followers, &r.MovedTo, &r.Locked, &r.KeyID, &r.keyPEM, &r.State, &r.FetchedAt, &r.ExpiresAt)
+		&r.Inbox, &r.SharedInbox, &r.Outbox, &r.Followers, &r.MovedTo, &r.Locked, &r.KeyID, &r.keyPEM, &r.State, &r.FetchedAt, &r.ExpiresAt, pq.Array(&r.AlsoKnownAs))
 	if err != nil {
 		return nil, err
 	}
@@ -14723,6 +14778,9 @@ type lookupOpts struct {
 	keyDoc *apKey // the key document already fetched, whose owner is being fetched
 	depth  int    // 1 while a key document's owner is fetched: an owner is never followed further
 	again  bool   // a caller's own fetch after the one it waited for answered another question
+	// fresh fetches the actor whatever the cache holds and whatever failure is remembered (but a gone actor, which
+	// stays gone): a move reads the target's alsoKnownAs as it is now (PRT 2). The caller bounds how often.
+	fresh bool
 	// payer is the client address of the delivery whose key this is, when the inbox asks: each request the fetch
 	// sends is counted against that address's allowance of key fetches (addrFetches), and none is sent while the
 	// key id's sender group has used its allowance of fetches that went on to verify a signature (keyFetches).
@@ -14945,14 +15003,14 @@ func (c *actorCache) cached(prev *remoteActor, asked string, o lookupOpts) (*rem
 		switch {
 		case prev.State == "gone":
 			return prev, true, nil
-		case o.keyDoc != nil || o.again:
+		case o.keyDoc != nil || o.again || o.fresh:
 		case force && now.Sub(prev.FetchedAt) < actorRecheck:
 			return prev, true, nil
 		case !force && now.Before(prev.ExpiresAt):
 			return prev, true, nil
 		}
 	}
-	if o.again {
+	if o.again || o.fresh {
 		return nil, false, nil
 	}
 	if m, ok := c.recall(asked, now); ok && m.reason != 0 {
@@ -15439,9 +15497,9 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	}
 	key := actorKey(doc, []string{want, keptKey}, keyDoc)
 	display, summary, link, icon := remoteDisplay(doc.Name, pref), remoteText(doc.Summary, remoteSummaryMax), firstLink(doc.URL), firstLink(doc.Icon)
-	outbox := doc.Outbox
+	outbox, aka := doc.Outbox, keptAliases(doc.AlsoKnownAs)
 	if doc.Suspended {
-		display, summary, link, icon, outbox = "", "", "", "", ""
+		display, summary, link, icon, outbox, aka = "", "", "", "", "", []string{}
 	}
 	inserted := false
 	switch {
@@ -15455,8 +15513,8 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 			_, err = tx.ExecContext(ctx, `UPDATE ap_actors SET kind = $2, preferred_username = $3,
 				summary = CASE WHEN EXISTS (SELECT 1 FROM users WHERE id = $1 AND suspended_until > now()) THEN summary ELSE $4 END, url = $5,
 				icon = CASE WHEN EXISTS (SELECT 1 FROM users WHERE id = $1 AND suspended_until > now()) THEN icon ELSE $6 END, inbox = $7, shared_inbox = $8,
-				followers_url = $9, moved_to = $10, locked = $11, key_id = $12, public_key = $13, state = 'ok', fetched_at = $14, expires_at = $15, outbox = $16 WHERE user_id = $1`,
-				uid, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, now, now.Add(actorTTL), outbox)
+				followers_url = $9, moved_to = $10, locked = $11, key_id = $12, public_key = $13, state = 'ok', fetched_at = $14, expires_at = $15, outbox = $16, also_known_as = $17 WHERE user_id = $1`,
+				uid, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, now, now.Add(actorTTL), outbox, pq.Array(aka))
 		}
 	default:
 		for _, taken := range []bool{false, true} {
@@ -15471,8 +15529,8 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 		}
 		var n int64
 		res, err2 := tx.ExecContext(ctx, `INSERT INTO ap_actors (user_id, ap_id, kind, preferred_username, summary, url, icon, inbox, shared_inbox, followers_url, moved_to, locked,
-			key_id, public_key, state, fetched_at, expires_at, outbox) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT (ap_id) DO NOTHING`,
-			uid, doc.ID, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, state, now, now.Add(actorTTL), outbox)
+			key_id, public_key, state, fetched_at, expires_at, outbox, also_known_as) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) ON CONFLICT (ap_id) DO NOTHING`,
+			uid, doc.ID, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, state, now, now.Add(actorTTL), outbox, pq.Array(aka))
 		if err = err2; err == nil {
 			n, _ = res.RowsAffected()
 		}
@@ -16018,6 +16076,7 @@ type lookupRun struct {
 	f       *federation
 	fetches int
 	jrds    map[string]wfAnswer
+	fresh   bool // the actor is fetched again whatever the cache holds (resolveRemote)
 }
 
 // spend counts a request against lookupFetches; past it the lookup stops.
@@ -16057,14 +16116,21 @@ func (r *lookupRun) webfinger(ctx context.Context, step, resource, host string) 
 	return j, nil
 }
 
-// actor fetches an actor through the cache of remote actors.
+// actor fetches an actor through the cache of remote actors (fetched again whatever the cache holds when the run
+// is fresh: a move, PRT 2, must read the target's alsoKnownAs as it is now, not as it was up to 24 hours ago).
 // It counts two requests: the actor's document and, at most, its key's (followKey). When there is no actor to
 // answer with, the cache never reached the key, and one is given back.
 func (r *lookupRun) actor(ctx context.Context, step, id string) (*remoteActor, error) {
 	if err := r.spend(step, 2); err != nil {
 		return nil, err
 	}
-	a, err := r.f.remoteActor(ctx, id)
+	var a *remoteActor
+	var err error
+	if r.fresh {
+		a, err = r.f.actors.lookup(ctx, id, lookupOpts{fresh: true})
+	} else {
+		a, err = r.f.remoteActor(ctx, id)
+	}
 	if err != nil {
 		r.fetches--
 		return nil, &lookupError{Reason: lookupReasonOf(err), Step: step, err: err}
@@ -16075,52 +16141,7 @@ func (r *lookupRun) actor(ctx context.Context, step, id string) (*remoteActor, e
 // findRemote resolves a handle or a profile address on another server, proves the handle, and reads the
 // account's latest public posts.
 func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupProfile, error) {
-	if f.refusal() != "" || f.actors == nil {
-		return nil, &lookupError{Reason: lookupUnavailable, Step: "start"}
-	}
-	if in.url == "" && !handleNameOK(in.name) {
-		return nil, &lookupError{Reason: lookupNotAccount, Step: "the name asked for"}
-	}
-	r := &lookupRun{f: f, jrds: map[string]wfAnswer{}}
-	var a *remoteActor
-	var actorID, subject string // subject: what the WebFinger of the query named; "" for an address that was an actor
-	if in.url != "" {
-		got, err := r.actor(ctx, "address as actor", in.url)
-		switch reason := lookupReasonOf(err); {
-		case err == nil:
-			a, actorID = got, got.ID
-		case reason == lookupNotAccount:
-			// Not an actor at that address (a profile page, a document of another id): its host's WebFinger
-			// may know the address as a resource.
-			u, _ := url.Parse(in.url)
-			j, err := r.webfinger(ctx, "webfinger of the address", in.url, strings.ToLower(u.Hostname()))
-			if err != nil {
-				return nil, err
-			}
-			actorID, subject = j.self, j.subject
-		default:
-			return nil, err
-		}
-	} else {
-		j, err := r.webfinger(ctx, "webfinger", acctURI(in.name, in.host), in.host)
-		if err != nil {
-			return nil, err
-		}
-		actorID, subject = j.self, j.subject
-	}
-	if a == nil {
-		var err error
-		if a, err = r.actor(ctx, "actor", actorID); err != nil {
-			return nil, err
-		}
-	}
-	switch a.State {
-	case "gone":
-		return nil, &lookupError{Reason: lookupGone, Step: "actor"}
-	case "suspended":
-		return nil, &lookupError{Reason: lookupSuspended, Step: "actor"}
-	}
-	handle, err := r.reverse(ctx, a, subject)
+	a, handle, r, err := f.resolveRemote(ctx, in, false)
 	if err != nil {
 		return nil, err
 	}
@@ -16162,6 +16183,64 @@ func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupPro
 	}
 	p.Posts, p.PostsNote = r.posts(ctx, a, handle)
 	return p, nil
+}
+
+// resolveRemote is the part of a lookup that finds the actor and proves its handle: the actor, the handle
+// (name@host) and the run, whose requests the caller may go on counting. fresh fetches the actor again whatever
+// the cache holds (a move, PRT 2); a stale row is then no answer, since what it kept is what may have changed.
+func (f *federation) resolveRemote(ctx context.Context, in lookupInput, fresh bool) (*remoteActor, string, *lookupRun, error) {
+	if f.refusal() != "" || f.actors == nil {
+		return nil, "", nil, &lookupError{Reason: lookupUnavailable, Step: "start"}
+	}
+	if in.url == "" && !handleNameOK(in.name) {
+		return nil, "", nil, &lookupError{Reason: lookupNotAccount, Step: "the name asked for"}
+	}
+	r := &lookupRun{f: f, jrds: map[string]wfAnswer{}, fresh: fresh}
+	var a *remoteActor
+	var actorID, subject string // subject: what the WebFinger of the query named; "" for an address that was an actor
+	if in.url != "" {
+		got, err := r.actor(ctx, "address as actor", in.url)
+		switch reason := lookupReasonOf(err); {
+		case err == nil:
+			a, actorID = got, got.ID
+		case reason == lookupNotAccount:
+			// Not an actor at that address (a profile page, a document of another id): its host's WebFinger
+			// may know the address as a resource.
+			u, _ := url.Parse(in.url)
+			j, err := r.webfinger(ctx, "webfinger of the address", in.url, strings.ToLower(u.Hostname()))
+			if err != nil {
+				return nil, "", nil, err
+			}
+			actorID, subject = j.self, j.subject
+		default:
+			return nil, "", nil, err
+		}
+	} else {
+		j, err := r.webfinger(ctx, "webfinger", acctURI(in.name, in.host), in.host)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		actorID, subject = j.self, j.subject
+	}
+	if a == nil {
+		var err error
+		if a, err = r.actor(ctx, "actor", actorID); err != nil {
+			return nil, "", nil, err
+		}
+	}
+	switch {
+	case a.State == "gone":
+		return nil, "", nil, &lookupError{Reason: lookupGone, Step: "actor"}
+	case a.State == "suspended":
+		return nil, "", nil, &lookupError{Reason: lookupSuspended, Step: "actor"}
+	case fresh && a.Stale:
+		return nil, "", nil, &lookupError{Reason: lookupNotFound, Step: "actor"}
+	}
+	handle, err := r.reverse(ctx, a, subject)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return a, handle, r, nil
 }
 
 // reverse is the reverse check (Mastodon's WebFinger page, the SWICG report's "Reverse discovery"): the
@@ -18329,69 +18408,130 @@ type outOrder struct {
 
 // enqueueOrdered is enqueueThen for an activity with its place among those of its object (outOrder).
 func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, o outOrder, then func(*sql.Tx) error) (enqueued, error) {
-	var out enqueued
-	f := q.f
-	switch {
-	case f.refusal() != "":
-		return out, errRefused
-	case !sameOrigin(apID, f.origin.url):
-		return out, errors.New("an activity's id must be on this instance's origin")
-	case len(body) > inboxBodyMax || !json.Valid(body):
-		return out, errors.New("an activity must be JSON of at most 256 KB")
+	outs, err := q.enqueueSeq(ctx, actor, []seqItem{{apID: apID, body: body, order: o}}, to, then)
+	if len(outs) == 0 {
+		return enqueued{}, err
 	}
+	return outs[0], err
+}
+
+// seqItem is one activity of enqueueSeq: its id, its body and its place among the activities of its object.
+type seqItem struct {
+	apID  string
+	body  []byte
+	order outOrder
+}
+
+// checkActivity is what every activity must be before anything is written: federation not refused, its id on this
+// origin, its body JSON of at most 256 KB.
+func (q *deliveryQueue) checkActivity(apID string, body []byte) error {
+	switch {
+	case q.f.refusal() != "":
+		return errRefused
+	case !sameOrigin(apID, q.f.origin.url):
+		return errors.New("an activity's id must be on this instance's origin")
+	case len(body) > inboxBodyMax || !json.Valid(body):
+		return errors.New("an activity must be JSON of at most 256 KB")
+	}
+	return nil
+}
+
+// enqueueSeq is enqueueOrdered for several activities of one actor to the same recipients, written in one transaction
+// in the order given (PRT 2: a member's Update(Person) and then their Move): all of them and then's writes commit, or
+// none does. They are fanned out in that order, so the first has its rows at an inbox before the second, and an item
+// whose order names the one before it (after) is held at each inbox while that one is queued there (afterHeldSQL).
+// The answer has one enqueued per item, in their order.
+func (q *deliveryQueue) enqueueSeq(ctx context.Context, actor keyOwner, items []seqItem, to []deliveryTarget, then func(*sql.Tx) error) ([]enqueued, error) {
+	f := q.f
+	for _, it := range items {
+		if err := q.checkActivity(it.apID, it.body); err != nil {
+			return nil, err
+		}
+	}
+	outs := make([]enqueued, len(items))
 	inboxes, hosts, refused := q.collect(to)
-	out.Refused = refused
+	for i := range outs {
+		outs[i].Refused = refused
+	}
 	if len(inboxes) > deliveryTargetsMax {
-		return out, fmt.Errorf("an activity goes to at most %d inboxes, not %d", deliveryTargetsMax, len(inboxes))
+		return outs, fmt.Errorf("an activity goes to at most %d inboxes, not %d", deliveryTargetsMax, len(inboxes))
 	}
 	if len(inboxes) == 0 && then == nil {
-		return out, nil
+		return outs, nil
 	}
 	done, err := f.dbTurn(ctx)
 	if err != nil {
-		return out, err
+		return outs, err
 	}
 	defer done()
 	tx, err := f.db.BeginTx(ctx, nil)
 	if err != nil {
-		return out, err
+		return outs, err
 	}
 	defer tx.Rollback()
-	if len(inboxes) == 0 {
-		if err := then(tx); err != nil {
-			return out, err
+	kick, waiting := false, false
+	if len(inboxes) > 0 {
+		for i, it := range items {
+			out, k, err := q.enqueueTx(ctx, tx, actor, it.apID, it.body, inboxes, hosts, it.order)
+			out.Refused = refused
+			outs[i] = out
+			if err != nil {
+				return outs, err
+			}
+			kick, waiting = kick || k, waiting || out.Waiting
 		}
-		return out, tx.Commit()
 	}
+	if then != nil {
+		if err := then(tx); err != nil {
+			return outs, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return outs, err
+	}
+	if waiting {
+		q.waiting.Store(true)
+	}
+	if kick {
+		q.kick()
+	}
+	return outs, nil
+}
+
+// enqueueTx writes one activity for its inboxes (collect's, at least one) in tx, under the queue's lock, which it
+// takes (a second take in the same transaction is free): the rules of enqueue. kick says whether rows or a waiting
+// activity were written, so that the workers are woken after the commit.
+func (q *deliveryQueue) enqueueTx(ctx context.Context, tx *sql.Tx, actor keyOwner, apID string, body []byte, inboxes, hosts []string, o outOrder) (out enqueued, kick bool, err error) {
+	f := q.f
 	// One enqueue or fan-out at a time, so the counts below are the counts the rows are written against and the
 	// caps hold exactly (workers only take rows away meanwhile).
 	if q.enqueueHook != nil {
 		q.enqueueHook("lock", apID)
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
-		return out, err
+		return out, false, err
 	}
 	// Nothing is enqueued for a member who has no key and does not share (FWR 7): one who asked other servers to forget
 	// them, or whose account is gone. Asked under the queue's lock, which their leaving holds too.
 	if actor != instanceActor {
 		var may bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = $1) OR COALESCE((`+mayHaveKeySQL+`), false)`, int64(actor), f.single).Scan(&may); err != nil {
-			return out, err
+			return out, false, err
 		}
 		if !may {
-			return out, errNotSharing
+			return out, false, errNotSharing
 		}
 	}
 	var queued, waiting int
 	if err := tx.QueryRowContext(ctx, deliveryCountsSQL, deliveryQueueMax, deliveryWaitingMax).Scan(&queued, &waiting); err != nil {
-		return out, err
+		return out, false, err
 	}
 	if waiting >= deliveryWaitingMax {
-		return out, errDeliveryFull
+		return out, false, errDeliveryFull
 	}
 	if o.afterTx != nil {
 		if o.after, err = o.afterTx(tx); err != nil {
-			return out, err
+			return out, false, err
 		}
 	}
 	if q.enqueueHook != nil {
@@ -18405,16 +18545,10 @@ func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID
 		apID, actor.arg(), string(body), pq.Array(inboxes), now, o.undoes, o.chain, o.after).Scan(&id, &undo)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.Duplicate = true
-		if then == nil {
-			return out, nil
-		}
-		if err := then(tx); err != nil {
-			return out, err
-		}
-		return out, tx.Commit()
+		return out, false, nil
 	}
 	if err != nil {
-		return out, err
+		return out, false, err
 	}
 	// The activity taken back still waits for its own fan-out (the queue was full): it never goes anywhere, so neither
 	// does this one (8.8, "Taking back"). Of a line (chain), each activity still waiting never goes; when its first
@@ -18427,39 +18561,22 @@ func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID
 				UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
 			w AS (UPDATE ap_outbox o SET fanned_out = true, targets = NULL FROM c WHERE o.id = c.id AND NOT o.fanned_out RETURNING c.root)
 			SELECT COALESCE(bool_or(root), false), count(*) FROM w`, undo.Int64, o.chain).Scan(&never, &gone); err != nil {
-			return out, err
+			return out, false, err
 		}
 		waiting -= gone
 		if never {
 			if _, err := tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id); err != nil {
-				return out, err
+				return out, false, err
 			}
-			if then != nil {
-				if err := then(tx); err != nil {
-					return out, err
-				}
-			}
-			return out, tx.Commit()
+			return out, false, nil
 		}
 	}
 	if waiting > 0 || queued+len(inboxes) > deliveryQueueMax {
 		out.Waiting = true
 	} else if out.Queued, out.Dropped, out.Unavailable, err = q.fanOut(ctx, tx, id, undo, inboxes, hosts, now); err != nil {
-		return out, err
+		return out, false, err
 	}
-	if then != nil {
-		if err := then(tx); err != nil {
-			return out, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return out, err
-	}
-	if out.Waiting {
-		q.waiting.Store(true)
-	}
-	q.kick()
-	return out, nil
+	return out, true, nil
 }
 
 // deliveryCountsSQL counts the rows queued and the activities waiting, each only up to its cap ($1, $2). With the
@@ -19949,10 +20066,11 @@ func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, o
 		return f.answerOnce(ctx, s.UserID, 0, instanceActor, "", s, follow, false, " refused (the instance actor is followed by nobody)")
 	}
 	var uid int64
-	var locked, shown, keyed, blocked bool
-	err := f.fedRow(ctx, []any{&uid, &locked, &shown, &keyed, &blocked}, `SELECT u.id, u.locked, `+publicMember+`,
+	var locked, shown, keyed, blocked, movedNew bool
+	err := f.fedRow(ctx, []any{&uid, &locked, &shown, &keyed, &blocked, &movedNew}, `SELECT u.id, u.locked, `+publicMember+`,
 		EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id),
-		EXISTS (SELECT 1 FROM blocks b WHERE (b.user_id = u.id AND b.target_id = $3) OR (b.user_id = $3 AND b.target_id = u.id))
+		EXISTS (SELECT 1 FROM blocks b WHERE (b.user_id = u.id AND b.target_id = $3) OR (b.user_id = $3 AND b.target_id = u.id)),
+		u.moved_to <> '' AND NOT EXISTS (SELECT 1 FROM follows w WHERE w.follower_id = $3 AND w.followee_id = u.id AND w.state = 'accepted')
 		FROM users u WHERE u.username = $1 AND u.domain = ''`, name, f.single, s.UserID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -19965,6 +20083,11 @@ func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, o
 		return f.answerOnce(ctx, s.UserID, uid, keyOwner(uid), name, s, follow, false, " refused (the account does not federate)")
 	case blocked:
 		return f.answerOnce(ctx, s.UserID, uid, keyOwner(uid), name, s, follow, false, " refused (a block)")
+	case movedNew:
+		// The member moved to another account (PRT 2): a new follower is refused here and follows that account
+		// instead (the actor names it in movedTo). A follower who was already following keeps its follow until it
+		// leaves, so a repeat of its Follow is answered as before.
+		return f.answerOnce(ctx, s.UserID, uid, keyOwner(uid), name, s, follow, false, " refused (the account moved to another server)")
 	}
 	var was, made sql.NullString
 	var mine, hostPending, hostAll int
@@ -20395,13 +20518,14 @@ type followView struct {
 func (a *app) followViewOf(ctx context.Context, u *user, ra *remoteActor) (followView, error) {
 	v := followView{Follow: "none"}
 	var mine, theirs sql.NullString
-	var optedIn, blocked, blockedBy, suspended bool
+	var optedIn, blocked, blockedBy, suspended, moved bool
 	err := a.db.QueryRowContext(ctx, `SELECT (SELECT state FROM follows WHERE follower_id = $1 AND followee_id = $3),
 		(SELECT state FROM follows WHERE follower_id = $3 AND followee_id = $1),
 		(SELECT `+publicMember+` FROM users u WHERE u.id = $1),
 		EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = $3), EXISTS (SELECT 1 FROM blocks WHERE user_id = $3 AND target_id = $1),
-		COALESCE((SELECT suspended_until > now() FROM users WHERE id = $3), false)`,
-		u.ID, a.mode == modeSingle, ra.UserID).Scan(&mine, &theirs, &optedIn, &blocked, &blockedBy, &suspended)
+		COALESCE((SELECT suspended_until > now() FROM users WHERE id = $3), false),
+		COALESCE((SELECT u.moved_to <> '' FROM users u WHERE u.id = $1), false)`,
+		u.ID, a.mode == modeSingle, ra.UserID).Scan(&mine, &theirs, &optedIn, &blocked, &blockedBy, &suspended, &moved)
 	if err != nil {
 		return v, err
 	}
@@ -20412,16 +20536,19 @@ func (a *app) followViewOf(ctx context.Context, u *user, ra *remoteActor) (follo
 		v.Follow = "following"
 	}
 	v.FollowsYou, v.Asks, v.Blocked = theirs.String == "accepted", theirs.String == "pending", blocked
-	v.Cannot = a.cannotFollow(optedIn, blocked || blockedBy, suspended, ra)
+	v.Cannot = a.cannotFollow(optedIn, blocked || blockedBy, suspended, moved, ra)
 	return v, nil
 }
 
 // cannotFollow is why a member cannot follow ra now, in the words the page shows, or "". suspendedHere is a
-// moderator's suspension of it on this server (FMD 2).
-func (a *app) cannotFollow(optedIn, blocked, suspendedHere bool, ra *remoteActor) string {
+// moderator's suspension of it on this server (FMD 2); a member who moved to another account (PRT 2) follows nobody
+// new from here.
+func (a *app) cannotFollow(optedIn, blocked, suspendedHere, moved bool, ra *remoteActor) string {
 	switch {
 	case !a.federating():
 		return lookupReasons[lookupUnavailable].words
+	case moved:
+		return moveFollowsNobody
 	case ra.State == "gone":
 		return lookupReasons[lookupGone].words
 	case ra.State == "suspended":
@@ -20544,49 +20671,18 @@ func (a *app) handleFedFollow(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusForbidden, v.Cannot)
 		return
 	}
-	f := a.fed
-	followID := f.activityID(u.Username)
-	tx, err := a.db.BeginTx(r.Context(), nil)
-	if err != nil {
-		a.serverError(w, err)
-		return
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE`, u.ID); err != nil {
-		a.serverError(w, err)
-		return
-	}
-	// The account's row is read FOR SHARE (FMD 2): a moderator's suspension written meanwhile either waits for this
-	// transaction and then ends the follow it writes, or is seen here, so no follow of a suspended account is left.
-	var held bool
-	err = tx.QueryRow(`SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1 FOR SHARE`, ra.UserID).Scan(&held)
-	if errors.Is(err, sql.ErrNoRows) {
-		fail(w, http.StatusNotFound, "No such account.")
-		return
-	}
-	if err != nil {
-		a.serverError(w, err)
-		return
-	}
-	if held {
+	made, full, err := a.followRemote(r.Context(), u, ra)
+	switch {
+	case errors.Is(err, errFollowSuspended):
 		fail(w, http.StatusForbidden, fedFollowSuspendedHere)
 		return
-	}
-	var made, full bool
-	err = tx.QueryRow(`WITH ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
-			SELECT $1, $2, 'pending', $3 WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $4 AND `+blockFree("$1::bigint", "$2::bigint", "false")+`
-			ON CONFLICT DO NOTHING RETURNING 1)
-		SELECT EXISTS (SELECT 1 FROM ins), (SELECT count(*) FROM follows WHERE follower_id = $1) >= $4`, u.ID, ra.UserID, followID, maxFollows).Scan(&made, &full)
-	var pqe *pq.Error
-	if errors.As(err, &pqe) && pqe.Code == "23503" {
+	case errors.Is(err, errFollowGone):
 		fail(w, http.StatusNotFound, "No such account.")
 		return
-	}
-	if err != nil {
-		a.serverError(w, err)
+	case errors.Is(err, errFollowNotQueued):
+		fail(w, http.StatusServiceUnavailable, fedFollowFull)
 		return
-	}
-	if err := tx.Commit(); err != nil {
+	case err != nil:
 		a.serverError(w, err)
 		return
 	}
@@ -20602,18 +20698,74 @@ func (a *app) handleFedFollow(w http.ResponseWriter, r *http.Request, u *user) {
 		writeJSON(w, http.StatusOK, map[string]any{"view": v, "changed": false})
 		return
 	}
-	me := f.memberActor(u.Username)
-	if err := f.sendFollow(r.Context(), keyOwner(u.ID), outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}, ra); err != nil {
-		if _, err2 := a.db.Exec(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2 AND ap_id = $3`, u.ID, ra.UserID, followID); err2 != nil {
-			a.serverError(w, err2)
-			return
-		}
-		log.Printf("follows: a Follow for %s could not be queued: %v", ra.Domain, err)
-		fail(w, http.StatusServiceUnavailable, fedFollowFull)
-		return
-	}
 	v.Follow = "requested"
 	writeJSON(w, http.StatusOK, map[string]any{"view": v, "changed": true})
+}
+
+// errFollowGone and errFollowNotQueued are followRemote's two failures a page is told of: the account went while the
+// follow was written, and the Follow could not be queued (the follow was taken back).
+var (
+	errFollowGone      = errors.New("the account went while the follow was written")
+	errFollowNotQueued = errors.New("the Follow could not be queued")
+	errFollowSuspended = errors.New("the account is suspended on this server")
+)
+
+// followRemote writes member u's follow of the remote account ra and sends the Follow: the row is written pending with
+// the Follow's id, in a short transaction that locks the member's row as handleFollow does (so maxFollows holds), and
+// the Follow is enqueued after the commit; if it cannot be, the row goes again (errFollowNotQueued). made says a
+// follow was written; full that none was because the member follows maxFollows accounts. The caller has asked
+// followViewOf first (handleFedFollow, and a move's followers, PRT 2).
+func (a *app) followRemote(ctx context.Context, u *user, ra *remoteActor) (made, full bool, err error) {
+	f := a.fed
+	followID := f.activityID(u.Username)
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE`, u.ID); err != nil {
+		return false, false, err
+	}
+	// The account's row is read FOR SHARE (FMD 2): a moderator's suspension written meanwhile either waits for this
+	// transaction and then ends the follow it writes, or is seen here, so no follow of a suspended account is left. The
+	// background step of a move (PRT 2) goes through here too.
+	var held bool
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1 FOR SHARE`, ra.UserID).Scan(&held)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, errFollowGone
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if held {
+		return false, false, errFollowSuspended
+	}
+	err = tx.QueryRowContext(ctx, `WITH ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
+			SELECT $1, $2, 'pending', $3 WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $4 AND `+blockFree("$1::bigint", "$2::bigint", "false")+`
+			ON CONFLICT DO NOTHING RETURNING 1)
+		SELECT EXISTS (SELECT 1 FROM ins), (SELECT count(*) FROM follows WHERE follower_id = $1) >= $4`, u.ID, ra.UserID, followID, maxFollows).Scan(&made, &full)
+	var pqe *pq.Error
+	if errors.As(err, &pqe) && pqe.Code == "23503" {
+		return false, false, errFollowGone
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, false, err
+	}
+	if !made {
+		return false, full, nil
+	}
+	me := f.memberActor(u.Username)
+	if err := f.sendFollow(ctx, keyOwner(u.ID), outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}, ra); err != nil {
+		if _, err2 := a.db.ExecContext(ctx, `DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2 AND ap_id = $3`, u.ID, ra.UserID, followID); err2 != nil {
+			return false, false, err2
+		}
+		log.Printf("follows: a Follow for %s could not be queued: %v", ra.Domain, err)
+		return false, false, errFollowNotQueued
+	}
+	return true, false, nil
 }
 
 // handleFedUnfollow is DELETE /api/fed/accounts/{id}/follow: the member's follow, or their request, goes, and an
@@ -22500,6 +22652,7 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	docContext := doc.Context // the activity carries the document's context: a move's terms when it names them
 	doc.Context = nil
 	to, err := f.recipients(ctx, uid, nil)
 	if err != nil {
@@ -22509,7 +22662,7 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 		f.personMade()
 	}
 	id := f.activityID(name)
-	body, err := apJSON(outUpdate{Context: actorContext, ID: id, Type: "Update", Actor: doc.ID, To: []string{publicCollection}, Cc: []string{doc.ID + "/followers"}, Object: doc})
+	body, err := apJSON(outUpdate{Context: docContext, ID: id, Type: "Update", Actor: doc.ID, To: []string{publicCollection}, Cc: []string{doc.ID + "/followers"}, Object: doc})
 	if err != nil {
 		return false, err
 	}
@@ -22950,12 +23103,770 @@ func (a *app) handleLeave(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
-	var s fedState
-	if err := a.db.QueryRowContext(r.Context(), fedStateSQL, u.ID, a.fed.leavingSince()).Scan(&s.on, &s.locked, &s.left, &s.keyed, &s.leaving); err != nil {
+	s, err := a.fedStateOf(r.Context(), u)
+	if err != nil {
 		a.serverError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"told": told.leaveSentence(!a.flagsCached()[fedFlag]), "federation": a.fedView(u, s)})
+}
+
+/* ---------- portability: moving to an account on another server ----------
+
+PRT 2 (docs/federation.md, "Moving to another server, as built (PRT 2)" under 6.4; docs/epic-prt/todo.md). A member
+moves their profile to an account on another server the way Mastodon's account migration works (its ActivityPub
+page, "Account migration"): the new account first names this one in its alsoKnownAs, and then the member says "I
+moved" here.
+
+  - Out (POST /api/me/move, with the member's password): the target, a handle or an address, is resolved as a
+    search by handle is (resolveRemote: WebFinger, the actor, the reverse check), through the fetcher and the domain
+    policy, with the actor fetched again whatever the cache holds, and the move goes on only when its alsoKnownAs
+    names this member's actor id. Then, in one transaction (enqueueSeq): users.moved_to and moved_at are set, an
+    Update(Person) whose actor names movedTo is enqueued to the member's followers on other servers, and a Move
+    (actor and object the member, target the new account) to the same inboxes, held at each inbox behind the Update
+    (comes_after, afterHeldSQL): every rule of the queue applies to both as to any activity (holds, retries, giving
+    up, a full queue, the pause, an account deleted or a member leaving meanwhile). Members here who follow the
+    member are moved by this server itself, as Mastodon moves the local followers of an account that moves: each
+    who may follow the new account (they share their profile, follows are on) follows it and stops following the
+    old one; the others keep their follow and see where the member went.
+  - After it the profile here is a redirect: the actor and the public page say where it went, it takes no new
+    followers (here, or from other servers: a Follow is refused), it makes no Public posts and follows nobody new.
+    Everything the member wrote stays, and they can still sign in, read, practise, export and post to this server.
+    The redirect can be taken back (DELETE /api/me/move, with the password), which sends an Update(Person) without
+    movedTo; followers who moved stay with the new account. Another move waits moveCooldown after the last one,
+    taken back or not, as Mastodon's 30 days.
+  - In this item only the side a Move comes from: a Move received is still counted and dropped at the inbox (PRT 3
+    acts on it). The accounts a member moves here from (PUT and DELETE /api/me/aliases) are what makes this server
+    a target: the actor names them in alsoKnownAs, at most aliasesMax.
+  - Everything here is in a mode that federates and behind the moves flag; local mode has none of it. */
+
+const (
+	moveCooldown     = 30 * 24 * time.Hour // a new move waits this long after the last one, as Mastodon's 30 days
+	aliasesMax       = 5                   // accounts a member names as the ones they move here from
+	actorAliasesKept = 16                  // entries of a remote actor's alsoKnownAs kept (the first, in its order)
+	actorAliasMax    = 2048                // bytes of one entry kept; a longer one is left out
+	moveFollowersMax = 10000               // members here who follow a member, moved with them at once
+)
+
+// The words of a move. Fixed, so the page shows what is built.
+const (
+	moveWarning          = "Your followers on other servers are asked to follow the new account instead, and members here who follow you follow it too when they share their profile. Your profile here then points to the new account: it takes no new followers, makes no Public posts and follows nobody new. Your posts, comments and practice stay here and do not move. You can stop the redirect later, but followers who moved stay with the new account, and another move is possible only 30 days after this one."
+	moveNeedsShare       = "Share your profile beyond this server first: your followers on other servers know you by it, and the new account checks it."
+	moveSameServer       = "That account is on this server. Moving between two accounts here is not built: move to an account on another server."
+	moveNoAlias          = "That account does not name this one as an old account yet. On the new account, add %s as an alias (on Mastodon: Preferences, Account, Moving from a different account), then try again."
+	moveChanged          = "Your profile changed while the move was being made (another move, or sharing turned off), so nothing was done. Look at Settings again and try once more."
+	moveFull             = "The queue to other servers is full just now, so nothing was changed. Try again in a few minutes."
+	moveNotMoved         = "Your profile does not point to another account."
+	moveFollowsNobody    = "Your profile here points to the account you moved to, so it follows nobody new. Follow from your new account."
+	moveTakesNoFollowers = "This account moved to another server and takes no new followers here."
+	aliasesFull          = "You can name at most 5 accounts you move here from. Remove one first."
+	aliasSame            = "That account is on this server. Only an account on another server can move here."
+	aliasNone            = "That account is not among the ones you named."
+)
+
+// keptAliases is what is kept of a remote actor's alsoKnownAs: the first actorAliasesKept entries of at most
+// actorAliasMax bytes each, without repeats, never nil (the column is NOT NULL).
+func keptAliases(in []string) []string {
+	out := []string{}
+	for _, s := range in {
+		if len(out) == actorAliasesKept {
+			break
+		}
+		if len(s) <= actorAliasMax && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// outMove is a Move (6.4): Mastodon's shape (its ActivityPub page, "Account migration"): the actor and the object
+// the account that moves, the target the account it moved to; addressed to its followers.
+type outMove struct {
+	Context string   `json:"@context"`
+	ID      string   `json:"id"`
+	Type    string   `json:"type"`
+	Actor   string   `json:"actor"`
+	Object  string   `json:"object"`
+	Target  string   `json:"target"`
+	To      []string `json:"to"`
+}
+
+// moved is where a member who moved went, as a page shows it: the actor id, its handle when the cache can show one,
+// and the address to link (the id).
+type moved struct {
+	ID     string `json:"id"`
+	Handle string `json:"handle"`
+	Link   string `json:"link"`
+}
+
+// movedLink is the address and the name a page shows for a move to id, from the cached actor's name and host.
+func movedLink(id, pref, host string) (string, string) {
+	if id == "" || !httpsURL(id) {
+		return "", ""
+	}
+	name := remoteHandle(pref, host)
+	if name == "" {
+		name = id
+	} else {
+		name = "@" + name
+	}
+	return id, name
+}
+
+// movedSQL is where member $1 moved, with the cached actor's name and host: one row of users by its key and one
+// look in ap_actors' unique index.
+const movedSQL = `SELECT u.moved_to, COALESCE(a.preferred_username, ''), COALESCE(x.domain, '') FROM users u
+	LEFT JOIN ap_actors a ON a.ap_id = u.moved_to AND u.moved_to <> '' LEFT JOIN users x ON x.id = a.user_id WHERE u.id = $1`
+
+// movedOf is where member uid moved, or nil.
+func (a *app) movedOf(ctx context.Context, uid int64) (*moved, error) {
+	var id, pref, host string
+	err := a.db.QueryRowContext(ctx, movedSQL, uid).Scan(&id, &pref, &host)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && id == "" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	link, name := movedLink(id, pref, host)
+	if link == "" {
+		return nil, nil
+	}
+	return &moved{ID: id, Handle: name, Link: link}, nil
+}
+
+// moveAlias is one account a member moves here from, as Settings lists it.
+type moveAlias struct {
+	ID     string `json:"id"`
+	Handle string `json:"handle"`
+}
+
+// moveView is what Settings shows of moving (fedView's "move"), with the moves flag on.
+type moveView struct {
+	Moved   *moved      `json:"moved,omitempty"`
+	At      string      `json:"at,omitempty"`   // when the member last moved, RFC 3339
+	Next    string      `json:"next,omitempty"` // while another move must wait: from when it may be made, RFC 3339
+	Aliases []moveAlias `json:"aliases"`
+	Warning string      `json:"warning"`
+	Cannot  string      `json:"cannot,omitempty"` // why the member cannot move now
+	Handle  string      `json:"handle"`           // the member's own handle, for the new account's alias
+}
+
+// moveStateSQL is what a move and Settings read of member $1 ($2 as in publicMember): whether they share and have a
+// key, where they moved and when, and the accounts they move here from with each one's cached name and host, in
+// their order. One row of users, a look in ap_keys' key and one in ap_actors' unique index per account named (at
+// most aliasesMax, and the one moved to).
+var moveStateSQL = `SELECT COALESCE(` + publicMember + `, false), EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id), u.moved_to, u.moved_at,
+	COALESCE(m.preferred_username, ''), COALESCE(m.domain, ''), u.also_known_as,
+	ARRAY(SELECT COALESCE(a.preferred_username, '') FROM unnest(u.also_known_as) WITH ORDINALITY k(id, n) LEFT JOIN ap_actors a ON a.ap_id = k.id ORDER BY k.n),
+	ARRAY(SELECT COALESCE(x.domain, '') FROM unnest(u.also_known_as) WITH ORDINALITY k(id, n) LEFT JOIN ap_actors a ON a.ap_id = k.id LEFT JOIN users x ON x.id = a.user_id ORDER BY k.n)
+	FROM users u LEFT JOIN LATERAL (SELECT a.preferred_username, x.domain FROM ap_actors a JOIN users x ON x.id = a.user_id WHERE a.ap_id = u.moved_to AND u.moved_to <> '') m ON true
+	WHERE u.id = $1`
+
+// moveState is moveStateSQL's row.
+type moveState struct {
+	shares, keyed bool
+	movedTo       string
+	movedAt       sql.NullTime
+	movedPref     string
+	movedHost     string
+	aliases       []string
+	aliasPrefs    []string
+	aliasHosts    []string
+}
+
+func (a *app) moveStateOf(ctx context.Context, uid int64) (moveState, error) {
+	var s moveState
+	err := a.db.QueryRowContext(ctx, moveStateSQL, uid, a.mode == modeSingle).Scan(&s.shares, &s.keyed, &s.movedTo, &s.movedAt, &s.movedPref, &s.movedHost,
+		pq.Array(&s.aliases), pq.Array(&s.aliasPrefs), pq.Array(&s.aliasHosts))
+	return s, err
+}
+
+// nextMove is the soonest another move may be made: moveCooldown after the last, the zero time when there was none.
+func (s moveState) nextMove() time.Time {
+	if !s.movedAt.Valid {
+		return time.Time{}
+	}
+	return s.movedAt.Time.Add(moveCooldown)
+}
+
+// moveViewOf is fedView's "move" for member u: nil without the moves flag (the card then offers nothing of it).
+func (a *app) moveViewOf(ctx context.Context, u *user) (*moveView, error) {
+	if a.fed == nil || !a.flagsCached()["moves"] {
+		return nil, nil
+	}
+	s, err := a.moveStateOf(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	v := &moveView{Aliases: []moveAlias{}, Warning: moveWarning, Handle: "@" + u.Username + "@" + a.fed.origin.host}
+	if link, name := movedLink(s.movedTo, s.movedPref, s.movedHost); link != "" {
+		v.Moved = &moved{ID: s.movedTo, Handle: name, Link: link}
+	}
+	if s.movedAt.Valid {
+		v.At = s.movedAt.Time.UTC().Format(time.RFC3339)
+		if next := s.nextMove(); a.fed.out.now().Before(next) {
+			v.Next = next.UTC().Format(time.RFC3339)
+		}
+	}
+	if !s.shares || !s.keyed {
+		v.Cannot = moveNeedsShare
+	}
+	for i, id := range s.aliases {
+		h := ""
+		if i < len(s.aliasPrefs) && i < len(s.aliasHosts) {
+			h = remoteHandle(s.aliasPrefs[i], s.aliasHosts[i])
+		}
+		if h == "" {
+			h = id
+		} else {
+			h = "@" + h
+		}
+		v.Aliases = append(v.Aliases, moveAlias{ID: id, Handle: h})
+	}
+	return v, nil
+}
+
+// moveCooldownWords says when another move may be made.
+func moveCooldownWords(last, next time.Time) string {
+	return fmt.Sprintf("You moved on %s. Another move is possible from %s, 30 days after the last one.", last.UTC().Format("2 January 2006"), next.UTC().Format("2 January 2006 at 15:04 UTC"))
+}
+
+// passwordAgain asks for the member's own password before an action that cannot be taken back by a click (a move,
+// its undoing), as changing the password does: wrong ones counted in limits.password, 429 past it.
+func (a *app) passwordAgain(w http.ResponseWriter, r *http.Request, u *user, pw string) bool {
+	var hash string
+	if err := a.db.QueryRowContext(r.Context(), `SELECT pw_hash FROM users WHERE id = $1`, u.ID).Scan(&hash); err != nil {
+		a.serverError(w, err)
+		return false
+	}
+	uid := strconv.FormatInt(u.ID, 10)
+	if a.lim.password.over(uid) {
+		logRefusal(w, "too many wrong passwords", "by member "+uid)
+		fail(w, http.StatusTooManyRequests, "Too many wrong passwords. Wait ten minutes and try again.")
+		return false
+	}
+	if !checkPassword(hash, pw) {
+		a.lim.password.add(uid)
+		fail(w, http.StatusForbidden, "The password is wrong.")
+		return false
+	}
+	return true
+}
+
+// takeLookup takes one of the server's lookup turns for member uid, one at a time per member as a search by handle
+// does (handleLookup): a move and an alias resolve an account the same way and share those turns. ok false: busy.
+func (f *federation) takeLookup(uid int64) (release func(), ok bool) {
+	f.lookupMu.Lock()
+	mine := f.lookupBy[uid]
+	f.lookupBy[uid] = true
+	f.lookupMu.Unlock()
+	if mine {
+		return nil, false
+	}
+	unmark := func() { f.lookupMu.Lock(); delete(f.lookupBy, uid); f.lookupMu.Unlock() }
+	select {
+	case f.lookups <- struct{}{}:
+		return func() { <-f.lookups; unmark() }, true
+	default:
+		unmark()
+		return nil, false
+	}
+}
+
+// resolveFor resolves the account a member typed (q) for a move (fresh: its actor fetched again) or an alias, with
+// every rule of a search by handle: the query read strictly, this server's own accounts refused with local's
+// words, an address Flowa never asks refused before any connection, the domain policy asked first, the lookup's
+// turns, its 15 s, its requests counted, and its floor for a name not found. On a failure it has answered.
+func (a *app) resolveFor(w http.ResponseWriter, r *http.Request, u *user, q string, fresh bool, local string) (*remoteActor, string, bool) {
+	answer := func(reason lookupReason, words string) {
+		if words == "" {
+			words = lookupReasons[reason].words
+		}
+		writeJSON(w, lookupHTTP[reason], map[string]string{"error": words, "reason": lookupReasons[reason].code})
+	}
+	f := a.fed
+	in, bad := parseLookup(q)
+	switch {
+	case bad != "":
+		answer(lookupBadInput, bad)
+		return nil, "", false
+	case f.refusal() != "":
+		answer(lookupUnavailable, "")
+		return nil, "", false
+	}
+	if _, isLocal := localTarget(in, f.origin); isLocal {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": local, "reason": "local"})
+		return nil, "", false
+	}
+	if !lookupHostOK(in) {
+		answer(lookupRefused, "")
+		return nil, "", false
+	}
+	if !f.admits(lookupHostOf(in)) {
+		answer(lookupNotAllowed, "")
+		return nil, "", false
+	}
+	release, ok := f.takeLookup(u.ID)
+	if !ok {
+		answer(lookupBusy, "")
+		return nil, "", false
+	}
+	defer release()
+	start := f.lookupNow()
+	ctx, cancel := context.WithTimeout(r.Context(), lookupTime)
+	defer cancel()
+	ra, handle, _, err := f.resolveRemote(ctx, in, fresh)
+	if err != nil {
+		reason := lookupReasonOf(err)
+		if left := lookupFloor - f.lookupNow().Sub(start); reason == lookupNotFound && left > 0 {
+			f.lookupPause(r.Context(), left)
+		}
+		var ae *actorError
+		var fe *fetchError
+		var le *lookupError
+		if reason == lookupUnavailable && errors.As(err, &le) && le.err != nil && !errors.As(err, &ae) && !errors.As(err, &fe) {
+			log.Printf("error: %v: %v", err, le.err) // this server's own trouble; never a remote server's words
+		}
+		answer(reason, "")
+		return nil, "", false
+	}
+	return ra, handle, true
+}
+
+// errMoveChanged is the move's own write finding the member no longer in a state to move (another move made
+// meanwhile, sharing turned off, the key gone): everything is rolled back.
+var errMoveChanged = errors.New("the member's profile changed while the move was made")
+
+// moveSetSQL records member $1's move to $2 at $3, only while the member may move: a local account that shares and
+// has a key ($5 as publicMember's $2) and whose last move is at least $4 seconds old. One row or none.
+var moveSetSQL = `UPDATE users u SET moved_to = $2, moved_at = $3 WHERE u.id = $1 AND u.domain = ''
+	AND (u.moved_at IS NULL OR u.moved_at <= $3::timestamptz - make_interval(secs => $4))
+	AND ` + strings.ReplaceAll(publicMember, "$2", "$5") + ` AND EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id)`
+
+// moveResult is what a move did: the inboxes the Update and the Move were written for (servers), whether they wait
+// for room in the queue, and the members here who now follow the new account and who could not.
+type moveResult struct {
+	servers       int
+	waiting       bool
+	moved, kept   int
+	updateID, mID string
+}
+
+// moveOut makes member u's move to ra at now: the doc comment of this section says what, in one transaction, and then
+// the members here who follow u.
+func (a *app) moveOut(ctx context.Context, u *user, ra *remoteActor, now time.Time) (moveResult, error) {
+	var res moveResult
+	f := a.fed
+	doc, known, err := a.actorOf(ctx, u.ID)
+	if err != nil {
+		return res, err
+	}
+	if !known {
+		return res, errSwitchesUnread
+	}
+	doc.MovedTo, doc.Context = ra.ID, nil
+	to, err := f.recipients(ctx, u.ID, nil)
+	if err != nil {
+		return res, err
+	}
+	res.updateID, res.mID = f.activityID(u.Username), f.activityID(u.Username)
+	upd, err := apJSON(outUpdate{Context: actorContextMoving, ID: res.updateID, Type: "Update", Actor: doc.ID, To: []string{publicCollection}, Cc: []string{doc.ID + "/followers"}, Object: doc})
+	if err != nil {
+		return res, err
+	}
+	mv, err := apJSON(outMove{Context: asContext, ID: res.mID, Type: "Move", Actor: doc.ID, Object: doc.ID, Target: ra.ID, To: []string{doc.ID + "/followers"}})
+	if err != nil {
+		return res, err
+	}
+	if a.fed.moveHook != nil {
+		a.fed.moveHook("enqueue")
+	}
+	outs, err := f.out.enqueueSeq(ctx, keyOwner(u.ID), []seqItem{{apID: res.updateID, body: upd}, {apID: res.mID, body: mv, order: outOrder{after: res.updateID}}}, to,
+		func(tx *sql.Tx) error {
+			if err := oneRow(tx.ExecContext(ctx, moveSetSQL, u.ID, ra.ID, now, moveCooldown.Seconds(), a.mode == modeSingle)); errors.Is(err, errOutChanged) {
+				return errMoveChanged
+			} else if err != nil {
+				return err
+			}
+			return nil
+		})
+	if err != nil {
+		return res, err
+	}
+	res.servers, res.waiting = outs[1].Queued, outs[1].Waiting
+	f.dropActor(keyOwner(u.ID))
+	a.dropVisitorPage()
+	// The move is made: its followers here are moved whether or not the member's page waits for the answer.
+	res.moved, res.kept = a.moveFollowers(context.WithoutCancel(ctx), u.ID, ra)
+	return res, nil
+}
+
+// moveFollowersSQL is the members here who follow member $1 (accepted), $2 at most, in the order of their ids:
+// follows_followee for the member's followers, and each one's row by its primary key (the lateral join holds the
+// planner to that, rather than reading users whole for a member followed from many servers: TestDBQueryPlans).
+const moveFollowersSQL = `SELECT u.id, u.username FROM (SELECT follower_id FROM follows WHERE followee_id = $1 AND state = 'accepted' ORDER BY follower_id) f
+	CROSS JOIN LATERAL (SELECT x.id, x.username FROM users x WHERE x.id = f.follower_id AND x.domain = '' OFFSET 0) u LIMIT $2`
+
+// moveFollowers moves the members here who follow member uid to ra, as Mastodon moves the local followers of an
+// account that moved: each who may follow ra (followViewOf: shares their profile, no block, ra's server allowed, the
+// follows flag on) follows it through the queue as a Follow of theirs (followRemote) and stops following uid; one
+// who follows or asked to follow ra already only stops following uid; the others keep their follow and see on the
+// profile where uid went. It counts both. A failure for one follower is logged and counted as kept.
+func (a *app) moveFollowers(ctx context.Context, uid int64, ra *remoteActor) (moved, kept int) {
+	type follower struct {
+		id   int64
+		name string
+	}
+	var list []follower
+	rows, err := a.db.QueryContext(ctx, moveFollowersSQL, uid, moveFollowersMax)
+	if err != nil {
+		log.Printf("federation: the members here who follow member %d could not be read for their move: %v", uid, err)
+		return 0, 0
+	}
+	for rows.Next() {
+		var x follower
+		if err = rows.Scan(&x.id, &x.name); err != nil {
+			break
+		}
+		list = append(list, x)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		log.Printf("federation: the members here who follow member %d could not be read for their move: %v", uid, err)
+		return 0, 0
+	}
+	on := a.flagsCached()["follows"]
+	for _, x := range list {
+		fu := &user{ID: x.id, Username: x.name}
+		v, err := a.followViewOf(ctx, fu, ra)
+		if err != nil {
+			log.Printf("federation: member %d could not be moved with member %d: %v", x.id, uid, err)
+			kept++
+			continue
+		}
+		if v.Follow == "none" {
+			if !on || v.Cannot != "" {
+				kept++
+				continue
+			}
+			made, _, err := a.followRemote(ctx, fu, ra)
+			if err != nil || !made {
+				if err != nil {
+					log.Printf("federation: member %d could not be moved with member %d: %v", x.id, uid, err)
+				}
+				kept++
+				continue
+			}
+		}
+		if _, err := a.db.ExecContext(ctx, `DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, x.id, uid); err != nil {
+			log.Printf("federation: member %d follows the new account of member %d but still the old one: %v", x.id, uid, err)
+		}
+		moved++
+	}
+	return moved, kept
+}
+
+// moveSentence is what the member is told after a move.
+func (r moveResult) sentence(paused bool) string {
+	var b strings.Builder
+	switch {
+	case r.waiting:
+		b.WriteString("Your followers on other servers are told once the queue to other servers has room.")
+	case r.servers == 0:
+		b.WriteString("You have no followers on other servers to tell.")
+	case r.servers == 1:
+		b.WriteString("Your followers on other servers are being told: 1 server.")
+	default:
+		fmt.Fprintf(&b, "Your followers on other servers are being told: %d servers.", r.servers)
+	}
+	if paused && (r.waiting || r.servers > 0) {
+		b.WriteString(" Sending is paused on this server just now, so it goes when an admin turns it on again.")
+	}
+	switch {
+	case r.moved == 1:
+		b.WriteString(" 1 member here now follows your new account.")
+	case r.moved > 1:
+		fmt.Fprintf(&b, " %d members here now follow your new account.", r.moved)
+	}
+	switch {
+	case r.kept == 1:
+		b.WriteString(" 1 member here could not follow it (they do not share their profile beyond this server) and sees where you went.")
+	case r.kept > 1:
+		fmt.Fprintf(&b, " %d members here could not follow it (they do not share their profile beyond this server) and see where you went.", r.kept)
+	}
+	return b.String()
+}
+
+// handleMove is POST /api/me/move, {"target": handle or address, "password": ...}: the member's move (the section's
+// doc comment). Behind the moves flag, in a mode that federates, held to limits.moves.
+func (a *app) handleMove(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.moves, u, "moves to another account")
+	if !ok {
+		return
+	}
+	var in struct {
+		Target   string `json:"target"`
+		Password string `json:"password"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	f := a.fed
+	if f.refusal() != "" {
+		fail(w, http.StatusServiceUnavailable, fedUnavailable)
+		return
+	}
+	if !a.passwordAgain(w, r, u, in.Password) {
+		return
+	}
+	st, err := a.moveStateOf(r.Context(), u.ID)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if !st.shares || !st.keyed {
+		fail(w, http.StatusBadRequest, moveNeedsShare)
+		return
+	}
+	if next := st.nextMove(); f.out.now().Before(next) {
+		fail(w, http.StatusConflict, moveCooldownWords(st.movedAt.Time, next))
+		return
+	}
+	ra, handle, ok := a.resolveFor(w, r, u, in.Target, true, moveSameServer)
+	if !ok {
+		return
+	}
+	me := f.memberActor(u.Username)
+	if !slices.Contains(ra.AlsoKnownAs, me) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": fmt.Sprintf(moveNoAlias, "@"+u.Username+"@"+f.origin.host), "reason": "noAlias"})
+		return
+	}
+	if !inboxOwn(ra) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": lookupReasons[lookupNotAccount].words, "reason": lookupReasons[lookupNotAccount].code})
+		return
+	}
+	res, err := a.moveOut(r.Context(), u, ra, f.out.now())
+	switch {
+	case errors.Is(err, errDeliveryFull):
+		w.Header().Set("Retry-After", "300")
+		fail(w, http.StatusServiceUnavailable, moveFull)
+		return
+	case errors.Is(err, errRefused):
+		fail(w, http.StatusServiceUnavailable, fedUnavailable)
+		return
+	case errors.Is(err, errSwitchesUnread):
+		w.Header().Set("Retry-After", "60")
+		fail(w, http.StatusServiceUnavailable, "This server could not read its own settings just now, so nothing was changed. Try again in a minute.")
+		return
+	case errors.Is(err, errNotSharing), errors.Is(err, errMoveChanged), errors.Is(err, errNoKey), errors.Is(err, sql.ErrNoRows):
+		fail(w, http.StatusConflict, moveChanged)
+		return
+	case err != nil:
+		a.serverError(w, err)
+		return
+	}
+	// The log says that a move was made and where to, never what the profile says.
+	log.Printf("federation: member %d moved to an account on %s: %d inboxes to tell%s, %d members here moved with them, %d not", u.ID, ra.Domain, res.servers,
+		map[bool]string{true: " (waiting for room)", false: ""}[res.waiting], res.moved, res.kept)
+	a.answerMove(w, r, u, map[string]any{"told": res.sentence(!a.flagsCached()[fedFlag]), "handle": "@" + handle})
+}
+
+// answerMove answers a move, its undoing or a change of aliases with the card's state.
+func (a *app) answerMove(w http.ResponseWriter, r *http.Request, u *user, out map[string]any) {
+	s, err := a.fedStateOf(r.Context(), u)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	out["federation"] = a.fedView(u, s)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// fedStateOf reads fedState for member u, with the move's part.
+func (a *app) fedStateOf(ctx context.Context, u *user) (fedState, error) {
+	var s fedState
+	if err := a.db.QueryRowContext(ctx, fedStateSQL, u.ID, a.fed.leavingSince()).Scan(&s.on, &s.locked, &s.left, &s.keyed, &s.leaving); err != nil {
+		return s, err
+	}
+	var err error
+	s.move, err = a.moveViewOf(ctx, u)
+	return s, err
+}
+
+// personChanged marks member uid's Update(Person) due when their profile is shown to other servers and posts go out,
+// as a saved profile does (handlePutMe), and wakes the producer after the caller's commit (personMarked).
+func (a *app) personChanged(ctx context.Context, tx *sql.Tx, uid int64, owner bool) (bool, error) {
+	var shares bool
+	if err := tx.QueryRowContext(ctx, `SELECT `+publicMember+` FROM users u WHERE u.id = $1`, uid, a.mode == modeSingle && owner).Scan(&shares); err != nil {
+		return false, err
+	}
+	if !shares || !a.postsGoOut(audPublic) {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, personChangedSQL, uid, a.fed.out.now(), personUpdateEvery.Seconds()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// afterPersonChange is what follows a commit that changed what the actor document says.
+func (a *app) afterPersonChange(uid int64, marked bool) {
+	a.fed.dropActor(keyOwner(uid))
+	a.dropVisitorPage()
+	if marked {
+		a.fed.personTries.Delete(uid)
+		a.fed.personWaits()
+	}
+}
+
+// handleMoveBack is DELETE /api/me/move, {"password": ...}: the redirect taken back. The actor no longer names
+// movedTo, and an Update(Person) says so to the followers on other servers (at most one in personUpdateEvery, as a
+// profile change); the followers who moved stay with the new account, and the 30 days before another move still
+// count from the move.
+func (a *app) handleMoveBack(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.moves, u, "moves to another account")
+	if !ok {
+		return
+	}
+	var in struct {
+		Password string `json:"password"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	if !a.passwordAgain(w, r, u, in.Password) {
+		return
+	}
+	ctx := r.Context()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if err := oneRow(tx.ExecContext(ctx, `UPDATE users SET moved_to = '' WHERE id = $1 AND moved_to <> ''`, u.ID)); errors.Is(err, errOutChanged) {
+		fail(w, http.StatusBadRequest, moveNotMoved)
+		return
+	} else if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	marked, err := a.personChanged(ctx, tx, u.ID, u.Owner)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.afterPersonChange(u.ID, marked)
+	log.Printf("federation: member %d took back the redirect of their profile", u.ID)
+	a.answerMove(w, r, u, map[string]any{"told": "Your profile no longer points to another account. Followers who moved stay with the new account."})
+}
+
+// handleAddAlias is PUT /api/me/aliases, {"account": handle or address}: an account on another server the member
+// moves here from, resolved as a search by handle (the cache's copy is enough: the account only has to exist), named
+// in the actor's alsoKnownAs (at most aliasesMax), and sent to the followers on other servers as an Update(Person).
+func (a *app) handleAddAlias(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.aliases, u, "changes to the accounts you move here from")
+	if !ok {
+		return
+	}
+	var in struct {
+		Account string `json:"account"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	var n int
+	if err := a.db.QueryRowContext(r.Context(), `SELECT cardinality(also_known_as) FROM users WHERE id = $1`, u.ID).Scan(&n); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if n >= aliasesMax {
+		fail(w, http.StatusBadRequest, aliasesFull)
+		return
+	}
+	ra, handle, ok := a.resolveFor(w, r, u, in.Account, false, aliasSame)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var added, full bool
+	if err := tx.QueryRowContext(ctx, `WITH up AS (UPDATE users SET also_known_as = also_known_as || $2::text WHERE id = $1 AND NOT ($2 = ANY (also_known_as))
+			AND cardinality(also_known_as) < $3 RETURNING 1)
+		SELECT EXISTS (SELECT 1 FROM up), (SELECT cardinality(also_known_as) >= $3 AND NOT ($2 = ANY (also_known_as)) FROM users WHERE id = $1)`,
+		u.ID, ra.ID, aliasesMax).Scan(&added, &full); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if full && !added {
+		fail(w, http.StatusBadRequest, aliasesFull)
+		return
+	}
+	marked := false
+	if added {
+		if marked, err = a.personChanged(ctx, tx, u.ID, u.Owner); err != nil {
+			a.serverError(w, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.afterPersonChange(u.ID, marked)
+	a.answerMove(w, r, u, map[string]any{"changed": added, "told": "@" + handle + " can now move here: it is named as one of your old accounts."})
+}
+
+// handleRemoveAlias is DELETE /api/me/aliases, {"id": actor id}: the account is no longer named.
+func (a *app) handleRemoveAlias(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.aliases, u, "changes to the accounts you move here from")
+	if !ok {
+		return
+	}
+	var in struct {
+		ID string `json:"id"`
+	}
+	if !readJSON(w, r, 4096, &in) {
+		return
+	}
+	ctx := r.Context()
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if err := oneRow(tx.ExecContext(ctx, `UPDATE users SET also_known_as = array_remove(also_known_as, $2) WHERE id = $1 AND $2 = ANY (also_known_as)`, u.ID, in.ID)); errors.Is(err, errOutChanged) {
+		fail(w, http.StatusNotFound, aliasNone)
+		return
+	} else if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	marked, err := a.personChanged(ctx, tx, u.ID, u.Owner)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.afterPersonChange(u.ID, marked)
+	a.answerMove(w, r, u, map[string]any{"changed": true})
 }
 
 /* ---------- federation: posts from followed accounts ----------
@@ -26239,6 +27150,18 @@ var migrations = []string{schema, schemaSocial,
 	// remote account. An index only: an older build after ./deploy.sh --rollback ignores it, and reads the
 	// two columns of a remote account as it always did (the cache's bound keeps such an account, nothing else asks).
 	`CREATE INDEX IF NOT EXISTS users_remote_held ON users (id) WHERE domain <> '' AND (muted_until IS NOT NULL OR suspended_until IS NOT NULL)`,
+	// 26: moving to an account on another server (docs/federation.md, "Moving to another server, as built (PRT 2)"
+	// under 6.4; PRT 2). users.moved_to is the actor id of the account a member moved to ('' for none: the actor
+	// document's movedTo), moved_at when they last moved (kept when the redirect is taken back, for the 30 days
+	// before another move), also_known_as the actor ids of the accounts they move here from (the document's
+	// alsoKnownAs). ap_actors.also_known_as is a remote actor's alsoKnownAs as last fetched, which a move checks
+	// for the member's own id. Columns with constant defaults or none: no row is rewritten, and an older build
+	// ignores them; after ./deploy.sh --rollback a moved member's actor would stop saying movedTo until the build
+	// comes back, and nothing is lost (14.4).
+	`ALTER TABLE users ADD COLUMN IF NOT EXISTS moved_to TEXT NOT NULL DEFAULT '';
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS moved_at TIMESTAMPTZ;
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS also_known_as TEXT[] NOT NULL DEFAULT '{}';
+	ALTER TABLE ap_actors ADD COLUMN IF NOT EXISTS also_known_as TEXT[] NOT NULL DEFAULT '{}'`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -27017,6 +27940,15 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("POST /api/fed/lookup", a.flagged("community", a.authed("", a.handleLookup)))
 		// "Remove me from other servers" (FWR 7): sharing is a member's own setting, behind no flag, so this is too.
 		mux.HandleFunc("POST /api/me/federation/leave", a.authed("", a.handleLeave))
+		// Moving to an account on another server, and the accounts a member moves here from (PRT 2): behind the moves
+		// flag, which only a mode that federates has.
+		moves := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
+			return a.flagged("moves", a.authed("", h))
+		}
+		mux.HandleFunc("POST /api/me/move", moves(a.handleMove))
+		mux.HandleFunc("DELETE /api/me/move", moves(a.handleMoveBack))
+		mux.HandleFunc("PUT /api/me/aliases", moves(a.handleAddAlias))
+		mux.HandleFunc("DELETE /api/me/aliases", moves(a.handleRemoveAlias))
 		// Follows across servers (FWR 3): a remote profile and blocks behind the community flag, as the local ones
 		// are; following and the requests behind the follows flag too, as local follows are.
 		fedSocial := func(h func(http.ResponseWriter, *http.Request, *user)) http.HandlerFunc {
@@ -27180,6 +28112,8 @@ type visitorData struct {
 	// With FLOWA_FEDERATE=on, the owner's newest Public posts (federation.md 4.2), and where the rest are.
 	Posts    []pubPost
 	AllPosts string
+	// Where the owner moved the profile to (PRT 2), with FLOWA_FEDERATE=on.
+	Moved, MovedName string
 }
 
 var visitorTmpl = template.Must(template.New("visitor").Parse(`<!doctype html>
@@ -27198,7 +28132,8 @@ var visitorTmpl = template.Must(template.New("visitor").Parse(`<!doctype html>
 <article class="card pub-card" aria-labelledby="pub-name">
 <div class="pub-who">{{if .Picture}}<img class="pub-pic" src="{{.Picture}}" alt="" width="72" height="72">{{else}}<span class="pub-pic pub-initial" aria-hidden="true">{{.Initial}}</span>{{end}}
 <div class="pub-names"><h1 id="pub-name">{{.Name}}</h1><p class="pub-handle">@{{.Username}}</p></div></div>
-{{with .Bio}}<p class="pub-text">{{.}}</p>
+{{if .Moved}}<p class="notice pub-moved">This profile has moved to <a href="{{.Moved}}" rel="nofollow noopener noreferrer">{{.MovedName}}</a>.</p>
+{{end}}{{with .Bio}}<p class="pub-text">{{.}}</p>
 {{end}}{{if .Links}}<ul class="pub-links" aria-label="Links">{{range .Links}}<li><a class="btn sm" href="{{.URL}}" rel="nofollow noopener noreferrer">{{.Name}}</a></li>{{end}}</ul>
 {{end}}</article>
 {{if .Posts}}<section class="pub-posts" aria-labelledby="pub-posts-h"><h2 id="pub-posts-h">Public posts</h2>
@@ -27321,6 +28256,14 @@ func (a *app) makeVisitorPage(st *static) (*visitorPage, error) {
 				break
 			}
 			d.Posts = append(d.Posts, a.postOf(context.Background(), x))
+		}
+		// An owner who moved the one profile to an account on another server (PRT 2): the page says where.
+		mv, err := a.movedOf(context.Background(), u.ID)
+		if err != nil {
+			return nil, err
+		}
+		if mv != nil {
+			d.Moved, d.MovedName = mv.Link, mv.Handle
 		}
 	}
 	// The picture went through cleanImage when it was saved: a JPEG or PNG made again by the server. Its
@@ -28610,6 +29553,18 @@ func (a *app) handleUserProfile(w http.ResponseWriter, r *http.Request, viewer *
 		return
 	}
 	out := map[string]any{"user": u.public(), "achievements": ach, "posts": posts, "likes": likes, "blocked": blocked}
+	// Where a member who moved to an account on another server went (PRT 2), for everyone who opens the profile;
+	// only a mode that federates can have one, and the key is there only then.
+	if a.fed != nil {
+		mv, err := a.movedOf(r.Context(), u.ID)
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if mv != nil {
+			out["moved"] = mv
+		}
+	}
 	// With follows on, how many follow this member and how many they follow, for everyone, and whether
 	// the viewer follows them. Who they are is shown only to the member (handleFollowers). With the flag
 	// off none of this is asked, so the profile costs what it did.
@@ -29594,6 +30549,7 @@ const (
 	audNotOptedIn = "Only members who share their profile beyond this server can post publicly. Turn that on in Settings, or post to this server."
 	audOff        = "Posting publicly is not available at the moment. Post to this server instead."
 	audUnknown    = "The audience is public or local (this server)."
+	audMoved      = "Your profile here points to the account you moved to, so it makes no Public posts. Post from your new account, or post to this server."
 )
 
 // postAudience decides a new post's audience from what the page asked for (nil: nothing). Outside a mode
@@ -29617,14 +30573,17 @@ func (a *app) postAudience(want *string, u *user) (aud, msg string, err error) {
 	if !a.federating() {
 		return "", audOff, nil
 	}
-	if a.mode == modeSingle && u.Owner {
-		return audPublic, "", nil
-	}
-	var on bool
-	if err := a.db.QueryRow(`SELECT federates FROM users WHERE id = $1`, u.ID).Scan(&on); err != nil {
+	// A member who moved to another account (PRT 2) posts publicly from there: their followers left with them.
+	var on, moved bool
+	if err := a.db.QueryRow(`SELECT federates, moved_to <> '' FROM users WHERE id = $1`, u.ID).Scan(&on, &moved); err != nil {
 		return "", "", err
 	}
-	if !on {
+	switch {
+	case moved:
+		return "", audMoved, nil
+	case a.mode == modeSingle && u.Owner:
+		return audPublic, "", nil
+	case !on:
 		return "", audNotOptedIn, nil
 	}
 	return audPublic, "", nil
@@ -31610,6 +32569,19 @@ func (a *app) handleFollow(w http.ResponseWriter, r *http.Request, u *user) {
 	id, ok := a.memberNamed(w, r, u, "You cannot follow yourself.")
 	if !ok {
 		return
+	}
+	// A member who moved to an account on another server (PRT 2) takes no new followers here; only a mode that
+	// federates can have one, so local mode asks nothing more than before.
+	if a.fed != nil {
+		var moved bool
+		if err := a.db.QueryRow(`SELECT moved_to <> '' FROM users WHERE id = $1`, id).Scan(&moved); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			a.serverError(w, err)
+			return
+		}
+		if moved {
+			fail(w, http.StatusForbidden, moveTakesNoFollowers)
+			return
+		}
 	}
 	tx, err := a.db.Begin()
 	if err != nil {

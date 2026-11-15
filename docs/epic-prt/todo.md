@@ -6,9 +6,9 @@ Category: feature. Size: S. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#92](https://github.com/TuanSSM/flowtopia/issues/92)). 1 of 4 items done: Export; Move out,
-Move in and the import follow, each in its own pull request. Every setting, table, route and test named below
-is new.
+**Status:** in progress (issue [#92](https://github.com/TuanSSM/flowtopia/issues/92)). 1 of 4 items done: Export; Move out
+is built and waits for its pull request; Move in and the import follow, each in its own pull request. Every setting,
+table, route and test named below is new.
 
 - [x] **Export.** A member downloads their profile, posts (with pictures), comments, follows and
   blocks as one archive, in every mode (local included), at most once an hour. Progress documents
@@ -48,6 +48,41 @@ is new.
   checks the same before it accepts a Move: its ActivityPub page, "Account migration"). DoD:
   `TestDBMoveOut`; the `federation` suite moves a member between its two instances and the followers
   follow the new account.
+  - Built: `POST /api/me/move` (the new account's handle or address and the member's password) and `DELETE
+    /api/me/move` (taking the redirect back, with the password), `PUT` and `DELETE /api/me/aliases` (the accounts a
+    member moves here from, at most 5, named in the actor's `alsoKnownAs`), behind the `moves` flag (off by default, a
+    flag of a mode that federates only), in "Beyond this server" in Settings; migration 25 (`users.moved_to`,
+    `moved_at`, `also_known_as`, `ap_actors.also_known_as`) with `flowa-schema24.dump`. The target is fetched again
+    whatever the cache holds, through the fetcher and the domain policy, and the move goes on only when its
+    `alsoKnownAs` names this member's actor; then one transaction writes `movedTo` and an Update(Person) and a Move to
+    the followers on other servers, the Move held behind the Update at each inbox (`comes_after`), every rule of the
+    queue applying to both. Members here who follow the member and share their profile follow the new account and stop
+    following the old one. After it the profile is a redirect: the actor, the public page, the visitor page of a
+    single-profile instance and the profile in the app say where it went; it takes no new follower (here, or from
+    another server: Reject), makes no Public post and follows nobody new; another move waits 30 days. Checks:
+    `TestDBMoveOut` (the DoD), `TestDBMoveOutAliases`, `TestDBMoveOutOrder`, `TestDBMoveOutPolicy`,
+    `TestDBMoveOutMidway`, `TestDBMoveOutAtOnce`, `TestDBMoveOutTarget`, `TestDBMoveOutFollowIn`,
+    `TestDBMoveOutFlagAndModes`, the moves' plans in `TestDBQueryPlans`; the `federation` suite (dee of one moves to gil
+    of two, refused until gil names her; her actor names `movedTo`; eli, her follower on one, follows gil on two; two
+    takes the Move without an error); the `federated` browser suite (the card, its names, contrast and keyboard path,
+    the refusals' words; picture `federated-move`). The followers who follow the new account in the suite are the
+    member's followers on her own server, which that server moves itself; followers on the other server follow it once
+    Move in (the next item) is built there. The box stays open until the pull request merges with `process_pr_result`
+    passed.
+  - Open: a Move received is still counted and dropped (Move in); a member here who could not follow the new account
+    (they do not share their profile) is not told by a notification, only by the profile; the owner's trial should show
+    how Mastodon takes this Move (its pages do not say whether it wants the Update first or reads `movedTo`: federation.md
+    lists what is unverified).
+  - For the owner: the 30 days count from the last move, also when the redirect was taken back (Mastodon's 30 days);
+    taking the redirect back is allowed at any time, keeps the followers who moved where they are, and sends an Update;
+    a second move after 30 days is allowed while still redirecting, and replaces the target; a moved member may still
+    post to this server, comment, like, practise, export and delete the account (Mastodon disables posting on the old
+    account; here only Public posts are refused, since posts to this server never claim to be the new account), and
+    their likes and comments on posts of other servers still go out; moving to an account on this same server is
+    refused (not built); a server under "limit" may be moved to; aliases ask no password (Mastodon calls them harmless);
+    the numbers are constants in `main.go`: 5 moves or undoings an hour per member, 30 alias changes an hour, 5 aliases,
+    16 entries of a remote actor's `alsoKnownAs` kept (a target that lists more than 16 accounts before this one is
+    refused), 2,048 bytes an entry, 10,000 members here moved at once.
 - [ ] **Move in.** A Move from a followed remote account whose target lists it in `alsoKnownAs`
   makes local followers follow the target and unfollow the old account; anything else is ignored.
   DoD: `TestDBMoveIn` with a recorded Mastodon Move fixture.
