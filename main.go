@@ -765,7 +765,9 @@ func pbkdf2Key(pw string, salt []byte, rounds, n int) []byte {
 	return key
 }
 
-func hashPassword(pw string) string { return hashWith(pw, pwRounds) }
+// hashPassword makes a new password's hash. A variable so the tests can keep the hash of their one admin password
+// (testhash_test.go) rather than make it again for every server they start.
+var hashPassword = func(pw string) string { return hashWith(pw, pwRounds) }
 
 // hashWith makes a hash with a given round count. The count is stored in the hash, so hashes
 // made before the count was raised still check.
