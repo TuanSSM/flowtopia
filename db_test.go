@@ -3603,6 +3603,13 @@ func (n planNode) walk(f func(planNode)) {
 // which is what the time a query takes comes from. The tables with a row or a few per member
 // (users, sessions, progress) and the reports are read whole where the question is about all of
 // them; whole says which, and the bound still holds them.
+// takebackRowsPerPair is the budget of takeBackSQL's plans, in rows counted per pair of an activity of the line (its
+// Delete included) and an inbox, plus 500 (FWR 7, the third review). The statement reads about 23 a pair at 10, 100 and
+// 1,000 inboxes; 35 leaves room for a harmless change of plan in a minor release of Postgres, while its first form,
+// which grew with the square of the inboxes, read about 116 a pair at 100 and 966 at 1,000 and fails these by a wide
+// margin.
+const takebackRowsPerPair = 35
+
 func TestDBQueryPlans(t *testing.T) {
 	e := newEnv(t)
 	db := e.a.db
@@ -3980,7 +3987,7 @@ func TestDBQueryPlans(t *testing.T) {
 		// and writes them: about 30 rows counted a pair.
 		{"deliveries: the last Update held behind the longest line at an inbox", afterHeldSQL, []any{fmt.Sprintf("https://here.example/c#%d", commentUpdatesMax-1), "https://h12.fan.example/inbox", afterHeldDepth}, 300, ""},
 		{"deliveries: a Delete's question at the send, over the longest line", heldBackSQL, []any{lineEnd, "https://h12.fan.example/inbox", time.Now(), true}, 400, ""},
-		{"deliveries: a Delete's takeback over the longest line at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, float64((commentUpdatesMax+1)*10*30 + 500), ""},
+		{"deliveries: a Delete's takeback over the longest line at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, float64((commentUpdatesMax+2)*10*takebackRowsPerPair + 500), ""},
 		// The copies of deleted accounts' keys to clear (FWR 7), through ap_outbox_signer.
 		{"deliveries: the kept keys of deleted accounts to clear, a batch", deliveryForgetKeySQL, []any{time.Now(), deliveryBatch}, 100, ""},
 	})
@@ -3988,8 +3995,9 @@ func TestDBQueryPlans(t *testing.T) {
 	tx.Rollback()
 	// A takeback as production meets it (the second review of FWR 7): a comment's longest line queued at 100 and at 1,000
 	// inboxes, with the Delete's rows written after the last ANALYZE, as a Delete's are, in a transaction rolled back.
-	// The cost grows with the pairs of activities and inboxes (about 30 rows counted a pair) and does not turn on the
-	// statistics: the first form of takeBackSQL read 8.6 million rows at 100 inboxes here.
+	// The cost grows with the pairs of activities and inboxes (about 23 rows counted a pair; the budget is
+	// takebackRowsPerPair) and does not turn on the statistics: the first form of takeBackSQL read 208,373 rows at 100
+	// inboxes and 17,383,073 at 1,000 here.
 	for _, inboxes := range []int{100, 1000} {
 		if tx, err = db.Begin(); err != nil {
 			t.Fatal(err)
@@ -4011,7 +4019,7 @@ func TestDBQueryPlans(t *testing.T) {
 		}
 		on = tx
 		plans([]planCase{{fmt.Sprintf("deliveries: a Delete's takeback over the longest line at %d inboxes, written after ANALYZE", inboxes), takeBackSQL,
-			[]any{del, end, time.Now()}, float64((commentUpdatesMax+2)*inboxes*30 + 500), ""}})
+			[]any{del, end, time.Now()}, float64((commentUpdatesMax+2)*inboxes*takebackRowsPerPair + 500), ""}})
 		on = db
 		tx.Rollback()
 	}

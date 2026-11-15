@@ -495,7 +495,12 @@ route and test named below is new unless the design note says it exists.
   sharing again waits at most the queue's 48 hours whatever its state, and a Delete(Person) older than that is never
   signed nor fanned out (`TestDBSharingAgainAfterHorizon`); an unlike sends its Undo for a member who keeps a key, and
   for one without it removes the like here only (`TestDBUnlikeNeedsSharing`); the locked check of `ensureKey` held by a
-  hook (`TestDBKeyNotWrittenAfterStopping`).
+  hook (`TestDBKeyNotWrittenAfterStopping`). After the third review: a record's tries start afresh at the Create's
+  success and at every mark (`TestDBDeleteTriesAfresh`), a Delete given up counts as not taken back, a record that
+  cannot be written reports no work (`TestDBFailingWriteDoesNotSpin`), a stop or a refusal meanwhile is no try
+  (`TestDBStopIsNoTry`), the clock's doubt holds a member's Delete(Person) and their sharing again
+  (`TestDBLeavingUnderClockDoubt`), an unlike while leaving is answered as for a member with no key
+  (`TestDBUnlikeWhileLeaving`), and the takeback's plan budgets are a rule of 35 rows a pair (`takebackRowsPerPair`).
   **Open:** the owner's trial (item 9) should confirm Mastodon removes the account on this Delete(Person) and what it does
   when the address comes back; a server that only ever received an activity whose record is gone is not told; a
   deletion made in local mode is never sent; a Delete(Person) whose deliveries fail for 48 hours is not sent again; the

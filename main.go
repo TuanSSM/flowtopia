@@ -2457,7 +2457,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 				return
 			}
 			if until.Valid {
-				fail(w, http.StatusConflict, leavingSentence(until.Time.Add(deliveryHorizon)))
+				fail(w, http.StatusConflict, a.fed.leavingSentenceAt(until.Time.Add(deliveryHorizon)))
 				return
 			}
 		}
@@ -2495,6 +2495,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	// gets one anyway, so a document never outlives the choice that let it out.
 	a.fed.dropActor(keyOwner(u.ID))
 	if personMarked {
+		a.fed.personTries.Delete(u.ID) // a new change starts its tries afresh (personFailed)
 		a.fed.personWaits()
 	}
 	// What the visitor's page of a single-profile instance shows changed: it is made again when next
@@ -3357,7 +3358,7 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 		// the hide's transaction. A restore sends nothing, so a post hidden once stays gone elsewhere.
 		if err == nil && kind == "post" && a.fed != nil {
 			var mark sql.Result
-			if mark, err = tx.Exec(`UPDATE ap_post_out SET state = 'delete' WHERE post_id = $1 AND state <> 'delete'`, in.ID); err == nil {
+			if mark, err = tx.Exec(`UPDATE ap_post_out SET state = 'delete', tries = 0, due_at = NULL WHERE post_id = $1 AND state <> 'delete'`, in.ID); err == nil {
 				n, _ := mark.RowsAffected()
 				outMarked = n > 0
 			}
@@ -6504,7 +6505,8 @@ type federation struct {
 	postsDue atomic.Bool
 	postsAt  atomic.Int64 // when the first record held back (a Delete the full queue refused) is due; 0: none
 	cut      atomic.Int64 // activities that went only to the first deliveryTargetsMax addresses since the start
-	// notTakenBack counts the posts and comments whose Delete the full queue refused past the delivery schedule's end,
+	// notTakenBack counts the posts and comments whose Delete the full queue refused, or whose making failed, past the
+	// delivery schedule's end (FWR 7, the third review: countGivenUp),
 	// since the start (in memory, so a restart counts from nothing, as the tab says).
 	notTakenBack atomic.Int64
 	personAt     atomic.Int64
@@ -7149,7 +7151,7 @@ func (a *app) startFederation(s fedSettings) error {
 		// (FWR 6), that waited for its worker at the stop: the workers start for it too.
 		// A post that went out and was deleted or hidden while the server ran in local mode (where nothing marks it)
 		// is still on the servers it went to: its Delete goes now.
-		if _, err := a.db.Exec(`UPDATE ap_post_out o SET state = 'delete' WHERE o.state = 'sent'
+		if _, err := a.db.Exec(`UPDATE ap_post_out o SET state = 'delete', tries = 0, due_at = NULL WHERE o.state = 'sent'
 			AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.id = o.post_id AND p.hidden_at IS NULL)`); err != nil {
 			return err
 		}
@@ -7835,7 +7837,7 @@ func (a *app) fedView(u *user, s fedState) map[string]any {
 		v["left"] = leftSentence
 	}
 	if s.leaving.Valid && !optedIn {
-		v["leaving"] = leavingSentence(s.leaving.Time.Add(deliveryHorizon))
+		v["leaving"] = a.fed.leavingSentenceAt(s.leaving.Time.Add(deliveryHorizon))
 	}
 	return v
 }
@@ -7859,13 +7861,30 @@ const fedStateSQL = `SELECT u.federates, u.locked, EXISTS (SELECT 1 FROM retired
 //
 // Bounded by the queue's horizon ($2, the queue's clock less deliveryHorizon): a row older than that is never signed,
 // since deliver gives it up before it opens the kept key (TestDBSharingAgainAfterHorizon). So 48 hours after the Delete
-// the member may share again whatever the queue's state (paused, refused, the clock in doubt), and the time the page
-// names is never in the past (the second review of FWR 7).
+// the member may share again while sending is paused or refused (the second review of FWR 7); while the queue's clock
+// is doubted there is no bound (leavingSince), and the page then names no time (leavingSentenceAt).
 const leavingSQL = `SELECT max(t) FROM (SELECT GREATEST(o.created_at, (SELECT max(d.created_at) FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued')) AS t
 	FROM ap_outbox o WHERE o.signer = $1 AND o.signer_sealed IS NOT NULL) x WHERE t > $2`
 
-// leavingSince is leavingSQL's $2: the queue's clock less its horizon.
-func (f *federation) leavingSince() time.Time { return f.outNow().Add(-deliveryHorizon) }
+// leavingSince is leavingSQL's $2: the queue's clock less its horizon; no bound while that clock is doubted (a jump
+// forward that is undone would make rows younger than 48 hours signable again after the member shared anew), so the
+// member waits until the clock is believed (FWR 7, the third review).
+func (f *federation) leavingSince() time.Time {
+	if f.out != nil && (f.out.doubting() || !f.out.clockOK()) {
+		return time.Time{}
+	}
+	return f.outNow().Add(-deliveryHorizon)
+}
+
+// leavingSentenceAt is leavingSentence, or, while the queue's clock is doubted (the member then waits for the clock,
+// leavingSince) or when that time is past on it, the same sentence naming no time: a time read off a doubted clock
+// could be false.
+func (f *federation) leavingSentenceAt(until time.Time) string {
+	if until.Before(f.outNow()) || f.out != nil && (f.out.doubting() || !f.out.clockOK()) {
+		return "Other servers are still being asked to forget you. You can share your profile again once that is done; this server is waiting for its clock to be confirmed first."
+	}
+	return leavingSentence(until)
+}
 
 // leavingSentence says why sharing cannot be turned on yet, and until when at most: the queue gives a delivery up 48
 // hours after it was written (deliveryHorizon), and then housekeeping clears the copy of the key.
@@ -18428,7 +18447,7 @@ func (q *deliveryQueue) fanOutDue(ctx context.Context) error {
 	}
 	// A deleted account's Delete(Person) that waited past the queue's horizon for its fan-out is never sent: after it the
 	// member may share again under the same key id (leavingSQL), so it is dropped, not fanned out (FWR 7).
-	if signed && now.Sub(created) > deliveryHorizon {
+	if signed && now.Sub(created) > deliveryHorizon && !(now.Sub(created) > deliveryClockFault && q.doubt()) {
 		if _, err := tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id); err != nil {
 			return err
 		}
@@ -19173,7 +19192,7 @@ type deliveryNumbers struct {
 	QueueMax     int              `json:"queueMax"`
 	FailedMax    int              `json:"failedMax"`              // Failed stops counting here: the page says "or more"
 	Cut          int64            `json:"cut,omitempty"`          // activities that went only to the first deliveryTargetsMax addresses, since the start (FWR 4)
-	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts and comments whose Delete the full queue refused past the schedule's end, since the start (FWR 4, 6)
+	NotTakenBack int64            `json:"notTakenBack,omitempty"` // posts and comments whose Delete the full queue refused, or whose making failed, past the schedule's end, since the start (FWR 4, 6, 7)
 	// CommentsNotSent are the comments' Creates and Updates not sent (the full queue, or what they belong to no longer shown), and
 	// ForwardsSkipped the replies from other servers not forwarded for a bound, both since the start (FWR 6).
 	CommentsNotSent int64 `json:"commentsNotSent,omitempty"`
@@ -21170,7 +21189,7 @@ func (a *app) postOut(ctx context.Context) (did bool, err error) {
 		return false, err
 	}
 	defer func() {
-		if err != nil && !errors.Is(err, errSwitchesUnread) {
+		if err != nil && !outNotTried(err) {
 			did, err = a.postFailed(p.id, state, tries, err)
 		}
 	}()
@@ -21251,7 +21270,7 @@ func (a *app) postOut(ctx context.Context) (did bool, err error) {
 		if len(to) == 0 { // nobody to send to: nothing to take back later either
 			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id))
 		}
-		return oneRow(tx.ExecContext(ctx, `UPDATE ap_post_out SET state = 'sent', targets = $2 WHERE post_id = $1 AND state = 'create'`, p.id, string(sent)))
+		return oneRow(tx.ExecContext(ctx, `UPDATE ap_post_out SET state = 'sent', targets = $2, tries = 0, due_at = NULL WHERE post_id = $1 AND state = 'create'`, p.id, string(sent)))
 	})
 	return a.outDone(err, p.id)
 }
@@ -21265,14 +21284,36 @@ func (a *app) postFailed(post int64, state string, tries int, cause error) (bool
 	ctx, cancel := own()
 	defer cancel()
 	if errors.Is(cause, errNotSharing) || tries >= len(deliveryRetries) {
+		if _, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = $2`, post, state); err != nil {
+			return false, err // nothing written: the step says so, and the loop waits and logs once a minute
+		}
 		log.Printf("federation: the %s of post %d is not sent: %v", state, post, cause)
-		f.outNotMade.Add(1)
-		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = $2`, post, state)
-		return true, err
+		f.countGivenUp(state, cause)
+		return true, nil
+	}
+	if _, err := f.fedExec(ctx, `UPDATE ap_post_out SET tries = tries + 1, due_at = $3 WHERE post_id = $1 AND state = $2`, post, state, f.out.now().Add(deliveryRetries[tries])); err != nil {
+		return false, err
 	}
 	log.Printf("federation: the %s of post %d failed: %v; tried again in %s", state, post, cause, deliveryRetries[tries])
-	_, err := f.fedExec(ctx, `UPDATE ap_post_out SET tries = tries + 1, due_at = $3 WHERE post_id = $1 AND state = $2`, post, state, f.out.now().Add(deliveryRetries[tries]))
-	return true, err
+	return true, nil
+}
+
+// countGivenUp counts a record given up (FWR 7, the third review): a Delete given up after its schedule leaves the
+// content up on the servers it reached, which notTakenBack says; anything else, and a Delete of a member who never had
+// a key (nothing of it went out), could not be sent (outNotMade).
+func (f *federation) countGivenUp(state string, cause error) {
+	if state == "delete" && !errors.Is(cause, errNotSharing) {
+		f.notTakenBack.Add(1)
+		return
+	}
+	f.outNotMade.Add(1)
+}
+
+// outNotTried says whether a producer's error is this server's own state rather than the record's (FWR 7, the third
+// review): the switches that could not be read, a stop (the step's context ended), federation refused meanwhile. Such a
+// record is left as it was, with no try counted, and made again on a later pass.
+func outNotTried(err error) bool {
+	return errors.Is(err, errSwitchesUnread) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errRefused)
 }
 
 // outDone reads enqueueThen's answer for a post's Create. A record changed meanwhile is read again on the next pass.
@@ -21333,7 +21374,7 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 	// An update whose making fails waits on the delivery schedule, counted in memory per member, and is dropped after
 	// it (the second review of FWR 7): the next change of the profile asks again.
 	defer func() {
-		if err != nil && !errors.Is(err, errSwitchesUnread) {
+		if err != nil && !outNotTried(err) {
 			did, err = a.personFailed(uid, gen, err)
 		} else if did && err == nil {
 			f.personTries.Delete(uid)
@@ -21405,16 +21446,20 @@ func (a *app) personFailed(uid, gen int64, cause error) (bool, error) {
 	n, _ := f.personTries.LoadOrStore(uid, 0)
 	tries := n.(int)
 	if errors.Is(cause, errNotSharing) || tries >= len(deliveryRetries) {
+		if _, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen); err != nil {
+			return false, err
+		}
 		log.Printf("federation: the profile update of member %d is not sent: %v", uid, cause)
 		f.outNotMade.Add(1)
 		f.personTries.Delete(uid)
-		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen)
-		return true, err
+		return true, nil
+	}
+	if _, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, f.out.now().Add(deliveryRetries[tries])); err != nil {
+		return false, err
 	}
 	f.personTries.Store(uid, tries+1)
 	log.Printf("federation: the profile update of member %d failed: %v; tried again in %s", uid, cause, deliveryRetries[tries])
-	_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, f.out.now().Add(deliveryRetries[tries]))
-	return true, err
+	return true, nil
 }
 
 // personChangedSQL marks member $1's Update(Person) due: now ($2, the queue's clock) when none was sent in the last
@@ -23981,14 +24026,7 @@ func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id i
 			return true
 		}
 		if !may {
-			var likes int
-			err := a.db.QueryRow(`WITH d AS (DELETE FROM likes WHERE post_id = $1 AND user_id = $2 AND ap_id = $3 RETURNING 1)
-				SELECT count(*) - (SELECT count(*) FROM d) FROM likes WHERE post_id = $1`, id, u.ID, likeID).Scan(&likes)
-			if err != nil {
-				a.serverError(w, err)
-				return true
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"liked": false, "likes": likes, "notice": unlikedHereOnly})
+			a.unlikeHere(w, id, u.ID)
 			return true
 		}
 	}
@@ -24022,6 +24060,10 @@ func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id i
 			a.serverError(w, err)
 			return true
 		}
+	case errors.Is(err, errNotSharing):
+		// The member left between the question above and the queue's (FWR 7, the third review): as for a member with no key.
+		a.unlikeHere(w, id, u.ID)
+		return true
 	case errors.Is(err, errDeliveryFull):
 		fail(w, http.StatusServiceUnavailable, talkFull)
 		return true
@@ -24031,6 +24073,19 @@ func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id i
 	}
 	a.likeCount(w, id, false)
 	return true
+}
+
+// unlikeHere removes member uid's like of post id here only, whatever id the Like had (leaving clears it), and answers
+// with the count and the notice that nothing is sent.
+func (a *app) unlikeHere(w http.ResponseWriter, id, uid int64) {
+	var likes int
+	err := a.db.QueryRow(`WITH d AS (DELETE FROM likes WHERE post_id = $1 AND user_id = $2 RETURNING 1)
+		SELECT count(*) - (SELECT count(*) FROM d) FROM likes WHERE post_id = $1`, id, uid).Scan(&likes)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"liked": false, "likes": likes, "notice": unlikedHereOnly})
 }
 
 // lastUndo reads, in the enqueue's transaction, the Undo the member's last unlike of the post enqueued (ap_like_out),
@@ -24143,7 +24198,7 @@ func (a *app) commentOut(ctx context.Context) (did bool, err error) {
 	// A record whose making fails goes back on the schedule, or is given up after it (commentFailed), so the records
 	// behind it are made (the second review of FWR 7).
 	defer func() {
-		if err != nil && !errors.Is(err, errSwitchesUnread) {
+		if err != nil && !outNotTried(err) {
 			did, err = a.commentFailed(cid, state, tries, err)
 		}
 	}()
@@ -24351,18 +24406,22 @@ func (a *app) commentFailed(cid int64, state string, tries int, cause error) (bo
 	ctx, cancel := own()
 	defer cancel()
 	if errors.Is(cause, errNotSharing) || tries >= len(deliveryRetries) {
-		log.Printf("federation: the %s of comment %d is not sent: %v", state, cid, cause)
-		f.outNotMade.Add(1)
 		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = $2`
 		if state == "update" {
 			stmt = `UPDATE ap_comment_out SET state = 'sent', tries = 0, due_at = NULL WHERE comment_id = $1 AND state = $2`
 		}
-		_, err := f.fedExec(ctx, stmt, cid, state)
-		return true, err
+		if _, err := f.fedExec(ctx, stmt, cid, state); err != nil {
+			return false, err
+		}
+		log.Printf("federation: the %s of comment %d is not sent: %v", state, cid, cause)
+		f.countGivenUp(state, cause)
+		return true, nil
+	}
+	if _, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $3 WHERE comment_id = $1 AND state = $2`, cid, state, f.out.now().Add(deliveryRetries[tries])); err != nil {
+		return false, err
 	}
 	log.Printf("federation: the %s of comment %d failed: %v; tried again in %s", state, cid, cause, deliveryRetries[tries])
-	_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $3 WHERE comment_id = $1 AND state = $2`, cid, state, f.out.now().Add(deliveryRetries[tries]))
-	return true, err
+	return true, nil
 }
 
 // commentOutFull holds a comment's Create or Update that the full queue refused (errDeliveryFull): tried again on the
@@ -28435,7 +28494,7 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 		// it, and their files with housekeeping's sweep.
 		del = `WITH d AS (DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
 			AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.id, p.user_id, p.ap_id),
-			o AS (UPDATE ap_post_out SET state = 'delete' WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING post_id),
+			o AS (UPDATE ap_post_out SET state = 'delete', tries = 0, due_at = NULL WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING post_id),
 			oc AS (UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING comment_id),
 			r AS (INSERT INTO ap_deleted (ap_id, user_id, at, by_staff) SELECT ap_id, user_id, now(), true FROM d WHERE ap_id IS NOT NULL
 				ON CONFLICT (ap_id, user_id) DO UPDATE SET by_staff = true, at = EXCLUDED.at)

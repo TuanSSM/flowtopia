@@ -2003,8 +2003,10 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     `leavingSQL` counts a Delete(Person) only while it, or its newest delivery still queued, is younger than the queue's
     horizon: a row older than that is never signed, since `deliver` gives it up for its age before it opens the kept key
     (the test makes the copy unopenable, so opening it first would be the failure the row records), and a Delete(Person)
-    that waited that long for its fan-out is dropped by `fanOutDue`, never fanned out. So with sending paused, refused or
-    the clock in doubt, the member may share again after 48 hours, and the page never names a time in the past.
+    that waited that long for its fan-out is dropped by `fanOutDue`, never fanned out. So with sending paused or
+    refused, the member may share again after 48 hours, and the page never names a time in the past. While the queue's
+    clock is doubted (a jump forward of more than 4 days, 8.3) there is no bound and the member waits: corrected after the
+    third review, below.
   - **An unlike asks what the queue asks** (`TestDBUnlikeNeedsSharing`): a member who stopped sharing with the switch
     keeps their key, so their unlike sends its Undo, as their posts' and comments' Deletes still go; a member with no key
     who does not share (one who left, should a like have kept its id) has it removed here only, and is told "Nothing is
@@ -2019,11 +2021,46 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     now groups the rows given up and the rows queued per inbox once each and joins them once (`gi`, MATERIALIZED), and
     reaches the Delete's own rows from each of those inboxes through `(outbox_id, inbox)` (`x`, and `hl`, `h` for the
     inboxes where one of the line is in flight) rather than testing each row against the list, which a full run here
-    once planned as 1,000 times 1,000: 4,056 / 41,973 / 419,073 rows at 10 / 100 / 1,000 inboxes, about 25 a pair of
-    activity and inbox, the same 4,443 rows after each of 300 ANALYZEs at 10 and the same 419,073 after each of 40 at
-    1,000. `TestDBQueryPlans` holds the two production shapes at 30 rows a pair, which the first form
-    fails; the semantics are those of before (the takeback, follow, like and comment-order tests pass unchanged).
-    `heldBackSQL` and `afterHeldSQL` ask about one inbox and have no such shape.
+    once planned as 1,000 times 1,000. In `TestDBQueryPlans`, whose fixture holds the whole plan test's data, it reads
+    4,056 / 41,973 / 419,073 rows at 10 / 100 / 1,000 inboxes, about 23 a pair of activity and inbox. A scratch test with
+    the delivery queue's fixture alone, re-analysed 300 times, read the same 4,443 rows at 10 inboxes every time (the old
+    form 5,603, and 13,228 once), and the same 419,073 at 1,000 after each of 40. The plan test's three cases have a
+    budget of `takebackRowsPerPair` (35) rows a pair plus 500, which leaves room for a harmless change of plan in a minor
+    release of Postgres while the first form, about 116 a pair at 100 inboxes and 966 at 1,000, fails the two
+    production shapes by far; the semantics are those of before (the takeback, follow, like and comment-order tests pass
+    unchanged). `heldBackSQL` and `afterHeldSQL` ask about one inbox and have no such shape.
+- **After the third review** (each with a test that fails without it):
+  - **A record's tries start afresh** (`TestDBDeleteTriesAfresh`). A post's Create that failed put its count on the
+    record, and its success and the marks of a deletion or a hide did not reset it, so the post's Delete could be given
+    up at its first failure and the post left up elsewhere. The Create's success and every mark now reset the tries and
+    the wait, as the comments' already did, and a new change of a profile starts its update's tries afresh. The test: a
+    Create that fails through the schedule but for its last wait, then a Delete that fails once and goes after; and a
+    Delete that fails every time, which gets its whole schedule before it is given up.
+  - **A Delete given up is counted as not taken back** (`notTakenBack`, the same test), with the full queue's: the
+    content is left up on the servers it reached. "Could not be sent" (`outNotMade`) keeps Creates, Updates, profile
+    changes and the Deletes of a member who never had a key (nothing of theirs went out); the Federation tab's two
+    sentences say so.
+  - **A record that cannot be written does not spin the worker** (`TestDBFailingWriteDoesNotSpin`, the record's table
+    refusing every write through a trigger in the test's own schema, as a full disk would). The retry path reports work
+    only when its own write succeeded, and logs only after it; otherwise the step reports no work and its error, so the
+    loop waits its pause and logs once a minute.
+  - **This server's own state is no try** (`TestDBStopIsNoTry`): a stop (a context ended), federation refused meanwhile
+    and switches that could not be read leave the record as it was, with no try counted and nothing given up
+    (`outNotTried`).
+  - **The clock's doubt holds a member's Delete(Person) and their sharing again** (`TestDBLeavingUnderClockDoubt`). The
+    fan-out drops an old Delete(Person) only when the clock is believed; while it is doubted the Delete is fanned out as
+    any activity, and its rows, written then, keep the member waiting. And while the clock is doubted `leavingSince`
+    passes no bound and the page names no time ("this server is waiting for its clock to be confirmed first"), so a jump
+    that is undone never lets rows younger than 48 hours be signed with the old key after the member shared again.
+  - **An unlike while leaving** (`TestDBUnlikeWhileLeaving`): the queue's refusal of a member who left between the
+    question and the enqueue is answered as for a member with no key, not with a 500.
+  - **Said plainly.** A worker's step claims and sends a row whatever its producer said: when the switches cannot be
+    read, the pause check reads them as off (`flagsCached` gives no flags on a failed read) and nothing is claimed;
+    only in the 2 seconds a successful read is kept can rows already enqueued, which were made while the switches were
+    on, still go, which is what they were made for. A reply to a member's comment can go out before that comment's
+    Create when the Create was put back on the schedule or given up: the reply names the comment by id, and a receiver
+    that does not have it treats the reply as it treats any reply to a post it does not know. A profile update's tries
+    (`personTries`) are kept in memory, so a restart starts them afresh: at worst one more pass of the schedule.
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail
