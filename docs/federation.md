@@ -1475,8 +1475,10 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   is a member's comment's way out, as `ap_post_out` is a post's. `notifications.fed` marks what an account of another
   server left (the backfill marks the rows FWR 3 and 5 wrote), `notifications_remote` serves FWR 3's trim through it
   and replaces `notifications_fed` (migration 22): the trim now covers comments, replies and likes without reading
-  the notifications members here left. `comments_remote (post_id, id)` and `comments_post_local (post_id, id)` give a
-  post's newest remote replies and newest local comments each through its own index.
+  the notifications members here left. `comments_remote (post_id, id)` gives a post's newest remote replies and counts
+  them for its cap; its newest local comments come through `comments_post`, past at most its 300 remote replies (the
+  index of local comments alone that an earlier draft added cost a write for every comment here, also in local mode,
+  and was dropped after the review of #116).
 - **In: a reply** (`repliedIn`). A Create whose Note passes the origin rule on the object (`noteShaped`, as for any
   post) and whose `inReplyTo` is a post of this server (`localPostOf`), a member's comment (`localCommentOf`, the id a
   comment goes out with, `/users/{name}/comments/{id}`), or a remote reply kept here (by `ap_id`). The post must be
@@ -1663,6 +1665,20 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     its likes still count, as there is no list of likes to agree with.
   - **Forwards are bounded and come last** (`TestDBForwardBounds`, the bullet on the forward above), and the note says
     plainly what one is known to achieve.
+  - **Small points** (`TestDBRemoteTalkSmallPoints`). A removed remote reply (its author's deletion, its account's, its
+    domain's suspension) is a placeholder that names nobody: the page gets no account and no link for it. A member's
+    comment on an unlisted post of another server is addressed as that post is, the public collection in `cc` only. An
+    id stays the kind of thing it was first kept as: an Update that adds `inReplyTo` to a kept post leaves it a post, and
+    a Delete removes whatever carries its id. Housekeeping's probe for comments gone without a Delete walks the records a
+    batch a pass, on from where it stopped (`orphansAfter`), so its cost is the batch, not the table, which keeps a
+    record while its comment exists. The followers of a post's author that a comment goes to leave out the accounts
+    with a block either way with the commenter (`postFollowersApartSQL`), as a post's mentions do; a shared inbox still
+    serves every follower on its server.
+  - **The caps are counted without a lock.** Each count (per post, per account, per server) is read in the statement
+    that writes, under READ COMMITTED, so the two inbox workers can each pass a cap by one at the same moment: a cap is
+    exceeded by at most one row (`inboxWorkers` minus one). The hourly allowances are counted in memory under a lock
+    and hold exactly; the caps in all are read by housekeeping each hour, so they can be passed by what one hour lets in
+    (at most the hourly allowance of each sending server).
   - **Switches that could not be read hold a comment's way out** (`TestDBCommentSwitchesUnread`): the record is written
     for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
     said off keeps the comment here.

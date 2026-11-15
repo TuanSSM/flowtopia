@@ -4096,7 +4096,9 @@ func TestDBQueryPlans(t *testing.T) {
 	plans([]planCase{
 		{"replies: the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 15000, ""}, // about 4 rows a remote reply: its blocks and its account (actorShown); the cap keeps 300
 		{"replies: that post alone", postOneSQL, []any{viewer, flood, false, true}, 15000, ""},
-		{"replies: the preview of its comments", commentsSQL(feedCommentsSQL), []any{viewer, false, pq.Array([]int64{flood}), previewComments}, 1000, ""},
+		// The members' newest comments come through comments_post, past the post's remote replies: here 3,000, ten times
+		// the cap that holds a post to 300, so the bound is the flood's size and a little.
+		{"replies: the preview of its comments", commentsSQL(feedCommentsSQL), []any{viewer, false, pq.Array([]int64{flood}), previewComments}, 3000 + 500, ""},
 		{"replies: a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
 			[]any{viewer, false, flood, 0, commentPage + 1}, 2000, ""},
 		{"replies: what a reply to the post answers", replyTargetSQL, []any{flood, floodAuthor, "", false}, 100, ""},
@@ -4107,7 +4109,7 @@ func TestDBQueryPlans(t *testing.T) {
 			remoteLikesPerObject, remoteLikesPerAccount, "h8.example", remoteLikesPerHost}, 12000, "domain_policies"},
 		{"replies: the record of a comment that waits", commentOutSQL, []any{false}, 100, ""},
 		{"replies: the caps in all", talkCountSQL, []any{remoteRepliesMax, remoteLikesMax}, 120000, ""},
-		{"replies: records of comments gone", talkOrphansSQL, []any{remoteBatch}, 20000, ""},
+		{"replies: records of comments gone, a batch", talkOrphansSQL, []any{remoteBatch, 0}, 5000 + 3*remoteBatch, "ap_comment_out"}, // its 5,000 rows read whole here, a small table; its primary key once it grows
 	})
 	on = db
 	rtx2.Rollback()

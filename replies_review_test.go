@@ -448,6 +448,79 @@ func TestDBForwardBounds(t *testing.T) {
 	}
 }
 
+// The small points of the review (C1, C2, C3, C5, C7).
+func TestDBRemoteTalkSmallPoints(t *testing.T) {
+	e := newTalkEnv(t)
+	// C2: a member's comment on an unlisted post of another server is unlisted: the public collection in cc only.
+	e.send(e.bo(), boID, "Create", noteObj(60, "unlisted over there", map[string]any{"to": []string{boID + "/followers"}, "cc": []string{asPublic}}))
+	up := e.remotePostID(boID + "/statuses/60")
+	c := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", up), map[string]any{"body": "nice"})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	for _, r := range e.ne.outRows() {
+		if r.id == fmt.Sprintf("https://here.example/users/ana/comments/%d/activity", c) {
+			if strings.Contains(r.body, `"to":["https://www.w3.org/ns/activitystreams#Public"`) || !strings.Contains(r.body, `"cc":["https://www.w3.org/ns/activitystreams#Public"`) {
+				t.Errorf("a comment on an unlisted post: %s", r.body)
+			}
+		}
+	}
+	// C3: an Update that adds inReplyTo to a kept post leaves it a post, and its Delete removes it.
+	e.send(e.bo(), boID, "Create", noteObj(61, "a post", nil))
+	edit := noteObj(61, "now a reply", map[string]any{"inReplyTo": e.postID, "updated": time.Now().UTC().Format(time.RFC3339)})
+	e.send(e.bo(), boID, "Update", edit)
+	if _, ok := e.kept(boID + "/statuses/61"); ok || e.count(`SELECT count(*) FROM posts WHERE ap_id = $1 AND body = 'now a reply'`, boID+"/statuses/61") != 1 {
+		t.Errorf("an Update adding inReplyTo to a kept post: %s", e.outcome())
+	}
+	e.send(e.bo(), boID, "Delete", map[string]any{"id": boID + "/statuses/61", "type": "Tombstone"})
+	if e.count(`SELECT count(*) FROM posts WHERE ap_id = $1`, boID+"/statuses/61")+e.count(`SELECT count(*) FROM comments WHERE ap_id = $1`, boID+"/statuses/61") != 0 {
+		t.Error("something carrying the deleted id is left")
+	}
+	// C7: the commenter's blocks apply to the post's author's followers.
+	e.must(200, e.cy, "PUT", "/api/me", map[string]any{"federates": true})
+	if _, err := e.a.fed.ensureKey(context.Background(), keyOwner(e.cyID)); err != nil {
+		t.Fatal(err)
+	}
+	e.mustExec(`INSERT INTO blocks (user_id, target_id) VALUES ($1, $2)`, e.cyID, e.catID)
+	cyc := num(e.must(200, e.cy, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "from cy"})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	for _, r := range e.ne.outRows() {
+		if r.id == fmt.Sprintf("https://here.example/users/cyd/comments/%d/activity", cyc) && (slices.Contains(r.inboxes, catID+"/inbox") || !slices.Contains(r.inboxes, "https://third.example/inbox")) {
+			t.Errorf("cy's comment, cy blocking cat: %v", r.inboxes)
+		}
+	}
+	// C1: a removed remote reply names nobody: no account and no link.
+	e.send(e.bo(), boID, "Create", reply(boID, 62, e.postID, "hi"))
+	b, _ := e.kept(boID + "/statuses/62")
+	e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "thanks", "parentId": b.id})
+	e.send(e.bo(), boID, "Delete", boID)
+	res := e.must(200, e.cy, "GET", fmt.Sprintf("/api/comments/%d/thread", b.id), nil)
+	root := res["comments"].([]any)[0].(map[string]any)
+	if num(root["userId"]) != 0 || root["remote"] != nil || res["users"].(map[string]any)[fmt.Sprint(e.boUser)] != nil {
+		t.Errorf("the placeholder of a gone account's reply: %v, users %v", root, res["users"])
+	}
+	// C5: the probe of comments gone without a Delete goes a batch a pass, on from where it stopped: a first batch of
+	// records whose comments are kept, then records of comments gone, which the second pass reaches.
+	e.mustExec(`DELETE FROM ap_comment_out`)
+	e.mustExec(`INSERT INTO comments (post_id, user_id, body) SELECT $1, $2, 'c' || g FROM generate_series(1, $3) g`, e.post, e.anaID, remoteBatch)
+	e.mustExec(`INSERT INTO ap_comment_out (comment_id, post_id, user_id, state, targets) SELECT id, post_id, user_id, 'sent', '[]' FROM comments WHERE body LIKE 'c%' AND user_id = $1`, e.anaID)
+	e.mustExec(`INSERT INTO ap_comment_out (comment_id, post_id, user_id, state, targets) SELECT 1000000 + g, 1, $1, 'sent', '[]' FROM generate_series(1, 200) g`, e.anaID)
+	gone := func() int {
+		return e.count(`SELECT count(*) FROM ap_comment_out WHERE comment_id > 1000000 AND state = 'delete'`)
+	}
+	if err := e.a.remoteTalkHousekeep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := gone()
+	if err := e.a.remoteTalkHousekeep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if second := gone(); first != 0 || second != 200 {
+		t.Errorf("the probe marked %d on its first pass, %d after its second, want 0 and 200", first, second)
+	}
+	if postFollowersApartSQL == postRecipientsSQL {
+		t.Error("postFollowersApartSQL found nothing to add blocks to")
+	}
+}
+
 // A full delivery queue refuses a comment's Create (finding S2): the record is held on the delivery schedule and tried
 // again, never removed with nothing sent.
 func TestDBCommentQueueFull(t *testing.T) {

@@ -6473,7 +6473,9 @@ type federation struct {
 	// commentsNotSent counts the comments' Creates and Updates the full queue refused past the schedule's end, since the
 	// start; commentHook, when set by a test, hears of the producer's steps ("read": the record is read).
 	commentsNotSent atomic.Int64
-	commentHook     func(stage string)
+	// orphansAfter is where housekeeping's probe of comments gone without a Delete goes on from (talkOrphansSQL).
+	orphansAfter atomic.Int64
+	commentHook  func(stage string)
 	// notifyHook, when set by a test, may fail the notification of a reply or a like (notifyFedTx).
 	notifyHook func() error
 	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
@@ -20565,6 +20567,37 @@ const postRecipientsSQL = `WITH r AS (
 	SELECT DISTINCT ON (k) ap_id, inbox, shared_inbox FROM (SELECT r.*, CASE WHEN r.shared_inbox <> '' AND split_part(r.shared_inbox, '/', 3) = split_part(r.ap_id, '/', 3)
 		THEN r.shared_inbox ELSE r.inbox END AS k FROM r) x ORDER BY k, user_id LIMIT $3`
 
+// postFollowersApartSQL is postRecipientsSQL's followers of member $1 alone ($2 empty), leaving out the accounts with a
+// block either way with member $4 (a commenter: the followers of the post's author that the comment goes to).
+var postFollowersApartSQL = strings.Replace(postRecipientsSQL, `WHERE f.followee_id = $1 AND f.state = 'accepted'`,
+	`WHERE f.followee_id = $1 AND f.state = 'accepted'
+			AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = $4 AND b.target_id = f.follower_id)
+			AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.user_id = f.follower_id AND b.target_id = $4)`, 1)
+
+// recipientsFor is the followers of member uid on other servers, as recipients gives them, but none with a block either
+// way with member apart.
+func (f *federation) recipientsFor(ctx context.Context, uid, apart int64) ([]deliveryTarget, error) {
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	rows, err := f.db.QueryContext(ctx, postFollowersApartSQL, uid, pq.Array([]string{}), deliveryTargetsMax+1, apart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []deliveryTarget
+	for rows.Next() {
+		var t deliveryTarget
+		if err := rows.Scan(&t.Actor, &t.Inbox, &t.SharedInbox); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // recipients reads postRecipientsSQL for member uid and the actors mentioned: at most deliveryTargetsMax, the
 // queue's bound for one activity; past it the rest are left out (the first in the order of their addresses are
 // kept), and said in the log with the bound.
@@ -21476,14 +21509,14 @@ func (f *federation) deleteNote(ctx context.Context, s *remoteActor, id string, 
 	}
 	outcome := ""
 	found, other := false, false
-	if gone == 0 && kept == 0 {
+	if gone > 0 || kept == 0 {
 		// A reply kept as a comment (FWR 6): removed as its author's own deletion here removes one, in this transaction.
 		if found, other, err = deleteReplyTx(ctx, tx, s.UserID, id); err != nil {
 			return "", nil, err
 		}
 	}
 	switch {
-	case gone > 0, found && !other:
+	case gone > 0 || found && !other:
 	case kept > 0:
 		outcome = " refused (the post is another account's)"
 	case other:
@@ -22436,7 +22469,17 @@ func replyText(n *apNote, author string) (string, commentRemote) {
 
 // replyAnswers says which held thing a post answers, so noteIn can hand it to repliedIn: a post or a comment of this
 // server by its id, or a remote reply kept here (by its id, as its own Update is too).
+//
+// An id stays the kind of thing it was first kept as (after the review of #116): a reply kept is a reply whatever its
+// edit says it answers, and a post kept is a post even when an edit adds inReplyTo.
 func (f *federation) replyAnswers(ctx context.Context, n *apNote) (bool, error) {
+	var asReply, asPost bool
+	if err := f.fedRow(ctx, []any{&asReply, &asPost}, `SELECT EXISTS (SELECT 1 FROM comments WHERE ap_id = $1), EXISTS (SELECT 1 FROM posts WHERE ap_id = $1)`, n.ID); err != nil {
+		return false, err
+	}
+	if asReply || asPost {
+		return asReply, nil
+	}
 	if n.InReplyTo != "" {
 		if _, _, ok := f.localPostOf(n.InReplyTo); ok {
 			return true, nil
@@ -23201,6 +23244,10 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 	mentions := noteMentionsOf(ms)
 	n := outReplyNote{ID: noteID, Type: "Note", AttributedTo: actor, InReplyTo: inReply, Published: created.UTC().Format(time.RFC3339),
 		To: []string{publicCollection}, Cc: []string{actor + "/followers"}}
+	if postAud == "unlisted" {
+		// Addressed as the post it answers is, never wider (after the review of #116): the public collection in cc only.
+		n.To, n.Cc = []string{actor + "/followers"}, []string{publicCollection}
+	}
 	if authorActor != actor {
 		n.Cc = append(n.Cc, authorActor)
 	}
@@ -23265,7 +23312,8 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if postAP == "" && authorID != uid {
-		more, err := f.recipients(ctx, authorID, nil)
+		// The post's author's followers, but none across a block with the commenter, as a post's mentions are.
+		more, err := f.recipientsFor(ctx, authorID, uid)
 		if err != nil {
 			return false, err
 		}
@@ -23324,13 +23372,16 @@ func (a *app) commentOutFull(ctx context.Context, cid int64, state string, tries
 }
 
 // talkCountSQL counts the replies kept from other servers up to $1, and the likes with an activity id up to $2, of posts
-// and of comments, each through its partial unique index. talkOrphansSQL marks for a Delete $1 records of comments that
-// went out and whose comment is gone, each comment asked by its primary key.
+// and of comments, each through its partial unique index. talkOrphansSQL looks at the next $1 records of comments that went
+// out, after the record $2 (a cursor through the table), marks for a Delete those whose comment is gone, each comment
+// asked by its primary key, and gives the last record it looked at, how many and how many it marked.
 const (
 	talkCountSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM comments WHERE ap_id IS NOT NULL LIMIT $1) a),
 		(SELECT count(*) FROM (SELECT 1 FROM likes WHERE ap_id IS NOT NULL LIMIT $2) b), (SELECT count(*) FROM (SELECT 1 FROM comment_likes WHERE ap_id IS NOT NULL LIMIT $2) c)`
-	talkOrphansSQL = `UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id IN (SELECT o.comment_id FROM ap_comment_out o
-		WHERE o.state IN ('sent', 'update') AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.id = o.comment_id) LIMIT $1)`
+	talkOrphansSQL = `WITH s AS (SELECT o.comment_id, k.kept FROM (SELECT comment_id FROM ap_comment_out WHERE state IN ('sent', 'update') AND comment_id > $2
+			ORDER BY comment_id LIMIT $1) o CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM comments c WHERE c.id = o.comment_id) AS kept OFFSET 0) k),
+		u AS (UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id IN (SELECT comment_id FROM s WHERE NOT kept) RETURNING 1)
+		SELECT COALESCE(max(comment_id), 0), count(*), (SELECT count(*) FROM u) FROM s`
 )
 
 // remoteTalkHousekeep counts the replies and likes kept from other servers against their caps in all (repliesFull,
@@ -23344,18 +23395,21 @@ func (a *app) remoteTalkHousekeep(ctx context.Context) error {
 	}
 	f.repliesFull.Store(replies >= remoteRepliesMax)
 	f.likesFull.Store(likes >= remoteLikesMax || cmtLikes >= remoteLikesMax)
-	for {
-		n, err := f.fedExec(ctx, talkOrphansSQL, remoteBatch)
-		if err != nil {
-			return err
-		}
-		if n > 0 {
-			f.commentWaits()
-		}
-		if n < remoteBatch {
-			return nil
-		}
+	// One batch a pass, from where the last pass stopped (orphansAfter), back to the start at the end: the records of
+	// comments that went out are kept while their comments are, so this probe is bounded by the batch, not the table
+	// (after the review of #116).
+	var last, looked, marked int64
+	if err := f.fedRow(ctx, []any{&last, &looked, &marked}, talkOrphansSQL, remoteBatch, f.orphansAfter.Load()); err != nil {
+		return err
 	}
+	if looked < remoteBatch {
+		last = 0
+	}
+	f.orphansAfter.Store(last)
+	if marked > 0 {
+		f.commentWaits()
+	}
+	return nil
 }
 
 /* ---------- federation: removing every remote row ---------- */
@@ -23902,9 +23956,9 @@ var migrations = []string{schema, schemaSocial,
 	// remote reply to a post here is a comments row (F5) whose ap_id is its id on its server (NULL is local, which every
 	// row there is keeps), ap_updated the updated time of the version kept, ap_extra what is shown beside its text (the
 	// link to the original, a content warning, its attachments as links). comments_ap_id finds one by its id and keeps
-	// one row per id; comments_remote counts a post's remote replies for its cap and gives its newest for the preview,
-	// comments_post_local its newest comments of this server, so a flood of remote replies never stands between the
-	// preview and those (each reads the rows it shows). likes.ap_id and comment_likes.ap_id
+	// one row per id; comments_remote counts a post's remote replies for its cap and gives its newest for the preview
+	// (its newest comments of this server come through comments_post, past at most the post's 300 remote replies).
+	// likes.ap_id and comment_likes.ap_id
 	// are the id of the Like that made the row: another server's Like here (so its Undo can name it by id), or a member's
 	// Like of a post of another server (so the Undo sent names it). ap_comment_out is a member's comment's way out, as
 	// ap_post_out is a post's (state create, sent, update or delete; targets the inboxes the Create went to), with no
@@ -23923,7 +23977,6 @@ var migrations = []string{schema, schemaSocial,
 	ALTER TABLE comments ADD COLUMN IF NOT EXISTS ap_extra JSONB NOT NULL DEFAULT '{}';
 	CREATE UNIQUE INDEX IF NOT EXISTS comments_ap_id ON comments (ap_id) WHERE ap_id IS NOT NULL;
 	CREATE INDEX IF NOT EXISTS comments_remote ON comments (post_id, id) WHERE ap_id IS NOT NULL;
-	CREATE INDEX IF NOT EXISTS comments_post_local ON comments (post_id, id) WHERE ap_id IS NULL;
 	ALTER TABLE likes ADD COLUMN IF NOT EXISTS ap_id TEXT;
 	CREATE UNIQUE INDEX IF NOT EXISTS likes_ap_id ON likes (ap_id) WHERE ap_id IS NOT NULL;
 	ALTER TABLE comment_likes ADD COLUMN IF NOT EXISTS ap_id TEXT;
@@ -26829,10 +26882,10 @@ var homeSQL = `SELECT ` + postCols("$4") + ` FROM (SELECT h.id FROM
 //
 // The comments of this server come first (FWR 6): replies from other servers, however many, never push a member's
 // comment out of the preview; they are read with the rest of the post's comments when it is opened. Each post gives
-// its newest comments of this server and its newest replies from other servers, each at most $4 and each through
-// its own index (comments_post_local, comments_remote), and the first $4 of those are kept, so the preview of a post
-// holding thousands of remote replies reads what one holding none does (TestDBQueryPlans). A post with no remote
-// reply shows what it always showed.
+// its newest comments of this server (through comments_post, passing over at most the post's remoteRepliesPerPost
+// remote replies) and its newest replies from other servers (through comments_remote), each at most $4, and the first
+// $4 of those are kept, so the preview of a post costs at most its cap of remote replies more than one with none
+// (TestDBQueryPlans). A post with no remote reply shows what it always showed.
 var feedCommentsSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.ap_id IS NULL DESC, c.id DESC) AS rn
 	FROM (SELECT x.* FROM unnest($3::bigint[]) AS q(pid) CROSS JOIN LATERAL (
 		(SELECT c.* FROM comments c WHERE c.post_id = q.pid AND c.parent_id IS NULL AND c.ap_id IS NULL AND ` + commentBlockFree + ` ORDER BY c.id DESC LIMIT $4)
@@ -27736,6 +27789,11 @@ func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment
 		}
 		if c.Deleted {
 			c.Body, c.Likes, c.Liked, c.Edited = "", 0, false, false
+			// A removed reply of another server (its author's deletion, its account's, its domain's suspension) leaves
+			// nothing readable of its author: no account, no link to the original (FWR 6, after the review of #116).
+			if c.Remote != nil {
+				c.UserID, c.Remote = 0, nil
+			}
 		}
 		out = append(out, c)
 	}

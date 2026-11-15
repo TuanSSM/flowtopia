@@ -361,7 +361,7 @@ route and test named below is new unless the design note says it exists.
   Built (federation.md 6.4, "Replies and likes across servers, as built (FWR 6)", says what and why; migration 23 with
   `flowa-schema22.dump`): `comments.ap_id`, `ap_updated` and `ap_extra`, `likes.ap_id` and `comment_likes.ap_id`,
   `ap_comment_out`, `notifications.fed` (backfilled) with `notifications_remote` in place of `notifications_fed`,
-  `comments_remote` and `comments_post_local`; a Create whose Note answers a Public post here, a member's comment
+  `comments_remote`; a Create whose Note answers a Public post here, a member's comment
   (`/users/{name}/comments/{id}`, the id comments go out with) or a remote reply kept here, from any account whose
   signature verified, behind the origin rule on the object, the domain policy, the switches a follow needs (unread is
   503 and a retry), the post's author sharing, blocks with the post's author, the member answered and the thread's
@@ -398,6 +398,15 @@ route and test named below is new unless the design note says it exists.
   remote replies and 2,000 remote likes), `TestDBPurgeRemote`, `TestDBInboxHandlers`, `TestDBRemoteNotes` and
   `TestDBEvictionCoversReferences` updated, with `-race -count=3` on two cores; the `federated` browser suite
   (`federated-remote-reply`).
+  After the review of #116 (federation.md 6.4, "After the review of #116"): a comment's Update waits for the activity
+  before it and has an id the Delete takes back, so nothing deleted goes out after its Delete (`TestDBCommentOrders`);
+  every edit moves the record's generation (`TestDBCommentEditWhileProduced`); a full queue holds a comment on the
+  delivery schedule (`TestDBCommentQueueFull`); nothing names a member who does not share (`TestDBCommentsNameNoNonSharer`);
+  switches that could not be read hold a comment's way out (`TestDBCommentSwitchesUnread`); notifications of a remote reply
+  or like commit with it (`TestDBRemoteTalkNotifiedAfterFailure`); local mode on a database that federated filters and
+  counts in SQL, and a suspended account's replies are neither listed nor counted (`TestDBRemoteHiddenInLocalMode`);
+  forwards are bounded per member and in all, smaller, never with `bto` or `bcc`, and after the members' own deliveries
+  (`TestDBForwardBounds`); and the small points (`TestDBRemoteTalkSmallPoints`).
   **Open:** `TestTwoInstances` is item 8's container suite (here `TestDBTwoFlowaReplies` covers the same steps in Go);
   a comment's id is not served (the Note is embedded in every activity); an Update reaches an inbox where the
   Create failed for good alone (it no longer overtakes a Create; after the review of #116 an Update waits for the activity
