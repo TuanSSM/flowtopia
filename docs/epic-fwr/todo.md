@@ -6,7 +6,7 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), the delivery queue is built (item 2, its fan-out on the Pi left to the owner), follows across servers are built (item 3, the recorded Mastodon fixtures left to the owner's trial), Public posts go out as notes (item 4, in review), and posts from followed accounts come into Home (item 5, in review). 0 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox (item 1), the delivery queue (item 2, its fan-out on the Pi left to the owner) and follows across servers (item 3, the recorded Mastodon fixtures left to the owner's trial) are built, each with the open points under it; Public posts go out as notes (item 4, done); posts from followed accounts come into Home (item 5, in review). 1 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -208,7 +208,7 @@ route and test named below is new unless the design note says it exists.
   both hold and the owner's review merges it. For the owner (defaults built): whether approval by hand should hold back
   local followers too (the design is silent; built: remote only), whether a public follower count should count every local follower
   (F10, unchanged), and the caps' numbers.
-- [ ] **Public posts go out as notes.** Create(Note) for Public posts of members who opted in, the
+- [x] **Public posts go out as notes.** Create(Note) for Public posts of members who opted in, the
   HTML of federation.md 6.5, mentions, one hashtag per prop, `flowa:tricks` and `flowa:combo` with
   the text fallback, the picture with alt text (a new field in the composer; written as both `name`
   and `summary`, federation.md 6.5), sent as `application/ld+json; profile=...`, Delete(Tombstone) on
@@ -264,8 +264,8 @@ route and test named below is new unless the design note says it exists.
   `TestDBDeleteAfterLocalMode`, `TestDBNotesForStaff`, `TestMentions` and its fixtures extended.
   **Open:** an Accept and a later Reject of the same Follow (after a block) can overtake each other at one inbox, since the
   Accept's id is not kept; a recorded Mastodon post confirming the h-card nesting and which of `name` and `summary` it writes for alt
-  text (the owner's trial, item 9); Update(Person) after `-rotate-keys`; nothing is sent when a member is suspended; the
-  box stays unchecked until the owner's review merges it. For the owner (defaults built): whether a post made while a
+  text (the owner's trial, item 9); Update(Person) after `-rotate-keys`; nothing is sent when a member is suspended. Done: merged as #114, every test its definition of done names
+  (`TestNoteFromPost`, `TestNoteContentEscaping`, `TestMentions`, `TestDBPostFanOut`) passing on main. For the owner (defaults built): whether a post made while a
   switch was off should go out when it comes back on (built: never), whether the alt text field belongs in local mode
   (built: every mode, shown once a picture is attached), whether a Delete should go after a member stops sharing
   (built: yes), whether the combo's prop gets a hashtag (built: yes), and the numbers: 10 mentions, 1,500 characters of
