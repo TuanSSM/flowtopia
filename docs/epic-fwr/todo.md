@@ -417,6 +417,13 @@ route and test named below is new unless the design note says it exists.
   counts agree with lists in local mode and for a suspended account's threads (`TestDBRemoteHiddenInLocalMode`,
   `TestDBQueryPlans`); a restore says the comment stays here (`TestDBRestoredCommentStaysHere`); notifications are
   trimmed in one order (`TestDBReplyNotesInOrder`).
+  After the third review (federation.md 6.4, "After the third review of #116"): an Undo comes after the Undo before it,
+  so likes end as the member sees them (`TestDBLikeClicksEndAsSeen`); a comment makes at most one Update a minute and
+  an edit takes an allowance in a mode that federates, so its line is at most 16 Updates (`TestDBCommentLineBounded`);
+  only an answer's opening name is asked about, never a handle of another server, and nothing accepted under a remote
+  post vanishes silently (`TestDBLeadingNames`); a forward looks at its allowances before it asks the queue
+  (`TestDBForwardBounds`); rows of the queue are locked in id order (`TestDBDeliveryLockOrder`); local mode's
+  statements are pinned as text (`TestPlainStatementsPinned`); 8.7 says how to roll back past this item.
   **Open:** `TestTwoInstances` is item 8's container suite (here `TestDBTwoFlowaReplies` covers the same steps in Go);
   a comment's id is not served (the Note is embedded in every activity); an Update reaches an inbox where the
   Create failed for good alone (it never overtakes a Create there, and at other inboxes it goes at once); a member who
