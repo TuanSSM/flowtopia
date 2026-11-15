@@ -21313,8 +21313,10 @@ func (a *app) postOut(ctx context.Context) (did bool, err error) {
 		return false, errSwitchesUnread
 	}
 	if !shown || !on {
-		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id)
-		return true, err
+		if err := f.outWrite(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	var mentioned []string
 	for _, m := range noteMentionsOf(p.mentions) {
@@ -21497,19 +21499,22 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 		f.personAt.Store(0)
 		return false, errSwitchesUnread
 	}
+	// Each write here goes through outWrite, so a write that fails is this server's own trouble, not a failure of the
+	// update counted against it (the last review of FWR 7).
 	if !shown || !on {
-		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen)
-		return true, err
+		if err := f.outWrite(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	doc, known, err := a.actorOf(ctx, uid)
-	if err == nil && !known {
-		// The switches could not be read: the document would say a guess. Tried again after the queue's own wait.
-		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait))
-		return true, err
-	}
-	if errors.Is(err, errNoKey) {
-		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait))
-		return true, err
+	if err == nil && !known || errors.Is(err, errNoKey) {
+		// The switches could not be read (the document would say a guess), or the key is not made yet: tried again after
+		// the queue's own wait.
+		if err := f.outWrite(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait)); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if err != nil {
 		return false, err
@@ -24386,8 +24391,10 @@ func (a *app) commentOut(ctx context.Context) (did bool, err error) {
 	// edits made meanwhile fold into it (the record stays update, its generation moved by each), so a comment's line is
 	// its Create, at most about editWindow / commentUpdateGap + 1 Updates, and its Delete (after the third review).
 	if state == "update" && sentAt.Valid && now.Before(sentAt.Time.Add(commentUpdateGap)) {
-		_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, sentAt.Time.Add(commentUpdateGap))
-		return true, err
+		if err := f.outWrite(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, sentAt.Time.Add(commentUpdateGap)); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	// What it answers: the top comment of its thread (here, or another server's), else the post.
 	inReply := postAP

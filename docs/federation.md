@@ -2074,13 +2074,13 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     Create when the Create was put back on the schedule or given up: the reply names the comment by id, and a receiver
     that does not have it treats the reply as it treats any reply to a post it does not know. A profile update's tries
     (`personTries`) are kept in memory, so a restart starts them afresh: at worst one more pass of the schedule.
-- **After the fourth review** (the tests named fail without their fix; where one covers only some branches, that is said):
+- **After the fourth review** (each with a test that fails without its fix):
   - **Every producer writes before it logs or counts** (`TestDBFailingWriteDoesNotSpin`, now also the full queue's branches
     for posts and comments, a Delete at its schedule's end and before it, a Create and a comment's Create, and a write
     refused every other time). The full queue's branches, the too large Create, an Update dropped for a comment no longer
-    shown and `commentOutFull` now write first (of these the test runs the full queue's Delete and Create branches for posts
-    and comments; the too large Create, the dropped Update, the Update's full queue branch and the profile's are the same
-    change with no test of their own); a failed write is returned as `outWriteError`, which `outNotTried`
+    shown and `commentOutFull` now write first (the test runs each of them: the full queue's Delete, Create and Update
+    branches for posts and comments, the too large Create, the dropped Update and the profile's full queue, each failing
+    when its log or count is put back before its write); a failed write is returned as `outWriteError`, which `outNotTried`
     knows, so the retry path does not take it for a failure of the record, the producer reports no work, and nothing is
     logged or counted until the write succeeds.
   - **Every change of a record's state resets its tries** (`TestDBCommentTriesAfresh`, `TestOutStateChangesReset`): an
@@ -2091,6 +2091,18 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     the producer's or the fan-out's, under the loop's once-a-minute log.
   - **Words for a time already past** (`TestDBLeavingSentences`): on a believed clock the sentence names neither a time
     nor the clock; the clock's clause is kept for a doubted clock.
+- **After the last review** (each with a test that fails without it):
+  - **The producers' last plain writes go through `outWrite`** (`TestDBOwnWritesAreNoTries`, a write refused every
+    other time): a comment's Update held for the gap between two Updates, a post's Create dropped for a post no longer
+    shown, and a profile's Update no longer shown, with the switches unread or with no key yet. A refused write there is
+    this server's trouble: no try is counted and nothing is logged as failed.
+  - **`TestOutStateChangesReset` reads more ways of writing a statement**: any letter case, no spaces around `=`,
+    double-quoted strings, and `retries = 0` is not taken for `tries = 0`; it still finds every statement the first
+    reading found (15), and examples written for the test show each case.
+  - **Sharing again after leaving** waits for housekeeping (at the start and every hour) to clear the kept copy of the
+    key once the queue has sent the Delete(Person), so up to an hour after the queue is empty; the `federation` suite
+    (FWR 8) sees it refused with the queue empty and allowed after a restart. Left as built: the 409 says "at the latest"
+    and names the horizon, which holds.
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail
