@@ -693,7 +693,9 @@ func TestDBInboxHandlers(t *testing.T) {
 		{"a Follow of an account on another server", activity(boID, "Follow", "https://elsewhere.example/users/z", nil), inDropped},
 		{"Create", activity(boID, "Create", map[string]any{"id": boID + "/notes/1", "type": "Note", "attributedTo": boID, "content": "hi"}, nil), inDropped},
 		{"Like", activity(boID, "Like", "https://here.example/users/ana/posts/1", nil), inDropped},
-		{"an Undo of a Like", activity(boID, "Undo", map[string]any{"id": boID + "/likes/1", "type": "Like", "actor": boID, "object": "https://here.example/users/ana/posts/1"}, nil), inDropped},
+		{"an Undo of a Like of a post elsewhere", activity(boID, "Undo", map[string]any{"id": boID + "/likes/1", "type": "Like", "actor": boID, "object": "https://elsewhere.example/posts/1"}, nil), inDropped},
+		// Since FWR 6 an Undo of a Like of a post here is kept and acted on whatever the switches (it only removes).
+		{"an Undo of a Like of a post here", activity(boID, "Undo", map[string]any{"id": boID + "/likes/2", "type": "Like", "actor": boID, "object": "https://here.example/users/ana/posts/1"}, nil), inAccepted},
 		{"an extension type", activity(boID, "EmojiReact", "https://here.example/users/ana/posts/1", nil), inDropped},
 		{"an Update of a Person by another actor", activity(boID, "Update", map[string]any{"id": ev, "type": "Person", "inbox": ev + "/inbox"}, nil), inDropped},
 		{"an Update of a Note", activity(boID, "Update", map[string]any{"id": boID, "type": "Note"}, nil), inDropped},
@@ -705,8 +707,8 @@ func TestDBInboxHandlers(t *testing.T) {
 			t.Errorf("%s: %d (%v), want %v", c.name, w.Code, e.last(), c.why)
 		}
 	}
-	if n := e.queued(); n != 2 {
-		t.Errorf("%d rows, want the Update and the Delete", n)
+	if n := e.queued(); n != 3 {
+		t.Errorf("%d rows, want the Undo, the Update and the Delete", n)
 	}
 	n := e.q.stats.numbers(time.Now())
 	if n.Dropped["Follow"] != 1 || n.Dropped["EmojiReact"] != 1 || n.Dropped["Update"] != 3 {
@@ -714,7 +716,7 @@ func TestDBInboxHandlers(t *testing.T) {
 	}
 	// The Update fetches bo again once the 10 minutes have passed; then the Delete marks bo gone.
 	e.clock.add(actorRecheck)
-	for range 2 {
+	for range 3 {
 		if worked, err := e.q.step(context.Background()); !worked || err != nil {
 			t.Fatal(worked, err)
 		}
@@ -722,7 +724,7 @@ func TestDBInboxHandlers(t *testing.T) {
 	if e.w.hit(boID) != 2 || e.count(`SELECT count(*) FROM ap_actors WHERE ap_id = $1 AND state = 'gone'`, boID) != 1 {
 		t.Errorf("after the two rows: %d fetches of bo, gone %d", e.w.hit(boID), e.count(`SELECT count(*) FROM ap_actors WHERE state = 'gone'`))
 	}
-	if h := e.q.stats.numbers(time.Now()).Handled; h["Update"] != 1 || h["Delete"] != 1 {
+	if h := e.q.stats.numbers(time.Now()).Handled; h["Update"] != 1 || h["Delete"] != 1 || h["Undo not acted on (nothing it undoes is known here)"] != 1 {
 		t.Errorf("handled: %v", h)
 	}
 	// The federation page shows the numbers to staff.

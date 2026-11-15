@@ -6,7 +6,7 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox (item 1), the delivery queue (item 2, its fan-out on the Pi left to the owner) and follows across servers (item 3, the recorded Mastodon fixtures left to the owner's trial) are built, each with the open points under it; Public posts go out as notes (item 4, done); posts from followed accounts come into Home (item 5, in review). 1 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox (item 1), the delivery queue (item 2, its fan-out on the Pi left to the owner) and follows across servers (item 3, the recorded Mastodon fixtures left to the owner's trial) are built, each with the open points under it; Public posts go out as notes (item 4, done); posts from followed accounts come into Home (item 5, in review); replies and likes cross servers (item 6, built on item 5, the open points under it). 1 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -358,6 +358,58 @@ route and test named below is new unless the design note says it exists.
   notifications. DoD: `TestDBRemoteReplies` (including the forward: sent once, only for the first
   sight, only to the collection named), `TestDBRemoteLikes`; `TestTwoInstances` covers reply, edit,
   like and unlike.
+  Built (federation.md 6.4, "Replies and likes across servers, as built (FWR 6)", says what and why; migration 23 with
+  `flowa-schema22.dump`): `comments.ap_id`, `ap_updated` and `ap_extra`, `likes.ap_id` and `comment_likes.ap_id`,
+  `ap_comment_out`, `notifications.fed` (backfilled) with `notifications_remote` in place of `notifications_fed`,
+  `comments_remote` and `comments_post_local`; a Create whose Note answers a Public post here, a member's comment
+  (`/users/{name}/comments/{id}`, the id comments go out with) or a remote reply kept here, from any account whose
+  signature verified, behind the origin rule on the object, the domain policy, the switches a follow needs (unread is
+  503 and a retry), the post's author sharing, blocks with the post's author, the member answered and the thread's
+  first author, public or unlisted only (a reply addressed to fewer people is not shown under a post anyone may read),
+  kept as a comment (`htmlToText`, 1,000 characters then the link, a content warning folding it, attachments as links),
+  a reply to a reply joining the thread with the person answered named first; an Update only by the same account with
+  a newer `updated`, a Delete only by the same account (a placeholder while it has answers); a reply to a post of
+  another server staying FWR 5's remote post; Like of a Public post or a member's comment and its Undo (embedded or by
+  id), once per account, the notification once; the forward of 7.1.2 for a reply first kept whose addressing names the
+  followers of the post's author or of the member answered, as received, signed by the instance actor, never to the
+  sending server, one activity per reply, 60 an hour per sending server; a member's comment on a Public post here (a
+  member who shares) or on a public post of another server going out as Create(Note) with `inReplyTo`, to the
+  commenter's and the post's author's followers on other servers and the accounts it names, Update(Note) with
+  `updated` inside the 15 minutes, Delete after its Create (`ap_outbox.undoes`) on a deletion, a hide, the post's
+  deletion or the comment gone; Like and Undo(Like) of a public post of another server by a member who shares,
+  enqueued with the like in one transaction, the Undo taking back its Like; `comment`, `reply`, `mention`, `like` and
+  `comment_like` notifications from other servers under FWR 3's bound, and no notification written for a remote
+  account; the caps (300 replies per post, 200 per account, 2,000 per server, 300 an hour per server, 50,000 in all;
+  2,000 likes per post or comment, 2,000 per account, 10,000 per server, 600 an hour per server, 200,000 in all), kept
+  while their post is, removed by `-purge-remote`; the preview taking a post's newest local comments and newest
+  remote replies each through its own index, local ones first; staff report, hide and delete a remote reply, the
+  post's author deletes one, the queue shows remote text as text (FWR 5's remote posts too); remote replies left out
+  of every page in local mode; after item 5's review: the same lock on the object's id, the memory of deletions (a
+  Delete before its Create, and a reply deleted here by the post's author or staff, `by_staff`), an account's own Delete
+  and a domain's suspension removing its replies, likes and notifications in their statements, the stored domain policy
+  asked by the statements that keep, only members who share answered or named, a suspended account's replies not
+  listed, a reply dated by its `published`; the dashboard's weeks counting this server's comments; the remote card's Like and
+  Comment for a public or unlisted post and the sentence for a followers-only one, the remote reply's handle, host,
+  text, fold, links and no Edit; `fedBuilt`, NodeInfo's `replies`, the Settings, Home and Admin switch sentences.
+  Tests: `TestDBRemoteReplies` (the forward sent once, only for the first sight and only to the collection named,
+  never to the sending server; every path above), `TestDBRemoteLikes`, `TestDBCommentsOut`, `TestDBTalkToRemotePosts`,
+  `TestDBTwoFlowaReplies` (two instances over the real fetcher, signer, inbox and queue: reply, edit, like, unlike and
+  deletion), `TestDBRepliesOneConnection`, `TestDBRemoteTalkNotesBounded`, `TestDBRemoteTalkFollowsItem5`, `TestDBQueryPlans` (a post with 3,000
+  remote replies and 2,000 remote likes), `TestDBPurgeRemote`, `TestDBInboxHandlers`, `TestDBRemoteNotes` and
+  `TestDBEvictionCoversReferences` updated, with `-race -count=3` on two cores; the `federated` browser suite
+  (`federated-remote-reply`).
+  **Open:** `TestTwoInstances` is item 8's container suite (here `TestDBTwoFlowaReplies` covers the same steps in Go);
+  a comment's id is not served (the Note is embedded in every activity); an Update(Note) can overtake a Create that
+  failed once and waits for its next attempt; a member's like of a remote reply stays here; a remote reply to a member's
+  comment under a post of another server is not kept; the likes of an account its server suspended still count;
+  recorded Mastodon replies and likes (the owner's trial, item 9); the box stays unchecked until those and the
+  owner's review. For the owner (defaults built): whether a reply addressed to fewer people than Public should be kept
+  for the post's author alone (built: dropped), whether a member who does not share may like or answer a post of
+  another server here only (built: refused, with the reason), whether a followers-only post of another server may be
+  liked or answered (built: no), whether replies and likes from other servers should expire (built: kept while their
+  post is), whether the Update and Delete of a forwarded reply should be forwarded too (built: no), and the numbers:
+  300, 200, 2,000, 300 an hour and 50,000 replies; 2,000, 2,000, 10,000, 600 an hour and 200,000 likes; 60 forwards an
+  hour per server; 1,000 characters of a reply.
 - [ ] **Account deletion across servers.** Delete(Person) out when an account is deleted and from
   "Remove me from other servers"; Delete(Person) in purges the remote account's content and follows;
   a Delete from an actor never seen is answered 202 with no fetch. Retired names exist since FRD's

@@ -3867,7 +3867,7 @@ func TestDBQueryPlans(t *testing.T) {
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT id, CASE WHEN id % 4 = 0 THEN 7 ELSE 8 + id % 400 END, 'pending' FROM users WHERE domain <> '' AND id % 10 < 3 AND 1 + id % 500 NOT IN (7, 8 + id % 400) ON CONFLICT DO NOTHING`,
 		// Member 9 has 20,000 notifications from members here, and 300 follows from other servers told.
 		`INSERT INTO notifications (user_id, actor_id, kind, read) SELECT 9, 1 + g % 500, 'like', false FROM generate_series(1, 20000) g`,
-		`INSERT INTO notifications (user_id, actor_id, kind) SELECT 9, id, 'follow' FROM users WHERE domain <> '' AND id % 7 = 0 LIMIT 300`,
+		`INSERT INTO notifications (user_id, actor_id, kind, fed) SELECT 9, id, 'follow', true FROM users WHERE domain <> '' AND id % 7 = 0 LIMIT 300`,
 		`ANALYZE`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -3877,9 +3877,9 @@ func TestDBQueryPlans(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM follows WHERE followee_id = 7 AND state = 'pending'`); n < 100 {
 		t.Fatalf("member 7 has %d requests waiting", n)
 	}
-	ftx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
+	ftx, ferr := db.Begin()
+	if ferr != nil {
+		t.Fatal(ferr)
 	}
 	on = ftx
 	plans([]planCase{
@@ -3904,7 +3904,7 @@ func TestDBQueryPlans(t *testing.T) {
 	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox and domain_policies) the planner reads whole for
 	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
 	// all for 200 removed, a few milliseconds, once for every 200 new actors.
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_inbox ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_comment_out ap_inbox ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
 	on = db
 	tx.Rollback()
 	// The delivery queue (FWR 2) at its cap: 50,000 rows queued on 300 hosts, 50 activities, a host whose circuit is
@@ -4000,7 +4000,7 @@ func TestDBQueryPlans(t *testing.T) {
 		// A fifth of them kept only for a mention, spread among the others: the cap in all must not read through them.
 		`UPDATE posts SET ap_mention_only = true WHERE ap_id IS NOT NULL AND id % 5 = 0`,
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT 5, 1000000 + g, 'accepted' FROM generate_series(1, 100) g ON CONFLICT DO NOTHING`,
-		`INSERT INTO notifications (user_id, actor_id, kind, post_id) SELECT 9, 1000001 + g % 2000, CASE WHEN g % 2 = 0 THEN 'mention' ELSE 'share' END, (SELECT min(id) FROM posts WHERE ap_id IS NOT NULL) + g FROM generate_series(1, 300) g`,
+		`INSERT INTO notifications (user_id, actor_id, kind, post_id, fed) SELECT 9, 1000001 + g % 2000, CASE WHEN g % 2 = 0 THEN 'mention' ELSE 'share' END, (SELECT min(id) FROM posts WHERE ap_id IS NOT NULL) + g, true FROM generate_series(1, 300) g`,
 		`INSERT INTO ap_deleted (ap_id, user_id, at) SELECT 'https://h1.example/d/' || g, 1000001 + g % 2000, now() - (g % 10) * interval '1 day' FROM generate_series(1, 2000) g`,
 		`ANALYZE`,
 	} {
@@ -4044,11 +4044,71 @@ func TestDBQueryPlans(t *testing.T) {
 		{"remote: the cap of posts kept for a mention, a batch", remoteMentionCapSQL, []any{remoteMentionOnlyMax, remoteBatch}, 3 * 4000, ""},
 		{"remote: the cap of remembered deletions", remoteDeletedCapSQL, []any{1500}, 6000, "ap_deleted"},
 		{"remote: remembering a deletion, under the account's cap", noteRememberSQL, []any{"https://h7.example/n/new", int64(1000008), time.Now(), remoteDeletedPerAccount}, 200, ""},
-		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, ""},
+		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, "ap_comment_out"},
 		{"remote: trimming a member's notifications, mentions and shares among them", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 6000, ""},
 	})
 	on = db
 	rtx.Rollback()
+	// Replies and likes across servers (FWR 6): the newest local post, a Public one of a member who shares, holds 3,000
+	// replies from 2,000 remote accounts (ten times what its cap keeps) beside its few comments from members here,
+	// and 2,000 remote likes; 5,000 members' comments went out and 10 wait. The timeline's page, the preview of its
+	// comments and a page of them stay bounded, the members' comments come first in the preview whatever the remote
+	// ones number, and the statements that keep a reply or a like, find what a reply answers, read the record that
+	// waits and count the caps each read through an index.
+	var first []int64
+	if err := db.QueryRow(`SELECT array_agg(id) FROM (`+feedSQL+`) p`, viewer, 0, 0, 0, pageSize+1, false, pq.Array(none)).Scan(pq.Array(&first)); err != nil || len(first) == 0 {
+		t.Fatalf("the timeline's first page %v: %v", first, err)
+	}
+	flood := first[0] // the newest post the viewer's timeline shows
+	for _, q := range []string{
+		`UPDATE posts SET audience = 'public', kind = 'post', hidden_at = NULL WHERE id = $1`,
+		`UPDATE users SET federates = true WHERE id = (SELECT user_id FROM posts WHERE id = $1)`,
+		`INSERT INTO comments (post_id, user_id, body) SELECT $1, 1 + g, 'local comment ' || g FROM generate_series(1, 3) g`,
+		`INSERT INTO comments (post_id, user_id, body, ap_id, created_at) SELECT $1, 1000001 + g % 2000, 'remote reply ' || g, 'https://h' || (g % 50) || '.example/r/' || g, now() + g * interval '1 second' FROM generate_series(1, 3000) g`,
+		`INSERT INTO likes (post_id, user_id, ap_id) SELECT $1, 1000001 + g, 'https://h' || (g % 50) || '.example/l/' || g FROM generate_series(0, 1999) g`,
+		`INSERT INTO ap_comment_out (comment_id, post_id, user_id, state, targets) SELECT g, $1 - g % 100, 1 + g % 500, CASE WHEN g % 500 = 0 THEN 'create' ELSE 'sent' END, '[]' FROM generate_series(1, 5000) g`,
+	} {
+		if _, err := db.Exec(q, flood); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	if _, err := db.Exec(`ANALYZE`); err != nil {
+		t.Fatal(err)
+	}
+	var localShown, previewed int
+	if err := db.QueryRow(`SELECT count(*) FILTER (WHERE c.ap_id IS NULL), count(*) FROM (`+feedCommentsSQL+`) c`, viewer, false, pq.Array([]int64{flood}), previewComments).Scan(&localShown, &previewed); err != nil {
+		t.Fatal(err)
+	}
+	if want := e.count(`SELECT count(*) FROM comments WHERE post_id = $1 AND parent_id IS NULL AND ap_id IS NULL`, flood); localShown != min(want, previewComments) || want == 0 {
+		t.Errorf("the preview shows %d of the post's %d comments from members here among %d, with 3,000 remote replies", localShown, want, previewed)
+	}
+	var floodAuthor string
+	if err := db.QueryRow(`SELECT u.username FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1`, flood).Scan(&floodAuthor); err != nil {
+		t.Fatal(err)
+	}
+	rtx2, ferr2 := db.Begin()
+	if ferr2 != nil {
+		t.Fatal(ferr2)
+	}
+	on = rtx2
+	plans([]planCase{
+		{"replies: the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 12000, ""},
+		{"replies: that post alone", postOneSQL, []any{viewer, flood, false, true}, 12000, ""},
+		{"replies: the preview of its comments", commentsSQL(feedCommentsSQL), []any{viewer, false, pq.Array([]int64{flood}), previewComments}, 1000, ""},
+		{"replies: a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
+			[]any{viewer, false, flood, 0, commentPage + 1}, 2000, ""},
+		{"replies: what a reply to the post answers", replyTargetSQL, []any{flood, floodAuthor, "", false}, 100, ""},
+		{"replies: what a reply to a remote reply answers", replyCommentSQL(false), []any{0, "", "https://h7.example/r/7", false}, 100, ""},
+		{"replies: keeping a reply under another post, with its caps", replyKeepSQL, []any{first[1], int64(1000008), "hi", nil, "https://h8.example/r/new", nil, "{}",
+			remoteRepliesPerPost, remoteRepliesPerAccount, "h8.example", remoteRepliesPerHost, time.Now()}, 2000, "domain_policies"}, // the server's count reads its accounts' replies, not every remote reply
+		{"replies: keeping a like, with its caps", likePostKeepSQL, []any{flood, floodAuthor, false, int64(1000008), "https://h8.example/l/new",
+			remoteLikesPerObject, remoteLikesPerAccount, "h8.example", remoteLikesPerHost}, 12000, "domain_policies"},
+		{"replies: the record of a comment that waits", commentOutSQL, []any{false}, 100, ""},
+		{"replies: the caps in all", talkCountSQL, []any{remoteRepliesMax, remoteLikesMax}, 120000, ""},
+		{"replies: records of comments gone", talkOrphansSQL, []any{remoteBatch}, 20000, ""},
+	})
+	on = db
+	rtx2.Rollback()
 	// The page's pictures, and the cache's weight: per post through the unique key, and the files kept through
 	// ap_media_used (the eviction runs once per picture fetched).
 	plans([]planCase{

@@ -131,9 +131,17 @@ func TestDBRemoteNotes(t *testing.T) {
 	}
 	e.must(200, e.ana, "GET", fmt.Sprintf("/api/posts/%d", p1), nil)
 	e.must(404, e.cy, "GET", fmt.Sprintf("/api/posts/%d", p1), nil)
-	// Nothing to like, comment on or bookmark until FWR 6; cy cannot even report what cy cannot read.
-	e.must(404, e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", p1), nil)
-	e.must(404, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p1), map[string]any{"body": "hi"})
+	// Since FWR 6 ana may like it (and take the like back), and cy, who cannot read it, may not (replies_test.go holds
+	// the rest); it is never bookmarked, since the bookmarks list holds posts of this server; cy cannot even report what
+	// cy cannot read.
+	if out := e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", p1), nil); out["liked"] != true {
+		t.Errorf("ana's like of a remote post: %v", out)
+	}
+	if out := e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", p1), nil); out["liked"] != false {
+		t.Errorf("ana's unlike of a remote post: %v", out)
+	}
+	e.must(404, e.cy, "POST", fmt.Sprintf("/api/posts/%d/like", p1), nil)
+	e.must(404, e.cy, "POST", fmt.Sprintf("/api/posts/%d/comments", p1), map[string]any{"body": "hi"})
 	e.must(404, e.ana, "POST", "/api/bookmarks", map[string]any{"kind": "post", "ref": fmt.Sprint(p1)})
 	e.must(404, e.cy, "POST", "/api/reports", map[string]any{"kind": "post", "id": p1, "reason": "spam"})
 	e.must(200, e.ana, "POST", "/api/reports", map[string]any{"kind": "post", "id": p1, "reason": "spam"})

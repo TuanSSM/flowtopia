@@ -73,9 +73,9 @@ func TestDBRemoteRemoveLosesToNewer(t *testing.T) {
 	}
 	defer rel.Do(func() { close(release) })
 	done := make(chan string, 1)
-	go func() { out, _ := f.noteIn(ctx, s, direct, time.Now()); done <- out }()
+	go func() { out, _ := f.noteIn(ctx, s, direct, time.Now(), nil); done <- out }()
 	<-paused
-	if out, err := f.noteIn(ctx, s, newer, time.Now()); err != nil || out != "" {
+	if out, err := f.noteIn(ctx, s, newer, time.Now(), nil); err != nil || out != "" {
 		t.Fatalf("the newer edit: %q %v", out, err)
 	}
 	rel.Do(func() { close(release) })
@@ -171,7 +171,7 @@ func TestDBRemoteSuspendedWhileStoring(t *testing.T) {
 	}
 	defer rel.Do(func() { close(release) })
 	done := make(chan string, 1)
-	go func() { out, _ := f.noteIn(ctx, s, act, time.Now()); done <- out }()
+	go func() { out, _ := f.noteIn(ctx, s, act, time.Now(), nil); done <- out }()
 	<-paused
 	_, admin := e.user("boss", "admin")
 	e.must(200, admin, "PUT", "/api/admin/federation/domains/social.example", map[string]any{"policy": "suspend"})

@@ -853,8 +853,8 @@ content in, as built (FWR 5)"):
   as a fold to open, a poll as its question and choices with "vote on its server", a long article as its title, its
   start and a link, and "Open on its server". Pictures (JPEG, PNG, the first frame of a GIF, at most 4 a post) come
   from this server's own copy with their descriptions; a video, a sound, a WebP or a picture not copied yet is a link
-  to the original. There is no like, comment or bookmark on such a post yet ("Replies and likes for posts from other
-  servers are not built yet"); Report and a moderator's Delete work. Only posts made after the follow arrive, and
+  to the original. A public or unlisted one can be liked and answered (below); a followers-only one cannot ("cannot
+  be liked or answered from here"), and none is bookmarked; Report and a moderator's Delete work. Only posts made after the follow arrive, and
   never in the Community timeline, on the public pages or in anyone else's Home. A followers-only post is shown to
   its followers here, to a member it names in its addressing, and to moderators acting on a report, and to nobody
   else; a direct message is not kept, and an edit that makes a post direct removes it. Blocking the account hides its posts and ends the follow,
@@ -886,8 +886,41 @@ content in, as built (FWR 5)"):
   `./deploy.sh --rollback` would show them as local posts in the Community timeline, so run
   `docker exec nunchaku /nunchaku -purge-remote` first, with the Federation switch off ("remote accounts, and going
   back past them", above). It removes those posts, their pictures' rows and the files under `-data/media` too.
-- **Not yet:** replies and likes across servers, Undo of a share, a post given by its id only (fetched from its
-  server), and the domain policy's "reject media".
+- **Not yet:** Undo of a share, a post given by its id only (fetched from its server), and the domain policy's
+  "reject media".
+
+### Federation: replies and likes across servers
+
+With the same switches on, replies and likes cross servers both ways ([docs/federation.md](docs/federation.md), 6.3,
+6.4 and "Replies and likes across servers, as built (FWR 6)"):
+
+- **Under a member's Public post.** A reply from another server shows as a comment, with its author's name and
+  handle and server (`@bo@social.example`), its text as plain text with only web addresses linked (a plain `@name`
+  in it never links to a member here), a content warning as a fold, its attachments as links and "Open on its
+  server". It has no Edit (only its own server changes it, and an edit there arrives here); the post's author and a
+  moderator may delete it, anyone who sees it may report it, and a moderator may hide it. A reply to a reply joins
+  its thread, starting with the person answered, as a member's does. Likes from other servers count with the likes
+  from here. The comments of members here come first in a post's preview, so many replies from elsewhere never
+  push them out of view. A reply or a like to a This server post, to a hidden one, across a block, or with Follows
+  off is not kept.
+- **Going out.** A comment of a member who shares their profile beyond this server, on a Public post here, goes to
+  their followers and the post's author's followers on other servers, and to the accounts it mentions; an edit
+  inside the 15 minutes and a deletion (also a moderator's hide, or the post's deletion) follow it. On a public post
+  of another server a member who shares may like it, take the like back, and answer it; one who does not is told
+  why. Comments of members who do not share stay here.
+- **The bell.** "commented on your post", "replied to your comment", "mentioned you", "liked your post" and "liked your comment" from accounts of
+  other servers, each told once, within the bounds above (50 from one server, 500 from all, per member).
+- **Forwarding.** A reply from another server that names a member's followers is passed on once, as it came, to
+  that member's followers on other servers but the sender's (ActivityPub's rule against replies only some followers
+  see), at most 60 an hour per sending server.
+- **Bounds.** 300 replies from other servers kept under one post, 200 from one account, 2,000 from one server, 300
+  new an hour from one server and 50,000 in all; 2,000 likes from other servers for one post or comment, 2,000 from
+  one account, 10,000 from one server, 600 new an hour and 200,000 in all. They are kept while the post is.
+- **Going back.** An older build after `./deploy.sh --rollback` would show replies from other servers as comments of
+  local accounts: run `-purge-remote` first, which removes them, the likes, and the records of comments sent.
+- **Not yet:** a like of a reply from another server goes no further than this server; a reply from another
+  server to a member's comment under a post of another server is not kept; an edit can reach a server before the
+  comment it changes when that comment's first delivery failed.
 
 ### What the server will connect to
 

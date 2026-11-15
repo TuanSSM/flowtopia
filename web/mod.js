@@ -45,8 +45,10 @@ function targetHTML(it) {
   const t = it.target || {};
   if (t.gone) return '<p class="small muted">It has been deleted since it was reported.</p>';
   const hidden = t.hidden ? `<span class="chip warn">${icon('lock')}Hidden: ${esc(t.hiddenReason)}</span>` : '';
-  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body">${richText(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="${t.alt ? esc(t.alt) : 'Picture in the reported post'}">${t.alt ? `<p class="small mq-alt">Description of the picture: ${esc(t.alt)}</p>` : ''}` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
-  if (it.kind === 'comment') return `<div class="mq-target"><p class="small">${richText(t.body)}</p><div class="row wrap" style="gap:6px"><a class="small" href="#/post/${t.postId}/${it.id}">Open the comment</a>${hidden}</div></div>`;
+  // Text from another server (t.remote) is shown as text: no @name in it is a member here.
+  const text = s => t.remote ? esc(s).replace(/\n/g, '<br>') : richText(s);
+  if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body" ${t.remote ? 'dir="auto"' : ''}>${text(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="${t.alt ? esc(t.alt) : 'Picture in the reported post'}">${t.alt ? `<p class="small mq-alt">Description of the picture: ${esc(t.alt)}</p>` : ''}` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
+  if (it.kind === 'comment') return `<div class="mq-target"><p class="small" ${t.remote ? 'dir="auto"' : ''}>${text(t.body)}</p><div class="row wrap" style="gap:6px"><a class="small" href="#/post/${t.postId}/${it.id}">Open the comment</a>${hidden}</div></div>`;
   const a = it.author || {};
   return `<div class="mq-target"><p class="small">${a.bio ? richText(a.bio) : '<span class="muted">No bio.</span>'}</p><a class="small" href="#/u/${esc(a.username)}">Open the profile</a></div>`;
 }

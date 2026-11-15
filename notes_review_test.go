@@ -296,7 +296,7 @@ func TestDBRemoteCreateDeleteRace(t *testing.T) {
 	}
 	defer releaseOnce.Do(func() { close(release) })
 	created := make(chan string, 1)
-	go func() { out, _ := f.noteIn(ctx, s, act, time.Now()); created <- out }()
+	go func() { out, _ := f.noteIn(ctx, s, act, time.Now(), nil); created <- out }()
 	<-held
 	deleted := make(chan string, 1)
 	go func() { out, _ := f.noteDeleted(ctx, s, boID+"/statuses/1"); deleted <- out }()

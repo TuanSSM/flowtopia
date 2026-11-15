@@ -147,7 +147,7 @@ func TestDBFollowUndoLeavesNothing(t *testing.T) {
 	}
 	// And from all servers together at most remoteNotesMax: 600 more from accounts of other hosts, then one Follow.
 	e.mustExec(`INSERT INTO users (username, display_name, pw_hash, role, domain) SELECT 'n' || g || '@h' || (g % 30) || '.example', '', '!', 'user', 'h' || (g % 30) || '.example' FROM generate_series(1, 600) g`)
-	e.mustExec(`INSERT INTO notifications (user_id, actor_id, kind) SELECT $1, id, 'follow' FROM users WHERE username LIKE 'n%@h%.example'`, anaID)
+	e.mustExec(`INSERT INTO notifications (user_id, actor_id, kind, fed) SELECT $1, id, 'follow', true FROM users WHERE username LIKE 'n%@h%.example'`, anaID)
 	id := "https://social.example/users/last"
 	e.w.put(id, worldDoc{body: actorDoc(id, "last", "", &e.other.PublicKey, nil)})
 	e.deliver(activity(id, "Follow", "https://here.example/users/ana", nil), e.signer(e.other, id+"#main-key", sigCavage))
@@ -275,7 +275,7 @@ func TestDBTrimKeepsLocalAndRequests(t *testing.T) {
 	e.deliver(activity(boID, "Follow", "https://here.example/users/cyd", nil), e.bo())
 	bo := e.remoteID(boID)
 	e.mustExec(`INSERT INTO users (username, display_name, pw_hash, role, domain) SELECT 'n' || g || '@h' || (g % 30) || '.example', '', '!', 'user', 'h' || (g % 30) || '.example' FROM generate_series(1, 600) g`)
-	e.mustExec(`INSERT INTO notifications (user_id, actor_id, kind) SELECT $1, id, 'follow' FROM users WHERE username LIKE 'n%@h%.example'`, cydID)
+	e.mustExec(`INSERT INTO notifications (user_id, actor_id, kind, fed) SELECT $1, id, 'follow', true FROM users WHERE username LIKE 'n%@h%.example'`, cydID)
 	ev := "https://social.example/users/eve"
 	e.w.put(ev, worldDoc{body: actorDoc(ev, "eve", "", &e.other.PublicKey, nil)})
 	e.deliver(activity(ev, "Follow", "https://here.example/users/cyd", nil), e.signer(e.other, ev+"#main-key", sigCavage))
