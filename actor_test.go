@@ -391,7 +391,7 @@ func TestDBPublicSurfaces(t *testing.T) {
 	if w := pubAsk(e, "GET", "/users/eve", apAccept); w.Code != 410 || w.Body.String() != `{"@context":"https://www.w3.org/ns/activitystreams","id":"https://flowa.example.org/users/eve","type":"Tombstone","formerType":"Person"}` || w.Result().Header.Get("Vary") != "Accept" {
 		t.Errorf("a retired name as a document: %d %s", w.Code, w.Body)
 	}
-	if w := pubAsk(e, "GET", "/users/eve", browser); w.Code != 410 || !strings.Contains(w.Body.String(), "Account deleted") {
+	if w := pubAsk(e, "GET", "/users/eve", browser); w.Code != 410 || !strings.Contains(w.Body.String(), "Profile no longer shared") {
 		t.Errorf("a retired name as a page: %d", w.Code)
 	}
 

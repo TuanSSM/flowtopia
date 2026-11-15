@@ -649,7 +649,8 @@ function fedCard() {
   if (fed.unavailable) return `${head}<p class="small">${esc(fed.unavailable)}</p>${fed.refused ? `<p class="notice warn">${esc(fed.refused)}</p>` : ''}</div></div>`;
   return `${head}
     ${fed.implied ? '<p class="small">This Flowa is yours alone, and it is set up to share your profile and Public posts beyond it.</p>'
-    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''}><span>${esc(fed.label)}</span></label>`}
+    : `<label class="check"><input type="checkbox" data-change="federates" ${on ? 'checked' : ''} ${fed.leaving && !on ? 'disabled aria-describedby="leaving-hint"' : ''}><span>${esc(fed.label)}</span></label>`}
+    ${fed.leaving ? `<p class="notice warn" id="leaving-hint" role="status">${esc(fed.leaving)}</p>` : ''}
     <p class="small muted">${on ? 'Other servers can find you as' : 'When it is on, other servers can find you as'} <b>${esc(fed.handle)}</b>. ${esc(fed.built)}</p>
     ${on && fed.profile ? `<p class="small"><a href="${esc(fed.profile)}" target="_blank" rel="noopener">See your public page ${icon('ext')}</a></p>` : ''}
     ${on && fed.warning ? `<p class="notice warn" role="status">${esc(fed.warning)}</p>` : ''}

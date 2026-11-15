@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"container/heap"
 	"container/list"
@@ -1662,7 +1663,7 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 	// mode the answer is as before, with no word of it.
 	if a.fed != nil && u != nil {
 		var s fedState
-		if err := a.db.QueryRow(fedStateSQL, u.ID).Scan(&s.on, &s.locked, &s.left, &s.keyed); err != nil {
+		if err := a.db.QueryRow(fedStateSQL, u.ID).Scan(&s.on, &s.locked, &s.left, &s.keyed, &s.leaving); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -2431,8 +2432,9 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	// other answer about a member carries it. It is not part of profileRev either: it is a switch saved
 	// on its own, not text edited against an older copy. was is what it was before, for the key below.
 	var fedOn, fedWas, lockedNow, personMarked, fedLeft, fedKeyed bool
+	var fedLeaving sql.NullTime
 	if a.fed != nil {
-		if err := tx.QueryRow(fedStateSQL, u.ID).Scan(&fedWas, &lockedNow, &fedLeft, &fedKeyed); err != nil {
+		if err := tx.QueryRow(fedStateSQL, u.ID).Scan(&fedWas, &lockedNow, &fedLeft, &fedKeyed, &fedLeaving); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -2445,6 +2447,20 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 			lockedNow = *locked
 		}
 		fedOn = fedWas
+		if federates != nil && *federates && !fedWas {
+			// Not while the member's Delete(Person) is still being sent (FWR 7): the key sharing makes has the same key id, so
+			// a server could take the new account and then remove it at the Delete's next attempt, or refuse the Delete
+			// against the new key.
+			var until sql.NullTime
+			if err := tx.QueryRow(leavingSQL, u.ID).Scan(&until); err != nil {
+				a.serverError(w, err)
+				return
+			}
+			if until.Valid {
+				fail(w, http.StatusConflict, leavingSentence(until.Time.Add(deliveryHorizon)))
+				return
+			}
+		}
 		if federates != nil && *federates != fedWas {
 			if _, err := tx.Exec(`UPDATE users SET federates = $2 WHERE id = $1`, u.ID, *federates); err != nil {
 				a.serverError(w, err)
@@ -2488,7 +2504,7 @@ func (a *app) handlePutMe(w http.ResponseWriter, r *http.Request, u *user) {
 	}
 	out := map[string]any{"user": cur}
 	if a.fed != nil {
-		out["federation"] = a.fedView(cur, fedState{on: fedOn, locked: lockedNow, left: fedLeft, keyed: fedKeyed})
+		out["federation"] = a.fedView(cur, fedState{on: fedOn, locked: lockedNow, left: fedLeft, keyed: fedKeyed, leaving: fedLeaving})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -2779,7 +2795,7 @@ func (a *app) handleDeleteUser(w http.ResponseWriter, r *http.Request, u *user) 
 	// goes to every server known to have heard of it (FWR 7, personGone), and the answer says what became of it.
 	// Elsewhere the deletion is what it always was, statement for statement (TestDBDeleteUserLocalStatements).
 	if a.fed != nil {
-		told, err := a.personGone(r.Context(), id, name, del)
+		told, err := a.personGone(r.Context(), id, name, false, del)
 		switch {
 		case errors.Is(err, errLastAdmin):
 			fail(w, http.StatusBadRequest, "Flowa needs at least one admin.")
@@ -6440,6 +6456,10 @@ type federation struct {
 	// handled, when set (by a test, under mu once the worker may run), hears of each request the worker has
 	// finished with.
 	handled func(o keyOwner, made bool, err error)
+	// beforeKey, when set (by a test, under mu), is called by the key maker before each request it takes, with its owner.
+	beforeKey func(o keyOwner)
+	// beforeGone, when set (by a test, under mu), is called by personGone between its checks and its transaction.
+	beforeGone func(uid int64)
 
 	mu      sync.Mutex
 	refused string // why this instance federates nothing although its mode federates; "" when it may
@@ -6663,6 +6683,11 @@ func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 	if have {
 		return false, nil
 	}
+	// A member gets a key only while they share their profile (FWR 7): a request asked before they stopped, or before
+	// they asked other servers to forget them, is dropped here, before the key is made, and again under the lock below.
+	if may, err := f.mayHaveKey(ctx, nil, o); err != nil || !may {
+		return false, cmp.Or(err, errNotSharing)
+	}
 	keyID, err := f.keyIDOf(ctx, o)
 	if err != nil {
 		return false, err
@@ -6684,6 +6709,12 @@ func (f *federation) ensureKey(ctx context.Context, o keyOwner) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
+	// The member's row is locked (FOR SHARE) and asked again: "Remove me from other servers" and an account's deletion
+	// lock it first, so a key is never written after either has removed the member's key, nor for a member who no
+	// longer shares (FWR 7).
+	if may, err := f.mayHaveKey(ctx, tx, o); err != nil || !may {
+		return false, cmp.Or(err, errNotSharing)
+	}
 	// The key id follows from the owner, so a second maker meets both unique constraints at once; DO
 	// NOTHING with no target covers both, and the check after it tells a lost race from a key id that
 	// another owner holds.
@@ -6746,6 +6777,39 @@ func (f *federation) ensureOrigin(ctx context.Context) error {
 	}
 	f.recorded.Store(true)
 	return nil
+}
+
+// errNotSharing is ensureKey's answer for a member who does not share their profile beyond this server (or no longer
+// has an account): no key is made for them (FWR 7).
+var errNotSharing = errors.New("the member does not share their profile")
+
+// mayHaveKeySQL says whether account $1 may have a key: a member here who shares their profile, or the owner of a
+// single-profile instance that federates ($2), whose sharing that setting is. Locked FOR SHARE in ensureKey's
+// transaction.
+const mayHaveKeySQL = `SELECT u.domain = '' AND (u.federates OR ($2 AND u.owner)) FROM users u WHERE u.id = $1`
+
+// mayHaveKey asks mayHaveKeySQL for owner o (the instance actor always may), in tx with the row locked when tx is
+// given, under a turn of its own otherwise. An account that is gone may not.
+func (f *federation) mayHaveKey(ctx context.Context, tx *sql.Tx, o keyOwner) (bool, error) {
+	if o == instanceActor {
+		return true, nil
+	}
+	var may bool
+	var err error
+	if tx != nil {
+		err = tx.QueryRowContext(ctx, mayHaveKeySQL+` FOR SHARE`, int64(o), f.single).Scan(&may)
+	} else {
+		done, terr := f.dbTurn(ctx)
+		if terr != nil {
+			return false, terr
+		}
+		err = f.db.QueryRowContext(ctx, mayHaveKeySQL, int64(o), f.single).Scan(&may)
+		done()
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return may, err
 }
 
 // errNoKey says an owner has no key yet.
@@ -6848,10 +6912,17 @@ func (f *federation) startWorker() {
 			case <-f.ctx.Done():
 				return
 			case o := <-f.ask:
+				f.mu.Lock()
+				before := f.beforeKey
+				f.mu.Unlock()
+				if before != nil {
+					before(o) // a test holds the key maker here, across a member's leaving (FWR 7)
+				}
 				began := time.Now()
 				made, err := f.ensureKey(f.ctx, o)
 				switch {
 				case errors.Is(err, errRefused): // said once already, by refuse
+				case errors.Is(err, errNotSharing): // asked before the member stopped sharing: dropped
 				case err != nil && f.ctx.Err() == nil:
 					log.Printf("keys: the key of %s was not made: %v", o, err)
 				case made:
@@ -7748,16 +7819,35 @@ func (a *app) fedView(u *user, s fedState) map[string]any {
 	if s.left && a.mode != modeSingle {
 		v["left"] = leftSentence
 	}
+	if s.leaving.Valid && !optedIn {
+		v["leaving"] = leavingSentence(s.leaving.Time.Add(deliveryHorizon))
+	}
 	return v
 }
 
 // fedState is what fedView is told of a member: sharing on, approving by hand, whether they asked other servers to
-// forget them before (left), and whether they have a key (keyed).
-type fedState struct{ on, locked, left, keyed bool }
+// forget them before (left), whether they have a key (keyed), and since when their Delete(Person) is being sent, if it
+// still is (leaving).
+type fedState struct {
+	on, locked, left, keyed bool
+	leaving                 sql.NullTime
+}
 
-// fedStateSQL reads fedState for member $1: one row of users, one look in retired_usernames' and ap_keys' keys.
+// fedStateSQL reads fedState for member $1: one row of users, one look in retired_usernames' and ap_keys' keys, and
+// leavingSQL's.
 const fedStateSQL = `SELECT u.federates, u.locked, EXISTS (SELECT 1 FROM retired_usernames r WHERE r.username = u.username),
-	EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) FROM users u WHERE u.id = $1`
+	EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id), (` + leavingSQL + `) FROM users u WHERE u.id = $1`
+
+// leavingSQL is when member $1's Delete(Person) was enqueued, while its row still keeps the copy of their key (some of
+// its deliveries wait), NULL otherwise: through ap_outbox_signer, which holds only the few rows that keep one.
+const leavingSQL = `SELECT max(o.created_at) FROM ap_outbox o WHERE o.signer = $1 AND o.signer_sealed IS NOT NULL`
+
+// leavingSentence says why sharing cannot be turned on yet, and until when at most: the queue gives a delivery up 48
+// hours after it was written (deliveryHorizon), and then housekeeping clears the copy of the key.
+func leavingSentence(until time.Time) string {
+	return "Other servers are still being asked to forget you. You can share your profile again once that is done, at the latest after " +
+		until.UTC().Format("2 January 2006, 15:04") + " UTC."
+}
 
 // leftSentence is shown beside the switch to a member who asked other servers to forget them (FWR 7).
 const leftSentence = "You asked other servers to forget you. If you share your profile again, it gets a new key, and servers that processed that request may still refuse your address."
@@ -8694,7 +8784,9 @@ func (a *app) pubSiteOf(st *static) *pubSite {
 		}
 	}
 	s.missing = s.page(pubData{Kind: "missing", Title: "Not found"})
-	s.wiped = s.page(pubData{Kind: "gone", Title: "Account deleted"})
+	// A retired name: an account deleted after it shared its profile, or a member who asked other servers to forget them
+	// and keeps the account here (FWR 7). One page for both, so it says no more than the Tombstone does.
+	s.wiped = s.page(pubData{Kind: "gone", Title: "Profile no longer shared"})
 	return s
 }
 
@@ -8769,7 +8861,7 @@ var pubTmpl = template.Must(template.New("pub").Parse(`<!doctype html>
 <header class="pub-top"><a class="btn primary" href="/index.html#/signin">Sign in</a></header>
 <main class="pub-main">
 {{if eq .Kind "missing"}}<section class="card pub-card" aria-labelledby="pub-h"><h1 id="pub-h">Nothing here</h1><p>There is no public profile or post at this address. It may never have been public, or it is no longer shared.</p></section>
-{{else if eq .Kind "gone"}}<section class="card pub-card" aria-labelledby="pub-h"><h1 id="pub-h">Account deleted</h1><p>The account that had this address was deleted. Its name is not given to anyone else.</p></section>
+{{else if eq .Kind "gone"}}<section class="card pub-card" aria-labelledby="pub-h"><h1 id="pub-h">Profile no longer shared</h1><p>The profile at this address is no longer shared beyond this server: its account was deleted, or asked other servers to forget it. Its name is not given to anyone else.</p></section>
 {{else if eq .Kind "actor"}}<section class="card pub-card" aria-labelledby="pub-h"><h1 id="pub-h">{{.Host}}</h1><p class="pub-handle">{{.ActorHandle}}</p><p>This is the server's own account. Other servers see it when this Flowa asks them for something on nobody's behalf; it posts nothing and follows nobody.</p></section>
 {{else}}{{with .Who}}<article class="card pub-card" aria-labelledby="pub-name">
 <div class="pub-who">{{if .Picture}}<img class="pub-pic" src="{{.Picture}}" alt="" width="72" height="72">{{else}}<span class="pub-pic pub-initial" aria-hidden="true">{{.Initial}}</span>{{end}}
@@ -17993,6 +18085,17 @@ func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
 		return out, err
 	}
+	// Nothing is enqueued for a member who has no key and does not share (FWR 7): one who asked other servers to forget
+	// them, or whose account is gone. Asked under the queue's lock, which their leaving holds too.
+	if actor != instanceActor {
+		var may bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = $1) OR COALESCE((`+mayHaveKeySQL+`), false)`, int64(actor), f.single).Scan(&may); err != nil {
+			return out, err
+		}
+		if !may {
+			return out, errNotSharing
+		}
+	}
 	var queued, waiting int
 	if err := tx.QueryRowContext(ctx, deliveryCountsSQL, deliveryQueueMax, deliveryWaitingMax).Scan(&queued, &waiting); err != nil {
 		return out, err
@@ -18572,6 +18675,11 @@ func (q *deliveryQueue) deliver(ctx context.Context, c *claimedRow) error {
 		}
 	} else if key, keyID, err = f.privateKey(ctx, owner); err != nil {
 		if errors.Is(err, errNoKey) {
+			// A member with no key is asked one only while they share (FWR 7); one who does not, or whose account is gone,
+			// has nothing to sign with, and the row is given up.
+			if may, merr := f.mayHaveKey(ctx, nil, owner); merr == nil && !may {
+				return q.fail(c, "the member does not share their profile and has no key")
+			}
 			f.requestKey(owner)
 		}
 		return q.giveBack(c, q.ownWait(ctx))
@@ -21230,8 +21338,11 @@ with the member's own key:
 // personDeleteHostsMax is how many servers one Delete(Person) goes to at most (docs/federation.md 6.4's bound).
 const personDeleteHostsMax = 2000
 
-// personKnownSQL lists the servers that may know member $1, one inbox per server (its shared inbox first), at most $2:
-// the doc comment above says from what. Each part reads through an index that starts with the member or the post.
+// personKnownSQL lists the servers that may know member $1, one inbox per server (its shared inbox first), in the order
+// of their host names after $3, at most $2: the doc comment above says from what. The records of posts and comments that
+// went out are read for their newest $4 each (personKnownRecords): every list of targets is parsed as JSON, and the
+// accounts that follow the member now come from follows anyway. Each part reads through an index that starts with the
+// member or the post.
 const personKnownSQL = `WITH a AS (SELECT a.ap_id, a.inbox, a.shared_inbox FROM (
 		SELECT follower_id FROM follows WHERE followee_id = $1
 		UNION SELECT followee_id FROM follows WHERE follower_id = $1
@@ -21243,13 +21354,24 @@ const personKnownSQL = `WITH a AS (SELECT a.ap_id, a.inbox, a.shared_inbox FROM 
 		UNION SELECT p.user_id FROM ap_like_out k JOIN posts p ON p.id = k.post_id WHERE k.user_id = $1 AND p.ap_id IS NOT NULL) i(id)
 		CROSS JOIN LATERAL (SELECT * FROM ap_actors x WHERE x.user_id = i.id) a WHERE a.state <> 'gone' AND a.inbox <> ''),
 	t AS (SELECT e->>'Actor' AS ap_id, e->>'Inbox' AS inbox, COALESCE(e->>'SharedInbox', '') AS shared_inbox
-		FROM (SELECT targets FROM ap_post_out WHERE user_id = $1 UNION ALL SELECT targets FROM ap_comment_out WHERE user_id = $1) o,
+		FROM ((SELECT targets FROM ap_post_out WHERE user_id = $1 ORDER BY created_at DESC LIMIT $4)
+			UNION ALL (SELECT targets FROM ap_comment_out WHERE user_id = $1 ORDER BY created_at DESC LIMIT $4)) o,
 			jsonb_array_elements(CASE WHEN left(o.targets, 1) = '[' THEN o.targets::jsonb ELSE '[]'::jsonb END) e),
 	q AS (SELECT DISTINCT d.inbox AS ap_id, d.inbox, '' AS shared_inbox FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.actor_id = $1),
 	r AS (SELECT * FROM a UNION ALL SELECT * FROM t WHERE ap_id IS NOT NULL AND inbox IS NOT NULL UNION ALL SELECT * FROM q),
 	k AS (SELECT ap_id, shared_inbox <> '' AND split_part(shared_inbox, '/', 3) = split_part(ap_id, '/', 3) AS sh,
-		CASE WHEN shared_inbox <> '' AND split_part(shared_inbox, '/', 3) = split_part(ap_id, '/', 3) THEN shared_inbox ELSE inbox END AS addr FROM r)
-	SELECT DISTINCT ON (lower(split_part(addr, '/', 3))) ap_id, addr FROM k ORDER BY lower(split_part(addr, '/', 3)), sh DESC, addr LIMIT $2`
+		CASE WHEN shared_inbox <> '' AND split_part(shared_inbox, '/', 3) = split_part(ap_id, '/', 3) THEN shared_inbox ELSE inbox END AS addr FROM r),
+	h AS (SELECT ap_id, sh, addr, lower(split_part(addr, '/', 3)) AS host FROM k)
+	SELECT DISTINCT ON (host) host, ap_id, addr FROM h WHERE host > $3 ORDER BY host, sh DESC, addr LIMIT $2`
+
+// personKnownRecords is how many of a member's newest records of posts, and of comments, that went out personKnownSQL
+// reads the targets of (FWR 7, after the review). The servers older records named are mostly the followers' of then,
+// who are still in follows or no longer follow.
+const personKnownRecords = 200
+
+// personKnownPages bounds the pages personKnown reads looking for servers the domain policy lets in: 50 pages of 2,001
+// hosts is every host 100,000 records could name.
+const personKnownPages = 50
 
 // outPersonDelete is a member's Delete(Person) (6.4): a new activity id, the actor's id as its object, to the public
 // collection, as Mastodon sends one.
@@ -21262,38 +21384,51 @@ type outPersonDelete struct {
 	Object  string   `json:"object"`
 }
 
-// personKnown reads personKnownSQL for member uid: the servers to tell, and how many more there were past
-// personDeleteHostsMax (only "some": the statement stops at one past the bound).
+// personKnown reads personKnownSQL for member uid, a page of hosts at a time: the servers to tell, the domain policy
+// and the queue's own rules applied first (collect), then cut at personDeleteHostsMax, so a refused server never takes
+// the place of one let in (after the review). It says whether more servers were let in than the bound. No turn is held
+// between two pages.
 func (f *federation) personKnown(ctx context.Context, uid int64) ([]deliveryTarget, bool, error) {
-	done, err := f.dbTurn(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	rows, err := f.db.QueryContext(ctx, personKnownSQL, uid, personDeleteHostsMax+1)
-	if err != nil {
-		done()
-		return nil, false, err
-	}
 	var out []deliveryTarget
-	for rows.Next() {
-		var t deliveryTarget
-		if err = rows.Scan(&t.Actor, &t.Inbox); err != nil {
-			break
+	after := ""
+	for page := 0; page < personKnownPages; page++ {
+		done, err := f.dbTurn(ctx)
+		if err != nil {
+			return nil, false, err
 		}
-		out = append(out, t)
+		rows, err := f.db.QueryContext(ctx, personKnownSQL, uid, personDeleteHostsMax+1, after, personKnownRecords)
+		if err != nil {
+			done()
+			return nil, false, err
+		}
+		n := 0
+		for rows.Next() {
+			var t deliveryTarget
+			if err = rows.Scan(&after, &t.Actor, &t.Inbox); err != nil {
+				break
+			}
+			n++
+			if ins, _, _ := f.out.collect([]deliveryTarget{t}); len(ins) == 1 {
+				out = append(out, t)
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+		done()
+		if err != nil {
+			return nil, false, err
+		}
+		if len(out) > personDeleteHostsMax {
+			log.Printf("federation: member %d is known to more than %d servers; their deletion is sent to the first %d of them", uid, personDeleteHostsMax, personDeleteHostsMax)
+			return out[:personDeleteHostsMax], true, nil
+		}
+		if n <= personDeleteHostsMax {
+			return out, false, nil
+		}
 	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
-	done()
-	if err != nil {
-		return nil, false, err
-	}
-	if len(out) > personDeleteHostsMax {
-		log.Printf("federation: member %d is known to more than %d servers; their deletion is sent to the first %d of them", uid, personDeleteHostsMax, personDeleteHostsMax)
-		return out[:personDeleteHostsMax], true, nil
-	}
+	log.Printf("federation: member %d is known to more servers than %d pages hold; their deletion goes to the %d of them let in", uid, personKnownPages, len(out))
 	return out, false, nil
 }
 
@@ -21307,7 +21442,26 @@ type personTold struct {
 	Out     enqueued
 }
 
-// sentence says it to the admin or the member, in the page's words.
+// leaveSentence says it to a member who asked other servers to forget them: their account here stays, so the words
+// are not those of a deletion (after the review).
+func (t personTold) leaveSentence(paused bool) string {
+	if t.Out.Queued == 0 && !t.Out.Waiting {
+		return "No other server is known to have your profile, so none was asked. Your profile is no longer shared."
+	}
+	s := fmt.Sprintf("Other servers that know your profile are being asked to forget it: %d of them. Your account here stays as it is.", t.Out.Queued)
+	if t.Out.Waiting {
+		s = fmt.Sprintf("Other servers that know your profile will be asked to forget it once the queue has room: %d of them. Your account here stays as it is.", t.Servers)
+	}
+	if t.Cut {
+		s += fmt.Sprintf(" At most %d servers are asked; the rest were left out.", personDeleteHostsMax)
+	}
+	if paused {
+		s += " Sending to other servers is paused: it goes when it is turned on again, within 48 hours."
+	}
+	return s
+}
+
+// sentence says it to the admin, in the page's words.
 func (t personTold) sentence(paused bool) string {
 	switch {
 	case !t.Keyed:
@@ -21330,18 +21484,26 @@ func (t personTold) sentence(paused bool) string {
 	return s
 }
 
+// errAlreadyLeft is a leaving that found no key to send it with: the member left already, at another request.
+var errAlreadyLeft = errors.New("no key: the member left already")
+
 // personGone runs then, which deletes the account uid (named name) or turns its sharing off, in one transaction with
-// the account's Delete(Person) and its deliveries when the account has a key and federation is not refused; in a
-// transaction of its own otherwise. Nothing is committed when it returns an error (errDeliveryFull: the queue cannot
-// take the activity now, and the caller says so rather than lose it). After the commit the account's key and actor
-// document are dropped from memory.
-func (a *app) personGone(ctx context.Context, uid int64, name string, then func(*sql.Tx) error) (personTold, error) {
+// the account's Delete(Person) and its deliveries when the account has a key and federation is not refused; for a
+// deletion, in a transaction of its own otherwise. Leaving (leaving true) is all or nothing (after the review): without
+// a key it is errAlreadyLeft, with federation refused errRefused, and nothing is changed. Nothing is committed when it
+// returns an error (errDeliveryFull: the queue cannot take the activity now, and the caller says so rather than lose
+// it). After the commit the account's key and actor document are dropped from memory.
+func (a *app) personGone(ctx context.Context, uid int64, name string, leaving bool, then func(*sql.Tx) error) (personTold, error) {
 	f := a.fed
 	var told personTold
 	if err := a.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ap_keys WHERE user_id = $1)`, uid).Scan(&told.Keyed); err != nil {
 		return told, err
 	}
+	if leaving && !told.Keyed {
+		return told, errAlreadyLeft
+	}
 	told.Refused = f.refusal()
+	keyGone := false
 	err := errRefused
 	if told.Keyed && told.Refused == "" && f.out != nil {
 		var to []deliveryTarget
@@ -21355,6 +21517,12 @@ func (a *app) personGone(ctx context.Context, uid int64, name string, then func(
 		if body, err = apJSON(outPersonDelete{Context: asContext, ID: apID, Type: "Delete", Actor: actor, To: []string{publicCollection}, Object: actor}); err != nil {
 			return told, err
 		}
+		f.mu.Lock()
+		before := f.beforeGone
+		f.mu.Unlock()
+		if before != nil {
+			before(uid) // a test changes the world here, between the checks and the transaction (after the review)
+		}
 		told.Out, err = f.out.enqueueThen(ctx, instanceActor, apID, body, to, func(tx *sql.Tx) error {
 			// The copy of the key the workers sign with, taken before then removes the key. Should the key have gone
 			// meanwhile, the activity goes too: nothing else may sign it.
@@ -21362,8 +21530,16 @@ func (a *app) personGone(ctx context.Context, uid int64, name string, then func(
 				FROM ap_keys k WHERE o.ap_id = $1 AND k.user_id = $2`, apID, uid); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM ap_outbox WHERE ap_id = $1 AND signer_sealed IS NULL`, apID); err != nil {
+			res, err := tx.ExecContext(ctx, `DELETE FROM ap_outbox WHERE ap_id = $1 AND signer_sealed IS NULL`, apID)
+			if err != nil {
 				return err
+			}
+			if n, _ := res.RowsAffected(); n == 1 {
+				// The key went since it was read: another leaving took it, and sent the Delete(Person) already.
+				if leaving {
+					return errAlreadyLeft
+				}
+				keyGone = true
 			}
 			if _, err := tx.ExecContext(ctx, memberRowsLockSQL, uid); err != nil {
 				return err
@@ -21373,6 +21549,12 @@ func (a *app) personGone(ctx context.Context, uid int64, name string, then func(
 		if errors.Is(err, errRefused) {
 			told.Refused = f.refusal()
 		}
+	}
+	if errors.Is(err, errRefused) && leaving {
+		return told, err // nothing changed: the member can leave when federation works again
+	}
+	if keyGone {
+		told.Keyed, told.Out = false, enqueued{}
 	}
 	if errors.Is(err, errRefused) {
 		// Nothing can be sent (no key, federation refused): the change alone, as it would be without federation.
@@ -21430,7 +21612,9 @@ func (f *federation) forgetOwner(o keyOwner) {
 // good, and the actor answers 410 while the member does not share); the key removed, so sharing again makes a new
 // one; the follows with accounts of other servers, both ways and in any state, removed with their request
 // notifications, since those servers drop them on the Delete; the records of posts, comments and likes that went out
-// and of a profile update, since the Delete removed them there; and the member's activities in the queue with their
+// and of a profile update, since the Delete removed them there; the ids of the Likes the member sent with their likes
+// of posts and replies of other servers, since the Delete removed those likes there (each stays here as a like of this
+// server, which an unlike then takes back here only, sending nothing); and the member's activities in the queue with their
 // deliveries, whatever their state (memberRowsLockSQL locked those rows first), as a deletion of the account removes
 // them: nothing of the member goes after the Delete(Person). It says how many follows it removed.
 const leaveSQL = `WITH u AS (UPDATE users SET federates = false WHERE id = $1 RETURNING username),
@@ -21443,9 +21627,15 @@ const leaveSQL = `WITH u AS (UPDATE users SET federates = false WHERE id = $1 RE
 	co AS (DELETE FROM ap_comment_out WHERE user_id = $1 RETURNING 1),
 	pe AS (DELETE FROM ap_person_out WHERE user_id = $1 RETURNING 1),
 	lo AS (DELETE FROM ap_like_out WHERE user_id = $1 RETURNING 1),
+	ll AS (UPDATE likes SET ap_id = NULL WHERE user_id = $1 AND ap_id IS NOT NULL RETURNING 1),
+	lc AS (UPDATE comment_likes SET ap_id = NULL WHERE user_id = $1 AND ap_id IS NOT NULL AND comment_id IN (SELECT id FROM comments WHERE ap_id IS NOT NULL) RETURNING 1),
 	w AS (DELETE FROM ap_outbox WHERE actor_id = $1 RETURNING 1)
 	SELECT (SELECT count(*) FROM f) + 0 * ((SELECT count(*) FROM u) + (SELECT count(*) FROM r) + (SELECT count(*) FROM k) + (SELECT count(*) FROM n)
-		+ (SELECT count(*) FROM po) + (SELECT count(*) FROM co) + (SELECT count(*) FROM pe) + (SELECT count(*) FROM lo) + (SELECT count(*) FROM w))`
+		+ (SELECT count(*) FROM po) + (SELECT count(*) FROM co) + (SELECT count(*) FROM pe) + (SELECT count(*) FROM lo) + (SELECT count(*) FROM ll)
+		+ (SELECT count(*) FROM lc) + (SELECT count(*) FROM w))`
+
+// leftAlready answers a leaving with no key to send it with.
+const leftAlready = "Your profile is not shared beyond this server now, so there is nothing for other servers to forget."
 
 // leaveWarning is said on the page before the member confirms, and is what the design asks the page to say (11).
 const leaveWarning = "Other servers are asked to delete your profile, your posts, comments and likes there, and your followers there lose you. Your account here stays as it is. Many servers remember a deleted address for good, so if you share your profile again later, servers that processed this may refuse you."
@@ -21482,28 +21672,34 @@ func (a *app) handleLeave(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	if !keyed {
-		fail(w, http.StatusBadRequest, "Your profile is not shared beyond this server now, so there is nothing for other servers to forget.")
+		fail(w, http.StatusBadRequest, leftAlready)
 		return
 	}
-	told, err := a.personGone(r.Context(), u.ID, u.Username, func(tx *sql.Tx) error {
+	told, err := a.personGone(r.Context(), u.ID, u.Username, true, func(tx *sql.Tx) error {
 		var ended int
 		return tx.QueryRowContext(r.Context(), leaveSQL, u.ID).Scan(&ended)
 	})
-	if errors.Is(err, errDeliveryFull) {
+	switch {
+	case errors.Is(err, errDeliveryFull):
 		w.Header().Set("Retry-After", "300")
 		fail(w, http.StatusServiceUnavailable, "The queue to other servers is full just now, so nothing was sent and your profile is still shared. Try again in a few minutes.")
 		return
-	}
-	if err != nil {
+	case errors.Is(err, errRefused):
+		fail(w, http.StatusServiceUnavailable, fedUnavailable)
+		return
+	case errors.Is(err, errAlreadyLeft):
+		fail(w, http.StatusBadRequest, leftAlready)
+		return
+	case err != nil:
 		a.serverError(w, err)
 		return
 	}
-	var locked bool
-	if err := a.db.QueryRowContext(r.Context(), `SELECT locked FROM users WHERE id = $1`, u.ID).Scan(&locked); err != nil {
+	var s fedState
+	if err := a.db.QueryRowContext(r.Context(), fedStateSQL, u.ID).Scan(&s.on, &s.locked, &s.left, &s.keyed, &s.leaving); err != nil {
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"told": told.sentence(!a.flagsCached()[fedFlag]), "federation": a.fedView(u, fedState{locked: locked, left: true})})
+	writeJSON(w, http.StatusOK, map[string]any{"told": told.leaveSentence(!a.flagsCached()[fedFlag]), "federation": a.fedView(u, s)})
 }
 
 /* ---------- federation: posts from followed accounts ----------
@@ -23659,6 +23855,19 @@ func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id i
 	if err != nil {
 		a.serverError(w, err)
 		return true
+	}
+	// Gated on sharing as likeRemote is (talkGate): an Undo is signed as the member, so only a member who shares sends
+	// one (FWR 7). With federation refused it is removed here only, as before, below.
+	if a.federating() {
+		var shares bool
+		if err := a.db.QueryRow(`SELECT `+strings.ReplaceAll(publicMember, "$2", "$1")+` FROM users u WHERE u.id = $2`, a.mode == modeSingle, u.ID).Scan(&shares); err != nil {
+			a.serverError(w, err)
+			return true
+		}
+		if !shares {
+			fail(w, http.StatusForbidden, talkNotShared)
+			return true
+		}
 	}
 	f := a.fed
 	actor := f.memberActor(u.Username)

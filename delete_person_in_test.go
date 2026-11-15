@@ -34,6 +34,8 @@ func TestDBDeletePersonIn(t *testing.T) {
 	}
 	e.mustExec(`INSERT INTO ap_deleted (ap_id, user_id, at) VALUES ($1, $2, now())`, boID+"/statuses/77", e.boUser)
 	e.mustExec(`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES ($1, 'post', $2, 'spam')`, e.anaID, post)
+	e.mustExec(`INSERT INTO reports (reporter_id, target_kind, target_id, reason) VALUES ($1, 'user', $2, 'spam')`, e.anaID, e.boUser)
+	e.mustExec(`UPDATE users SET bio = 'bo''s bio', avatar = 'data:image/png;base64,x' WHERE id = $1`, e.boUser)
 	e.mustExec(`INSERT INTO blocks (user_id, target_id) VALUES ($1, $2)`, e.cyID, e.boUser)
 	var ob int64
 	e.a.db.QueryRow(`INSERT INTO ap_outbox (ap_id, body, created_at, fanned_out) VALUES ('https://here.example/actor/activities/t1', '{}', now(), true) RETURNING id`).Scan(&ob)
@@ -102,6 +104,26 @@ func TestDBDeletePersonIn(t *testing.T) {
 	before := e.w.total()
 	if ra, err := e.a.fed.remoteActor(context.Background(), boID); err != nil || ra.State != "gone" || e.w.total() != before {
 		t.Errorf("bo asked for again: %v %v, %d fetches", ra, err, e.w.total()-before)
+	}
+
+	// The reports about bo are kept, and show nothing of what bo wrote or looked like: the reported post is gone, and the
+	// account is its handle alone (after the review: H).
+	e.setFlag("moderation", true)
+	_, mo := e.user("mo", "moderator")
+	q := e.must(200, mo, "GET", "/api/mod/queue", nil)
+	raw := fmt.Sprint(q["_raw"])
+	if strings.Contains(raw, "hello") || strings.Contains(raw, "bo's bio") || strings.Contains(raw, "base64") || strings.Contains(raw, `"displayName":"bo"`) {
+		t.Errorf("the queue shows something of the deleted account: %s", raw)
+	}
+	items, _ := q["items"].([]any)
+	if len(items) != 2 {
+		t.Errorf("the queue holds %d items, want the two reports about bo", len(items))
+	}
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m["kind"] == "post" && fmt.Sprint(m["target"]) != "map[gone:true]" {
+			t.Errorf("the reported post of the deleted account: %v", m["target"])
+		}
 	}
 
 	// cat's own Delete with a Tombstone object.
@@ -194,7 +216,7 @@ func TestDBLeaveOtherServers(t *testing.T) {
 		t.Errorf("not confirmed: %d %v", code, out["_raw"])
 	}
 	out := e.must(200, e.ana, "POST", "/api/me/federation/leave", map[string]any{"confirm": true})
-	if s, _ := out["told"].(string); !strings.Contains(s, "3 of them") {
+	if s, _ := out["told"].(string); !strings.Contains(s, "being asked to forget it: 3 of them") || strings.Contains(s, "gone") {
 		t.Errorf("the member is told: %v", out["_raw"])
 	}
 	pd := e.personDeletes()
@@ -226,6 +248,14 @@ func TestDBLeaveOtherServers(t *testing.T) {
 	if code, _ := e.do(e.ana, "POST", "/api/me/federation/leave", map[string]any{"confirm": true}); code != 400 {
 		t.Errorf("leaving twice: %d", code)
 	}
+	// Not sharing again while the Delete(Person) is still being sent (C): the new key would have the same key id. The page
+	// says why and until when at most.
+	if code, out := e.do(e.ana, "PUT", "/api/me", map[string]any{"federates": true}); code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "at the latest after") {
+		t.Errorf("sharing again while the Delete(Person) is sent: %d %v", code, out["_raw"])
+	}
+	if f := fed(); !strings.Contains(fmt.Sprint(f["leaving"]), "still being asked to forget you") {
+		t.Errorf("while the Delete(Person) is sent, the page is told %v", f)
+	}
 	// The servers verify it with the key they hold.
 	stub := &personStub{pub: &anaKey.PublicKey, keyID: e.a.fed.origin.url + anaKeyID, now: e.clock.now}
 	e.out.fetch = deliveryStub(t, stub)
@@ -236,7 +266,13 @@ func TestDBLeaveOtherServers(t *testing.T) {
 		t.Errorf("delivered: %+v", got)
 	}
 
-	// Sharing again: a new key, and the actor answers again.
+	// Once every delivery ended and housekeeping cleared the copy of the key: sharing again, a new key, the actor answers.
+	if _, _, err := e.out.housekeep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f := fed(); f["leaving"] != nil {
+		t.Errorf("after the Delete(Person) went, the page is told %v", f)
+	}
 	e.must(200, e.ana, "PUT", "/api/me", map[string]any{"federates": true})
 	if _, err := e.a.fed.ensureKey(ctx, keyOwner(e.anaID)); err != nil {
 		t.Fatal(err)

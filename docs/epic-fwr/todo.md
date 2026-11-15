@@ -474,16 +474,34 @@ route and test named below is new unless the design note says it exists.
   verifies the Delete(Person) with the key it kept after its refetch met the 410), `TestDBQueryPlans`, with `-race
   -count=3` on two cores; the `federated` browser suite (`federated-leave`). README "Federation: deleting an account
   across servers"; `fedBuilt` (the start log and the dashboard) and NodeInfo's `deletion`.
+  After the review (federation.md 6.4, "After the review" under FWR 7's part): no key for a member who does not share
+  (`ensureKey` asks `mayHaveKeySQL` before and under the member's row lock; the delivery worker asks no key for one; a
+  request the key maker took before a leaving is dropped), and the queue refuses an activity of a member with no key
+  who does not share; leaving clears the ids of the member's Likes (each stays here as a local like) and an unlike that
+  would send an Undo asks that the member shares; sharing again refused while the Delete(Person) is sent (409, the card
+  says until when, at most 48 hours); leaving all or nothing (503 with federation refused meanwhile); two leavings at
+  once answer once; `personKnownSQL` reads the newest 200 records of posts and of comments out (`personKnownRecords`)
+  and the policy is applied before the cut at 2,000, a page of hosts at a time; leaving's own words, and one page
+  "Profile no longer shared" for a retired name. Tests `TestDBLeaveDropsWaitingKeyRequest` (the key maker held by a hook
+  across the leaving: fails without the fix as the full run did), `TestDBDeliverAsksNoKeyForNonSharer`,
+  `TestDBNothingGoesOutAfterLeaving` (one case per way out, after leaving and after a deletion), `TestDBLeaveAllOrNothing`,
+  `TestDBTwoLeavingsAtOnce`, `TestDBLeftPageWords`, `TestDBDeletePersonPolicyBeforeCut`, `TestDBDeletePersonLockTime`
+  (10,000 of the member's deliveries go in about 126 ms under the queue's lock: logged), `TestDBQueryPlans` (records out
+  with targets), `TestDBKeysGenerated` (its members now share before a key is made for them).
   **Open:** the owner's trial (item 9) should confirm Mastodon removes the account on this Delete(Person) and what it does
   when the address comes back; a server that only ever received an activity whose record is gone is not told; a
   deletion made in local mode is never sent; a Delete(Person) whose deliveries fail for 48 hours is not sent again; the
   box stays unchecked until the
   owner's review merges it. For the owner (defaults built): whether a deletion should wait for room rather than be
   refused when the queue is full (built: refused with 503, nothing lost), whether "Remove me" should refuse sharing again
-  under the same name (built: allowed, with a new key, and warned), whether a member's block of a deleted remote account
+  under the same name (built: allowed, with a new key, and warned, once the Delete(Person) has reached the servers),
+  whether a member who stopped sharing may still take back a like that went out (built: refused, with the reason, as a
+  like is), whether a member's likes of posts of other servers stay here after leaving (built: yes, as likes of this
+  server), whether a member's block of a deleted remote account
   and the reports about it should go too (built: kept), whether a suspended member's deletion should be sent (built:
   yes), and the numbers: 2,000 servers per Delete(Person), 3 removals an hour per member, the copy of a key kept until
-  its deliveries end (at most the queue's 48 hours).
+  its deliveries end (at most the queue's 48 hours), the newest 200 records of posts and of comments read for the
+  servers that know a member.
 - [ ] **Two instances federating in CI.** `test/federation.sh`: two containers from the built image
   and two databases on a Docker network, `FLOWA_FEDERATION_ALLOW_PRIVATE` set, driven through their
   APIs: follow, accept, post with a chip and a picture, like, reply, edit, delete, block, unfollow,

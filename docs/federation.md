@@ -1919,7 +1919,8 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
   `TestDBUnknownDeleteCheap` (202, no fetch, no row, one statement, the indexed lookup of `actorKnown`, for the bare id
   and a Tombstone; past the address's allowance 429 with no statement).
 - **What each public address answers for a deleted member** (held in `TestDBDeletePerson`): `GET /users/{name}` 410
-  with the Tombstone to a server and the "Account deleted" page to a browser; WebFinger, the outbox, followers,
+  with the Tombstone to a server and to a browser the page "Profile no longer shared" (after the review: one page for a
+  deleted account and for a member who left, so it says no more than the Tombstone); WebFinger, the outbox, followers,
   following, featured, a post's Note and page, its Create and every picture the one 404 of a name nobody shows; the
   inbox at `/users/{name}/inbox` answers as for any name (it takes deliveries for the instance, not per name). Nothing
   the member wrote is in any answer.
@@ -1942,6 +1943,49 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
   member with 1,000 followers on 300 servers, what leaving changes, the copies to clear); the `federated` browser
   suite (the button, its warning, the question declined and confirmed, the card after, the actor's 410; picture
   `federated-leave`).
+- **After the review** (each with a test that fails without it):
+  - **No key for a member who does not share** (`TestDBLeaveDropsWaitingKeyRequest`, `TestDBDeliverAsksNoKeyForNonSharer`).
+    `ensureKey` makes a key only for the instance actor, a member who shares, or the owner of a single-profile instance
+    that federates (`mayHaveKeySQL`), asked before the key is made and again in its transaction with the member's row
+    locked, so a request the key maker took before a member left (as `TestDBLeaveOtherServers` once met in a full run,
+    the key maker holding the request ana's sharing had asked) is dropped (`errNotSharing`), and a second leaving finds no
+    key and is refused, so no second Delete(Person) goes. The delivery worker asks for a key only for a member who shares;
+    a row of one who does not, with no key, is given up. The test holds the key maker with a hook (`beforeKey`) across
+    the leaving.
+  - **Nothing of a member goes out after they leave or are deleted** (`TestDBNothingGoesOutAfterLeaving`, a case per way
+    out: like, unlike, comment, editing a comment here and on a post of another server, deleting a comment, a Public and a
+    This server post, deleting a post, follow, unfollow, accept, reject, block, a profile change, `-rotate-keys`; after a
+    deletion each is 401). The queue itself refuses an activity of a member who has no key and does not share
+    (`enqueueOrdered`, under its lock), whatever a stale page or a leftover row asks. Leaving clears the ids of the Likes
+    the member sent (`likes.ap_id`, and `comment_likes.ap_id` on replies of other servers): the Delete removed those likes
+    there, and each stays here as a like of this server, so an unlike removes it here and sends nothing. An unlike that
+    would send an Undo asks first that the member shares, as a like does.
+  - **Not sharing again while the Delete(Person) is being sent** (`TestDBLeaveOtherServers`). The key sharing makes has
+    the same key id, so a server could take the new account and then remove it at the Delete's next attempt, or refuse
+    the Delete against the new key. While a row with the member as `signer` keeps the copy of their key (`leavingSQL`),
+    turning sharing on is refused with 409 and a sentence saying until when at most (48 hours after the Delete was
+    enqueued, the queue's horizon); the Settings card shows that sentence and the switch is disabled.
+  - **Leaving is all or nothing** (`TestDBLeaveAllOrNothing`, a hook that refuses federation between the handler's
+    check and the transaction): 503, and the key, the sharing, the name and the follows are as they were; the member can
+    leave once federation works again. A deletion by an admin still goes alone in that case, and says so.
+  - **Two leavings at once** (`TestDBTwoLeavingsAtOnce`): the one that finds the key gone (the other took it) changes
+    nothing and answers as a leaving with nothing to forget, never "N of them".
+  - **Bounded and filtered first** (`TestDBQueryPlans`, `TestDBDeletePersonPolicyBeforeCut`). `personKnownSQL` reads the
+    targets of the member's newest 200 records of posts and 200 of comments out (`personKnownRecords`): with 1,000 records
+    of 50 inboxes each the plan counts 73,662 rows where every list would be 320,302 (the reviewer measured 68 MB of JSON
+    and 1.46 s for 1,000 lists of 500). The domain policy and the queue's own rules (`collect`) are applied to each server
+    before the cut at 2,000, a page of 2,001 hosts at a time in the order of their names (at most 50 pages), so a refused
+    server never takes the place of one let in.
+  - **Leaving has its own words** (`TestDBLeaveOtherServers`, `TestDBLeftPageWords`): "Other servers that know your
+    profile are being asked to forget it: N of them. Your account here stays as it is." The browser's page at a retired
+    name now says "Profile no longer shared ... its account was deleted, or asked other servers to forget it", for both;
+    the Tombstone to servers is unchanged.
+  - **Measured** (`TestDBDeletePersonLockTime`, logged, not asserted): leaving with 10,000 queued deliveries of the member
+    took 166 ms in all and about 126 ms from taking the queue's lock to the answer, on the 2.1 GHz Xeon. The queue holds
+    at most 50,000 rows in all, so a member can own at most that many: about 0.6 s by the same measure (five times), under the
+    second the review set, so it is not batched. **Reports** about a remote account that deleted itself show nothing it
+    wrote or looked like: a reported post or reply is gone, and the account is its handle alone, its name, bio and
+    picture removed (`TestDBDeletePersonIn`).
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail

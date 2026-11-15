@@ -949,15 +949,20 @@ In a mode that federates, other servers learn when an account is gone, both ways
   Federation switch is on again, within 48 hours), or more than 2,000 servers were known (the rest are left out).
   When the queue to other servers is full the deletion is refused with the reason ("try again in a few minutes"),
   so nothing is lost. Only a server that kept the member's key can check the deletion; the account's address
-  answers "deleted" (410) from then on, which tells the others when they ask. What the member had waiting to go
+  answers 410 with a Tombstone from then on, which tells the others when they ask (a browser there reads "Profile no
+  longer shared"). What the member had waiting to go
   out goes with the account. In local mode deleting an account is exactly as before and tells no other server,
   ever; its address answers "deleted" once the server federates again.
 - **"Remove me from other servers"**, in Settings under "Beyond this server", for a member whose profile was shared:
   asks every server this one has a record of to delete the profile, its posts, comments and likes, turns sharing
   off, and ends the follows with accounts of other servers. The account here stays, with its name, posts and
   members' follows. The card says before, and asks again before anything is sent, that many servers remember a
-  deleted address for good, so sharing again later (allowed, with a new key) may be refused there. At most 3 times
-  an hour per member. Not on a single-profile instance, where `FLOWA_FEDERATE` is the owner's sharing.
+  deleted address for good, so sharing again later (allowed, with a new key) may be refused there. Sharing again
+  waits until the request has reached the servers (at most 48 hours; the card says until when). The member's likes
+  of posts of other servers stay here as likes of this server. If federation cannot work at that moment nothing is
+  changed and the member is told to try later. From then on nothing of the member goes to other servers and no key is
+  made for them until they share again. At most 3 times an hour per member. Not on a single-profile instance, where
+  `FLOWA_FEDERATE` is the owner's sharing.
 - **An account of another server deletes itself:** its posts and their pictures, its follows and requests both ways,
   its replies (a reply a member answered stays as "deleted" so the answer stays), its likes, every notification it
   left, its name, picture and bio, and the deliveries waiting for it are removed at once; it is shown as a deleted

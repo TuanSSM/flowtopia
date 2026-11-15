@@ -3999,6 +3999,11 @@ func TestDBQueryPlans(t *testing.T) {
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT 1000000 + g, 1 + g % 500, 'accepted' FROM generate_series(1, 2000) g WHERE 1 + g % 500 <> 11 ON CONFLICT DO NOTHING`,
 		`INSERT INTO ap_post_out (post_id, user_id, state, targets) SELECT g, 1 + g % 500, CASE WHEN g % 250 = 0 THEN 'create' ELSE 'sent' END, '[]' FROM generate_series(1, 5000) g`,
 		`INSERT INTO ap_person_out (user_id, due_at, sent_at, gen) SELECT g, CASE WHEN g = 7 THEN now() END, now() - interval '1 hour', 1 FROM generate_series(1, 500) g`,
+		// FWR 7, after the review: member 11's 1,000 posts that went out, each to 50 inboxes, so the servers that know the
+		// member read only the newest personKnownRecords lists (unbounded, every list would be parsed).
+		`INSERT INTO ap_post_out (post_id, user_id, state, targets, created_at) SELECT 200000 + g, 11, 'sent',
+			(SELECT json_agg(json_build_object('Actor', 'https://t' || k || '.example/u', 'Inbox', 'https://t' || k || '.example/u/inbox', 'SharedInbox', ''))::text FROM generate_series(1, 50) k),
+			now() - make_interval(secs => g) FROM generate_series(1, 1000) g`,
 		`ANALYZE`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -4017,8 +4022,10 @@ func TestDBQueryPlans(t *testing.T) {
 		// Account deletion across servers (FWR 7): the servers that may know member 11, one per server, through the
 		// member's indexes (follows both ways, likes, comments, the records out, the queue) and the actors' keys; ap_like_out
 		// and ap_comment_out are empty here, so the planner reads them whole, and ap_actors (at most 20,000 rows, the cache's
-		// bound) whole when the member's followers are a third of it, as here: one pass, on an admin's rare action.
-		{"deletion: the servers that know a member, 1,000 followers on 300 servers", personKnownSQL, []any{11, personDeleteHostsMax + 1}, 20000, "ap_comment_out ap_actors ap_like_out"},
+		// bound) whole when the member's followers are a third of it, as here: one pass, on an admin's rare action. Of the
+		// member's 1,000 records of posts out with 50 inboxes each, only the newest personKnownRecords lists are parsed:
+		// 73,662 rows counted on the 2.1 GHz Xeon, where every list would be 320,302 (after the review of FWR 7).
+		{"deletion: the servers that know a member, 1,000 followers on 300 servers", personKnownSQL, []any{11, personDeleteHostsMax + 1, "", personKnownRecords}, 90000, "ap_comment_out ap_actors ap_like_out"},
 	})
 	// "Remove me from other servers" writes: asked in a transaction rolled back.
 	if tx, err = db.Begin(); err != nil {
@@ -6280,6 +6287,7 @@ func TestDBKeysGenerated(t *testing.T) {
 
 	// Two goroutines ask for one member's key at once: one key, made by one of them, read by both.
 	anaID, _ := e.user("ana", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, anaID) // a key is made only for a member who shares (FWR 7)
 	f := newFederation(e.a.db, settings)
 	results := make(chan bool, 2)
 	var wg sync.WaitGroup
@@ -6302,6 +6310,7 @@ func TestDBKeysGenerated(t *testing.T) {
 
 	// Two servers, each making a key before either writes it: the unique index keeps one, both read it.
 	boID, _ := e.user("bo", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, boID)
 	var both sync.WaitGroup
 	both.Add(2)
 	race := func() (*rsa.PrivateKey, error) { k, err := generateKey(); both.Done(); both.Wait(); return k, err }
@@ -6338,6 +6347,7 @@ func TestDBKeysGenerated(t *testing.T) {
 	cyID, _ := e.user("cy", "user")
 	cy2, _ := e.user("cy2", "user")
 	cy3, _ := e.user("cy3", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id IN ($1, $2, $3)`, cyID, cy2, cy3)
 	e.a.db.SetMaxOpenConns(1)
 	held := make(chan string, 16)
 	var active, most atomic.Int32
@@ -6394,6 +6404,7 @@ func TestDBKeysGenerated(t *testing.T) {
 
 	// stop waits for a key being made, until its context ends, and a key made after stop is not written.
 	danID, _ := e.user("dan", "user")
+	e.mustExec(`UPDATE users SET federates = true WHERE id = $1`, danID)
 	entered, release := make(chan struct{}), make(chan struct{})
 	h := newFederation(e.a.db, settings)
 	h.gen = func() (*rsa.PrivateKey, error) { close(entered); <-release; return generateKey() }
