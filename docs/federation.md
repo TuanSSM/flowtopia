@@ -4161,12 +4161,24 @@ migration (migration 17 had every column), "federation: domain policies and the 
   hold for it. **Follows that exist stay** when a domain is limited and requests stay requests when it is lifted, as
   Mastodon's Limit does (only a suspension removes follows). The admin page explains each policy in one sentence.
   **Cost.** While no domain is limited (most instances), the statements run without the look (`limitStatements`,
-  from the policy in memory, which each admin change reloads before its answer), so nothing is read that was not read
-  before. With a limit, each remote reply a page lists or counts costs a look in users, the walk through
-  domain_policies and a look in follows: `TestDBQueryPlans`'s "limited:" cases read a post holding 3,000 remote
-  replies (ten times the cap) at about 130,000 rows against 11,000 without a limit (about 40 rows a reply, 25 of them
-  the small domain_policies read whole in the test; so about a tenth of that at the cap of 300, not measured); the bell
-  and a page of comments stay under 1,000 rows. The look a Follow and a picture take ask the stored policy always.
+  from the policy in memory, which each admin change reloads before its answer), byte for byte the statements of before
+  this item (`TestUnlimitedIsBefore`), so nothing is read that was not read before; local mode likewise. With a limit,
+  each remote reply a page lists or counts costs a look in users, the walk through domain_policies and a look in
+  follows. The walk looks up the domain and each domain above it in domain_policies' primary key (`policyWalk`, the
+  names made into an array: compared with IN and a subquery over the row, the planner read the whole table for each
+  look, which the review of #119 measured at 16.4 s for 3,000 remote accounts against 3,333 limit rows, and 18.8 ms
+  as an array). `TestDBQueryPlans` reads a post holding 3,000 remote replies (ten times the cap) with 3,025 policies
+  analyzed at about 24,000 rows (8 a reply) against 11,000 without a limit, and fails if domain_policies is read whole;
+  with only 25 policies the planner reads that small table whole instead, about 130,000 rows, still a few milliseconds.
+  The bell and a page of comments stay under 1,000 rows. The look a Follow and a picture take ask the stored policy
+  always, by the same primary key. **A trailing dot** names the same server but another id: an actor whose id has one
+  is refused (`actorCache.lead`, as an id not where it came from), so no account is stored under such a domain and the
+  same person cannot be kept twice, with and without it; `actorHost` leaves the dot out, as `fedHost` does, and the walk
+  reads a domain without it (`rtrim`, on the names looked up, not on the index). No instance has federated yet, so none
+  holds such an account.
+  **The inbox's queue** asks again, when a row is handled, only whether the sender's domain is suspended (as before
+  this item): in allowlist mode, a host whose allow row is removed while its activities wait in the queue still has
+  them handled.
 - **Reject media.** A row with `reject_media` (any policy but suspend, which stores both switches off, since it rejects
   everything): the pictures of its accounts' posts are kept as links (`mediaInsertSQL`, asking the stored policy as
   the post is kept), a picture wanted before the policy was set is claimed and turned into a link without a fetch
@@ -4203,7 +4215,7 @@ migration (migration 17 had every column), "federation: domain policies and the 
   domain waiting for approval, also under a limit not yet read into memory; reject media in and out),
   `TestFanOutPassesAdmits`, `TestDBFanOutDueAsksPolicy`, `TestLimitFragments`, `TestDBFederatedRoutes` (the two new
   routes), `TestDBQueryPlans` ("limited:"), the `federated` browser suite, and 20 checks of the `federation` suite
-  (`test/federation.sh`, 95 planned in all) between the two real instances: one's admin limits two's domain, and a
+  (`test/federation.sh`, 96 planned in all) between the two real instances: one's admin limits two's domain, and a
   Follow from two waits on one for a member who approves nobody by hand, while a reply from two is read on one by a
   follower of its author and neither listed nor counted for the member who does not follow it, both shown once the
   limit is lifted; with two's media rejected, a picture of two's comes to one as a link, kept as one, and two's proxy

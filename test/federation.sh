@@ -26,7 +26,7 @@ export PATH="$HOME/.local/go/bin:$PATH"
 
 # planned is the number of checks a whole run makes. A run that stops early counts the ones it never reached as skipped,
 # with the reason, so the count at the end always adds up to it; a whole run that does not is a failure of the script.
-planned=95
+planned=96
 # The whole run's deadline, below the CI job's 15 minutes and the step's 13, so that the logs are always written.
 limit=${FLOWA_FED_LIMIT:-660}
 pass=0 fail=0 skip=0 last=$(date +%s.%N)
@@ -246,6 +246,8 @@ need() { stop "each needs $1, which failed"; }
 # all <check> <wanted> <got>: one PASS or FAIL for several statuses at once.
 all() { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1" "got $3, wanted $2; last answer $(cut -c1-300 <<<"$body")"; fi; }
 other() { if [ "$1" = one ]; then echo two; else echo one; fi; }
+# The app keeps its queue's numbers for 5 s (fedHealthEvery), and Docker's own health check asks for them every 30 s,
+# so what queued reads can be up to 5 s old: a check that must see a row as it is now reads the database (removal).
 queued() { health "$1" | jq -r '.federation.queued // "none"'; }
 drained() { [ "$(queued "$1")" = 0 ]; }
 
@@ -448,6 +450,14 @@ all "and bob's posts are hidden from ana's Home on one" "200 0" "$code $(j '[.po
 # again is refused with that sentence, the address shows "Profile no longer shared", and an unlike stays on two. Once one
 # is back and two's queue is empty, the removal has reached one and bob may share again at once.
 docker stop -t 5 "$p-one-tls" "$p-one-app" >/dev/null
+# What follows is read row by row: bob's Delete(Person) to one in two's queue, the activities bob's account sends after
+# leaving (ap_outbox past this mark), and the Deletes one has handled from bob (its database runs while its app is away).
+outmark=$(sql two "SELECT COALESCE(max(id), 0) FROM ap_outbox")
+bobdeletes=$(sql one "SELECT count(*) FROM ap_inbox WHERE kind = 'Delete' AND actor_id = $bob1 AND state = 'done'")
+removal() {   # removal: the states of the rows of bob's Delete(Person) to one in two's queue (a delivered row is removed)
+  sql two "SELECT COALESCE(string_agg(d.state, ',' ORDER BY d.id), 'none') FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id
+    WHERE o.body::jsonb->>'type' = 'Delete' AND o.body::jsonb->>'object' = 'https://two.flowa.test/users/bob' AND d.host = 'one.flowa.test'"
+}
 api two bob POST /api/me/federation/leave '{"confirm":true}'
 all "with one stopped, bob asks to be removed from other servers on two, and one server is to be told" "200 false" "$code $(j .federation.optedIn)"
 api two bob GET /api/me
@@ -463,17 +473,24 @@ if [ "$got" = 410 ] && grep -q 'Profile no longer shared' "$work/page"; then ok 
 else bad "bob's address on two shows \"Profile no longer shared\"" "$got $(head -c 300 "$work/page")"; fi
 # Leaving cleared the ids of bob's likes, so his like of ana's post is a like of this server now: an unlike removes it
 # here and enqueues nothing (his removal takes it back on one): two's queue holds the removal alone.
+removalwaits() { [ "$(removal)" = queued ]; }
+within 30 "bob's removal waits in two's queue for one, as one queued row" removalwaits || need "bob's removal waiting for one"
 api two bob POST "/api/posts/$p1two/like"
 liked=$code$(j .liked)
 api two cyd GET "/api/posts/$p1two"
-all "bob's unlike after leaving removes his like on two and sends nothing" "200false 200 0 1" "$liked $code $(j '.posts[0].likes') $(queued two)"
+sent=$(sql two "SELECT count(*) FROM ap_outbox WHERE id > $outmark AND body::jsonb->>'actor' = 'https://two.flowa.test/users/bob' AND body::jsonb->>'type' IN ('Like', 'Undo')")
+all "bob's unlike after leaving removes his like on two and sends nothing (no Like or Undo of his queued since he left)" "200false 200 0 0" "$liked $code $(j '.posts[0].likes') $sent"
 docker start "$p-one-app" "$p-one-tls" >/dev/null
 port[one]=$(docker port "$p-one-tls" 443/tcp | head -1 | sed 's/.*://')
 within 60 "one comes back" healthy one || need "one running again"
 # The first retry is 1 minute after the failure, give or take 20% (federation.md 8.3).
-within 120 "two's queue sends the removal once one is back, and is empty" drained two
-bobgone() { api one ana GET "/api/fed/accounts/$bob1" && ok200 '.account.state == "gone"'; }
-within 30 "on one bob's account is gone" bobgone
+# Delivered, the row is removed; given up, it stays as failed: only the first passes.
+removed() { [ "$(removal)" = none ] && drained two; }
+within 120 "two's queue delivers the removal once one is back (its row gone, not given up) and is empty" removed
+# One took the Delete itself (its inbox handled one more Delete from bob), not only learned from a fetch that he is gone.
+bobgone() { [ "$(sql one "SELECT count(*) FROM ap_inbox WHERE kind = 'Delete' AND actor_id = $bob1 AND state = 'done'")" -gt "$bobdeletes" ] &&
+  api one ana GET "/api/fed/accounts/$bob1" && ok200 '.account.state == "gone"'; }
+within 30 "on one bob's Delete is handled and his account is gone" bobgone
 within 30 "and his like of ana's post is taken away there" likes 0
 api two bob GET /api/me
 all "with the removal sent, bob's card no longer says it is being sent" "200 none" "$code $(j '.federation.leaving // "none"')"
@@ -510,7 +527,7 @@ actorup() { [ "$(curl -sS -m 10 --noproxy '*' --cacert "$work/ca.pem" --resolve 
   -o /dev/null -w '%{http_code}' "https://one.flowa.test:${port[one]}/users/$1" 2>/dev/null)" = 200 ]; }
 waitfor 30 actorup dee
 if found two cyd dee@one.flowa.test; then dee2=$(j .result.account); api two cyd PUT "/api/fed/accounts/$dee2/follow"; fi
-all "cyd follows dee from two: requested" "200 requested" "$code $(j .view.follow)"
+all "cyd finds dee from two and asks to follow her (two says requested until an answer comes, whatever one decides)" "200 requested" "$code $(j .view.follow)"
 deereq() { api one dee GET /api/fed/requests && ok200 '[.requests[].user.remote.handle] | join(",") == "cyd@two.flowa.test"'; }
 within 30 "on one cyd's Follow waits for dee's approval though she approves nobody by hand: two's domain is limited" deereq || need "a request from a limited server"
 api one dee PUT "/api/fed/requests/$(j '.requests[0].user.id')"

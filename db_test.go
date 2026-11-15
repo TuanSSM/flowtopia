@@ -4222,6 +4222,24 @@ func TestDBQueryPlans(t *testing.T) {
 		{"limited: notifications", notificationsFedSQL, []any{viewer, maxNotifList}, 1000, "domain_policies"},
 		{"limited: the unread count of the bell", unreadFedSQL, []any{viewer}, 1000, "domain_policies"},
 	})
+	// With a list of thousands of policies (3,025 rows, analyzed), every walk looks its names up in the primary key of
+	// domain_policies, never reading the table: a statement that read it whole for each remote reply, Follow or picture
+	// (the IN form of policyWalk did) fails here by the scan and by its budget.
+	if _, err := rtx2.Exec(`INSERT INTO domain_policies (domain, policy) SELECT 'p' || g || '.example', CASE WHEN g % 3 = 0 THEN 'limit' ELSE 'allow' END FROM generate_series(1, 3000) g`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx2.Exec(`ANALYZE domain_policies`); err != nil {
+		t.Fatal(err)
+	}
+	plans([]planCase{
+		{"limited: 3,025 policies, the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 30000, ""}, // about 8 rows a remote reply, the walk by the primary key
+		{"limited: 3,025 policies, a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
+			[]any{viewer, false, flood, 0, commentPage + 1}, 1000, ""},
+		{"limited: 3,025 policies, the bell", notificationsFedSQL, []any{viewer, maxNotifList}, 1000, ""},
+		{"policies: 3,025 of them, a Follow in", followInSQL, []any{1000003, 9, "https://h3.example/f/new3", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, ""},
+		{"policies: 3,025 of them, the picture worker's claim", mediaClaimSQL, []any{time.Now(), 60.0}, 100, ""},
+		{"policies: 3,025 of them, keeping a picture", mediaInsertSQL, []any{flood, 999, "picture", "https://h8.example/p.png", "", "wanted", "h8.example"}, 100, ""},
+	})
 	on = db
 	rtx2.Rollback()
 	// The page's pictures, and the cache's weight: per post through the unique key, and the files kept through

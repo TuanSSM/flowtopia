@@ -195,6 +195,46 @@ func TestDBDomainPolicies(t *testing.T) {
 	t.Run("values, pages and the about page", testDomainValues)
 	t.Run("limit in and out", testDomainLimit)
 	t.Run("reject media in and out", testDomainRejectMedia)
+	t.Run("a host with a trailing dot", testDomainTrailingDot)
+}
+
+// A host with a trailing dot names the same server (DNS, fedHost and the policy read both alike) but is another id. An
+// actor whose id has one is not kept, so no account is stored under a domain the policy's statements could miss, and
+// the same person cannot be kept twice, with and without the dot; the account without it is limited, and its
+// pictures rejected, as its domain's row says.
+func testDomainTrailingDot(t *testing.T) {
+	r := newRemoteEnv(t)
+	r.mustExec(`INSERT INTO domain_policies (domain, policy, reject_media) VALUES ('social.example', 'limit', true)`)
+	if err := r.a.fed.loadPolicy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := actorHost("https://Social.Example./users/dot"); got != "social.example" {
+		t.Errorf("actorHost keeps the dot: %q", got)
+	}
+	dotted, plain := "https://social.example./users/dot", "https://social.example/users/dot"
+	r.w.put(dotted, worldDoc{body: actorDoc(dotted, "dot", "Dot", r.pub, nil)})
+	r.w.put(plain, worldDoc{body: actorDoc(plain, "dot", "Dot", r.pub, nil)})
+	if _, err := r.actor(dotted); reason(err) != actorWrongID {
+		t.Errorf("an actor id with a trailing dot: %v", err)
+	}
+	if n := r.count(`SELECT count(*) FROM users WHERE domain LIKE '%.' OR domain LIKE 'social.example%'`); n != 0 {
+		t.Fatalf("%d accounts kept for an id with a trailing dot", n)
+	}
+	ra, err := r.actor(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.actor(dotted)
+	if n := r.count(`SELECT count(*) FROM users WHERE domain LIKE 'social.example%'`); n != 1 || ra.Domain != "social.example" {
+		t.Errorf("the account is kept %d times, under %q", n, ra.Domain)
+	}
+	var limited, rejected bool
+	if err := r.a.db.QueryRow(`SELECT NOT `+limitFree("$1::bigint", "0")+`, `+policyWalk("(SELECT domain FROM users WHERE id = $1)", "dw.reject_media"), ra.UserID).Scan(&limited, &rejected); err != nil {
+		t.Fatal(err)
+	}
+	if !limited || !rejected {
+		t.Errorf("the account of social.example: limited %v, pictures rejected %v", limited, rejected)
+	}
 }
 
 // The values an admin saves with a domain, the list a page at a time with its search, the switch that publishes the
@@ -431,6 +471,8 @@ func TestDBPolicyWalkSQL(t *testing.T) {
 	for host, want := range map[string][2]bool{
 		"limited.example": {true, false}, "a.ok.limited.example": {true, false}, "pics.example": {false, true}, "cdn.pics.example": {false, true},
 		"xlimited.example": {false, false}, "example": {false, false}, "": {false, false}, "limited.example.evil": {false, false},
+		// A trailing dot is read as fedHost reads it, so a domain stored with one is still held to its rows.
+		"a.ok.limited.example.": {true, false}, "cdn.pics.example.": {false, true}, ".": {false, false},
 	} {
 		var got [2]bool
 		if err := e.a.db.QueryRow(`SELECT `+policyWalk("$1::text", "dw.policy = 'limit'")+`, `+policyWalk("$1::text", "dw.reject_media"), host).Scan(&got[0], &got[1]); err != nil {

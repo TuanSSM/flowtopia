@@ -560,7 +560,11 @@ func TestDBMediaCacheBudget(t *testing.T) {
 			t.Fatalf("the worker: %v %v", worked, err)
 		}
 	}
-	// The first fetch waits at the stub: no database connection is held meanwhile.
+	// The first fetch waits at the stub: no database connection is held meanwhile. The key worker is let finish first:
+	// making ana a member who shares asked it for her key, which the env also made itself, and the worker's own look
+	// (ensureKey, then mayHaveKey) could hold a connection at the moment the pool is read (seen about once in 100 runs
+	// on more than one core, the worker's stack the only one in the database driver then).
+	settleKeys(t, e.a.fed)
 	slow.Store(true)
 	done := make(chan struct{})
 	go func() { defer close(done); m.step(context.Background()) }()

@@ -3086,13 +3086,13 @@ func (a *app) targetOwner(kind string, id int64, viewer *user) (int64, error) {
 	switch kind {
 	case "post":
 		// A post of another server only for who may read it (postOneSQL's rule), so a report cannot tell that one exists.
-		err = a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`,
+		err = a.db.QueryRow(a.limitStatements(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`),
 			id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "comment":
 		// A comment under a post of another server only for who may read that post (FWR 6), as for the post.
-		err = a.db.QueryRow(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
+		err = a.db.QueryRow(a.limitStatements(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
 			AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)
-			AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+			AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`), id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "user":
 		err = a.db.QueryRow(`SELECT id FROM users WHERE id = $1`, id).Scan(&owner)
 	default:
@@ -14570,13 +14570,16 @@ func (e *actorError) Error() string {
 
 func (e *actorError) Unwrap() error { return e.err }
 
-// actorHost is the host of an id for an error: lower case, at most 253 bytes, "" when it has none.
+// actorHost is the host of an id (for an error, the stored domain of an account, the inboxes compared): lower case,
+// at most 253 bytes, "" when it has none.
 func actorHost(id string) string {
 	u, err := url.Parse(id)
 	if err != nil {
 		return ""
 	}
-	h := strings.ToLower(u.Hostname())
+	// Lower case and without a trailing dot, as fedHost and the domain policy compare it (an actor whose id has one is
+	// not kept: actorCache.lead).
+	h := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if len(h) > 253 {
 		h = h[:253]
 	}
@@ -15014,6 +15017,12 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 		return c.failure(ctx, addr, prev, actorUndecodable, err)
 	}
 	if !sameID(doc.ID, res.URL) {
+		return c.failure(ctx, addr, prev, actorWrongID, nil)
+	}
+	// An id whose host ends in a dot names the same server as without it (DNS reads both alike, and so do fedHost and
+	// the domain policy), but it is another id: kept, it would be a second account for the same person, stored under a
+	// domain the policy's statements could not match. It is refused as an id that is not where it came from.
+	if u, err := url.Parse(doc.ID); err != nil || strings.HasSuffix(u.Hostname(), ".") {
 		return c.failure(ctx, addr, prev, actorWrongID, nil)
 	}
 	keyDoc := o.keyDoc
@@ -20752,10 +20761,14 @@ func (p *fedPolicy) rejectsMedia(host string) bool {
 // policyWalk is the SQL condition that a row of domain_policies (dw) for the domain expr (an expression written in
 // this file, lower case as users.domain is) or a domain above it meets cond: the same walk as fedPolicy.walk, each
 // name looked up in the table's primary key. A statement that keeps work for later asks it, so a change of policy
-// holds what was queued before it.
+// holds what was queued before it. The names are made into an array first (= ANY(ARRAY(...))): compared with IN and
+// a subquery that refers to the outer row, the planner reads every row of domain_policies for each look instead of
+// its primary key (TestDBQueryPlans' "policies:" cases, with thousands of rows). A trailing dot on the domain is left
+// out (rtrim, on the name looked up, not on the index), as fedHost leaves it out: no account is stored with one
+// (actorHost, actorCache.lead), and one stored before would still be held to its domain's rows.
 func policyWalk(expr, cond string) string {
-	return `EXISTS (SELECT 1 FROM domain_policies dw WHERE dw.domain IN (SELECT array_to_string(w.l[i:], '.')
-		FROM (SELECT string_to_array(` + expr + `, '.') AS l) w, generate_series(1, cardinality(w.l) - 1) i) AND ` + cond + `)`
+	return `EXISTS (SELECT 1 FROM domain_policies dw WHERE dw.domain = ANY(ARRAY(SELECT array_to_string(w.l[i:], '.')
+		FROM (SELECT string_to_array(rtrim(` + expr + `, '.'), '.') AS l) w, generate_series(1, cardinality(w.l) - 1) i)) AND ` + cond + `)`
 }
 
 // limitFree is the SQL condition that the account id (an expression written in this file) is not one of a limited
@@ -29117,7 +29130,7 @@ func (a *app) localStatements(q string) string {
 	case a.hidingRemote():
 		return unlimited(hideRemote(q))
 	case a.plainLocal():
-		return plainStatements(q)
+		return unlimited(plainStatements(q))
 	}
 	return a.limitStatements(q)
 }
@@ -29133,9 +29146,13 @@ func (a *app) limitStatements(q string) string {
 	return unlimited(q)
 }
 
-// unlimited takes every limitFree fragment the statements are built with out of q.
+// unlimited takes every limitFree fragment the statements are built with out of q, with the words that joined it, so
+// what is left is byte for byte the statement as it was before FMD 1 (TestUnlimitedIsBefore); a fragment joined
+// otherwise (the bell's) becomes true.
 func unlimited(q string) string {
 	for _, f := range limitFragments {
+		q = strings.ReplaceAll(q, ` AND (c.ap_id IS NULL OR `+f+`)`, "")
+		q = strings.ReplaceAll(q, ` AND `+f, "")
 		q = strings.ReplaceAll(q, f, "true")
 	}
 	return q
@@ -29530,8 +29547,8 @@ func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (comment
 	var secs float64
 	// A comment is gone to the viewer when it, the comment it answers or its post is by someone on
 	// the other side of a block (blockFree), as it is when it was hidden.
-	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
-		FROM `+commentShown, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+	err := a.db.QueryRow(a.limitStatements(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
+		FROM `+commentShown), id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "That comment is gone.")
 		return c, false
@@ -29988,7 +30005,7 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	// Taking one's own like back always works, as it does for posts (handleLike).
 	if done := a.unliked(w, `DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2`,
-		`SELECT (SELECT count(*) FROM comment_likes WHERE comment_id = $1) FROM `+commentShown, id, u); done {
+		a.limitStatements(`SELECT (SELECT count(*) FROM comment_likes WHERE comment_id = $1) FROM `+commentShown), id, u); done {
 		return
 	}
 	c, ok := a.commentRow(w, id, u)
