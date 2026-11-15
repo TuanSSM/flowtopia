@@ -36,10 +36,12 @@ is new.
     Mastodon's archive) can come with the Move items.
   - For the owner: likes and bookmarks are left out (the item names profile, posts, comments, follows and
     blocks); a hidden post or comment is included with the reason the member is already shown; the flag is
-    off by default; the numbers (one an hour, 6 begun an hour, 2 at once, 512 MB, 30 minutes, 32 KB/s after the
-    first minute, a minute at most per write) are constants in `main.go`. With those, two members reading at
-    32 KB/s can still hold both places for up to 30 minutes each (the time cap), six times an hour; a reader any
-    slower lets its place go within about a minute. The size bound counts text at six times its bytes, so for
+    off by default; the numbers (one an hour, 6 begun an hour, 60 asks an hour, 2 at once, 512 MB, 30 minutes,
+    8 KB/s after a grace of 1 minute, a stall of 1 minute at most per write) are constants in `main.go`. With
+    those, two members reading at 8 KB/s can still hold both places for up to 30 minutes each (the time cap), six
+    times an hour. A reader just under the rate keeps its place for some minutes, because what is counted
+    includes what waits in the connection's buffers; one that stops reading lets it go once a write has waited
+    the 1 minute stall. The size bound counts text at six times its bytes, so for
     text in scripts that take 3 or 4 bytes a character it refuses at roughly a fifth of 512 MB of real archive,
     which takes tens of thousands of long comments.
 - [ ] **Move out.** The member sets `alsoKnownAs` on the new account; on Flowa, "I moved" sets

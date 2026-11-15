@@ -572,6 +572,7 @@ type limits struct {
 	commentEdits                                *limiter // edits of comments per member, in a mode that federates (each may go out as an Update)
 	export                                      *limiter // downloads of a member's own data that ran to the end, per member (PRT 1)
 	exportTries                                 *limiter // downloads of a member's own data begun, finished or not, per member
+	exportChecks                                *limiter // asks whether a download would start (?check), per member
 }
 
 func newLimits() limits {
@@ -615,6 +616,9 @@ func newLimits() limits {
 		// back, so a dropped connection does not cost the hour; exportTries still bounds how many the server begins.
 		export:      newLimiter(1, time.Hour),
 		exportTries: newLimiter(6, time.Hour),
+		// Each ask reads the size of the member's archive, a few thousand index lookups for a member with long lists;
+		// 60 an hour is a person pressing the button again and again, and a script gets no more.
+		exportChecks: newLimiter(60, time.Hour),
 	}
 }
 
@@ -30277,9 +30281,12 @@ const (
 	exportsAtOnce = 2
 	// A download must keep up an average of exportMinRate bytes a second once exportGrace has passed, and no single
 	// write may wait longer than exportStall. Two people reading slowly would otherwise hold both places for the
-	// whole half hour, six times an hour each; now a reader slower than this lets the place go within a minute or
-	// so. The archive is broken off as a failed one: the hour is given back, the try is counted.
-	exportMinRate = 32 << 10 // bytes a second, 32 KB/s
+	// whole half hour, six times an hour each. The rate is low enough for a phone on a poor connection to get a small
+	// archive (the half hour bounds a large one). What is counted is what was handed to the connection, which includes
+	// what still waits in its buffers, so a reader just under the rate can keep its place for some minutes before the
+	// count falls under it; a reader that stops lets it go once a write has waited exportStall. The archive is broken
+	// off as a failed one: the hour is given back, the try is counted.
+	exportMinRate = 8 << 10 // bytes a second, 8 KB/s
 	exportGrace   = time.Minute
 	exportStall   = time.Minute
 )
@@ -30295,9 +30302,10 @@ var (
 // control character as six bytes, \u003c; compression only makes it smaller), the addresses of other servers'
 // posts and accounts and their handles among them, and 512 bytes per row (1024 for an account, whose handle may
 // carry this server's host, at most 253 bytes of letters, digits, dots and hyphens) for the field names, the zip's
-// own records and the manifest's line. The profile's JSON fields are counted fourteen times: profile.json is written
-// indented, which adds a line and its indent to each element, at most seven bytes at the depth validation allows
-// (two levels, an avatar's props), to the six of an escaped byte. octet_length reads the size a value is kept at
+// own records and the manifest's line. The profile's JSON fields count as text; profile.json is written indented,
+// which adds a line and its indent to each of their elements, and that is within the fixed 64 KB: validation keeps
+// the four together under 3 KB (three cleaned handles, three yes-or-no preferences, at most five prop names, avatar
+// settings of at most 2 KB). octet_length reads the size a value is kept at
 // without unpacking it, which matters for pictures: length would unpack each one to count its characters.
 var exportSizeSQL = `SELECT
 	(SELECT coalesce(sum(octet_length(image) / 4 * 3 + 6 * (octet_length(body) + octet_length(alt) + octet_length(data::text) + octet_length(prop) + octet_length(skill) + octet_length(hidden_reason)) + 1024), 0) FROM posts WHERE user_id = $1)
@@ -30307,7 +30315,7 @@ var exportSizeSQL = `SELECT
 	+ (SELECT coalesce(sum(` + exportAccountBytes("f.follower_id") + `), 0) FROM follows f WHERE f.followee_id = $1)
 	+ (SELECT coalesce(sum(` + exportAccountBytes("b.target_id") + `), 0) FROM blocks b WHERE b.user_id = $1)
 	+ (SELECT octet_length(avatar) / 4 * 3 + 6 * (octet_length(username) + octet_length(display_name) + octet_length(bio))
-		+ 14 * (octet_length(links::text) + octet_length(props::text) + octet_length(prefs::text) + octet_length(avatar_cfg::text)) + 65536 FROM users WHERE id = $1)`
+		+ 6 * (octet_length(links::text) + octet_length(props::text) + octet_length(prefs::text) + octet_length(avatar_cfg::text)) + 65536 FROM users WHERE id = $1)`
 
 // exportAccountBytes is the most an account of a list writes, the account being the one the column id names: its
 // handle and the address of its profile at six times their bytes, and 1024 bytes for the rest. Each account is
@@ -30321,6 +30329,8 @@ const (
 	exportAgain = "You downloaded your data less than an hour ago. Wait a while and try again."
 	exportTries = "You have started several downloads in the last hour that did not finish. Wait a while and try again."
 	exportBusy  = "Flowa is making other people's downloads right now. Try again in a minute."
+	// exportChecked is the refusal of the asks themselves, apart from the hour and the tries, which they never touch.
+	exportChecked = "You have asked about a download many times this hour. Wait a while and try again."
 )
 
 func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
@@ -30344,6 +30354,11 @@ func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 	// that a refusal is shown as words on the page rather than saved as a file. Both answer in the same order, the
 	// cheap refusals before the size is read.
 	check := r.URL.Query().Has("check")
+	if check && !a.lim.exportChecks.add(key) {
+		logRefusal(w, "too many asks about a download of data", "by member "+key)
+		fail(w, http.StatusTooManyRequests, exportChecked)
+		return
+	}
 	busy := func() {
 		w.Header().Set("Retry-After", "60")
 		fail(w, http.StatusServiceUnavailable, exportBusy)
@@ -30425,8 +30440,9 @@ func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 		err = x.z.Close()
 	}
 	if err == nil {
-		// The zip's directory may still sit in the server's buffer: it is pushed out now, so that a client gone before
-		// the last bytes is a failed download like any other, and not one counted as whole.
+		// The end of the zip's directory may still sit in the server's buffer. Pushing it out proves only that every
+		// byte was handed to the connection; a failure here is a failed download, given back, but a client that goes
+		// once the bytes are in the connection's buffers is not seen, and the download counts.
 		err = x.out.flush()
 	}
 	if err != nil {

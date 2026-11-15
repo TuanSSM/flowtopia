@@ -1144,11 +1144,14 @@ in the container's environment, when set, is shown instead.
   30 minutes (`exportMaxBytes` and `exportMaxTime` in `main.go`). Its size is reckoned first as an upper bound
   in bytes, without unpacking a picture; a larger one is refused before it starts. The bound counts text at six
   times its bytes, so for text in scripts that take 3 or 4 bytes a character it refuses at roughly a fifth of
-  512 MB of real archive, which takes tens of thousands of long comments. A download must keep up 32 KB a
+  512 MB of real archive, which takes tens of thousands of long comments. A download must keep up 8 KB a
   second on average once its first minute has passed, and no write may wait longer than a minute
-  (`exportMinRate`, `exportGrace`, `exportStall`); a slower reader is broken off, the hour given back and the try
-  counted. One that runs out of time or is cut off, or whose last bytes cannot be sent, is broken off without the
-  zip's directory, so the browser reports a
+  (`exportMinRate`, `exportGrace`, `exportStall`); the Settings card says so. A slower reader is broken off, the
+  hour given back and the try counted. What is counted is what was handed to the connection, including what
+  still waits in its buffers, so a reader just under the rate can keep its place for some minutes. The page's
+  question whether a download would start (`?check=1`) has its own allowance of 60 an hour, which touches neither
+  the hour nor the tries. One that runs out of time or is cut off, or whose last bytes cannot be handed to the
+  connection, is broken off without the zip's directory, so the browser reports a
   failed download and no zip program opens it as whole. A request from another site is refused, the answer is
   never cached, and the log gets one line per download with the member's number and the size, never content.
   A suspended member cannot sign in, so cannot download until the suspension ends; there is no export by staff

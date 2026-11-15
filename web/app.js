@@ -632,7 +632,7 @@ let exportBusy = false; // a download is being asked about or has just begun (th
 function dataCard() {
   return `<div class="card" id="data-card"><div class="card-h"><h2>Your data</h2></div>
     <p class="small muted">Download one zip file with your profile, your posts and their pictures, your comments, the accounts you follow, the accounts that follow you and the accounts you block. Other people appear only by their handle. Your likes, bookmarks, notifications and password are not in it.</p>
-    <p class="small muted" style="margin:8px 0 12px">Your practice progress is not in it either: use Export JSON under Data on this page, once for each prop. You can download your data once an hour.</p>
+    <p class="small muted" style="margin:8px 0 12px">Your practice progress is not in it either: use Export JSON under Data on this page, once for each prop. You can download your data once an hour. The download needs a connection of at least 8 KB a second.</p>
     <div class="row wrap"><a class="btn" href="api/export" download data-act="export-all">Download my data</a></div></div>`;
 }
 function pageSettings() {

@@ -410,7 +410,7 @@ try:
     nav('#/settings')
     check('with the export flag off Settings has no Your data card and the address answers 404',js("return !document.querySelector('#data-card')") and http_code(sam,'export')==404)
     api(op,'flags',{'flags':{'export':True}},'PUT');load();nav('#/settings')
-    check('Settings has Your data, saying what is in the archive and what is not, and where the practice progress is',lambda: 'your posts and their pictures' in (txt('#data-card') or '') and 'Export JSON' in txt('#data-card') and 'once an hour' in txt('#data-card') and txt('#data-card a[data-act=export-all]')=='Download my data')
+    check('Settings has Your data, saying what is in the archive and what is not, where the practice progress is, and the connection it needs',lambda: 'your posts and their pictures' in (txt('#data-card') or '') and 'Export JSON' in txt('#data-card') and 'once an hour' in txt('#data-card') and 'at least 8 KB a second' in txt('#data-card') and txt('#data-card a[data-act=export-all]')=='Download my data')
     check('the link is a real address the browser saves',js("const a=document.querySelector('#data-card a[data-act=export-all]');return [a.getAttribute('href'),a.hasAttribute('download')]")==['api/export',True])
     # Two presses in a row (a double click) ask once and download once.
     js("window.__checks=0;const f=window.fetch;window.fetch=(u,...o)=>{if(String(u).includes('export?check'))window.__checks++;return f(u,...o)};const a=document.querySelector('#data-card a[data-act=export-all]');a.click();a.click()")
