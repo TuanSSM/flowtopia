@@ -397,6 +397,57 @@ func TestDBRemoteHiddenInLocalMode(t *testing.T) {
 	}
 }
 
+// The forward's bounds (finding S2): never a body that names anyone in bto or bcc, never one larger than forwardBodyMax,
+// none while an activity waits for its fan-out (the members' own deliveries first), and an hourly bound per member and
+// in all beside the one per sending server.
+func TestDBForwardBounds(t *testing.T) {
+	e := newRepliesEnv(t)
+	followers := "https://here.example/users/ana/followers"
+	n := 0
+	try := func(more map[string]any) int {
+		t.Helper()
+		n++
+		note := reply(boID, 100+n, e.postID, "hi", followers)
+		body := activity(boID, "Create", note, more)
+		e.deliver(body, e.bo())
+		if _, ok := e.kept(fmt.Sprintf("%s/statuses/%d", boID, 100+n)); !ok {
+			t.Fatalf("reply %d not kept: %s", n, e.outcome())
+		}
+		return len(e.forwards())
+	}
+	if got := try(nil); got != 1 {
+		t.Fatalf("the first reply: %d forwards", got)
+	}
+	if got := try(map[string]any{"bcc": []string{"https://social.example/users/secret"}}); got != 1 {
+		t.Errorf("a reply with bcc was forwarded")
+	}
+	if got := try(map[string]any{"padding": strings.Repeat("x", forwardBodyMax)}); got != 1 {
+		t.Errorf("a reply larger than %d bytes was forwarded", forwardBodyMax)
+	}
+	e.mustExec(`INSERT INTO ap_outbox (ap_id, actor_id, body, fanned_out, created_at) VALUES ('https://here.example/actor/w/1', $1, '{}', false, now())`, e.anaID)
+	if got := try(nil); got != 1 {
+		t.Errorf("a reply was forwarded while an activity waits for its fan-out")
+	}
+	e.mustExec(`DELETE FROM ap_outbox WHERE ap_id = 'https://here.example/actor/w/1'`)
+	for range forwardsPerMemberHour {
+		e.a.fed.forwardsFor.add(fmt.Sprint(e.anaID))
+	}
+	if got := try(nil); got != 1 {
+		t.Errorf("a reply was forwarded past the member's hourly bound")
+	}
+	e.a.fed.forwardsFor = newLimiter(forwardsPerMemberHour, time.Hour)
+	for range forwardsMaxHour {
+		e.a.fed.forwardsAll.add("")
+	}
+	if got := try(nil); got != 1 {
+		t.Errorf("a reply was forwarded past the bound in all")
+	}
+	e.a.fed.forwardsAll = newLimiter(forwardsMaxHour, time.Hour)
+	if got := try(nil); got != 2 {
+		t.Errorf("within the bounds again: %d forwards", got)
+	}
+}
+
 // A full delivery queue refuses a comment's Create (finding S2): the record is held on the delivery schedule and tried
 // again, never removed with nothing sent.
 func TestDBCommentQueueFull(t *testing.T) {

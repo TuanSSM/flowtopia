@@ -1524,8 +1524,20 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   receiver that wants the actor's own signature fetches the reply from its origin). A collection the reply names that
   is neither of those (another member's followers) is not forwarded to. One activity per reply: its id here is made
   from the reply's (`/actor/forwards/<hash>`), and `ap_outbox` is unique by id, so it is sent once. At most 60 replies
-  forwarded an hour per sending server (`forwardsPerHostHour`), 10,000 addresses each (the queue's bound). A forward
-  that fails (a full queue) is said in the log and not tried again; the reply is kept either way. The Update and
+  forwarded an hour per sending server (`forwardsPerHostHour`); after the review of #116 also 30 an hour per member whose
+  followers it goes to and 300 in all, at most 1,000 addresses and 64 KB each, never a body addressed to anyone in `bto`
+  or `bcc`, and none while the delivery queue is past its resume mark or an activity waits for its fan-out, so the
+  members' own posts and comments always come first (`TestDBForwardBounds`). A forward that fails (a full queue) is
+  said in the log and not tried again; the reply is kept either way.
+
+  **What a forward achieves is not shown.** Flowa's own inbox answers a delivery signed by anyone but the activity's
+  actor as a forward and does not act on it (7.10, `inForward`, 202), so a forward between two Flowa servers is taken
+  and dropped. For Mastodon, the reading of its documentation recorded in Sources (12 November 2026) is that its
+  security page advises against implementing Linked Data signatures and uses them for relays and for the Deletes of a
+  server that shuts down, and that how it treats an activity forwarded by a server that is not its actor and carries no
+  Linked Data signature is not on its pages; that is not verified. docs.joinmastodon.org could not be read again from the
+  session that built this (its host is not among the session's allowed hosts). If such forwards are dropped by the
+  servers they are for, forwarding costs deliveries and achieves nothing; keeping it or removing it is the owner's. The Update and
   Delete of a reply are not forwarded (decided: 7.1.2 is about ghost replies; an edit or a deletion that reaches only
   some followers leaves the version they saw).
 - **Out: a member's comment** (`commentOut`, the delivery queue's producer after posts). A comment of a member who
@@ -1649,6 +1661,8 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     agree with what is listed. A database that never federated runs the statements as they always were. In a mode that
     federates, a reply of an account its server suspended is left out of the counts as of the lists (`actorShown`);
     its likes still count, as there is no list of likes to agree with.
+  - **Forwards are bounded and come last** (`TestDBForwardBounds`, the bullet on the forward above), and the note says
+    plainly what one is known to achieve.
   - **Switches that could not be read hold a comment's way out** (`TestDBCommentSwitchesUnread`): the record is written
     for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
     said off keeps the comment here.

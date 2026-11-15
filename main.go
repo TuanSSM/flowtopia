@@ -6461,7 +6461,11 @@ type federation struct {
 	// repliesIn, likesIn and forwardsOut count the remote replies and likes taken, and the replies forwarded, per sending
 	// host in an hour (FWR 6); repliesFull and likesFull say the caps in all were reached at housekeeping's last count.
 	repliesIn, likesIn, forwardsOut *limiter
-	repliesFull, likesFull          atomic.Bool
+	// forwardsFor and forwardsAll bound the forwards per member and in all an hour; forwardsSkipped counts the replies
+	// not forwarded for a bound since the start.
+	forwardsFor, forwardsAll *limiter
+	forwardsSkipped          atomic.Int64
+	repliesFull, likesFull   atomic.Bool
 	// commentsDue says a record of ap_comment_out may wait (commentWaits), commentsAt when the first one held back is
 	// due (a Delete the full queue refused), as postsDue and postsAt do for posts.
 	commentsDue atomic.Bool
@@ -6503,6 +6507,7 @@ func newFederation(db *sql.DB, s fedSettings) *federation {
 		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupBy: map[int64]bool{}, lookupNow: time.Now, lookupPause: lookupWait,
 		conns: make(chan struct{}, fedConnsMax), notesIn: newLimiter(remoteNotesPerHostHour, time.Hour), deletesIn: newLimiter(remoteDeletedPerHostHour, time.Hour),
 		repliesIn: newLimiter(remoteRepliesPerHostHour, time.Hour), likesIn: newLimiter(remoteLikesPerHostHour, time.Hour), forwardsOut: newLimiter(forwardsPerHostHour, time.Hour),
+		forwardsFor: newLimiter(forwardsPerMemberHour, time.Hour), forwardsAll: newLimiter(forwardsMaxHour, time.Hour),
 		ctx: ctx, cancel: cancel}
 }
 
@@ -22301,17 +22306,21 @@ notes, and a member's likes and comments on public posts of other servers go to 
   - Every statement takes one of the federation's turns, never across a fetch or another statement's wait. */
 
 const (
-	remoteRepliesPerPost     = 300    // replies from other servers kept under one post; more are dropped and counted
-	remoteRepliesPerAccount  = 200    // replies kept from one remote account
-	remoteRepliesPerHost     = 2000   // replies kept from the accounts of one server
-	remoteRepliesMax         = 50000  // replies from other servers kept in all (housekeeping's count)
-	remoteRepliesPerHostHour = 300    // new replies taken from one server in an hour
-	remoteLikesPerObject     = 2000   // likes from other servers kept for one post or comment
-	remoteLikesPerAccount    = 2000   // likes kept from one remote account, of posts and of comments each
-	remoteLikesPerHost       = 10000  // likes kept from the accounts of one server, of posts and of comments each
-	remoteLikesMax           = 200000 // likes with an activity id kept in all, of posts and of comments each (housekeeping's count)
-	remoteLikesPerHostHour   = 600    // new likes taken from one server in an hour
-	forwardsPerHostHour      = 60     // replies forwarded for one sending server in an hour (7.1.2)
+	remoteRepliesPerPost     = 300      // replies from other servers kept under one post; more are dropped and counted
+	remoteRepliesPerAccount  = 200      // replies kept from one remote account
+	remoteRepliesPerHost     = 2000     // replies kept from the accounts of one server
+	remoteRepliesMax         = 50000    // replies from other servers kept in all (housekeeping's count)
+	remoteRepliesPerHostHour = 300      // new replies taken from one server in an hour
+	remoteLikesPerObject     = 2000     // likes from other servers kept for one post or comment
+	remoteLikesPerAccount    = 2000     // likes kept from one remote account, of posts and of comments each
+	remoteLikesPerHost       = 10000    // likes kept from the accounts of one server, of posts and of comments each
+	remoteLikesMax           = 200000   // likes with an activity id kept in all, of posts and of comments each (housekeeping's count)
+	remoteLikesPerHostHour   = 600      // new likes taken from one server in an hour
+	forwardsPerHostHour      = 60       // replies forwarded for one sending server in an hour (7.1.2)
+	forwardsPerMemberHour    = 30       // replies forwarded to one member's followers in an hour
+	forwardsMaxHour          = 300      // replies forwarded in all in an hour
+	forwardTargetsMax        = 1000     // addresses one forward goes to, after shared inboxes
+	forwardBodyMax           = 64 << 10 // bytes of an activity forwarded as it came
 )
 
 // The words a member is told when a like or a comment cannot reach another server.
@@ -22515,7 +22524,7 @@ func (f *federation) repliedIn(ctx context.Context, s *remoteActor, act *apActiv
 	}
 	// The forward first: a notification that fails is tried again, and then the reply is a repeat, which forwards nothing.
 	if !update {
-		f.forward(ctx, s, act, addressed, t, raw)
+		f.forward(ctx, s, act, n, addressed, t, raw)
 	}
 	return "", nil
 }
@@ -22684,8 +22693,14 @@ func (f *federation) keepReply(ctx context.Context, s *remoteActor, n *apNote, p
 // server's, and the reply is about an object of this server): the activity as it came, signed by the instance actor,
 // never to the server that sent it. One activity per reply (its id here is made from the reply's), so it goes once.
 // A failure is said in the log and not tried again: the reply is kept either way.
-func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivity, addressed []string, t replyTarget, raw []byte) {
+func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivity, n *apNote, addressed []string, t replyTarget, raw []byte) {
 	if f.out == nil || len(raw) == 0 {
+		return
+	}
+	// Never the bytes of an activity addressed to anyone in bto or bcc: those are not to be passed on (ActivityPub 6.1:
+	// the server removes them before delivery), and Flowa forwards the body as it came. Never more than forwardBodyMax.
+	if len(raw) > forwardBodyMax || len(act.Audience.Bto)+len(act.Audience.Bcc)+len(n.Audience.Bto)+len(n.Audience.Bcc) > 0 {
+		f.forwardsSkipped.Add(1)
 		return
 	}
 	all := slices.Concat(addressed, act.Audience.To, act.Audience.Cc, act.Audience.Audience)
@@ -22702,8 +22717,22 @@ func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivit
 	if len(members) == 0 {
 		return
 	}
-	if !f.forwardsOut.add(s.Domain) {
-		log.Printf("federation: a reply from %s is not forwarded: its server's replies forwarded this hour reached %d", s.Domain, forwardsPerHostHour)
+	// The bounds (after the review of #116): per sending server, per member whose followers it goes to, and in all, an
+	// hour each; and none while the delivery queue is past its resume mark or an activity waits for its fan-out, so the
+	// members' own posts and comments always come first and a few hosts cannot fill the queue with forwards.
+	if !f.forwardsOut.add(s.Domain) || !f.forwardsAll.add("") {
+		f.forwardsSkipped.Add(1)
+		return
+	}
+	for _, uid := range members {
+		if !f.forwardsFor.add(strconv.FormatInt(uid, 10)) {
+			f.forwardsSkipped.Add(1)
+			return
+		}
+	}
+	var queued, waiting int
+	if err := f.fedRow(ctx, []any{&queued, &waiting}, deliveryCountsSQL, deliveryQueueResume, 1); err != nil || queued >= deliveryQueueResume || waiting > 0 {
+		f.forwardsSkipped.Add(1)
 		return
 	}
 	var to []deliveryTarget
@@ -22720,8 +22749,8 @@ func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivit
 			}
 		}
 	}
-	if len(to) > deliveryTargetsMax {
-		to = to[:deliveryTargetsMax]
+	if len(to) > forwardTargetsMax {
+		to = to[:forwardTargetsMax]
 	}
 	sum := sha256.Sum256([]byte(act.ID))
 	id := f.origin.url + "/actor/forwards/" + hex.EncodeToString(sum[:16])

@@ -408,7 +408,9 @@ route and test named below is new unless the design note says it exists.
   for the post's author alone (built: dropped), whether a member who does not share may like or answer a post of
   another server here only (built: refused, with the reason), whether a followers-only post of another server may be
   liked or answered (built: no), whether replies and likes from other servers should expire (built: kept while their
-  post is), whether the Update and Delete of a forwarded reply should be forwarded too (built: no), and the numbers:
+  post is), whether the Update and Delete of a forwarded reply should be forwarded too (built: no), whether to keep forwarding
+  at all (built: bounded; Flowa's own inbox drops a forward, and what Mastodon does with one that carries no Linked Data
+  signature is not on its pages, so a forward may achieve nothing; federation.md 6.4 "Forward"), and the numbers:
   300, 200, 2,000, 300 an hour and 50,000 replies; 2,000, 2,000, 10,000, 600 an hour and 200,000 likes; 60 forwards an
   hour per server; 1,000 characters of a reply.
 - [ ] **Account deletion across servers.** Delete(Person) out when an account is deleted and from
