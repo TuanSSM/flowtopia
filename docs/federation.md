@@ -3174,6 +3174,15 @@ The tables are additive. An older build without the workers leaves them untouche
 again resumes the queue, and rows past 48 hours are given up at the first claim. Nothing is lost that
 a 48-hour outage would not lose anyway.
 
+**Past FWR 6 (migration 23), the queue must be empty first.** Before `./deploy.sh --rollback` past this version, let
+the delivery queue empty (Admin, Federation, "Sending to other servers" shows 0 queued and nothing waiting), then
+turn **Federation** off under Admin, Features, wait 5 seconds, run `docker exec nunchaku /nunchaku -purge-remote`,
+and only then roll back. An older build ignores `comes_after` and `undoes_chain` on rows already queued, so it could
+send a comment's Update before its Create, or its Delete while its Create is in flight. There is no switch that
+stops only what is sent: Federation stops the inbox and the sending together. The purge removes the delivery queue
+with the records of where each post and comment went, so a Delete of a post or a comment still queued at the purge
+is never sent, and a post or comment deleted after it is not taken back from other servers.
+
 ### 8.8 The delivery queue, as built (FWR 2)
 
 "federation: the delivery queue" in `main.go` (`deliveryQueue`), migration 19 (with `flowa-schema18.dump` for the

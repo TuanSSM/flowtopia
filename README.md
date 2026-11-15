@@ -918,10 +918,18 @@ With the same switches on, replies and likes cross servers both ways ([docs/fede
   new an hour from one server and 50,000 in all; 2,000 likes from other servers for one post or comment, 2,000 from
   one account, 10,000 from one server, 600 new an hour and 200,000 in all. They are kept while the post is.
 - **Going back.** An older build after `./deploy.sh --rollback` would show replies from other servers as comments of
-  local accounts: run `-purge-remote` first, which removes them, the likes, and the records of comments sent.
+  local accounts, and would send what is still queued out of order. Before `./deploy.sh --rollback` past this version,
+  let the delivery queue empty (Admin, Federation, "Sending to other servers" shows 0 queued and nothing waiting), then
+  turn **Federation** off under Admin, Features, wait 5 seconds, run `docker exec nunchaku /nunchaku -purge-remote`, and
+  only then roll back. An older build ignores `comes_after` and `undoes_chain` on rows already queued, so it could send
+  a comment's Update before its Create, or its Delete while its Create is in flight. There is no switch that stops only
+  what is sent: Federation stops the inbox and the sending together. The purge removes the delivery queue with the
+  records of where each post and comment went, so a Delete of a post or a comment still queued at the purge is never
+  sent, and a post or comment deleted after it is not taken back from other servers.
 - **Not yet:** a like of a reply from another server goes no further than this server; a reply from another
-  server to a member's comment under a post of another server is not kept. A comment answering a member who does not
-  share their profile, or in a thread one of them began, stays here, so their name never leaves.
+  server to a member's comment under a post of another server is not kept. Under a post here, a comment answering a
+  member who does not share their profile, or in a thread one of them began, stays here; under a post of another
+  server it is refused, with the reason.
 
 ### What the server will connect to
 
