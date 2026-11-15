@@ -25,6 +25,7 @@ GET /api/blocks
 GET /api/bookmarks
 GET /api/comments/{id}/replies
 GET /api/comments/{id}/thread
+GET /api/export
 GET /api/followers
 GET /api/following
 GET /api/home

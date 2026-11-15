@@ -77,6 +77,7 @@ const FLAGS = [
   ['community', 'Community', 'The timeline with posts, likes and comments, public profiles, the people list and the notification bell.'],
   ['follows', 'Follows and Home', 'Members follow each other from profiles, and the timeline gets Home beside Community: the posts of the people a member follows, and their own. A profile shows how many follow it and how many it follows; who they are is shown only to the member. Needs Community.'],
   ['bookmarks', 'Bookmarks', 'Members keep skills, combos and posts to come back to, on a Bookmarks page.'],
+  ['export', 'Download my data', 'Members download one zip file from Settings with their profile, their posts and pictures, their comments, follows and blocks, at most once an hour. Practice progress keeps its own export on the same page.'],
   ['linkCards', 'Link cards', 'Instagram, TikTok and YouTube links in posts become cards with a preview the server fetches, so visitors never contact those sites until they open a link.'],
   ['videoEmbeds', 'Play YouTube in place', 'A play button on YouTube cards that loads the video from youtube-nocookie.com inside Flowa. Adds that one site to the page security policy while on.'],
   ['suggest', 'Next-trick suggestions', 'The combo builder suggests what can follow the last trick, from how the moves travel, with a bridge when nothing links directly. Members can share their transition marks anonymously to improve it.'],
@@ -624,6 +625,15 @@ function propXPCard() {
     <div class="bar" style="margin-top:10px"><i style="width:${L.pct}%"></i></div><div class="tiny num" style="margin-top:4px">${L.next.toLocaleString()} XP to level ${L.level + 1}</div></div>`;
 }
 
+// Everything a member wrote, as one zip file the server makes (GET /api/export). The link is a real address, so it
+// has a name and works by keyboard; a click asks first whether a download would start, so a refusal is said here
+// instead of being saved as a file, then goes to the address, which the browser saves without leaving the page.
+function dataCard() {
+  return `<div class="card" id="data-card"><div class="card-h"><h2>Your data</h2></div>
+    <p class="small muted">Download one zip file with your profile, your posts and their pictures, your comments, the accounts you follow, the accounts that follow you and the accounts you block. Other people appear only by their handle. Your likes, bookmarks, notifications and password are not in it.</p>
+    <p class="small muted" style="margin:8px 0 12px">Your practice progress is not in it either: use Export JSON under Data on this page, once for each prop. You can download your data once an hour.</p>
+    <div class="row wrap"><a class="btn" href="api/export" download data-act="export-all">Download my data</a></div></div>`;
+}
 function pageSettings() {
   const theme = localStorage.getItem('nf-theme') || 'auto';
   return `<div class="page-h"><div><h1>Settings</h1><p>Theme is saved in this browser.${me ? ' Everything else is saved to your account.' : ''}</p></div></div>
@@ -633,6 +643,7 @@ function pageSettings() {
       ${me ? `<div class="field">Dominant hand<div class="seg" role="group" aria-label="Dominant hand" style="width:max-content">${[['L', 'Left'], ['R', 'Right']].map(([k, n]) => `<button class="${state.settings.dominant === k ? 'on' : ''}" data-act="dominant" data-v="${k}" aria-pressed="${state.settings.dominant === k}">${n}</button>`).join('')}</div></div>` : ''}</div></div>
     ${me ? `<div class="card"><div class="card-h"><h2>Data: ${esc(curProp().name)}</h2></div><p class="small muted" style="margin-bottom:12px">Export, import and reset apply to your ${esc(curProp().name.toLowerCase())} progress only. The server also keeps a daily backup for 14 days.</p>
       <div class="row wrap"><button class="btn" data-act="export">Export JSON</button><button class="btn" data-act="file">Import JSON</button><input type="file" accept="application/json" data-change="import" hidden><button class="btn danger" data-act="reset">Reset</button></div></div>` : ''}
+    ${me && flags.export ? dataCard() : ''}
     ${me && fed ? fedCard() : ''}
     <div class="card"><div class="card-h"><h2>About the skill maps</h2></div><p class="small muted">Each map takes its technique names from the sources listed on its skills. Prerequisites and tiers are coaching proposals, not rules of the art. Skills marked unconfirmed could not be checked against a source.</p>
       <p class="small muted" style="margin-top:10px">What is planned for Flowa itself is in its repository, the same for every prop.</p>
@@ -1083,6 +1094,14 @@ document.addEventListener('click', e => {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       break;
     }
+    case 'export-all':
+      e.preventDefault();
+      api('export?check=1').then(r => {
+        if (!r.ok) { toast(r.error); return; }
+        location.assign('api/export');
+        toast('Your download has started. It can take a minute when you have many pictures.');
+      });
+      break;
     case 'fed-leave': fedLeave(); break;
     case 'reset':
       if (confirm(`Erase all your ${curProp().name.toLowerCase()} progress, sessions and combos? The server keeps a daily backup.`)) { state = blank(); commit(); toast('Progress reset.'); }

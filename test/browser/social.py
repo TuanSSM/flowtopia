@@ -406,5 +406,25 @@ try:
     nav('#/timeline')
     left=js("const f=document.querySelector('#compose-form');return f&&[f.body.value,!!document.querySelector('.compose-img'),socialDraft()]")
     check('after sign-out the next person on this browser finds an empty composer',left==['',False,False] and get(sam,'me')['user']['username']=='sam' and 'Private until' not in js("return document.body.textContent"),left)
+    # Your data (PRT 1), whose flag is off by default: no card and no address until an admin turns it on.
+    nav('#/settings')
+    check('with the export flag off Settings has no Your data card and the address answers 404',js("return !document.querySelector('#data-card')") and http_code(sam,'export')==404)
+    api(op,'flags',{'flags':{'export':True}},'PUT');load();nav('#/settings')
+    check('Settings has Your data, saying what is in the archive and what is not, and where the practice progress is',lambda: 'your posts and their pictures' in (txt('#data-card') or '') and 'Export JSON' in txt('#data-card') and 'once an hour' in txt('#data-card') and txt('#data-card a[data-act=export-all]')=='Download my data')
+    check('the link is a real address the browser saves',js("const a=document.querySelector('#data-card a[data-act=export-all]');return [a.getAttribute('href'),a.hasAttribute('download')]")==['api/export',True])
+    click('#data-card a[data-act=export-all]')
+    check('Download my data starts the download, which the server then counts as the hour',lambda: http_code(sam,'export?check=1')==429,lambda: http_code(sam,'export?check=1'),timeout=SLOW)
+    check('and the page says it started, and stays where it was',lambda: 'download has started' in (txt('#toast') or '') and js("return location.hash")=='#/settings',lambda: txt('#toast'))
+    click('#data-card a[data-act=export-all]')
+    check('a second download in the hour is refused in words on the page',lambda: 'less than an hour ago' in (txt('#toast') or ''),lambda: txt('#toast'))
+    # The archive itself, for a member who posted: a zip with the files the README lists, and her post in it.
+    import zipfile,io as _io
+    ula=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    api(ula,'signup',{'username':'ula','password':'flowa-test-only'});api(ula,'posts',{'body':'Ula spins a poi weave'})
+    res=ula.open(BASE+'api/export',timeout=60);raw=res.read()
+    z=zipfile.ZipFile(_io.BytesIO(raw));names=z.namelist()
+    check('the archive is a whole zip with README first and manifest last, and holds her post and nothing of sam',z.testzip() is None and names[0]=='README.txt' and names[-1]=='manifest.json' and 'Ula spins' in z.read('posts.json').decode() and json.loads(z.read('manifest.json'))['complete'] and not any(b'Sam Spins' in z.read(n) for n in names),names)
+    check('it comes as an attachment named for the member, kept nowhere on the way',res.headers.get('Content-Disposition','').startswith('attachment; filename="flowa-ula-') and res.headers.get('Cache-Control')=='no-store',dict(res.headers))
+    api(op,'flags',{'flags':{'export':False}},'PUT');load()
 finally:
     done()
