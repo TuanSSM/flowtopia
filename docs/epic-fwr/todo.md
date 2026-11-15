@@ -407,10 +407,21 @@ route and test named below is new unless the design note says it exists.
   counts in SQL, and a suspended account's replies are neither listed nor counted (`TestDBRemoteHiddenInLocalMode`);
   forwards are bounded per member and in all, smaller, never with `bto` or `bcc`, and after the members' own deliveries
   (`TestDBForwardBounds`); and the small points (`TestDBRemoteTalkSmallPoints`).
+  After the second review (federation.md 6.4, "After the second review of #116"): a restart looks for the comments that
+  wait (`TestDBCommentRecordsAfterRestart`); an Update is enqueued at once and held only at an inbox where the activity
+  before it is still on its way, the Delete takes the whole line back at each inbox, and a like again waits behind the
+  Undo before it (`TestDBCommentOrders`, `TestDBLikeAgainAfterUndo`); the comments and forwards not sent are on the
+  Federation tab, counted since the start (`TestDBForwardBounds`); an answer under a remote post that could not go there
+  is refused with the reason (`TestDBRemoteAnswerThatWouldStay`); the producer asks again about the member answered
+  (`TestDBCommentsNameNoNonSharer`); local mode on a database that never federated runs the statements of before, and
+  counts agree with lists in local mode and for a suspended account's threads (`TestDBRemoteHiddenInLocalMode`,
+  `TestDBQueryPlans`); a restore says the comment stays here (`TestDBRestoredCommentStaysHere`); notifications are
+  trimmed in one order (`TestDBReplyNotesInOrder`).
   **Open:** `TestTwoInstances` is item 8's container suite (here `TestDBTwoFlowaReplies` covers the same steps in Go);
   a comment's id is not served (the Note is embedded in every activity); an Update reaches an inbox where the
-  Create failed for good alone (it no longer overtakes a Create; after the review of #116 an Update waits for the activity
-  before it and the Delete takes back the last one); a member's like of a remote reply stays here; a remote reply to a member's
+  Create failed for good alone (it never overtakes a Create there, and at other inboxes it goes at once); a member who
+  stops sharing after a comment that names them went out gets nothing taken back; a member's like of a remote reply
+  stays here; a remote reply to a member's
   comment under a post of another server is not kept; the likes of an account its server suspended still count;
   recorded Mastodon replies and likes (the owner's trial, item 9); the box stays unchecked until those and the
   owner's review. For the owner (defaults built): whether a reply addressed to fewer people than Public should be kept
