@@ -45,6 +45,7 @@ func newNotesInEnv(t *testing.T) *notesInEnv {
 	e := &notesInEnv{followEnv: f}
 	e.anaID, e.ana = f.member("ana", false)
 	e.cyID, e.cy = f.user("cyd", "user")
+	f.mustExec(`UPDATE users SET federates = true WHERE id = $1`, e.cyID) // cyd shares their profile, so a post may name them
 	f.w.put(catID, worldDoc{body: actorDoc(catID, "cat", "Cat", &f.other.PublicKey, nil)})
 	f.w.put(eveID, worldDoc{body: actorDoc(eveID, "eve", "Eve", &f.other.PublicKey, nil)})
 	ra, err := f.a.fed.remoteActor(context.Background(), boID)
@@ -589,7 +590,13 @@ func TestDBMediaCacheBudget(t *testing.T) {
 	if code, _, _ := e.visit("GET", fmt.Sprintf("/api/fed/media/%d.jpg", okID), e.cy, 1, nil); code != 404 {
 		t.Errorf("the picture for cy: %d", code)
 	}
-	// Reading the post wants the evicted pictures again, and shows them as links meanwhile.
+	// Reading the post just after the eviction does not ask for them again (a full cache would evict and fetch in turn
+	// as a member scrolls); an hour later it does, and shows them as links meanwhile.
+	e.must(200, e.ana, "GET", fmt.Sprintf("/api/posts/%d", post), nil)
+	if n := e.count(`SELECT count(*) FROM ap_media WHERE post_id = $1 AND state = 'wanted'`, post); n != 0 {
+		t.Errorf("%d evicted pictures wanted again at once", n)
+	}
+	nowMu.Add(int64(mediaRewantEvery / time.Second))
 	out := e.must(200, e.ana, "GET", fmt.Sprintf("/api/posts/%d", post), nil)["posts"].([]any)[0].(map[string]any)
 	ms := out["remote"].(map[string]any)["media"].([]any)
 	if ms[0].(map[string]any)["src"] != nil || ms[2].(map[string]any)["src"] != fmt.Sprintf("/api/fed/media/%d.jpg", okID) || ms[0].(map[string]any)["alt"] != "alt of https://pics.example/p/1.png" {
@@ -598,6 +605,15 @@ func TestDBMediaCacheBudget(t *testing.T) {
 	if e.count(`SELECT count(*) FROM ap_media WHERE post_id = $1 AND state = 'wanted'`, post) != 2 {
 		t.Error("the evicted pictures are not wanted again")
 	}
+	// With mediaWantedMax waiting already, a read asks for none: at most that many ever wait.
+	e.mustExec(`UPDATE ap_media SET state = 'evicted', next_at = now() - interval '2 hours' WHERE post_id = $1 AND state = 'wanted'`, post)
+	e.mustExec(`INSERT INTO ap_media (post_id, n, kind, url, state) SELECT $1, 100 + g, 'picture', 'https://pics.example/f/' || g, 'wanted' FROM generate_series(1, $2) g`, post, mediaWantedMax)
+	e.must(200, e.ana, "GET", fmt.Sprintf("/api/posts/%d", post), nil)
+	if n := e.count(`SELECT count(*) FROM ap_media WHERE state = 'wanted'`); n != mediaWantedMax {
+		t.Errorf("%d pictures wait, more than the %d allowed", n, mediaWantedMax)
+	}
+	e.mustExec(`DELETE FROM ap_media WHERE post_id = $1 AND n >= 100`, post)
+	e.mustExec(`UPDATE ap_media SET state = 'wanted' WHERE post_id = $1 AND state = 'evicted'`, post)
 	// The budget in bytes: one picture's worth evicts down to the low mark.
 	var one int
 	e.a.db.QueryRow(`SELECT max(bytes) FROM ap_media WHERE state = 'ok'`).Scan(&one)

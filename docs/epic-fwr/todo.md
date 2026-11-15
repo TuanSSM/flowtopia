@@ -292,7 +292,7 @@ route and test named below is new unless the design note says it exists.
   kept as 6.7 reads them and never widened, direct and limited dropped; an Update only by the same account and only
   with a newer `updated`, the whole post replaced; Delete (Tombstone or bare id) of the account's own post with its
   pictures and notifications, another account's refused, another origin's dropped at the inbox, one before its Create
-  remembered 7 days; Announce of a member's Public post as a `share` notification, anything else dropped; `htmlToText`
+  remembered 7 days with its account; Announce of a member's Public post as a `share` notification, anything else dropped; `htmlToText`
   ending a line at the close of a block, and `remotePost` (2,000 characters then "Read the rest on its server" and the
   link, a cut inside markup dropped and the link kept, the content warning folding the post, a poll's choices, a long
   post's title, start and link, attachments as pictures or links); mentions shown as `@bo@social.example`, members told
@@ -316,12 +316,30 @@ route and test named below is new unless the design note says it exists.
   `TestDBRemoteNotesOneConnection`, `TestDBQueryPlans` with 20,000 remote posts, `TestDBTwoFlowaNotes` (a member's
   post through the real fan-out reaches the other Flowa's follower's Home, and the Delete removes it),
   `TestDBPurgeRemote`, with `-race -count=3` on two cores; the `federated` browser suite (`federated-remote-post`).
+  After the review of #115 (federation.md 6.6, "After the review of #115"): a suspended remote account not shown, one
+  that deletes itself losing its posts and follows at once; a domain's suspension removing its posts, pictures, mentions
+  and shares, and the picture route asking the policy; deletions remembered with their account, 100 per account, 600 an
+  hour per host and 20,000 in all, whoever follows the account; only members who share their profile named; posts kept
+  for a mention capped apart at 5,000; a Create and a Delete of one post taking turns on its id; a moderator's delete
+  remembered; an edit making a post direct or leaving nobody to read it removing it; the picture worker at a start, a
+  picture asked for again at most once an hour and only while fewer than 2,000 wait, and a hold of a minute after a
+  failed write; `shrinkPicture` given its bound, and one decode at a time with link cards; an undecodable Delete stored
+  since migration 22 not acted on; a future `published` shown as the time received; remote posts not shown in local
+  mode; the Federation switch off before `-purge-remote`. Tests `TestDBRemoteActorSuspendedOrGone`,
+  `TestDBRemoteDomainSuspended`, `TestDBRemoteDeletedMemory`, `TestDBMediaWorkerAtStart`, `TestDBRemoteNotesWhoReads`
+  (a pending follow, an unfollow, a member who never opted in, a suspended one), `TestDBRemoteMentionOnlyCap`,
+  `TestDBRemoteCreateDeleteRace`, `TestDBRemoteNotesTakenAway`, `TestDBMediaWriteFails`, `TestDBRemoteNotesEdges` (the
+  public addresses with a remote post's id answer 404), `TestDBRemoteNotesInLocalMode`, and `TestDBMediaCacheBudget`
+  extended.
   **Open:** a post given by id only is not fetched from its origin, Undo of a share is not acted on, the domain
   policy's `reject_media` and remote avatars wait for FMD; recorded Mastodon posts (the owner's trial, item 9) to hold
   the fixtures to; the box stays unchecked until those and the owner's review. For the owner (defaults built): whether
   a post naming a member from an account nobody follows should be kept (built: yes, read by that member alone), the
-  numbers (200 posts per account, 600 an hour per host, 50,000 in all, 30 days, 200 MB and 4,000 pictures down to
-  160 MB and 3,200, 1,280 px and 200 KB a picture, 4 pictures a post, 2,000 waiting), and whether an account's posts
+  numbers (200 posts per account, 600 an hour per host, 50,000 in all and 5,000 of them kept for a mention, 30 days,
+  deletions remembered 7 days, 100 per account, 600 an hour per host and 20,000 in all, 200 MB and 4,000 pictures down
+  to 160 MB and 3,200, 1,280 px and 200 KB a picture, 4 pictures a post, 2,000 waiting, an evicted picture asked for
+  again at most once an hour, a minute's hold after a failed write), whether a remote account that deletes itself
+  should lose its follows here at once (built: yes, ahead of FWR 7's purge), and whether an account's posts
   should go when its last follower here leaves (built: kept until their 30 days, shown to nobody).
 - [ ] **Replies and likes across servers.** Remote replies become comments under local posts (deeper
   replies flattened as RPL does for a reply to a reply); local comments on Public posts go out; Like

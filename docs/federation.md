@@ -1813,9 +1813,13 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
   replaced, its pictures with it. An Update of a post never kept is taken as its Create would be, from the embedded
   object (no fetch). **Decided:** an edit notifies nobody, so a server cannot repeat a mention by editing.
 - **Delete.** Of a post the same account wrote: the post goes with its notifications, its pictures' rows (`ON DELETE
-  CASCADE`) and their files. Of another account's post: refused. Of a post never kept: remembered 7 days, only when the
-  author is followed here (the only case whose late Create would be kept), so the Create that arrives after it is
-  refused (6.3).
+  CASCADE`) and their files. Of another account's post: refused. Of a post never kept: remembered 7 days with the
+  account that deleted it, whoever follows that account (a post naming a member is kept without a follow, so a
+  mention deleted at once must not tell anyone when its Create comes late), so that account's Create arriving after
+  it, or its Update taken as a Create, is refused (6.3); another account of the same server cannot block a post by
+  deleting its id ahead. Bounded: 100 remembered per account (past it a Delete is acted on and not remembered), 600 an
+  hour per sending host, 20,000 in all (housekeeping drops the oldest). Corrected after the review of #115: before, a
+  Delete was remembered only for a followed account, by id alone, without a cap.
 - **Text** (`remotePost`, with `htmlToText`, which now also ends a line at the close of a heading, a quote, a list, a
   `div` or a `pre`, for long posts). The first 2,000 characters, then "…" and "Read the rest on its server:" with the
   link; a text the decoder cut at 64 KB inside a tag, an attribute, a comment or an entity loses the unterminated tail
@@ -1856,7 +1860,9 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
   redirects, each checked again), holding no connection or turn while it waits; so no member's request ever waits on
   another server and nothing is fetched while a page is drawn. The bytes decide the type (`image.DecodeConfig`: JPEG,
   PNG or GIF, whatever the header said, which only lets an image type through first), the size is read before
-  decoding (4,096 px a side), one picture is decoded at a time (`pictureMu`), the first frame of a GIF, and the copy is
+  decoding (4,096 px a side, the bound `shrinkPicture` is given), one picture is decoded at a time with link cards'
+  thumbnails (`pictureMu`; a member's own upload is decoded in its own request, `cleanImage`, as before), the first
+  frame of a GIF, and the copy is
   a JPEG of at most 1,280 px and 200 KB made from the pixels alone. Each is written once, whole, to a temporary file
   renamed into place under `-data/media`, and its last use is written at most once an hour, for an SD card's sake. At
   most 200 MB and 4,000 files: past either, the least recently used are marked evicted (the row first, then the file)
@@ -1868,8 +1874,38 @@ Posts from followed accounts in Home ("federation: posts from followed accounts"
   once. Housekeeping removes files no row names, older than 10 minutes. Not built: the domain policy's `reject_media`
   (FMD's), avatars and headers of remote accounts.
 - **Rollback (14.4).** This is the first version to keep remote posts: an older build after `./deploy.sh --rollback`
-  shows them as local, in the Community timeline, so `/nunchaku -purge-remote` must run first. It now also counts
-  and removes the pictures' rows and the remembered deletions, and empties `-data/media`.
+  shows them as local, in the Community timeline, so `/nunchaku -purge-remote` must run first, with the Federation
+  switch off (the inbox then answers 503 and its workers take no row, so nothing is stored between the purge and the
+  rollback: a post naming a member needs no follow). It now also counts and removes the pictures' rows and the
+  remembered deletions, and empties `-data/media`.
+- **After the review of #115** (each with a test that fails without it):
+  - An account its server says is suspended (`ap_actors.state`) is left out of Home, of a post opened alone and of
+    the picture route (`actorShown`, one primary key look per account) until its server lifts it; an account that
+    deletes itself loses its posts here (their pictures with them) and its follows both ways in the statement that
+    marks it gone (`actorGoneSQL`). Suspending a domain removes, in the statement that ends its follows, the posts its
+    accounts left (kept for a follow or a mention), their pictures and the mention and share notifications they sent;
+    the picture route asks the domain policy too.
+  - A post may name only a member who shares their profile and is not suspended (`publicMember`, as an Announce
+    asks); a member who never opted in gets nothing from other servers.
+  - Posts kept only for a mention (`posts.ap_mention_only`) have a cap of their own, 5,000, so servers nobody here
+    follows cannot push followed accounts' posts out; the 50,000 counts the others.
+  - A Create and a Delete of one post take turns on its id (`pg_advisory_xact_lock` inside their transaction, never
+    across a fetch), so two workers cannot both miss each other.
+  - A moderator's delete of a remote post is remembered like its author's own, so an edit from its server does not
+    bring it back. An edit that makes a kept post direct, or takes out the only mention that kept an unfollowed
+    author's post, removes it (only when newer than the version kept).
+  - The picture worker starts at a start when a picture waits; a picture a reader asks for again after its
+    eviction is asked for at most once an hour, and only while fewer than 2,000 wait (the soft bound of the rows
+    written at the same moment by the two inbox workers apart); a write that fails (a full disk) holds the worker off
+    for a minute.
+  - An undecodable Delete stored since migration 22 is not acted on (only older rows are read as an actor's own).
+  - Links: the original is on the author's host (`remoteLink`); a reply's `inReplyTo` and an attachment's address are
+    https addresses on any host, by nature (a reply may answer anyone; Mastodon serves files from a host of its own),
+    and the page names the host beside each. A `published` later than the time received is shown as that time.
+  - **Local mode on a database that federated.** The remote accounts stay and the follow lists show them as before
+    (FWR 3), but their posts are not shown (`homeSQL`'s `$5`, `postOneSQL`'s `$4`), the picture route is not there and
+    housekeeping does not touch them; they show again when the mode federates again, and `-purge-remote` removes
+    them. Local mode is otherwise as it has always been.
 - **Tests.** `TestRemoteHTMLToText` (the hostile corpus: script, style, event attributes, `javascript:` and `data:`
   links, entities numeric and overlong, comments, CDATA, direction marks, a megabyte of nesting, a text cut inside a
   tag, an attribute, a comment, an entity), `TestRemotePostFixtures` (`testdata/federation/notes`, written from
@@ -3679,7 +3715,8 @@ changes no running instance.
   fetches and keeps the actor it finds, so from this version an instance in a mode that federates has remote
   rows once anyone has looked someone up, and the purge before a rollback matters in practice. As built (FWR 5):
   the first version to keep remote posts, which an older build after `./deploy.sh --rollback` shows as local, in
-  the Community timeline; the purge removes them, their pictures' rows and the files under `-data/media`.
+  the Community timeline; the purge removes them, their pictures' rows and the files under `-data/media`. Turn the
+  Federation switch off before the purge, so that nothing is stored between it and the rollback.
 - **Social facts cannot be rolled back.** Activities delivered stay delivered; an actor id announced
   stays announced (section 4.3). A rollback to a build without federation leaves remote servers
   retrying for their own horizon, then giving up.

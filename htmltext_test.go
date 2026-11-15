@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -100,7 +101,7 @@ func TestRemoteHTMLToText(t *testing.T) {
 	for what, tail := range map[string]string{"a tag": `<a href="https://x.example/`, "an attribute": `<span class="h-car`, "a comment": "<!-- a note",
 		"an entity": "&am", "a numeric entity": "&#12", "a script": "<script>alert(1)"} {
 		n := &apNote{ID: "https://social.example/users/bo/statuses/1", Kind: "Note", Content: "<p>Hello there</p>" + tail, Cut: true}
-		body, _, _ := remotePost(n, boID)
+		body, _, _ := remotePost(n, boID, time.Now())
 		if want := "Hello there\n\n" + remoteReadRest + " https://social.example/users/bo/statuses/1"; body != want {
 			t.Errorf("cut inside %s: %q, want %q", what, body, want)
 		}
@@ -259,7 +260,7 @@ func TestRemotePostFixtures(t *testing.T) {
 		{"mention.json", "Thanks @anna@social.example and @cyd@here.example! Also @anna, written plainly.", "", "Note", false, nil},
 	} {
 		n := read(c.file)
-		body, v, media := remotePost(n, boID)
+		body, v, media := remotePost(n, boID, time.Now())
 		if body != c.body || v.CW != c.cw || v.Kind != c.kind || v.Sensitive != c.sensitive || !slices.Equal(media, c.media) {
 			t.Errorf("%s:\n got %q %q %s %v %v\nwant %q %q %s %v %v", c.file, body, v.CW, v.Kind, v.Sensitive, media, c.body, c.cw, c.kind, c.sensitive, c.media)
 		}
@@ -269,7 +270,7 @@ func TestRemotePostFixtures(t *testing.T) {
 	}
 	// The long Article: its title, its first 500 characters, then the link; its heading on a line of its own.
 	n := read("article.json")
-	body, v, _ := remotePost(n, boID)
+	body, v, _ := remotePost(n, boID, time.Now())
 	text, _, _ := strings.Cut(body, "\n\n"+remoteReadRest)
 	if v.Title != "A long note on learning the figure-8" || v.Kind != "Article" || !strings.HasPrefix(body, "Why the figure-8\nFlow arts are") ||
 		!strings.HasSuffix(body, remoteReadRest+" https://social.example/@bo/106") || utf8.RuneCountInString(text) != remoteLongMax+1 || !strings.HasSuffix(text, "…") {
@@ -300,7 +301,7 @@ func FuzzRemotePost(f *testing.F) {
 	f.Fuzz(func(t *testing.T, in string, cut bool) {
 		for _, kind := range []string{"Note", "Article", "Question"} {
 			n := &apNote{ID: id, Kind: kind, Content: in, Summary: in, Name: "A title", Cut: cut, Options: []string{"yes", "no"}}
-			body, v, _ := remotePost(n, boID)
+			body, v, _ := remotePost(n, boID, time.Now())
 			if cut && !strings.HasSuffix(body, remoteReadRest+" "+id) && !strings.HasSuffix(body, remotePollSays+" "+id) {
 				t.Fatalf("%s cut, without the link: %q from %q", kind, body, in)
 			}

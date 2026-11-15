@@ -3787,10 +3787,10 @@ func TestDBQueryPlans(t *testing.T) {
 	// whole where 500 lookups would cost more, as the planner sees it: a row per member, like people.
 	homeMost := float64((500+1)*(pageSize+1)*4 + 8000)
 	plans([]planCase{
-		{"Home, 500 accounts followed, first page", homeSQL, []any{viewer, 0, pageSize + 1, false}, homeMost, ""},
-		{"Home, 500 accounts followed, an older page", homeSQL, []any{viewer, older, pageSize + 1, false}, homeMost, ""},
-		{"Home, 500 accounts followed, as a moderator", homeSQL, []any{viewer, 0, pageSize + 1, true}, homeMost, ""},
-		{"Home of a member who follows nobody", homeSQL, []any{followed, 0, pageSize + 1, false}, 300, ""},
+		{"Home, 500 accounts followed, first page", homeSQL, []any{viewer, 0, pageSize + 1, false, false}, homeMost, ""},
+		{"Home, 500 accounts followed, an older page", homeSQL, []any{viewer, older, pageSize + 1, false, false}, homeMost, ""},
+		{"Home, 500 accounts followed, as a moderator", homeSQL, []any{viewer, 0, pageSize + 1, true, false}, homeMost, ""},
+		{"Home of a member who follows nobody", homeSQL, []any{followed, 0, pageSize + 1, false, false}, 300, ""},
 		{"the 500 accounts a member follows", followingSQL, []any{viewer, maxFollowList}, 13000, "users"},
 		{"the followers of a member", followersSQL, []any{followed, maxFollowList}, 600, ""},
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
@@ -4027,15 +4027,18 @@ func TestDBQueryPlans(t *testing.T) {
 	plans([]planCase{
 		{"remote: the timeline, first page, 20,000 newer remote posts", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 1500, ""},
 		{"remote: the timeline as a moderator sees it", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, true, pq.Array(none)}, 1500, ""},
-		{"remote: Home, 500 members and 100 remote accounts followed", homeSQL, []any{viewer, 0, pageSize + 1, false}, homeRemote, ""},
-		{"remote: a post alone, its author followed", postOneSQL, []any{viewer, remotePost, false}, 300, ""},
-		{"remote: a post alone, not readable", postOneSQL, []any{viewer, notSeen, false}, 300, ""},
-		{"remote: a post alone, a local one", postOneSQL, []any{viewer, 4321, false}, 300, ""},
-		{"remote: whether an account is followed, and who is named", noteDecideSQL, []any{remoteFollowed, pq.Array([]string{"m1", "m2", "m3", "nobody"})}, 100, ""},
+		{"remote: Home, 500 members and 100 remote accounts followed", homeSQL, []any{viewer, 0, pageSize + 1, false, true}, homeRemote, ""},
+		{"remote: a post alone, its author followed", postOneSQL, []any{viewer, remotePost, false, true}, 300, ""},
+		{"remote: a post alone, not readable", postOneSQL, []any{viewer, notSeen, false, true}, 300, ""},
+		{"remote: a post alone, a local one", postOneSQL, []any{viewer, 4321, false, true}, 300, ""},
+		{"remote: whether an account is followed, and who is named", noteDecideSQL, []any{remoteFollowed, pq.Array([]string{"m1", "m2", "m3", "nobody"}), false}, 100, ""},
 		{"remote: the cap per account", notePastCapSQL, []any{remoteFollowed, remotePostsPerAccount}, 200, ""},
 		{"remote: the picture worker's claim", mediaClaimSQL, []any{time.Now(), 60.0}, 100, ""},
 		{"remote: retention, a batch of 1,000 past their time", remoteKeepSQL, []any{time.Now().Add(48 * time.Hour), remoteBatch}, 15000, ""},
 		{"remote: the cap in all, a batch", remoteCapSQL, []any{15000, remoteBatch}, 3 * (15000 + remoteBatch + 5000), ""},
+		{"remote: the cap of posts kept for a mention, a batch", remoteMentionCapSQL, []any{remoteMentionOnlyMax, remoteBatch}, 200, ""},
+		{"remote: the cap of remembered deletions", remoteDeletedCapSQL, []any{1500}, 6000, "ap_deleted"},
+		{"remote: remembering a deletion, under the account's cap", noteRememberSQL, []any{"https://h7.example/n/new", int64(1000008), time.Now(), remoteDeletedPerAccount}, 200, ""},
 		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, ""},
 		{"remote: trimming a member's notifications, mentions and shares among them", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 6000, ""},
 	})

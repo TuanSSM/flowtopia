@@ -5332,20 +5332,24 @@ func htmlUnescape(s string) string {
 // shrinkThumb decodes a JPEG or PNG, scales it to at most 640 px on its longer side and re-encodes
 // it as a JPEG of at most 60 KB, so what Flowa serves is its own small copy.
 func shrinkThumb(raw []byte) ([]byte, int, int, error) {
-	return shrinkPicture(raw, thumbSide, maxThumbOut)
+	return shrinkPicture(raw, 4096, thumbSide, maxThumbOut)
 }
 
-// shrinkPicture is shrinkThumb for any bound: at most side px on the longer side, at most maxOut bytes. The
-// remote picture cache (FWR 5) makes its copies with it.
-func shrinkPicture(raw []byte, side, maxOut int) ([]byte, int, int, error) {
+// shrinkPicture is shrinkThumb for any bound: at most inSide px a side declared before anything is decoded, at most
+// side px on the longer side and maxOut bytes after. The remote picture cache (FWR 5) makes its copies with it. One
+// decode at a time, for link cards and remote pictures together (pictureMu); a member's own upload is decoded by
+// cleanImage in its own request, as before.
+func shrinkPicture(raw []byte, inSide, side, maxOut int) ([]byte, int, int, error) {
 	// The size first: a small file can declare a huge image, which would take all memory to decode.
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	if cfg.Width > 4096 || cfg.Height > 4096 {
+	if cfg.Width > inSide || cfg.Height > inSide {
 		return nil, 0, 0, errors.New("image too large")
 	}
+	pictureMu.Lock()
+	defer pictureMu.Unlock()
 	src, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil, 0, 0, err
@@ -6424,8 +6428,13 @@ type federation struct {
 	followsOn func() (on, known bool)
 	// media is the remote picture cache (FWR 5), set by startFederation; notesIn counts the remote posts stored per
 	// sending host (remoteNotesPerHostHour).
-	media   *mediaCache
-	notesIn *limiter
+	media     *mediaCache
+	notesIn   *limiter
+	deletesIn *limiter // deletions of posts never kept remembered per sending host (remoteDeletedPerHostHour)
+	// notesSince is when migration 22 was applied (handle reads older rows as before it); noteHook, when set by a
+	// test, hears of the steps where a Create holds its post's lock and a Delete is about to take it.
+	notesSince time.Time
+	noteHook   func(stage string)
 	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
 	// once in followAnswerEvery (followAnswerDue).
 	answersMu sync.Mutex
@@ -6455,7 +6464,7 @@ func newFederation(db *sql.DB, s fedSettings) *federation {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &federation{db: db, origin: s.origin, secret: s.secret, cache: map[keyOwner]cachedKey{}, gen: generateKey,
 		ask: make(chan keyOwner, keyQueue), lookups: make(chan struct{}, lookupsAtOnce), lookupBy: map[int64]bool{}, lookupNow: time.Now, lookupPause: lookupWait,
-		conns: make(chan struct{}, fedConnsMax), notesIn: newLimiter(remoteNotesPerHostHour, time.Hour), ctx: ctx, cancel: cancel}
+		conns: make(chan struct{}, fedConnsMax), notesIn: newLimiter(remoteNotesPerHostHour, time.Hour), deletesIn: newLimiter(remoteDeletedPerHostHour, time.Hour), ctx: ctx, cancel: cancel}
 }
 
 // lookupWait waits for d, or until ctx ends: lookupFloor's pause.
@@ -6852,6 +6861,10 @@ func (a *app) startFederation(s fedSettings) error {
 	f.out = newDeliveryQueue(f, a.fetch, max(s.workers, 1), func() bool { return !a.flagsCached()["federation"] })
 	f.out.goneInbox = f.goneFollower
 	f.media = newMediaCache(f, a.fetch, filepath.Join(a.dataDir, "media"), func() bool { return !a.flagsCached()["federation"] })
+	// When migration 22 (FWR 5) was applied: inbox rows stored before it are read as that version's worker read them.
+	if err := a.db.QueryRow(`SELECT applied_at FROM schema_migrations WHERE version = 22`).Scan(&f.notesSince); err != nil {
+		return err
+	}
 	f.out.produce = a.sendOut // FWR 4: Public posts, their deletions and profiles become activities in the workers
 	f.switches = a.outSwitches
 	f.postsDue.Store(true) // a record left by a stop is looked for at the first step
@@ -6917,6 +6930,15 @@ func (a *app) startFederation(s fedSettings) error {
 		}
 		if waiting {
 			f.inbox.kick()
+		}
+		// Pictures that wait for the worker (given back at a stop, or due for another try) are fetched from the start,
+		// not only once another remote picture arrives (FWR 5).
+		var pictures bool
+		if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM ap_media WHERE state = 'wanted')`).Scan(&pictures); err != nil {
+			return err
+		}
+		if pictures {
+			f.media.kick()
 		}
 		// The delivery queue's start: the clock's floor, the hosts marked unavailable, and its workers when rows wait.
 		if err := f.out.readStart(a.db); err != nil {
@@ -17086,6 +17108,14 @@ const inboxClaimSQL = `UPDATE ap_inbox SET locked_until = $1::timestamptz + make
 		ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
 	RETURNING id, actor_id, kind, attempts`
 
+// actorGoneSQL marks account $1 gone, and removes its remote posts and its follows both ways, giving the files of
+// its posts' pictures.
+const actorGoneSQL = `WITH m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL) AND file <> ''),
+	p AS (DELETE FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL RETURNING 1),
+	f AS (DELETE FROM follows WHERE follower_id = $1 OR followee_id = $1 RETURNING 1),
+	a AS (UPDATE ap_actors SET state = 'gone' WHERE user_id = $1 RETURNING 1)
+	SELECT COALESCE((SELECT array_agg(file) FROM m), '{}') FROM (SELECT (SELECT count(*) FROM p) + (SELECT count(*) FROM f) + (SELECT count(*) FROM a)) x`
+
 // errRetry is a handling that failed for this server's reason, to be tried again later.
 type errRetry struct{ why string }
 
@@ -17191,15 +17221,17 @@ func (q *inboxQueue) handle(ctx context.Context, row, actor int64, kind string) 
 	switch kind {
 	case "Delete", "Create", "Update", "Announce", "Follow", "Accept", "Reject", "Undo", "Block":
 		var body sql.NullString
-		if err := f.fedRow(ctx, []any{&body}, `SELECT body FROM ap_inbox WHERE id = $1`, row); err != nil {
+		var received time.Time
+		if err := f.fedRow(ctx, []any{&body, &received}, `SELECT body, received_at FROM ap_inbox WHERE id = $1`, row); err != nil {
 			return "", &errRetry{"the database"}
 		}
 		act, err = decodeActivity([]byte(body.String), inboxBodyMax)
 		switch {
 		case err == nil && act.Actor == apID && len(act.Object) == 1:
-		case kind == "Delete" || kind == "Update":
-			// Before FWR 5 the inbox stored a Delete or an Update only when it was about the actor itself, and its
-			// worker never read the body: a row that does not read is handled as one of those, as it was.
+		case kind == "Update" || kind == "Delete" && received.Before(f.notesSince):
+			// Before FWR 5 (migration 22) the inbox stored a Delete or an Update only when it was about the actor
+			// itself, and its worker never read the body: such a row that does not read is handled as one of those, as
+			// it was. A Delete stored since does read, or is not acted on; an Update only fetches the actor again.
 			act = nil
 		default:
 			return " not acted on (the stored activity does not read)", nil
@@ -17218,10 +17250,14 @@ func (q *inboxQueue) handle(ctx context.Context, row, actor int64, kind string) 
 	switch kind {
 	case "Delete":
 		// The actor deleted itself (6.3): marked gone, so its key verifies nothing more and its profile is not
-		// shown; FWR 7 purges what it left here. Every key of it kept in memory goes too.
-		if err := q.finish(ctx, `UPDATE ap_actors SET state = 'gone' WHERE user_id = $1`, actor); err != nil {
+		// shown, and in the same statement its posts here go (their pictures' rows with them, the files after) and so
+		// do the follows both ways (FWR 5): nothing of a deleted account stays readable in a Home. FWR 7 purges the
+		// rest. Every key of it kept in memory goes too.
+		var files []string
+		if err := f.fedRow(ctx, []any{pq.Array(&files)}, actorGoneSQL, actor); err != nil {
 			return "", &errRetry{"the database"}
 		}
+		removeMedia(f.mediaDir(), files)
 		f.actors.keys.drop(apID)
 		return "", nil
 	case "Update":
@@ -20184,12 +20220,19 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 	// Mastodon's suspension removes them and does not restore them (section 10); nothing is sent, since nothing goes to
 	// a suspended domain. Its accounts are found by users_remote_domain for the domain itself, and by reading the remote
 	// accounts for its subdomains (at most remoteActorsMax and those something points at), once, on this admin action.
-	ended := 0
+	//
+	// Since FWR 5 the same statement removes the posts its accounts left here (kept for a follow or for a mention), with
+	// their pictures' rows and their notifications, and the share and mention notifications its accounts sent; the
+	// pictures' files go after the commit.
+	ended, removed := 0, 0
+	var files []string
 	if in.Policy == "suspend" {
 		if err := tx.QueryRow(`WITH s AS (SELECT id FROM users WHERE domain <> '' AND (domain = $1 OR right(domain, length($1) + 1) = '.' || $1)),
-			n AS (DELETE FROM notifications WHERE kind IN ('follow', 'follow_request') AND actor_id IN (SELECT id FROM s)),
-			g AS (DELETE FROM follows WHERE follower_id IN (SELECT id FROM s) OR followee_id IN (SELECT id FROM s) RETURNING 1)
-			SELECT count(*) FROM g`, d).Scan(&ended); err != nil {
+			n AS (DELETE FROM notifications WHERE kind IN ('follow', 'follow_request', 'share', 'mention') AND actor_id IN (SELECT id FROM s)),
+			g AS (DELETE FROM follows WHERE follower_id IN (SELECT id FROM s) OR followee_id IN (SELECT id FROM s) RETURNING 1),
+			m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM posts WHERE user_id IN (SELECT id FROM s) AND ap_id IS NOT NULL) AND file <> ''),
+			p AS (DELETE FROM posts WHERE user_id IN (SELECT id FROM s) AND ap_id IS NOT NULL RETURNING 1)
+			SELECT (SELECT count(*) FROM g), (SELECT count(*) FROM p), COALESCE((SELECT array_agg(file) FROM m), '{}')`, d).Scan(&ended, &removed, pq.Array(&files)); err != nil {
 			a.serverError(w, err)
 			return
 		}
@@ -20197,6 +20240,7 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 	detail := map[string]any{"domain": d, "policy": in.Policy, "was": was}
 	if in.Policy == "suspend" {
 		detail["followsEnded"] = ended // the audit says what the suspension ended (FWR 3)
+		detail["postsRemoved"] = removed
 	}
 	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, detail); err != nil {
 		a.serverError(w, err)
@@ -20206,6 +20250,7 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
+	removeMedia(a.fed.mediaDir(), files)
 	a.fedPolicyChanged(w, r, u)
 }
 
@@ -20775,15 +20820,19 @@ timeline, not the public pages, the outbox or NodeInfo's count, not anyone else'
     when its object is a post of this server. Create, Update and Announce wait for the switches like follows
     (followsState: off drops, unread is 503 and a retry); a Delete only removes and is always acted on.
   - Kept (noteIn) when an account here follows the author (accepted), or when the post's Mention tags name a
-    member here whom its addressing lets read it and who does not block the author (6.3: "or mentions a local
-    member"); that member alone may open it, from the notification. A post addressed to neither the public
+    member here who shares their profile (publicMember), whom its addressing lets read it and who does not block
+    the author (6.3: "or mentions a local member"); that member alone may open it, from the notification, and such
+    posts have a cap of their own (remoteMentionOnlyMax). An account its server says is suspended is not shown
+    (actorShown); one that deletes itself loses its posts and follows here (actorGoneSQL). A post addressed to neither the public
     collection nor the author's followers collection is a direct message and dropped (6.7, F3). Audiences are
     never widened: a followers-only post is read only by followers and by members its addressing names.
   - Update: only of a post the same account wrote (the row's user_id, never a remote string), only with an
     updated time newer than the one kept; the whole post is replaced (ActivityPub 7.3), its pictures too. An
-    Update of a post never kept is taken as a Create would be. Delete removes the post, its pictures and the
-    notifications pointing at it; one of a post another account wrote is refused; one of a post never kept is
-    remembered 7 days when the author is followed here, so a Create arriving late is refused (6.3).
+    Update of a post never kept is taken as a Create would be; an edit that makes a post direct or leaves nobody
+    here who may read it removes it. Delete removes the post, its pictures and the notifications pointing at it;
+    one of a post another account wrote is refused; one of a post never kept is remembered 7 days with its account
+    (noteRememberSQL's bounds), as is a moderator's delete, so a Create (or an Update taken as one) arriving late
+    is refused (6.3). A Create and a Delete of one post take turns on its id (noteLock).
   - Text (remotePost): htmlToText, the first remoteTextMax characters, then "Read the rest on its server" and the
     link to the original; a content warning as the summary the post folds behind; a poll's question and choices
     with "This is a poll; vote on its server"; a long post (Article, Page, ...) as its title, its summary or its
@@ -20794,8 +20843,8 @@ timeline, not the public pages, the outbox or NodeInfo's count, not anyone else'
   - Announce of a member's Public post: a share notification to its author (no timeline entry, F3 has no
     boosts); of anything else, dropped. Notifications from other servers are bounded per member as FWR 3's are.
   - Bounds: remotePostsPerAccount kept per account (the oldest go), remoteNotesPerHostHour new posts an hour per
-    sending host (past it dropped and counted), remotePostsMax in all and retention after remoteKeep (both in
-    housekeeping, in batches); the inbox's own allowances and queue caps before all of it.
+    sending host (past it dropped and counted), remotePostsMax in all, remoteMentionOnlyMax kept for a mention and
+    retention after remoteKeep (in housekeeping, in batches); the inbox's own allowances and queue caps before all of it.
   - Pictures (F6, 9.4): a worker (mediaCache) fetches each through the guarded fetcher, one at a time in all and
     so one per host, holding no connection while it waits; decodes it under pictureMu after reading its size,
     makes a JPEG of at most mediaSide px and mediaOut bytes (so no remote byte is served as sent and nothing a
@@ -20806,31 +20855,36 @@ timeline, not the public pages, the outbox or NodeInfo's count, not anyone else'
   - Every statement takes one of the federation's turns (dbTurn), never across a fetch or another statement. */
 
 const (
-	remotePostsPerAccount  = 200                 // remote posts kept per account; a Create past it drops that account's oldest
-	remotePostsMax         = 50000               // remote posts kept in all; housekeeping drops the oldest past it
-	remoteNotesPerHostHour = 600                 // new remote posts stored per sending host in an hour; more are dropped and counted
-	remoteKeep             = 30 * 24 * time.Hour // a remote post nobody here interacted with is kept this long (9.3)
-	remoteDeletedKeep      = 7 * 24 * time.Hour  // how long the id of a post deleted before it arrived is remembered (6.3)
-	remoteLongMax          = 500                 // characters of a long post (Article, Page, ...) shown before its link (6.6)
-	remoteCWMax            = 500                 // characters of a content warning kept
-	remoteTitleMax         = 200                 // characters of a long post's title kept
-	remoteOptionMax        = 200                 // characters of a poll's choice kept
-	remoteAltMax           = 1500                // characters of a picture's description kept, as for a local post's alt text
-	remoteMediaShown       = 4                   // pictures of one post fetched and shown (6.6); the rest are links
-	remoteMediaMax         = 8                   // attachments of one post kept at all; the rest are left out
-	remoteBatch            = 1000                // rows one housekeeping statement removes
-	mediaMaxBytes          = 200 << 20           // the picture cache on disk (F6): past it, the least recently used go
-	mediaLowBytes          = 160 << 20           // down to this (9.3)
-	mediaMaxFiles          = 4000                // pictures kept: 200 MB of 50 KB pictures, and few enough files for an SD card's directory
-	mediaLowFiles          = 3200                //
-	mediaSide              = 1280                // px on the longer side of a picture kept (F6)
-	mediaOut               = 200 << 10           // bytes of a picture kept (F6)
-	mediaInSide            = 4096                // px a side a picture may declare before it is decoded (7.5)
-	mediaWantedMax         = 2000                // pictures waiting to be fetched; past it a new one is only a link
-	mediaLease             = time.Minute         // a claimed picture is another worker's again after this
-	mediaPoll              = 30 * time.Second    // an idle worker looks again after this, or at once when a picture is wanted
-	mediaUsedEvery         = time.Hour           // a picture's last use is written at most this often (an SD card's writes)
-	mediaOrphanAge         = 10 * time.Minute    // a file with no row older than this is removed by housekeeping
+	remotePostsPerAccount    = 200                 // remote posts kept per account; a Create past it drops that account's oldest
+	remotePostsMax           = 50000               // remote posts kept in all; housekeeping drops the oldest past it
+	remoteNotesPerHostHour   = 600                 // new remote posts stored per sending host in an hour; more are dropped and counted
+	remoteKeep               = 30 * 24 * time.Hour // a remote post nobody here interacted with is kept this long (9.3)
+	remoteDeletedKeep        = 7 * 24 * time.Hour  // how long the id of a post deleted before it arrived is remembered (6.3)
+	remoteDeletedPerAccount  = 100                 // ids of deletions remembered per account; past it a deletion is acted on but not remembered
+	remoteDeletedPerHostHour = 600                 // deletions remembered per sending host in an hour (deletesIn)
+	remoteDeletedMax         = 20000               // ids of deletions remembered in all; housekeeping drops the oldest past it
+	remoteMentionOnlyMax     = 5000                // posts kept only for a mention (nobody here follows their author), in all; housekeeping drops the oldest past it
+	mediaRewantEvery         = time.Hour           // an evicted picture is asked for again by a reader at most this long after it was evicted or last asked for
+	remoteLongMax            = 500                 // characters of a long post (Article, Page, ...) shown before its link (6.6)
+	remoteCWMax              = 500                 // characters of a content warning kept
+	remoteTitleMax           = 200                 // characters of a long post's title kept
+	remoteOptionMax          = 200                 // characters of a poll's choice kept
+	remoteAltMax             = 1500                // characters of a picture's description kept, as for a local post's alt text
+	remoteMediaShown         = 4                   // pictures of one post fetched and shown (6.6); the rest are links
+	remoteMediaMax           = 8                   // attachments of one post kept at all; the rest are left out
+	remoteBatch              = 1000                // rows one housekeeping statement removes
+	mediaMaxBytes            = 200 << 20           // the picture cache on disk (F6): past it, the least recently used go
+	mediaLowBytes            = 160 << 20           // down to this (9.3)
+	mediaMaxFiles            = 4000                // pictures kept: 200 MB of 50 KB pictures, and few enough files for an SD card's directory
+	mediaLowFiles            = 3200                //
+	mediaSide                = 1280                // px on the longer side of a picture kept (F6)
+	mediaOut                 = 200 << 10           // bytes of a picture kept (F6)
+	mediaInSide              = 4096                // px a side a picture may declare before it is decoded (7.5)
+	mediaWantedMax           = 2000                // pictures waiting to be fetched; past it a new one is only a link
+	mediaLease               = time.Minute         // a claimed picture is another worker's again after this
+	mediaPoll                = 30 * time.Second    // an idle worker looks again after this, or at once when a picture is wanted
+	mediaUsedEvery           = time.Hour           // a picture's last use is written at most this often (an SD card's writes)
+	mediaOrphanAge           = 10 * time.Minute    // a file with no row older than this is removed by housekeeping
 )
 
 // mediaRetries is the wait before each later try of a picture whose fetch failed for a reason that may pass (a time
@@ -20887,7 +20941,7 @@ type remoteView struct {
 	CW        string        `json:"cw,omitempty"`        // the content warning the post folds behind (summary)
 	Sensitive bool          `json:"sensitive,omitempty"` // its pictures are hidden until a tap
 	Published *time.Time    `json:"published,omitempty"` // as its server says, for the time shown
-	ReplyTo   string        `json:"replyTo,omitempty"`   // the post it answers, on another server: replies are FWR 6's
+	ReplyTo   string        `json:"replyTo,omitempty"`   // the post it answers (an https id, on any server: a reply may answer anyone; the page names its host); replies are FWR 6's
 	Kind      string        `json:"kind"`                // its type: Note, Question, Article, ...
 	Media     []remoteMedia `json:"media,omitempty"`
 }
@@ -20897,7 +20951,7 @@ type remoteView struct {
 type remoteMedia struct {
 	Kind string `json:"kind"`          // picture, video, audio or file
 	Src  string `json:"src,omitempty"` // /api/fed/media/{id}.jpg, only while the cache holds it
-	Link string `json:"link"`          // the attachment on its server
+	Link string `json:"link"`          // the attachment on its server: an https address, often on a host for media apart from the author's (Mastodon's files host); the page names its host
 	Alt  string `json:"alt,omitempty"` // its description, plain text, shown escaped
 }
 
@@ -20910,10 +20964,16 @@ type remoteAttachment struct {
 // remotePost is a remote post as Flowa keeps it: the text shown (plain, escaped by the page), what is shown
 // beside it, and its attachments. A text cut (at remoteTextMax characters, at remoteLongMax for a long post, or by
 // the decoder at 64 KB inside markup, which htmlToText drops) ends with the link to the original, as does a poll.
-func remotePost(n *apNote, author string) (string, remoteView, []remoteAttachment) {
+//
+// now is when the post arrived: a published time later than it (a server's clock, or a post dated ahead to stay on
+// top) is shown as now.
+func remotePost(n *apNote, author string, now time.Time) (string, remoteView, []remoteAttachment) {
 	v := remoteView{Link: remoteLink(n, author), Kind: n.Kind, Sensitive: n.Sensitive}
 	if !n.Published.IsZero() {
 		t := n.Published
+		if t.After(now) {
+			t = now
+		}
 		v.Published = &t
 	}
 	if n.InReplyTo != "" {
@@ -21028,17 +21088,21 @@ func noteAudience(n *apNote, act *apActivity, followers string) (string, []strin
 }
 
 // noteDecideSQL says whether a member here follows the account $1 (accepted), and which of the members named
-// $2 may be told of a post of it: local, and no block between the two.
+// $2 may be told of a post of it: local, sharing their profile beyond this server and not suspended (publicMember,
+// $3 single mode, as an Announce asks), and no block between the two. A member who never opted in gets nothing
+// from a network they never joined.
 var noteDecideSQL = `SELECT EXISTS (SELECT 1 FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.followee_id = $1 AND f.state = 'accepted' AND u.domain = ''),
-	ARRAY(SELECT u.id FROM users u WHERE u.username = ANY($2) AND u.domain = '' AND ` + blockFree("u.id", "$1::bigint", "false") + ` ORDER BY u.id)`
+	ARRAY(SELECT u.id FROM users u WHERE u.username = ANY($2) AND u.domain = '' AND ` + strings.ReplaceAll(publicMember, "$2", "$3") + `
+		AND ` + blockFree("u.id", "$1::bigint", "false") + ` ORDER BY u.id)`
 
-// noteInsertSQL keeps a new remote post unless its id is kept already or was deleted before it came.
-const noteInsertSQL = `INSERT INTO posts (user_id, body, audience, ap_id, ap_updated, ap_to, ap_extra)
-	SELECT $1, $2, $3, $4, $5, $6, $7 WHERE NOT EXISTS (SELECT 1 FROM ap_deleted WHERE ap_id = $4)
+// noteInsertSQL keeps a new remote post unless its id is kept already, or the same account deleted it before it
+// came (another account of the server cannot block it by deleting its id ahead).
+const noteInsertSQL = `INSERT INTO posts (user_id, body, audience, ap_id, ap_updated, ap_to, ap_extra, ap_mention_only)
+	SELECT $1, $2, $3, $4, $5, $6, $7, $8 WHERE NOT EXISTS (SELECT 1 FROM ap_deleted WHERE ap_id = $4 AND user_id = $1)
 	ON CONFLICT (ap_id) WHERE ap_id IS NOT NULL DO NOTHING RETURNING id`
 
 // noteUpdateSQL replaces a kept post with a newer version of it by the same account.
-const noteUpdateSQL = `UPDATE posts SET body = $3, audience = $4, ap_updated = $5, ap_to = $6, ap_extra = $7
+const noteUpdateSQL = `UPDATE posts SET body = $3, audience = $4, ap_updated = $5, ap_to = $6, ap_extra = $7, ap_mention_only = $8
 	WHERE ap_id = $1 AND user_id = $2 AND (ap_updated IS NULL OR ap_updated < $5) RETURNING id`
 
 // notePastCapSQL removes account $1's remote posts past its newest $2, a few at a time, and gives the files of
@@ -21073,6 +21137,10 @@ func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity
 	}
 	aud, addressed := noteAudience(n, act, s.Followers)
 	if aud == "" {
+		if update {
+			// An edit that makes a kept post direct takes it out of who may read it here: removed (never widened).
+			return f.noteRemoved(ctx, s, n.ID, n.Updated, " removed (an edit made it a direct message)")
+		}
 		return " dropped (a direct message)", nil
 	}
 	// The members the Mention tags name by a local actor id (never the text: a short @anna is not the anna here).
@@ -21087,16 +21155,20 @@ func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity
 	}
 	var followed bool
 	var to []int64
-	if err := f.fedRow(ctx, []any{&followed, pq.Array(&to)}, noteDecideSQL, s.UserID, pq.Array(names)); err != nil {
+	if err := f.fedRow(ctx, []any{&followed, pq.Array(&to)}, noteDecideSQL, s.UserID, pq.Array(names), f.single); err != nil {
 		return "", &errRetry{"the database"}
 	}
 	if to == nil {
 		to = []int64{}
 	}
 	if !followed && len(to) == 0 {
+		if update {
+			// An edit that takes out the only mention that kept the post of an account nobody follows: removed.
+			return f.noteRemoved(ctx, s, n.ID, n.Updated, " removed (an edit left nobody here who may read it)")
+		}
 		return " dropped (nobody here follows the account)", nil
 	}
-	body, view, media := remotePost(n, s.ID)
+	body, view, media := remotePost(n, s.ID, time.Now())
 	extra, err := json.Marshal(view)
 	if err != nil {
 		return "", err
@@ -21109,7 +21181,7 @@ func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity
 	if err != nil {
 		return "", &errRetry{"no turn at the database"}
 	}
-	outcome, made, files, err := f.keepNote(ctx, s, n.ID, update, body, aud, updated, to, extra, media)
+	outcome, made, files, err := f.keepNote(ctx, s, n.ID, update, body, aud, updated, to, extra, media, !followed)
 	done()
 	removeMedia(f.mediaDir(), files)
 	if err != nil {
@@ -21133,17 +21205,22 @@ func (f *federation) noteIn(ctx context.Context, s *remoteActor, act *apActivity
 // keepNote writes the post in one transaction under the caller's turn: the row (new, or the newer version of one
 // kept), its attachments, and the account's posts past remotePostsPerAccount out. It returns the post's row when
 // it wrote one, and the files of pictures that went, which the caller removes after the commit.
-func (f *federation) keepNote(ctx context.Context, s *remoteActor, id string, update bool, body, aud string, updated any, to []int64, extra []byte, media []remoteAttachment) (string, int64, []string, error) {
+func (f *federation) keepNote(ctx context.Context, s *remoteActor, id string, update bool, body, aud string, updated any, to []int64, extra []byte, media []remoteAttachment, mentionOnly bool) (string, int64, []string, error) {
 	tx, err := f.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", 0, nil, err
 	}
 	defer tx.Rollback()
+	// A Create and a Delete of the same post, handled by the two workers at once, take turns on its id, so neither
+	// misses the other under READ COMMITTED (noteLock).
+	if _, err := tx.ExecContext(ctx, noteLock, id); err != nil {
+		return "", 0, nil, err
+	}
 	var row int64
 	var files []string
 	if update {
 		// The pictures of the version replaced go with it (their files after the commit).
-		err = tx.QueryRowContext(ctx, noteUpdateSQL, id, s.UserID, body, aud, updated, pq.Array(to), string(extra)).Scan(&row)
+		err = tx.QueryRowContext(ctx, noteUpdateSQL, id, s.UserID, body, aud, updated, pq.Array(to), string(extra), mentionOnly).Scan(&row)
 		switch {
 		case err == nil:
 			var gone []string
@@ -21171,7 +21248,7 @@ func (f *federation) keepNote(ctx context.Context, s *remoteActor, id string, up
 		if !f.notesIn.add(s.Domain) {
 			return " dropped (its server sent more posts this hour than are kept)", 0, nil, nil
 		}
-		err = tx.QueryRowContext(ctx, noteInsertSQL, s.UserID, body, aud, id, updated, pq.Array(to), string(extra)).Scan(&row)
+		err = tx.QueryRowContext(ctx, noteInsertSQL, s.UserID, body, aud, id, updated, pq.Array(to), string(extra), mentionOnly).Scan(&row)
 		if errors.Is(err, sql.ErrNoRows) {
 			return " a repeat, or deleted before it came", 0, nil, nil
 		}
@@ -21198,6 +21275,9 @@ func (f *federation) keepNote(ctx context.Context, s *remoteActor, id string, up
 	if err := tx.QueryRowContext(ctx, notePastCapSQL, s.UserID, remotePostsPerAccount).Scan(&gone, pq.Array(&old)); err != nil {
 		return "", 0, nil, err
 	}
+	if f.noteHook != nil {
+		f.noteHook("create held") // a test holds the transaction here, its lock taken
+	}
 	if err := tx.Commit(); err != nil {
 		return "", 0, nil, err
 	}
@@ -21211,32 +21291,100 @@ const noteDeleteSQL = `WITH p AS (SELECT id, user_id FROM posts WHERE ap_id = $1
 	d AS (DELETE FROM posts WHERE id IN (SELECT id FROM p WHERE user_id = $2) RETURNING 1)
 	SELECT (SELECT count(*) FROM d), (SELECT count(*) FROM p), COALESCE((SELECT array_agg(file) FROM m), '{}')`
 
+// noteLock makes the statements about one post's id ($1) take turns until their transaction ends: a Create and a
+// Delete of it handled by the two workers at once (7.10's inboxWorkers) cannot both read before the other writes.
+// Taken inside the transaction that writes, never across a fetch.
+const noteLock = `SELECT pg_advisory_xact_lock(7130652, hashtext($1))`
+
+// noteRememberSQL remembers that account $2 deleted $1, which it never had kept here, unless the account has
+// $4 such ids remembered already (remoteDeletedPerAccount); in all they are trimmed to remoteDeletedMax by
+// housekeeping, and each sending host may add remoteDeletedPerHostHour an hour (deletesIn).
+const noteRememberSQL = `INSERT INTO ap_deleted (ap_id, user_id, at) SELECT $1, $2, $3
+	WHERE (SELECT count(*) FROM (SELECT 1 FROM ap_deleted WHERE user_id = $2 LIMIT $4) c) < $4
+	ON CONFLICT (ap_id, user_id) DO NOTHING`
+
 // noteDeleted acts on a Delete by s of the object id (a Tombstone or a bare id; the inbox held it to the actor's
-// origin): the post goes with its pictures, its notifications and anything else that hangs off it.
+// origin): the post goes with its pictures, its notifications and anything else that hangs off it. One never kept is
+// remembered, within the bounds of noteRememberSQL, whoever follows the account: a post of an account nobody follows
+// may be kept for a mention, and a mention deleted at once must not tell anyone when its Create comes late.
 func (f *federation) noteDeleted(ctx context.Context, s *remoteActor, id string) (string, error) {
 	if !sameOrigin(id, s.ID) {
 		return " refused (the object is on another origin)", nil
 	}
+	if f.noteHook != nil {
+		f.noteHook("delete locking")
+	}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", &errRetry{"no turn at the database"}
+	}
+	outcome, files, err := f.deleteNote(ctx, s, id, true)
+	done()
+	removeMedia(f.mediaDir(), files)
+	if err != nil {
+		return "", &errRetry{"the database"}
+	}
+	return outcome, nil
+}
+
+// deleteNote removes post id of s in one transaction under the caller's turn, after its lock (noteLock); remember
+// says whether an id never kept is remembered. It returns the files of the pictures that went.
+func (f *federation) deleteNote(ctx context.Context, s *remoteActor, id string, remember bool) (string, []string, error) {
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, noteLock, id); err != nil {
+		return "", nil, err
+	}
 	var gone, kept int
 	var files []string
-	if err := f.fedRow(ctx, []any{&gone, &kept, pq.Array(&files)}, noteDeleteSQL, id, s.UserID); err != nil {
-		return "", &errRetry{"the database"}
+	if err := tx.QueryRowContext(ctx, noteDeleteSQL, id, s.UserID).Scan(&gone, &kept, pq.Array(&files)); err != nil {
+		return "", nil, err
 	}
-	removeMedia(f.mediaDir(), files)
+	outcome := ""
 	switch {
 	case gone > 0:
-		return "", nil
 	case kept > 0:
-		return " refused (the post is another account's)", nil
+		outcome = " refused (the post is another account's)"
+	case !remember:
+		outcome = " of a post never kept"
+	case !f.deletesIn.add(s.Domain):
+		outcome = " of a post never kept (not remembered: its server sent more deletions this hour than are kept)"
+	default:
+		if _, err := tx.ExecContext(ctx, noteRememberSQL, id, s.UserID, time.Now(), remoteDeletedPerAccount); err != nil {
+			return "", nil, err
+		}
+		outcome = " of a post never kept"
 	}
-	// Never kept: remembered, so the Create arriving after its Delete is refused, but only for an account someone
-	// here follows, whose Create would be kept (the rest cost no row).
-	if _, err := f.fedExec(ctx, `INSERT INTO ap_deleted (ap_id, user_id, at) SELECT $1, $2, $3
-		WHERE EXISTS (SELECT 1 FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.followee_id = $2 AND f.state = 'accepted' AND u.domain = '')
-		ON CONFLICT (ap_id) DO NOTHING`, id, s.UserID, time.Now()); err != nil {
+	return outcome, files, tx.Commit()
+}
+
+// noteRemoved takes out a kept post that a newer edit of s (updated) leaves nobody here may read: the same as its
+// Delete, but only when the edit is newer than the version kept, and nothing is remembered.
+func (f *federation) noteRemoved(ctx context.Context, s *remoteActor, id string, updated time.Time, outcome string) (string, error) {
+	var stored sql.NullTime
+	err := f.fedRow(ctx, []any{&stored}, `SELECT ap_updated FROM posts WHERE ap_id = $1 AND user_id = $2`, id, s.UserID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return " dropped (an edit of a post not kept, which nobody here may read)", nil
+	case err != nil:
+		return "", &errRetry{"the database"}
+	case stored.Valid && !stored.Time.Before(updated):
+		return " ignored (not newer than the version kept)", nil
+	}
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", &errRetry{"no turn at the database"}
+	}
+	_, files, err := f.deleteNote(ctx, s, id, false)
+	done()
+	removeMedia(f.mediaDir(), files)
+	if err != nil {
 		return "", &errRetry{"the database"}
 	}
-	return " of a post never kept", nil
+	return outcome, nil
 }
 
 // announced acts on an Announce by s of a post of this server: a share notification to its author when the post is
@@ -21285,20 +21433,39 @@ func (f *federation) notifyFedPost(ctx context.Context, uid int64, s *remoteActo
 }
 
 // remoteSeen is the SQL condition that the viewer (an expression written in this file) may read the remote post p
-// outside Home: they follow its author (accepted), or its Mention tags and addressing name them (ap_to).
+// outside Home: they follow its author (accepted), or its Mention tags and addressing name them (ap_to), and its
+// author's server has not said the account is suspended or gone (actorShown).
 func remoteSeen(viewer string) string {
-	return `(EXISTS (SELECT 1 FROM follows rf WHERE rf.follower_id = ` + viewer + ` AND rf.followee_id = p.user_id AND rf.state = 'accepted') OR ` + viewer + ` = ANY(p.ap_to))`
+	return `(EXISTS (SELECT 1 FROM follows rf WHERE rf.follower_id = ` + viewer + ` AND rf.followee_id = p.user_id AND rf.state = 'accepted') OR ` + viewer + ` = ANY(p.ap_to))
+		AND ` + actorShown("p.user_id")
 }
 
-// postOneSQL is one post as feedSQL reads it ($1 the viewer, $2 the post, $3 whether the viewer may hide posts):
-// a local one under feedSQL's rules, and a remote one too when the viewer may read it (remoteSeen), or may hide
-// posts (a moderator acting on a report). A remote post is never in feedSQL's pages.
+// actorShown is the SQL condition that the account id (an expression written in this file) is not a remote account
+// whose server says it is suspended or gone (ap_actors.state): one look in ap_actors' primary key, true for a local
+// account, which has no row there. A gone account's posts are removed when it deletes itself; a suspended one's are
+// kept and not shown until its server lifts the suspension (6.3).
+func actorShown(id string) string {
+	return `NOT EXISTS (SELECT 1 FROM ap_actors sa WHERE sa.user_id = ` + id + ` AND sa.state <> 'ok' OFFSET 0)`
+}
+
+// postOneSQL is one post as feedSQL reads it ($1 the viewer, $2 the post, $3 whether the viewer may hide posts, $4
+// whether the mode federates): a local one under feedSQL's rules, and in a mode that federates a remote one too when
+// the viewer may read it (remoteSeen), or may hide posts (a moderator acting on a report). A remote post is never in
+// feedSQL's pages, and never shown in local mode (a database that federated once and runs in local mode).
 var postOneSQL = `SELECT ` + postCols("$3") + ` FROM posts p WHERE p.id = $2 AND (p.hidden_at IS NULL OR p.user_id = $1 OR $3)
-		AND ` + blockFree("$1", "p.user_id", "$3") + ` AND (p.ap_id IS NULL OR $3 OR ` + remoteSeen("$1") + `)`
+		AND ` + blockFree("$1", "p.user_id", "$3") + ` AND (p.ap_id IS NULL OR $4 AND ($3 OR ` + remoteSeen("$1") + `))`
+
+// mediaRewantSQL asks again for the evicted pictures $1 a page shows: only those evicted or last asked for more than
+// $3 seconds before $2 (so a full cache does not evict and fetch the same pictures in turn as a member scrolls), and
+// only as many as leave at most $4 waiting in all (mediaWantedMax). next_at is when it was evicted or asked for.
+const mediaRewantSQL = `UPDATE ap_media SET state = 'wanted', tries = 0, next_at = $2, locked_until = NULL WHERE id IN (
+	SELECT id FROM ap_media WHERE id = ANY($1) AND state = 'evicted' AND next_at <= $2::timestamptz - make_interval(secs => $3) ORDER BY id
+	LIMIT GREATEST($4 - (SELECT count(*) FROM (SELECT 1 FROM ap_media WHERE state = 'wanted' LIMIT $4) w), 0))`
 
 // attachRemote gives each remote post of a page what the page draws beside its text: ap_extra, and its attachments
 // as the cache holds them now, in one statement for the page (none when the page has no remote post, so a local
-// page costs what it did). A picture the cache evicted is wanted again, so it is fetched while the post is read.
+// page costs what it did). A picture the cache evicted is wanted again within mediaRewantSQL's bounds, so it is
+// fetched while the post is read. Outside a mode that federates no picture is served (the route is not there).
 func (a *app) attachRemote(posts []*post) error {
 	var ids []int64
 	byID := map[int64]*post{}
@@ -21331,7 +21498,9 @@ func (a *app) attachRemote(posts []*post) error {
 		}
 		switch state {
 		case "ok":
-			m.Src = fmt.Sprintf("/api/fed/media/%d.jpg", id)
+			if a.fed != nil {
+				m.Src = fmt.Sprintf("/api/fed/media/%d.jpg", id)
+			}
 		case "evicted":
 			again = append(again, id)
 		}
@@ -21342,7 +21511,7 @@ func (a *app) attachRemote(posts []*post) error {
 	}
 	rows.Close()
 	if len(again) > 0 && a.fed != nil && a.fed.media != nil {
-		if _, err := a.db.Exec(`UPDATE ap_media SET state = 'wanted', tries = 0, next_at = now(), locked_until = NULL WHERE id = ANY($1) AND state = 'evicted'`, pq.Array(again)); err != nil {
+		if _, err := a.db.Exec(mediaRewantSQL, pq.Array(again), a.fed.media.now(), mediaRewantEvery.Seconds(), mediaWantedMax); err != nil {
 			return err
 		}
 		a.fed.media.kick()
@@ -21352,8 +21521,9 @@ func (a *app) attachRemote(posts []*post) error {
 
 /* The picture cache (F6, 9.4). */
 
-// pictureMu lets one picture be decoded at a time (7.5): a picture of 4096 by 4096 is 64 MB once decoded, and the
-// container has 384 MB.
+// pictureMu lets one picture be decoded at a time (7.5), a remote picture or a link card's thumbnail (shrinkPicture):
+// a picture of 4096 by 4096 is 64 MB once decoded, and the container has 384 MB. Held over the decode alone, never
+// over a fetch.
 var pictureMu sync.Mutex
 
 // mediaFileRE is the name of a picture the cache wrote: 32 hex digits, random, and .jpg. Nothing else in the
@@ -21373,11 +21543,18 @@ type mediaCache struct {
 	wake               chan struct{}
 	once               sync.Once
 	manual             bool // set by a test, which then calls step itself: no worker starts
+	started            atomic.Bool
+	// holdUntil is when the worker may claim again after it could not write a picture (Unix nanoseconds on now's clock).
+	holdUntil atomic.Int64
+	// writeFile writes a picture (write); a test makes it fail as a full disk would.
+	writeFile func([]byte) (string, error)
 }
 
 func newMediaCache(f *federation, fetch *fetcher, dir string, paused func() bool) *mediaCache {
-	return &mediaCache{f: f, fetch: fetch, dir: dir, now: time.Now, paused: paused, maxBytes: mediaMaxBytes, lowBytes: mediaLowBytes,
+	m := &mediaCache{f: f, fetch: fetch, dir: dir, now: time.Now, paused: paused, maxBytes: mediaMaxBytes, lowBytes: mediaLowBytes,
 		maxFiles: mediaMaxFiles, lowFiles: mediaLowFiles, wake: make(chan struct{}, 1)}
+	m.writeFile = m.write
+	return m
 }
 
 // mediaDir is the cache's directory, "" when there is none (a federation with no cache, as -rotate-keys makes).
@@ -21412,6 +21589,7 @@ func (m *mediaCache) kick() {
 		if !m.f.enter() {
 			return
 		}
+		m.started.Store(true)
 		go func() {
 			defer m.f.wg.Done()
 			m.loop()
@@ -21455,7 +21633,7 @@ const mediaClaimSQL = `UPDATE ap_media SET locked_until = $1::timestamptz + make
 // then recorded under a turn. A picture claimed as a stop came is given back (its lease cleared, its try not
 // counted); the claim itself runs on a context a stop does not cancel, as both queues' do.
 func (m *mediaCache) step(ctx context.Context) (bool, error) {
-	if m.paused() {
+	if m.paused() || m.now().UnixNano() < m.holdUntil.Load() {
 		return false, nil
 	}
 	if ctx.Err() != nil {
@@ -21493,9 +21671,11 @@ func (m *mediaCache) step(ctx context.Context) (bool, error) {
 	}
 	name := ""
 	if ferr == nil {
-		if name, err = m.write(out); err != nil {
-			// This server's own failure (the disk): tried again later, the try not counted.
+		if name, err = m.writeFile(out); err != nil {
+			// This server's own failure (the disk, full perhaps): tried again later, the try not counted, and the
+			// worker holds off for as long, so it does not go on fetching picture after picture it cannot keep.
 			log.Printf("media: writing a picture: %v", err)
+			m.holdUntil.Store(m.now().Add(mediaRetries[0]).UnixNano())
 			_, err = m.f.fedExec(cctx, `UPDATE ap_media SET locked_until = NULL, tries = tries - 1, next_at = $2 WHERE id = $1 AND state = 'wanted'`, id, m.now().Add(mediaRetries[0]))
 			return true, err
 		}
@@ -21596,9 +21776,9 @@ func (m *mediaCache) evict(ctx context.Context) error {
 			files--
 		}
 		var gone []string
-		if err := m.f.fedRow(ctx, []any{pq.Array(&gone)}, `WITH u AS (UPDATE ap_media a SET state = 'evicted', file = '', bytes = 0, width = 0, height = 0
+		if err := m.f.fedRow(ctx, []any{pq.Array(&gone)}, `WITH u AS (UPDATE ap_media a SET state = 'evicted', file = '', bytes = 0, width = 0, height = 0, next_at = $2
 				FROM (SELECT id, file FROM ap_media WHERE id = ANY($1) AND state = 'ok') o WHERE a.id = o.id AND a.state = 'ok' RETURNING o.file)
-			SELECT COALESCE(array_agg(file) FILTER (WHERE file <> ''), '{}') FROM u`, pq.Array(pick)); err != nil {
+			SELECT COALESCE(array_agg(file) FILTER (WHERE file <> ''), '{}') FROM u`, pq.Array(pick), m.now()); err != nil {
 			return err
 		}
 		removeMedia(m.dir, gone)
@@ -21623,9 +21803,7 @@ func shrinkRemote(raw []byte) ([]byte, int, int, error) {
 	if cfg.Width < 1 || cfg.Height < 1 || cfg.Width > mediaInSide || cfg.Height > mediaInSide {
 		return nil, 0, 0, errors.New("picture too large")
 	}
-	pictureMu.Lock()
-	defer pictureMu.Unlock()
-	return shrinkPicture(raw, mediaSide, mediaOut)
+	return shrinkPicture(raw, mediaInSide, mediaSide, mediaOut)
 }
 
 // handleFedMedia serves a picture of the cache to a member who may read its post, from this server only: the page
@@ -21639,10 +21817,14 @@ func (a *app) handleFedMedia(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	staff := can(u, permPostHide)
-	var file string
+	var file, host string
 	var used time.Time
-	err = a.db.QueryRow(`SELECT m.file, m.used_at FROM ap_media m JOIN posts p ON p.id = m.post_id WHERE m.id = $1 AND m.state = 'ok'
-		AND (p.hidden_at IS NULL OR $3) AND `+blockFree("$2", "p.user_id", "$3")+` AND ($3 OR `+remoteSeen("$2")+`)`, id, u.ID, staff).Scan(&file, &used)
+	err = a.db.QueryRow(`SELECT m.file, m.used_at, au.domain FROM ap_media m JOIN posts p ON p.id = m.post_id JOIN users au ON au.id = p.user_id WHERE m.id = $1 AND m.state = 'ok'
+		AND (p.hidden_at IS NULL OR $3) AND `+blockFree("$2", "p.user_id", "$3")+` AND `+actorShown("p.user_id")+` AND ($3 OR `+remoteSeen("$2")+`)`, id, u.ID, staff).Scan(&file, &used, &host)
+	// A domain suspended since: its pictures are not served, whatever is left on disk until housekeeping's sweep.
+	if err == nil && a.fed.policyNow().decide(host) == policySuspended {
+		err = sql.ErrNoRows
+	}
 	if errors.Is(err, sql.ErrNoRows) || err == nil && !mediaFileRE.MatchString(file) {
 		http.NotFound(w, r)
 		return
@@ -21682,8 +21864,15 @@ const (
 	SELECT (SELECT count(*) FROM d), COALESCE((SELECT array_agg(file) FROM m), '{}')`
 	remoteKeepSQL = `WITH old AS (SELECT p.id FROM posts p WHERE p.ap_id IS NOT NULL AND p.created_at < $1 AND ` + remoteUntouched + `
 		ORDER BY p.created_at, p.id LIMIT $2), ` + remoteGoneSQL
-	remoteCapSQL = `WITH old AS (SELECT p.id FROM posts p WHERE p.ap_id IS NOT NULL ORDER BY p.created_at DESC, p.id DESC OFFSET $1 LIMIT $2), ` + remoteGoneSQL
+	remoteCapSQL = `WITH old AS (SELECT p.id FROM posts p WHERE p.ap_id IS NOT NULL AND NOT p.ap_mention_only ORDER BY p.created_at DESC, p.id DESC OFFSET $1 LIMIT $2), ` + remoteGoneSQL
+	// remoteMentionCapSQL removes the posts kept only for a mention past the newest $1 of them, through
+	// posts_remote_mention: they have a cap of their own, so servers nobody here follows cannot push the posts of
+	// followed accounts out of Home.
+	remoteMentionCapSQL = `WITH old AS (SELECT p.id FROM posts p WHERE p.ap_id IS NOT NULL AND p.ap_mention_only ORDER BY p.created_at DESC, p.id DESC OFFSET $1 LIMIT $2), ` + remoteGoneSQL
 )
+
+// remoteDeletedCapSQL removes the remembered deletions past the newest $1, through ap_deleted_at.
+const remoteDeletedCapSQL = `DELETE FROM ap_deleted WHERE (ap_id, user_id) IN (SELECT ap_id, user_id FROM ap_deleted ORDER BY at DESC OFFSET $1)`
 
 // remoteHousekeep removes remote posts past their retention and past the cap in all, ids of deletions remembered
 // past 7 days, and files of the cache no row names (a post removed by a moderator, by -purge-remote, or by its
@@ -21695,7 +21884,7 @@ func (a *app) remoteHousekeep() (int64, error) {
 	for _, step := range []struct {
 		sql string
 		arg any
-	}{{remoteKeepSQL, time.Now().Add(-remoteKeep)}, {remoteCapSQL, remotePostsMax}} {
+	}{{remoteKeepSQL, time.Now().Add(-remoteKeep)}, {remoteMentionCapSQL, remoteMentionOnlyMax}, {remoteCapSQL, remotePostsMax}} {
 		for {
 			var n int64
 			var files []string
@@ -21710,6 +21899,9 @@ func (a *app) remoteHousekeep() (int64, error) {
 		}
 	}
 	if _, err := f.fedExec(ctx, `DELETE FROM ap_deleted WHERE at < $1`, time.Now().Add(-remoteDeletedKeep)); err != nil {
+		return removed, err
+	}
+	if _, err := f.fedExec(ctx, remoteDeletedCapSQL, remoteDeletedMax); err != nil {
 		return removed, err
 	}
 	if m := f.media; m != nil {
@@ -22262,13 +22454,16 @@ var migrations = []string{schema, schemaSocial,
 	// server; NULL is local, which every row there is keeps. ap_updated is the updated time of the version kept (an
 	// Update without one, or no newer, is ignored); ap_to the local members its Mention tags name and its addressing
 	// lets read it, who may open it from their notification; ap_extra what Flowa shows besides the text (the link to
-	// the original, a title, a content warning, whether its pictures are sensitive, the time it was published).
+	// the original, a title, a content warning, whether its pictures are sensitive, the time it was published);
+	// ap_mention_only that it was kept only because it names a member here (nobody here followed its author), which
+	// has a cap of its own (posts_remote_mention).
 	// posts_ap_id finds a post by its id and keeps one row per id; posts_local is the Community timeline's index,
 	// which reads local posts only; posts_remote serves retention and the cap in all, by age. ap_media is the
 	// picture cache's index (F6): one row per attachment of a remote post, its file under -data/media once a worker
 	// fetched it, removed with its post; ap_media_wanted serves the worker's claim, ap_media_used the eviction, least
-	// recently used first. ap_deleted remembers for 7 days the id of a post deleted before it arrived here, so a late
-	// Create is refused (6.3). notifications_fed is the trim of what accounts of other servers leave in a member's
+	// recently used first. ap_deleted remembers for 7 days the id of a post deleted before it arrived here, or deleted
+	// here by a moderator, with the account that deleted it, so a late Create (or an Update taken as one) by that
+	// account is refused (6.3). notifications_fed is the trim of what accounts of other servers leave in a member's
 	// notifications, now with shares and mentions; reports_target lets retention ask whether a post is reported, one
 	// post at a time. Columns with constant defaults, new indexes and new tables: no row
 	// is rewritten, and an older build ignores them, but it would show remote posts as local, which is why
@@ -22277,9 +22472,11 @@ var migrations = []string{schema, schemaSocial,
 	ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_updated TIMESTAMPTZ;
 	ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_to BIGINT[] NOT NULL DEFAULT '{}';
 	ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_extra JSONB NOT NULL DEFAULT '{}';
+	ALTER TABLE posts ADD COLUMN IF NOT EXISTS ap_mention_only BOOLEAN NOT NULL DEFAULT false;
 	CREATE UNIQUE INDEX IF NOT EXISTS posts_ap_id ON posts (ap_id) WHERE ap_id IS NOT NULL;
 	CREATE INDEX IF NOT EXISTS posts_local ON posts (id DESC) WHERE ap_id IS NULL;
 	CREATE INDEX IF NOT EXISTS posts_remote ON posts (created_at, id) WHERE ap_id IS NOT NULL;
+	CREATE INDEX IF NOT EXISTS posts_remote_mention ON posts (created_at, id) WHERE ap_id IS NOT NULL AND ap_mention_only;
 	CREATE TABLE IF NOT EXISTS ap_media (
 		id BIGSERIAL PRIMARY KEY,
 		post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -22302,9 +22499,10 @@ var migrations = []string{schema, schemaSocial,
 	CREATE INDEX IF NOT EXISTS ap_media_used ON ap_media (used_at, id) WHERE state = 'ok';
 	CREATE INDEX IF NOT EXISTS ap_media_file ON ap_media (file) WHERE file <> '';
 	CREATE TABLE IF NOT EXISTS ap_deleted (
-		ap_id TEXT PRIMARY KEY,
+		ap_id TEXT NOT NULL,
 		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-		at TIMESTAMPTZ NOT NULL
+		at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (ap_id, user_id)
 	);
 	CREATE INDEX IF NOT EXISTS ap_deleted_user ON ap_deleted (user_id);
 	CREATE INDEX IF NOT EXISTS ap_deleted_at ON ap_deleted (at);
@@ -25134,7 +25332,9 @@ func postCols(staff string) string {
 
 // homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
 // first. $1 is the viewer, $2 "older than this post" (0 for the first page), $3 how many, $4 whether the
-// viewer may see hidden posts. What is shown is what the Community timeline shows of those accounts:
+// viewer may see hidden posts, $5 whether the mode federates: remote posts (FWR 5) are shown only then, so a
+// database that federated once and runs in local mode shows Home as local mode always has; and an account its
+// server says is suspended or gone is left out (actorShown, one look per account followed). What is shown is what the Community timeline shows of those accounts:
 // a hidden post only to its author and to staff, nothing across a block (blockFree, asked once per
 // account, with the same staff exception).
 //
@@ -25145,9 +25345,9 @@ func postCols(staff string) string {
 // The counts and the viewer's like are read after the LIMIT, for the posts shown only.
 var homeSQL = `SELECT ` + postCols("$4") + ` FROM (SELECT h.id FROM
 		(SELECT x.id FROM (SELECT $1::bigint AS id UNION ALL SELECT f.followee_id FROM follows f WHERE f.follower_id = $1 AND f.state = 'accepted') x
-			WHERE ` + blockFree("$1", "x.id", "$4") + `) a
+			WHERE ` + blockFree("$1", "x.id", "$4") + ` AND ` + actorShown("x.id") + `) a
 		CROSS JOIN LATERAL (SELECT p.id FROM posts p WHERE p.user_id = a.id AND ($2 = 0 OR p.id < $2)
-			AND (p.hidden_at IS NULL OR p.user_id = $1 OR $4) ORDER BY p.id DESC LIMIT $3) h
+			AND (p.hidden_at IS NULL OR p.user_id = $1 OR $4) AND ($5 OR p.ap_id IS NULL) ORDER BY p.id DESC LIMIT $3) h
 		ORDER BY h.id DESC LIMIT $3) h JOIN posts p ON p.id = h.id ORDER BY p.id DESC`
 
 // feedCommentsSQL is the newest top-level comments of each of those posts ($3 the posts, $4 how many
@@ -25167,7 +25367,7 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) 
 	}
 	// Hidden posts are seen only by their author and by those who may hide posts.
 	if only != 0 && ids == nil {
-		return a.readPosts(viewer, postOneSQL, viewer.ID, only, can(viewer, permPostHide))
+		return a.readPosts(viewer, postOneSQL, viewer.ID, only, can(viewer, permPostHide), a.fed != nil)
 	}
 	return a.readPosts(viewer, feedSQL, viewer.ID, before, byUser, only, limit, can(viewer, permPostHide), pq.Array(ids))
 }
@@ -25637,9 +25837,13 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 		// In a mode that federates the same statement marks the post's record of its way out for a Delete (FWR 4),
 		// whatever state it was in: a post that went out is taken back where it went, one still waiting goes with
 		// nothing sent. One statement, so the deletion and the mark are never apart.
+		// A post of another server (FWR 5) deleted by staff is remembered as its author's own deletion would be, so its
+		// author's later Update (taken as a Create for a post not kept) does not bring it back; its pictures' rows go with
+		// it, and their files with housekeeping's sweep.
 		del = `WITH d AS (DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
-			AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.id, p.user_id),
-			o AS (UPDATE ap_post_out SET state = 'delete' WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING post_id)
+			AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.id, p.user_id, p.ap_id),
+			o AS (UPDATE ap_post_out SET state = 'delete' WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING post_id),
+			r AS (INSERT INTO ap_deleted (ap_id, user_id, at) SELECT ap_id, user_id, now() FROM d WHERE ap_id IS NOT NULL ON CONFLICT (ap_id, user_id) DO NOTHING)
 			SELECT d.user_id, (SELECT count(*) FROM o) FROM d`
 		dest = append(dest, &out)
 	}
@@ -26772,7 +26976,7 @@ func (a *app) followList(w http.ResponseWriter, u *user, q, key string) {
 // way with ?before=. It has its own route rather than a parameter on GET /api/posts, so the follows
 // flag closes it as it closes the other follow routes, and the Community timeline's query is not touched.
 func (a *app) handleHome(w http.ResponseWriter, r *http.Request, u *user) {
-	out, err := a.readPosts(u, homeSQL, u.ID, queryID(r, "before"), pageSize+1, can(u, permPostHide))
+	out, err := a.readPosts(u, homeSQL, u.ID, queryID(r, "before"), pageSize+1, can(u, permPostHide), a.fed != nil)
 	if err != nil {
 		a.serverError(w, err)
 		return
