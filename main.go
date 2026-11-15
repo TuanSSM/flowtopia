@@ -7934,15 +7934,20 @@ const fedStateSQL = `SELECT u.federates, u.locked, EXISTS (SELECT 1 FROM retired
 	EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id), (` + leavingSQL + `) FROM users u WHERE u.id = $1`
 
 // leavingSQL is when member $1's Delete(Person) was enqueued, or its newest delivery still queued was written if later
-// (a fan-out the full queue held back), while its row keeps the copy of their key, NULL otherwise: through
-// ap_outbox_signer, which holds only the few rows that keep one, and each one's rows by (outbox_id, inbox).
+// (a fan-out the full queue held back), while it is still being sent, NULL otherwise: through ap_outbox_signer, which
+// holds only the few rows that keep a copy of a key, and each one's rows by (outbox_id, inbox). "Still being sent" is
+// deliveryForgetKeySQL's own test, the other way round: not fanned out yet, or a delivery of it still queued. An
+// activity fanned out with no delivery queued is never signed again (rows are written only by its fan-out, once, and a
+// failed row is never queued again), which is why housekeeping may clear its copy; so the member may share again as
+// soon as the sending ends, not at housekeeping's next pass, up to an hour later (the last review of FWR 8).
 //
 // Bounded by the queue's horizon ($2, the queue's clock less deliveryHorizon): a row older than that is never signed,
 // since deliver gives it up before it opens the kept key (TestDBSharingAgainAfterHorizon). So 48 hours after the Delete
 // the member may share again while sending is paused or refused (the second review of FWR 7); while the queue's clock
 // is doubted there is no bound (leavingSince), and the page then names no time (leavingSentenceAt).
 const leavingSQL = `SELECT max(t) FROM (SELECT GREATEST(o.created_at, (SELECT max(d.created_at) FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued')) AS t
-	FROM ap_outbox o WHERE o.signer = $1 AND o.signer_sealed IS NOT NULL) x WHERE t > $2`
+	FROM ap_outbox o WHERE o.signer = $1 AND o.signer_sealed IS NOT NULL
+		AND (NOT o.fanned_out OR EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued'))) x WHERE t > $2`
 
 // leavingSince is leavingSQL's $2: the queue's clock less its horizon; no bound while that clock is doubted (a jump
 // forward that is undone would make rows younger than 48 hours signable again after the member shared anew), so the

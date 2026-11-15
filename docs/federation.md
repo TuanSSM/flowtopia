@@ -2104,10 +2104,13 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
   - **`TestOutStateChangesReset` reads more ways of writing a statement**: any letter case, no spaces around `=`,
     double-quoted strings, and `retries = 0` is not taken for `tries = 0`; it still finds every statement the first
     reading found (15), and examples written for the test show each case.
-  - **Sharing again after leaving** waits for housekeeping (at the start and every hour) to clear the kept copy of the
-    key once the queue has sent the Delete(Person), so up to an hour after the queue is empty; the `federation` suite
-    (FWR 8) sees it refused with the queue empty and allowed after a restart. Left as built: the 409 says "at the latest"
-    and names the horizon, which holds.
+  - **Sharing again ends when the sending ends** (`TestDBSharingAgainWhenSent`; found by the `federation` suite, FWR 8):
+    `leavingSQL` asks `deliveryForgetKeySQL`'s own question, the other way round (not fanned out yet, or a delivery of it
+    still queued), so a member may share again as soon as their Delete(Person) has been sent or given up everywhere,
+    not when housekeeping next clears the kept copy of the key, up to an hour later, while the card said "still being
+    asked". Safe: an activity's deliveries are written only by its one fan-out and a failed row is never queued again, so
+    a fanned-out activity with nothing queued is never signed again. The 48-hour bound and the clock's doubt are as
+    before (`TestDBSharingAgainAfterHorizon`, `TestDBLeavingUnderClockDoubt`, `TestDBLeaveOtherServers` unchanged).
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail
