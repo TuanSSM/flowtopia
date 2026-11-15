@@ -391,7 +391,7 @@ func TestDBExport(t *testing.T) {
 		if man.Format != "flowa-export" || man.Version != exportFormat || !man.Complete || !maps.Equal(man.Counts, wantCounts) || !slices.Equal(man.Files, names[:len(names)-1]) {
 			t.Errorf("manifest.json: %+v, files %v", man, names)
 		}
-		for _, words := range []string{"manifest.json", "waits for your answer is listed too, marked pending", "no file"} {
+		for _, words := range []string{"manifest.json", "another server that waits for your answer is listed too, marked pending", "no file"} {
 			if !bytes.Contains(files["README.txt"], []byte(words)) {
 				t.Errorf("README.txt does not say %q", words)
 			}
@@ -1094,6 +1094,13 @@ func TestDBExportEstimateBound(t *testing.T) {
 		e.mustExec(`INSERT INTO posts (user_id, body, alt, image) VALUES ($1, $2, $3, $4)`, uid, wide(2000), wide(200), noisePNG(t, 40))
 		e.mustExec(`INSERT INTO comments (post_id, user_id, body) VALUES ($1, $2, $3)`, p, uid, wide(1000))
 	}
+	atEstimate(t, e, uid, tok)
+}
+
+// atEstimate sets the cap to the member's estimate exactly and downloads a whole archive over a real connection (a
+// download past the cap is broken off), then sets it one byte lower and is refused before anything is sent.
+func atEstimate(t *testing.T, e *tenv, uid int64, tok string) {
+	t.Helper()
 	code, body := e.exportCode(tok, "?check=1", nil)
 	if code != 200 {
 		t.Fatalf("check: %d %s", code, body)
@@ -1130,5 +1137,163 @@ func TestDBExportEstimateBound(t *testing.T) {
 	e.a.exportMax = est.Bytes - 1
 	if code, _ := e.exportCode(tok, "", nil); code != 413 {
 		t.Fatalf("one byte under the estimate: %d, want 413", code)
+	}
+	e.a.exportMax = 0
+}
+
+// The addresses of other servers' posts, comments and accounts, and the handles, count in the estimate too: a member
+// whose rows are mostly such addresses (random, so compression cannot shrink them, and full of &, which JSON writes
+// as six bytes) still gets a whole archive at the cap set to the estimate, and so does a profile whose JSON fields
+// are long and full of the same.
+func TestDBExportEstimateRemote(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("export", true)
+	uid, tok := e.user("ria", "user")
+	r := rand.New(rand.NewPCG(5, 6))
+	addr := func(n int) string {
+		const set = "&&&&<>abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+		b := []byte("https://far.example/")
+		for range n {
+			b = append(b, set[r.IntN(len(set))])
+		}
+		return string(b)
+	}
+	// A member whose profile's JSON fields are long and full of &, on their own, so that the room the profile is given
+	// does not cover the addresses of the member below.
+	pid, ptok := e.user("pia", "user")
+	e.mustExec(`UPDATE users SET prefs = $2, links = $3 WHERE id = $1`, pid,
+		fmt.Sprintf(`{%q: true, %q: false}`, addr(800), addr(800)), fmt.Sprintf(`{"instagram": %q}`, addr(1200)))
+	atEstimate(t, e, pid, ptok)
+	for i := range 60 {
+		var rid, post, root int64
+		name := fmt.Sprintf("far%d@far.example", i)
+		if err := e.a.db.QueryRow(`INSERT INTO users (username, display_name, pw_hash, domain) VALUES ($1, '', '!', 'far.example') RETURNING id`, name).Scan(&rid); err != nil {
+			t.Fatal(err)
+		}
+		e.mustExec(`INSERT INTO ap_actors (user_id, ap_id, kind, preferred_username, inbox, fetched_at, expires_at) VALUES ($1, $2, 'Person', $3, 'https://far.example/inbox', now(), now() + interval '1 day')`,
+			rid, addr(2000), fmt.Sprint("far", i))
+		e.mustExec(`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2), ($2, $1)`, uid, rid)
+		if err := e.a.db.QueryRow(`INSERT INTO posts (user_id, body, audience, ap_id) VALUES ($1, 'x', 'public', $2) RETURNING id`, rid, addr(2000)).Scan(&post); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.a.db.QueryRow(`INSERT INTO comments (post_id, user_id, body, ap_id) VALUES ($1, $2, 'x', $3) RETURNING id`, post, rid, addr(2000)).Scan(&root); err != nil {
+			t.Fatal(err)
+		}
+		e.mustExec(`INSERT INTO comments (post_id, user_id, parent_id, body) VALUES ($1, $2, $3, 'y')`, post, uid, root)
+	}
+	atEstimate(t, e, uid, tok)
+}
+
+// The last bytes of a whole archive (the end of the zip's directory, held in the server's buffer) are pushed out
+// before the download counts: a failure there is a failed download, broken off and given back.
+func TestDBExportFlush(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("export", true)
+	_, tok := e.user("ana", "user")
+	e.post(tok, "a post")
+	var fail, flushed atomic.Bool
+	e.a.exportHook = func(step string) error {
+		if step == "flush" {
+			flushed.Store(true)
+			if fail.Load() {
+				return errors.New("the test failed the last push")
+			}
+		}
+		return nil
+	}
+	srv := httptest.NewServer(e.h)
+	defer srv.Close()
+	get := func() ([]byte, error) {
+		req, _ := http.NewRequest("GET", srv.URL+"/api/export", nil)
+		req.Host = "example.com"
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer res.Body.Close()
+		return io.ReadAll(res.Body)
+	}
+	fail.Store(true)
+	if _, err := get(); err == nil || !flushed.Load() {
+		t.Fatalf("a download whose last push failed ended as complete (flushed %v)", flushed.Load())
+	}
+	fail.Store(false)
+	if code, body := e.exportCode(tok, "?check=1", nil); code != 200 {
+		t.Fatalf("a download whose last push failed was counted: %d %s", code, body)
+	}
+	raw, err := get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A reader slower than exportMinRate after exportGrace lets its place go: the download is broken off, the hour given
+// back and the try counted. The clock is the test's, moved forward at each write, so nothing waits.
+func TestDBExportSlowReader(t *testing.T) {
+	e := newEnv(t)
+	e.setFlag("export", true)
+	uid, tok := e.user("ana", "user")
+	manyPictures(t, e, uid, 4)
+	var mu sync.Mutex
+	clock := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	var slow atomic.Bool
+	e.a.exportNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return clock
+	}
+	e.a.exportHook = func(step string) error {
+		if step == "write" && slow.Load() {
+			mu.Lock()
+			clock = clock.Add(20 * time.Second) // each write of at most a few KB takes 20 s: far under 32 KB/s
+			mu.Unlock()
+		}
+		return nil
+	}
+	srv := httptest.NewServer(e.h)
+	defer srv.Close()
+	get := func() ([]byte, error) {
+		req, _ := http.NewRequest("GET", srv.URL+"/api/export", nil)
+		req.Host = "example.com"
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: tok})
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer res.Body.Close()
+		return io.ReadAll(res.Body)
+	}
+	slow.Store(true)
+	if raw, err := get(); err == nil {
+		t.Fatalf("a download far under the slowest rate ran to the end (%d bytes)", len(raw))
+	}
+	slow.Store(false)
+	key := fmt.Sprint(uid)
+	tries := func() int {
+		l := e.a.lim.exportTries
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if f := l.m[key]; f != nil {
+			return f.n
+		}
+		return 0
+	}
+	if n := tries(); n != tenths {
+		t.Fatalf("the slow download's try counts %d tenths, want %d", n, tenths)
+	}
+	if code, body := e.exportCode(tok, "?check=1", nil); code != 200 {
+		t.Fatalf("the slow download spent the hour: %d %s", code, body)
+	}
+	// At a rate the clock does not hold against (it stands still), the same download is whole.
+	raw, err := get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw))); err != nil {
+		t.Fatal(err)
 	}
 }

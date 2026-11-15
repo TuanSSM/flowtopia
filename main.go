@@ -227,9 +227,11 @@ type app struct {
 	// exportSlots holds one token per download running now, at most exportsAtOnce across the server.
 	exportSlots chan struct{}
 	// exportHook, when set, is told of each step of a download ("write" before every write to the client, "page" after
-	// each page of rows is read and its connection given back), and an error from it stops the download as a failed
-	// write would. Tests only; nil in the server.
+	// each page of rows is read and its connection given back, "flush" before the last bytes are pushed out), and an
+	// error from it stops the download as a failed write would. Tests only; nil in the server.
 	exportHook func(step string) error
+	// exportNow is the clock the slowest-download rule reads (time.Now when nil); a test moves it by hand.
+	exportNow func() time.Time
 }
 
 // buildVersion names the build. A release image has its tag compiled in (build-image.sh, with -X), and
@@ -30273,24 +30275,47 @@ const (
 	// exportsAtOnce is how many downloads the server makes at the same time, whoever asks: each holds a database
 	// connection while it reads a page (of 8 on the Pi) and a picture in memory (of 384 MB). Another waits its turn.
 	exportsAtOnce = 2
+	// A download must keep up an average of exportMinRate bytes a second once exportGrace has passed, and no single
+	// write may wait longer than exportStall. Two people reading slowly would otherwise hold both places for the
+	// whole half hour, six times an hour each; now a reader slower than this lets the place go within a minute or
+	// so. The archive is broken off as a failed one: the hour is given back, the try is counted.
+	exportMinRate = 32 << 10 // bytes a second, 32 KB/s
+	exportGrace   = time.Minute
+	exportStall   = time.Minute
 )
 
-var errExportTooBig = errors.New("the archive grew past its size cap while it was written")
+var (
+	errExportTooBig = errors.New("the archive grew past its size cap while it was written")
+	errExportSlow   = errors.New("the download fell under the slowest rate a download may keep")
+)
 
 // exportSizeSQL is an upper bound, in bytes, of the archive of member $1 as sent, held against the same cap as
 // the writer counts: a picture at its decoded size (three quarters of its base64 text) and 512 bytes for its
-// file's place in the zip, every piece of text six times its bytes (JSON writes <, > and & and each control
-// character as six bytes, \u003c; compression only makes it smaller), and 512 bytes per row for the field names,
-// the zip's own records and the manifest's line. octet_length reads the size a value is kept at without
-// unpacking it, which matters for pictures: length would unpack each one to count its characters.
-const exportSizeSQL = `SELECT
+// file's place in the zip, every piece of text that is written six times its bytes (JSON writes <, > and & and each
+// control character as six bytes, \u003c; compression only makes it smaller), the addresses of other servers'
+// posts and accounts and their handles among them, and 512 bytes per row (1024 for an account, whose handle may
+// carry this server's host, at most 253 bytes of letters, digits, dots and hyphens) for the field names, the zip's
+// own records and the manifest's line. The profile's JSON fields are counted fourteen times: profile.json is written
+// indented, which adds a line and its indent to each element, at most seven bytes at the depth validation allows
+// (two levels, an avatar's props), to the six of an escaped byte. octet_length reads the size a value is kept at
+// without unpacking it, which matters for pictures: length would unpack each one to count its characters.
+var exportSizeSQL = `SELECT
 	(SELECT coalesce(sum(octet_length(image) / 4 * 3 + 6 * (octet_length(body) + octet_length(alt) + octet_length(data::text) + octet_length(prop) + octet_length(skill) + octet_length(hidden_reason)) + 1024), 0) FROM posts WHERE user_id = $1)
-	+ (SELECT coalesce(sum(6 * (octet_length(body) + octet_length(hidden_reason)) + 512), 0) FROM comments WHERE user_id = $1 AND NOT deleted)
-	+ (SELECT count(*) * 512 FROM follows WHERE follower_id = $1)
-	+ (SELECT count(*) * 512 FROM follows WHERE followee_id = $1)
-	+ (SELECT count(*) * 512 FROM blocks WHERE user_id = $1)
-	+ (SELECT octet_length(avatar) / 4 * 3 + 6 * (octet_length(username) + octet_length(display_name) + octet_length(bio) + octet_length(links::text) + octet_length(props::text)
-		+ octet_length(prefs::text) + octet_length(avatar_cfg::text)) + 65536 FROM users WHERE id = $1)`
+	+ (SELECT coalesce(sum(6 * (octet_length(c.body) + octet_length(c.hidden_reason) + coalesce(octet_length(p.ap_id), 0) + coalesce(octet_length(pc.ap_id), 0)) + 512), 0)
+		FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.user_id = $1 AND NOT c.deleted)
+	+ (SELECT coalesce(sum(` + exportAccountBytes("f.followee_id") + `), 0) FROM follows f WHERE f.follower_id = $1)
+	+ (SELECT coalesce(sum(` + exportAccountBytes("f.follower_id") + `), 0) FROM follows f WHERE f.followee_id = $1)
+	+ (SELECT coalesce(sum(` + exportAccountBytes("b.target_id") + `), 0) FROM blocks b WHERE b.user_id = $1)
+	+ (SELECT octet_length(avatar) / 4 * 3 + 6 * (octet_length(username) + octet_length(display_name) + octet_length(bio))
+		+ 14 * (octet_length(links::text) + octet_length(props::text) + octet_length(prefs::text) + octet_length(avatar_cfg::text)) + 65536 FROM users WHERE id = $1)`
+
+// exportAccountBytes is the most an account of a list writes, the account being the one the column id names: its
+// handle and the address of its profile at six times their bytes, and 1024 bytes for the rest. Each account is
+// looked up by its key, one at a time, so the size of a member with 5,000 blocks reads those rows and no table whole.
+func exportAccountBytes(id string) string {
+	return `6 * coalesce((SELECT octet_length(u.username) + coalesce((SELECT octet_length(ac.preferred_username) + octet_length(ac.ap_id)
+		FROM ap_actors ac WHERE ac.user_id = u.id), 0) FROM users u WHERE u.id = ` + id + `), 0) + 1024`
+}
 
 const (
 	exportAgain = "You downloaded your data less than an hour ago. Wait a while and try again."
@@ -30388,11 +30413,21 @@ func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 	x := &exporter{a: a, ctx: ctx, uid: u.ID, now: now, counts: map[string]int{}}
 	// The size was checked above with an upper bound, so the writer's cap, the same number, is met only by an
 	// archive that grew while it was written.
-	x.out = &exportWriter{w: w, max: capB, hook: a.exportHook}
+	clock := a.exportNow
+	if clock == nil {
+		clock = time.Now
+	}
+	x.out = &exportWriter{w: w, max: capB, hook: a.exportHook, now: clock, rc: http.NewResponseController(w), end: time.Now().Add(limit)}
+	x.out.start = x.out.now()
 	x.z = zip.NewWriter(x.out)
 	err := x.run()
 	if err == nil {
 		err = x.z.Close()
+	}
+	if err == nil {
+		// The zip's directory may still sit in the server's buffer: it is pushed out now, so that a client gone before
+		// the last bytes is a failed download like any other, and not one counted as whole.
+		err = x.out.flush()
 	}
 	if err != nil {
 		// Not counted: the member may try again at once, in a window of their own. The connection is dropped without
@@ -30408,11 +30443,19 @@ func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
 
 // exportWriter is the response under the zip: it counts what was sent, stops at the size cap, and tells the test
 // hook of each write, so a test can check that no connection is held while the client is written to.
+//
+// It also holds a download to the slowest rate it may keep (exportMinRate after exportGrace, by the clock now) and
+// gives each write at most exportStall before the connection's deadline, never past end, the download's own.
+// now and rc are nil in a writer made without them, which then keeps no rate and sets no deadline.
 type exportWriter struct {
-	w    io.Writer
-	n    int64
-	max  int64
-	hook func(string) error
+	w     io.Writer
+	n     int64
+	max   int64
+	hook  func(string) error
+	now   func() time.Time
+	start time.Time
+	rc    *http.ResponseController
+	end   time.Time
 }
 
 func (c *exportWriter) Write(b []byte) (int, error) {
@@ -30424,9 +30467,38 @@ func (c *exportWriter) Write(b []byte) (int, error) {
 			return 0, err
 		}
 	}
+	if c.now != nil {
+		if took := c.now().Sub(c.start); took > exportGrace && float64(c.n) < exportMinRate*took.Seconds() {
+			return 0, errExportSlow
+		}
+	}
+	if c.rc != nil {
+		// A writer that cannot take a deadline (a test's recorder) is held by the rate rule and the context alone.
+		d := time.Now().Add(exportStall)
+		if d.After(c.end) {
+			d = c.end
+		}
+		c.rc.SetWriteDeadline(d)
+	}
 	n, err := c.w.Write(b)
 	c.n += int64(n)
 	return n, err
+}
+
+// flush pushes out what the server still holds of the answer, the end of the zip with it.
+func (c *exportWriter) flush() error {
+	if c.hook != nil {
+		if err := c.hook("flush"); err != nil {
+			return err
+		}
+	}
+	if c.rc == nil {
+		return nil
+	}
+	if err := c.rc.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
 }
 
 // exporter makes one archive. Every file name in it is made here from fixed words and row numbers, never from
@@ -30810,8 +30882,8 @@ comments.json       Your comments and replies, oldest first, each with the numbe
                     people's posts and comments is not included.
 following.json      The accounts you follow (or asked to follow: marked pending), by handle. An account of another
                     server is name@host, with the address of its profile.
-followers.json      The accounts that follow you, the same way. On a Flowa that shares with other servers, a
-                    request to follow you that waits for your answer is listed too, marked pending.
+followers.json      The accounts that follow you, the same way. A request to follow you from an account of
+                    another server that waits for your answer is listed too, marked pending.
 blocks.json         The accounts you block, the same way.
 manifest.json       Written last: the format version, when the archive was made, how many of each thing it holds,
                     and the list of files. If manifest.json is missing, the download did not finish: download again.

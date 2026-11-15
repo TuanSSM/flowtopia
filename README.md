@@ -1142,8 +1142,13 @@ in the container's environment, when set, is shown instead.
   answered 405. The archive is made while it is sent, a page of 500 rows or one picture at a
   time, with a database connection held only while a page is read; it may hold up to 512 MB and take up to
   30 minutes (`exportMaxBytes` and `exportMaxTime` in `main.go`). Its size is reckoned first as an upper bound
-  in bytes, without unpacking a picture; a larger one is refused before it starts, and
-  one that runs out of time or is cut off is broken off without the zip's directory, so the browser reports a
+  in bytes, without unpacking a picture; a larger one is refused before it starts. The bound counts text at six
+  times its bytes, so for text in scripts that take 3 or 4 bytes a character it refuses at roughly a fifth of
+  512 MB of real archive, which takes tens of thousands of long comments. A download must keep up 32 KB a
+  second on average once its first minute has passed, and no write may wait longer than a minute
+  (`exportMinRate`, `exportGrace`, `exportStall`); a slower reader is broken off, the hour given back and the try
+  counted. One that runs out of time or is cut off, or whose last bytes cannot be sent, is broken off without the
+  zip's directory, so the browser reports a
   failed download and no zip program opens it as whole. A request from another site is refused, the answer is
   never cached, and the log gets one line per download with the member's number and the size, never content.
   A suspended member cannot sign in, so cannot download until the suspension ends; there is no export by staff

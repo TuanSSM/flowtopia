@@ -3816,8 +3816,9 @@ func TestDBQueryPlans(t *testing.T) {
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
 		{"the counts of a member who follows 500", followCountsSQL, []any{viewer}, 1500, ""},
 		// A member's own data (PRT 1): the size is read before every download and every check, and each list a page
-		// at a time, all by the member's indexes.
-		{"export: the size of a member's archive (500 follows, 5,000 blocks)", exportSizeSQL, []any{viewer}, 13000, ""},
+		// at a time, all by the member's indexes. The size reads each account of the member's lists by its key, so
+		// its bound is about three rows per follow and block (5,500 here) and the posts and comments.
+		{"export: the size of a member's archive (500 follows, 5,000 blocks)", exportSizeSQL, []any{viewer}, 20000, ""},
 		{"export: a page of a member's posts", exportPostsSQL, []any{viewer, 0, exportPage}, 300, ""},
 		{"export: a page of a member's comments", exportCommentsSQL, []any{viewer, 0, exportPage}, 1500, ""},
 		{"export: a page of whom a member follows, of 500", exportFollowingSQL, []any{viewer, 0, exportPage}, 25000, "users"},
