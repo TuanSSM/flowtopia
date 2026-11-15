@@ -3986,6 +3986,35 @@ func TestDBQueryPlans(t *testing.T) {
 	})
 	on = db
 	tx.Rollback()
+	// A takeback as production meets it (the second review of FWR 7): a comment's longest line queued at 100 and at 1,000
+	// inboxes, with the Delete's rows written after the last ANALYZE, as a Delete's are, in a transaction rolled back.
+	// The cost grows with the pairs of activities and inboxes (about 30 rows counted a pair) and does not turn on the
+	// statistics: the first form of takeBackSQL read 8.6 million rows at 100 inboxes here.
+	for _, inboxes := range []int{100, 1000} {
+		if tx, err = db.Begin(); err != nil {
+			t.Fatal(err)
+		}
+		line := fmt.Sprintf("https://here.example/l%d#", inboxes)
+		for _, q := range []string{
+			`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at, comes_after) SELECT $1 || g, '{}', true, now(), CASE WHEN g > 0 THEN $1 || (g - 1) END FROM generate_series(0, ` + fmt.Sprint(commentUpdatesMax) + `) g`,
+			`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at, undoes, undoes_chain) SELECT $1 || 'delete', '{}', true, now(), id, true FROM ap_outbox WHERE ap_id = $1 || ` + fmt.Sprint(commentUpdatesMax) + `::text`,
+			`INSERT INTO ap_deliveries (outbox_id, inbox, host, next_at, created_at) SELECT o.id, 'https://t' || k || '.fan.example/inbox', 't' || k || '.fan.example', now(), now()
+				FROM ap_outbox o, generate_series(1, ` + fmt.Sprint(inboxes) + `) k WHERE o.ap_id LIKE $1 || '%'`,
+		} {
+			if _, err := tx.Exec(q, line); err != nil {
+				t.Fatalf("%v\n%s", err, q)
+			}
+		}
+		var end, del int64
+		if err := tx.QueryRow(`SELECT (SELECT id FROM ap_outbox WHERE ap_id = $1 || $2::text), (SELECT id FROM ap_outbox WHERE ap_id = $1 || 'delete')`, line, fmt.Sprint(commentUpdatesMax)).Scan(&end, &del); err != nil {
+			t.Fatal(err)
+		}
+		on = tx
+		plans([]planCase{{fmt.Sprintf("deliveries: a Delete's takeback over the longest line at %d inboxes, written after ANALYZE", inboxes), takeBackSQL,
+			[]any{del, end, time.Now()}, float64((commentUpdatesMax+2)*inboxes*30 + 500), ""}})
+		on = db
+		tx.Rollback()
+	}
 	// Public posts out (FWR 4): member 11 has 1,000 followers on 300 other servers (a tenth of them with no shared
 	// inbox), beside 2,000 remote accounts following members 1 to 500; 5,000 posts went out and have their records,
 	// 20 wait, and 500 members have had their profile sent. The recipients of a post are one statement through

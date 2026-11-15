@@ -2011,6 +2011,16 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     sent to the post's server". This replaces the refusal built after the first review.
   - **The locked check in `ensureKey` is tested on purpose** (`TestDBKeyNotWrittenAfterStopping`): a hook between making
     a key and writing it (`keyMade`) turns sharing off in that gap, and the key is not written, every time.
+  - **A takeback's cost no longer turns on statistics** (FWR 6's `takeBackSQL`, fixed here because its plan test failed
+    once in this item's runs). Its count of a line's queued rows per inbox was a correlated HAVING that the planner could
+    evaluate once per row of the outer side, depending on what ANALYZE's sample saw: 13,228 rows instead of 5,603 at 10
+    inboxes once in 300 ANALYZEs here, and, with the Delete's rows written after ANALYZE as in production, 208,373 rows
+    at 100 inboxes and 17,383,073 at 1,000 (the reviewer saw 8.6 million and 682 ms at 100), under the queue's lock. It
+    now groups the rows given up and the rows queued per inbox once each and joins them once (`gi`, MATERIALIZED): 4,038
+    / 43,573 / 435,073 rows at 10 / 100 / 1,000 inboxes, about 25 a pair of activity and inbox, and the same 4,423 rows
+    after each of 300 ANALYZEs. `TestDBQueryPlans` holds the two production shapes at 30 rows a pair, which the first form
+    fails; the semantics are those of before (the takeback, follow, like and comment-order tests pass unchanged).
+    `heldBackSQL` and `afterHeldSQL` ask about one inbox and have no such shape.
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail

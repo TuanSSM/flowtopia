@@ -18318,6 +18318,13 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 // from being claimed at all, and a policy refusal at the send gives the row up (failed, not queued). A lease that runs
 // out (a stop past its bounds, a crash) keeps its attempt: that request may have left.
 // It says how many rows of the second went.
+//
+// The inboxes where the second's own row goes (gi) are found from two groupings joined once: the rows of the line
+// given up per inbox (g) and the rows of the line queued there (rn), each counted once, so its cost grows with the
+// pairs of activities and inboxes and does not depend on what ANALYZE's sample saw. Its first form counted r again for
+// each inbox in a correlated HAVING, which the planner could evaluate once per row of the outer side: 13,228 rows read
+// instead of 5,603 at 10 inboxes, and 8.6 million at 100 with the Delete's rows written after ANALYZE, under the
+// queue's lock (TestDBQueryPlans holds both shapes).
 const takeBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT k.undoes_chain
 			FROM ap_outbox o, ap_outbox k WHERE o.id = $2 AND k.id = $1
 		UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
@@ -18328,8 +18335,10 @@ const takeBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_
 	g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3,
 			last_error = CASE WHEN d.attempts = 0 THEN 'taken back before it was sent' ELSE 'taken back after an attempt that may have arrived' END
 		FROM r WHERE d.id = r.row_id AND d.id IN (SELECT id FROM k) AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3) RETURNING d.inbox, d.attempts, r.root),
-	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT g.inbox FROM g GROUP BY g.inbox
-			HAVING bool_or(g.root) AND max(g.attempts) = 0 AND count(*) = (SELECT count(*) FROM r WHERE r.inbox = g.inbox))
+	rn AS (SELECT inbox, count(*) AS n FROM r GROUP BY inbox),
+	gi AS MATERIALIZED (SELECT g.inbox FROM g JOIN rn ON rn.inbox = g.inbox GROUP BY g.inbox, rn.n
+			HAVING bool_or(g.root) AND max(g.attempts) = 0 AND count(*) = rn.n),
+	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM gi)
 		RETURNING n.id),
 	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, l.until) FROM (SELECT inbox, max(locked_until) AS until FROM r WHERE locked_until >= $3 GROUP BY inbox) l
 		WHERE n.outbox_id = $1 AND n.inbox = l.inbox RETURNING n.id)
