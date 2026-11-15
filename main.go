@@ -26941,10 +26941,15 @@ func postCols(staff string) string {
 	return `p.id, p.user_id, p.kind, p.body, p.prop, p.skill, p.image, p.data, p.created_at,
 		(SELECT count(*) FROM likes l WHERE l.post_id = p.id), EXISTS (SELECT 1 FROM likes l WHERE l.post_id = p.id AND l.user_id = $1),
 		(SELECT count(*) FROM comments c LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL
-			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)
-			AND (c.ap_id IS NULL OR ` + actorShown("c.user_id") + `)), p.hidden_reason, p.audience, p.alt,
+			AND ` + blockFree("$1", "c.user_id", staff) + ` AND (pc.id IS NULL OR ` + blockFree("$1", "pc.user_id", staff) + `)` + postCountShown + `), p.hidden_reason, p.audience, p.alt,
 		p.ap_id IS NOT NULL, p.ap_extra`
 }
+
+// postCountShown is what FWR 6 added to postCols' count of comments: a reply of an account its server says is suspended
+// is not counted, as it is not listed, nor an answer in a thread such a reply began (its thread is not listed; a
+// deleted one is, as a placeholder). plainLocal takes it out again.
+var postCountShown = `
+			AND (c.ap_id IS NULL OR ` + actorShown("c.user_id") + `) AND (pc.ap_id IS NULL OR pc.deleted OR ` + actorShown("pc.user_id") + `)`
 
 // homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
 // first. $1 is the viewer, $2 "older than this post" (0 for the first page), $3 how many, $4 whether the
@@ -26977,6 +26982,12 @@ var homeSQL = `SELECT ` + postCols("$4") + ` FROM (SELECT h.id FROM
 // remote replies) and its newest replies from other servers (through comments_remote), each at most $4, and the first
 // $4 of those are kept, so the preview of a post costs at most its cap of remote replies more than one with none
 // (TestDBQueryPlans). A post with no remote reply shows what it always showed.
+//
+// feedCommentsLocalSQL is the statement as it was before FWR 6, which local mode on a database that never federated
+// runs (plainLocal): it has no remote reply to put after the others.
+var feedCommentsLocalSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.id DESC) AS rn
+	FROM comments c WHERE c.post_id = ANY($3) AND c.parent_id IS NULL AND ` + commentBlockFreeLocal + `) c WHERE c.rn <= $4 ORDER BY c.id`
+
 var feedCommentsSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.post_id ORDER BY c.ap_id IS NULL DESC, c.id DESC) AS rn
 	FROM (SELECT x.* FROM unnest($3::bigint[]) AS q(pid) CROSS JOIN LATERAL (
 		(SELECT c.* FROM comments c WHERE c.post_id = q.pid AND c.parent_id IS NULL AND c.ap_id IS NULL AND ` + commentBlockFree + ` ORDER BY c.id DESC LIMIT $4)
@@ -27002,9 +27013,7 @@ func (a *app) loadPosts(viewer *user, before, byUser, only int64, ids ...int64) 
 // readPosts runs q, feedSQL or homeSQL with its arguments, and gives the page as the page reads it:
 // the posts with their comments and links, the users involved, and whether more follow.
 func (a *app) readPosts(viewer *user, q string, args ...any) (map[string]any, error) {
-	if a.hidingRemote() {
-		q = hideRemote(q)
-	}
+	q = a.localStatements(q)
 	rows, err := a.db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -27625,8 +27634,42 @@ var postTalkShown = `(p.ap_id IS NULL OR p.audience IN ('public', 'unlisted') AN
 
 // hidingRemote says the instance runs in local mode on a database that federated before and still keeps rows of other
 // servers (remoteKept, read at the start): then what other servers left is neither listed nor counted (hideRemote).
-// A database that never federated has none, and its statements are the ones they always were.
 func (a *app) hidingRemote() bool { return a.fed == nil && a.remoteKept }
+
+// plainLocal says the instance runs in local mode on a database that never federated (no account of another server):
+// then the statements over posts and comments are the ones they were before FWR 6 (plainStatements), with nothing of
+// what only rows of other servers need. TestDBQueryPlans reads them in that mode.
+func (a *app) plainLocal() bool { return a.fed == nil && !a.remoteKept }
+
+// localStatements is q as this mode runs it: hideRemote on a database that federated and runs in local mode,
+// plainStatements on one that never federated, q itself in a mode that federates.
+func (a *app) localStatements(q string) string {
+	switch {
+	case a.hidingRemote():
+		return hideRemote(q)
+	case a.plainLocal():
+		return plainStatements(q)
+	}
+	return q
+}
+
+// plainStatements takes out of q what FWR 6 added to the statements over posts and comments for rows of other servers:
+// the look at a reply's account in the counts and the lists (postCountShown, commentAccountShown, replyCountShown), and the
+// preview's two branches (feedCommentsSQL, back to feedCommentsLocalSQL). Only the two columns commentCols added stay,
+// read from the row the statement holds anyway. TestDBRemoteHiddenInLocalMode holds that each fragment is found.
+func plainStatements(q string) string {
+	for _, r := range plainParts {
+		q = strings.ReplaceAll(q, r[0], r[1])
+	}
+	return q
+}
+
+var plainParts = [][2]string{
+	{feedCommentsSQL, feedCommentsLocalSQL},
+	{postCountShown, ""},
+	{commentAccountShown, ""},
+	{replyCountShown, ""},
+}
 
 // hideRemote is a statement over posts and comments (postCols, commentCols, commentBlockFree) that leaves out the
 // replies and likes of other servers, from lists and counts alike, so in local mode a page's counts agree with what it
@@ -27641,6 +27684,8 @@ func hideRemote(q string) string {
 
 var hideRemoteParts = [][2]string{
 	{`WHERE c.post_id = p.id AND NOT c.deleted AND c.hidden_at IS NULL`, `WHERE c.post_id = p.id AND c.ap_id IS NULL AND NOT c.deleted AND c.hidden_at IS NULL`},
+	// A member's answer in a thread a reply of another server began is not listed (its thread is not), so not counted.
+	{`AND (pc.id IS NULL OR NOT EXISTS`, `AND (pc.id IS NULL OR pc.ap_id IS NULL AND NOT EXISTS`},
 	{`(SELECT count(*) FROM likes l WHERE l.post_id = p.id)`, `(SELECT count(*) FROM likes l WHERE l.post_id = p.id AND l.ap_id IS NULL)`},
 	{`(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id)`, `(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id AND l.ap_id IS NULL)`},
 	{`FROM comments r WHERE r.parent_id = c.id AND`, `FROM comments r WHERE r.parent_id = c.id AND r.ap_id IS NULL AND`},
@@ -27817,13 +27862,20 @@ func (a *app) handleBookmarks(w http.ResponseWriter, _ *http.Request, u *user) {
 // Since FWR 6 it also leaves out the replies of an account its server says is suspended (actorShown, one primary key
 // look; true for a member here), as Home leaves out that account's posts; a placeholder stays, so the answers of members
 // here under a gone account's reply still read.
-var commentBlockFree = blockFree("$1", "c.user_id", "$2") + ` AND (c.deleted OR ` + actorShown("c.user_id") + `)`
+var commentBlockFree = commentBlockFreeLocal + commentAccountShown
+
+// commentBlockFreeLocal is commentBlockFree as it was before FWR 6, and commentAccountShown what FWR 6 added to it.
+var commentBlockFreeLocal = blockFree("$1", "c.user_id", "$2")
+var commentAccountShown = ` AND (c.deleted OR ` + actorShown("c.user_id") + `)`
 
 var commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
 	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
-	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL AND ` + blockFree("$1", "r.user_id", "$2") + `
-		AND (r.ap_id IS NULL OR r.deleted OR ` + actorShown("r.user_id") + `)), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL,
+	(SELECT count(*) FROM comments r WHERE r.parent_id = c.id AND r.hidden_at IS NULL AND ` + blockFree("$1", "r.user_id", "$2") + replyCountShown + `), COALESCE(c.hidden_reason, ''), c.hidden_at IS NOT NULL,
 	c.ap_id IS NOT NULL, c.ap_extra`
+
+// replyCountShown is what FWR 6 added to commentCols' count of replies (plainLocal takes it out again).
+var replyCountShown = `
+		AND (r.ap_id IS NULL OR r.deleted OR ` + actorShown("r.user_id") + `)`
 
 var repliesSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
 		FROM comments c WHERE c.parent_id = ANY($3) AND ` + commentBlockFree + `) c WHERE c.rn <= $4`
@@ -27839,10 +27891,7 @@ func commentsSQL(inner string) string {
 // A hidden comment is shown in full to its author and moderators; to everyone else it is left
 // out, or kept as an empty placeholder when it has replies that are still shown.
 func (a *app) queryComments(viewer *user, inner string, args ...any) ([]*comment, error) {
-	q := commentsSQL(inner)
-	if a.hidingRemote() {
-		q = hideRemote(q)
-	}
+	q := a.localStatements(commentsSQL(inner))
 	rows, err := a.db.Query(q, append([]any{viewer.ID, can(viewer, permPostHide)}, args...)...)
 	if err != nil {
 		return nil, err

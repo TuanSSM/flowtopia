@@ -3706,6 +3706,12 @@ func TestDBQueryPlans(t *testing.T) {
 		{"the posts a member bookmarked", feedSQL, []any{viewer, 0, 0, 0, len(mine) + 1, false, pq.Array(mine)}, 1500, ""},
 		{"the comments under a page of posts", commentsSQL(feedCommentsSQL), []any{viewer, false, pq.Array(newest), previewComments}, 1500, ""},
 		{"the replies under those comments", commentsSQL(repliesSQL), []any{viewer, false, pq.Array(roots), previewReplies}, 1500, ""},
+		// Local mode on a database that never federated runs the statements as they were before FWR 6 (plainLocal),
+		// within the same budgets as then.
+		{"local mode: timeline, first page", plainStatements(feedSQL), []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 1500, ""},
+		{"local mode: one post", plainStatements(feedSQL), []any{viewer, 0, 0, 4321, 2, false, pq.Array(none)}, 300, ""},
+		{"local mode: the comments under a page of posts", plainStatements(commentsSQL(feedCommentsSQL)), []any{viewer, false, pq.Array(newest), previewComments}, 1500, ""},
+		{"local mode: the replies under those comments", plainStatements(commentsSQL(repliesSQL)), []any{viewer, false, pq.Array(roots), previewReplies}, 1500, ""},
 		{"notifications", notificationsSQL, []any{viewer, maxNotifList}, 400, ""},
 		{"the unread count of the bell", unreadSQL, []any{viewer}, 400, ""},
 		{"bookmarks", bookmarksSQL, []any{viewer}, 200, ""},
@@ -3749,6 +3755,8 @@ func TestDBQueryPlans(t *testing.T) {
 		{"one post with 5,000 blocks", feedSQL, []any{viewer, 0, 0, newest[0], 2, false, pq.Array(none)}, 300, ""},
 		{"comments with 5,000 blocks", commentsSQL(feedCommentsSQL), []any{viewer, false, pq.Array(newest), previewComments}, 1500, ""},
 		{"replies with 5,000 blocks", commentsSQL(repliesSQL), []any{viewer, false, pq.Array(roots), previewReplies}, 1500, ""},
+		{"local mode: comments with 5,000 blocks", plainStatements(commentsSQL(feedCommentsSQL)), []any{viewer, false, pq.Array(newest), previewComments}, 1500, ""},
+		{"local mode: replies with 5,000 blocks", plainStatements(commentsSQL(repliesSQL)), []any{viewer, false, pq.Array(roots), previewReplies}, 1500, ""},
 		// The list sorts the reader's own blocks to show the latest 500: each of them is read, in the
 		// index and then in the table, and only the 500 accounts shown are looked up.
 		{"the list of 5,000 blocks, its first 500", blockListSQL, []any{viewer, maxBlockList}, 13000, ""},

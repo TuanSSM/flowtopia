@@ -579,6 +579,21 @@ func TestDBRemoteHiddenInLocalMode(t *testing.T) {
 			t.Errorf("hideRemote's fragment is in none of the statements it is for: %s", part[0])
 		}
 	}
+	// On a database that never federated (point 6 of the second review): every fragment plainStatements takes out is
+	// there, and what is left asks nothing of an account of another server, the preview being the statement of before.
+	for _, part := range plainParts {
+		if !strings.Contains(feedSQL+commentsSQL(feedCommentsSQL)+commentsSQL(repliesSQL), part[0]) {
+			t.Errorf("plainStatements' fragment is in none of the statements it is for: %s", part[0])
+		}
+	}
+	for _, q := range []string{plainStatements(feedSQL), plainStatements(commentsSQL(feedCommentsSQL)), plainStatements(commentsSQL(repliesSQL))} {
+		if strings.Contains(q, "ap_actors") || strings.Contains(q, "ap_id IS NULL OR") || strings.Contains(q, "comments_remote") {
+			t.Errorf("a statement of local mode on a database that never federated still asks about other servers: %s", q)
+		}
+	}
+	if !strings.Contains(plainStatements(commentsSQL(feedCommentsSQL)), feedCommentsLocalSQL) {
+		t.Error("the preview in local mode is not the statement of before")
+	}
 	e := newRepliesEnv(t)
 	for i := 0; i < commentPage+2; i++ {
 		e.mustExec(`INSERT INTO comments (post_id, user_id, body, ap_id) VALUES ($1, $2, 'r', $3)`, e.post, e.boUser, fmt.Sprintf("%s/statuses/x%d", boID, i))
@@ -586,10 +601,15 @@ func TestDBRemoteHiddenInLocalMode(t *testing.T) {
 	e.mustExec(`INSERT INTO likes (post_id, user_id, ap_id) VALUES ($1, $2, $3), ($1, $4, $5)`, e.post, e.boUser, boID+"#l", e.catID, catID+"#l")
 	e.must(200, e.cy, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "local one"})
 	e.must(200, e.cy, "POST", fmt.Sprintf("/api/posts/%d/like", e.post), nil)
+	// cy answers one of the remote replies: in a thread another server's reply began, so not listed in local mode, and
+	// not counted either.
+	var first int64
+	e.a.db.QueryRow(`SELECT id FROM comments WHERE ap_id = $1`, boID+"/statuses/x0").Scan(&first)
+	e.must(200, e.cy, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "an answer", "parentId": first})
 	post := func() map[string]any {
 		return e.must(200, e.ana, "GET", fmt.Sprintf("/api/posts/%d", e.post), nil)["posts"].([]any)[0].(map[string]any)
 	}
-	if p := post(); num(p["commentCount"]) != commentPage+3 || num(p["likes"]) != 3 {
+	if p := post(); num(p["commentCount"]) != commentPage+4 || num(p["likes"]) != 3 {
 		t.Fatalf("federated: %v comments, %v likes", p["commentCount"], p["likes"])
 	}
 	f := e.a.fed
@@ -609,6 +629,12 @@ func TestDBRemoteHiddenInLocalMode(t *testing.T) {
 	if num(p["commentCount"]) != 1 || num(p["likes"]) != 1 || len(anyList(p["comments"])) != 1 {
 		t.Errorf("local mode, the post: %v comments, %v likes, %d previewed", p["commentCount"], p["likes"], len(anyList(p["comments"])))
 	}
+	// In local mode on a database that never federated, the app runs the plain statements.
+	e.a.fed = nil
+	if q := e.a.localStatements(commentsSQL(feedCommentsSQL)); !strings.Contains(q, feedCommentsLocalSQL) {
+		t.Error("local mode on a database that never federated runs the statements of a federating mode")
+	}
+	e.a.fed = f
 	// A start in local mode on this database finds that it keeps rows of other servers.
 	local := newApp(e.a.db, t.TempDir())
 	if err := local.start(func(string) string { return "" }); err != nil || !local.remoteKept || local.fed != nil {

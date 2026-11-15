@@ -1597,8 +1597,8 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   milestone post, a post of a member who does not share, or a comment it cannot see; it cannot edit or delete another
   account's reply. A member who cannot read a post of another server cannot read its comments either (`commentShown`,
   `targetOwner` hold remote posts to `remoteSeen`). **Local mode**: no inbox takes one; in an instance that federated
-  before, the rows stay until `-purge-remote` and `queryComments` leaves remote replies out of every list of comments
-  (their counts still count them).
+  before, the rows stay until `-purge-remote`, and the lists and counts of comments and likes leave them out alike
+  (`hideRemote`, the bullet on local mode under "After the review of #116").
 - **Moderation.** A remote reply is reported, hidden, restored and deleted by staff as a member's comment is, and the
   post's author deletes one under their post; the queue shows a remote post's or reply's text as text (no `@name`
   linked, fixing the same for FWR 5's remote posts). Nothing is sent for it: it is its server's.
@@ -1655,9 +1655,16 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     local mode asks once whether rows of other servers are kept (`remoteKept`); when they are, the statements over posts
     and comments leave remote replies and likes out before their LIMIT and out of the counts (`hideRemote`, fixed
     fragments of `postCols`, `commentCols` and `commentBlockFree`), so a page of comments is full and a post's counts
-    agree with what is listed. A database that never federated runs the statements as they always were. In a mode that
-    federates, a reply of an account its server suspended is left out of the counts as of the lists (`actorShown`);
-    its likes still count, as there is no list of likes to agree with.
+    agree with what is listed; a member's answer in a thread a remote reply began is neither listed nor counted (after
+    the second review). On a database that never federated, local mode runs the statements over posts and comments as
+    they were before this item (`plainLocal`, `plainStatements`): the look at a reply's account in the counts and
+    the lists is taken out, and the preview is its old single statement, not the two branches that put remote replies
+    after the others. Only the two columns `commentCols` added (`c.ap_id IS NOT NULL, c.ap_extra`) stay, read from the
+    row the statement holds anyway. `TestDBQueryPlans` reads them in that mode within the old budgets: the timeline 894
+    rows, one post 42, the preview of a page 484, its replies 124, and with 5,000 blocks the preview 218, the same as
+    before this item. In a mode that federates, a reply of an account its server suspended is left out of the counts as
+    of the lists (`actorShown`), and so are the answers in its thread unless it is a placeholder; its likes still count,
+    as there is no list of likes to agree with.
   - **Forwards are bounded and come last** (`TestDBForwardBounds`, the bullet on the forward above), and the note says
     plainly what one is known to achieve.
   - **Small points** (`TestDBRemoteTalkSmallPoints`). A removed remote reply (its author's deletion, its account's, its
