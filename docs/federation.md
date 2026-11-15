@@ -4346,7 +4346,11 @@ Interoperability is shown in four ways, in rising order of trust, and the last i
      with its host failing and its retry time recorded, that instance restarted with the row still there, the first
      one started again and the post arriving on the retry schedule (1 minute, give or take 20%, so about 70 s: the
      suite waits for it rather than shortening it, since no setting may); an unfollow; a block ending the follow the
-     other way and hiding the posts; "Remove me from other servers" seen as a gone account with its like taken away;
+     other way and hiding the posts; "Remove me from other servers" seen as a gone account with its like taken away,
+     and on its own server the card saying the removal is being sent, sharing again refused with that sentence, the
+     address answering "Profile no longer shared", an unlike afterwards removing the like there and sending nothing,
+     and sharing again allowed once housekeeping has cleared the kept key (a restart runs it); the Federation tab's
+     counts of what was not sent at 0 on both instances, mid-run and at the end;
      an admin's deletion seen as a gone account with its follow and posts removed; both queues empty at the end; each
      app under 300 MB (section 12); and neither key secret in the logs and queue state it keeps.
    - **Waiting:** no fixed wait; each check polls what it needs every quarter second with a deadline and prints how

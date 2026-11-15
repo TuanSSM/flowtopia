@@ -367,6 +367,17 @@ for n in "${names[@]}"; do
   if [ "$shared" -ge 1 ]; then ok "deliveries reach $n's shared inbox over HTTPS ($shared to /inbox, $own to a member's own inbox, each answered 202)"
   else bad "deliveries reach $n's shared inbox over HTTPS" "$shared to /inbox, $own to a member's own inbox"; fi
 done
+# The Federation tab's counts of what was not sent: activities cut at the address cap, deletions not taken back,
+# comments not sent, forwards skipped and activities that could not be made. A clean run leaves each at 0.
+undropped() {   # undropped <instance>: says the counts in $dropped; true when every one is 0 (left out when 0)
+  api "$1" admin GET /api/admin/federation &&
+    dropped=$(j '.deliveries | "cut \(.cut // 0), not taken back \(.notTakenBack // 0), comments not sent \(.commentsNotSent // 0), forwards skipped \(.forwardsSkipped // 0), not made \(.outNotMade // 0)"') &&
+    [ "$(j '.deliveries | [.cut, .notTakenBack, .commentsNotSent, .forwardsSkipped, .outNotMade] | map(. // 0) | add')" = 0 ]
+}
+for n in "${names[@]}"; do
+  if undropped "$n"; then ok "$n's Federation tab counts nothing left unsent ($dropped)"
+  else bad "$n's Federation tab counts nothing left unsent" "$code ${dropped:-$(cut -c1-300 <<<"$body")}"; fi
+done
 
 # ---- two away, one restarted, nothing lost ----
 t0=$SECONDS
@@ -404,6 +415,33 @@ all "bob asks to be removed from other servers on two, and one server is told" "
 bobgone() { api one ana GET "/api/fed/accounts/$bob1" && [ "$(j .account.state)" = gone ]; }
 within 30 "on one bob's account is gone" bobgone
 within 30 "and his like of ana's post is taken away there" likes 0
+# What leaving leaves on two: the card says the removal is still being sent, sharing again is refused with the
+# reason until it has been, the address shows "Profile no longer shared", and an unlike stays here.
+api two bob GET /api/me
+leaving=$(j '.federation.leaving // ""')
+if [ "$code" = 200 ] && [ -n "$leaving" ]; then ok "bob's card on two says the removal is being sent: $leaving"
+else bad "bob's card on two says the removal is being sent" "$code $(jq -c .federation <<<"$body")"; fi
+api two bob PUT /api/me '{"federates":true}'
+all "and sharing again is refused with that reason while it is" "409 $leaving" "$code $(j .error)"
+got=$(curl -sS -m 20 --noproxy '*' --cacert "$work/ca.pem" --resolve "two.flowa.test:${port[two]}:127.0.0.1" -H 'Accept: text/html' \
+  -o "$work/page" -w '%{http_code}' "https://two.flowa.test:${port[two]}/users/bob" 2>&1)
+if grep -q 'Profile no longer shared' "$work/page"; then ok "bob's address on two shows \"Profile no longer shared\" ($got)"
+else bad "bob's address on two shows \"Profile no longer shared\"" "$got $(head -c 300 "$work/page")"; fi
+within 30 "two's queue is empty once the removal has gone" drained two
+# Leaving cleared the ids of bob's likes, so his like of ana's post is a like of this server now: an unlike removes it
+# here and enqueues nothing (his removal took it back on one already).
+api two bob POST "/api/posts/$p1two/like"
+liked=$code$(j .liked)
+api two cyd GET "/api/posts/$p1two"
+all "bob's unlike after leaving removes his like on two and sends nothing" "200false 200 0 0" "$liked $code $(j '.posts[0].likes') $(queued two)"
+# The removal's copy of bob's key is cleared by housekeeping, at the start and every hour, so sharing again waits
+# for that pass after the queue empties (said in the todo); a restart of two runs it.
+api two bob PUT /api/me '{"federates":true}'
+echo "sharing again with two's queue empty, before housekeeping: $code $(j '.error // "allowed"')"
+docker restart -t 10 "$p-two-app" >/dev/null
+within 60 "two restarts" healthy two
+sharing() { api two bob PUT /api/me '{"federates":true}' && [ "$code" = 200 ] && [ "$(j .federation.optedIn)" = true ]; }
+within 30 "after housekeeping, bob may share his profile again" sharing
 api one admin GET /api/admin/users
 anaid=$(j '.users[] | select(.username == "ana") | .id')
 api one admin DELETE "/api/admin/users/$anaid"
@@ -415,6 +453,10 @@ all "and her posts are gone from cyd's Home there" "200 0" "$code $(j '[.posts[]
 api two cyd GET "/api/fed/accounts/$ana2"
 all "and her account shows as gone on two" "200 gone" "$code $(j .account.state)"
 for n in "${names[@]}"; do within 30 "$n's queue is empty at the end, nothing failed" drained "$n"; done
+for n in "${names[@]}"; do
+  if undropped "$n"; then ok "$n's Federation tab still counts nothing left unsent since its last start ($dropped)"
+  else bad "$n's Federation tab still counts nothing left unsent since its last start" "$code ${dropped:-$(cut -c1-300 <<<"$body")}"; fi
+done
 
 # ---- memory, and what is kept ----
 # docker stats shows the container's memory as the kernel counts it for the cgroup, without the page cache it can
