@@ -2061,6 +2061,21 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
     Create when the Create was put back on the schedule or given up: the reply names the comment by id, and a receiver
     that does not have it treats the reply as it treats any reply to a post it does not know. A profile update's tries
     (`personTries`) are kept in memory, so a restart starts them afresh: at worst one more pass of the schedule.
+- **After the fourth review** (each with a test that fails without it):
+  - **Every producer writes before it logs or counts** (`TestDBFailingWriteDoesNotSpin`, now also the full queue's branches
+    for posts and comments, a Delete at its schedule's end and before it, a Create and a comment's Create, and a write
+    refused every other time). The full queue's branches, the too large Create, an Update dropped for a comment no longer
+    shown and `commentOutFull` now write first; a failed write is returned as `outWriteError`, which `outNotTried`
+    knows, so the retry path does not take it for a failure of the record, the producer reports no work, and nothing is
+    logged or counted until the write succeeds.
+  - **Every change of a record's state resets its tries** (`TestDBCommentTriesAfresh`, `TestOutStateChangesReset`): an
+    Update dropped because the comment is no longer shown, and an edit that turns a sent record into an Update, now
+    start afresh too. The statements that change a record's state are listed in one comment beside `outNotTried`, and
+    the test reads `main.go` and fails on one that neither resets the tries and the wait nor gives a reason.
+  - **A step says its producer's error while rows flow** (`TestDBProducerErrorStillSends`): the delivery's error, or else
+    the producer's or the fan-out's, under the loop's once-a-minute log.
+  - **Words for a time already past** (`TestDBLeavingSentences`): on a believed clock the sentence names neither a time
+    nor the clock; the clock's clause is kept for a doubted clock.
 - **Open.** The owner's trial (FWR 9) should confirm that Mastodon removes the account on this Delete(Person) and what
   it does when the address comes back; a server that only received an activity whose record is gone is not told (see
   above); a deletion made in local mode is never sent; the Delete(Person) is not sent again if all its deliveries fail

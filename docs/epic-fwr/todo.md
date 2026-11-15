@@ -501,6 +501,10 @@ route and test named below is new unless the design note says it exists.
   (`TestDBStopIsNoTry`), the clock's doubt holds a member's Delete(Person) and their sharing again
   (`TestDBLeavingUnderClockDoubt`), an unlike while leaving is answered as for a member with no key
   (`TestDBUnlikeWhileLeaving`), and the takeback's plan budgets are a rule of 35 rows a pair (`takebackRowsPerPair`).
+  After the fourth review: every producer writes before it logs or counts, a failed write being no failure of the record
+  (`TestDBFailingWriteDoesNotSpin`); every change of a record's state resets its tries, held by a test that reads
+  `main.go` (`TestDBCommentTriesAfresh`, `TestOutStateChangesReset`); a step says its producer's error while rows flow;
+  and the sentence for a time already past names no clock (`TestDBLeavingSentences`).
   **Open:** the owner's trial (item 9) should confirm Mastodon removes the account on this Delete(Person) and what it does
   when the address comes back; a server that only ever received an activity whose record is gone is not told; a
   deletion made in local mode is never sent; a Delete(Person) whose deliveries fail for 48 hours is not sent again; the

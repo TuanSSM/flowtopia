@@ -7877,11 +7877,14 @@ func (f *federation) leavingSince() time.Time {
 }
 
 // leavingSentenceAt is leavingSentence, or, while the queue's clock is doubted (the member then waits for the clock,
-// leavingSince) or when that time is past on it, the same sentence naming no time: a time read off a doubted clock
-// could be false.
+// leavingSince), the same sentence naming no time but the clock (a time read off a doubted clock could be false); and
+// when that time is past on a believed clock (a delivery written late), the sentence with neither.
 func (f *federation) leavingSentenceAt(until time.Time) string {
-	if until.Before(f.outNow()) || f.out != nil && (f.out.doubting() || !f.out.clockOK()) {
+	if f.out != nil && (f.out.doubting() || !f.out.clockOK()) {
 		return "Other servers are still being asked to forget you. You can share your profile again once that is done; this server is waiting for its clock to be confirmed first."
+	}
+	if until.Before(f.outNow()) {
+		return "Other servers are still being asked to forget you. You can share your profile again once that is done."
 	}
 	return leavingSentence(until)
 }
@@ -18681,7 +18684,9 @@ func (q *deliveryQueue) step(ctx context.Context) (bool, error) {
 		return true, q.giveBack(c, 0)
 	}
 	defer q.leaveHost(c.host)
-	return true, q.deliver(ctx, c)
+	// The delivery's error, or else the producer's or the fan-out's, so a record failing every time is said while rows
+	// flow too (the loop logs once a minute).
+	return true, cmp.Or(q.deliver(ctx, c), before)
 }
 
 // deliver sends one claimed row and writes down what came of it.
@@ -21223,14 +21228,18 @@ func (a *app) postOut(ctx context.Context) (did bool, err error) {
 			// The post is still on the servers it went to: the Delete stays recorded and is tried again on the
 			// delivery schedule (8.3), each wait one more step, until the schedule's end (about 40 hours).
 			if tries >= len(deliveryRetries) {
-				log.Printf("federation: the Delete of post %d is not sent: %v, %d times over the schedule", p.id, err, tries+1)
+				if err := f.outWrite(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'delete'`, p.id); err != nil {
+					return false, err
+				}
+				log.Printf("federation: the Delete of post %d is not sent: the delivery queue stayed full, %d times over the schedule", p.id, tries+1)
 				f.notTakenBack.Add(1) // and the Federation tab says how many since the start
-				_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'delete'`, p.id)
-				return true, err
+				return true, nil
 			}
-			log.Printf("federation: the Delete of post %d waits: %v; tried again in %s", p.id, err, deliveryRetries[tries])
-			_, err := f.fedExec(ctx, `UPDATE ap_post_out SET tries = tries + 1, due_at = $2 WHERE post_id = $1 AND state = 'delete'`, p.id, now.Add(deliveryRetries[tries]))
-			return true, err
+			if err := f.outWrite(ctx, `UPDATE ap_post_out SET tries = tries + 1, due_at = $2 WHERE post_id = $1 AND state = 'delete'`, p.id, now.Add(deliveryRetries[tries])); err != nil {
+				return false, err
+			}
+			log.Printf("federation: the Delete of post %d waits: the delivery queue is full; tried again in %s", p.id, deliveryRetries[tries])
+			return true, nil
 		}
 		return a.outDone(err, p.id)
 	}
@@ -21261,9 +21270,11 @@ func (a *app) postOut(ctx context.Context) (did bool, err error) {
 		return false, err
 	}
 	if len(body) > inboxBodyMax {
+		if err := f.outWrite(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id); err != nil {
+			return false, err
+		}
 		log.Printf("federation: the Create of post %d is %d bytes, more than a delivery may carry; it is not sent", p.id, len(body))
-		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id)
-		return true, err
+		return true, nil
 	}
 	sent, _ := json.Marshal(to)
 	_, err = f.out.enqueueThen(ctx, keyOwner(uid), postID+"/activity", body, to, func(tx *sql.Tx) error {
@@ -21313,8 +21324,39 @@ func (f *federation) countGivenUp(state string, cause error) {
 // review): the switches that could not be read, a stop (the step's context ended), federation refused meanwhile. Such a
 // record is left as it was, with no try counted, and made again on a later pass.
 func outNotTried(err error) bool {
-	return errors.Is(err, errSwitchesUnread) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errRefused)
+	var w *outWriteError
+	return errors.Is(err, errSwitchesUnread) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errRefused) ||
+		errors.As(err, &w)
 }
+
+// outWriteError is a producer's own write about a record that failed (a full disk, the database gone): no failure of the
+// record, which stays as it was for a later pass, and nothing is logged or counted for it (FWR 7, the fourth review).
+type outWriteError struct{ err error }
+
+func (e *outWriteError) Error() string { return "writing a record of what goes out: " + e.err.Error() }
+func (e *outWriteError) Unwrap() error { return e.err }
+
+// outWrite runs a producer's write about a record, its failure an outWriteError. The producers log and count what they
+// did only after it succeeded, and report no work when it failed, so the worker's loop waits and logs once a minute.
+func (f *federation) outWrite(ctx context.Context, stmt string, args ...any) error {
+	if _, err := f.fedExec(ctx, stmt, args...); err != nil {
+		return &outWriteError{err}
+	}
+	return nil
+}
+
+// Every statement that changes the state of a record of ap_post_out or ap_comment_out (ap_person_out has none: its
+// due_at is its state, and personTries its count) starts the record's tries and wait afresh, so no activity inherits
+// another's count (FWR 7, the third and fourth reviews; TestOutStateChangesReset reads main.go for them):
+//   - a post's Create sent (postOut: create to sent); the marks of a post's deletion or a moderator's hide
+//     (handleDeletePost's bulk mark, handleModAction, the start's mark of posts deleted in local mode): to delete;
+//   - a comment's Create sent and an Update sent (commentOut: create or update to sent), an Update dropped because the
+//     comment is no longer shown, an Update given up in a full queue or failing (commentOutFull, commentFailed): to sent;
+//   - a comment's edit (handleEditComment: sent to update; a Create or an Update that waits keeps its own count, being
+//     the same activity); the marks of a comment's deletion (handleDeleteComment), a moderator's hide (handleModAction),
+//     the post's deletion (handleDeletePost), the deletion of a post of another server by its author (noteDeleteSQL)
+//     and housekeeping's probe of comments gone (talkOrphansSQL): to delete.
+// The rows removed (a record done or given up) need nothing.
 
 // outDone reads enqueueThen's answer for a post's Create. A record changed meanwhile is read again on the next pass.
 // A full queue (errDeliveryFull) lets the Create go, as an outage would (8.8): the record is removed, and said in the
@@ -21324,11 +21366,13 @@ func (a *app) outDone(err error, post int64) (bool, error) {
 	case err == nil, errors.Is(err, errOutChanged):
 		return true, nil
 	case errors.Is(err, errDeliveryFull):
-		log.Printf("federation: post %d is not sent: %v", post, err)
 		ctx, cancel := own()
 		defer cancel()
-		_, err := a.fed.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1`, post)
-		return true, err
+		if err := a.fed.outWrite(ctx, `DELETE FROM ap_post_out WHERE post_id = $1`, post); err != nil {
+			return false, err
+		}
+		log.Printf("federation: post %d is not sent: the delivery queue is full", post)
+		return true, nil
 	}
 	return false, err
 }
@@ -21430,8 +21474,11 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 		return err
 	})
 	if errors.Is(err, errDeliveryFull) {
-		log.Printf("federation: the profile of member %d is not sent: %v", uid, err)
-		_, err = f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL, sent_at = $2 WHERE user_id = $1 AND gen = $3`, uid, now, gen)
+		if err := f.outWrite(ctx, `UPDATE ap_person_out SET due_at = NULL, sent_at = $2 WHERE user_id = $1 AND gen = $3`, uid, now, gen); err != nil {
+			return false, err
+		}
+		log.Printf("federation: the profile of member %d is not sent: the delivery queue is full", uid)
+		return true, nil
 	}
 	return err == nil, err
 }
@@ -24236,13 +24283,17 @@ func (a *app) commentOut(ctx context.Context) (did bool, err error) {
 		})
 		if errors.Is(err, errDeliveryFull) {
 			if tries >= len(deliveryRetries) {
-				log.Printf("federation: the Delete of comment %d is not sent: %v, %d times over the schedule", cid, err, tries+1)
+				if err := f.outWrite(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'delete'`, cid); err != nil {
+					return false, err
+				}
+				log.Printf("federation: the Delete of comment %d is not sent: the delivery queue stayed full, %d times over the schedule", cid, tries+1)
 				f.notTakenBack.Add(1)
-				_, err := f.fedExec(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'delete'`, cid)
-				return true, err
+				return true, nil
 			}
-			_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = 'delete'`, cid, now.Add(deliveryRetries[tries]))
-			return true, err
+			if err := f.outWrite(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = 'delete'`, cid, now.Add(deliveryRetries[tries])); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 		return a.commentOutDone(err)
 	}
@@ -24257,16 +24308,18 @@ func (a *app) commentOut(ctx context.Context) (did bool, err error) {
 		// (its author, its post, the author of its thread or the member it answers stopped being shown beyond this
 		// server since it was written) is said in the log and counted on the Federation tab, never silent (after the
 		// third and fourth reviews).
+		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
+		if state == "update" {
+			stmt = `UPDATE ap_comment_out SET state = 'sent', tries = 0, due_at = NULL WHERE comment_id = $1 AND state = 'update'`
+		}
+		if err := f.outWrite(ctx, stmt, cid); err != nil {
+			return false, err
+		}
 		if on && kept {
 			log.Printf("federation: the %s of comment %d is not sent: the comment, its post, the first comment of its thread or the member it answers is no longer shown beyond this server", state, cid)
 			f.commentsNotSent.Add(1)
 		}
-		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
-		if state == "update" {
-			stmt = `UPDATE ap_comment_out SET state = 'sent' WHERE comment_id = $1 AND state = 'update'`
-		}
-		_, err := f.fedExec(ctx, stmt, cid)
-		return true, err
+		return true, nil
 	}
 	// At most one Update per commentUpdateGap: an edit sooner after the last activity waits for the gap's end, and the
 	// edits made meanwhile fold into it (the record stays update, its generation moved by each), so a comment's line is
@@ -24430,18 +24483,22 @@ func (a *app) commentFailed(cid int64, state string, tries int, cause error) (bo
 func (a *app) commentOutFull(ctx context.Context, cid int64, state string, tries int, now time.Time) (bool, error) {
 	f := a.fed
 	if tries >= len(deliveryRetries) {
-		log.Printf("federation: the %s of comment %d is not sent: the delivery queue stayed full, %d times over the schedule", state, cid, tries+1)
-		f.commentsNotSent.Add(1)
 		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
 		if state == "update" {
 			stmt = `UPDATE ap_comment_out SET state = 'sent', tries = 0, due_at = NULL WHERE comment_id = $1 AND state = 'update'`
 		}
-		_, err := f.fedExec(ctx, stmt, cid)
-		return true, err
+		if err := f.outWrite(ctx, stmt, cid); err != nil {
+			return false, err
+		}
+		log.Printf("federation: the %s of comment %d is not sent: the delivery queue stayed full, %d times over the schedule", state, cid, tries+1)
+		f.commentsNotSent.Add(1)
+		return true, nil
+	}
+	if err := f.outWrite(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = $3`, cid, now.Add(deliveryRetries[tries]), state); err != nil {
+		return false, err
 	}
 	log.Printf("federation: the %s of comment %d waits: the delivery queue is full; tried again in %s", state, cid, deliveryRetries[tries])
-	_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = $3`, cid, now.Add(deliveryRetries[tries]), state)
-	return true, err
+	return true, nil
 }
 
 // talkCountSQL counts the replies kept from other servers up to $1, and the likes with an activity id up to $2, of posts
@@ -29393,7 +29450,8 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 	if a.fed != nil {
 		// A comment that went out is sent again as Update(Note) (FWR 6); one whose Create waits goes with the new text.
 		// Every edit moves the generation, so a producer that read the record before it does not write what it read.
-		n, err := a.db.Exec(`UPDATE ap_comment_out SET gen = gen + 1, state = CASE WHEN state = 'sent' THEN 'update' ELSE state END
+		n, err := a.db.Exec(`UPDATE ap_comment_out SET gen = gen + 1, state = CASE WHEN state = 'sent' THEN 'update' ELSE state END,
+			tries = CASE WHEN state = 'sent' THEN 0 ELSE tries END, due_at = CASE WHEN state = 'sent' THEN NULL ELSE due_at END
 			WHERE comment_id = $1 AND state <> 'delete'`, id)
 		if err != nil {
 			a.serverError(w, err)

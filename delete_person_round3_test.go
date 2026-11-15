@@ -120,8 +120,107 @@ func TestDBDeleteTriesAfresh(t *testing.T) {
 
 // A record whose own write fails reports no work, so the worker's loop waits and logs once a minute instead of going
 // round at once (S2): with the producer failing a post and the record's table refusing every write (a trigger in the
-// test's own schema, as a full disk would), 20 steps report no work and the producer logs nothing.
+// test's own schema, as a full disk would), 20 steps report no work and the producer logs nothing. And the same for the
+// full queue's branches (the fourth review), posts and comments, a Delete at its schedule's end and before it, a Create
+// and a comment's Create: the producer reports no work, counts nothing and logs nothing while its write fails.
 func TestDBFailingWriteDoesNotSpin(t *testing.T) {
+	t.Run("a failing record", failingWriteRecord)
+	for _, c := range []struct {
+		kind, state string
+		final       bool
+	}{{"post", "delete", true}, {"post", "delete", false}, {"post", "create", false}, {"comment", "delete", true}, {"comment", "delete", false},
+		{"comment", "create", true}, {"comment", "create", false}} {
+		t.Run(fmt.Sprintf("full queue, %s %s, final %v", c.kind, c.state, c.final), func(t *testing.T) { failingWriteFullQueue(t, c.kind, c.state, c.final) })
+	}
+	t.Run("full queue, a write failing every other time", failingWriteIntermittent)
+}
+
+// A write that fails once is not a failure of the record (the fourth review): the record is left as it was, and the
+// retry path does not run on it (it would count a try and log "failed", or give a Delete up). With every other write
+// refused (a sequence in the test's own schema), a post's Delete in a full queue is held one wait over two passes: one
+// "waits" line, no "failed" line, one try.
+func failingWriteIntermittent(t *testing.T) {
+	e := newNotesEnv(t)
+	bo, _ := e.remote("bo", "h1.fan.example", true)
+	e.follows(bo)
+	p := e.postAs(e.ana, map[string]any{"body": "x", "audience": "public"})
+	e.produce()
+	e.must(200, e.ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
+	e.mustExec(`INSERT INTO ap_outbox (ap_id, body, targets, created_at) SELECT 'https://here.example/actor/activities/full' || g, '{}', '{https://h1.fan.example/inbox}', now()
+		FROM generate_series(1, $1) g`, deliveryWaitingMax)
+	e.mustExec(`CREATE SEQUENCE every_other`)
+	e.mustExec(`CREATE FUNCTION every_other_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+		IF nextval('every_other') % 2 = 1 THEN RAISE EXCEPTION 'could not extend file'; END IF; RETURN COALESCE(NEW, OLD); END $$`)
+	e.mustExec(`CREATE TRIGGER every_other_write BEFORE UPDATE OR DELETE ON ap_post_out FOR EACH ROW EXECUTE FUNCTION every_other_write()`)
+	logs := logged(t)
+	for i := 0; i < 2; i++ {
+		e.a.fed.postsDue.Store(true)
+		e.a.sendOut(context.Background())
+	}
+	l := logs.String()
+	if w, f := strings.Count(l, fmt.Sprintf("Delete of post %d waits", p)), strings.Count(l, fmt.Sprintf("delete of post %d failed", p)); w != 1 || f != 0 {
+		t.Errorf("two passes, every other write refused: %d waits lines, %d failed lines; want 1 and 0", w, f)
+	}
+	if _, tries, _ := e.postRecord(p); tries != 1 {
+		t.Errorf("two passes, every other write refused: %d tries, want 1", tries)
+	}
+}
+
+func failingWriteFullQueue(t *testing.T, kind, state string, final bool) {
+	e := newNotesEnv(t)
+	e.setFlag("community", true)
+	bo, _ := e.remote("bo", "h1.fan.example", true)
+	e.follows(bo)
+	p := e.postAs(e.ana, map[string]any{"body": "x", "audience": "public"})
+	table, col, id := "ap_post_out", "post_id", p
+	if kind == "comment" {
+		e.produce()
+		out := e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "a comment"})
+		table, col, id = "ap_comment_out", "comment_id", num(out["comment"].(map[string]any)["id"])
+	}
+	if state == "delete" {
+		e.produce()
+		path := fmt.Sprintf("/api/posts/%d", p)
+		if kind == "comment" {
+			path = fmt.Sprintf("/api/comments/%d", id)
+		}
+		e.must(200, e.ana, "DELETE", path, nil)
+	}
+	tries := 0
+	if final {
+		tries = len(deliveryRetries)
+	}
+	e.mustExec(`UPDATE `+table+` SET tries = $2 WHERE `+col+` = $1`, id, tries)
+	if n := e.count(`SELECT count(*) FROM `+table+` WHERE `+col+` = $1 AND state = $2`, id, state); n != 1 {
+		t.Fatalf("the setup: no %s record in state %s", kind, state)
+	}
+	e.mustExec(`INSERT INTO ap_outbox (ap_id, body, targets, created_at) SELECT 'https://here.example/actor/activities/full' || g, '{}', '{https://h1.fan.example/inbox}', now()
+		FROM generate_series(1, $1) g`, deliveryWaitingMax)
+	e.mustExec(`CREATE FUNCTION refuse_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'could not extend file'; END $$`)
+	e.mustExec(`CREATE TRIGGER refuse_write BEFORE UPDATE OR DELETE ON ` + table + ` FOR EACH ROW EXECUTE FUNCTION refuse_write()`)
+	logs := logged(t)
+	notTaken, notSent, notMade := e.a.fed.notTakenBack.Load(), e.a.fed.commentsNotSent.Load(), e.a.fed.outNotMade.Load()
+	for i := 0; i < 10; i++ {
+		e.a.fed.postsDue.Store(true)
+		e.a.fed.commentsDue.Store(true)
+		did, err := e.a.sendOut(context.Background())
+		if did || err == nil {
+			t.Fatalf("pass %d with the record's write failing: did %v, %v", i, did, err)
+		}
+	}
+	if e.a.fed.notTakenBack.Load() != notTaken || e.a.fed.commentsNotSent.Load() != notSent || e.a.fed.outNotMade.Load() != notMade {
+		t.Errorf("counted while the write failed: notTakenBack +%d, commentsNotSent +%d, outNotMade +%d", e.a.fed.notTakenBack.Load()-notTaken,
+			e.a.fed.commentsNotSent.Load()-notSent, e.a.fed.outNotMade.Load()-notMade)
+	}
+	if n := strings.Count(logs.String(), fmt.Sprintf("of %s %d", kind, id)) + strings.Count(logs.String(), fmt.Sprintf("%s %d is not sent", kind, id)); n != 0 {
+		t.Errorf("the producer logged %d lines while the write failed: %s", n, logs.String())
+	}
+	if n := e.count(`SELECT count(*) FROM `+table+` WHERE `+col+` = $1 AND tries = $2`, id, tries); n != 1 {
+		t.Error("the record changed though its write failed")
+	}
+}
+
+func failingWriteRecord(t *testing.T) {
 	e := newNotesEnv(t)
 	bo, _ := e.remote("bo", "h1.fan.example", true)
 	e.follows(bo)
