@@ -919,8 +919,8 @@ With the same switches on, replies and likes cross servers both ways ([docs/fede
 - **Going back.** An older build after `./deploy.sh --rollback` would show replies from other servers as comments of
   local accounts: run `-purge-remote` first, which removes them, the likes, and the records of comments sent.
 - **Not yet:** a like of a reply from another server goes no further than this server; a reply from another
-  server to a member's comment under a post of another server is not kept; an edit can reach a server before the
-  comment it changes when that comment's first delivery failed.
+  server to a member's comment under a post of another server is not kept. A comment answering a member who does not
+  share their profile, or in a thread one of them began, stays here, so their name never leaves.
 
 ### What the server will connect to
 

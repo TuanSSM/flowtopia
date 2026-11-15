@@ -399,8 +399,9 @@ route and test named below is new unless the design note says it exists.
   `TestDBEvictionCoversReferences` updated, with `-race -count=3` on two cores; the `federated` browser suite
   (`federated-remote-reply`).
   **Open:** `TestTwoInstances` is item 8's container suite (here `TestDBTwoFlowaReplies` covers the same steps in Go);
-  a comment's id is not served (the Note is embedded in every activity); an Update(Note) can overtake a Create that
-  failed once and waits for its next attempt; a member's like of a remote reply stays here; a remote reply to a member's
+  a comment's id is not served (the Note is embedded in every activity); an Update reaches an inbox where the
+  Create failed for good alone (it no longer overtakes a Create; after the review of #116 an Update waits for the activity
+  before it and the Delete takes back the last one); a member's like of a remote reply stays here; a remote reply to a member's
   comment under a post of another server is not kept; the likes of an account its server suspended still count;
   recorded Mastodon replies and likes (the owner's trial, item 9); the box stays unchecked until those and the
   owner's review. For the owner (defaults built): whether a reply addressed to fewer people than Public should be kept

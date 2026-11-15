@@ -1616,10 +1616,37 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   `TestDBRepliesOneConnection`, `TestDBRemoteTalkNotesBounded`, `TestDBRemoteTalkFollowsItem5`, `TestDBQueryPlans` (a post holding 3,000 remote
   replies and 2,000 remote likes), `TestDBPurgeRemote`, `TestDBInboxHandlers` and `TestDBRemoteNotes` updated; the
   `federated` browser suite (`federated-remote-reply`).
+- **After the review of #116** (each with a test that fails without it):
+  - **A comment's activities stay in order, and nothing deleted goes out after its Delete** (`TestDBCommentOrders`). An
+    Update(Note) is never enqueued while the comment's last activity (its Create, or the Update before) still has a
+    delivery queued or waits for its fan-out: the record stays `update`, due again after the queue's own wait (no worker
+    sleeps), and edits meanwhile fold into it, so two edits make two Updates, one after the other, the second with the
+    newest text. Updates have ids the record names (`<comment>#update-<generation>`, kept in `ap_comment_out.last_ap_id`),
+    and the Delete takes back the last activity by the queue's own rule (`ap_outbox.undoes`): a Create never tried is
+    given up and nothing goes; one tried, or an Update never tried, is given up and the Delete goes; one in flight holds
+    the Delete until its lease ends. After an Update the Delete goes even to an inbox the Update never reached
+    (`ap_outbox.undoes_kept`, read by `takeBackSQL` and `enqueueTakeBack`), since the Create went there. A deletion, a
+    hide, a post's deletion and housekeeping's mark clear a held Update's wait, so the Delete goes at once. Posts send no
+    Update(Note) (they are not edited), so they have no such case.
+  - **An edit while the Create is being made is not lost** (`TestDBCommentEditWhileProduced`): every edit moves the
+    record's generation, and the Create's step checks the generation it read, so it rolls back and the next pass sends the
+    text as edited.
+  - **A full queue holds a comment, never drops it** (`TestDBCommentQueueFull`): a Create or an Update the full queue
+    refuses waits on the delivery schedule, as a post's Delete does, and is given up, said in the log and counted, only
+    past its last wait.
+  - **Nothing names a member who does not share** (`TestDBCommentsNameNoNonSharer`): a comment answering a member who
+    does not share their profile, or in a thread one of them began, or answering a hidden comment, stays here, as the
+    comments of members who do not share do, so neither the comment's id nor the name added before an answer leaves;
+    the producer asks again about the thread's first author before the Create. A name of such a member in the text stays
+    text: `resolveMentions` finds only members who share, so it is no Mention tag and no link to their actor.
+  - **Switches that could not be read hold a comment's way out** (`TestDBCommentSwitchesUnread`): the record is written
+    for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
+    said off keeps the comment here.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
-  as Mastodon does from the actor's origin, is not affected); an Update(Note) can reach an inbox before the Create it
-  changes when that Create failed once and waits for its next attempt (the receiver then keeps the first text; no
-  takeback rule covers an Update); a member's like of a remote reply stays here; a remote reply to a member's comment
+  as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
+  Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
+  receiver does with an Update of an object it never had is its own (FWR 5 here takes one as new only when recent); a
+  member's like of a remote reply stays here; a remote reply to a member's comment
   under a post of another server is not kept (it answers no post here); the likes of an account its server says is
   suspended still count; recorded Mastodon replies and likes to hold this to (the owner's trial, FWR 9).
 

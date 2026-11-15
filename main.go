@@ -3312,7 +3312,7 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 		// A hidden comment is taken back the same way (FWR 6).
 		if err == nil && kind == "comment" && a.fed != nil {
 			var mark sql.Result
-			if mark, err = tx.Exec(`UPDATE ap_comment_out SET state = 'delete' WHERE comment_id = $1 AND state <> 'delete'`, in.ID); err == nil {
+			if mark, err = tx.Exec(`UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id = $1 AND state <> 'delete'`, in.ID); err == nil {
 				n, _ := mark.RowsAffected()
 				cmtMarked = n > 0
 			}
@@ -6463,6 +6463,10 @@ type federation struct {
 	// due (a Delete the full queue refused), as postsDue and postsAt do for posts.
 	commentsDue atomic.Bool
 	commentsAt  atomic.Int64
+	// commentsNotSent counts the comments' Creates and Updates the full queue refused past the schedule's end, since the
+	// start; commentHook, when set by a test, hears of the producer's steps ("read": the record is read).
+	commentsNotSent atomic.Int64
+	commentHook     func(stage string)
 	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
 	// once in followAnswerEvery (followAnswerDue).
 	answersMu sync.Mutex
@@ -17789,6 +17793,13 @@ func (q *deliveryQueue) enqueueThen(ctx context.Context, actor keyOwner, apID st
 // before ("" for none): a post's Delete takes back its Create, an Undo its Follow. At each inbox the first is never
 // overtaken (takeBack, and deliver at the send).
 func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, undoes string, then func(*sql.Tx) error) (enqueued, error) {
+	return q.enqueueTakeBack(ctx, actor, apID, body, to, undoes, false, then)
+}
+
+// enqueueTakeBack is enqueueUndo with keep: the activity it takes back is not the first of its object at those inboxes
+// (a comment's Update, after its Create), so the second still goes where the first was never tried or never fanned out
+// (ap_outbox.undoes_kept, read by takeBackSQL); only the first is given up there.
+func (q *deliveryQueue) enqueueTakeBack(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, undoes string, keep bool, then func(*sql.Tx) error) (enqueued, error) {
 	var out enqueued
 	f := q.f
 	switch {
@@ -17838,9 +17849,9 @@ func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID st
 	now := q.now()
 	var id int64
 	var undo sql.NullInt64
-	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at, undoes)
-		VALUES ($1, $2, $3, $4, $5, (SELECT u.id FROM ap_outbox u WHERE u.ap_id = $6 AND $6 <> '')) ON CONFLICT (ap_id) DO NOTHING RETURNING id, undoes`,
-		apID, actor.arg(), string(body), pq.Array(inboxes), now, undoes).Scan(&id, &undo)
+	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at, undoes, undoes_kept)
+		VALUES ($1, $2, $3, $4, $5, (SELECT u.id FROM ap_outbox u WHERE u.ap_id = $6 AND $6 <> ''), $7) ON CONFLICT (ap_id) DO NOTHING RETURNING id, undoes`,
+		apID, actor.arg(), string(body), pq.Array(inboxes), now, undoes, keep).Scan(&id, &undo)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.Duplicate = true
 		if then == nil {
@@ -17862,7 +17873,7 @@ func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID st
 			SELECT EXISTS (SELECT 1 FROM c)`, undo.Int64).Scan(&never); err != nil {
 			return out, err
 		}
-		if never {
+		if never && !keep {
 			if _, err := tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id); err != nil {
 				return out, err
 			}
@@ -17986,6 +17997,8 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 // waiting for its own fan-out was dropped with the second by enqueueUndo). At each inbox of the second:
 //   - the first queued and not claimed, with attempts 0: no request for it ever left (below), so it is given up
 //     ("taken back before it was sent") and the second's row for that inbox goes too: there is nothing to take back;
+//     unless the second's undoes_kept says an earlier activity of the same object went there (a comment's Delete
+//     after its Update, whose Create went first): then the second goes;
 //   - the first queued and not claimed after an attempt (a 5xx, a time out, a refusal, a redirect, an open circuit
 //     holding it): that request may have arrived (a 504 from the other server's proxy after it stored the post), so the
 //     first is given up ("taken back after an attempt") and the second goes as any row;
@@ -18007,7 +18020,8 @@ const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', loc
 			last_error = CASE WHEN d.attempts = 0 THEN 'taken back before it was sent' ELSE 'taken back after an attempt that may have arrived' END
 		WHERE d.outbox_id = $2 AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)
 			AND EXISTS (SELECT 1 FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox = d.inbox) RETURNING d.inbox, d.attempts),
-	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM g WHERE attempts = 0) RETURNING n.id),
+	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM g WHERE attempts = 0)
+		AND NOT EXISTS (SELECT 1 FROM ap_outbox k WHERE k.id = $1 AND k.undoes_kept) RETURNING n.id),
 	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, d.locked_until) FROM ap_deliveries d
 		WHERE n.outbox_id = $1 AND d.outbox_id = $2 AND d.inbox = n.inbox AND d.state = 'queued' AND d.locked_until >= $3 RETURNING n.id)
 	SELECT (SELECT count(*) FROM x) + 0 * (SELECT count(*) FROM h)`
@@ -21391,7 +21405,7 @@ func (f *federation) keepNote(ctx context.Context, s *remoteActor, id string, up
 // kept at all, and the files of its pictures.
 const noteDeleteSQL = `WITH p AS (SELECT id, user_id FROM posts WHERE ap_id = $1),
 	m AS (SELECT file FROM ap_media WHERE post_id IN (SELECT id FROM p WHERE user_id = $2) AND file <> ''),
-	o AS (UPDATE ap_comment_out SET state = 'delete' WHERE post_id IN (SELECT id FROM p WHERE user_id = $2) AND state <> 'delete' RETURNING 1),
+	o AS (UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE post_id IN (SELECT id FROM p WHERE user_id = $2) AND state <> 'delete' RETURNING 1),
 	d AS (DELETE FROM posts WHERE id IN (SELECT id FROM p WHERE user_id = $2) RETURNING 1)
 	SELECT (SELECT count(*) FROM d), (SELECT count(*) FROM p), COALESCE((SELECT array_agg(file) FROM m), '{}')`
 
@@ -22789,15 +22803,12 @@ func (f *federation) commentWaits() {
 // talkGate says whether a member may like or answer a post of another server, or whose comment on a Public post here
 // goes out: the switches a post needs, and the member sharing their profile beyond this server. status is 0 when they
 // may, else the answer and its words.
+//
+// The member's sharing is asked before the switches, so 503 (talkSwitches: the switches could not be read) is said only
+// of a member who shares: a comment on a Public post here then still gets its way out, which the producer holds until the
+// switches read (FWR 6, after its review).
 func (a *app) talkGate(q queryRower, u *user) (int, string, error) {
 	if !a.federating() {
-		return http.StatusForbidden, talkOff, nil
-	}
-	on, known := a.fed.switches()
-	switch {
-	case !known:
-		return http.StatusServiceUnavailable, talkSwitches, nil
-	case !on:
 		return http.StatusForbidden, talkOff, nil
 	}
 	var shares bool
@@ -22806,6 +22817,13 @@ func (a *app) talkGate(q queryRower, u *user) (int, string, error) {
 	}
 	if !shares {
 		return http.StatusForbidden, talkNotShared, nil
+	}
+	on, known := a.fed.switches()
+	switch {
+	case !known:
+		return http.StatusServiceUnavailable, talkSwitches, nil
+	case !on:
+		return http.StatusForbidden, talkOff, nil
 	}
 	return 0, "", nil
 }
@@ -22972,12 +22990,15 @@ type outReplyActivity struct {
 
 // commentOutSQL reads the oldest record of ap_comment_out that waits, with what its activity needs: the comment (none
 // when it is gone) and whether it may still go out (shown, its author sharing, its post a Public post here of a member
-// who shares or a public post of another server), what it answers (the top comment of its thread, else the post), and
-// the authors' ids and names; $1 the gate's single mode.
-var commentOutSQL = `SELECT o.comment_id, o.post_id, o.user_id, o.state, o.targets, o.gen, o.tries, o.due_at, u.username,
+// who shares or a public post of another server, the top comment of its thread, when there is one, of an account of
+// another server or of a member who shares: nothing names a member who does not), what it answers (the top comment of
+// its thread, else the post), the post's audience, and the authors' ids and names; $1 the gate's single mode.
+var commentOutSQL = `SELECT o.comment_id, o.post_id, o.user_id, o.state, o.targets, o.gen, o.tries, o.due_at, u.username, o.last_ap_id,
 		COALESCE(c.id IS NOT NULL AND NOT c.deleted AND c.hidden_at IS NULL AND ` + personShown + `
 			AND (p.ap_id IS NULL AND p.audience = 'public' AND p.hidden_at IS NULL AND p.kind = 'post' AND (pu.federates OR ($1 AND pu.owner)) AND (pu.suspended_until IS NULL OR pu.suspended_until <= now())
-				OR p.ap_id IS NOT NULL AND p.audience IN ('public', 'unlisted')), false),
+				OR p.ap_id IS NOT NULL AND p.audience IN ('public', 'unlisted'))
+			AND (pc.id IS NULL OR pcu.domain <> '' OR (pcu.federates OR ($1 AND pcu.owner)) AND (pcu.suspended_until IS NULL OR pcu.suspended_until <= now())), false),
+		COALESCE(p.audience, ''),
 		COALESCE(c.body, ''), COALESCE(c.created_at, now()), c.edited_at,
 		COALESCE(p.ap_id, ''), COALESCE(pu.username, ''), COALESCE(pa.ap_id, ''), COALESCE(p.user_id, 0),
 		COALESCE(pc.id, 0), COALESCE(pc.ap_id, ''), COALESCE(pcu.username, ''), COALESCE(pca.ap_id, '')
@@ -22996,12 +23017,12 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 	}
 	f.commentsAt.Store(0)
 	var cid, post, uid, gen, authorID, parentID int64
-	var state, targets, name, body, postAP, authorName, authorAP, parentAP, parentName, parentActor string
+	var state, targets, name, last, postAud, body, postAP, authorName, authorAP, parentAP, parentName, parentActor string
 	var tries int
 	var due, edited sql.NullTime
 	var shown bool
 	var created time.Time
-	err := f.fedRow(ctx, []any{&cid, &post, &uid, &state, &targets, &gen, &tries, &due, &name, &shown, &body, &created, &edited,
+	err := f.fedRow(ctx, []any{&cid, &post, &uid, &state, &targets, &gen, &tries, &due, &name, &last, &shown, &postAud, &body, &created, &edited,
 		&postAP, &authorName, &authorAP, &authorID, &parentID, &parentAP, &parentName, &parentActor}, commentOutSQL, a.mode == modeSingle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -23015,8 +23036,15 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	f.commentsDue.Store(true) // another may wait behind it
+	if f.commentHook != nil {
+		f.commentHook("read") // a test holds the producer here, between its read of the record and its write
+	}
 	actor := f.memberActor(name)
 	noteID := f.commentNoteID(name, cid)
+	createID := noteID + "/activity"
+	if last == "" {
+		last = createID
+	}
 	var to []deliveryTarget
 	if targets != "" {
 		json.Unmarshal([]byte(targets), &to)
@@ -23027,7 +23055,7 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		_, err = f.out.enqueueUndo(ctx, keyOwner(uid), noteID+"#delete", b, to, noteID+"/activity", func(tx *sql.Tx) error {
+		_, err = f.out.enqueueTakeBack(ctx, keyOwner(uid), noteID+"#delete", b, to, last, last != createID, func(tx *sql.Tx) error {
 			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'delete'`, cid))
 		})
 		if errors.Is(err, errDeliveryFull) {
@@ -23040,7 +23068,7 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 			_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = 'delete'`, cid, now.Add(deliveryRetries[tries]))
 			return true, err
 		}
-		return a.commentOutDone(err, cid)
+		return a.commentOutDone(err)
 	}
 	on, known := f.switches()
 	if shown && !known {
@@ -23099,25 +23127,39 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 	}
 	n.Content = noteHTMLWith(body, nil, byKey, f.origin.host, nil)
 	if state == "update" {
+		// An Update never goes while the last activity of the comment (its Create, or the Update before) still has a
+		// delivery queued or waits for its fan-out: at each inbox it would overtake it, and the Delete takes back the
+		// last one only. It is held, the record due again after the queue's own wait, and edits meanwhile fold into it.
+		var waits bool
+		if err := f.fedRow(ctx, []any{&waits}, `SELECT EXISTS (SELECT 1 FROM ap_outbox o WHERE o.ap_id = $1
+			AND (NOT o.fanned_out OR EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued')))`, last); err != nil {
+			return false, err
+		}
+		if waits {
+			_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, now.Add(deliveryOwnWait))
+			return true, err
+		}
 		if edited.Valid {
 			n.Updated = edited.Time.UTC().Format(time.RFC3339)
 		} else {
 			n.Updated = now.UTC().Format(time.RFC3339)
 		}
-		id := f.activityID(name)
+		id := noteID + "#update-" + strconv.FormatInt(gen, 10)
 		b, err := apJSON(outReplyActivity{Context: noteContext, ID: id, Type: "Update", Actor: actor, To: n.To, Cc: n.Cc, Object: n})
 		if err != nil {
 			return false, err
 		}
 		_, err = f.out.enqueueThen(ctx, keyOwner(uid), id, b, to, func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE ap_comment_out SET state = 'sent' WHERE comment_id = $1 AND state = 'update' AND gen = $2`, cid, gen)
-			return err
+			// The record leaves update only when no edit came meanwhile (gen); either way the Update just made is the
+			// last activity, which the next one waits for and the Delete takes back.
+			// A Delete marked meanwhile finds no row in update: everything rolls back, and the Delete goes next.
+			return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET last_ap_id = $3, tries = 0, due_at = NULL,
+				state = CASE WHEN gen = $2 THEN 'sent' ELSE state END WHERE comment_id = $1 AND state = 'update'`, cid, gen, id))
 		})
 		if errors.Is(err, errDeliveryFull) {
-			log.Printf("federation: the edit of comment %d is not sent: %v", cid, err)
-			_, err = f.fedExec(ctx, `UPDATE ap_comment_out SET state = 'sent' WHERE comment_id = $1 AND state = 'update' AND gen = $2`, cid, gen)
+			return a.commentOutFull(ctx, cid, "update", tries, now)
 		}
-		return err == nil, err
+		return a.commentOutDone(err)
 	}
 	// The Create: to the commenter's followers on other servers, the post's author's when it is a member here, the
 	// post's author when it is another server's and the remote accounts the comment names.
@@ -23146,28 +23188,48 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	sent, _ := json.Marshal(to)
-	_, err = f.out.enqueueThen(ctx, keyOwner(uid), noteID+"/activity", b, to, func(tx *sql.Tx) error {
+	_, err = f.out.enqueueThen(ctx, keyOwner(uid), createID, b, to, func(tx *sql.Tx) error {
+		// gen is what was read: an edit made since changes it, the whole step rolls back, and the next pass makes the
+		// Create with the text as it is then (an edit while the record is create sends no Update of its own).
 		if len(to) == 0 {
-			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`, cid))
+			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create' AND gen = $2`, cid, gen))
 		}
-		return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET state = 'sent', targets = $2 WHERE comment_id = $1 AND state = 'create'`, cid, string(sent)))
+		return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET state = 'sent', targets = $2, last_ap_id = $4, tries = 0, due_at = NULL
+			WHERE comment_id = $1 AND state = 'create' AND gen = $3`, cid, string(sent), gen, createID))
 	})
-	return a.commentOutDone(err, cid)
+	if errors.Is(err, errDeliveryFull) {
+		return a.commentOutFull(ctx, cid, "create", tries, now)
+	}
+	return a.commentOutDone(err)
 }
 
-// commentOutDone is outDone for a comment's Create or Delete.
-func (a *app) commentOutDone(err error, cid int64) (bool, error) {
-	switch {
-	case err == nil, errors.Is(err, errOutChanged):
+// commentOutDone reads enqueueThen's answer for a comment's Create or Delete: a record changed meanwhile is read again on
+// the next pass.
+func (a *app) commentOutDone(err error) (bool, error) {
+	if err == nil || errors.Is(err, errOutChanged) {
 		return true, nil
-	case errors.Is(err, errDeliveryFull):
-		log.Printf("federation: comment %d is not sent: %v", cid, err)
-		ctx, cancel := own()
-		defer cancel()
-		_, err := a.fed.fedExec(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1`, cid)
-		return true, err
 	}
 	return false, err
+}
+
+// commentOutFull holds a comment's Create or Update that the full queue refused (errDeliveryFull): tried again on the
+// delivery schedule (8.3), each wait one step more, as a post's Delete is, and given up, said in the log and counted,
+// after the schedule's last wait. Nothing is lost silently.
+func (a *app) commentOutFull(ctx context.Context, cid int64, state string, tries int, now time.Time) (bool, error) {
+	f := a.fed
+	if tries >= len(deliveryRetries) {
+		log.Printf("federation: the %s of comment %d is not sent: the delivery queue stayed full, %d times over the schedule", state, cid, tries+1)
+		f.commentsNotSent.Add(1)
+		stmt := `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'create'`
+		if state == "update" {
+			stmt = `UPDATE ap_comment_out SET state = 'sent', tries = 0, due_at = NULL WHERE comment_id = $1 AND state = 'update'`
+		}
+		_, err := f.fedExec(ctx, stmt, cid)
+		return true, err
+	}
+	log.Printf("federation: the %s of comment %d waits: the delivery queue is full; tried again in %s", state, cid, deliveryRetries[tries])
+	_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET tries = tries + 1, due_at = $2 WHERE comment_id = $1 AND state = $3`, cid, now.Add(deliveryRetries[tries]), state)
+	return true, err
 }
 
 // talkCountSQL counts the replies kept from other servers up to $1, and the likes with an activity id up to $2, of posts
@@ -23176,7 +23238,7 @@ func (a *app) commentOutDone(err error, cid int64) (bool, error) {
 const (
 	talkCountSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM comments WHERE ap_id IS NOT NULL LIMIT $1) a),
 		(SELECT count(*) FROM (SELECT 1 FROM likes WHERE ap_id IS NOT NULL LIMIT $2) b), (SELECT count(*) FROM (SELECT 1 FROM comment_likes WHERE ap_id IS NOT NULL LIMIT $2) c)`
-	talkOrphansSQL = `UPDATE ap_comment_out SET state = 'delete' WHERE comment_id IN (SELECT o.comment_id FROM ap_comment_out o
+	talkOrphansSQL = `UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id IN (SELECT o.comment_id FROM ap_comment_out o
 		WHERE o.state IN ('sent', 'update') AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.id = o.comment_id) LIMIT $1)`
 )
 
@@ -23755,7 +23817,10 @@ var migrations = []string{schema, schemaSocial,
 	// are the id of the Like that made the row: another server's Like here (so its Undo can name it by id), or a member's
 	// Like of a post of another server (so the Undo sent names it). ap_comment_out is a member's comment's way out, as
 	// ap_post_out is a post's (state create, sent, update or delete; targets the inboxes the Create went to), with no
-	// foreign key to comments, since it outlives the comment until its Delete is enqueued. notifications.fed marks a
+	// foreign key to comments, since it outlives the comment until its Delete is enqueued; last_ap_id is the activity it
+	// enqueued last (its Create, then each Update), which its next Update waits for and its Delete takes back.
+	// ap_outbox.undoes_kept says the takeback goes even to an inbox the activity it takes back never reached, since an
+	// earlier activity of the same object went there (a comment's Delete after an Update). notifications.fed marks a
 	// notification an account of another server left, and notifications_remote serves the trim of those (FWR 3's bound
 	// of 50 per server and 500 in all), which now covers comments, replies and likes too without reading a member's
 	// notifications from members here; notifications_fed, its narrower forerunner of migration 22, goes. The backfill
@@ -23780,9 +23845,11 @@ var migrations = []string{schema, schemaSocial,
 		targets TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 		gen BIGINT NOT NULL DEFAULT 0,
+		last_ap_id TEXT NOT NULL DEFAULT '',
 		tries INT NOT NULL DEFAULT 0,
 		due_at TIMESTAMPTZ
 	);
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS undoes_kept BOOLEAN NOT NULL DEFAULT false;
 	CREATE INDEX IF NOT EXISTS ap_comment_out_due ON ap_comment_out (comment_id) WHERE state <> 'sent';
 	CREATE INDEX IF NOT EXISTS ap_comment_out_user ON ap_comment_out (user_id);
 	CREATE INDEX IF NOT EXISTS ap_comment_out_post ON ap_comment_out (post_id);
@@ -27161,7 +27228,7 @@ func (a *app) handleDeletePost(w http.ResponseWriter, r *http.Request, u *user) 
 		del = `WITH d AS (DELETE FROM posts p USING users au WHERE p.id = $1 AND au.id = p.user_id
 			AND (p.user_id = $2 OR ($3 AND au.role = ANY($4))) RETURNING p.id, p.user_id, p.ap_id),
 			o AS (UPDATE ap_post_out SET state = 'delete' WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING post_id),
-			oc AS (UPDATE ap_comment_out SET state = 'delete' WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING comment_id),
+			oc AS (UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE post_id IN (SELECT id FROM d) AND state <> 'delete' RETURNING comment_id),
 			r AS (INSERT INTO ap_deleted (ap_id, user_id, at, by_staff) SELECT ap_id, user_id, now(), true FROM d WHERE ap_id IS NOT NULL
 				ON CONFLICT (ap_id, user_id) DO UPDATE SET by_staff = true, at = EXCLUDED.at)
 			SELECT d.user_id, (SELECT count(*) FROM o) + (SELECT count(*) FROM oc) FROM d`
@@ -27755,7 +27822,9 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 			fail(w, status, msg)
 			return
 		}
-		goesOut = status == 0 && (remote || public)
+		// Switches that could not be read are not "off": the record is written and the producer waits for them to read
+		// (errSwitchesUnread), as a post's way out does; only a read that said off keeps the comment here.
+		goesOut = (status == 0 || status == http.StatusServiceUnavailable) && (remote || public)
 	}
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -27797,6 +27866,18 @@ func (a *app) handleComment(w http.ResponseWriter, r *http.Request, u *user) {
 		root = in.ParentID
 		if parent != 0 {
 			root = parent // one level of threading: a reply to a reply joins the same thread
+		}
+		// Nothing that names a member who does not share their profile leaves this server (FWR 6, after its review): an
+		// answer to their comment, or in a thread they began, would carry their comment's id and their name. Such a
+		// comment, and an answer to a hidden comment, stays here, as the comments of members who do not share do.
+		if goesOut {
+			if hidden {
+				goesOut = false
+			} else if err := tx.QueryRow(`SELECT COALESCE(bool_and(u.domain <> '' OR `+publicMember+`), true) FROM users u WHERE u.id = ANY($1)`,
+				pq.Array([]int64{answered, rootOwner}), a.mode == modeSingle).Scan(&goesOut); err != nil {
+				a.serverError(w, err)
+				return
+			}
 		}
 		if answered != u.ID {
 			var name string
@@ -27906,7 +27987,9 @@ func (a *app) handleEditComment(w http.ResponseWriter, r *http.Request, u *user)
 	}
 	if a.fed != nil {
 		// A comment that went out is sent again as Update(Note) (FWR 6); one whose Create waits goes with the new text.
-		n, err := a.db.Exec(`UPDATE ap_comment_out SET state = 'update', gen = gen + 1 WHERE comment_id = $1 AND state IN ('sent', 'update')`, id)
+		// Every edit moves the generation, so a producer that read the record before it does not write what it read.
+		n, err := a.db.Exec(`UPDATE ap_comment_out SET gen = gen + 1, state = CASE WHEN state = 'sent' THEN 'update' ELSE state END
+			WHERE comment_id = $1 AND state <> 'delete'`, id)
 		if err != nil {
 			a.serverError(w, err)
 			return
@@ -27992,7 +28075,7 @@ func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request, u *use
 	if err == nil && a.fed != nil {
 		// A comment that went out is taken back where it went (FWR 6), marked in the deletion's transaction.
 		var res sql.Result
-		if res, err = tx.Exec(`UPDATE ap_comment_out SET state = 'delete' WHERE comment_id = $1 AND state <> 'delete'`, id); err == nil {
+		if res, err = tx.Exec(`UPDATE ap_comment_out SET state = 'delete', tries = 0, due_at = NULL WHERE comment_id = $1 AND state <> 'delete'`, id); err == nil {
 			marked, _ = res.RowsAffected()
 		}
 	}

@@ -565,7 +565,9 @@ func TestDBCommentsOut(t *testing.T) {
 	if !slices.Equal(cr.inboxes, []string{catID + "/inbox", "https://third.example/inbox"}) {
 		t.Errorf("it goes to %v", cr.inboxes)
 	}
-	// An edit inside the window: Update(Note) with updated, to the same inboxes.
+	// An edit inside the window, once the Create went (an Update waits for it): Update(Note) with updated, to the same
+	// inboxes.
+	e.mustExec(`DELETE FROM ap_deliveries WHERE outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $1)`, noteID+"/activity")
 	e.must(200, e.ana, "PUT", fmt.Sprintf("/api/comments/%d", cmt), map[string]any{"body": "and a second one, edited"})
 	produce()
 	up := last("Update")
