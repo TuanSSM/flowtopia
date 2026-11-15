@@ -1639,6 +1639,9 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     comments of members who do not share do, so neither the comment's id nor the name added before an answer leaves;
     the producer asks again about the thread's first author before the Create. A name of such a member in the text stays
     text: `resolveMentions` finds only members who share, so it is no Mention tag and no link to their actor.
+  - **A notification is never lost to a failure** (`TestDBRemoteTalkNotifiedAfterFailure`): the notifications of a
+    remote reply or like are written in the transaction that keeps it (`notifyFedTx`), so a failure rolls both back and
+    the worker's retry keeps the reply and tells the member, where before the retry found a repeat and told nobody.
   - **Switches that could not be read hold a comment's way out** (`TestDBCommentSwitchesUnread`): the record is written
     for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
     said off keeps the comment here.

@@ -304,6 +304,48 @@ func TestDBCommentSwitchesUnread(t *testing.T) {
 	_ = slices.Contains[[]string]
 }
 
+// A notification that fails once (finding S3): the reply or the like rolls back with it, the worker tries the row again,
+// and the member is told; nothing is kept with nobody told.
+func TestDBRemoteTalkNotifiedAfterFailure(t *testing.T) {
+	e := newRepliesEnv(t)
+	failOnce := func() {
+		var once sync.Once
+		e.a.fed.notifyHook = func() error {
+			var err error
+			once.Do(func() { err = errors.New("failing once") })
+			return err
+		}
+	}
+	again := func() {
+		t.Helper()
+		e.clock.add(inboxRetries[0] + time.Second)
+		for {
+			worked, err := e.q.step(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !worked {
+				return
+			}
+		}
+	}
+	failOnce()
+	e.send(e.bo(), boID, "Create", reply(boID, 1, e.postID, "hi"))
+	if _, ok := e.kept(boID + "/statuses/1"); ok || !strings.HasPrefix(e.outcome(), "queued:") {
+		t.Fatalf("the reply whose notification failed: kept %v, %s", ok, e.outcome())
+	}
+	again()
+	if _, ok := e.kept(boID + "/statuses/1"); !ok || !slices.Equal(e.notes(e.anaID), []string{"comment"}) {
+		t.Errorf("after the retry: kept %v, ana told %v (%s)", ok, e.notes(e.anaID), e.outcome())
+	}
+	failOnce()
+	e.deliver(activity(boID, "Like", e.postID, map[string]any{"id": boID + "#l1"}), e.bo())
+	again()
+	if !slices.Equal(e.notes(e.anaID), []string{"comment", "like"}) || e.count(`SELECT count(*) FROM likes WHERE post_id = $1`, e.post) != 1 {
+		t.Errorf("after the like's retry: ana told %v (%s)", e.notes(e.anaID), e.outcome())
+	}
+}
+
 // A full delivery queue refuses a comment's Create (finding S2): the record is held on the delivery schedule and tried
 // again, never removed with nothing sent.
 func TestDBCommentQueueFull(t *testing.T) {

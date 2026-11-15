@@ -6467,6 +6467,8 @@ type federation struct {
 	// start; commentHook, when set by a test, hears of the producer's steps ("read": the record is read).
 	commentsNotSent atomic.Int64
 	commentHook     func(stage string)
+	// notifyHook, when set by a test, may fail the notification of a reply or a like (notifyFedTx).
+	notifyHook func() error
 	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
 	// once in followAnswerEvery (followAnswerDue).
 	answersMu sync.Mutex
@@ -21623,6 +21625,12 @@ func (f *federation) notifyFedPost(ctx context.Context, uid int64, s *remoteActo
 	return f.notifyFedAt(ctx, uid, s, kind, postID, 0)
 }
 
+// notifyFedSQL writes member $1's notification of kind $3 from the remote account $2 about post $4 and comment $5 (NULL for
+// none), unless a block stands between them or the same one is there already.
+var notifyFedSQL = `INSERT INTO notifications (user_id, actor_id, kind, post_id, comment_id, fed) SELECT $1::bigint, $2::bigint, $3::text, $4::bigint, $5::bigint, true
+	WHERE ` + blockFree("$1::bigint", "$2::bigint", "false") + ` AND NOT EXISTS (SELECT 1 FROM notifications
+		WHERE user_id = $1 AND actor_id = $2 AND kind = $3 AND post_id = $4 AND comment_id IS NOT DISTINCT FROM $5::bigint)`
+
 // notifyFedAt is notifyFedPost about a comment too (commentID, 0 for none): a reply, a comment, a mention in one, a
 // like of one (FWR 6). Never twice for one post, comment, account and kind, so liking, unliking and liking again tells
 // the member once, as a local like does (handleLike).
@@ -21631,13 +21639,34 @@ func (f *federation) notifyFedAt(ctx context.Context, uid int64, s *remoteActor,
 	if commentID != 0 {
 		cmt = commentID
 	}
-	n, err := f.fedExec(ctx, `INSERT INTO notifications (user_id, actor_id, kind, post_id, comment_id, fed) SELECT $1::bigint, $2::bigint, $3::text, $4::bigint, $5::bigint, true
-		WHERE `+blockFree("$1::bigint", "$2::bigint", "false")+` AND NOT EXISTS (SELECT 1 FROM notifications
-			WHERE user_id = $1 AND actor_id = $2 AND kind = $3 AND post_id = $4 AND comment_id IS NOT DISTINCT FROM $5::bigint)`, uid, s.UserID, kind, postID, cmt)
+	n, err := f.fedExec(ctx, notifyFedSQL, uid, s.UserID, kind, postID, cmt)
 	if err != nil || n == 0 {
 		return err
 	}
 	_, err = f.fedExec(ctx, remoteNotesTrimSQL, uid, s.Domain, remoteNotesPerHost, remoteNotesMax)
+	return err
+}
+
+// notifyFedTx is notifyFedAt in the caller's transaction (a reply's or a like's), so the notification and what it tells of
+// commit together; the hook, when a test sets one, may fail it.
+func (f *federation) notifyFedTx(ctx context.Context, tx *sql.Tx, uid int64, s *remoteActor, kind string, postID, commentID int64) error {
+	if f.notifyHook != nil {
+		if err := f.notifyHook(); err != nil {
+			return err
+		}
+	}
+	var cmt any
+	if commentID != 0 {
+		cmt = commentID
+	}
+	res, err := tx.ExecContext(ctx, notifyFedSQL, uid, s.UserID, kind, postID, cmt)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, remoteNotesTrimSQL, uid, s.Domain, remoteNotesPerHost, remoteNotesMax)
 	return err
 }
 
@@ -22485,19 +22514,24 @@ func (f *federation) repliedIn(ctx context.Context, s *remoteActor, act *apActiv
 	if !update {
 		f.forward(ctx, s, act, addressed, t, raw)
 	}
-	// Who is told: the member answered, the post's author unless answered, the members the Mention tags name (never
-	// the text), each once, never across a block (notifyFedAt).
+	return "", nil
+}
+
+// keepReply resolves what a reply answers and keeps it, in one transaction under the caller's turn.
+
+// replyNotesTx tells, in tx, the members a reply made concerns (keepReply's comment says who).
+func (f *federation) replyNotesTx(ctx context.Context, tx *sql.Tx, s *remoteActor, n *apNote, t replyTarget, made int64) error {
 	told := map[int64]bool{}
 	if t.answered != 0 && t.answeredDomain == "" {
 		told[t.answered] = true
-		if err := f.notifyFedAt(ctx, t.answered, s, "reply", t.post, made); err != nil {
-			return "", &errRetry{"the database"}
+		if err := f.notifyFedTx(ctx, tx, t.answered, s, "reply", t.post, made); err != nil {
+			return err
 		}
 	}
 	if !told[t.author] {
 		told[t.author] = true
-		if err := f.notifyFedAt(ctx, t.author, s, "comment", t.post, made); err != nil {
-			return "", &errRetry{"the database"}
+		if err := f.notifyFedTx(ctx, tx, t.author, s, "comment", t.post, made); err != nil {
+			return err
 		}
 	}
 	var names []string
@@ -22506,24 +22540,23 @@ func (f *federation) repliedIn(ctx context.Context, s *remoteActor, act *apActiv
 			names = append(names, name)
 		}
 	}
-	if len(names) > 0 {
-		var ids []int64
-		if err := f.fedRow(ctx, []any{pq.Array(&ids)}, `SELECT COALESCE(array_agg(u.id), '{}') FROM users u WHERE u.username = ANY($1) AND u.domain = '' AND `+publicMember, pq.Array(names), f.single); err != nil {
-			return "", &errRetry{"the database"}
-		}
-		for _, uid := range ids {
-			if !told[uid] {
-				told[uid] = true
-				if err := f.notifyFedAt(ctx, uid, s, "mention", t.post, made); err != nil {
-					return "", &errRetry{"the database"}
-				}
+	if len(names) == 0 {
+		return nil
+	}
+	var ids []int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(array_agg(u.id), '{}') FROM users u WHERE u.username = ANY($1) AND u.domain = '' AND `+publicMember, pq.Array(names), f.single).Scan(pq.Array(&ids)); err != nil {
+		return err
+	}
+	for _, uid := range ids {
+		if !told[uid] {
+			told[uid] = true
+			if err := f.notifyFedTx(ctx, tx, uid, s, "mention", t.post, made); err != nil {
+				return err
 			}
 		}
 	}
-	return "", nil
+	return nil
 }
-
-// keepReply resolves what a reply answers and keeps it, in one transaction under the caller's turn.
 
 // replyNarrowed takes out the kept reply n of s whose edit addresses fewer people than Public, under its lock and only
 // when the edit is newer than the version kept; nothing is remembered.
@@ -22624,6 +22657,13 @@ func (f *federation) keepReply(ctx context.Context, s *remoteActor, n *apNote, p
 	}
 	switch {
 	case made != 0:
+		// Who is told: the member answered, the post's author unless answered, the members the Mention tags name (never
+		// the text), each once, never across a block, in the transaction that keeps the reply (after the review of #116):
+		// a failure rolls the reply back too, so the retry keeps it and tells them, never finds it a repeat with nobody
+		// told.
+		if err := f.replyNotesTx(ctx, tx, s, n, t, made); err != nil {
+			return "", 0, t, err
+		}
 	case post >= remoteRepliesPerPost:
 		return " dropped (the post holds as many replies from other servers as are kept)", 0, t, nil
 	case acct >= remoteRepliesPerAccount:
@@ -22744,7 +22784,29 @@ func (f *federation) likedIn(ctx context.Context, s *remoteActor, act *apActivit
 	}
 	args := []any{num, name, f.single, s.UserID, act.ID, remoteLikesPerObject, remoteLikesPerAccount, s.Domain, remoteLikesPerHost}
 	var post, author, cmt, objN, acct, host, made int64
-	if err := f.fedRow(ctx, []any{&post, &author, &cmt, &objN, &acct, &host, &made}, stmt, args...); err != nil {
+	// The like and its notification commit together (after the review of #116), so a failure is tried again whole.
+	done, err := f.dbTurn(ctx)
+	if err != nil {
+		return "", &errRetry{"no turn at the database"}
+	}
+	err = func() error {
+		tx, err := f.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := tx.QueryRowContext(ctx, stmt, args...).Scan(&post, &author, &cmt, &objN, &acct, &host, &made); err != nil {
+			return err
+		}
+		if made > 0 {
+			if err := f.notifyFedTx(ctx, tx, author, s, kind, post, cmt); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	}()
+	done()
+	if err != nil {
 		return "", &errRetry{"the database"}
 	}
 	switch {
@@ -22758,9 +22820,6 @@ func (f *federation) likedIn(ctx context.Context, s *remoteActor, act *apActivit
 		return " dropped (as many likes from its server are kept as may be)", nil
 	case made == 0:
 		return " a repeat", nil
-	}
-	if err := f.notifyFedAt(ctx, author, s, kind, post, cmt); err != nil {
-		return "", &errRetry{"the database"}
 	}
 	return "", nil
 }
