@@ -27983,6 +27983,13 @@ var commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body,
 var replyCountShown = `
 		AND (r.ap_id IS NULL OR r.deleted OR ` + actorShown("r.user_id") + `)`
 
+// commentPageSQL is a page of a post's top-level comments ($3 the post, $4 after this one, $5 how many), replyPageSQL a
+// page of a thread's replies ($3 the comment), both through queryComments.
+var (
+	commentPageSQL = `SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`
+	replyPageSQL   = `SELECT * FROM comments c WHERE c.parent_id = $3 AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`
+)
+
 var repliesSQL = `SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.parent_id ORDER BY c.id DESC) AS rn
 		FROM comments c WHERE c.parent_id = ANY($3) AND ` + commentBlockFree + `) c WHERE c.rn <= $4`
 
@@ -28103,7 +28110,7 @@ func (a *app) handleGetComments(w http.ResponseWriter, r *http.Request, u *user)
 	if _, ok := a.postOwnerIn(w, id, u, a.talkShown()); !ok {
 		return
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND `+commentBlockFree+` ORDER BY c.id LIMIT $5`, id, queryID(r, "after"), commentPage+1)
+	list, err := a.queryComments(u, commentPageSQL, id, queryID(r, "after"), commentPage+1)
 	if err == nil {
 		err = a.attachReplies(u, list)
 	}
@@ -28159,7 +28166,7 @@ func (a *app) handleGetReplies(w http.ResponseWriter, r *http.Request, u *user) 
 	if c.parentID != 0 {
 		id = c.parentID
 	}
-	list, err := a.queryComments(u, `SELECT * FROM comments c WHERE c.parent_id = $3 AND c.id > $4 AND `+commentBlockFree+` ORDER BY c.id LIMIT $5`, id, queryID(r, "after"), replyPage+1)
+	list, err := a.queryComments(u, replyPageSQL, id, queryID(r, "after"), replyPage+1)
 	if err != nil {
 		a.serverError(w, err)
 		return

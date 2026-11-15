@@ -1766,6 +1766,10 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     of a host after a 429 (`hostHeldSQL`), and the rows of a comment's line at an inbox in the takeback and the send-time
     question (`takeBackSQL`, `heldBackSQL`). The test reads each plan and holds that every row lock is taken over rows in
     that order.
+  - **Local mode's statements are pinned as text** (`TestPlainStatementsPinned`, `testdata/plain-local`). The feed, the
+    preview of comments, its replies, and a page of comments and of replies, as local mode runs them on a database that
+    never federated, are kept as files and compared word for word. They were checked against origin/main's statements of
+    before this item: the same, but for the two columns `commentCols` added.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
