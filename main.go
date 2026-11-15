@@ -6479,6 +6479,7 @@ type federation struct {
 	// not forwarded for a bound since the start.
 	forwardsFor, forwardsAll *limiter
 	forwardsSkipped          atomic.Int64
+	forwardsAsked            atomic.Int64 // the times forward asked the queue's counts (a test reads it)
 	repliesFull, likesFull   atomic.Bool
 	// commentsDue says a record of ap_comment_out may wait (commentWaits), commentsAt when the first one held back is
 	// due (a Delete the full queue refused), as postsDue and postsAt do for posts.
@@ -18085,9 +18086,11 @@ const takeBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_
 		UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
 	r AS (SELECT p.id AS row_id, p.state, p.locked_until, p.attempts, c.root, p.inbox FROM c, ap_deliveries n, LATERAL (SELECT d.id, d.state, d.locked_until, d.attempts, d.inbox
 			FROM ap_deliveries d WHERE d.outbox_id = c.id AND d.inbox = n.inbox OFFSET 0) p WHERE n.outbox_id = $1 AND p.state = 'queued'),
+	k AS (SELECT d.id FROM ap_deliveries d WHERE d.id IN (SELECT row_id FROM r) AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)
+		ORDER BY d.id FOR UPDATE),
 	g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3,
 			last_error = CASE WHEN d.attempts = 0 THEN 'taken back before it was sent' ELSE 'taken back after an attempt that may have arrived' END
-		FROM r WHERE d.id = r.row_id AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3) RETURNING d.inbox, d.attempts, r.root),
+		FROM r WHERE d.id = r.row_id AND d.id IN (SELECT id FROM k) AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3) RETURNING d.inbox, d.attempts, r.root),
 	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT g.inbox FROM g GROUP BY g.inbox
 			HAVING bool_or(g.root) AND max(g.attempts) = 0 AND count(*) = (SELECT count(*) FROM r WHERE r.inbox = g.inbox))
 		RETURNING n.id),
@@ -18105,7 +18108,7 @@ const takeBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_
 const heldBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT $4 FROM ap_outbox o WHERE o.id = $1
 		UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
 	x AS (SELECT d.id, d.locked_until FROM c, LATERAL (SELECT id FROM ap_deliveries WHERE outbox_id = c.id AND inbox = $2 OFFSET 0) k, ap_deliveries d
-		WHERE d.id = k.id AND d.state = 'queued' FOR UPDATE OF d),
+		WHERE d.id = k.id AND d.state = 'queued' ORDER BY d.id FOR UPDATE OF d),
 	g AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $3, last_error = 'taken back after an attempt that may have arrived'
 		FROM x WHERE d.id = x.id AND (x.locked_until IS NULL OR x.locked_until < $3) RETURNING d.id)
 	SELECT (SELECT max(locked_until) FROM x WHERE locked_until >= $3), (SELECT count(*) FROM g)`
@@ -18627,8 +18630,7 @@ func (q *deliveryQueue) record(c *claimedRow, form sigForm, err error) error {
 		// Every other row for that inbox would be answered the same, and the followers whose inbox it was go (goneInbox).
 		ctx, cancel := own()
 		defer cancel()
-		if _, err := q.exec(ctx, `UPDATE ap_deliveries SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = $4
-			WHERE host = $1 AND inbox = $2 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $3)`, c.host, c.inbox, now, why); err != nil {
+		if _, err := q.exec(ctx, inboxGoneSQL, c.host, c.inbox, now, why); err != nil {
 			return err
 		}
 		if q.goneInbox != nil {
@@ -18675,9 +18677,29 @@ func (q *deliveryQueue) hostAnswered(host string, now time.Time, hold time.Durat
 	if _, err := q.exec(ctx, `UPDATE ap_hosts SET state = 'open', until = GREATEST(COALESCE(until, $2), $2) WHERE host = $1 AND state <> 'unavailable'`, host, until); err != nil {
 		return err
 	}
-	_, err := q.exec(ctx, `UPDATE ap_deliveries SET next_at = $2 WHERE host = $1 AND state = 'queued' AND next_at < $2 AND (locked_until IS NULL OR locked_until < $3)`, host, until, now)
+	_, err := q.exec(ctx, hostHeldSQL, host, until, now)
 	return err
 }
+
+// inboxGoneSQL gives up every queued row of inbox $2 of host $1 not claimed ($3 the clock, $4 why): after a 410 for one,
+// each would be answered the same. hostHeldSQL moves the queued rows of host $1 not claimed to $2, the end of a 429's
+// Retry-After ($3 the clock). Both lock their rows in the order of their ids (deliveryLockOrder).
+const (
+	inboxGoneSQL = `UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3, last_error = $4
+	FROM (SELECT id FROM ap_deliveries WHERE host = $1 AND inbox = $2 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $3)
+		ORDER BY id FOR UPDATE) k
+	WHERE d.id = k.id AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)`
+	hostHeldSQL = `UPDATE ap_deliveries d SET next_at = $2
+	FROM (SELECT id FROM ap_deliveries WHERE host = $1 AND state = 'queued' AND next_at < $2 AND (locked_until IS NULL OR locked_until < $3)
+		ORDER BY id FOR UPDATE) k
+	WHERE d.id = k.id AND d.state = 'queued' AND d.next_at < $2 AND (d.locked_until IS NULL OR d.locked_until < $3)`
+)
+
+// deliveryLockOrder: every statement that locks several rows of ap_deliveries takes them in the order of their ids
+// (a subquery with ORDER BY id FOR UPDATE: the rows are locked as the sorted rows come out): the 410 answer's rows of an
+// inbox, a 429's rows of a host, takeBackSQL's and heldBackSQL's rows of a line at an inbox. Two workers locking rows
+// they both want then never each hold one the other waits for (after the third review). The claim locks one row, and
+// SKIP LOCKED never waits.
 
 // fail gives a row up (8.3): kept deliveryKeep for the Federation tab, then removed by housekeeping.
 func (q *deliveryQueue) fail(c *claimedRow, why string) error {
@@ -22873,10 +22895,20 @@ func (f *federation) forward(ctx context.Context, s *remoteActor, act *apActivit
 	if len(members) == 0 {
 		return
 	}
-	// The bounds (after the review of #116): none while the delivery queue is past its resume mark or an activity waits
-	// for its fan-out, so the members' own posts and comments always come first and a few hosts cannot fill the queue
-	// with forwards; that is asked first, so a forward the queue refuses takes no allowance. Then per sending server,
-	// in all, and per member whose followers it goes to, an hour each.
+	// The bounds (after the review of #116): per sending server, in all, and per member whose followers it goes to, an
+	// hour each; and none while the delivery queue is past its resume mark or an activity waits for its fan-out, so the
+	// members' own posts and comments always come first and a few hosts cannot fill the queue with forwards. The
+	// allowances are looked at first without being spent (a reply past one costs no statement), then the queue is asked,
+	// and only then are they spent, so a forward the queue refuses takes none (after the third review).
+	over := f.forwardsOut.over(s.Domain) || f.forwardsAll.over("")
+	for _, uid := range members {
+		over = over || f.forwardsFor.over(strconv.FormatInt(uid, 10))
+	}
+	if over {
+		f.forwardsSkipped.Add(1)
+		return
+	}
+	f.forwardsAsked.Add(1)
 	var queued, waiting int
 	if err := f.fedRow(ctx, []any{&queued, &waiting}, deliveryCountsSQL, deliveryQueueResume, 1); err != nil || queued >= deliveryQueueResume || waiting > 0 {
 		f.forwardsSkipped.Add(1)

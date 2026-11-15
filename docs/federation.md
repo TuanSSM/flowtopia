@@ -1758,6 +1758,14 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
     go there, and keeping it here would leave it where none of that post's people see it. An answer there whose thread
     was begun by a member who stopped sharing cannot go (it would carry that member's comment's id): it is not sent, said
     in the log and counted on the Federation tab with the comments the full queue could not send (`commentsNotSent`).
+  - **A forward looks before it asks** (`TestDBForwardBounds`). The hourly allowances are looked at first without being
+    spent, so a reply past one costs no statement; then the queue's counts are asked; only then are the allowances spent,
+    so a forward the queue refuses still takes none.
+  - **Rows of the queue are locked in one order** (`TestDBDeliveryLockOrder`). Every statement that locks several rows
+    of `ap_deliveries` takes them in the order of their ids: the rows of an inbox after a 410 (`inboxGoneSQL`), the rows
+    of a host after a 429 (`hostHeldSQL`), and the rows of a comment's line at an inbox in the takeback and the send-time
+    question (`takeBackSQL`, `heldBackSQL`). The test reads each plan and holds that every row lock is taken over rows in
+    that order.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a

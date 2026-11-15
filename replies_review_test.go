@@ -788,8 +788,12 @@ func TestDBForwardBounds(t *testing.T) {
 	for range forwardsPerMemberHour {
 		e.a.fed.forwardsFor.add(fmt.Sprint(e.anaID))
 	}
+	asked := e.a.fed.forwardsAsked.Load()
 	if got := try(nil); got != 2 {
 		t.Errorf("a reply was forwarded past the member's hourly bound")
+	}
+	if e.a.fed.forwardsAsked.Load() != asked {
+		t.Error("a reply past an allowance asked the queue's counts (small point 4 of the third review)")
 	}
 	e.a.fed.forwardsFor = newLimiter(forwardsPerMemberHour, time.Hour)
 	for range forwardsMaxHour {

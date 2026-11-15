@@ -3973,10 +3973,11 @@ func TestDBQueryPlans(t *testing.T) {
 		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedKeep, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_hosts"},
 		// A comment's longest line (FWR 6): each step down it is one look through ap_outbox's unique id index, and each
 		// activity's row at the inbox one look through (outbox_id, inbox). Once per row sent, and per Delete fanned out,
-		// whose takeback looks at each activity of the line at each of its inboxes: about 20 rows counted a pair.
+		// whose takeback looks at each activity of the line at each of its inboxes, locks those rows in the order of their ids
+		// and writes them: about 30 rows counted a pair.
 		{"deliveries: the last Update held behind the longest line at an inbox", afterHeldSQL, []any{fmt.Sprintf("https://here.example/c#%d", commentUpdatesMax-1), "https://h12.fan.example/inbox", afterHeldDepth}, 300, ""},
 		{"deliveries: a Delete's question at the send, over the longest line", heldBackSQL, []any{lineEnd, "https://h12.fan.example/inbox", time.Now(), true}, 400, ""},
-		{"deliveries: a Delete's takeback over the longest line at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, float64((commentUpdatesMax+1)*10*20 + 500), ""},
+		{"deliveries: a Delete's takeback over the longest line at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, float64((commentUpdatesMax+1)*10*30 + 500), ""},
 	})
 	on = db
 	tx.Rollback()
