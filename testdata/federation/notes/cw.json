@@ -1,0 +1,55 @@
+{
+ "@context": [
+  "https://www.w3.org/ns/activitystreams",
+  {
+   "ostatus": "http://ostatus.org#",
+   "toot": "http://joinmastodon.org/ns#",
+   "sensitive": "as:sensitive",
+   "Hashtag": "as:Hashtag",
+   "Emoji": "toot:Emoji",
+   "blurhash": "toot:blurhash",
+   "focalPoint": {
+    "@container": "@list",
+    "@id": "toot:focalPoint"
+   },
+   "votersCount": "toot:votersCount"
+  }
+ ],
+ "id": "https://social.example/users/bo/statuses/101/activity",
+ "type": "Create",
+ "actor": "https://social.example/users/bo",
+ "published": "2026-11-01T10:00:00Z",
+ "to": [
+  "https://www.w3.org/ns/activitystreams#Public"
+ ],
+ "cc": [
+  "https://social.example/users/bo/followers"
+ ],
+ "object": {
+  "id": "https://social.example/users/bo/statuses/101",
+  "attributedTo": "https://social.example/users/bo",
+  "to": [
+   "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+   "https://social.example/users/bo/followers"
+  ],
+  "published": "2026-11-01T10:00:00Z",
+  "url": "https://social.example/@bo/101",
+  "type": "Note",
+  "summary": "Spoilers: the ending of the routine",
+  "sensitive": true,
+  "content": "<p>The last move is a <strong>reverse</strong> figure-8 into a catch.</p><p>Took me a month.</p>",
+  "attachment": [
+   {
+    "type": "Document",
+    "mediaType": "image/jpeg",
+    "url": "https://files.social.example/media/101.jpg",
+    "name": "A nunchaku caught behind the back",
+    "blurhash": "UBL_:rOpGG-oBUNG,qRj2so|=eE1w^n4S5NH",
+    "width": 1280,
+    "height": 960
+   }
+  ]
+ }
+}

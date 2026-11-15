@@ -1,0 +1,49 @@
+{
+ "@context": [
+  "https://www.w3.org/ns/activitystreams",
+  {
+   "ostatus": "http://ostatus.org#",
+   "toot": "http://joinmastodon.org/ns#",
+   "sensitive": "as:sensitive",
+   "Hashtag": "as:Hashtag",
+   "Emoji": "toot:Emoji",
+   "blurhash": "toot:blurhash",
+   "focalPoint": {
+    "@container": "@list",
+    "@id": "toot:focalPoint"
+   },
+   "votersCount": "toot:votersCount"
+  }
+ ],
+ "id": "https://social.example/users/bo/statuses/107/activity",
+ "type": "Create",
+ "actor": "https://social.example/users/bo",
+ "published": "2026-11-01T10:00:00Z",
+ "to": [
+  "https://social.example/users/bo/followers"
+ ],
+ "cc": [
+  "https://here.example/users/ana"
+ ],
+ "object": {
+  "id": "https://social.example/users/bo/statuses/107",
+  "attributedTo": "https://social.example/users/bo",
+  "to": [
+   "https://social.example/users/bo/followers"
+  ],
+  "cc": [
+   "https://here.example/users/ana"
+  ],
+  "published": "2026-11-01T10:00:00Z",
+  "url": "https://social.example/@bo/107",
+  "type": "Note",
+  "content": "<p>Only for my followers, and <span class=\"h-card\"><a href=\"https://here.example/@ana\" class=\"u-url mention\">@<span>ana</span></a></span>.</p>",
+  "tag": [
+   {
+    "type": "Mention",
+    "href": "https://here.example/users/ana",
+    "name": "@ana@here.example"
+   }
+  ]
+ }
+}

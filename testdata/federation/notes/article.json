@@ -1,0 +1,49 @@
+{
+ "@context": [
+  "https://www.w3.org/ns/activitystreams",
+  {
+   "ostatus": "http://ostatus.org#",
+   "toot": "http://joinmastodon.org/ns#",
+   "sensitive": "as:sensitive",
+   "Hashtag": "as:Hashtag",
+   "Emoji": "toot:Emoji",
+   "blurhash": "toot:blurhash",
+   "focalPoint": {
+    "@container": "@list",
+    "@id": "toot:focalPoint"
+   },
+   "votersCount": "toot:votersCount"
+  }
+ ],
+ "id": "https://social.example/users/bo/statuses/106/activity",
+ "type": "Create",
+ "actor": "https://social.example/users/bo",
+ "published": "2026-11-01T10:00:00Z",
+ "to": [
+  "https://www.w3.org/ns/activitystreams#Public"
+ ],
+ "cc": [
+  "https://social.example/users/bo/followers"
+ ],
+ "object": {
+  "id": "https://social.example/users/bo/statuses/106",
+  "attributedTo": "https://social.example/users/bo",
+  "to": [
+   "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+   "https://social.example/users/bo/followers"
+  ],
+  "published": "2026-11-01T10:00:00Z",
+  "url": [
+   {
+    "type": "Link",
+    "mediaType": "text/html",
+    "href": "https://social.example/@bo/106"
+   }
+  ],
+  "type": "Article",
+  "name": "A long note on learning the figure-8",
+  "content": "<h2>Why the figure-8</h2><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><p>Flow arts are a family of movement practices with props such as poi, staffs and nunchaku. A spin starts slow and gets faster as the plane settles.</p><blockquote><p>Practice slow, then fast.</p></blockquote><ul><li>Grip</li><li>Wrist</li></ul>"
+ }
+}

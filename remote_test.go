@@ -1459,7 +1459,10 @@ func TestDBPurgeRemote(t *testing.T) {
 	r0, r1 := remote[0], remote[1]
 	// What later items let hang off a remote account, written as they would be.
 	for _, q := range []string{
-		`INSERT INTO posts (user_id, body) VALUES (%[1]d, 'a remote post')`,
+		// A remote post as FWR 5 keeps it, with its picture's row and a deletion remembered.
+		`INSERT INTO posts (user_id, body, ap_id) VALUES (%[1]d, 'a remote post', 'https://remote.example/notes/1')`,
+		`INSERT INTO ap_media (post_id, n, kind, url, state, file, bytes) SELECT id, 0, 'picture', 'https://remote.example/a.png', 'ok', '0123456789abcdef0123456789abcdef.jpg', 10 FROM posts WHERE ap_id IS NOT NULL AND user_id = %[1]d`,
+		`INSERT INTO ap_deleted (ap_id, user_id, at) VALUES ('https://remote.example/notes/0', %[1]d, now())`,
 		`INSERT INTO comments (post_id, user_id, body) VALUES (%[3]d, %[1]d, 'a remote comment')`,
 		`INSERT INTO likes (post_id, user_id) VALUES (%[3]d, %[1]d)`,
 		`INSERT INTO follows (follower_id, followee_id) VALUES (%[2]d, %[1]d)`,
@@ -1493,17 +1496,32 @@ func TestDBPurgeRemote(t *testing.T) {
 		return s
 	}
 	before := local()
-	var out strings.Builder
-	if err := purgeWith(e.a.db, &out); err != nil {
+	// The picture cache's directory: the file of that picture, a temporary file a stop left, and a file the cache did
+	// not write, which stays.
+	media := filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(media, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 3 follows, 1 blocks, 2 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records, 1 records of posts sent. Local accounts and their posts are as they were.\n"
+	for _, f := range []string{"0123456789abcdef0123456789abcdef.jpg", "tmp-123", "README"} {
+		if err := os.WriteFile(filepath.Join(media, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out strings.Builder
+	if err := purgeWith(e.a.db, media, &out); err != nil {
+		t.Fatal(err)
+	}
+	want := "removed 5 remote accounts, and with them 5 cached actor documents, 1 posts, 1 comments, 1 likes, 0 comment likes, 3 follows, 1 blocks, 2 notifications, 1 reports, 1 inbox rows, 1 deliveries, 1 activities to send, 1 host records, 1 records of posts sent, 1 pictures of remote posts, 1 remembered deletions, and 1 cached picture files. Local accounts and their posts are as they were.\n"
+	if left, _ := os.ReadDir(media); len(left) != 1 || left[0].Name() != "README" {
+		t.Errorf("the media directory holds %v, want only the file the cache did not write", left)
+	}
 	if out.String() != want {
 		t.Errorf("printed %q\nwant    %q", out.String(), want)
 	}
 	if n := e.count(`SELECT count(*) FROM users WHERE domain <> ''`) + e.count(`SELECT count(*) FROM ap_actors`) + e.count(`SELECT count(*) FROM follows`) +
 		e.count(`SELECT count(*) FROM likes`) + e.count(`SELECT count(*) FROM comments`) + e.count(`SELECT count(*) FROM notifications`) + e.count(`SELECT count(*) FROM reports`) + e.count(`SELECT count(*) FROM blocks`) + e.count(`SELECT count(*) FROM ap_inbox`) +
-		e.count(`SELECT count(*) FROM ap_outbox`) + e.count(`SELECT count(*) FROM ap_deliveries`) + e.count(`SELECT count(*) FROM ap_hosts`) + e.count(`SELECT count(*) FROM ap_post_out`); n != 0 {
+		e.count(`SELECT count(*) FROM ap_outbox`) + e.count(`SELECT count(*) FROM ap_deliveries`) + e.count(`SELECT count(*) FROM ap_hosts`) + e.count(`SELECT count(*) FROM ap_post_out`) +
+		e.count(`SELECT count(*) FROM ap_media`) + e.count(`SELECT count(*) FROM ap_deleted`); n != 0 {
 		t.Errorf("%d rows left behind", n)
 	}
 	if got := local(); got != before {
@@ -1516,10 +1534,10 @@ func TestDBPurgeRemote(t *testing.T) {
 	e.must(200, boss, "GET", "/api/admin/users", nil)
 	// Again: nothing to remove, and it says so.
 	out.Reset()
-	if err := purgeWith(e.a.db, &out); err != nil || !strings.HasPrefix(out.String(), "removed 0 remote accounts, and with them 0 cached actor documents, 0 posts") {
+	if err := purgeWith(e.a.db, media, &out); err != nil || !strings.HasPrefix(out.String(), "removed 0 remote accounts, and with them 0 cached actor documents, 0 posts") {
 		t.Errorf("the second run: %q %v", out.String(), err)
 	}
-	if err := purgeCommand(func(string) string { return "" }, &out); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+	if err := purgeCommand(func(string) string { return "" }, media, &out); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
 		t.Errorf("without a database: %v", err)
 	}
 }

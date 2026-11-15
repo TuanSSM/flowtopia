@@ -614,6 +614,14 @@ select.sm { width: auto; height: 28px; font-size: 12.5px; padding: 0 8px; }
 .post-img { display: block; max-width: 100%; max-height: 520px; border-radius: 10px; border: 1px solid var(--line); object-fit: contain; background: var(--bg); }
 .ms { padding: 12px 14px; border-radius: 11px; background: color-mix(in srgb, var(--warn) 8%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); }
 .post-acts { display: flex; gap: 6px; }
+/* A post from another server (FWR 5): its folds, its links to the original, and no action buttons. */
+.fed-post .post-name, .fed-post .tiny, .fed-media { overflow-wrap: anywhere; }
+.fed-post .post-body, .fed-post .post-title { unicode-bidi: isolate; margin: 0; }
+.fed-cw > summary, .fed-sensitive > summary { cursor: pointer; padding: 8px 10px; border-radius: 8px; background: var(--card-2); overflow-wrap: anywhere; }
+.fed-cw[open] > summary, .fed-sensitive[open] > summary { margin-bottom: 10px; }
+.fed-cw > .post-body, .fed-cw > .post-img { margin-top: 8px; }
+.fed-acts { flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.fed-media { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 0; }
 .act { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 8px; color: var(--ink-2); font-size: 12.5px; font-weight: 560; }
 .act:hover { background: var(--card-2); color: var(--ink); }
 .act.on { color: var(--bad); } .act.on svg.i { fill: currentColor; }

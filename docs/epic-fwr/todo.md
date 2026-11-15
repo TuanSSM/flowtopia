@@ -6,7 +6,7 @@ Category: feature. Size: L. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), the delivery queue is built (item 2, its fan-out on the Pi left to the owner), follows across servers are built (item 3, the recorded Mastodon fixtures left to the owner's trial), and Public posts go out as notes (item 4, in review). 0 of 9 items done. Federated mode is marked experimental in
+**Status:** in progress (issue [#90](https://github.com/TuanSSM/flowtopia/issues/90)); the inbox is built (item 1, in review), the delivery queue is built (item 2, its fan-out on the Pi left to the owner), follows across servers are built (item 3, the recorded Mastodon fixtures left to the owner's trial), Public posts go out as notes (item 4, in review), and posts from followed accounts come into Home (item 5, in review). 0 of 9 items done. Federated mode is marked experimental in
 the Admin page and the README from the first item until the last one passes. Every setting, table,
 route and test named below is new unless the design note says it exists.
 
@@ -284,6 +284,45 @@ route and test named below is new unless the design note says it exists.
   hostile corpus and the fixtures, and a cut text ending in each of those),
   `TestDBRemoteNotes` (a short remote mention never notifies or links the local member of that
   name; an Update without `updated` or older than the stored one is ignored), `TestMediaCacheBudget`, `TestDBQueryPlans` with 20,000 remote posts.
+  Built (federation.md 6.6, "Remote content in, as built (FWR 5)", says what and why; migration 22 with
+  `flowa-schema21.dump`): `posts.ap_id`, `ap_updated`, `ap_to` and `ap_extra`, `posts_local`, `posts_remote`, `ap_media`,
+  `ap_deleted`, `notifications_fed` and `reports_target`; Create and Update of a post in from an account a member here
+  follows, or naming a member here in its Mention tags, the origin rule on the object as well as the activity
+  (`noteShaped`), behind the switches a follow needs (unread is 503 and a retry); public, unlisted and followers-only
+  kept as 6.7 reads them and never widened, direct and limited dropped; an Update only by the same account and only
+  with a newer `updated`, the whole post replaced; Delete (Tombstone or bare id) of the account's own post with its
+  pictures and notifications, another account's refused, another origin's dropped at the inbox, one before its Create
+  remembered 7 days; Announce of a member's Public post as a `share` notification, anything else dropped; `htmlToText`
+  ending a line at the close of a block, and `remotePost` (2,000 characters then "Read the rest on its server" and the
+  link, a cut inside markup dropped and the link kept, the content warning folding the post, a poll's choices, a long
+  post's title, start and link, attachments as pictures or links); mentions shown as `@bo@social.example`, members told
+  from the tags' local `href`s alone, a remote post's text never linking an `@name`; the picture cache under
+  `-data/media` (a worker, the guarded fetcher, the type by its bytes, the size before decoding, one decode at a time,
+  a JPEG of 1,280 px and 200 KB, written once, 200 MB and 4,000 files with eviction least recently used first, a link
+  while not copied, `GET /api/fed/media/{id}.jpg` from this origin only); Home drawing a remote post with the handle and
+  host, the link to the original and no like, comment or bookmark ("not built yet"), Report and a moderator's Delete
+  kept, a block hiding the account and ending the follow; `feedSQL`, `postShown`, `publicPost`, reports, NodeInfo's
+  count and the dashboard's weeks narrowed to local posts or to who may read a remote one; 200 posts per account, 600
+  an hour per host, 50,000 in all and 30 days, in batched housekeeping that also removes files no row names;
+  `-purge-remote` removing the posts, their pictures' rows, the remembered deletions and the files; `fedBuilt` and
+  NodeInfo's `home`; the Home and remote profile sentences. Tests: `TestRemoteHTMLToText` (the hostile corpus, a
+  megabyte of nesting, a cut inside a tag, an attribute, a comment, an entity), `TestRemotePostFixtures` (the fixtures of
+  `testdata/federation/notes`, written from documentation), `FuzzRemotePost` (30 s, no failure), `TestDBRemoteNotes`
+  (every path above: a short remote mention never notifies or links the local member of that name, an Update without
+  `updated` or older than the stored one ignored, origin mismatches, a direct message, an account nobody follows, a
+  block, flags off and unread, repeats), `TestDBRemoteNotesBounds`, `TestMediaCacheBudget` (the size before decoding,
+  the type by its bytes, the bounds) and `TestDBMediaCacheBudget` (bytes and files, the eviction order, no connection
+  held during a slow fetch, a private address, a redirect to one, a wrong type, a bomb, a picture over 8 MB, a stop),
+  `TestDBRemoteNotesOneConnection`, `TestDBQueryPlans` with 20,000 remote posts, `TestDBTwoFlowaNotes` (a member's
+  post through the real fan-out reaches the other Flowa's follower's Home, and the Delete removes it),
+  `TestDBPurgeRemote`, with `-race -count=3` on two cores; the `federated` browser suite (`federated-remote-post`).
+  **Open:** a post given by id only is not fetched from its origin, Undo of a share is not acted on, the domain
+  policy's `reject_media` and remote avatars wait for FMD; recorded Mastodon posts (the owner's trial, item 9) to hold
+  the fixtures to; the box stays unchecked until those and the owner's review. For the owner (defaults built): whether
+  a post naming a member from an account nobody follows should be kept (built: yes, read by that member alone), the
+  numbers (200 posts per account, 600 an hour per host, 50,000 in all, 30 days, 200 MB and 4,000 pictures down to
+  160 MB and 3,200, 1,280 px and 200 KB a picture, 4 pictures a post, 2,000 waiting), and whether an account's posts
+  should go when its last follower here leaves (built: kept until their 30 days, shown to nobody).
 - [ ] **Replies and likes across servers.** Remote replies become comments under local posts (deeper
   replies flattened as RPL does for a reply to a reply); local comments on Public posts go out; Like
   and Undo(Like) both ways; Update(Note) for comment edits inside the 15-minute window, carrying

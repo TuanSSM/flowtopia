@@ -441,6 +441,11 @@ members who share their profile to their followers on other servers, with a post
 posts, replies and likes sent to it are counted and dropped", and the parts add `posts` (6.5, "Public posts out, as
 built").
 
+As built (FWR 5): the sentence now ends "..., with a post's deletion and a profile's changes, and keeps the posts of
+the accounts its members follow on other servers for those members' Home (their pictures copied into its own bounded
+cache, a member told when one mentions them or shares their post), while replies and likes sent to it are counted and
+dropped", and the parts add `home` (6.6, "Remote content in, as built").
+
 ### 4.2 What each mode means for every surface
 
 | Surface | `local` (default) | `federated` | `single` |
@@ -1775,6 +1780,104 @@ Mention's name when that carries a host, else the name with that host. `TestRemo
 (30 s, no failure) and `BenchmarkHTMLToText` (64 KB of each kind of markup in under 2 ms on a 2.1 GHz Xeon) hold
 it. Nothing converted is stored: the search shows and forgets it. Remote text is shown escaped as plain text,
 not through `richText`, which would still read `@bo@social.example` as the local `bo` until FWR 4 (finding 9).
+
+#### Remote content in, as built (FWR 5)
+
+Posts from followed accounts in Home ("federation: posts from followed accounts" in `main.go`; migration 22 with
+`flowa-schema21.dump`). What, and why where the note left room:
+
+- **Where a remote post is kept.** A `posts` row (F5, 9.2) with `ap_id` its id, `ap_updated` the `updated` of the
+  version kept, `ap_to` the members here who may open it from a notification, and `ap_extra` what is shown beside the
+  text (the link to the original, a long post's title, the content warning, whether its pictures are sensitive, its
+  `published`, the post it answers). Its audience is `public`, `unlisted` or `followers` as 6.7 reads it. Indexes:
+  `posts_ap_id` (unique), `posts_local (id DESC) WHERE ap_id IS NULL` for the Community timeline, `posts_remote
+  (created_at, id)` for retention and the cap. `ap_media` is the picture cache's index (one row per attachment, removed
+  with its post), `ap_deleted` the 7 days' memory of deletions that came before their post, `notifications_fed` the
+  trim of what other servers leave in the bell, `reports_target` the question "is this post reported" one post at a time.
+- **What the inbox takes.** A Create or an Update whose object is embedded, of a kind 6.6 shows (Note, Question,
+  Article, Page, Image, Audio, Video, Event), with its id on the actor's origin and attributed to the actor alone
+  (`noteShaped`: 7.3 on the object, not only on the activity); one given by id only is dropped and counted, since
+  fetching it from its origin is not built. A Delete of an object on the actor's own origin. An Announce whose object
+  is a post of this server. Create, Update and Announce need the switches a follow needs (`followsState`): off drops
+  and counts, switches that cannot be read answer 503 and a worker tries a stored row again later. A Delete only
+  removes, so it is always acted on. Every type keeps the inbox's own allowances and caps (7.10).
+- **When it is kept** (`noteIn`). The author is followed by a member here (accepted), or the post's Mention tags name a
+  member here (a `href` that is a local actor id) whom no block separates from the author; for a followers-only post
+  that member must also be in its addressing, so no audience is ever widened. **Decided:** a post that mentions a
+  member and is from an account nobody follows is kept (6.3's row says so), shown only to the members it names, from
+  the bell, never in a Home. A direct or limited post (neither the public collection nor the author's followers
+  collection) is dropped (F3). An account marked suspended or gone stores nothing new. A Create of an id kept or
+  remembered as deleted is a repeat.
+- **Update.** Only of a post the same account wrote, decided by the row's `user_id` (7.3: never a string a remote
+  document supplied), only with an `updated` newer than the one kept (Mastodon's rule, 6.3): the whole post is
+  replaced, its pictures with it. An Update of a post never kept is taken as its Create would be, from the embedded
+  object (no fetch). **Decided:** an edit notifies nobody, so a server cannot repeat a mention by editing.
+- **Delete.** Of a post the same account wrote: the post goes with its notifications, its pictures' rows (`ON DELETE
+  CASCADE`) and their files. Of another account's post: refused. Of a post never kept: remembered 7 days, only when the
+  author is followed here (the only case whose late Create would be kept), so the Create that arrives after it is
+  refused (6.3).
+- **Text** (`remotePost`, with `htmlToText`, which now also ends a line at the close of a heading, a quote, a list, a
+  `div` or a `pre`, for long posts). The first 2,000 characters, then "…" and "Read the rest on its server:" with the
+  link; a text the decoder cut at 64 KB inside a tag, an attribute, a comment or an entity loses the unterminated tail
+  and still ends with the link. The link is the post's first `url` on the author's own host, else its id: a `url`
+  elsewhere would send a reader where the author chose under this server's name (the lookup's rule, 11). The content
+  warning (at most 500 characters) is a fold to open (a `details` element: a button, no script); a poll is its
+  question, each choice on a line (at most 20, 200 characters each; `oneOf`, else `anyOf`, which the decoder now
+  reads) and "This is a poll; vote on its server:" with the link; an Article, Page, Image, Audio, Video or Event is its
+  `name` as a title (200 characters), its summary or its first 500 characters, and the link. Custom emoji stay
+  `:shortcode:` text; quote fields and other unknown properties are ignored (a quote's `RE:` paragraph is text).
+- **Mentions.** A short `@bo` linked as a Mention of the post becomes `@bo@social.example` (the matching of FRD 8);
+  the page shows a remote post's text escaped and links only web addresses in it (`remoteText`), never an `@name`, so
+  a plain `@anna` in a remote post neither links nor notifies the member anna here. Who is told is decided from the
+  Mention tags' `href`s that are local actor ids, at most 10, never from the text.
+- **Announce** of a member's Public post (of a member who shares their profile): a `share` notification to its author,
+  once per post and account, never across a block; of anything else, dropped. The bell's notifications from other
+  servers stay bounded by FWR 3's trim (50 per server, 500 in all, per member), which now reads shares and mentions too.
+- **Home and everything else.** Home (`homeSQL`) is unchanged: a remote account followed is one more account, read a
+  page at a time through `posts_user`. `feedSQL` (the Community timeline, a member's page and the bookmarks) reads
+  local posts only through `posts_local`; a post opened alone (`postOneSQL`) is a remote one only for a follower of its
+  author, a member it names (`ap_to`), or staff; `postShown` (likes, comments, bookmarks) refuses remote posts until
+  FWR 6; a report of a remote post needs the same right to read it; `publicPost` (the public pages, the outbox, the
+  Notes served) and NodeInfo's `localPosts` count this server's posts only, and the dashboard's weeks count local
+  posts. The page draws a remote post with the author's name isolated and its handle and host apart, the time, "Open
+  on its server", and no like, comment or bookmark ("Replies and likes for posts from other servers are not built
+  yet"); Report and a moderator's Delete and hide stay. A block hides the account's posts (blockFree) and ends the
+  follow, so nothing more is kept unless another member follows it.
+- **Bounds.** 200 posts kept per account (a Create past it drops the account's oldest, 50 at most per Create), 600 new
+  posts an hour per sending host (in memory, then dropped and counted), 50,000 in all and 30 days for a post nobody
+  here liked, commented on or reported (9.3; housekeeping, 1,000 rows a statement, through `posts_remote`). An account
+  unfollowed by its last follower here keeps its posts until those 30 days, read by nobody (no Home shows it), and the
+  actor cache never evicts an account with posts (`posts` is in `userRefs`). `TestDBQueryPlans` holds it with 20,000
+  remote posts: the Community timeline 284 rows read, Home of 600 accounts about 36,900, a post alone 1 to 35, a
+  batch of retention about 11,300 and of the cap about 25,300, the worker's claim 5.
+- **Pictures (F6, 9.4), with one correction.** 9.4 fetched a picture on its first view, in the request of the member
+  who viewed it; built instead: a worker (`mediaCache`) fetches the pictures of a post when it is kept, one at a time
+  in all (so one per host), through the guarded fetcher (`fetchPicture`: no private address, 8 MB and 10 s, at most 3
+  redirects, each checked again), holding no connection or turn while it waits; so no member's request ever waits on
+  another server and nothing is fetched while a page is drawn. The bytes decide the type (`image.DecodeConfig`: JPEG,
+  PNG or GIF, whatever the header said, which only lets an image type through first), the size is read before
+  decoding (4,096 px a side), one picture is decoded at a time (`pictureMu`), the first frame of a GIF, and the copy is
+  a JPEG of at most 1,280 px and 200 KB made from the pixels alone. Each is written once, whole, to a temporary file
+  renamed into place under `-data/media`, and its last use is written at most once an hour, for an SD card's sake. At
+  most 200 MB and 4,000 files: past either, the least recently used are marked evicted (the row first, then the file)
+  until 160 MB and 3,200 files; at most 2,000 wait to be fetched (past that a new one is a link). A picture not copied
+  yet, failed or evicted shows as a link to the original, and an evicted one is wanted again when a post that shows it
+  is read. `GET /api/fed/media/{id}.jpg` serves the copy to a member who may read the post, with the headers of a
+  picture (`private, max-age=86400`, `nosniff`); the CSP's `img-src 'self' data: blob:` is unchanged. A time out, a
+  refused connection or a server error is tried again after 1 minute, 10 minutes and 1 hour; anything else fails at
+  once. Housekeeping removes files no row names, older than 10 minutes. Not built: the domain policy's `reject_media`
+  (FMD's), avatars and headers of remote accounts.
+- **Rollback (14.4).** This is the first version to keep remote posts: an older build after `./deploy.sh --rollback`
+  shows them as local, in the Community timeline, so `/nunchaku -purge-remote` must run first. It now also counts
+  and removes the pictures' rows and the remembered deletions, and empties `-data/media`.
+- **Tests.** `TestRemoteHTMLToText` (the hostile corpus: script, style, event attributes, `javascript:` and `data:`
+  links, entities numeric and overlong, comments, CDATA, direction marks, a megabyte of nesting, a text cut inside a
+  tag, an attribute, a comment, an entity), `TestRemotePostFixtures` (`testdata/federation/notes`, written from
+  documentation: a content warning, a poll, attachments of five kinds, a quote with unknown fields, a hashtag and a
+  custom emoji, a long Article, followers-only, direct, short mentions), `FuzzRemotePost` (30 s), `TestDBRemoteNotes`,
+  `TestDBRemoteNotesBounds`, `TestMediaCacheBudget`, `TestDBMediaCacheBudget`, `TestDBRemoteNotesOneConnection`,
+  `TestDBQueryPlans`, `TestDBPurgeRemote`, `TestDBTwoFlowaNotes` (one Flowa's post through the real fan-out reaches the
+  other's follower's Home, and its Delete removes it), and the `federated` browser suite (`federated-remote-post`).
 
 ### 6.7 Addressing
 
@@ -3574,7 +3677,9 @@ changes no running instance.
   before `./deploy.sh --rollback`, and a server of this version fetches no actor by itself. A database backup
   restored into an older build is the same case: purge first. As built (FRD 8): a member's search by handle
   fetches and keeps the actor it finds, so from this version an instance in a mode that federates has remote
-  rows once anyone has looked someone up, and the purge before a rollback matters in practice.
+  rows once anyone has looked someone up, and the purge before a rollback matters in practice. As built (FWR 5):
+  the first version to keep remote posts, which an older build after `./deploy.sh --rollback` shows as local, in
+  the Community timeline; the purge removes them, their pictures' rows and the files under `-data/media`.
 - **Social facts cannot be rolled back.** Activities delivered stay delivered; an actor id announced
   stays announced (section 4.3). A rollback to a build without federation leaves remote servers
   retrying for their own horizon, then giving up.
