@@ -1,0 +1,80 @@
+{
+ "@context": [
+  "https://www.w3.org/ns/activitystreams",
+  {
+   "ostatus": "http://ostatus.org#",
+   "toot": "http://joinmastodon.org/ns#",
+   "sensitive": "as:sensitive",
+   "Hashtag": "as:Hashtag",
+   "Emoji": "toot:Emoji",
+   "blurhash": "toot:blurhash",
+   "focalPoint": {
+    "@container": "@list",
+    "@id": "toot:focalPoint"
+   },
+   "votersCount": "toot:votersCount"
+  }
+ ],
+ "id": "https://social.example/users/bo/statuses/103/activity",
+ "type": "Create",
+ "actor": "https://social.example/users/bo",
+ "published": "2026-11-01T10:00:00Z",
+ "to": [
+  "https://www.w3.org/ns/activitystreams#Public"
+ ],
+ "cc": [
+  "https://social.example/users/bo/followers"
+ ],
+ "object": {
+  "id": "https://social.example/users/bo/statuses/103",
+  "attributedTo": "https://social.example/users/bo",
+  "to": [
+   "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+   "https://social.example/users/bo/followers"
+  ],
+  "published": "2026-11-01T10:00:00Z",
+  "url": "https://social.example/@bo/103",
+  "type": "Note",
+  "content": "<p>Four kinds of media.</p>",
+  "attachment": [
+   {
+    "type": "Document",
+    "mediaType": "image/png",
+    "url": "https://files.social.example/media/a.png",
+    "name": "Two poi in a fire circle",
+    "blurhash": "UBL_:rOpGG-oBUNG,qRj2so|=eE1w^n4S5NH",
+    "focalPoint": [
+     -0.55,
+     0.43
+    ],
+    "width": 800,
+    "height": 600
+   },
+   {
+    "type": "Document",
+    "mediaType": "image/webp",
+    "url": "https://files.social.example/media/b.webp",
+    "name": "A webp picture"
+   },
+   {
+    "type": "Document",
+    "mediaType": "video/mp4",
+    "url": "https://files.social.example/media/c.mp4",
+    "name": "A video of the flow"
+   },
+   {
+    "type": "Document",
+    "mediaType": "audio/mpeg",
+    "url": "https://files.social.example/media/d.mp3",
+    "name": "The music"
+   },
+   {
+    "type": "Image",
+    "url": "https://files.social.example/media/e.gif",
+    "summary": "A spinning staff, as a GIF"
+   }
+  ]
+ }
+}

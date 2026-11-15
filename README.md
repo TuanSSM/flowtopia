@@ -468,16 +468,26 @@ which no member's name can be.
 **An instance that federates has remote accounts as soon as a member has looked someone up, so before
 `./deploy.sh --rollback` to a build older than the one that added them, you must remove them**: an older build
 does not know which accounts are remote and would list them as members (and, from later versions on, show
-their posts as local ones). While this version still runs:
+their posts as local ones). While this version still runs, first turn **Federation** off under Admin, Features
+(deliveries are then refused with 503 and nothing more is stored: a post that names a member needs no follow, so
+one could arrive between the purge and the rollback otherwise) and wait 5 seconds (the server reads the switch every
+2 seconds, and a delivery already in hand finishes or fails against the purge), then run the purge. It says so in
+its output when it finds the switch still on:
 
 ```sh
 docker exec nunchaku /nunchaku -purge-remote   # removes every remote account and what hangs off it, then says what went
 ./deploy.sh --rollback
 ```
 
+**A database that federated, started in local mode** (`FLOWA_MODE` unset): the remote accounts stay, and the follow
+lists keep showing them as before, but their posts are not shown (not in Home, not opened alone, and the picture
+route is not there) and housekeeping leaves them as they are; they show again when the mode federates again, or
+`-purge-remote` removes them.
+
 It runs in one transaction, in any mode, needs only the database, and prints the number of remote accounts
-it removed and of each kind of row that went with them (cached actors and, once later versions add them,
-their posts, comments, likes, follows, blocks, notifications and reports). Local accounts and everything they
+it removed and of each kind of row that went with them (cached actors, their posts and the pictures of those,
+comments, likes, follows, blocks, notifications and reports), and the files of the picture cache under
+`-data/media`. Local accounts and everything they
 wrote stay as they were; an audit line about a removed account keeps its action with the account left empty.
 Run it again and it removes nothing. A backup taken before is the way back to them, if ever wanted. The
 same applies to a backup restored into an older build: purge first, or the older build lists them.
@@ -830,8 +840,54 @@ member who shares their profile goes to their followers on other servers ([docs/
   posts and profile changes since the last start reached only the first 10,000. It also counts the deleted or hidden posts whose Delete could not be queued for about 40 hours. The moderation queue shows a reported
   post's picture with its description. `-purge-remote` also removes the
   records of where each post went, after which a deletion is sent nowhere.
-- **Not yet:** posts from followed accounts in Home (a later version), and an Update of the profile after
-  `-rotate-keys`.
+- **Not yet:** an Update of the profile after `-rotate-keys`.
+
+### Federation: posts from followed accounts in Home
+
+In a mode that federates, with the Federation switch and Follows both on, the posts of an account on another server
+that a member follows come into that member's Home ([docs/federation.md](docs/federation.md), 6.6 and "Remote
+content in, as built (FWR 5)"):
+
+- **What a member sees.** In Home, beside the posts of members they follow: the author's name and handle with its
+  server (`@bo@social.example`), the time, the text as plain text with its web addresses linked, a content warning
+  as a fold to open, a poll as its question and choices with "vote on its server", a long article as its title, its
+  start and a link, and "Open on its server". Pictures (JPEG, PNG, the first frame of a GIF, at most 4 a post) come
+  from this server's own copy with their descriptions; a video, a sound, a WebP or a picture not copied yet is a link
+  to the original. There is no like, comment or bookmark on such a post yet ("Replies and likes for posts from other
+  servers are not built yet"); Report and a moderator's Delete work. Only posts made after the follow arrive, and
+  never in the Community timeline, on the public pages or in anyone else's Home. A followers-only post is shown to
+  its followers here, to a member it names in its addressing, and to moderators acting on a report, and to nobody
+  else; a direct message is not kept, and an edit that makes a post direct removes it. Blocking the account hides its posts and ends the follow,
+  so nothing more of it is kept unless someone else here follows it.
+- **The bell.** "mentioned you" when a post of another server names the member in its tags (a plain `@name` in its
+  text never does, and never links to the member here of that name), opening the post; "shared your post" when an
+  account elsewhere shares one of the member's Public posts. At most 50 notifications from one server and 500 from
+  all are kept per member, the newest.
+- **What the admin sees.** Each post, edit, deletion and share is a delivery the Federation tab counts. A post of an
+  account nobody here follows is counted as handled and dropped, unless it names a member here who shares their
+  profile (then only that member may read it). Bounds: 200 posts kept per account (the oldest go), 600 new posts an
+  hour from one server, 50,000 in all, 5,000 of them at most kept only for a mention, and 30 days for a post nobody
+  here reported; housekeeping removes the rest every hour. An account its server says is suspended is not shown
+  until that is lifted; one that deletes itself loses its posts and follows here at once; suspending a domain under
+  Federation removes its accounts' posts, their pictures and their mentions and shares. A moderator's delete of such
+  a post is remembered a year (apart from the bound on deletions other servers send), and an edit of a post not kept
+  is taken as new only when the post was published within the last 7 days, so its server's edit does not bring it
+  back. A post that arrives late is dated by its own published time (never later than its arrival), but Home lists
+  posts in the order they arrived.
+- **The picture cache.** `-data/media` (`/data/media` in the container), the one new directory: one JPEG per
+  picture, at most 1,280 px and 200 KB, made again from the pixels so nothing of the remote file is served as sent.
+  At most 200 MB and 4,000 files; past either, the least recently shown go until 160 MB and 3,200 files are left,
+  and a post shows the link until the picture is copied again (a picture evicted is asked for again when shown, at
+  most once an hour, and at most 2,000 wait). One picture is fetched at a time, through the guarded fetcher (no
+  private address, 8 MB and 10 s at most, 4,096 px a side read before decoding), and a picture that cannot be
+  written (a full disk) holds the worker off for a minute. The files are
+  not in the daily backup; losing them costs a fetch again.
+- **Going back.** This is the first version that keeps posts of other servers: an older build after
+  `./deploy.sh --rollback` would show them as local posts in the Community timeline, so run
+  `docker exec nunchaku /nunchaku -purge-remote` first, with the Federation switch off ("remote accounts, and going
+  back past them", above). It removes those posts, their pictures' rows and the files under `-data/media` too.
+- **Not yet:** replies and likes across servers, Undo of a share, a post given by its id only (fetched from its
+  server), and the domain policy's "reject media".
 
 ### What the server will connect to
 
@@ -900,6 +956,10 @@ in the container's environment, when set, is shown instead.
 - `data/static-kept.json.gz` is written by the app at start: the scripts and the style sheet of the
   running build's page, so that the next one can answer their names for an hour ([Static files](#static-files)). It holds
   no member data and can be deleted at any time.
+- `data/media/` exists only in a mode that federates, once a post of a followed account on another server has a
+  picture: the server's own JPEG copies of those pictures, at most 200 MB and 4,000 files
+  ([posts from followed accounts](#federation-posts-from-followed-accounts-in-home)). It is not in the backups;
+  deleting it costs only fetching the pictures again.
 - `./backup.sh` writes a full, compressed dump of the database (accounts, posts, comments, progress,
   catalogs, everything) to `data/backups/flowa-DATE.dump`, checks it can be read back, and keeps 14.
   Run it daily from cron: `17 3 * * * /home/pi/nunchaku/backup.sh >> /home/pi/nunchaku/data/backups/backup.log 2>&1`.

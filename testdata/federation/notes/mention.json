@@ -1,0 +1,58 @@
+{
+ "@context": [
+  "https://www.w3.org/ns/activitystreams",
+  {
+   "ostatus": "http://ostatus.org#",
+   "toot": "http://joinmastodon.org/ns#",
+   "sensitive": "as:sensitive",
+   "Hashtag": "as:Hashtag",
+   "Emoji": "toot:Emoji",
+   "blurhash": "toot:blurhash",
+   "focalPoint": {
+    "@container": "@list",
+    "@id": "toot:focalPoint"
+   },
+   "votersCount": "toot:votersCount"
+  }
+ ],
+ "id": "https://social.example/users/bo/statuses/109/activity",
+ "type": "Create",
+ "actor": "https://social.example/users/bo",
+ "published": "2026-11-01T10:00:00Z",
+ "to": [
+  "https://www.w3.org/ns/activitystreams#Public"
+ ],
+ "cc": [
+  "https://social.example/users/bo/followers",
+  "https://social.example/users/anna",
+  "https://here.example/users/cyd"
+ ],
+ "object": {
+  "id": "https://social.example/users/bo/statuses/109",
+  "attributedTo": "https://social.example/users/bo",
+  "to": [
+   "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+   "https://social.example/users/bo/followers",
+   "https://social.example/users/anna",
+   "https://here.example/users/cyd"
+  ],
+  "published": "2026-11-01T10:00:00Z",
+  "url": "https://social.example/@bo/109",
+  "type": "Note",
+  "content": "<p>Thanks <span class=\"h-card\"><a href=\"https://social.example/@anna\" class=\"u-url mention\">@<span>anna</span></a></span> and <span class=\"h-card\"><a href=\"https://here.example/@cyd\" class=\"u-url mention\">@<span>cyd</span></a></span>! Also @anna, written plainly.</p>",
+  "tag": [
+   {
+    "type": "Mention",
+    "href": "https://social.example/users/anna",
+    "name": "@anna"
+   },
+   {
+    "type": "Mention",
+    "href": "https://here.example/users/cyd",
+    "name": "@cyd@here.example"
+   }
+  ]
+ }
+}

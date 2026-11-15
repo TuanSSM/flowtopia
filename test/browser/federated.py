@@ -445,7 +445,7 @@ try:
       const json=(d,st=200)=>Promise.resolve(new Response(JSON.stringify(d),{status:st,headers:{'Content-Type':'application/json'}}));
       window.__realFetch=window.__realFetch||window.fetch;const real=window.__realFetch;
       window.fetch=(u,o)=>{const m=(o&&o.method)||'GET',p=String(u).replace(/^.*?api[/]/,'');
-        if(p==='fed/accounts/7')return json({account:{id:7,name:'Bo \u202eexe',handle:'bo@social.example',host:'social.example',bio:'Poi in the park. <b id=pwn6>x</b>',link:'https://social.example/@bo',locked:true,state:'ok'},view:{follow:window.__fed.follow,asks:!!window.__fed.items.length},notice:'Their posts do not show in Flowa yet, in Home or here: only their profile does. Open the profile on their server to read their posts. Pictures from other servers are not shown yet.'});
+        if(p==='fed/accounts/7')return json({account:{id:7,name:'Bo \u202eexe',handle:'bo@social.example',host:'social.example',bio:'Poi in the park. <b id=pwn6>x</b>',link:'https://social.example/@bo',locked:true,state:'ok'},view:{follow:window.__fed.follow,asks:!!window.__fed.items.length},notice:'Once you follow them, their new posts show in your Home. Their older posts and their replies stay on their server: open the profile there to read them.'});
         if(p==='fed/accounts/7/follow'){window.__calls.push(m+' '+p);window.__fed.follow=m==='PUT'?'requested':'none';return json({view:{follow:window.__fed.follow},changed:true,sent:true})}
         if(p==='fed/requests/7'){window.__calls.push(m+' '+p);window.__fed.items=[];return json({approved:m==='PUT',sent:true})}
         if(p==='fed/requests')return json({requests:window.__fed.items.length?[{user:bo,since:new Date().toISOString()}]:[],total:window.__fed.items.length});
@@ -455,7 +455,7 @@ try:
     js(STUB,'none')
     nav('#/fed/7')
     prof=lambda: js("""const m=document.querySelector('#main');return [m.querySelector('h1 bdi')&&m.querySelector('h1 bdi').textContent,(m.querySelector('.look-host')||{}).textContent,!!m.querySelector('[id^=pwn]'),
-      (m.querySelector('[data-act=fed-follow]')||{}).innerText,m.innerText.includes('Their posts do not show in Flowa yet'),m.innerText.includes('approves its followers by hand')]""")
+      (m.querySelector('[data-act=fed-follow]')||{}).innerText,m.innerText.includes('their new posts show in your Home'),m.innerText.includes('approves its followers by hand')]""")
     check('a remote profile: its name isolated, its host apart, its words as text, Follow, and where its posts would be, why they are not',lambda: prof()==['Bo \u202eexe','social.example',False,'Follow',True,True],prof)
     check('the request it made waits on its profile with Approve and Decline, each named for whom',lambda: js("return [...document.querySelectorAll('.fed-asks button')].map(b=>b.getAttribute('aria-label'))")==['Approve bo@social.example','Decline bo@social.example'])
     for t in ('dark','light'):
@@ -487,6 +487,41 @@ try:
     click('[data-act=bell]')
     wide=lambda: js("const p=document.querySelector('.ntf-panel');return p&&p.innerText.includes('@long.example')?[p.scrollWidth,p.clientWidth]:null")
     check('a handle of 200 characters wraps in the bell: the panel does not scroll sideways',lambda: (lambda v: bool(v) and v[0]<=v[1])(wide()),wide)
+    # A post of a followed account of another server in Home (FWR 5), drawn from an answer the suite supplies in the
+    # page, since no remote server can exist here: a hostile name and text, a content warning, a picture the server
+    # copied (here a picture of this origin standing for it) with its description, and a video only as a link.
+    load(BASE);js("localStorage.setItem('fl-tl','home')")
+    js(STUB,'following')
+    js("""const bo={id:7,username:'bo@social.example',displayName:'Bo \\u202eexe <img src=x id=pwn7>',role:'user',avatar:'',remote:{id:7,handle:'bo@social.example',host:'social.example'}};
+      const rp={id:4242,userId:7,kind:'post',body:'Practice day with <b id=pwn8>bold</b> and @admin, see https://social.example/@bo/1',prop:'',skill:'',image:'',data:{},created:new Date().toISOString(),
+        likes:0,liked:false,comments:[],commentCount:0,remote:{link:'https://social.example/@bo/1',kind:'Note',cw:'Spoilers \\u202e of the routine',
+        media:[{kind:'picture',src:'/icon.svg',link:'https://files.social.example/a.png',alt:'Two poi <script>x</script> in a fire circle'},{kind:'video',link:'https://files.social.example/c.mp4',alt:'The flow'}]}};
+      const json=(d,st=200)=>Promise.resolve(new Response(JSON.stringify(d),{status:st,headers:{'Content-Type':'application/json'}}));
+      const prev=window.fetch;window.fetch=(u,o)=>{const p=String(u).replace(/^.*?api[/]/,'');if(p==='home'||p.startsWith('home?'))return json({posts:[rp],users:{7:bo},more:false});return prev(u,o)};""")
+    nav('#/timeline')
+    card=lambda: js("""const c=document.querySelector('.fed-post');if(!c)return null;const img=c.querySelector('img.post-img');
+      return [(c.querySelector('.post-name bdi')||{}).textContent,(c.querySelector('.look-host')||{}).textContent,!!document.querySelector('[id^=pwn]'),
+        [...c.querySelectorAll('a[target=_blank]')].map(a=>a.getAttribute('href')).includes('https://social.example/@bo/1'),
+        c.querySelectorAll('[data-act=like],[data-act=cmt-toggle],[data-act=bookmark]').length,
+        !!c.querySelector('a[href="#/u/admin"]'),(c.querySelector('.fed-cw summary')||{}).innerText||'']""")
+    check('a remote post in Home (answer supplied by the suite, no remote server): the name isolated with its host apart, nothing of its text as markup, the link to the original, no like, comment or bookmark, no @name linked to a member here, folded behind its warning',
+      lambda: (lambda v: bool(v) and v[0].startswith('Bo ‮exe') and v[1]=='social.example' and v[2] is False and v[3] and v[4]==0 and v[5] is False and 'Spoilers' in v[6])(card()),card)
+    click('.fed-cw summary')
+    pic=lambda: js("""const i=document.querySelector('.fed-post img.post-img');return i&&[i.src.startsWith(location.origin+'/'),i.alt,!!document.querySelector('[id^=pwn]'),
+      [...document.querySelectorAll('.fed-post .fed-media a')].map(a=>a.getAttribute('href'))]""")
+    check('opened: its picture is loaded from this server only, its description is the alt text as written (escaped), and the video is a link to the original (answer supplied by the suite)',
+      lambda: pic()==[True,'Two poi <script>x</script> in a fire circle',False,['https://files.social.example/c.mp4']],pic)
+    check('the remote post says what a member cannot do with it yet',lambda: 'Replies and likes for posts from other servers are not built yet' in (txt('.fed-post') or ''),lambda: txt('.fed-post'))
+    for t in ('dark','light'):
+        themed(t)
+        n,p,d=js(A['NAMES'],'.fed-post'),js(A['PICTURES']),js(A['IDS'])
+        check(f'the remote post, {t}: every control and link has a name, its picture a text alternative, no id repeats (a11y.py)',n['n']>0 and not n['bad'] and not p['bad'] and not d['bad'],lambda: (n,p,d))
+        r=js(C['CHECK'],'.fed-post',False,C['KNOWN'],'')
+        check(f'the remote post, {t}: text and the edges of controls stand out (contrast.py)',r['n']>0 and not r['bad'] and not r['unknown'],lambda: (r['n'],r['bad'][:4],r['unknown'][:4]))
+    themed('dark')
+    js("scrollTo(0,0)");frames()
+    picture('federated-remote-post','Federated mode: a post of a followed account of another server in Home, opened past its content warning, its picture from this server (an answer supplied by the suite, no server asked)')
+    js("localStorage.removeItem('fl-tl')")
     load(BASE)
     api(op,'me',{'federates':False},'PUT');api(op,'flags',{'flags':{'follows':False}},'PUT')
     load(BASE)
@@ -518,7 +553,7 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==16)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==17)
     else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.

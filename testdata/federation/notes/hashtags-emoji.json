@@ -1,0 +1,60 @@
+{
+ "@context": [
+  "https://www.w3.org/ns/activitystreams",
+  {
+   "ostatus": "http://ostatus.org#",
+   "toot": "http://joinmastodon.org/ns#",
+   "sensitive": "as:sensitive",
+   "Hashtag": "as:Hashtag",
+   "Emoji": "toot:Emoji",
+   "blurhash": "toot:blurhash",
+   "focalPoint": {
+    "@container": "@list",
+    "@id": "toot:focalPoint"
+   },
+   "votersCount": "toot:votersCount"
+  }
+ ],
+ "id": "https://social.example/users/bo/statuses/105/activity",
+ "type": "Create",
+ "actor": "https://social.example/users/bo",
+ "published": "2026-11-01T10:00:00Z",
+ "to": [
+  "https://www.w3.org/ns/activitystreams#Public"
+ ],
+ "cc": [
+  "https://social.example/users/bo/followers"
+ ],
+ "object": {
+  "id": "https://social.example/users/bo/statuses/105",
+  "attributedTo": "https://social.example/users/bo",
+  "to": [
+   "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+   "https://social.example/users/bo/followers"
+  ],
+  "published": "2026-11-01T10:00:00Z",
+  "url": "https://social.example/@bo/105",
+  "type": "Note",
+  "content": "<p>Practice day :blobcat: <a href=\"https://social.example/tags/poi\" class=\"mention hashtag\" rel=\"tag\">#<span>poi</span></a></p>",
+  "tag": [
+   {
+    "type": "Hashtag",
+    "href": "https://social.example/tags/poi",
+    "name": "#poi"
+   },
+   {
+    "id": "https://social.example/emojis/1",
+    "type": "Emoji",
+    "name": ":blobcat:",
+    "updated": "2026-01-01T00:00:00Z",
+    "icon": {
+     "type": "Image",
+     "mediaType": "image/png",
+     "url": "https://files.social.example/emoji/blobcat.png"
+    }
+   }
+  ]
+ }
+}

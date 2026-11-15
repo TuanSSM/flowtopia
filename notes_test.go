@@ -709,8 +709,9 @@ func TestDBNothingPrivateLeaves(t *testing.T) {
 }
 
 // Two Flowa instances over the real fetcher, signer, inbox and delivery queue: a member of b.example follows ana
-// here, ana posts, and b.example's inbox takes the Create, verified, and counts and drops it (notes in are FWR 5);
-// ana deletes the post, and the Delete arrives the same way.
+// here, ana posts through the real fan-out, and b.example's inbox takes the Create, verified, and keeps it: bob sees
+// it in his Home, with her handle and host and the link to the original, and in no Community timeline (FWR 5); ana
+// deletes the post, the Delete arrives the same way, and the post is gone from bob's Home.
 func TestDBTwoFlowaNotes(t *testing.T) {
 	e := newNotesEnv(t)
 	be := newEnv(t)
@@ -787,15 +788,36 @@ func TestDBTwoFlowaNotes(t *testing.T) {
 	hmu.Lock()
 	heard = nil
 	hmu.Unlock()
-	p := e.postAs(e.ana, map[string]any{"body": "hello b.example", "audience": "public"})
+	p := e.postAs(e.ana, map[string]any{"body": "hello b.example, says @ana", "audience": "public"})
 	pump()
-	if !slices.Equal(heardNow(), []inboxReason{inDropped}) || dropped("Create") != 1 {
+	if !slices.Equal(heardNow(), []inboxReason{inAccepted}) || dropped("Create") != 0 {
 		t.Fatalf("b.example heard %v, dropped Creates %d", heardNow(), dropped("Create"))
+	}
+	// bob sees it in his Home, with ana's handle and the link to the original, and nowhere else (FWR 5).
+	home := be.must(200, bo, "GET", "/api/home", nil)
+	posts := home["posts"].([]any)
+	if len(posts) != 1 {
+		t.Fatalf("bob's Home holds %d posts, want ana's", len(posts))
+	}
+	got := posts[0].(map[string]any)
+	remote, _ := got["remote"].(map[string]any)
+	if got["body"] != "hello b.example, says @ana" || remote == nil || remote["link"] != fmt.Sprintf("https://here.example/users/ana/posts/%d", p) {
+		t.Errorf("bob's Home shows %v", got)
+	}
+	author := home["users"].(map[string]any)[fmt.Sprint(num(got["userId"]))].(map[string]any)
+	if r, _ := author["remote"].(map[string]any); r == nil || r["handle"] != "ana@here.example" {
+		t.Errorf("the author is shown as %v", author)
+	}
+	if tl := be.must(200, bo, "GET", "/api/posts", nil)["posts"].([]any); len(tl) != 0 {
+		t.Errorf("the Community timeline of b.example shows %d posts from here", len(tl))
 	}
 	e.must(200, e.ana, "DELETE", fmt.Sprintf("/api/posts/%d", p), nil)
 	pump()
-	if !slices.Equal(heardNow(), []inboxReason{inDropped, inDropped}) || dropped("Delete") != 1 {
+	if !slices.Equal(heardNow(), []inboxReason{inAccepted, inAccepted}) || dropped("Delete") != 0 {
 		t.Fatalf("b.example heard %v, dropped Deletes %d", heardNow(), dropped("Delete"))
+	}
+	if n := len(be.must(200, bo, "GET", "/api/home", nil)["posts"].([]any)); n != 0 || be.count(`SELECT count(*) FROM posts WHERE ap_id IS NOT NULL`) != 0 {
+		t.Errorf("after the Delete bob's Home holds %d posts", n)
 	}
 	if n := e.count(`SELECT count(*) FROM ap_deliveries`) + be.count(`SELECT count(*) FROM ap_deliveries`); n != 0 {
 		t.Errorf("%d deliveries left on the two queues", n)

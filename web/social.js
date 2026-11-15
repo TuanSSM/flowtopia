@@ -258,7 +258,7 @@ async function loadFedAccount(id) {
   render();
 }
 // A remote account's profile here (#/fed/id): what the cache keeps of it, as text, with Follow, its requests
-// and Block. Its posts do not show in Flowa yet, and the page says so where they would be.
+// and Block. Its posts show in Home once followed, not here, and the page says so where they would be.
 function pageFedAccount(id) {
   id = Number(id);
   const d = social.fedAcc[id];
@@ -297,7 +297,35 @@ function feedHTML(key, empty) {
 }
 // Whose post it is, in words, for the names of the comment box under it and of its picture.
 const postBy = p => { const u = social.users[p.userId]; return u ? `the post by ${u.displayName || u.username}` : 'this post'; };
+// Text of a post from another server, which the server made plain (htmlToText): escaped, its line breaks kept, and
+// only its web addresses linked. No @name in it is linked or read as a member here: who a remote post mentions is
+// known from its server's tags, and the server writes those as @name@host already.
+// The text is cut into runs and links as the server cuts it (linkCheck.linkRuns, as richText does), each piece escaped.
+function remoteText(s) {
+  return linkCheck.linkRuns(s).map(r => r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(r.text)}</a>` : esc(r.text)).join('').replace(/\n/g, '<br>');
+}
+const MEDIA_WORDS = { picture: 'Picture', video: 'Video', audio: 'Sound', file: 'File' };
+// A post from an account on another server (p.remote), in Home or opened from a notification: the author's name
+// isolated with the handle and host apart, the time and a link to the original; a content warning folds it; its
+// pictures come from this server only (the server's copy), each with its description, else a link to the original.
+// No like, comment or bookmark: those cross servers in a later version, and the footer says so.
+function remoteCard(p) {
+  const u = social.users[p.userId] || {}, r = p.remote, link = httpsOnly(r.link), staff = canDo('content.delete');
+  const who = u.remote ? `<a class="post-name" href="#/fed/${u.remote.id}"><bdi>${esc(whoName(u))}</bdi></a><span class="tiny">${u.remote.handle ? handleHTML(u.remote.handle) : `on <span class="look-host">${esc(u.remote.host)}</span>`}` : `<b class="post-name">Someone</b><span class="tiny">`;
+  const pics = (r.media || []).map(m => m.src
+    ? `<img class="post-img" src="${esc(m.src)}" alt="${m.alt ? esc(m.alt) : 'A picture without a description, from another server'}" loading="lazy">`
+    : httpsOnly(m.link) ? `<p class="small fed-media">${icon('ext')}${outLink(httpsOnly(m.link), `${MEDIA_WORDS[m.kind] || 'File'} on its server`)}${m.alt ? ` <span class="muted" dir="auto">${esc(m.alt)}</span>` : ''}</p>` : '').join('');
+  const media = pics && r.sensitive ? `<details class="fed-sensitive"><summary>Sensitive pictures. Show them</summary>${pics}</details>` : pics;
+  const inner = `${r.replyTo && httpsOnly(r.replyTo) ? `<p class="tiny">${outLink(httpsOnly(r.replyTo), 'In reply to a post on its server')}</p>` : ''}${r.title ? `<p class="post-title" dir="auto"><b>${esc(r.title)}</b></p>` : ''}${p.body ? `<p class="post-body" dir="auto">${remoteText(p.body)}</p>` : ''}${media}`;
+  const body = r.cw ? `<details class="fed-cw"><summary><span dir="auto">${esc(r.cw)}</span> <span class="tiny">Show the post</span></summary>${inner}</details>` : inner;
+  return `<article class="card post fed-post" data-post="${p.id}">
+    <header class="row" style="gap:10px">${avatarHTML(u)}<span class="grow" style="display:grid">${who} · <a class="muted" href="#/post/${p.id}">${ago(r.published || p.created)}</a></span></span>${staff ? `<button class="icon-btn" data-act="post-del" data-id="${p.id}" aria-label="Delete post">${icon('trash')}</button>` : ''}${canReport(p.userId) ? `<button class="icon-btn" data-act="report" data-kind="post" data-id="${p.id}" data-what="this post" aria-label="Report post" data-tip="Report">${icon('flag')}</button>` : ''}</header>
+    ${p.hidden ? `<p class="notice warn">${icon('lock')} Hidden by a moderator: ${esc(p.hidden)}${canDo('post.hide') ? ` <button class="btn sm" data-act="mod-do" data-do="restore" data-kind="post" data-id="${p.id}">Restore</button>` : ''}</p>` : ''}
+    ${body}
+    <footer class="post-acts fed-acts">${link ? `<span class="small">${outLink(link, `Open on its server ${icon('ext')}`)}</span>` : ''}<span class="tiny muted">Replies and likes for posts from other servers are not built yet.</span></footer></article>`;
+}
 function postCard(p) {
+  if (p.remote) return remoteCard(p);
   const u = social.users[p.userId] || {}, mine = p.userId === me.id || canDo('content.delete');
   const tags = p.data?.tags || (p.skill ? [{ prop: p.prop, skill: p.skill }] : []);
   const chips = tags.map(t => trickChip(t.prop, t.skill)).join('');
@@ -652,7 +680,7 @@ function pageTimeline(single, focus) {
   if (single && focus && social.focus !== Number(focus)) loadThread(Number(single), Number(focus));
   if (!focus) social.focus = 0;
   const tabs = single || !flags.follows ? '' : `<div class="seg tl-tabs" role="group" aria-label="Timeline">${[['all', 'Community'], ['home', 'Home']].map(([k, n]) => `<button class="${tab === k ? 'on' : ''}" data-act="tl-tab" data-v="${k}" aria-pressed="${tab === k}">${n}</button>`).join('')}</div>`;
-  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? `Posts from the people you follow, and your own.${fed ? ' Posts of people you follow on other servers do not show here yet.' : ''}` : oneProfile ? 'Your posts. Only you see them, signed in: this Flowa holds your profile alone. Your milestones post themselves; turn that off in your profile.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
+  const lead = single ? '<a href="#/timeline">Back to the timeline</a>' : tab === 'home' ? `Posts from the people you follow, and your own.${fed ? ' Posts of people you follow on other servers show here from when you follow them; to reply or like, open them on their server.' : ''}` : oneProfile ? 'Your posts. Only you see them, signed in: this Flowa holds your profile alone. Your milestones post themselves; turn that off in your profile.' : 'What everyone here is working on. Your milestones post themselves; turn that off in your profile.';
   const empty = single ? 'That post is gone.' : tab === 'home' ? 'Your Home is empty. Follow someone from the People list or from their profile, and their posts show here with yours.' : 'Nothing here yet. Share what you worked on today.';
   return `<div class="page-h"><div class="grow"><h1>${single ? 'Post' : 'Timeline'}</h1><p>${lead}</p></div>${tabs}</div>
   <div class="grid g32 tl"><div class="stack" data-tour="feed">${single ? '' : composer()}${feedHTML(key, empty)}</div>
@@ -708,6 +736,7 @@ function notifText(n) {
     case 'follow': return `<b>${who}</b> followed you`;
     case 'follow_request': return `<b>${who}</b> asked to follow you`;
     case 'follow_rejected': return `<b>${who}</b> did not accept your follow, or ended it`;
+    case 'share': return `<b>${who}</b> shared your post`;
     case 'achievement': { const b = badgeByKey(n.text); return `Achievement unlocked: <b>${esc(b?.name || n.text)}</b>`; }
     default: return esc(localTimes(n.text)); // a mute or suspension carries its end time
   }

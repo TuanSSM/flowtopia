@@ -7,8 +7,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -54,6 +56,24 @@ func TestRemoteHTMLToText(t *testing.T) {
 		{"spaces and blank lines tidied", "  <p> a  b </p>\n\n\n<p>c</p>  ", false, "a b\n\nc"},
 		{"nested links: the first ends at the second", `<a href="https://a.example/1">one<a href="https://a.example/2">two</a>`, false, "one (https://a.example/1)two (https://a.example/2)"},
 		{"tags in another case", "<P>a<BR/>b</P>", false, "a\nb"},
+		// FWR 5's hostile corpus: what a remote post may carry to make a page run or show markup.
+		{"event attributes", `<img src=x onerror="alert(1)">a<b onclick='steal()'>b</b><svg onload=alert(1)>c`, false, "abc"},
+		{"a data: link", `<a href="data:text/html,<script>alert(1)</script>">d</a>`, false, "d"},
+		{"a javascript: link hidden by an entity", `<a href="jav&#x61;script:alert(1)">j</a>`, false, "j"},
+		{"a javascript: link in capitals", `<a href="JAVASCRIPT:alert(1)">j</a>`, false, "j"},
+		{"an http link in capitals is not taken either", `<a href="HTTPS://example.com/">e</a>`, false, "e"},
+		{"numeric entities that make markup are text", "&#60;b&#62;bold&#x3C;/b&#x3e;", false, "<b>bold</b>"},
+		{"an overlong numeric entity", "a&#x110000;b&#99999999999999999999;c", false, "a�b�c"},
+		{"a NUL by entity", "a&#0;b", false, "a�b"},
+		{"nested tags never closed", "<div><p><b>bold<i>it<u>", false, "boldit"},
+		{"script in capitals with attributes", `<SCRIPT type="module">bad()</SCRIPT >ok`, false, "ok"},
+		{"a style with another closing tag in a string", `<style>p::after{content:"</p>"}</style>x`, false, "x"},
+		{"a tag split around another", "<scr<script>ipt>alert(1)</script>ok", false, "ipt>alert(1)ok"},
+		{"a CDATA never closed", "a<![CDATA[ <b>", false, "a"},
+		{"an iframe and an object", `<iframe src="https://evil.example/"></iframe><object data="x"></object>ok`, false, "ok"},
+		{"a remote picture is no picture", `<img src="https://evil.example/track.gif" alt="tracker">seen`, false, "seen"},
+		{"a heading and a quote end their lines", "<h2>Title</h2><blockquote><p>q</p></blockquote>after", false, "Title\nq\n\nafter"},
+		{"bidi isolates and overrides", "a\u2067b\u2069c\u202dd\u200fe", false, "abcde"},
 	} {
 		if got := htmlToText(c.in, bo, cats, c.cut); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
@@ -72,6 +92,20 @@ func TestRemoteHTMLToText(t *testing.T) {
 	if got := htmlToText(strings.Repeat("<!--", 20000)+"x", nil, nil, false); got != "" {
 		t.Errorf("comment openers: %q", got)
 	}
+	// A megabyte of nesting: 100,000 opened tags and as many closed, in one pass with no stack.
+	if got := htmlToText(strings.Repeat("<div>", 100000)+"core"+strings.Repeat("</div>", 100000), nil, nil, false); got != "core" {
+		t.Errorf("a megabyte of nesting: %q", got[:min(len(got), 80)])
+	}
+	// A text the decoder cut at 64 KB (apNote.Cut) may end inside a tag, an attribute, a comment or an entity: the
+	// unterminated tail goes, and the post still ends with the link to the original (remotePost).
+	for what, tail := range map[string]string{"a tag": `<a href="https://x.example/`, "an attribute": `<span class="h-car`, "a comment": "<!-- a note",
+		"an entity": "&am", "a numeric entity": "&#12", "a script": "<script>alert(1)"} {
+		n := &apNote{ID: "https://social.example/users/bo/statuses/1", Kind: "Note", Content: "<p>Hello there</p>" + tail, Cut: true}
+		body, _, _ := remotePost(n, boID, time.Now())
+		if want := "Hello there\n\n" + remoteReadRest + " https://social.example/users/bo/statuses/1"; body != want {
+			t.Errorf("cut inside %s: %q, want %q", what, body, want)
+		}
+	}
 	if got, cut := cutText(strings.Repeat("é", 2001), remoteTextMax); !cut || utf8.RuneCountInString(got) != remoteTextMax {
 		t.Errorf("cut at %d characters: %d, %v", remoteTextMax, utf8.RuneCountInString(got), cut)
 	}
@@ -85,7 +119,7 @@ func TestRemoteHTMLToText(t *testing.T) {
 // section 13) converts to text with no markup left.
 func TestRemoteHTMLFixtures(t *testing.T) {
 	n := 0
-	for _, dir := range []string{"testdata/federation", "testdata/federation/shapes", "testdata/federation/actors"} {
+	for _, dir := range []string{"testdata/federation", "testdata/federation/shapes", "testdata/federation/actors", "testdata/federation/notes"} {
 		files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 		for _, p := range files {
 			b, err := os.ReadFile(p)
@@ -182,4 +216,110 @@ func BenchmarkHTMLToText(b *testing.B) {
 			}
 		})
 	}
+}
+
+// The fixtures of testdata/federation/notes (written from documentation, their README says from where): each
+// remote post as Flowa keeps it, the text, what is shown beside it, and the attachments to fetch or link.
+func TestRemotePostFixtures(t *testing.T) {
+	read := func(name string) *apNote {
+		t.Helper()
+		b, err := os.ReadFile("testdata/federation/notes/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		act, err := decodeActivity(b, apMax)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		n, err := act.Object[0].note()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !noteShaped(act) {
+			t.Fatalf("%s: not taken by the inbox", name)
+		}
+		return n
+	}
+	for _, c := range []struct {
+		file, body, cw, kind string
+		sensitive            bool
+		media                []remoteAttachment
+	}{
+		{"cw.json", "The last move is a reverse figure-8 into a catch.\n\nTook me a month.", "Spoilers: the ending of the routine", "Note", true,
+			[]remoteAttachment{{"picture", "https://files.social.example/media/101.jpg", "A nunchaku caught behind the back", true}}},
+		{"poll.json", "What should I practise today?\n• apple\n• orange\n• banana\n\n" + remotePollSays + " https://social.example/@bo/102", "", "Question", false, nil},
+		{"attachments.json", "Four kinds of media.", "", "Note", false, []remoteAttachment{
+			{"picture", "https://files.social.example/media/a.png", "Two poi in a fire circle", true},
+			{"picture", "https://files.social.example/media/b.webp", "A webp picture", false}, // WebP: a link, the standard library cannot decode it
+			{"video", "https://files.social.example/media/c.mp4", "A video of the flow", false},
+			{"audio", "https://files.social.example/media/d.mp3", "The music", false},
+			{"picture", "https://files.social.example/media/e.gif", "A spinning staff, as a GIF", true}}},
+		{"quote.json", "RE: https://social.example/@cat/90\n\nSo true.", "", "Note", false, nil},
+		{"hashtags-emoji.json", "Practice day :blobcat: #poi", "", "Note", false, nil},
+		{"followers-only.json", "Only for my followers, and @ana@here.example.", "", "Note", false, nil},
+		{"mention.json", "Thanks @anna@social.example and @cyd@here.example! Also @anna, written plainly.", "", "Note", false, nil},
+	} {
+		n := read(c.file)
+		body, v, media := remotePost(n, boID, time.Now())
+		if body != c.body || v.CW != c.cw || v.Kind != c.kind || v.Sensitive != c.sensitive || !slices.Equal(media, c.media) {
+			t.Errorf("%s:\n got %q %q %s %v %v\nwant %q %q %s %v %v", c.file, body, v.CW, v.Kind, v.Sensitive, media, c.body, c.cw, c.kind, c.sensitive, c.media)
+		}
+		if _, num, _ := strings.Cut(n.ID, "/statuses/"); v.Link != "https://social.example/@bo/"+num || v.Published == nil {
+			t.Errorf("%s: link %q, published %v", c.file, v.Link, v.Published)
+		}
+	}
+	// The long Article: its title, its first 500 characters, then the link; its heading on a line of its own.
+	n := read("article.json")
+	body, v, _ := remotePost(n, boID, time.Now())
+	text, _, _ := strings.Cut(body, "\n\n"+remoteReadRest)
+	if v.Title != "A long note on learning the figure-8" || v.Kind != "Article" || !strings.HasPrefix(body, "Why the figure-8\nFlow arts are") ||
+		!strings.HasSuffix(body, remoteReadRest+" https://social.example/@bo/106") || utf8.RuneCountInString(text) != remoteLongMax+1 || !strings.HasSuffix(text, "…") {
+		t.Errorf("the article: %q %+v (%d characters before the link)", body, v, utf8.RuneCountInString(text))
+	}
+	// The direct message reads too; its addressing is what drops it (TestDBRemoteNotes).
+	if aud, _ := noteAudience(read("direct.json"), &apActivity{}, boID+"/followers"); aud != "" {
+		t.Errorf("the direct message is read as %q", aud)
+	}
+	if aud, _ := noteAudience(read("followers-only.json"), &apActivity{}, boID+"/followers"); aud != "followers" {
+		t.Errorf("the followers-only post is read as %q", aud)
+	}
+	// A url on another host than the author's is not offered as the original: the post's id is.
+	n = &apNote{ID: boID + "/statuses/9", URL: []apLink{{Href: "https://phish.example/login"}}}
+	if l := remoteLink(n, boID); l != n.ID {
+		t.Errorf("a url on another host is offered: %s", l)
+	}
+}
+
+// What holds of any remote post: no "<" in its text that markup made (each is a "<" the input had as text, since
+// the input holds no entity), and a text the decoder cut ends with the link to the original.
+func FuzzRemotePost(f *testing.F) {
+	for _, s := range []string{"<p>a</p>", "<<b>x", "a < b", "<a href='", "&lt;b&gt;", "<!--", "<script>x", strings.Repeat("é", 2100)} {
+		f.Add(s, false)
+		f.Add(s, true)
+	}
+	const id = "https://social.example/users/bo/statuses/1"
+	f.Fuzz(func(t *testing.T, in string, cut bool) {
+		for _, kind := range []string{"Note", "Article", "Question"} {
+			n := &apNote{ID: id, Kind: kind, Content: in, Summary: in, Name: "A title", Cut: cut, Options: []string{"yes", "no"}}
+			body, v, _ := remotePost(n, boID, time.Now())
+			if cut && !strings.HasSuffix(body, remoteReadRest+" "+id) && !strings.HasSuffix(body, remotePollSays+" "+id) {
+				t.Fatalf("%s cut, without the link: %q from %q", kind, body, in)
+			}
+			if strings.Contains(in, "&") {
+				continue
+			}
+			textLt := 0
+			for i := 0; i < len(in); i++ {
+				// A "<" that starts no tag, comment or declaration (as htmlToText reads one) is text.
+				if in[i] == '<' && !strings.HasPrefix(in[i:], "<!") && !strings.HasPrefix(in[i:], "<?") && !(i+1 < len(in) && isAlpha(in[i+1])) && !(i+2 < len(in) && in[i+1] == '/' && isAlpha(in[i+2])) {
+					textLt++
+				}
+			}
+			// What is shown is made from the content and the summary, each the input once (a name and a choice are plain text,
+			// AS2 Core 4.7: their "<" are characters the page escapes, so they are held fixed here).
+			if got := strings.Count(body, "<") + strings.Count(v.CW, "<") + strings.Count(v.Title, "<"); got > 2*textLt {
+				t.Fatalf("%s: %d \"<\" from %d in the input's text: %q", kind, got, textLt, body)
+			}
+		}
+	})
 }

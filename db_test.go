@@ -3787,10 +3787,10 @@ func TestDBQueryPlans(t *testing.T) {
 	// whole where 500 lookups would cost more, as the planner sees it: a row per member, like people.
 	homeMost := float64((500+1)*(pageSize+1)*4 + 8000)
 	plans([]planCase{
-		{"Home, 500 accounts followed, first page", homeSQL, []any{viewer, 0, pageSize + 1, false}, homeMost, ""},
-		{"Home, 500 accounts followed, an older page", homeSQL, []any{viewer, older, pageSize + 1, false}, homeMost, ""},
-		{"Home, 500 accounts followed, as a moderator", homeSQL, []any{viewer, 0, pageSize + 1, true}, homeMost, ""},
-		{"Home of a member who follows nobody", homeSQL, []any{followed, 0, pageSize + 1, false}, 300, ""},
+		{"Home, 500 accounts followed, first page", homeSQL, []any{viewer, 0, pageSize + 1, false, false}, homeMost, ""},
+		{"Home, 500 accounts followed, an older page", homeSQL, []any{viewer, older, pageSize + 1, false, false}, homeMost, ""},
+		{"Home, 500 accounts followed, as a moderator", homeSQL, []any{viewer, 0, pageSize + 1, true, false}, homeMost, ""},
+		{"Home of a member who follows nobody", homeSQL, []any{followed, 0, pageSize + 1, false, false}, 300, ""},
 		{"the 500 accounts a member follows", followingSQL, []any{viewer, maxFollowList}, 13000, "users"},
 		{"the followers of a member", followersSQL, []any{followed, maxFollowList}, 600, ""},
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
@@ -3983,6 +3983,77 @@ func TestDBQueryPlans(t *testing.T) {
 		{"notes: the mentions of a post, 10 of them", mentionLookupSQL, []any{pq.Array(names), false, 11}, 600, ""},
 		{"notes: the oldest record of a post that waits", postOutSQL, []any{false}, 100, ""},
 		{"notes: the profile due first", personOutSQL, []any{false}, 100, ""},
+	})
+	// Posts from followed accounts (FWR 5): 20,000 remote posts, newer than every local one, by the 2,000 remote
+	// accounts (10 each), 5,000 pictures of them in the cache's index and 2,000 waiting, the reader following 100 of
+	// those accounts beside the 500 members, and 300 mentions and shares told to member 9 by them. The Community
+	// timeline reads local posts only through posts_local and never passes over the remote ones; Home reads a page
+	// per account followed as before (remote accounts are accounts); a post alone, the decision, the cap per
+	// account, the worker's claim and housekeeping's batches each read through an index, and no statement reads
+	// every remote post.
+	for _, q := range []string{
+		`INSERT INTO posts (user_id, body, audience, ap_id, ap_to, created_at) SELECT 1000001 + g % 2000, 'remote ' || g, 'public', 'https://h' || (g % 50) || '.example/n/' || g,
+			CASE WHEN g % 100 = 0 THEN ARRAY[9::bigint] ELSE '{}' END, now() - (20000 - g) * interval '10 seconds' + interval '1 day' FROM generate_series(1, 20000) g`,
+		`INSERT INTO ap_media (post_id, n, kind, url, state, file, bytes, used_at) SELECT p.id, 0, 'picture', 'https://m.example/' || p.id, CASE WHEN p.id % 4 = 0 THEN 'ok' WHEN p.id % 4 = 1 THEN 'link' ELSE 'failed' END,
+			CASE WHEN p.id % 4 = 0 THEN md5(p.id::text) || '.jpg' ELSE '' END, 50000, now() - p.id * interval '1 second' FROM posts p WHERE p.ap_id IS NOT NULL AND p.id % 4 <> 3`,
+		`INSERT INTO ap_media (post_id, n, kind, url, state) SELECT p.id, 1, 'picture', 'https://m.example/w/' || p.id, 'wanted' FROM posts p WHERE p.ap_id IS NOT NULL AND p.id % 10 = 0`,
+		// A fifth of them kept only for a mention, spread among the others: the cap in all must not read through them.
+		`UPDATE posts SET ap_mention_only = true WHERE ap_id IS NOT NULL AND id % 5 = 0`,
+		`INSERT INTO follows (follower_id, followee_id, state) SELECT 5, 1000000 + g, 'accepted' FROM generate_series(1, 100) g ON CONFLICT DO NOTHING`,
+		`INSERT INTO notifications (user_id, actor_id, kind, post_id) SELECT 9, 1000001 + g % 2000, CASE WHEN g % 2 = 0 THEN 'mention' ELSE 'share' END, (SELECT min(id) FROM posts WHERE ap_id IS NOT NULL) + g FROM generate_series(1, 300) g`,
+		`INSERT INTO ap_deleted (ap_id, user_id, at) SELECT 'https://h1.example/d/' || g, 1000001 + g % 2000, now() - (g % 10) * interval '1 day' FROM generate_series(1, 2000) g`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM posts WHERE ap_id IS NOT NULL`); n != 20000 {
+		t.Fatalf("%d remote posts, want 20,000", n)
+	}
+	var remoteFollowed, remotePost, notSeen int64
+	if err := db.QueryRow(`SELECT max(p.id) FROM posts p JOIN follows f ON f.followee_id = p.user_id AND f.follower_id = 5 WHERE p.ap_id IS NOT NULL`).Scan(&remotePost); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT max(id) FROM posts WHERE ap_id IS NOT NULL AND user_id > 1000100`).Scan(&notSeen); err != nil {
+		t.Fatal(err)
+	}
+	remoteFollowed = 1000050
+	// Home now follows 600 accounts: a page of each, as before.
+	homeRemote := float64((600+1)*(pageSize+1)*4 + 8000)
+	rtx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	on = rtx
+	plans([]planCase{
+		{"remote: the timeline, first page, 20,000 newer remote posts", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 1500, ""},
+		{"remote: the timeline as a moderator sees it", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, true, pq.Array(none)}, 1500, ""},
+		{"remote: Home, 500 members and 100 remote accounts followed", homeSQL, []any{viewer, 0, pageSize + 1, false, true}, homeRemote, ""},
+		{"remote: a post alone, its author followed", postOneSQL, []any{viewer, remotePost, false, true}, 300, ""},
+		{"remote: a post alone, not readable", postOneSQL, []any{viewer, notSeen, false, true}, 300, ""},
+		{"remote: a post alone, a local one", postOneSQL, []any{viewer, 4321, false, true}, 300, ""},
+		{"remote: whether an account is followed, and who is named", noteDecideSQL, []any{remoteFollowed, pq.Array([]string{"m1", "m2", "m3", "nobody"}), false}, 100, ""},
+		{"remote: the cap per account", notePastCapSQL, []any{remoteFollowed, remotePostsPerAccount}, 200, ""},
+		{"remote: the picture worker's claim", mediaClaimSQL, []any{time.Now(), 60.0}, 100, ""},
+		{"remote: retention, a batch of 1,000 past their time", remoteKeepSQL, []any{time.Now().Add(48 * time.Hour), remoteBatch}, 15000, ""},
+		// The cap in all reads posts_remote_followed (the posts not kept for a mention) up to its offset, and a batch.
+		{"remote: the cap in all, a batch", remoteCapSQL, []any{15000, remoteBatch}, 15000 + 3*remoteBatch, ""},
+		// Each host's share and the cap of posts kept for a mention read those 4,000 posts (each one's account by its key).
+		{"remote: each host's share of the posts kept for a mention", remoteMentionHostSQL, []any{remoteMentionPerHost, remoteBatch}, 8 * 4000, ""},
+		{"remote: the cap of posts kept for a mention, a batch", remoteMentionCapSQL, []any{remoteMentionOnlyMax, remoteBatch}, 3 * 4000, ""},
+		{"remote: the cap of remembered deletions", remoteDeletedCapSQL, []any{1500}, 6000, "ap_deleted"},
+		{"remote: remembering a deletion, under the account's cap", noteRememberSQL, []any{"https://h7.example/n/new", int64(1000008), time.Now(), remoteDeletedPerAccount}, 200, ""},
+		{"remote: a Delete", noteDeleteSQL, []any{"https://h7.example/n/7", int64(1000008)}, 100, ""},
+		{"remote: trimming a member's notifications, mentions and shares among them", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 6000, ""},
+	})
+	on = db
+	rtx.Rollback()
+	// The page's pictures, and the cache's weight: per post through the unique key, and the files kept through
+	// ap_media_used (the eviction runs once per picture fetched).
+	plans([]planCase{
+		{"remote: the pictures of a page", `SELECT id, post_id, kind, url, alt, state FROM ap_media WHERE post_id = ANY($1) ORDER BY post_id, n`, []any{pq.Array([]int64{remotePost, notSeen})}, 50, ""},
+		{"remote: the oldest pictures to evict", `SELECT id, bytes, used_at FROM ap_media WHERE state = 'ok' ORDER BY used_at, id LIMIT 100`, nil, 300, ""},
 	})
 	// The indexes migration 6 adds are the ones those plans stand on: without one of them a plan above fails.
 	for _, idx := range []string{"likes_user", "comment_likes_user", "posts_created", "comments_created"} {
