@@ -174,7 +174,7 @@ jobs:
         run: python3 -m py_compile test/browser/*.py
       # shellcheck ships with the runner image; errors fail the build, style notes do not.
       - name: Shell scripts
-        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/db-image.sh build-image.sh test/release.sh test/restore.sh
+        run: shellcheck -S error deploy.sh backup.sh test/browser/run.sh test/docs.sh test/ci-plan.sh test/sleeps.sh test/slowest.sh test/go-summary.sh test/db-image.sh build-image.sh test/release.sh test/restore.sh
       - name: The rules that choose which jobs run
         run: test/ci-plan.sh --self-test
       - name: Reading the pinned Postgres image from compose.yml
@@ -187,6 +187,8 @@ jobs:
           test/sleeps.sh
       - name: The slowest checks table builds from examples
         run: test/slowest.sh --self-test
+      - name: The db suite's one-line result reads a timeout or a panic as a failure
+        run: test/go-summary.sh --self-test
 
       - name: Workflow files
         uses: raven-actions/actionlint@v2
@@ -291,7 +293,8 @@ jobs:
   integration:
     name: integration (${{ matrix.suite }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # The db suite gives go test 25 minutes (below), so its job has room past that; every other suite 15.
+    timeout-minutes: ${{ matrix.suite == 'db' && 35 || 15 }}
     needs: changes
     if: needs.changes.outputs.suites != '[]' && needs.changes.outputs.suites != ''
     strategy:
@@ -333,8 +336,12 @@ jobs:
         run: |
           mkdir -p report
           if [ "$SUITE" = db ]; then
-            TEST_DATABASE_URL="$DATABASE_URL" go test -race -count=1 -run DB -v ./... | tee report/result.txt || code=$?
-            echo "$(grep -c -- '^--- PASS' report/result.txt) passed, $(grep -c -- '^--- FAIL' report/result.txt) failed, $(grep -c -- '^--- SKIP' report/result.txt) skipped" > report/line.txt
+            # go test's own -timeout is 10 minutes when none is given, and the database tests under the race
+            # detector take about that on this runner: 25 minutes leaves room, and a run past it still fails.
+            # test/go-summary.sh counts a run that failed with no failed test (a timeout, a panic, a build that
+            # broke) as a failure with its reason, never as "0 failed".
+            TEST_DATABASE_URL="$DATABASE_URL" go test -race -count=1 -timeout 25m -run DB -v ./... | tee report/result.txt || code=$?
+            test/go-summary.sh report/result.txt "${code:-0}" > report/line.txt
             cat report/line.txt
             exit "${code:-0}"
           fi

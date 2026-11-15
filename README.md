@@ -1516,4 +1516,6 @@ Working on the repository with Claude Code: see [docs/claude-code-setup.md](docs
 A push to the PR cancels the run for the previous commit, and a cancelled run stops at once (no
 step uses `always()`, which would keep starting suites after the cancel). Before opening a PR the same checks can
 be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/physics.js` (Go tests that need Postgres run when
-`TEST_DATABASE_URL` is set, as in CI's integration job) and `test/browser/run.sh combo.py social.py`.
+`TEST_DATABASE_URL` is set, as in CI's integration job, which runs them as `go test -race -count=1 -timeout 25m -run DB`:
+go test's own default of 10 minutes is about what they take under the race detector) and
+`test/browser/run.sh combo.py social.py`.
