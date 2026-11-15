@@ -166,11 +166,11 @@ func TestDBProducerErrorStillSends(t *testing.T) {
 	was := e.out.produce
 	e.out.produce = func(context.Context) (bool, error) { return false, errors.New("the producer cannot work") }
 	defer func() { e.out.produce = was }()
-	worked, err := e.out.step(context.Background())
+	worked, _ := e.out.step(context.Background()) // the row's own outcome is not what is asked here
 	if !worked || len(stub.taken()) != 1 {
 		t.Errorf("a step with its producer failing: worked %v, %d sent", worked, len(stub.taken()))
 	}
-	if worked, err = e.out.step(context.Background()); worked || err == nil || !strings.Contains(err.Error(), "cannot work") {
+	if worked, err := e.out.step(context.Background()); worked || err == nil || !strings.Contains(err.Error(), "cannot work") {
 		t.Errorf("with nothing to claim, the step says the producer's error: %v %v", worked, err)
 	}
 }
