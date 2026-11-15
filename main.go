@@ -4784,10 +4784,12 @@ type fetcher struct {
 	// address and the router's, which a stranger's name can point at and which look public to the
 	// guard. Empty until the federation settings item lets an operator list them.
 	deny []netip.Prefix
-	// fedPrivate is FLOWA_FEDERATION_ALLOW_PRIVATE=on (parseAllowPrivate), for the two-instance test alone: the dial
-	// guard then lets private addresses through (privateDialGuard), still on port 443 and still over https with a
-	// certificate the system trusts. Set once by start before any request; never set in a build that is reached.
-	fedPrivate bool
+	// fedTr and fedClient are set only under FLOWA_FEDERATION_ALLOW_PRIVATE=on (parseAllowPrivate, allowFedPrivate), for
+	// the two-instance test alone: federation requests then go through a Transport of their own whose dial guard lets
+	// private addresses through (privateDialGuard), still on port 443 and over https with a certificate the system
+	// trusts, while link previews keep tr and dialGuard whatever the setting. Nil otherwise: one Transport, as always.
+	fedTr     *http.Transport
+	fedClient *http.Client
 	// dials counts the connections this fetcher tried to open: allowed, refused, or to a name that
 	// did not resolve. Nothing reads it while the server runs; TestDBLocalModeUnchanged holds it at
 	// zero through a start.
@@ -4880,10 +4882,11 @@ func dialGuard(address string, allowPrivate bool, over overrider, deny []netip.P
 }
 
 // privateDialGuard is the dial guard under FLOWA_FEDERATION_ALLOW_PRIVATE=on (the two-instance test,
-// test/federation.sh): an address in a private range (RFC 1918, unique local IPv6) is let through as well as a
-// public one, because the two instances reach each other on a Docker network. Everything else dialGuard refuses
-// stays refused: loopback (the instance itself), link-local (a cloud's metadata address), unspecified, multicast
-// and the reserved ranges, any port but 443, and the fetcher's own deny list. The URL's rules (https, a DNS name,
+// test/federation.sh): an IPv4 address in a private range (RFC 1918) is let through as well as a public one, because
+// the two instances reach each other on a Docker network, which is IPv4. Everything else dialGuard refuses stays
+// refused: unique local IPv6 (fc00::/7, where a cloud's metadata address also lives, fd00:ec2::254), loopback (the
+// instance itself), link-local (169.254.169.254), unspecified, multicast and the reserved ranges, any port but 443,
+// and the fetcher's own deny list. Only federation requests use it (allowFedPrivate); link previews never do. The URL's rules (https, a DNS name,
 // the domain policy) and TLS verification are not touched: the test trusts its own certificate authority through
 // SSL_CERT_FILE, as any Go program on Linux does.
 func privateDialGuard(address string, deny []netip.Prefix) error {
@@ -4892,7 +4895,7 @@ func privateDialGuard(address string, deny []netip.Prefix) error {
 		return err
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || (!ip.IsPrivate() && !publicIP(ip)) {
+	if ip == nil || !publicIP(ip) && (ip.To4() == nil || !ip.IsPrivate()) {
 		return &addrRefused{host}
 	}
 	if a, ok := netip.AddrFromSlice(ip); ok {
@@ -4911,11 +4914,25 @@ func privateDialGuard(address string, deny []netip.Prefix) error {
 
 func newFetcher(base string, allowPrivate bool) *fetcher {
 	f := &fetcher{base: strings.TrimRight(base, "/"), allowPrivate: allowPrivate, busy: map[string]*hostSlot{}, version: buildVersion}
+	f.tr = f.transport(func(address string) error { return dialGuard(address, allowPrivate, f.over, f.deny) })
+	// Redirects are followed by do, which checks each one by the kind's rule.
+	f.client = &http.Client{Transport: f.tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return f
+}
+
+// allowFedPrivate gives federation requests a Transport of their own under FLOWA_FEDERATION_ALLOW_PRIVATE=on, with the
+// same pool, timeouts and per-host turns (those are the fetcher's, acquire), whose dial guard is privateDialGuard. Link
+// previews keep the first Transport and dialGuard, so the setting never reaches them. Called once by start, before any
+// request.
+func (f *fetcher) allowFedPrivate() {
+	f.fedTr = f.transport(func(address string) error { return privateDialGuard(address, f.deny) })
+	f.fedClient = &http.Client{Transport: f.fedTr, CheckRedirect: f.client.CheckRedirect}
+}
+
+// transport is the fetcher's Transport with guard as its dialer's Control: it runs on every address actually dialled.
+func (f *fetcher) transport(guard func(address string) error) *http.Transport {
 	dialer := &net.Dialer{Timeout: dialTimeout, Control: func(network, address string, _ syscall.RawConn) error {
-		if f.fedPrivate {
-			return privateDialGuard(address, f.deny)
-		}
-		return dialGuard(address, allowPrivate, f.over, f.deny)
+		return guard(address)
 	}}
 	// Counted before the name is looked up: a fetch to a name that does not resolve asked a name
 	// server, and that is a connection to another machine too.
@@ -4928,7 +4945,7 @@ func newFetcher(base string, allowPrivate bool) *fetcher {
 	}
 	// Proxy stays nil: a proxy from HTTPS_PROXY would make the connection for us, to an address the
 	// guard never sees. No cookie jar, and TLS verified as Go does by default, at least TLS 1.2.
-	f.tr = &http.Transport{
+	return &http.Transport{
 		Proxy:                  nil,
 		DialContext:            dial,
 		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
@@ -4939,9 +4956,6 @@ func newFetcher(base string, allowPrivate bool) *fetcher {
 		MaxIdleConnsPerHost:    1,
 		IdleConnTimeout:        idleTimeout,
 	}
-	// Redirects are followed by do, which checks each one by the kind's rule.
-	f.client = &http.Client{Transport: f.tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return f
 }
 
 // fedHost says why a host may not be asked for a federation kind, or "" when it may, and gives the
@@ -5301,6 +5315,9 @@ func (f *fetcher) send(ctx context.Context, rule *fetchRule, r *fetchReq, wire *
 				return nil, &fetchError{Fail: failRefused, Host: wire.Hostname(), Reason: "the signer changed the request line"}
 			}
 		}
+	}
+	if rule.fed && f.fedClient != nil {
+		return f.fedClient.Do(req) // FLOWA_FEDERATION_ALLOW_PRIVATE=on: federation's own Transport (allowFedPrivate)
 	}
 	return f.client.Do(req)
 }
@@ -26745,7 +26762,11 @@ func (a *app) start(getenv func(string) string) error {
 		log.Print(fedBuiltLog)
 	}
 	if rootsPresent() {
-		log.Print("TLS roots: present")
+		if getenv("SSL_CERT_FILE") != "" {
+			log.Print("TLS roots: present, from SSL_CERT_FILE") // Go reads it before the roots compiled in (the federation suite's own authority)
+		} else {
+			log.Print("TLS roots: present")
+		}
 	} else {
 		log.Print("TLS roots: none; link previews cannot be fetched")
 	}
@@ -26783,8 +26804,8 @@ func (a *app) start(getenv func(string) string) error {
 		a.fetch.origin = fed.origin
 	}
 	if fed.allowPrivate {
-		a.fetch.fedPrivate = true
-		log.Printf("FLOWA_FEDERATION_ALLOW_PRIVATE=on: FOR THE TWO-INSTANCE TEST ONLY. Federation requests from %s may connect to private addresses (still https, port 443 and a trusted certificate). Never set this on a server that other servers reach", fed.origin.host)
+		a.fetch.allowFedPrivate()
+		log.Printf("FLOWA_FEDERATION_ALLOW_PRIVATE=on: FOR THE TWO-INSTANCE TEST ONLY. Federation requests from %s may connect to private IPv4 addresses (still https, port 443 and a trusted certificate); link previews may not. Never set this on a server that other servers reach", fed.origin.host)
 	}
 	// A single-profile instance is checked before the admin account is made, so an ADMIN_USER that
 	// would be a second account is refused with nothing written (checkSingle).

@@ -4509,7 +4509,7 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 		"FLOWA_ORIGIN": "https://public.example.net", "FLOWA_KEY_SECRET": "flowa-test-only", "FLOWA_FEDERATE": "on", "FLOWA_FEDERATION_WORKERS": "lots",
 		"FLOWA_FEDERATION_ALLOW_PRIVATE": "on"}
 	g.a.hosts = nil
-	if err := g.a.start(func(k string) string { return env[k] }); err != nil || g.a.mode != modeLocal || !g.a.fetch.off || g.a.fetch.fedPrivate {
+	if err := g.a.start(func(k string) string { return env[k] }); err != nil || g.a.mode != modeLocal || !g.a.fetch.off || g.a.fetch.fedClient != nil {
 		t.Errorf("a start with the settings of a deployment: %v, mode %q", err, g.a.mode)
 	}
 	if !reflect.DeepEqual(g.a.hosts, []string{"flowa.example.org"}) {

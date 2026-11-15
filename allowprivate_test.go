@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"net/http"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 // FLOWA_FEDERATION_ALLOW_PRIVATE, the two-instance test's setting (test/federation.sh, federation.md 5.1): off unless
@@ -57,7 +60,9 @@ func TestPrivateDialGuard(t *testing.T) {
 		"172.18.0.3:443":               true,
 		"10.1.2.3:443":                 true,
 		"192.168.1.20:443":             true,
-		"[fd00::1]:443":                true,
+		"[fd00::1]:443":                false, // unique local IPv6: the test network is IPv4
+		"[fd00:ec2::254]:443":          false, // a cloud's metadata address over IPv6
+		"[::ffff:10.1.2.3]:443":        true,  // the IPv4 address it carries
 		"93.184.216.34:443":            true,
 		"172.18.0.3:3169":              false,
 		"172.18.0.3:80":                false,
@@ -82,7 +87,32 @@ func TestPrivateDialGuard(t *testing.T) {
 		t.Error("the deny list does not hold under FLOWA_FEDERATION_ALLOW_PRIVATE")
 	}
 	// The fetcher a build makes never has it on: only start sets it, from the setting.
-	if newFetcher("", false).fedPrivate {
+	f := newFetcher("", false)
+	if f.fedClient != nil {
 		t.Error("a new fetcher lets private addresses through")
+	}
+	// With the setting on, a link preview still may not dial a private address, and a federation request may: the
+	// preview's Transport refuses 10.255.255.1 before any connection, federation's tries to connect (and runs out of
+	// the short time given, nothing answering there).
+	f.allowFedPrivate()
+	dial := func(tr *http.Transport) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		c, err := tr.DialContext(ctx, "tcp", "10.255.255.1:443")
+		if c != nil {
+			c.Close()
+		}
+		return err
+	}
+	var ar *addrRefused
+	if err := dial(f.tr); !errors.As(err, &ar) {
+		t.Errorf("a link preview to a private address with the setting on: %v, want refused", err)
+	}
+	if err := dial(f.fedTr); errors.As(err, &ar) {
+		t.Errorf("a federation request to a private address with the setting on: %v, want let through", err)
+	}
+	// And the kinds go through their own client: a preview never through federation's.
+	if f.client == f.fedClient || f.client.Transport != f.tr || f.fedClient.Transport != f.fedTr {
+		t.Error("previews and federation share a client under the setting")
 	}
 }

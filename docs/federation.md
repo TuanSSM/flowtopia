@@ -574,13 +574,18 @@ certificate verified, and every rule of the URL (a DNS name, the domain policy, 
 stays. `on` is refused at start unless the origin is a name under `.test` (RFC 6761 keeps it for testing, so no
 public authority signs a certificate for it and no server others reach can have it); unset, empty or `off` is off,
 anything else stops the start; a mode that does not federate never reads it. Under it the dial guard is
-`privateDialGuard`: RFC 1918 and unique local IPv6 addresses beside public ones, still never loopback, link-local
-(the metadata address), the reserved ranges or a port other than 443. The start logs "FOR THE TWO-INSTANCE TEST
-ONLY". The test's apps trust its own certificate authority through `SSL_CERT_FILE`, which Go reads on Linux before
+`privateDialGuard`, for federation requests only: RFC 1918 IPv4 addresses beside public ones (the test network is
+IPv4), still never unique local IPv6 (fc00::/7, where a cloud's metadata address `fd00:ec2::254` lives), loopback,
+link-local (169.254.169.254), the reserved ranges or a port other than 443. Federation requests get a Transport of
+their own under it (`allowFedPrivate`, the same pool size and timeouts; the per-host turns are the fetcher's and shared
+as before), and link previews keep the first Transport and `dialGuard` whatever the setting; without the setting there
+is one Transport, as always. The start logs "FOR THE TWO-INSTANCE TEST ONLY", and "TLS roots: present, from
+SSL_CERT_FILE" when that is set (local mode's start lines are unchanged when it is not). The test's apps trust its own certificate authority through `SSL_CERT_FILE`, which Go reads on Linux before
 the roots compiled into the binary, so no setting for a test authority was needed. `test/release.sh` fails when
 `compose.yml` names it, `SSL_CERT_FILE`, `SSL_CERT_DIR` or `FLOWA_PREVIEW_BASE` (its `TEST_ONLY`, with a
-`--self-test` in the lint job). Tests: `TestAllowPrivateSetting`, `TestPrivateDialGuard`, `TestDBLocalModeUnchanged`
-(a local start with it set ignores it).
+`--self-test` in the lint job). Tests: `TestAllowPrivateSetting`, `TestPrivateDialGuard` (with the setting on, a preview's
+Transport refuses a 10.x address before connecting and federation's lets it through; `fd00::1` and `fd00:ec2::254`
+refused), `TestDBLocalModeUnchanged` (a local start with it set ignores it).
 
 ### 5.2 Ids and URLs
 
