@@ -8,7 +8,8 @@ line as it is, not a paraphrase.
 1. Lint: `gofmt -l .` (must print nothing), `go vet ./...`,
    `for f in sim/*.js web/*.js test/*.js; do node --check "$f" || echo "SYNTAX $f"; done`,
    `node test/catalog.js web/catalog/*.json`, `python3 -m py_compile test/browser/*.py`,
-   `test/sleeps.sh` (a browser test's sleep needs `# fixed: why` on its line),
+   `test/sleeps.sh` (a browser test's sleep, and one in `test/federation.sh`, needs `# fixed: why` on its line),
+   `test/release.sh --self-test` (compose.yml names no setting for tests alone),
    `test/slowest.sh --self-test` and `test/go-summary.sh --self-test` when those scripts changed.
 2. Bundles: if `figure/src` or `tour/src` changed, rebuild (`cd figure && npm run build`,
    `cd tour && npm run build`) and confirm `git status` shows the bundle changed too.
@@ -19,7 +20,11 @@ line as it is, not a paraphrase.
    minutes is about what they take under `-race`.
 4. Integration, only when `web/`, `main.go` or `test/browser/` changed:
    `test/browser/run.sh combo.py` and `test/browser/run.sh demos.py`, both `0 failed`.
-5. Remove the throwaway database when done: `docker rm -f flowa-test-db`.
+5. Two instances, only when `main.go`, the `Dockerfile`, `build-image.sh`, `test/federation.sh` or `test/fedproxy`
+   changed and the machine has Docker with buildx (not the Pi: about 2.5 minutes and two app containers; CI runs it,
+   so say it was left to CI): `test/federation.sh`, expect `<n> passed, 0 failed, 0 skipped` and each app under
+   300 MB. It removes its own containers, network and volumes.
+6. Remove the throwaway database when done: `docker rm -f flowa-test-db`.
 
 Staticcheck is not installed on the Pi; CI runs it. Say so in the report rather than claiming it
 passed. Finish with a short table: check, result, time.
