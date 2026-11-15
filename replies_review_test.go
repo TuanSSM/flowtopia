@@ -451,6 +451,19 @@ func TestDBCommentsNameNoNonSharer(t *testing.T) {
 	if _, ok := e.queued(fmt.Sprintf("https://here.example/users/ana/comments/%d/activity", ans)); ok {
 		t.Error("the answer went out after the thread's first author stopped sharing")
 	}
+	// And about the member answered, whose name opens the answer (point 5 of the second review): in ana's own thread,
+	// an answer to fay, who stops sharing before the Create is made, stays here.
+	fayID, fay := e.member("fay", false)
+	top, _ := e.comment("ana's thread")
+	e.ne.produce()
+	fayCmt := num(e.must(200, fay, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "fay here", "parentId": top})["comment"].(map[string]any)["id"])
+	e.ne.produce()
+	toFay := num(e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", e.post), map[string]any{"body": "hello fay", "parentId": fayCmt})["comment"].(map[string]any)["id"])
+	e.mustExec(`UPDATE users SET federates = false WHERE id = $1`, fayID)
+	e.ne.produce()
+	if _, ok := e.queued(fmt.Sprintf("https://here.example/users/ana/comments/%d/activity", toFay)); ok {
+		t.Error("the answer to fay went out after fay stopped sharing")
+	}
 	for _, r := range e.ne.outRows() {
 		if strings.Contains(r.body, "secret cy") || strings.Contains(r.body, fmt.Sprintf("/users/cyd/comments/%d", cyCmt)) {
 			t.Errorf("cy's comment is named in %s", r.id)

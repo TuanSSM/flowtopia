@@ -1645,7 +1645,8 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   - **Nothing names a member who does not share** (`TestDBCommentsNameNoNonSharer`): a comment answering a member who
     does not share their profile, or in a thread one of them began, or answering a hidden comment, stays here, as the
     comments of members who do not share do, so neither the comment's id nor the name added before an answer leaves;
-    the producer asks again about the thread's first author before the Create. A name of such a member in the text stays
+    the producer asks again about the thread's first author and about the member answered, whose name opens the comment,
+    before each Create and Update (after the second review). A name of such a member in the text stays
     text: `resolveMentions` finds only members who share, so it is no Mention tag and no link to their actor.
   - **A notification is never lost to a failure** (`TestDBRemoteTalkNotifiedAfterFailure`): the notifications of a
     remote reply or like are written in the transaction that keeps it (`notifyFedTx`), so a failure rolls both back and
@@ -1717,7 +1718,9 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
   receiver does with an Update of an object it never had is its own (FWR 5 here takes one as new only when recent); a
-  member's like of a remote reply stays here; a remote reply to a member's comment
+  member's like of a remote reply stays here; a member who stops sharing after a comment that answers or names them
+  went out gets nothing taken back (the comment stays on the servers it reached; only its later edits stay here); a
+  remote reply to a member's comment
   under a post of another server is not kept (it answers no post here); the likes of an account its server says is
   suspended still count; recorded Mastodon replies and likes to hold this to (the owner's trial, FWR 9).
 

@@ -23212,13 +23212,16 @@ type outReplyActivity struct {
 // commentOutSQL reads the oldest record of ap_comment_out that waits, with what its activity needs: the comment (none
 // when it is gone) and whether it may still go out (shown, its author sharing, its post a Public post here of a member
 // who shares or a public post of another server, the top comment of its thread, when there is one, of an account of
-// another server or of a member who shares: nothing names a member who does not), what it answers (the top comment of
+// another server or of a member who shares, and the member the comment answers, whose name opens it (startsWithMention),
+// one who shares: nothing names a member who does not, all asked again at each send), what it answers (the top comment of
 // its thread, else the post), the post's audience, and the authors' ids and names; $1 the gate's single mode.
 var commentOutSQL = `SELECT o.comment_id, o.post_id, o.user_id, o.state, o.targets, o.gen, o.tries, o.due_at, u.username, o.last_ap_id,
 		COALESCE(c.id IS NOT NULL AND NOT c.deleted AND c.hidden_at IS NULL AND ` + personShown + `
 			AND (p.ap_id IS NULL AND p.audience = 'public' AND p.hidden_at IS NULL AND p.kind = 'post' AND (pu.federates OR ($1 AND pu.owner)) AND (pu.suspended_until IS NULL OR pu.suspended_until <= now())
 				OR p.ap_id IS NOT NULL AND p.audience IN ('public', 'unlisted'))
-			AND (pc.id IS NULL OR pcu.domain <> '' OR (pcu.federates OR ($1 AND pcu.owner)) AND (pcu.suspended_until IS NULL OR pcu.suspended_until <= now())), false),
+			AND (pc.id IS NULL OR pcu.domain <> '' OR (pcu.federates OR ($1 AND pcu.owner)) AND (pcu.suspended_until IS NULL OR pcu.suspended_until <= now()))
+			AND NOT EXISTS (SELECT 1 FROM users m WHERE m.domain = '' AND m.username = substring(lower(c.body) from '^@([a-z0-9][a-z0-9._-]{2,23})\M')
+				AND NOT ((m.federates OR ($1 AND m.owner)) AND (m.suspended_until IS NULL OR m.suspended_until <= now()))), false),
 		COALESCE(p.audience, ''),
 		COALESCE(c.body, ''), COALESCE(c.created_at, now()), c.edited_at,
 		COALESCE(p.ap_id, ''), COALESCE(pu.username, ''), COALESCE(pa.ap_id, ''), COALESCE(p.user_id, 0),
