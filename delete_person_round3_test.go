@@ -122,17 +122,106 @@ func TestDBDeleteTriesAfresh(t *testing.T) {
 // round at once (S2): with the producer failing a post and the record's table refusing every write (a trigger in the
 // test's own schema, as a full disk would), 20 steps report no work and the producer logs nothing. And the same for the
 // full queue's branches (the fourth review), posts and comments, a Delete at its schedule's end and before it, a Create
-// and a comment's Create: the producer reports no work, counts nothing and logs nothing while its write fails.
+// and a comment's Create and Update (commentOutFull's Update branch, the last review): the producer reports no work,
+// counts nothing and logs nothing while its write fails. And the same for the too large Create, an Update dropped for a
+// comment no longer shown, and the profile's full queue (the last review).
 func TestDBFailingWriteDoesNotSpin(t *testing.T) {
 	t.Run("a failing record", failingWriteRecord)
 	for _, c := range []struct {
 		kind, state string
 		final       bool
 	}{{"post", "delete", true}, {"post", "delete", false}, {"post", "create", false}, {"comment", "delete", true}, {"comment", "delete", false},
-		{"comment", "create", true}, {"comment", "create", false}} {
+		{"comment", "create", true}, {"comment", "create", false}, {"comment", "update", true}, {"comment", "update", false}} {
 		t.Run(fmt.Sprintf("full queue, %s %s, final %v", c.kind, c.state, c.final), func(t *testing.T) { failingWriteFullQueue(t, c.kind, c.state, c.final) })
 	}
 	t.Run("full queue, a write failing every other time", failingWriteIntermittent)
+	t.Run("a Create too large to send", failingWriteTooLarge)
+	t.Run("an Update dropped for a comment no longer shown", failingWriteDroppedUpdate)
+	t.Run("full queue, the profile", failingWriteProfileFull)
+}
+
+// refuseWrites makes every update and deletion of table fail, as a full disk would.
+func (e *notesEnv) refuseWrites(table string) {
+	e.t.Helper()
+	e.mustExec(`CREATE OR REPLACE FUNCTION refuse_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'could not extend file'; END $$`)
+	e.mustExec(`CREATE TRIGGER refuse_write BEFORE UPDATE OR DELETE ON ` + table + ` FOR EACH ROW EXECUTE FUNCTION refuse_write()`)
+}
+
+// fillQueue fills the delivery queue to the number of activities that may wait, so the next enqueue is refused.
+func (e *notesEnv) fillQueue() {
+	e.t.Helper()
+	e.mustExec(`INSERT INTO ap_outbox (ap_id, body, targets, created_at) SELECT 'https://here.example/actor/activities/full' || g, '{}', '{https://h1.fan.example/inbox}', now()
+		FROM generate_series(1, $1) g`, deliveryWaitingMax)
+}
+
+// noSpin runs the producer ten times with a record whose write fails, and fails unless each pass reports no work with an
+// error, nothing is counted, and nothing is logged about it (lines holding about).
+func (e *notesEnv) noSpin(run func() (bool, error), about string) {
+	e.t.Helper()
+	logs := logged(e.t)
+	f := e.a.fed
+	notTaken, notSent, notMade := f.notTakenBack.Load(), f.commentsNotSent.Load(), f.outNotMade.Load()
+	for i := 0; i < 10; i++ {
+		f.postsDue.Store(true)
+		f.commentsDue.Store(true)
+		f.personAt.Store(0)
+		if did, err := run(); did || err == nil {
+			e.t.Fatalf("pass %d with the record's write failing: did %v, %v", i, did, err)
+		}
+	}
+	if f.notTakenBack.Load() != notTaken || f.commentsNotSent.Load() != notSent || f.outNotMade.Load() != notMade {
+		e.t.Errorf("counted while the write failed: notTakenBack +%d, commentsNotSent +%d, outNotMade +%d", f.notTakenBack.Load()-notTaken,
+			f.commentsNotSent.Load()-notSent, f.outNotMade.Load()-notMade)
+	}
+	if strings.Contains(logs.String(), about) {
+		e.t.Errorf("the producer logged while the write failed: %s", logs.String())
+	}
+}
+
+func failingWriteTooLarge(t *testing.T) {
+	e := newNotesEnv(t)
+	bo, _ := e.remote("bo", "h1.fan.example", true)
+	e.follows(bo)
+	p := e.postAs(e.ana, map[string]any{"body": "x", "audience": "public"})
+	e.mustExec(`UPDATE posts SET body = repeat('x', $2) WHERE id = $1`, p, inboxBodyMax) // the Note alone is over a delivery's size
+	e.refuseWrites("ap_post_out")
+	e.noSpin(func() (bool, error) { return e.a.postOut(context.Background()) }, fmt.Sprintf("post %d", p))
+	if n := e.count(`SELECT count(*) FROM ap_post_out WHERE post_id = $1 AND state = 'create' AND tries = 0`, p); n != 1 {
+		t.Error("the record changed though its write failed")
+	}
+}
+
+func failingWriteDroppedUpdate(t *testing.T) {
+	e := newNotesEnv(t)
+	e.setFlag("community", true)
+	bo, _ := e.remote("bo", "h1.fan.example", true)
+	e.follows(bo)
+	p := e.postAs(e.ana, map[string]any{"body": "x", "audience": "public"})
+	out := e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "a comment"})
+	cid := num(out["comment"].(map[string]any)["id"])
+	e.produced()
+	e.must(200, e.ana, "PUT", fmt.Sprintf("/api/comments/%d", cid), map[string]any{"body": "edited"})
+	e.must(200, e.ana, "PUT", "/api/me", map[string]any{"federates": false})
+	e.refuseWrites("ap_comment_out")
+	e.noSpin(func() (bool, error) { return e.a.commentOut(context.Background()) }, fmt.Sprintf("comment %d", cid))
+	if n := e.count(`SELECT count(*) FROM ap_comment_out WHERE comment_id = $1 AND state = 'update' AND tries = 0`, cid); n != 1 {
+		t.Error("the record changed though its write failed")
+	}
+}
+
+func failingWriteProfileFull(t *testing.T) {
+	e := newNotesEnv(t)
+	bo, _ := e.remote("bo", "h1.fan.example", true)
+	e.follows(bo)
+	e.produce()
+	e.must(200, e.ana, "PUT", "/api/me", map[string]any{"displayName": "Ana Again"})
+	e.mustExec(`UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, e.anaID, e.clock.now().Add(-time.Second))
+	e.fillQueue()
+	e.refuseWrites("ap_person_out")
+	e.noSpin(func() (bool, error) { return e.a.personOut(context.Background()) }, fmt.Sprintf("member %d", e.anaID))
+	if n := e.count(`SELECT count(*) FROM ap_person_out WHERE user_id = $1 AND due_at IS NOT NULL`, e.anaID); n != 1 {
+		t.Error("the record changed though its write failed")
+	}
 }
 
 // A write that fails once is not a failure of the record (the fourth review): the record is left as it was, and the
@@ -177,6 +266,12 @@ func failingWriteFullQueue(t *testing.T, kind, state string, final bool) {
 		e.produce()
 		out := e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/comments", p), map[string]any{"body": "a comment"})
 		table, col, id = "ap_comment_out", "comment_id", num(out["comment"].(map[string]any)["id"])
+	}
+	if state == "update" {
+		// The comment's Create sent, then an edit a minute past the gap between two Updates, so the Update is made.
+		e.produce()
+		e.must(200, e.ana, "PUT", fmt.Sprintf("/api/comments/%d", id), map[string]any{"body": "edited"})
+		e.mustExec(`UPDATE ap_comment_out SET sent_at = $2 WHERE comment_id = $1`, id, e.clock.now().Add(-commentUpdateGap-time.Minute))
 	}
 	if state == "delete" {
 		e.produce()

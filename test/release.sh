@@ -4,6 +4,8 @@
 # Pi does.
 #   test/release.sh            the image checks, then the deploy checks
 #   test/release.sh --image    the image checks only, for a machine that must not be deployed to
+#   test/release.sh --self-test   the check that compose.yml names no test-only setting, against examples
+# First, compose.yml names no setting that is for tests alone (TEST_ONLY below), which a deployment must never get.
 # The image checks: both architectures under one name, the digest printed, the same commit giving the
 # same bytes (also from brotli copies another brotli made), the version compiled in, a brotli copy of
 # each page file made for it, nothing pushed without --push.
@@ -29,8 +31,50 @@ bad() { echo "FAIL $1${2:+: $2}"; fail=$((fail + 1)); took "$1"; }
 is() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', wanted '$3'"; fi; }   # is <name> <got> <wanted>
 finish() { echo "$pass passed, $fail failed, $skip skipped"; [ "$fail" -eq 0 ]; }
 
+# Settings for tests alone, which a deployment must never be given: FLOWA_FEDERATION_ALLOW_PRIVATE lets federation
+# reach private addresses (the two-instance suite, test/federation.sh), FLOWA_PREVIEW_BASE sends link cards to a
+# stub, and SSL_CERT_FILE and SSL_CERT_DIR would replace the certificate authorities the binary trusts (the
+# federation suite trusts its own that way). compose.yml must not name any of them.
+TEST_ONLY="FLOWA_FEDERATION_ALLOW_PRIVATE FLOWA_PREVIEW_BASE SSL_CERT_FILE SSL_CERT_DIR"
+test_only() {   # test_only <compose file>: the test-only settings it names, on one line; nothing when none
+  local s found=""
+  for s in $TEST_ONLY; do grep -Eq "(^|[^A-Z0-9_])$s([^A-Z0-9_]|$)" "$1" && found+="${found:+ }$s"; done
+  echo "$found"
+}
+compose_check() {   # counted with the other checks
+  local named; named=$(test_only compose.yml)
+  if [ -z "$named" ]; then ok "compose.yml names no setting that is for tests alone ($TEST_ONLY)"
+  else bad "compose.yml names no setting that is for tests alone" "it names $named"; fi
+}
+self_test() {   # the check above against examples, and the real compose.yml left as it is
+  local t fails=0 got; t=$(mktemp -d); trap 'rm -rf "$t"' RETURN
+  expect() {   # expect <name> <a line of a compose file> <names wanted, or empty>
+    printf 'services:\n  nunchaku:\n    environment:\n%s\n' "$2" > "$t/compose.yml"
+    got=$(test_only "$t/compose.yml")
+    if [ "$got" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: '$3'"; echo "  got:  '$got'"; fails=$((fails + 1)); fi
+  }
+  expect "the settings of a deployment" '      FLOWA_MODE: ${FLOWA_MODE:-}
+      FLOWA_FEDERATION_WORKERS: ${FLOWA_FEDERATION_WORKERS:-}' ""
+  expect "FLOWA_FEDERATION_ALLOW_PRIVATE as a setting" '      FLOWA_FEDERATION_ALLOW_PRIVATE: ${FLOWA_FEDERATION_ALLOW_PRIVATE:-}' "FLOWA_FEDERATION_ALLOW_PRIVATE"
+  expect "FLOWA_FEDERATION_ALLOW_PRIVATE in a list" '      - FLOWA_FEDERATION_ALLOW_PRIVATE=on' "FLOWA_FEDERATION_ALLOW_PRIVATE"
+  expect "FLOWA_FEDERATION_ALLOW_PRIVATE named in a comment" '      # FLOWA_FEDERATION_ALLOW_PRIVATE is for tests' "FLOWA_FEDERATION_ALLOW_PRIVATE"
+  expect "the link card stub and a certificate file" '      FLOWA_PREVIEW_BASE: http://stub
+      SSL_CERT_FILE: /ca.pem' "FLOWA_PREVIEW_BASE SSL_CERT_FILE"
+  expect "a longer name that only starts the same" '      FLOWA_FEDERATION_ALLOW_PRIVATE_NOTE: x
+      MY_SSL_CERT_DIR: y' ""
+  got=$(test_only compose.yml)
+  if [ -z "$got" ]; then echo "PASS the real compose.yml names none"; else echo "FAIL the real compose.yml names $got"; fails=$((fails + 1)); fi
+  echo "FAILURES: $fails"
+  [ "$fails" -eq 0 ]
+}
+
 only_image=false
-case "${1:-}" in "") ;; --image) only_image=true ;; *) echo "usage: test/release.sh [--image]" >&2; exit 2 ;; esac
+case "${1:-}" in
+  "") ;;
+  --image) only_image=true ;;
+  --self-test) self_test; exit ;;
+  *) echo "usage: test/release.sh [--image | --self-test]" >&2; exit 2 ;;
+esac
 docker info >/dev/null 2>&1 || { echo "the Docker daemon is not running" >&2; exit 2; }
 docker buildx version >/dev/null 2>&1 || { echo "docker buildx is not installed" >&2; exit 2; }
 if curl -s -o /dev/null -m 2 http://127.0.0.1:5000/v2/; then echo "port 5000 is in use on this machine; the registry for the checks cannot start" >&2; exit 2; fi
@@ -41,6 +85,7 @@ if ! $only_image; then
   if curl -s -o /dev/null -m 2 http://127.0.0.1:3169/; then echo "port 3169 is in use on this machine (--image runs the rest)" >&2; exit 2; fi
 fi
 
+compose_check
 repo=localhost:5000/flowtopia
 work=$(mktemp -d)
 made_data=false

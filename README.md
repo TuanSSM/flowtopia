@@ -981,6 +981,34 @@ In a mode that federates, other servers learn when an account is gone, both ways
   left long ago) is not told; it learns the account is gone the next time it asks for it. A deletion is not sent
   again after 48 hours of failures.
 
+### Federation: two instances talking to each other (the federation suite)
+
+`test/federation.sh` starts two Flowas from the image a release builds and has them federate, as two real servers
+would ([docs/federation.md](docs/federation.md), 13, "As built (FWR 8)"). It needs Docker with buildx, Go, Node,
+`jq`, `openssl` and `curl`, takes about three and a half minutes, and cleans up after itself, on a failure and on
+Ctrl-C too. CI runs it as the `federation` suite; it is too heavy to be worth running on the Pi.
+
+- **What runs:** on a Docker network of its own, for `one.flowa.test` and `two.flowa.test` each: a Postgres from the
+  image `compose.yml` pins, the app in federated mode with that origin and a key secret made for the run, and a small
+  TLS proxy (`test/fedproxy`) that answers for the name over HTTPS on port 443, as the proxy in front of a real
+  deployment does. The certificates come from a certificate authority made for the run, which the apps trust through
+  `SSL_CERT_FILE`. Every name is `flowa-fed-<random>`, the proxies are published on free ports of `127.0.0.1`, and
+  nothing touches port 3169 or a running deployment, so it can run beside the test database and other drills.
+- **What it checks**, each on the other instance, through the APIs the page uses: a lookup by handle, a follow
+  approved by hand and one accepted at once, a Public post with a trick chip and a picture with alt text in the
+  follower's Home with the picture served from that server's own cache, a like, an unlike and a like again, a reply,
+  its edit and its deletion, a comment and a like the other way, every delivery verified at the shared or the
+  member's inbox with none refused, the queues drained, one instance stopped while the other restarts with a delivery
+  waiting (retried on its schedule, about a minute later, and nothing lost), an unfollow, a block, "Remove me from
+  other servers" while the other server is away (the card, sharing again refused until the removal is sent, then allowed
+  at once), an admin's deletion of an account, and each app under 300 MB in `docker stats` after the run.
+- **`FLOWA_FEDERATION_ALLOW_PRIVATE=on`** is the suite's own setting and nothing else's: it lets federation requests
+  connect to private IPv4 addresses (the network's), still only over https on port 443 with a certificate the app
+  trusts; link previews never, and no IPv6 private or link-local address (where cloud metadata lives).
+  The start refuses it unless `FLOWA_ORIGIN` is a name under `.test`, which no public server can have, and logs it
+  loudly. Never set it on a server; `test/release.sh` fails when `compose.yml` names it, or `SSL_CERT_FILE`,
+  `SSL_CERT_DIR` or `FLOWA_PREVIEW_BASE`.
+
 ### What the server will connect to
 
 The link card fetcher has grown into the one way out for federation too (`fetcher.do` in `main.go`), but
@@ -988,7 +1016,8 @@ The link card fetcher has grown into the one way out for federation too (`fetche
 federation is built, every request to another server goes through it, and these are the rules:
 
 - Only `https`, only port 443, on the first address and on every redirect. A WebFinger lookup is never
-  retried over `http`.
+  retried over `http`. (The two-instance test's `FLOWA_FEDERATION_ALLOW_PRIVATE` lets private addresses
+  through below, and nothing else; never set it on a server.)
 - Never an IP address written as the host (in any form, including `2130706433` or `0x7f.1`), `localhost`, a
   name with no dot, a private name (`.local`, `.lan`, `.internal` and the like), a name with a user name in
   front, a URL over 2,048 bytes, a refused domain or any name under it, or this instance's own name.
@@ -1495,11 +1524,11 @@ runs on every one so the checks do not have to run on the Pi. Its jobs:
 
 | Job | What it runs |
 | --- | --- |
-| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to `deploy.sh`, `build-image.sh`, `release_tag.yml` or the `Dockerfile` runs `lint` and the `release` suite, one to `brotli.js` those and `unit tests`, one to `backup.sh` or the drill `lint` and the `restore` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
+| `changes` | checks that the PR title is a Conventional Commits title; turns the changed files into a plan with `test/ci-plan.sh`: which of `lint`, `unit tests` and `screenshots` run, and which integration suites. A PR of Markdown, `docs/`, `.claude/` or `.gitignore` runs just `docs`; a change to the release or deploy files runs `lint`; a change to `compose.yml` runs `lint` and every integration suite, since it names the Postgres they all start; a change to `deploy.sh`, `build-image.sh`, `release_tag.yml` or the `Dockerfile` runs `lint` and the `release` suite (and the `federation` suite for `build-image.sh` and the `Dockerfile`, which it builds from; a change to `test/federation.sh` or `test/fedproxy` runs that suite alone), one to `brotli.js` those and `unit tests`, one to `backup.sh` or the drill `lint` and the `restore` suite; a change to one browser test runs that suite; a change to `main.go`, to `process_pr.yml`, or to a path no rule knows runs everything |
 | `docs` | `test/docs.sh`: Markdown links point at files that exist; `.claude` agents, skills and rules have their front matter |
-| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep says why its time is fixed); `test/contrast.js` (the page's colours in both themes: text at 4.5:1, icons and the edges of fields at 3:1); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
+| `lint` | `gofmt -l`, `go vet`, staticcheck; `node --check` on every script; `test/catalog.js`; `test/badges.js`, `test/links.js`, `test/merge.js` and `test/flags.js`; Python syntax; `test/sleeps.sh` (a browser test's sleep, and one in `test/federation.sh`, says why its time is fixed); `test/release.sh --self-test` (`compose.yml` names no setting for tests alone); `test/contrast.js` (the page's colours in both themes: text at 4.5:1, icons and the edges of fields at 3:1); shellcheck; actionlint; and a preview of the next release's version and notes (git-cliff) in the job summary |
 | `unit tests` | `go build`, `go test -race`, `node brotli.js` and `node brotli.js --check` (a brotli copy of every page file, each unpacking to its file) with `TestStaticHashed` again on a binary that has them, `node test/physics.js` (every clip), `node sim/bake.js` (the committed clips must be the ones the bake gives), and that `web/tour.js` and `web/figure3d.js` are the bundles their sources build |
-| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, a brotli copy of every page file, the same bytes when built twice, the second time over brotli copies stamped as another brotli's and a stray file; then `deploy.sh` pulls and starts one, which sends a script under its hashed name with brotli and leaves its page's files in `data/`, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them, `keys` works them with the keyboard alone (Tab order, focus rings, dialogs, and a journey from signing in to a reply under a comment) |
+| `integration (<suite>)` | one job per suite, in parallel, each with its own Postgres service, started from the image `compose.yml` pins: `db` (the Go tests that need Postgres), `release` (`test/release.sh`: `build-image.sh` pushes two versions to a registry on the runner, both architectures, a brotli copy of every page file, the same bytes when built twice, the second time over brotli copies stamped as another brotli's and a stray file; then `deploy.sh` pulls and starts one, which sends a script under its hashed name with brotli and leaves its page's files in `data/`, replaces it with the next without restarting the database, rolls back, refuses a release with no image and an image that says it is another version, and builds with `--build`), `restore` (`test/restore.sh`, the restore drill described under Data), `federation` (`test/federation.sh`, two instances from the release image federating over HTTPS on a Docker network, described under "Federation: two instances talking to each other"; its logs and both queues' state are kept with the job, and the comment shows each app's memory) and each `test/browser` script driven through headless Firefox, plus `demos` and `combo` again with avatars on. `touch` runs Firefox as a phone: a touch pointer, and the page zoomed until the window holds 390 px of it, because a Firefox window is never narrower than 450 px. `a11y` walks the pages for controls without a name, `contrast` walks them in both themes for text, icons and field edges that do not stand out from what is behind them, `keys` works them with the keyboard alone (Tab order, focus rings, dialogs, and a journey from signing in to a reply under a comment) |
 | `screenshots` | `test/browser/pages.py`: the landing page, the main pages at desktop and phone width, a new member's first screen and a sheet of demos, then a second run with reduced motion (`FLOWA_MOTION=reduce`) for the pages where something moves, pushed to the `ci-screenshots` branch (one folder per PR, replaced each run) |
 | `PR summary` | one comment on the PR, kept up to date, with the results, the five slowest checks, the screenshots inline, and the size of the change |
 | `process_pr_result` | the one required check: passes only when every job the plan needed passed |
@@ -1568,4 +1597,5 @@ step uses `always()`, which would keep starting suites after the cancel). Before
 be run locally with `gofmt -l . && go vet ./... && go test ./... && node test/physics.js` (Go tests that need Postgres run when
 `TEST_DATABASE_URL` is set, as in CI's integration job, which runs them as `go test -race -count=1 -timeout 25m -run DB`:
 go test's own default of 10 minutes is about what they take under the race detector) and
-`test/browser/run.sh combo.py social.py`.
+`test/browser/run.sh combo.py social.py`. `test/federation.sh` runs the two-instance suite on a machine with Docker
+(about three and a half minutes; CI runs it, and it is too heavy for the Pi).

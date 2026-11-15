@@ -546,8 +546,8 @@ func TestDBLockedOnlyFederating(t *testing.T) {
 	f.must(400, fa, "PUT", "/api/me", map[string]any{"locked": "yes"})
 }
 
-// Two Flowa instances over the real fetcher, signer, inbox and delivery queue (FWR 3; FWR 8's container suite,
-// TestTwoInstances of the DoD, is item 8's): cyd on here.example follows ana on b.example, accepted at once,
+// Two Flowa instances over the real fetcher, signer, inbox and delivery queue (FWR 3; TestTwoInstances of the DoD is
+// FWR 8's federation suite, test/federation.sh, which takes these steps between two real processes): cyd on here.example follows ana on b.example, accepted at once,
 // then unfollows; ana approves by hand and cyd's next Follow waits for her Approve; and ana follows cyd back and
 // unfollows. Each step is one worker step on each side, on the test's clocks.
 func TestDBTwoFlowaFollow(t *testing.T) {

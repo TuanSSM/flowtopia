@@ -702,7 +702,8 @@ func TestDBTalkToRemotePosts(t *testing.T) {
 
 // Two Flowa instances over the real fetcher, signer, inbox and delivery queue (TestDBTwoFlowaNotes's world): bob at
 // b.example follows ana here, answers her Public post, edits his answer, likes the post and takes the like back; each
-// step is seen here. (FWR 8's container suite is the DoD's TestTwoInstances.)
+// step is seen here. (The DoD's TestTwoInstances is FWR 8's federation suite, test/federation.sh, which takes these
+// steps between two real processes.)
 func TestDBTwoFlowaReplies(t *testing.T) {
 	e := newNotesEnv(t)
 	be := newEnv(t)

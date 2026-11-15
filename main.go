@@ -4784,6 +4784,12 @@ type fetcher struct {
 	// address and the router's, which a stranger's name can point at and which look public to the
 	// guard. Empty until the federation settings item lets an operator list them.
 	deny []netip.Prefix
+	// fedTr and fedClient are set only under FLOWA_FEDERATION_ALLOW_PRIVATE=on (parseAllowPrivate, allowFedPrivate), for
+	// the two-instance test alone: federation requests then go through a Transport of their own whose dial guard lets
+	// private addresses through (privateDialGuard), still on port 443 and over https with a certificate the system
+	// trusts, while link previews keep tr and dialGuard whatever the setting. Nil otherwise: one Transport, as always.
+	fedTr     *http.Transport
+	fedClient *http.Client
 	// dials counts the connections this fetcher tried to open: allowed, refused, or to a name that
 	// did not resolve. Nothing reads it while the server runs; TestDBLocalModeUnchanged holds it at
 	// zero through a start.
@@ -4875,10 +4881,58 @@ func dialGuard(address string, allowPrivate bool, over overrider, deny []netip.P
 	return nil
 }
 
+// privateDialGuard is the dial guard under FLOWA_FEDERATION_ALLOW_PRIVATE=on (the two-instance test,
+// test/federation.sh): an IPv4 address in a private range (RFC 1918) is let through as well as a public one, because
+// the two instances reach each other on a Docker network, which is IPv4. Everything else dialGuard refuses stays
+// refused: unique local IPv6 (fc00::/7, where a cloud's metadata address also lives, fd00:ec2::254), loopback (the
+// instance itself), link-local (169.254.169.254), unspecified, multicast and the reserved ranges, any port but 443,
+// and the fetcher's own deny list. Only federation requests use it (allowFedPrivate); link previews never do. The URL's rules (https, a DNS name,
+// the domain policy) and TLS verification are not touched: the test trusts its own certificate authority through
+// SSL_CERT_FILE, as any Go program on Linux does.
+func privateDialGuard(address string, deny []netip.Prefix) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !publicIP(ip) && (ip.To4() == nil || !ip.IsPrivate()) {
+		return &addrRefused{host}
+	}
+	if a, ok := netip.AddrFromSlice(ip); ok {
+		a = a.Unmap()
+		for _, p := range deny {
+			if p.Contains(a) {
+				return &addrRefused{host}
+			}
+		}
+	}
+	if port != "443" {
+		return &addrRefused{"port " + port}
+	}
+	return nil
+}
+
 func newFetcher(base string, allowPrivate bool) *fetcher {
 	f := &fetcher{base: strings.TrimRight(base, "/"), allowPrivate: allowPrivate, busy: map[string]*hostSlot{}, version: buildVersion}
+	f.tr = f.transport(func(address string) error { return dialGuard(address, allowPrivate, f.over, f.deny) })
+	// Redirects are followed by do, which checks each one by the kind's rule.
+	f.client = &http.Client{Transport: f.tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return f
+}
+
+// allowFedPrivate gives federation requests a Transport of their own under FLOWA_FEDERATION_ALLOW_PRIVATE=on, with the
+// same pool, timeouts and per-host turns (those are the fetcher's, acquire), whose dial guard is privateDialGuard. Link
+// previews keep the first Transport and dialGuard, so the setting never reaches them. Called once by start, before any
+// request.
+func (f *fetcher) allowFedPrivate() {
+	f.fedTr = f.transport(func(address string) error { return privateDialGuard(address, f.deny) })
+	f.fedClient = &http.Client{Transport: f.fedTr, CheckRedirect: f.client.CheckRedirect}
+}
+
+// transport is the fetcher's Transport with guard as its dialer's Control: it runs on every address actually dialled.
+func (f *fetcher) transport(guard func(address string) error) *http.Transport {
 	dialer := &net.Dialer{Timeout: dialTimeout, Control: func(network, address string, _ syscall.RawConn) error {
-		return dialGuard(address, allowPrivate, f.over, f.deny)
+		return guard(address)
 	}}
 	// Counted before the name is looked up: a fetch to a name that does not resolve asked a name
 	// server, and that is a connection to another machine too.
@@ -4891,7 +4945,7 @@ func newFetcher(base string, allowPrivate bool) *fetcher {
 	}
 	// Proxy stays nil: a proxy from HTTPS_PROXY would make the connection for us, to an address the
 	// guard never sees. No cookie jar, and TLS verified as Go does by default, at least TLS 1.2.
-	f.tr = &http.Transport{
+	return &http.Transport{
 		Proxy:                  nil,
 		DialContext:            dial,
 		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
@@ -4902,9 +4956,6 @@ func newFetcher(base string, allowPrivate bool) *fetcher {
 		MaxIdleConnsPerHost:    1,
 		IdleConnTimeout:        idleTimeout,
 	}
-	// Redirects are followed by do, which checks each one by the kind's rule.
-	f.client = &http.Client{Transport: f.tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return f
 }
 
 // fedHost says why a host may not be asked for a federation kind, or "" when it may, and gives the
@@ -5264,6 +5315,9 @@ func (f *fetcher) send(ctx context.Context, rule *fetchRule, r *fetchReq, wire *
 				return nil, &fetchError{Fail: failRefused, Host: wire.Hostname(), Reason: "the signer changed the request line"}
 			}
 		}
+	}
+	if rule.fed && f.fedClient != nil {
+		return f.fedClient.Do(req) // FLOWA_FEDERATION_ALLOW_PRIVATE=on: federation's own Transport (allowFedPrivate)
 	}
 	return f.client.Do(req)
 }
@@ -6408,6 +6462,8 @@ type fedSettings struct {
 	origin  publicOrigin
 	secret  keySecret
 	workers int // FLOWA_FEDERATION_WORKERS: the delivery queue's workers (parseWorkers)
+	// allowPrivate is FLOWA_FEDERATION_ALLOW_PRIVATE=on, the two-instance test's setting (parseAllowPrivate).
+	allowPrivate bool
 }
 
 // parseFederation reads FLOWA_FEDERATE (single mode only), and FLOWA_ORIGIN, FLOWA_KEY_SECRET and
@@ -6436,7 +6492,29 @@ func parseFederation(m instanceMode, getenv func(string) string) (fedSettings, e
 	if err != nil {
 		return fedSettings{}, fmt.Errorf("%s: %w", which, err)
 	}
-	return fedSettings{on: true, origin: o, secret: s, workers: w}, nil
+	p, err := parseAllowPrivate(getenv("FLOWA_FEDERATION_ALLOW_PRIVATE"), o)
+	if err != nil {
+		return fedSettings{}, fmt.Errorf("%s: %w", which, err)
+	}
+	return fedSettings{on: true, origin: o, secret: s, workers: w, allowPrivate: p}, nil
+}
+
+// parseAllowPrivate reads FLOWA_FEDERATION_ALLOW_PRIVATE, a setting for the two-instance test (test/federation.sh,
+// federation.md 5.1) and nothing else: unset, empty or "off" is off, as every deployment has it; "on" lets federation
+// requests connect to private addresses (privateDialGuard), and is refused unless the origin is a name under .test,
+// which RFC 6761 keeps for testing, so no public certificate authority signs it and no server other servers reach
+// can have it. Any other value stops the start. test/release.sh fails when compose.yml names the setting.
+func parseAllowPrivate(v string, o publicOrigin) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "off":
+		return false, nil
+	case "on":
+		if !strings.HasSuffix(o.host, ".test") {
+			return false, fmt.Errorf("FLOWA_FEDERATION_ALLOW_PRIVATE=on is for the two-instance test only, and FLOWA_ORIGIN=%s is not a name under .test; unset it", o.url)
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("FLOWA_FEDERATION_ALLOW_PRIVATE must be on or off, not %q (unset is off; it is for the two-instance test only)", shown(v, 40))
 }
 
 const (
@@ -7856,15 +7934,20 @@ const fedStateSQL = `SELECT u.federates, u.locked, EXISTS (SELECT 1 FROM retired
 	EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id), (` + leavingSQL + `) FROM users u WHERE u.id = $1`
 
 // leavingSQL is when member $1's Delete(Person) was enqueued, or its newest delivery still queued was written if later
-// (a fan-out the full queue held back), while its row keeps the copy of their key, NULL otherwise: through
-// ap_outbox_signer, which holds only the few rows that keep one, and each one's rows by (outbox_id, inbox).
+// (a fan-out the full queue held back), while it is still being sent, NULL otherwise: through ap_outbox_signer, which
+// holds only the few rows that keep a copy of a key, and each one's rows by (outbox_id, inbox). "Still being sent" is
+// deliveryForgetKeySQL's own test, the other way round: not fanned out yet, or a delivery of it still queued. An
+// activity fanned out with no delivery queued is never signed again (rows are written only by its fan-out, once, and a
+// failed row is never queued again), which is why housekeeping may clear its copy; so the member may share again as
+// soon as the sending ends, not at housekeeping's next pass, up to an hour later (the last review of FWR 8).
 //
 // Bounded by the queue's horizon ($2, the queue's clock less deliveryHorizon): a row older than that is never signed,
 // since deliver gives it up before it opens the kept key (TestDBSharingAgainAfterHorizon). So 48 hours after the Delete
 // the member may share again while sending is paused or refused (the second review of FWR 7); while the queue's clock
 // is doubted there is no bound (leavingSince), and the page then names no time (leavingSentenceAt).
 const leavingSQL = `SELECT max(t) FROM (SELECT GREATEST(o.created_at, (SELECT max(d.created_at) FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued')) AS t
-	FROM ap_outbox o WHERE o.signer = $1 AND o.signer_sealed IS NOT NULL) x WHERE t > $2`
+	FROM ap_outbox o WHERE o.signer = $1 AND o.signer_sealed IS NOT NULL
+		AND (NOT o.fanned_out OR EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued'))) x WHERE t > $2`
 
 // leavingSince is leavingSQL's $2: the queue's clock less its horizon; no bound while that clock is doubted (a jump
 // forward that is undone would make rows younger than 48 hours signable again after the member shared anew), so the
@@ -21252,8 +21335,10 @@ func (a *app) postOut(ctx context.Context) (did bool, err error) {
 		return false, errSwitchesUnread
 	}
 	if !shown || !on {
-		_, err := f.fedExec(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id)
-		return true, err
+		if err := f.outWrite(ctx, `DELETE FROM ap_post_out WHERE post_id = $1 AND state = 'create'`, p.id); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	var mentioned []string
 	for _, m := range noteMentionsOf(p.mentions) {
@@ -21436,19 +21521,22 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 		f.personAt.Store(0)
 		return false, errSwitchesUnread
 	}
+	// Each write here goes through outWrite, so a write that fails is this server's own trouble, not a failure of the
+	// update counted against it (the last review of FWR 7).
 	if !shown || !on {
-		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen)
-		return true, err
+		if err := f.outWrite(ctx, `UPDATE ap_person_out SET due_at = NULL WHERE user_id = $1 AND gen = $2`, uid, gen); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	doc, known, err := a.actorOf(ctx, uid)
-	if err == nil && !known {
-		// The switches could not be read: the document would say a guess. Tried again after the queue's own wait.
-		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait))
-		return true, err
-	}
-	if errors.Is(err, errNoKey) {
-		_, err := f.fedExec(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait))
-		return true, err
+	if err == nil && !known || errors.Is(err, errNoKey) {
+		// The switches could not be read (the document would say a guess), or the key is not made yet: tried again after
+		// the queue's own wait.
+		if err := f.outWrite(ctx, `UPDATE ap_person_out SET due_at = $2 WHERE user_id = $1`, uid, now.Add(deliveryOwnWait)); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if err != nil {
 		return false, err
@@ -24325,8 +24413,10 @@ func (a *app) commentOut(ctx context.Context) (did bool, err error) {
 	// edits made meanwhile fold into it (the record stays update, its generation moved by each), so a comment's line is
 	// its Create, at most about editWindow / commentUpdateGap + 1 Updates, and its Delete (after the third review).
 	if state == "update" && sentAt.Valid && now.Before(sentAt.Time.Add(commentUpdateGap)) {
-		_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, sentAt.Time.Add(commentUpdateGap))
-		return true, err
+		if err := f.outWrite(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, sentAt.Time.Add(commentUpdateGap)); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	// What it answers: the top comment of its thread (here, or another server's), else the post.
 	inReply := postAP
@@ -26677,7 +26767,11 @@ func (a *app) start(getenv func(string) string) error {
 		log.Print(fedBuiltLog)
 	}
 	if rootsPresent() {
-		log.Print("TLS roots: present")
+		if getenv("SSL_CERT_FILE") != "" {
+			log.Print("TLS roots: present, from SSL_CERT_FILE") // Go reads it before the roots compiled in (the federation suite's own authority)
+		} else {
+			log.Print("TLS roots: present")
+		}
 	} else {
 		log.Print("TLS roots: none; link previews cannot be fetched")
 	}
@@ -26713,6 +26807,10 @@ func (a *app) start(getenv func(string) string) error {
 	a.fetch.version = a.version
 	if fed.on {
 		a.fetch.origin = fed.origin
+	}
+	if fed.allowPrivate {
+		a.fetch.allowFedPrivate()
+		log.Printf("FLOWA_FEDERATION_ALLOW_PRIVATE=on: FOR THE TWO-INSTANCE TEST ONLY. Federation requests from %s may connect to private IPv4 addresses (still https, port 443 and a trusted certificate); link previews may not. Never set this on a server that other servers reach", fed.origin.host)
 	}
 	// A single-profile instance is checked before the admin account is made, so an ADMIN_USER that
 	// would be a second account is refused with nothing written (checkSingle).

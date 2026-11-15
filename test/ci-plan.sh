@@ -12,9 +12,10 @@
 set -euo pipefail
 
 # Every suite, in the order the summary lists them. Each one is a job in the integration matrix.
-# release and restore are not browser suites: test/release.sh builds the release image and deploys it
-# with deploy.sh; test/restore.sh is the restore drill, a backup taken and put back with backup.sh.
-ALL="db release restore combo demos social mod editor suggest links avatar touch a11y contrast keys single federated demos-avatars combo-avatars"
+# release, restore and federation are not browser suites: test/release.sh builds the release image and deploys
+# it with deploy.sh; test/restore.sh is the restore drill, a backup taken and put back with backup.sh;
+# test/federation.sh starts two instances from the release image on a Docker network and has them federate.
+ALL="db release restore federation combo demos social mod editor suggest links avatar touch a11y contrast keys single federated demos-avatars combo-avatars"
 BROWSER="combo demos social mod editor suggest links avatar touch a11y contrast keys single federated demos-avatars combo-avatars"
 # Suites that play demo clips or draw the figure, for changes to the clips or the 3D figure. The touch suite
 # is one of them: it measures the avatar editor and the landing page's demo on a phone. So is the a11y suite:
@@ -47,10 +48,14 @@ plan() {
       compose.yml|test/db-image.sh) lint=true; suites $ALL ;;
       # The image and the way it gets onto a machine: the release suite builds it as the release
       # workflow does and deploys it with deploy.sh.
-      Dockerfile|.dockerignore) lint=true; suites release ;;
+      # The federation suite runs two containers from the same image.
+      Dockerfile|.dockerignore) lint=true; suites release federation ;;
       # The settings a deployment starts from: the release suite deploys with a file made like it.
       .env.example) lint=true; suites release ;;
-      deploy.sh|build-image.sh|test/release.sh|.github/workflows/release_tag.yml) lint=true; suites release ;;
+      build-image.sh) lint=true; suites release federation ;;
+      deploy.sh|test/release.sh|.github/workflows/release_tag.yml) lint=true; suites release ;;
+      # The two-instance suite and its TLS proxy (a Go command of its own, only for that suite).
+      test/federation.sh|test/fedproxy/*) lint=true; suites federation ;;
       # The brotli copies of the page's files, made before a release is compiled: the unit job makes them,
       # checks they unpack to their files and has the server send them; the release suite asks the image.
       brotli.js|brotli/*) lint=true; unit=true; suites release ;;
@@ -101,7 +106,7 @@ self_test() {
     local got; got=$(tr ',' '\n' <<<"$1" | plan | paste -sd' ')
     if [ "$got" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  want: $2"; echo "  got:  $got"; fails=$((fails + 1)); fi
   }
-  local all='["db","release","restore","combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","contrast","keys","single","federated","demos-avatars","combo-avatars"]'
+  local all='["db","release","restore","federation","combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","contrast","keys","single","federated","demos-avatars","combo-avatars"]'
   local browser='["combo","demos","social","mod","editor","suggest","links","avatar","touch","a11y","contrast","keys","single","federated","demos-avatars","combo-avatars"]'
   expect "README.md,docs/epics.md,.claude/rules/go-server.md" 'code=false lint=false unit=false screenshots=false suites=[]'
   expect "main.go" "code=true lint=true unit=true screenshots=true suites=$all"
@@ -110,11 +115,16 @@ self_test() {
   expect "cliff.toml,CLAUDE.md,.github/dependabot.yml" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "backup.sh,test/restore.sh,testdata/backups/flowa-schema5.dump,.github/workflows/restore_drill.yml" 'code=true lint=true unit=false screenshots=false suites=["restore"]'
   expect ".github/workflows/release_tag.yml" 'code=true lint=true unit=false screenshots=false suites=["release"]'
-  expect "deploy.sh,build-image.sh,test/release.sh" 'code=true lint=true unit=false screenshots=false suites=["release"]'
+  expect "deploy.sh,test/release.sh" 'code=true lint=true unit=false screenshots=false suites=["release"]'
+  expect "build-image.sh" 'code=true lint=true unit=false screenshots=false suites=["release","federation"]'
+  expect "test/federation.sh" 'code=true lint=true unit=false screenshots=false suites=["federation"]'
+  expect "test/fedproxy/main.go" 'code=true lint=true unit=false screenshots=false suites=["federation"]'
+  expect "allowprivate_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "brotli.js,brotli/.gitignore" 'code=true lint=true unit=true screenshots=false suites=["release"]'
   expect "compose.yml" "code=true lint=true unit=false screenshots=false suites=$all"
   expect "test/db-image.sh,.github/dependabot.yml" "code=true lint=true unit=false screenshots=false suites=$all"
-  expect "Dockerfile,.dockerignore,.env.example" 'code=true lint=true unit=false screenshots=false suites=["release"]'
+  expect "Dockerfile,.dockerignore,.env.example" 'code=true lint=true unit=false screenshots=false suites=["release","federation"]'
+  expect ".env.example" 'code=true lint=true unit=false screenshots=false suites=["release"]'
   expect "test/sleeps.sh,test/slowest.sh" 'code=true lint=true unit=false screenshots=false suites=[]'
   expect "db_test.go" 'code=true lint=true unit=true screenshots=false suites=["db"]'
   expect "test/go-summary.sh" 'code=true lint=true unit=false screenshots=false suites=["db"]'
