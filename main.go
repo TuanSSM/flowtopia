@@ -4784,6 +4784,10 @@ type fetcher struct {
 	// address and the router's, which a stranger's name can point at and which look public to the
 	// guard. Empty until the federation settings item lets an operator list them.
 	deny []netip.Prefix
+	// fedPrivate is FLOWA_FEDERATION_ALLOW_PRIVATE=on (parseAllowPrivate), for the two-instance test alone: the dial
+	// guard then lets private addresses through (privateDialGuard), still on port 443 and still over https with a
+	// certificate the system trusts. Set once by start before any request; never set in a build that is reached.
+	fedPrivate bool
 	// dials counts the connections this fetcher tried to open: allowed, refused, or to a name that
 	// did not resolve. Nothing reads it while the server runs; TestDBLocalModeUnchanged holds it at
 	// zero through a start.
@@ -4875,9 +4879,42 @@ func dialGuard(address string, allowPrivate bool, over overrider, deny []netip.P
 	return nil
 }
 
+// privateDialGuard is the dial guard under FLOWA_FEDERATION_ALLOW_PRIVATE=on (the two-instance test,
+// test/federation.sh): an address in a private range (RFC 1918, unique local IPv6) is let through as well as a
+// public one, because the two instances reach each other on a Docker network. Everything else dialGuard refuses
+// stays refused: loopback (the instance itself), link-local (a cloud's metadata address), unspecified, multicast
+// and the reserved ranges, any port but 443, and the fetcher's own deny list. The URL's rules (https, a DNS name,
+// the domain policy) and TLS verification are not touched: the test trusts its own certificate authority through
+// SSL_CERT_FILE, as any Go program on Linux does.
+func privateDialGuard(address string, deny []netip.Prefix) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || (!ip.IsPrivate() && !publicIP(ip)) {
+		return &addrRefused{host}
+	}
+	if a, ok := netip.AddrFromSlice(ip); ok {
+		a = a.Unmap()
+		for _, p := range deny {
+			if p.Contains(a) {
+				return &addrRefused{host}
+			}
+		}
+	}
+	if port != "443" {
+		return &addrRefused{"port " + port}
+	}
+	return nil
+}
+
 func newFetcher(base string, allowPrivate bool) *fetcher {
 	f := &fetcher{base: strings.TrimRight(base, "/"), allowPrivate: allowPrivate, busy: map[string]*hostSlot{}, version: buildVersion}
 	dialer := &net.Dialer{Timeout: dialTimeout, Control: func(network, address string, _ syscall.RawConn) error {
+		if f.fedPrivate {
+			return privateDialGuard(address, f.deny)
+		}
 		return dialGuard(address, allowPrivate, f.over, f.deny)
 	}}
 	// Counted before the name is looked up: a fetch to a name that does not resolve asked a name
@@ -6408,6 +6445,8 @@ type fedSettings struct {
 	origin  publicOrigin
 	secret  keySecret
 	workers int // FLOWA_FEDERATION_WORKERS: the delivery queue's workers (parseWorkers)
+	// allowPrivate is FLOWA_FEDERATION_ALLOW_PRIVATE=on, the two-instance test's setting (parseAllowPrivate).
+	allowPrivate bool
 }
 
 // parseFederation reads FLOWA_FEDERATE (single mode only), and FLOWA_ORIGIN, FLOWA_KEY_SECRET and
@@ -6436,7 +6475,29 @@ func parseFederation(m instanceMode, getenv func(string) string) (fedSettings, e
 	if err != nil {
 		return fedSettings{}, fmt.Errorf("%s: %w", which, err)
 	}
-	return fedSettings{on: true, origin: o, secret: s, workers: w}, nil
+	p, err := parseAllowPrivate(getenv("FLOWA_FEDERATION_ALLOW_PRIVATE"), o)
+	if err != nil {
+		return fedSettings{}, fmt.Errorf("%s: %w", which, err)
+	}
+	return fedSettings{on: true, origin: o, secret: s, workers: w, allowPrivate: p}, nil
+}
+
+// parseAllowPrivate reads FLOWA_FEDERATION_ALLOW_PRIVATE, a setting for the two-instance test (test/federation.sh,
+// federation.md 5.1) and nothing else: unset, empty or "off" is off, as every deployment has it; "on" lets federation
+// requests connect to private addresses (privateDialGuard), and is refused unless the origin is a name under .test,
+// which RFC 6761 keeps for testing, so no public certificate authority signs it and no server other servers reach
+// can have it. Any other value stops the start. test/release.sh fails when compose.yml names the setting.
+func parseAllowPrivate(v string, o publicOrigin) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "off":
+		return false, nil
+	case "on":
+		if !strings.HasSuffix(o.host, ".test") {
+			return false, fmt.Errorf("FLOWA_FEDERATION_ALLOW_PRIVATE=on is for the two-instance test only, and FLOWA_ORIGIN=%s is not a name under .test; unset it", o.url)
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("FLOWA_FEDERATION_ALLOW_PRIVATE must be on or off, not %q (unset is off; it is for the two-instance test only)", shown(v, 40))
 }
 
 const (
@@ -26713,6 +26774,10 @@ func (a *app) start(getenv func(string) string) error {
 	a.fetch.version = a.version
 	if fed.on {
 		a.fetch.origin = fed.origin
+	}
+	if fed.allowPrivate {
+		a.fetch.fedPrivate = true
+		log.Printf("FLOWA_FEDERATION_ALLOW_PRIVATE=on: FOR THE TWO-INSTANCE TEST ONLY. Federation requests from %s may connect to private addresses (still https, port 443 and a trusted certificate). Never set this on a server that other servers reach", fed.origin.host)
 	}
 	// A single-profile instance is checked before the admin account is made, so an ADMIN_USER that
 	// would be a second account is refused with nothing written (checkSingle).

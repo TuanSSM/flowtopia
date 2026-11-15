@@ -4506,9 +4506,10 @@ func TestDBLocalModeUnchanged(t *testing.T) {
 	// The settings federation will read are nothing to a local instance: no name is added to the
 	// ones it answers to.
 	env := map[string]string{"FLOWA_MODE": " Local ", "ADMIN_USER": "owner", "ADMIN_PASSWORD": "flowa-test-only", "FLOWA_HOSTS": "flowa.example.org", "FLOWA_PREVIEW_FETCH": "off",
-		"FLOWA_ORIGIN": "https://public.example.net", "FLOWA_KEY_SECRET": "flowa-test-only", "FLOWA_FEDERATE": "on", "FLOWA_FEDERATION_WORKERS": "lots"}
+		"FLOWA_ORIGIN": "https://public.example.net", "FLOWA_KEY_SECRET": "flowa-test-only", "FLOWA_FEDERATE": "on", "FLOWA_FEDERATION_WORKERS": "lots",
+		"FLOWA_FEDERATION_ALLOW_PRIVATE": "on"}
 	g.a.hosts = nil
-	if err := g.a.start(func(k string) string { return env[k] }); err != nil || g.a.mode != modeLocal || !g.a.fetch.off {
+	if err := g.a.start(func(k string) string { return env[k] }); err != nil || g.a.mode != modeLocal || !g.a.fetch.off || g.a.fetch.fedPrivate {
 		t.Errorf("a start with the settings of a deployment: %v, mode %q", err, g.a.mode)
 	}
 	if !reflect.DeepEqual(g.a.hosts, []string{"flowa.example.org"}) {
