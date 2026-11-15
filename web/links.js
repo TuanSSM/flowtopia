@@ -119,6 +119,34 @@ const linkCheck = (() => {
     }
     return out;
   }
-  return { parseLink, mentionsIn };
+  // linkRuns cuts a text into runs and links as the server's textParts reads a post (main.go, after markText): a
+  // link is http or https up to a space, a control character, a mark that turns the text's direction, <, > or ",
+  // less the punctuation that ends a sentence after it (.,;:!?)'). [{ text, url }], url '' for a run of text. The page
+  // links what the server links, and reads mentions only in the runs of text, as the server does.
+  const URL_RE = /https?:\/\/[^\x00-\x20\x7f-\x9f<>"\u202a-\u202e\u2066-\u2069]+/g;
+  function linkRuns(text) {
+    const s = String(text ?? ''), out = [];
+    let at = 0;
+    for (const m of s.matchAll(URL_RE)) {
+      let end = m.index + m[0].length;
+      while (end > m.index && ".,;:!?)'".includes(s[end - 1])) end--;
+      if (at < m.index) out.push({ text: s.slice(at, m.index), url: '' });
+      out.push({ text: s.slice(m.index, end), url: s.slice(m.index, end) });
+      at = end;
+    }
+    if (at < s.length) out.push({ text: s.slice(at), url: '' });
+    return out;
+  }
+  // textMentions is who a whole text tells here, as the server's mentionNames does: the members mentioned in its runs
+  // of text, in order, without repeats, at most 10.
+  function textMentions(text, own = '') {
+    const out = [];
+    for (const r of linkRuns(text)) {
+      if (r.url) continue;
+      for (const m of mentionsIn(r.text, own)) if (m.local && !out.includes(m.name) && out.length < 10) out.push(m.name);
+    }
+    return out;
+  }
+  return { parseLink, mentionsIn, linkRuns, textMentions };
 })();
 if (typeof module !== 'undefined') module.exports = linkCheck;

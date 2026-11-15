@@ -38,17 +38,20 @@ function ago(t) {
 // (linkCheck.mentionsIn reads mentions as the server does). On this server's own host, which a
 // server that federates names in the member's handle, @anna@host is the member here.
 const ownHost = () => { const h = (fed && fed.handle) || ''; return h.includes('@', 1) ? h.slice(h.lastIndexOf('@') + 1) : ''; };
+// The text is cut into runs and links as the server cuts it (linkCheck.linkRuns), and each piece is escaped as it is
+// written, so what is a link and what is a mention here is what the server notifies and sends.
 function richText(s) {
   const own = ownHost();
-  return esc(s).split(/(https?:\/\/[^\s<]+[^\s<.,)])/).map((part, i) => {
-    if (i % 2) return `<a href="${part}" target="_blank" rel="noopener noreferrer">${part}</a>`;
+  return linkCheck.linkRuns(s).map(r => {
+    if (r.url) return `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.text)}</a>`;
+    const t = r.text;
     let out = '', at = 0;
-    for (const m of linkCheck.mentionsIn(part, own)) {
+    for (const m of linkCheck.mentionsIn(t, own)) {
       if (!m.local) continue;
-      out += part.slice(at, m.start) + `<a href="#/u/${m.name}">${part.slice(m.start, m.end)}</a>`;
+      out += esc(t.slice(at, m.start)) + `<a href="#/u/${m.name}">${esc(t.slice(m.start, m.end))}</a>`;
       at = m.end;
     }
-    return out + part.slice(at);
+    return out + esc(t.slice(at));
   }).join('').replace(/\n/g, '<br>');
 }
 // A photo for a post: shrunk to fit the server's limit. Gives the picture as a data URL, its size in px,

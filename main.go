@@ -8050,7 +8050,7 @@ func apJSON(v any) ([]byte, error) {
 var propNames = map[string]string{"nunchaku": "Nunchaku", "poi": "Poi", "staff": "Staff", "doublestaff": "Double staff", "buugeng": "Buugeng"}
 
 // textURL finds the http and https links in a post's text, as the page links them.
-var textURL = regexp.MustCompile(`https?://[^\s<>"]+`)
+var textURL = regexp.MustCompile(`https?://[^\s<>"\x00]+`)
 
 // textPart is a run of a post's text, or a link in it (URL set).
 type textPart struct{ Text, URL string }
@@ -8110,11 +8110,11 @@ func noteHTMLWith(body string, more []string, mentions map[string]noteMention, o
 			if !ok || !link || !linkable(href) {
 				continue
 			}
-			b.WriteString(html.EscapeString(s[at:m.start]))
+			b.WriteString(escText(s[at:m.start]))
 			b.WriteString(`<span class="h-card"><a href="` + html.EscapeString(href) + `" class="u-url mention">@<span>` + html.EscapeString(nm.user()) + `</span></a></span>`)
 			at = m.end
 		}
-		b.WriteString(html.EscapeString(s[at:]))
+		b.WriteString(escText(s[at:]))
 	}
 	para := func(s string, tags []outTag) {
 		b.WriteString("<p>")
@@ -8135,7 +8135,7 @@ func noteHTMLWith(body string, more []string, mentions map[string]noteMention, o
 		}
 		b.WriteString("</p>")
 	}
-	body = noteText(strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n")))
+	body = markText(strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n")))
 	if body != "" {
 		for _, p := range paraBreak.Split(body, -1) {
 			para(p, nil)
@@ -8147,7 +8147,7 @@ func noteHTMLWith(body string, more []string, mentions map[string]noteMention, o
 		if i == len(more)-1 {
 			t = tags
 		}
-		para(noteText(m), t)
+		para(markText(m), t)
 	}
 	return b.String()
 }
@@ -8161,21 +8161,27 @@ func linkable(u string) bool {
 	})
 }
 
-// noteText drops from text what must not reach another server's page: control characters other than a line
-// break (a tab becomes a space) and the marks that embed, override or isolate a direction (bidiOverride).
-func noteText(s string) string {
+// markText is the text as mentions and links are read in it (noteHTMLWith, bodyMentions): a lone carriage return and a
+// tab are a space, as other whitespace; a control character and a mark that turns a text's direction become a NUL,
+// which ends a name or a link (never joining the text either side of it, as dropping it would: "@ann" then a mark then
+// "a" mentions ann) and which escText drops when the text is written. Posts hold no NUL (Postgres text cannot), so a
+// NUL here is always such a mark. web/links.js reads the same characters as ending a name or a link.
+func markText(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
 		case r == '\n':
 			return r
-		case r == '\t':
+		case r == '\t', r == '\r':
 			return ' '
 		case unicode.IsControl(r), bidiOverride(r):
-			return -1
+			return 0
 		}
 		return r
 	}, s)
 }
+
+// escText writes a run of marked text (markText): its marks dropped, every other character escaped.
+func escText(s string) string { return html.EscapeString(strings.ReplaceAll(s, "\x00", "")) }
 
 // noteMention is a mention of a Public post as resolved when the post was made, kept in posts.ap_mentions: the key
 // the text is matched by (a local name, or name@host of another server, in lower case), the actor's id (the
@@ -23181,11 +23187,11 @@ func parseMentions(text, own string) []mentionAt {
 }
 
 // bodyMentions are the mentions of a post's or a comment's text where its content shows them: in the text runs
-// between links, line by line, after noteText, exactly the runs noteHTMLWith makes mention links in. So what is
+// between links, line by line, after markText, exactly the runs noteHTMLWith makes mention links in. So what is
 // notified, addressed and delivered to is what a reader sees as a mention, never a name inside a link.
 func bodyMentions(body, own string) []mentionAt {
 	var out []mentionAt
-	for _, line := range strings.Split(noteText(strings.ReplaceAll(body, "\r\n", "\n")), "\n") {
+	for _, line := range strings.Split(markText(strings.ReplaceAll(body, "\r\n", "\n")), "\n") {
 		for _, p := range textParts(line) {
 			if p.URL == "" {
 				out = append(out, parseMentions(p.Text, own)...)

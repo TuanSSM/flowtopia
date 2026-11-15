@@ -3,7 +3,7 @@
 // TestMentions puts to the server's parseMentions: @name is a member here, @name@host a handle of another server
 // and never a member here (docs/federation.md, finding 9). Run: node test/mentions.js
 const fs = require('fs'), path = require('path');
-const { mentionsIn } = require('../web/links.js');
+const { mentionsIn, textMentions } = require('../web/links.js');
 const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'mentions-fixtures.json'), 'utf8'));
 let fails = 0, n = 0;
 const check = (ok, msg) => { n++; if (!ok) { fails++; console.log('FAIL ' + msg); } };
@@ -17,6 +17,12 @@ for (const c of fx.cases) {
   }
   check(JSON.stringify(local) === JSON.stringify(c.local) && JSON.stringify(remote) === JSON.stringify(c.remote),
     `mentionsIn(${JSON.stringify(c.text)}) = local ${JSON.stringify(local)}, remote ${JSON.stringify(remote)}; want ${JSON.stringify(c.local)}, ${JSON.stringify(c.remote)}`);
+}
+// Whole texts, links and all: who the page links as a member here is who the server tells.
+check(Array.isArray(fx.texts) && fx.texts.length >= 10, 'the whole-text fixtures look cut short');
+for (const c of fx.texts || []) {
+  const got = textMentions(c.text, c.own || '');
+  check(JSON.stringify(got) === JSON.stringify(c.local), `textMentions(${JSON.stringify(c.text)}) = ${JSON.stringify(got)}; want ${JSON.stringify(c.local)}`);
 }
 console.log(fails ? `${fails} of ${n} mention checks failed` : `PASS ${n} mention checks`);
 process.exit(fails ? 1 : 0);

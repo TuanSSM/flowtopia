@@ -34,5 +34,21 @@
     {"text": "@Anna@Flowa.Example and @anna@flowa.example. and @an@flowa.example", "own": "flowa.example", "local": ["anna", "anna"], "remote": []},
     {"text": "@anna@flowa.example.evil.test", "own": "flowa.example", "local": [], "remote": ["anna@flowa.example.evil.test"]},
     {"text": "@anna@flowa.example", "local": [], "remote": ["anna@flowa.example"]}
+  ],
+  "texts_about": "Whole texts, links and all: who is told here (mentionNames on the server, textMentions on the page), in order, without repeats. A name inside a link is no mention; a control character or a mark that turns the text's direction ends a name; a lone carriage return is a space.",
+  "texts": [
+    {"text": "x\r@anna", "local": ["anna"]},
+    {"text": "x‪@anna", "local": ["anna"]},
+    {"text": "@ann‮a", "local": ["ann"]},
+    {"text": "https://x.example/\"@anna", "local": ["anna"]},
+    {"text": "https://x.example/>@anna", "local": ["anna"]},
+    {"text": "see https://x.example/@anna, @bob", "local": ["bob"]},
+    {"text": "https://x.example/@anna.", "local": []},
+    {"text": "(https://x.example/a) @cyd", "local": ["cyd"]},
+    {"text": "line1\n@anna\t@bob", "local": ["anna", "bob"]},
+    {"text": "@anna@bob @anna", "local": ["anna"]},
+    {"text": "https://x.example/a @anna", "local": []},
+    {"text": "http://x.example/‮@anna", "local": ["anna"]},
+    {"text": "@anna@here.example and @bob@social.example", "own": "here.example", "local": ["anna"]}
   ]
 }

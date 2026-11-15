@@ -86,6 +86,10 @@ func TestMentions(t *testing.T) {
 			Text, Own     string
 			Local, Remote []string
 		}
+		Texts []struct {
+			Text, Own string
+			Local     []string
+		}
 	}
 	if err := json.Unmarshal(raw, &fx); err != nil || len(fx.Cases) < 20 {
 		t.Fatalf("the fixtures look cut short: %d cases, %v", len(fx.Cases), err)
@@ -108,6 +112,15 @@ func TestMentions(t *testing.T) {
 		}
 		if !slices.Equal(local, c.Local) || !slices.Equal(remote, c.Remote) {
 			t.Errorf("parseMentions(%q) = local %q, remote %q; want %q, %q", c.Text, local, remote, c.Local, c.Remote)
+		}
+	}
+	// Whole texts, links and all, as mentionNames reads them for notifications (and the page's textMentions).
+	if len(fx.Texts) < 10 {
+		t.Fatalf("the whole-text fixtures look cut short: %d", len(fx.Texts))
+	}
+	for _, c := range fx.Texts {
+		if got := mentionNames(c.Text, c.Own); !slices.Equal(got, c.Local) {
+			t.Errorf("mentionNames(%q, %q) = %q, want %q", c.Text, c.Own, got, c.Local)
 		}
 	}
 	// What is notified: local names only, without repeats; on this instance's own host a handle is a member here.

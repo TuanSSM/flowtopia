@@ -1624,7 +1624,7 @@ built, and the decisions where 6.4, 6.5, 6.7 and 14.5 were silent:
   hashtag); `span` only bare or with `class="h-card"`. Every character of the member's text goes through
   `html.EscapeString` (`<`, `>`, `&`, `'` and `"`); only `http` and `https` text becomes a link (`javascript:` and
   `data:` stay text); a mention or a `#word` inside a link stays part of the link; control characters (but a line break)
-  and the marks that embed, override or isolate a direction are dropped (`noteText`; the app's own page still shows the
+  and the marks that embed, override or isolate a direction are dropped from what is written, after ending any name or link they stand in (`markText`, `escText`: "@ann", a mark, "a" mentions ann; a lone carriage return is a space; the app's own page still shows the
   text as stored); a mention's address is a link only when it is https with nothing that could end an attribute
   (`linkable`), else the actor's id is, else the mention stays text. (So a mention's link is always https; a link in the
   text may be http or https, as 6.5 says and Mastodon's sanitiser keeps both.) `TestNoteContentEscaping` and `FuzzNoteContent`
