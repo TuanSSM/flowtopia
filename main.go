@@ -15111,7 +15111,7 @@ func (c *actorCache) byKey(ctx context.Context, keyID string, force bool, use ke
 var userRefs = []struct{ table, column string }{
 	{"achievements", "user_id"}, {"ap_inbox", "actor_id"}, {"ap_keys", "user_id"}, {"ap_outbox", "actor_id"}, {"ap_person_out", "user_id"}, {"ap_post_out", "user_id"}, {"badge_blocks", "user_id"}, {"blocks", "target_id"},
 	{"blocks", "user_id"}, {"bookmarks", "user_id"}, {"catalog_revisions", "author_id"}, {"comment_likes", "user_id"},
-	{"comments", "user_id"}, {"ap_comment_out", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
+	{"comments", "user_id"}, {"ap_comment_out", "user_id"}, {"ap_like_out", "user_id"}, {"domain_policies", "created_by"}, {"follows", "followee_id"}, {"follows", "follower_id"}, {"instance_settings", "updated_by"},
 	{"likes", "user_id"}, {"mod_actions", "actor_id"}, {"mod_actions", "target_user_id"},
 	{"notifications", "user_id"}, {"posts", "user_id"}, {"progress", "user_id"}, {"reports", "reporter_id"},
 	{"reports", "resolver_id"}, {"sessions", "user_id"},
@@ -17805,13 +17805,21 @@ func (q *deliveryQueue) enqueueThen(ctx context.Context, actor keyOwner, apID st
 // before ("" for none): a post's Delete takes back its Create, an Undo its Follow. At each inbox the first is never
 // overtaken (takeBack, and deliver at the send).
 func (q *deliveryQueue) enqueueUndo(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, undoes string, then func(*sql.Tx) error) (enqueued, error) {
-	return q.enqueueTakeBack(ctx, actor, apID, body, to, undoes, false, then)
+	return q.enqueueOrdered(ctx, actor, apID, body, to, outOrder{undoes: undoes}, then)
 }
 
-// enqueueTakeBack is enqueueUndo with keep: the activity it takes back is not the first of its object at those inboxes
-// (a comment's Update, after its Create), so the second still goes where the first was never tried or never fanned out
-// (ap_outbox.undoes_kept, read by takeBackSQL); only the first is given up there.
-func (q *deliveryQueue) enqueueTakeBack(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, undoes string, keep bool, then func(*sql.Tx) error) (enqueued, error) {
+// outOrder is where an activity stands among the activities of its object that this server enqueued (FWR 6): undoes
+// the one it takes back, after the one that must be settled at an inbox before it is sent there (afterHeldSQL: a
+// comment's Update after its Create or the Update before it, a Like after the Undo of the like before it), chain that
+// what it takes back is the last of such a line, which the takeback then covers whole at each inbox (a comment's
+// Delete: takeBackSQL). Each is an activity id, "" for none.
+type outOrder struct {
+	undoes, after string
+	chain         bool
+}
+
+// enqueueOrdered is enqueueThen for an activity with its place among those of its object (outOrder).
+func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, o outOrder, then func(*sql.Tx) error) (enqueued, error) {
 	var out enqueued
 	f := q.f
 	switch {
@@ -17861,9 +17869,9 @@ func (q *deliveryQueue) enqueueTakeBack(ctx context.Context, actor keyOwner, apI
 	now := q.now()
 	var id int64
 	var undo sql.NullInt64
-	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at, undoes, undoes_kept)
-		VALUES ($1, $2, $3, $4, $5, (SELECT u.id FROM ap_outbox u WHERE u.ap_id = $6 AND $6 <> ''), $7) ON CONFLICT (ap_id) DO NOTHING RETURNING id, undoes`,
-		apID, actor.arg(), string(body), pq.Array(inboxes), now, undoes, keep).Scan(&id, &undo)
+	err = tx.QueryRowContext(ctx, `INSERT INTO ap_outbox (ap_id, actor_id, body, targets, created_at, undoes, undoes_chain, comes_after)
+		VALUES ($1, $2, $3, $4, $5, (SELECT u.id FROM ap_outbox u WHERE u.ap_id = $6 AND $6 <> ''), $7, NULLIF($8, '')) ON CONFLICT (ap_id) DO NOTHING RETURNING id, undoes`,
+		apID, actor.arg(), string(body), pq.Array(inboxes), now, o.undoes, o.chain, o.after).Scan(&id, &undo)
 	if errors.Is(err, sql.ErrNoRows) {
 		out.Duplicate = true
 		if then == nil {
@@ -17878,14 +17886,20 @@ func (q *deliveryQueue) enqueueTakeBack(ctx context.Context, actor keyOwner, apI
 		return out, err
 	}
 	// The activity taken back still waits for its own fan-out (the queue was full): it never goes anywhere, so neither
-	// does this one (8.8, "Taking back").
+	// does this one (8.8, "Taking back"). Of a line (chain), each activity still waiting never goes; when its first
+	// waits too, nothing of the line went anywhere, and this one is dropped with them. Those no longer wait, so this
+	// one is fanned out now when nothing else waits.
 	if undo.Valid {
 		var never bool
-		if err := tx.QueryRowContext(ctx, `WITH c AS (UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1 AND NOT fanned_out RETURNING id)
-			SELECT EXISTS (SELECT 1 FROM c)`, undo.Int64).Scan(&never); err != nil {
+		var gone int
+		if err := tx.QueryRowContext(ctx, `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT $2 FROM ap_outbox o WHERE o.id = $1
+				UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
+			w AS (UPDATE ap_outbox o SET fanned_out = true, targets = NULL FROM c WHERE o.id = c.id AND NOT o.fanned_out RETURNING c.root)
+			SELECT COALESCE(bool_or(root), false), count(*) FROM w`, undo.Int64, o.chain).Scan(&never, &gone); err != nil {
 			return out, err
 		}
-		if never && !keep {
+		waiting -= gone
+		if never {
 			if _, err := tx.ExecContext(ctx, `UPDATE ap_outbox SET fanned_out = true, targets = NULL WHERE id = $1`, id); err != nil {
 				return out, err
 			}
@@ -18006,17 +18020,23 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 
 // takeBackSQL is what the fan-out of activity $1, which takes back activity $2 ($3 the queue's clock), does to the
 // rows of both, so that at no inbox the second overtakes the first and none is lost (8.8, "Taking back"; one still
-// waiting for its own fan-out was dropped with the second by enqueueUndo). At each inbox of the second:
+// waiting for its own fan-out was dropped with the second by enqueueOrdered). When the second's undoes_chain says the
+// first is the last of a line (a comment's Update, whose comes_after names the Update or the Create before it), "the
+// first" below is every activity of that line back to its start (c), and the line's start is the one that has no
+// comes_after (the Create; a line whose start was removed by housekeeping has none, and is never taken as unsent). At
+// each inbox of the second:
 //   - the first queued and not claimed, with attempts 0: no request for it ever left (below), so it is given up
-//     ("taken back before it was sent") and the second's row for that inbox goes too: there is nothing to take back;
-//     unless the second's undoes_kept says an earlier activity of the same object went there (a comment's Delete
-//     after its Update, whose Create went first): then the second goes;
+//     ("taken back before it was sent"), and when the start of the line was among them, no row of the line is left
+//     queued there and none had an attempt, the second's row for that inbox goes too: there is nothing to take back
+//     (an activity of a line is never sent to an inbox while one before it is queued there, afterHeldSQL). Counting the
+//     rows queued against those given up covers a claim made after this statement's snapshot (g then waits for the row
+//     and, rechecked, leaves it alone): the second then stays;
 //   - the first queued and not claimed after an attempt (a 5xx, a time out, a refusal, a redirect, an open circuit
 //     holding it): that request may have arrived (a 504 from the other server's proxy after it stored the post), so the
 //     first is given up ("taken back after an attempt") and the second goes as any row;
 //   - the first claimed (a request may be in flight): the second is due no earlier than the end of its lease, and
-//     deliver asks again at the send (heldBackSQL), which also covers a claim made after this statement's snapshot (g
-//     then waits for the row and, rechecked, leaves it alone, and h does not see it).
+//     deliver asks again at the send (heldBackSQL), which also covers a claim made after this statement's snapshot (h
+//     does not see it).
 //
 // attempts counts the claims that may have sent a request. A claim counts one, and every path that gives a claimed row
 // back unsent takes it back (giveBack, attempts - 1): another worker of this process sending to the host, the clock
@@ -18028,26 +18048,48 @@ func (q *deliveryQueue) fanOut(ctx context.Context, tx *sql.Tx, id int64, undo s
 // from being claimed at all, and a policy refusal at the send gives the row up (failed, not queued). A lease that runs
 // out (a stop past its bounds, a crash) keeps its attempt: that request may have left.
 // It says how many rows of the second went.
-const takeBackSQL = `WITH g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3,
+const takeBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT k.undoes_chain
+			FROM ap_outbox o, ap_outbox k WHERE o.id = $2 AND k.id = $1
+		UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
+	r AS (SELECT p.id AS row_id, p.state, p.locked_until, p.attempts, c.root, p.inbox FROM c, ap_deliveries n, LATERAL (SELECT d.id, d.state, d.locked_until, d.attempts, d.inbox
+			FROM ap_deliveries d WHERE d.outbox_id = c.id AND d.inbox = n.inbox OFFSET 0) p WHERE n.outbox_id = $1 AND p.state = 'queued'),
+	g AS (UPDATE ap_deliveries d SET state = 'failed', locked_until = NULL, failed_at = $3,
 			last_error = CASE WHEN d.attempts = 0 THEN 'taken back before it was sent' ELSE 'taken back after an attempt that may have arrived' END
-		WHERE d.outbox_id = $2 AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3)
-			AND EXISTS (SELECT 1 FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox = d.inbox) RETURNING d.inbox, d.attempts),
-	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT inbox FROM g WHERE attempts = 0)
-		AND NOT EXISTS (SELECT 1 FROM ap_outbox k WHERE k.id = $1 AND k.undoes_kept) RETURNING n.id),
-	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, d.locked_until) FROM ap_deliveries d
-		WHERE n.outbox_id = $1 AND d.outbox_id = $2 AND d.inbox = n.inbox AND d.state = 'queued' AND d.locked_until >= $3 RETURNING n.id)
+		FROM r WHERE d.id = r.row_id AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $3) RETURNING d.inbox, d.attempts, r.root),
+	x AS (DELETE FROM ap_deliveries n WHERE n.outbox_id = $1 AND n.inbox IN (SELECT g.inbox FROM g GROUP BY g.inbox
+			HAVING bool_or(g.root) AND max(g.attempts) = 0 AND count(*) = (SELECT count(*) FROM r WHERE r.inbox = g.inbox))
+		RETURNING n.id),
+	h AS (UPDATE ap_deliveries n SET next_at = GREATEST(n.next_at, l.until) FROM (SELECT inbox, max(locked_until) AS until FROM r WHERE locked_until >= $3 GROUP BY inbox) l
+		WHERE n.outbox_id = $1 AND n.inbox = l.inbox RETURNING n.id)
 	SELECT (SELECT count(*) FROM x) + 0 * (SELECT count(*) FROM h)`
 
 // heldBackSQL is deliver's question, at the send of a row of an activity that takes back activity $1 to inbox $2 ($3
-// the queue's clock): is the first still queued for that inbox? Its row is locked first (FOR UPDATE: a claim by another
-// worker made after this statement began is waited for and then seen as it is now), and the conditions are the locked
-// row's. Claimed: the end of its lease, until which the second waits. Not claimed (it failed in flight and waits for
-// another attempt): it is given up, and the second is sent, since the first may have arrived before its answer was
-// lost.
-const heldBackSQL = `WITH x AS (SELECT id, locked_until FROM ap_deliveries WHERE outbox_id = $1 AND inbox = $2 AND state = 'queued' FOR UPDATE),
+// the queue's clock; $4 its undoes_chain, which makes the first the whole line, as in takeBackSQL): is the first still
+// queued for that inbox? Its rows are locked first (FOR UPDATE: a claim by another worker made after this statement
+// began is waited for and then seen as it is now), and the conditions are the locked rows'. Claimed: the end of its
+// lease, until which the second waits. Not claimed (it failed in flight and waits for another attempt, or it waits
+// behind one before it in its line): it is given up, and the second is sent, since the first may have arrived before
+// its answer was lost.
+const heldBackSQL = `WITH RECURSIVE c(id, after, root) AS (SELECT o.id, o.comes_after, o.comes_after IS NULL OR NOT $4 FROM ap_outbox o WHERE o.id = $1
+		UNION ALL SELECT o.id, o.comes_after, o.comes_after IS NULL FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE NOT c.root AND o.id < c.id),
+	x AS (SELECT d.id, d.locked_until FROM c, LATERAL (SELECT id FROM ap_deliveries WHERE outbox_id = c.id AND inbox = $2 OFFSET 0) k, ap_deliveries d
+		WHERE d.id = k.id AND d.state = 'queued' FOR UPDATE OF d),
 	g AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $3, last_error = 'taken back after an attempt that may have arrived'
 		FROM x WHERE d.id = x.id AND (x.locked_until IS NULL OR x.locked_until < $3) RETURNING d.id)
 	SELECT (SELECT max(locked_until) FROM x WHERE locked_until >= $3), (SELECT count(*) FROM g)`
+
+// afterHeldSQL is deliver's question, at the send of a row of an activity that comes after activity $1 (its
+// comes_after) to inbox $2: is that one, or one before it in its line, still queued there (in flight or waiting for
+// another attempt)? It answers when the last of them is due or its lease ends, until which the row waits; and whether
+// one of them still waits for its fan-out (it never does once this one is fanned out: the queue fans out in order, and
+// enqueueOrdered marks those it drops). The one before is never given up for it: when it is given up for good at that
+// inbox (its attempts spent, its 48 hours past, the domain policy), this one is sent after it all the same. Nothing is
+// locked: a row that is no longer queued never is again.
+const afterHeldSQL = `WITH RECURSIVE c(id, after) AS (SELECT o.id, o.comes_after FROM ap_outbox o WHERE o.ap_id = $1
+		UNION ALL SELECT o.id, o.comes_after FROM c JOIN ap_outbox o ON o.ap_id = c.after WHERE o.id < c.id)
+	SELECT (SELECT max(GREATEST(d.next_at, d.locked_until)) FROM c, LATERAL (SELECT next_at, locked_until FROM ap_deliveries
+			WHERE outbox_id = c.id AND inbox = $2 AND state = 'queued' OFFSET 0) d),
+		EXISTS (SELECT 1 FROM c, LATERAL (SELECT 1 FROM ap_outbox o WHERE o.id = c.id AND NOT o.fanned_out OFFSET 0) w)`
 
 // fanOutDue fans out the oldest waiting activity once the queue is under deliveryQueueResume (8.5). Workers call it
 // before a claim, at most once every deliveryPoll, and only while activities may wait.
@@ -18193,7 +18235,8 @@ const deliveryClaimSQL = `UPDATE ap_deliveries d SET locked_until = $1::timestam
 		WHERE q.state = 'queued' AND q.next_at <= $1 AND (q.locked_until IS NULL OR q.locked_until < $1) AND q.host <> ALL($3::text[])
 			AND NOT EXISTS (SELECT 1 FROM ap_hosts h WHERE h.host = q.host AND h.state <> 'ok' AND (h.until > $1 OR h.state = 'unavailable'))
 		ORDER BY q.next_at, q.id LIMIT 1 FOR UPDATE OF q SKIP LOCKED)
-	RETURNING d.id, d.inbox, d.host, d.attempts, d.created_at, d.locked_until, o.actor_id, o.body, COALESCE((SELECT h.sig FROM ap_hosts h WHERE h.host = d.host), 'cavage'), o.undoes`
+	RETURNING d.id, d.inbox, d.host, d.attempts, d.created_at, d.locked_until, o.actor_id, o.body, COALESCE((SELECT h.sig FROM ap_hosts h WHERE h.host = d.host), 'cavage'), o.undoes,
+		o.undoes_chain, COALESCE(o.comes_after, '')`
 
 // claimedRow is a row a worker holds: lease is its locked_until, which every later statement about it names, so a
 // worker that lost its lease changes nothing.
@@ -18208,6 +18251,8 @@ type claimedRow struct {
 	body     []byte
 	sig      string
 	undoes   sql.NullInt64 // the activity this one takes back (8.8, "Taking back"), if any
+	chain    bool          // what it takes back is the last of a line (outOrder)
+	after    string        // the activity that must be settled at the inbox first (outOrder), "" for none
 }
 
 func (q *deliveryQueue) busyHosts() []string {
@@ -18259,7 +18304,7 @@ func (q *deliveryQueue) claim(ctx context.Context, busy []string) (*claimedRow, 
 		}
 	}
 	c := &claimedRow{}
-	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig, &c.undoes)
+	err = stmt.QueryRowContext(ctx, q.now(), deliveryLease.Seconds(), pq.Array(busy)).Scan(&c.id, &c.inbox, &c.host, &c.attempts, &c.created, &c.lease, &c.actor, &c.body, &c.sig, &c.undoes, &c.chain, &c.after)
 	done()
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -18327,11 +18372,26 @@ func (q *deliveryQueue) deliver(ctx context.Context, c *claimedRow) error {
 		// longer allowed, since then gets nothing (section 10).
 		return q.fail(c, "the domain policy refuses the host")
 	}
+	// An activity that comes after another of its object is never sent to an inbox while that one is still on its way
+	// there (FWR 6).
+	if c.after != "" {
+		var until sql.NullTime
+		var waits bool
+		if err := q.row(ctx, []any{&until, &waits}, afterHeldSQL, c.after, c.inbox); err != nil {
+			return q.giveBack(c, q.ownWait(ctx))
+		}
+		if waits {
+			return q.giveBack(c, deliveryOwnWait)
+		}
+		if until.Valid {
+			return q.giveBack(c, max(until.Time.Sub(q.now()), 0)+time.Second)
+		}
+	}
 	// An activity that takes back another is never sent to an inbox before the first's outcome there (8.8).
 	if c.undoes.Valid {
 		var until sql.NullTime
 		var gaveUp int
-		if err := q.row(ctx, []any{&until, &gaveUp}, heldBackSQL, c.undoes.Int64, c.inbox, q.now()); err != nil {
+		if err := q.row(ctx, []any{&until, &gaveUp}, heldBackSQL, c.undoes.Int64, c.inbox, q.now(), c.chain); err != nil {
 			return q.giveBack(c, q.ownWait(ctx))
 		}
 		if until.Valid {
@@ -23023,7 +23083,14 @@ func (a *app) likeRemote(w http.ResponseWriter, r *http.Request, u *user, id int
 		a.serverError(w, err)
 		return
 	}
-	_, err = f.out.enqueueThen(r.Context(), keyOwner(u.ID), likeID, body, []deliveryTarget{t.to}, func(tx *sql.Tx) error {
+	// A like taken back before: the Like comes after that Undo, so at the author's inbox it never overtakes it
+	// (afterHeldSQL), where the like would be taken back after it came.
+	var after string
+	if err := a.db.QueryRow(`SELECT undo_id FROM ap_like_out WHERE user_id = $1 AND post_id = $2`, u.ID, id).Scan(&after); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		a.serverError(w, err)
+		return
+	}
+	_, err = f.out.enqueueOrdered(r.Context(), keyOwner(u.ID), likeID, body, []deliveryTarget{t.to}, outOrder{after: after}, func(tx *sql.Tx) error {
 		return oneRow(tx.ExecContext(r.Context(), `INSERT INTO likes (post_id, user_id, ap_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, id, u.ID, likeID))
 	})
 	switch {
@@ -23054,10 +23121,16 @@ func (a *app) unlikeRemote(w http.ResponseWriter, r *http.Request, u *user, id i
 	}
 	f := a.fed
 	actor := f.memberActor(u.Username)
-	drop := func(tx *sql.Tx) error {
-		return oneRow(tx.ExecContext(r.Context(), `DELETE FROM likes WHERE post_id = $1 AND user_id = $2 AND ap_id = $3`, id, u.ID, likeID))
-	}
 	undoID := f.activityID(u.Username)
+	drop := func(tx *sql.Tx) error {
+		if err := oneRow(tx.ExecContext(r.Context(), `DELETE FROM likes WHERE post_id = $1 AND user_id = $2 AND ap_id = $3`, id, u.ID, likeID)); err != nil {
+			return err
+		}
+		// The Undo the next Like of this post comes after (likeRemote), when one was enqueued.
+		_, err := tx.ExecContext(r.Context(), `INSERT INTO ap_like_out (user_id, post_id, undo_id) SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM ap_outbox WHERE ap_id = $3)
+			ON CONFLICT (user_id, post_id) DO UPDATE SET undo_id = EXCLUDED.undo_id`, u.ID, id, undoID)
+		return err
+	}
 	body, err := apJSON(outLike{Context: asContext, ID: undoID, Type: "Undo", Actor: actor, To: []string{author},
 		Object: outLike{ID: likeID, Type: "Like", Actor: actor, Object: postAP}})
 	if err != nil {
@@ -23189,7 +23262,7 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		_, err = f.out.enqueueTakeBack(ctx, keyOwner(uid), noteID+"#delete", b, to, last, last != createID, func(tx *sql.Tx) error {
+		_, err = f.out.enqueueOrdered(ctx, keyOwner(uid), noteID+"#delete", b, to, outOrder{undoes: last, chain: true}, func(tx *sql.Tx) error {
 			return oneRow(tx.ExecContext(ctx, `DELETE FROM ap_comment_out WHERE comment_id = $1 AND state = 'delete'`, cid))
 		})
 		if errors.Is(err, errDeliveryFull) {
@@ -23265,18 +23338,8 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 	}
 	n.Content = noteHTMLWith(body, nil, byKey, f.origin.host, nil)
 	if state == "update" {
-		// An Update never goes while the last activity of the comment (its Create, or the Update before) still has a
-		// delivery queued or waits for its fan-out: at each inbox it would overtake it, and the Delete takes back the
-		// last one only. It is held, the record due again after the queue's own wait, and edits meanwhile fold into it.
-		var waits bool
-		if err := f.fedRow(ctx, []any{&waits}, `SELECT EXISTS (SELECT 1 FROM ap_outbox o WHERE o.ap_id = $1
-			AND (NOT o.fanned_out OR EXISTS (SELECT 1 FROM ap_deliveries d WHERE d.outbox_id = o.id AND d.state = 'queued')))`, last); err != nil {
-			return false, err
-		}
-		if waits {
-			_, err := f.fedExec(ctx, `UPDATE ap_comment_out SET due_at = $2 WHERE comment_id = $1 AND state = 'update'`, cid, now.Add(deliveryOwnWait))
-			return true, err
-		}
+		// The Update comes after the last activity of the comment (its Create, or the Update before): at each inbox it
+		// is held while that one is still on its way there (afterHeldSQL), and the Delete takes the line back whole.
 		if edited.Valid {
 			n.Updated = edited.Time.UTC().Format(time.RFC3339)
 		} else {
@@ -23287,9 +23350,9 @@ func (a *app) commentOut(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		_, err = f.out.enqueueThen(ctx, keyOwner(uid), id, b, to, func(tx *sql.Tx) error {
+		_, err = f.out.enqueueOrdered(ctx, keyOwner(uid), id, b, to, outOrder{after: last}, func(tx *sql.Tx) error {
 			// The record leaves update only when no edit came meanwhile (gen); either way the Update just made is the
-			// last activity, which the next one waits for and the Delete takes back.
+			// last activity, which the next one comes after and the Delete takes back.
 			// A Delete marked meanwhile finds no row in update: everything rolls back, and the Delete goes next.
 			return oneRow(tx.ExecContext(ctx, `UPDATE ap_comment_out SET last_ap_id = $3, tries = 0, due_at = NULL,
 				state = CASE WHEN gen = $2 THEN 'sent' ELSE state END WHERE comment_id = $1 AND state = 'update'`, cid, gen, id))
@@ -23963,9 +24026,12 @@ var migrations = []string{schema, schemaSocial,
 	// Like of a post of another server (so the Undo sent names it). ap_comment_out is a member's comment's way out, as
 	// ap_post_out is a post's (state create, sent, update or delete; targets the inboxes the Create went to), with no
 	// foreign key to comments, since it outlives the comment until its Delete is enqueued; last_ap_id is the activity it
-	// enqueued last (its Create, then each Update), which its next Update waits for and its Delete takes back.
-	// ap_outbox.undoes_kept says the takeback goes even to an inbox the activity it takes back never reached, since an
-	// earlier activity of the same object went there (a comment's Delete after an Update). notifications.fed marks a
+	// enqueued last (its Create, then each Update), which its next Update names as the one before it and its Delete
+	// takes back. ap_outbox.comes_after is the id of the activity that must be settled at an inbox before this one is sent
+	// there (a comment's Update after its Create or the Update before, a Like after the Undo of the like before it), and
+	// undoes_chain says the activity taken back is the last of such a line, which the takeback covers whole at each inbox
+	// (a comment's Delete). ap_like_out keeps the Undo a member's unlike of a post of another server enqueued last, which
+	// the next Like of that post comes after; it goes with its Undo's row of ap_outbox. notifications.fed marks a
 	// notification an account of another server left, and notifications_remote serves the trim of those (FWR 3's bound
 	// of 50 per server and 500 in all), which now covers comments, replies and likes too without reading a member's
 	// notifications from members here; notifications_fed, its narrower forerunner of migration 22, goes. The backfill
@@ -23993,7 +24059,15 @@ var migrations = []string{schema, schemaSocial,
 		tries INT NOT NULL DEFAULT 0,
 		due_at TIMESTAMPTZ
 	);
-	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS undoes_kept BOOLEAN NOT NULL DEFAULT false;
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS comes_after TEXT;
+	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS undoes_chain BOOLEAN NOT NULL DEFAULT false;
+	CREATE TABLE IF NOT EXISTS ap_like_out (
+		user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		post_id BIGINT NOT NULL,
+		undo_id TEXT NOT NULL REFERENCES ap_outbox(ap_id) ON DELETE CASCADE,
+		PRIMARY KEY (user_id, post_id)
+	);
+	CREATE INDEX IF NOT EXISTS ap_like_out_undo ON ap_like_out (undo_id);
 	CREATE INDEX IF NOT EXISTS ap_comment_out_due ON ap_comment_out (comment_id) WHERE state <> 'sent';
 	CREATE INDEX IF NOT EXISTS ap_comment_out_user ON ap_comment_out (user_id);
 	CREATE INDEX IF NOT EXISTS ap_comment_out_post ON ap_comment_out (post_id);

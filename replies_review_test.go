@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // talkEnv is repliesEnv with the producer at hand.
@@ -70,9 +72,79 @@ func (e *talkEnv) updates(note string) []outRow {
 	return out
 }
 
-// Every order of a comment's Create, its edits and its Delete (finding B1): an Update is never enqueued while the
-// activity before it has a delivery queued, so at each inbox nothing overtakes; the Delete takes back the last activity,
-// so nothing deleted goes out after it, and it goes to every inbox an earlier activity may have reached.
+// wired is the delivery queue pointed at a stub inbox server, which answers each host with the status set for it (202
+// when none is).
+type wired struct {
+	e     *talkEnv
+	stub  *inboxStub
+	mu    sync.Mutex
+	codes map[string]int
+}
+
+func (e *talkEnv) wire() *wired {
+	w := &wired{e: e, stub: newInboxStub(e.clock.now, e.pub), codes: map[string]int{}}
+	w.stub.answer = func(host, _, _ string) (int, string) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if c, ok := w.codes[host]; ok {
+			return c, ""
+		}
+		return 202, ""
+	}
+	e.out.fetch = deliveryStub(e.t, w.stub)
+	e.out.fetch.origin = e.a.fed.origin
+	// fan's server moves to a name the stub answers for (deliveryStub), before the comments the test makes.
+	e.allow(inboxB)
+	e.mustExec(`UPDATE ap_actors SET ap_id = 'https://' || $1 || '/users/fan', inbox = 'https://' || $1 || '/users/fan/inbox', shared_inbox = 'https://' || $1 || '/inbox'
+		WHERE ap_id = 'https://third.example/users/fan'`, inboxB)
+	e.mustExec(`UPDATE users SET domain = $1, username = 'fan@' || $1 WHERE username = 'fan@third.example'`, inboxB)
+	e.out.pace.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	return w
+}
+
+func (w *wired) answer(host string, code int) {
+	w.mu.Lock()
+	w.codes[host] = code
+	w.mu.Unlock()
+}
+
+// drain runs the queue's steps until none has work at this moment of the test's clock.
+func (w *wired) drain() {
+	w.e.t.Helper()
+	for i := 0; ; i++ {
+		worked, err := w.e.out.step(context.Background())
+		if err != nil {
+			w.e.t.Fatal(err)
+		}
+		if !worked {
+			return
+		}
+		if i > 200 {
+			w.e.t.Fatal("the queue never ran out of work")
+		}
+	}
+}
+
+// got lists the activities host was sent, in order, each by what follows the comment's Note id (note).
+func (w *wired) got(host, note string) []string {
+	var out []string
+	for _, r := range w.stub.requests() {
+		if r.host == host && strings.HasPrefix(r.id, note) {
+			out = append(out, strings.TrimPrefix(r.id, note))
+		}
+	}
+	return out
+}
+
+const (
+	inboxA = "social.example" // cat's server, one of ana's followers
+	inboxB = "b.fan.example"  // fan's, once wire moved it
+)
+
+// Every order of a comment's Create, its edits and its Delete, at each inbox on its own (finding B1, and point 2 of the
+// second review): an Update is enqueued at once and comes after the activity before it, so at an inbox where that one is
+// still on its way the Update waits, and at the others it goes; the Delete takes back the comment's whole line at each
+// inbox, so nothing deleted goes out after it, and it goes to every inbox an earlier activity may have reached.
 func TestDBCommentOrders(t *testing.T) {
 	t.Run("Create untried, an edit, the Delete: nothing goes", func(t *testing.T) {
 		e := newTalkEnv(t)
@@ -80,32 +152,30 @@ func TestDBCommentOrders(t *testing.T) {
 		e.ne.produce()
 		e.edit(cmt, "first, edited")
 		e.ne.produce()
-		if ups := e.updates(note); len(ups) != 0 {
-			t.Fatalf("an Update was enqueued while its Create waits untried: %v", ups[0].id)
+		if ups := e.updates(note); len(ups) != 1 || len(ups[0].inboxes) != 2 {
+			t.Fatalf("the Update of an edit: %v", ups)
 		}
 		e.del(cmt)
 		e.ne.produce()
-		c, _ := e.queued(note + "/activity")
 		d, dok := e.queued(note + "#delete")
-		if c != 0 || d != 0 || !dok || e.count(`SELECT count(*) FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id LIKE $1 || '%' AND d.state = 'queued'`, note) != 0 {
-			t.Errorf("queued after the Delete: Create %d, Delete %d (made %v)", c, d, dok)
+		if d != 0 || !dok || e.count(`SELECT count(*) FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id LIKE $1 || '%' AND d.state = 'queued'`, note) != 0 {
+			t.Errorf("queued after the Delete: Delete %d (made %v)", d, dok)
 		}
 	})
-	t.Run("Create tried, an edit, the Delete: the Update is held, the Delete goes", func(t *testing.T) {
+	t.Run("Create tried, an edit, the Delete: the line is given up, the Delete goes", func(t *testing.T) {
 		e := newTalkEnv(t)
 		cmt, note := e.comment("first")
 		e.ne.produce()
 		e.mustExec(`UPDATE ap_deliveries SET attempts = 1 WHERE state = 'queued' AND outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $1)`, note+"/activity")
 		e.edit(cmt, "first, edited")
 		e.ne.produce()
-		if ups := e.updates(note); len(ups) != 0 {
-			t.Fatalf("an Update was enqueued while its Create is still queued: %v", ups[0].id)
-		}
+		ups := e.updates(note)
 		e.del(cmt)
 		e.ne.produce()
 		c, _ := e.queued(note + "/activity")
-		if d, _ := e.queued(note + "#delete"); c != 0 || d != 2 || len(e.updates(note)) != 0 {
-			t.Errorf("after the Delete: Create %d queued, Delete %d queued, %d Updates", c, d, len(e.updates(note)))
+		u, _ := e.queued(ups[0].id)
+		if d, _ := e.queued(note + "#delete"); c != 0 || u != 0 || d != 2 {
+			t.Errorf("after the Delete: Create %d queued, Update %d, Delete %d", c, u, d)
 		}
 	})
 	t.Run("Create sent, an Update untried, the Delete: the Update is given up, the Delete goes", func(t *testing.T) {
@@ -145,7 +215,129 @@ func TestDBCommentOrders(t *testing.T) {
 			t.Errorf("Update in flight %d, Delete queued %d, of them due before the Update's lease ends %d", u, d, early)
 		}
 	})
-	t.Run("Create tried, an edit held, a moderator's hide: the Delete goes at once", func(t *testing.T) {
+	t.Run("Create untried, its Update claimed at one inbox, the Delete: the Delete stays there", func(t *testing.T) {
+		// A worker that claimed the Update holds it only until it sees the Create still queued; the Delete is not
+		// dropped at that inbox meanwhile, since the Update is not among the rows given up.
+		e := newTalkEnv(t)
+		cmt, note := e.comment("first")
+		e.ne.produce()
+		e.edit(cmt, "first, edited")
+		e.ne.produce()
+		ups := e.updates(note)
+		lease := e.clock.now().Add(deliveryLease)
+		e.mustExec(`UPDATE ap_deliveries SET attempts = 1, locked_until = $2 WHERE outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $1) AND host = $3`, ups[0].id, lease, inboxA)
+		e.del(cmt)
+		e.ne.produce()
+		at := e.count(`SELECT count(*) FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = $1 AND d.host = $2 AND d.next_at >= $3`, note+"#delete", inboxA, lease)
+		if d, _ := e.queued(note + "#delete"); d != 1 || at != 1 {
+			t.Errorf("Delete queued %d, at the inbox of the claimed Update after its lease %d", d, at)
+		}
+	})
+	t.Run("Create sent at A and retrying at B, an edit, the Delete: each inbox gets them in order", func(t *testing.T) {
+		e := newTalkEnv(t)
+		w := e.wire()
+		w.answer(inboxB, 503)
+		cmt, note := e.comment("first")
+		w.drain()
+		e.edit(cmt, "first, edited")
+		w.drain()
+		if a, b := w.got(inboxA, note), w.got(inboxB, note); !slices.Equal(a, []string{"/activity", "#update-1"}) || !slices.Equal(b, []string{"/activity"}) {
+			t.Fatalf("with B failing: A got %v, B got %v", a, b)
+		}
+		// The Delete gives up B's Create (tried once, it may have arrived) and the Update behind it, and goes at once.
+		e.del(cmt)
+		w.answer(inboxB, 202)
+		w.drain()
+		a, b := w.got(inboxA, note), w.got(inboxB, note)
+		if !slices.Equal(a, []string{"/activity", "#update-1", "#delete"}) || !slices.Equal(b, []string{"/activity", "#delete"}) {
+			t.Errorf("A got %v, B got %v", a, b)
+		}
+	})
+	t.Run("the Create in flight at A as the Delete is sent there: the Delete waits for it", func(t *testing.T) {
+		e := newTalkEnv(t)
+		w := e.wire()
+		cmt, note := e.comment("first")
+		e.ne.produce()
+		e.edit(cmt, "first, edited")
+		e.ne.produce()
+		// Another worker holds A's Create (a request may be in flight); the Delete takes back the Update and waits for
+		// the lease, but a claim made after its fan-out's snapshot is not seen there: the send asks again.
+		lease := e.clock.now().Add(deliveryLease)
+		e.mustExec(`UPDATE ap_deliveries SET attempts = 1, locked_until = $3 WHERE host = $1 AND outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $2)`, inboxA, note+"/activity", lease)
+		e.del(cmt)
+		e.ne.produce()
+		e.mustExec(`UPDATE ap_deliveries SET next_at = $2 WHERE outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $1)`, note+"#delete", e.clock.now())
+		w.drain()
+		if a := w.got(inboxA, note); len(a) != 0 {
+			t.Errorf("A got %v while its Create was in flight", a)
+		}
+	})
+	t.Run("an edit while the Create retries at B: the Update waits there, then follows it", func(t *testing.T) {
+		e := newTalkEnv(t)
+		w := e.wire()
+		w.answer(inboxB, 503)
+		cmt, note := e.comment("first")
+		w.drain()
+		e.edit(cmt, "second")
+		w.drain()
+		w.answer(inboxB, 500)
+		e.clock.add(deliveryRetries[0] + time.Minute)
+		w.drain() // B fails the Create again; the Update still waits behind it
+		e.edit(cmt, "third")
+		w.drain()
+		if b := w.got(inboxB, note); !slices.Equal(b, []string{"/activity", "/activity"}) {
+			t.Fatalf("B got %v while its Create retries", b)
+		}
+		w.answer(inboxB, 202)
+		e.clock.add(deliveryRetries[len(deliveryRetries)-1] + time.Minute)
+		w.drain()
+		a, b := w.got(inboxA, note), w.got(inboxB, note)
+		if !slices.Equal(a, []string{"/activity", "#update-1", "#update-2"}) || !slices.Equal(b, []string{"/activity", "/activity", "/activity", "#update-1", "#update-2"}) {
+			t.Errorf("A got %v, B got %v", a, b)
+		}
+		ups := e.updates(note)
+		if len(ups) != 2 || !strings.Contains(ups[1].body, "third") {
+			t.Errorf("the second Update: %v", ups)
+		}
+	})
+	t.Run("the Create given up for good at B: the Update goes there alone", func(t *testing.T) {
+		e := newTalkEnv(t)
+		w := e.wire()
+		w.answer(inboxB, 503)
+		cmt, note := e.comment("first")
+		w.drain()
+		e.edit(cmt, "second")
+		w.drain()
+		// Its attempts spent, or its 48 hours past: the row fails, and what came after it is no longer held.
+		e.mustExec(`UPDATE ap_deliveries SET state = 'failed', locked_until = NULL, failed_at = now() WHERE host = $1 AND outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $2)`, inboxB, note+"/activity")
+		w.answer(inboxB, 202)
+		e.clock.add(deliveryRetries[0] + time.Minute)
+		w.drain()
+		if b := w.got(inboxB, note); !slices.Equal(b, []string{"/activity", "#update-1"}) {
+			t.Errorf("B got %v", b)
+		}
+	})
+	t.Run("an Update waiting for its fan-out, the Delete: the Update never goes, the Delete goes at once", func(t *testing.T) {
+		e := newTalkEnv(t)
+		cmt, note := e.comment("first")
+		e.ne.produce()
+		e.delivered(note + "/activity")
+		e.edit(cmt, "first, edited")
+		e.ne.produce()
+		ups := e.updates(note)
+		// As a full queue leaves it: the activity written, its rows not yet.
+		e.mustExec(`UPDATE ap_outbox SET fanned_out = false, targets = $2 WHERE ap_id = $1`, ups[0].id, pq.Array(ups[0].inboxes))
+		e.mustExec(`DELETE FROM ap_deliveries WHERE outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = $1)`, ups[0].id)
+		e.del(cmt)
+		e.ne.produce()
+		d, _ := e.queued(note + "#delete")
+		waiting := e.count(`SELECT count(*) FROM ap_outbox WHERE NOT fanned_out`)
+		u, _ := e.queued(ups[0].id)
+		if d != 2 || waiting != 0 || u != 0 {
+			t.Errorf("Delete queued %d, activities waiting %d, Update queued %d", d, waiting, u)
+		}
+	})
+	t.Run("Create tried, an edit, a moderator's hide: the Delete goes at once", func(t *testing.T) {
 		e := newTalkEnv(t)
 		cmt, note := e.comment("first")
 		e.ne.produce()
@@ -155,31 +347,51 @@ func TestDBCommentOrders(t *testing.T) {
 		_, admin := e.user("boss", "admin")
 		e.must(200, admin, "POST", "/api/mod/actions", map[string]any{"action": "hide", "kind": "comment", "id": cmt, "reason": "test"})
 		e.ne.produce()
-		if d, _ := e.queued(note + "#delete"); d != 2 || len(e.updates(note)) != 0 {
-			t.Errorf("after the hide: Delete %d queued, %d Updates", d, len(e.updates(note)))
+		u, _ := e.queued(e.updates(note)[0].id)
+		if d, _ := e.queued(note + "#delete"); d != 2 || u != 0 {
+			t.Errorf("after the hide: Delete %d queued, Update %d queued", d, u)
 		}
 	})
-	t.Run("two edits: the second waits for the first, and carries the newest text", func(t *testing.T) {
-		e := newTalkEnv(t)
-		cmt, note := e.comment("first")
-		e.ne.produce()
-		e.delivered(note + "/activity")
-		e.edit(cmt, "second")
-		e.ne.produce()
-		e.edit(cmt, "third")
-		e.ne.produce()
-		if ups := e.updates(note); len(ups) != 1 || !strings.Contains(ups[0].body, "second") {
-			t.Fatalf("two edits, the first Update queued: %d Updates", len(ups))
+}
+
+// A like, its Undo and a like again of a post of another server (point 8 of the second review): the second Like comes
+// after the Undo, so while the Undo still retries at the author's inbox the Like waits, and the author's server ends
+// with the post liked.
+func TestDBLikeAgainAfterUndo(t *testing.T) {
+	e := newTalkEnv(t)
+	w := e.wire()
+	e.send(e.bo(), boID, "Create", noteObj(40, "bo's post", nil))
+	p := e.remotePostID(boID + "/statuses/40")
+	like := func() { e.t.Helper(); e.must(200, e.ana, "POST", fmt.Sprintf("/api/posts/%d/like", p), nil) }
+	sent := func() []string {
+		kinds := map[string]string{}
+		for _, r := range e.ne.outRows() {
+			kinds[r.id] = r.kind
 		}
-		e.edit(cmt, "fourth")
-		e.delivered(e.updates(note)[0].id)
-		e.clock.add(deliveryOwnWait + time.Second)
-		e.ne.produce()
-		ups := e.updates(note)
-		if len(ups) != 2 || !strings.Contains(ups[1].body, "fourth") || strings.Contains(ups[1].body, "third") {
-			t.Errorf("after the first Update went: %d Updates, the last %s", len(ups), ups[len(ups)-1].body)
+		var out []string
+		for _, r := range w.stub.requests() {
+			if r.path == "/users/bo/inbox" {
+				out = append(out, kinds[r.id])
+			}
 		}
-	})
+		return out
+	}
+	w.answer(inboxA, 503)
+	like()
+	w.drain() // the Like is tried once, and retries
+	like()    // the Undo: the Like is given up, the Undo goes after its attempt
+	w.drain() // and is tried once, and retries
+	like()    // liked again
+	w.drain()
+	if got := sent(); !slices.Equal(got, []string{"Like", "Undo"}) {
+		t.Fatalf("while the Undo retries: %v", got)
+	}
+	w.answer(inboxA, 202)
+	e.clock.add(deliveryRetries[len(deliveryRetries)-1] + time.Minute)
+	w.drain()
+	if got := sent(); !slices.Equal(got, []string{"Like", "Undo", "Undo", "Like"}) {
+		t.Errorf("bo's inbox got %v", got)
+	}
 }
 
 // Nothing that names a member who does not share their profile leaves this server (finding B2): an answer to their
@@ -301,7 +513,6 @@ func TestDBCommentSwitchesUnread(t *testing.T) {
 	if _, ok := e.queued(note + "/activity"); !ok {
 		t.Error("the comment did not go out once the switches read")
 	}
-	_ = slices.Contains[[]string]
 }
 
 // A notification that fails once (finding S3): the reply or the like rolls back with it, the worker tries the row again,

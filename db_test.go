@@ -3904,7 +3904,7 @@ func TestDBQueryPlans(t *testing.T) {
 	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox and domain_policies) the planner reads whole for
 	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
 	// all for 200 removed, a few milliseconds, once for every 200 new actors.
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_comment_out ap_inbox ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_comment_out ap_inbox ap_like_out ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
 	on = db
 	tx.Rollback()
 	// The delivery queue (FWR 2) at its cap: 50,000 rows queued on 300 hosts, 50 activities, a host whose circuit is
@@ -3922,11 +3922,21 @@ func TestDBQueryPlans(t *testing.T) {
 		`INSERT INTO ap_hosts (host, created_at) SELECT 'f' || g || '.fan.example', now() FROM generate_series(0, 4699) g`,
 		`UPDATE ap_hosts SET state = 'open', until = now() + interval '5 minutes' WHERE host = 'h0.fan.example'`,
 		`UPDATE ap_hosts SET state = 'unavailable' WHERE host = 'h1.fan.example'`,
+		// A comment's line (FWR 6): its Create and 20 Updates, each coming after the one before, queued at 10 inboxes,
+		// and its Delete, which takes the line back; beside 5,000 activities sent and kept for housekeeping's days.
+		`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at) SELECT 'https://here.example/old/' || g, '{}', true, now() - interval '1 day' FROM generate_series(1, 5000) g`,
+		`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at, comes_after) SELECT 'https://here.example/c#' || g, '{}', true, now(), CASE WHEN g > 0 THEN 'https://here.example/c#' || (g - 1) END FROM generate_series(0, 20) g`,
+		`INSERT INTO ap_outbox (ap_id, body, fanned_out, created_at, undoes, undoes_chain) SELECT 'https://here.example/c#delete', '{}', true, now(), id, true FROM ap_outbox WHERE ap_id = 'https://here.example/c#20'`,
+		`INSERT INTO ap_deliveries (outbox_id, inbox, host, next_at, created_at) SELECT o.id, 'https://h' || k || '.fan.example/inbox', 'h' || k || '.fan.example', now(), now() FROM ap_outbox o, generate_series(10, 19) k WHERE o.ap_id LIKE 'https://here.example/c#%'`,
 		`ANALYZE`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatalf("%v\n%s", err, q)
 		}
+	}
+	var lineEnd, lineDelete int64
+	if err := db.QueryRow(`SELECT (SELECT id FROM ap_outbox WHERE ap_id = 'https://here.example/c#20'), (SELECT id FROM ap_outbox WHERE ap_id = 'https://here.example/c#delete')`).Scan(&lineEnd, &lineDelete); err != nil {
+		t.Fatal(err)
 	}
 	fanIn, fanHosts := make([]string, 300), make([]string, 300)
 	for i := range fanIn {
@@ -3939,10 +3949,10 @@ func TestDBQueryPlans(t *testing.T) {
 	}
 	on = tx
 	plans([]planCase{
-		{"deliveries: the claim", deliveryClaimSQL, []any{time.Now(), 60.0, pq.Array([]string{"h2.fan.example", "h3.fan.example"})}, 100, "ap_outbox"},
+		{"deliveries: the claim", deliveryClaimSQL, []any{time.Now(), 60.0, pq.Array([]string{"h2.fan.example", "h3.fan.example"})}, 100, ""},
 		// A count to its cap: near the cap the planner reads ap_deliveries whole (the queue and 7 days of failed rows),
 		// each row counted by the scan and again by the limit above it. Once per activity enqueued.
-		{"deliveries: the counts before an enqueue", deliveryCountsSQL, []any{deliveryQueueMax, deliveryWaitingMax}, 2*(deliveryQueueMax+20000) + 200, "ap_deliveries ap_outbox"},
+		{"deliveries: the counts before an enqueue", deliveryCountsSQL, []any{deliveryQueueMax, deliveryWaitingMax}, 2*(deliveryQueueMax+20000) + 200, "ap_deliveries"},
 		{"deliveries: an activity to 300 hosts", deliveryFanOutSQL, []any{1, pq.Array(fanIn), pq.Array(fanHosts), time.Now(), deliveryHostMax}, 2*deliveryQueueMax + 5000, ""},
 		{"deliveries: a host's failure", hostFailedSQL, []any{"h5.fan.example", time.Now(), "answered 503", 600.0, hostStreakGap.Seconds()}, 10, ""},
 		// Housekeeping's batches: chosen through an index, removed or moved through the primary key, never a pass over
@@ -3951,7 +3961,13 @@ func TestDBQueryPlans(t *testing.T) {
 		{"deliveries: failed rows past the cap, a batch", deliveryRetainCapSQL, []any{10000, deliveryBatch}, 3*(10000+deliveryBatch) + 100, ""},
 		{"deliveries: rows due too far ahead, a batch", deliveryPullDueSQL, []any{time.Now(), time.Now().Add(-2 * time.Hour), deliveryBatch}, 4*deliveryBatch + 100, ""},
 		{"deliveries: rows written in the future, a batch", deliveryPullAgeSQL, []any{time.Now().Add(-2 * time.Hour), time.Now(), deliveryBatch}, 4*deliveryBatch + 100, ""},
-		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedKeep, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_outbox ap_hosts"},
+		{"deliveries: the numbers", deliveryNumbersSQL, []any{time.Now(), deliveryQueueMax, deliveryFailedKeep, deliveryWaitingMax}, 3*(deliveryQueueMax+20000) + 6000, "ap_deliveries ap_hosts"},
+		// A comment's line of 21 (FWR 6): each step down it is one look through ap_outbox's unique id index, and each
+		// activity's row at the inbox one look through (outbox_id, inbox). Once per row sent, and per Delete fanned out,
+		// whose takeback looks at each activity of the line at each of its inboxes: about 20 rows counted a pair.
+		{"deliveries: an Update held behind a line of 20 at an inbox", afterHeldSQL, []any{"https://here.example/c#19", "https://h12.fan.example/inbox"}, 300, ""},
+		{"deliveries: a Delete's question at the send, over a line of 21", heldBackSQL, []any{lineEnd, "https://h12.fan.example/inbox", time.Now(), true}, 400, ""},
+		{"deliveries: a Delete's takeback over a line of 21 at 10 inboxes", takeBackSQL, []any{lineDelete, lineEnd, time.Now()}, 21*10*20 + 500, ""},
 	})
 	on = db
 	tx.Rollback()

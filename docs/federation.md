@@ -1631,17 +1631,11 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   replies and 2,000 remote likes), `TestDBPurgeRemote`, `TestDBInboxHandlers` and `TestDBRemoteNotes` updated; the
   `federated` browser suite (`federated-remote-reply`).
 - **After the review of #116** (each with a test that fails without it):
-  - **A comment's activities stay in order, and nothing deleted goes out after its Delete** (`TestDBCommentOrders`). An
-    Update(Note) is never enqueued while the comment's last activity (its Create, or the Update before) still has a
-    delivery queued or waits for its fan-out: the record stays `update`, due again after the queue's own wait (no worker
-    sleeps), and edits meanwhile fold into it, so two edits make two Updates, one after the other, the second with the
-    newest text. Updates have ids the record names (`<comment>#update-<generation>`, kept in `ap_comment_out.last_ap_id`),
-    and the Delete takes back the last activity by the queue's own rule (`ap_outbox.undoes`): a Create never tried is
-    given up and nothing goes; one tried, or an Update never tried, is given up and the Delete goes; one in flight holds
-    the Delete until its lease ends. After an Update the Delete goes even to an inbox the Update never reached
-    (`ap_outbox.undoes_kept`, read by `takeBackSQL` and `enqueueTakeBack`), since the Create went there. A deletion, a
-    hide, a post's deletion and housekeeping's mark clear a held Update's wait, so the Delete goes at once. Posts send no
-    Update(Note) (they are not edited), so they have no such case.
+  - **A comment's activities stay in order at each inbox, and nothing deleted goes out after its Delete**
+    (`TestDBCommentOrders`; reworked after the second review, below). Updates have ids the record names
+    (`<comment>#update-<generation>`, kept in `ap_comment_out.last_ap_id`), and each comes after the activity before it
+    (its Create, or the Update before), so the Delete takes back the comment's whole line. Posts send no Update(Note)
+    (they are not edited), so they have no such case.
   - **An edit while the Create is being made is not lost** (`TestDBCommentEditWhileProduced`): every edit moves the
     record's generation, and the Create's step checks the generation it read, so it rolls back and the next pass sends the
     text as edited.
@@ -1682,6 +1676,28 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
   - **Switches that could not be read hold a comment's way out** (`TestDBCommentSwitchesUnread`): the record is written
     for a member who shares, and the producer waits for the switches to read, as a post's way out does; only a read that
     said off keeps the comment here.
+- **After the second review of #116** (each with a test that fails without it):
+  - **One slow server holds nobody else's edits** (`TestDBCommentOrders`, `TestDBLikeAgainAfterUndo`). An Update is
+    enqueued at once, naming the activity it comes after (`ap_outbox.comes_after`), and the queue holds its row at an
+    inbox while that activity, or one before it in the comment's line, is still queued at the same inbox, in flight or
+    waiting for another attempt (`afterHeldSQL`, asked at the send as `heldBackSQL` is, the row given back until the last
+    of them is due or its lease ends; no worker sleeps, and the one before is never given up for it). At every other inbox
+    it goes at once. The queue fans out in order, so the one before always has its rows first; one that a Delete drops
+    before its fan-out is marked, and nothing waits for it. Where the one before is given up for good at an inbox (its 11
+    attempts or 48 hours spent, the domain policy, the host's cap that dropped its row), the Update is sent there after it
+    all the same: it carries the whole Note as edited, so a receiver either ignores an Update of an object it never had
+    (Mastodon does) or takes the edited text, which is the comment as it is; holding it longer would hold it for nothing,
+    since the one before will not come. The Delete takes back the comment's line whole at each inbox
+    (`ap_outbox.undoes_chain`, `takeBackSQL`): every row of the line queued there and not claimed is given up; the Delete's
+    own row goes only where the Create itself was among them untried, none had an attempt and none was left queued
+    (counted, so a claim made after the statement's snapshot keeps the Delete), since then nothing of the comment ever
+    left for that inbox; a row in flight holds the Delete past its lease, and the send asks again over the whole line. A
+    Delete made while an Update still waits for its fan-out drops it and fans out at once, not one pass later. A like
+    again after an unlike comes after that Undo the same way: `ap_like_out` keeps the Undo a member's unlike enqueued last
+    (it goes with the Undo's row of `ap_outbox`), and the next Like of that post waits behind it at the author's inbox,
+    where it would otherwise be taken back by an Undo that arrived after it. Each step down a line is one lookup through
+    `ap_outbox`'s unique id index, one per Update the comment had; a comment is edited only in its first 15 minutes, and
+    edits made while its producer is busy fold into one Update.
 - **Open.** A comment's id is not served (a receiver that fetches it by id gets 404; one that takes the embedded Note,
   as Mastodon does from the actor's origin, is not affected); an Update can no longer reach an inbox before the
   Create it changes (above), but at an inbox where the Create failed for good the Update arrives alone, and what a
