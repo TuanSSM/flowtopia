@@ -36,6 +36,15 @@ func TestDBLeadNameAgrees(t *testing.T) {
 		{"@" + strings.Repeat("a", 22) + ".b hi", strings.Repeat("a", 22) + ".b"},
 		{"@" + strings.Repeat("a", 23) + ".b hi", strings.Repeat("a", 23)},
 		{"@abc_ hi", "abc_"},
+		// A letter or a digit of another script straight after the name does not hide it from either side.
+		{"@aliceさん、ありがとう", "alice"},
+		{"@aliceé hi", "alice"},
+		{"@alice١", "alice"},
+		{"@aliceß@host", "alice"},
+		{"@abc\nhi", "abc"},
+		{"@abc's", "abc"},
+		{"@", ""},
+		{"", ""},
 	} {
 		var got sql.NullString
 		if err := e.a.db.QueryRow(`SELECT substring(lower($1) from '`+leadNamePattern+`')`, c.text).Scan(&got); err != nil {

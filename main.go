@@ -28247,11 +28247,13 @@ func (a *app) handleThread(w http.ResponseWriter, r *http.Request, u *user) {
 }
 
 // leadNamePattern finds the name of a member here that opens a text, as Postgres reads it (commentOutSQL): @ and 3 to 24
-// name characters, the longest that ends a word (\M) and is not followed by more name characters and an @, so a handle
-// of another server (@name@host, @name.x@host, @name-x@host) names no member here. leadName reads it the same way in
-// Go, by construction: the longest such name, tried from the longest down, as the regular expression backtracks.
-// TestLeadNameAgrees runs one table of texts through both.
-const leadNamePattern = `^@([a-z0-9][a-z0-9._-]{2,23})\M(?![a-z0-9._-]*@)`
+// name characters, the longest that ends in a letter, a digit or _ with none of those after it, and is not followed by
+// more name characters and an @, so a handle of another server (@name@host, @name.x@host, @name-x@host) names no
+// member here. The end of the name is spelled out in ASCII and not left to \M, which in Postgres also counts letters
+// and digits of other scripts: "@aliceさん" opens with alice on both sides. leadName reads it the same way in Go, by
+// construction: the longest such name, tried from the longest down, as the regular expression backtracks.
+// TestDBLeadNameAgrees runs one table of texts through both.
+const leadNamePattern = `^@([a-z0-9][a-z0-9._-]{1,22}[a-z0-9_])(?![a-z0-9_])(?![a-z0-9._-]*@)`
 
 func leadName(text string) string {
 	low := strings.ToLower(text)

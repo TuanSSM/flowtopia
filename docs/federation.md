@@ -1773,7 +1773,7 @@ drill). What was built, and the decisions where 6.3, 6.4, 9.1 and 11 left room:
 - **After the fourth review of #116** (each with a test that fails without it):
   - **Go and Postgres read a leading name alike** (`TestDBLeadNameAgrees`, `TestDBLeadingNames`). Postgres backtracked
     around the old lookahead, so `@fan.x@third.example` or `@fan-x@third.example` read as a member here named `fan`.
-    The name is now one that ends a word and is not followed by more name characters and an `@` (`leadNamePattern`),
+    The name is now one that ends in a letter, a digit or `_` of ASCII with none of those after it, and is not followed by more name characters and an `@` (`leadNamePattern`; a letter of another script straight after the name does not hide it),
     and Go's `leadName` reads it the same way by construction; one table of texts goes through both. A comment that
     does not go though the switches are on (its author, its post, its thread's first comment or the member it answers
     no longer shown beyond this server) is now always said in the log and counted on the Federation tab, under a post
