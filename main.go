@@ -21816,7 +21816,10 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 	_, err = f.out.enqueueThen(ctx, keyOwner(uid), id, body, to, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE ap_person_out SET sent_at = $2, due_at = CASE WHEN gen = $3 THEN NULL ELSE GREATEST(due_at, $2::timestamptz + make_interval(secs => $4)) END
 			WHERE user_id = $1`, uid, now, gen, personUpdateEvery.Seconds())
-		return err
+		if err != nil {
+			return &outWriteError{err} // this server's own write, like the others here: no try of the update
+		}
+		return nil
 	})
 	if errors.Is(err, errDeliveryFull) {
 		if err := f.outWrite(ctx, `UPDATE ap_person_out SET due_at = NULL, sent_at = $2 WHERE user_id = $1 AND gen = $3`, uid, now, gen); err != nil {

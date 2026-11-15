@@ -19,8 +19,8 @@ func (e *notesEnv) everyOtherWrite(table string) {
 }
 
 // The producers' own writes that the last review found outside outWrite (a comment's Update held for the gap between
-// two Updates, a post's Create dropped for a post no longer shown, and three branches of a profile's Update: no longer
-// shown, the switches unread, no key yet): each write refused once is this server's trouble, not a failure of the record,
+// two Updates, a post's Create dropped for a post no longer shown, and branches of a profile's Update: no longer
+// shown, the switches unread, no key yet, and the write made with the enqueue): each write refused once is this server's trouble, not a failure of the record,
 // so no try is counted and nothing is logged as failed. Each case fails with the plain write it had.
 func TestDBOwnWritesAreNoTries(t *testing.T) {
 	t.Run("a comment's Update held for the gap", func(t *testing.T) {
@@ -58,7 +58,7 @@ func TestDBOwnWritesAreNoTries(t *testing.T) {
 			t.Errorf("a refused drop counted as the record's failure: kept with no try %d, log %q", n, logs.String())
 		}
 	})
-	for _, branch := range []string{"no longer shown", "switches unread", "no key yet"} {
+	for _, branch := range []string{"no longer shown", "switches unread", "no key yet", "sent"} {
 		t.Run("a profile's Update, "+branch, func(t *testing.T) {
 			e := newNotesEnv(t)
 			bo, _ := e.remote("bo", "h1.fan.example", true)
@@ -75,8 +75,16 @@ func TestDBOwnWritesAreNoTries(t *testing.T) {
 				f.followsOn = func() (bool, bool) { return true, false }
 				t.Cleanup(func() { f.followsOn = keep })
 			case "no key yet":
+				// The key maker is held first: a request for ana's key still waiting would make it again after the
+				// delete, and the update would then be sent, not put off.
+				hold := make(chan struct{})
+				f.mu.Lock()
+				f.beforeKey = func(keyOwner) { <-hold }
+				f.mu.Unlock()
+				t.Cleanup(func() { close(hold) })
 				e.mustExec(`DELETE FROM ap_keys WHERE user_id = $1`, e.anaID)
 			}
+			// "sent" changes nothing: the update is made, and the refused write is the one that goes with its enqueue.
 			e.everyOtherWrite("ap_person_out")
 			logs := logged(t)
 			f.personAt.Store(0)
