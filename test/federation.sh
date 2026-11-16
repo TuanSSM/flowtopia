@@ -3,6 +3,8 @@
 # their own: the federation suite (docs/federation.md 13, "As built (FWR 8)").
 #   test/federation.sh                 the suite
 #   test/federation.sh --logs <dir>    and keep both apps' logs, both proxies' logs and both queues' state there
+#   FLOWA_FED_KEEP=on test/federation.sh   and, when a check failed, leave the containers running to be looked at
+# When a check failed, the last 200 lines of each app's log and both queues' state are printed at the end.
 # What runs:
 #   - the image, built once by build-image.sh --load as a release builds it, and the Postgres image compose.yml pins;
 #   - on one new network, for each of one.flowa.test and two.flowa.test: a Postgres, the app in federated mode with
@@ -118,6 +120,10 @@ collect() {   # the logs and the queues' state, into $work/logs, then into --log
       sql "$n" "SELECT d.id, d.state, d.attempts, d.next_at, d.inbox, d.last_error, o.ap_id FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id ORDER BY d.id"
       echo "-- inbox by kind, state and outcome"; sql "$n" "SELECT kind, state, outcome, count(*) FROM ap_inbox GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
       echo "-- hosts"; sql "$n" "SELECT host, state, failures, sig, delivered, dropped, last_success, last_failure, last_error FROM ap_hosts ORDER BY host"
+      echo "-- inbox rows (the body is dropped once handled)"
+      sql "$n" "SELECT i.id, u.username, i.kind, i.state, i.attempts, i.received_at, i.handled_at, i.outcome, i.activity_id FROM ap_inbox i JOIN users u ON u.id = i.actor_id ORDER BY i.id"
+      echo "-- follows"; sql "$n" "SELECT a.username, b.username, f.state, f.ap_id FROM follows f JOIN users a ON a.id = f.follower_id JOIN users b ON b.id = f.followee_id ORDER BY 1, 2"
+      echo "-- activities made (newest 60)"; sql "$n" "SELECT id, created_at, fanned_out, body::jsonb->>'type', ap_id FROM ap_outbox ORDER BY id DESC LIMIT 60"
       echo "-- health"; health "$n"
     } >"$work/logs/$n-queue.txt" 2>&1
   done
@@ -126,7 +132,23 @@ collect() {   # the logs and the queues' state, into $work/logs, then into --log
 cleanup() {
   [ -d "$work" ] || return
   docker inspect "$p-one-app" >/dev/null 2>&1 && collect
-  local c
+  local c n
+  # After a failed check, the last 200 lines of each app's log and both queues' state go to the output too, so a run in
+  # CI says why without its uploaded logs.
+  if [ "$fail" -gt 0 ] && [ -d "$work/logs" ]; then
+    for n in "${names[@]}"; do
+      [ -f "$work/logs/$n-app.log" ] || continue
+      echo "---- the last 200 lines of $n's app log"; tail -n 200 "$work/logs/$n-app.log"
+      echo "---- $n's queues and rows"; cat "$work/logs/$n-queue.txt" 2>/dev/null
+    done
+  fi
+  # FLOWA_FED_KEEP=on keeps the containers, network and volumes of a run that failed, to be looked at by hand (and
+  # removed by hand: docker rm -f the containers named $p-*, then the network and volumes).
+  if [ "$fail" -gt 0 ] && [ "${FLOWA_FED_KEEP:-}" = on ]; then
+    echo "kept for a look: the containers, network and volumes named $p-* (remove them by hand)"
+    rm -rf "$work"
+    return
+  fi
   for c in $(docker ps -aq --filter "name=^$p-"); do docker rm -f "$c" >/dev/null 2>&1; done
   docker network rm "$p" >/dev/null 2>&1
   docker volume rm "$p-one-data" "$p-two-data" >/dev/null 2>&1

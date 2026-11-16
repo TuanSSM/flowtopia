@@ -3567,7 +3567,9 @@ corrected:
   the row is given up past 48 hours from when it was written (the first attempt is due then: F9's "first attempt");
   the domain policy is asked again (`admits`), so a host suspended, or no longer allowed, since the row was written
   gets nothing and the row is given up; the signer's key is read (`privateKey`; a member with no key yet waits a
-  minute, without counting an attempt); and one of the pacer's places is taken: places are a tenth of a second
+  minute, without counting an attempt, or less: once the key worker has made the key, the rows given back for it are
+  due at once, `keyMade`, after the review of #119, where the federation suite's second follower waited that minute
+  behind the first one's key); and one of the pacer's places is taken: places are a tenth of a second
   apart in all, so at most 10 requests a second, and a place more than a second ahead (a clock that stepped back) is
   not waited for. A row held longer than half its 60 s lease has the lease renewed before the send, and is not sent
   if it lost it: every statement about a claimed row names the lease it holds, so a worker that lost its row

@@ -7043,6 +7043,9 @@ func (f *federation) startWorker() {
 				case made:
 					log.Printf("keys: made the key of %s in %d ms", o, time.Since(began).Milliseconds())
 					f.dropActor(o) // a document is not kept without a key, but one may be on its way
+					if f.out != nil {
+						f.out.keyMade(f.ctx, o)
+					}
 				}
 				f.mu.Lock()
 				handled := f.handled
@@ -18603,6 +18606,32 @@ func (q *deliveryQueue) fanOutDue(ctx context.Context) error {
 }
 
 /* The workers */
+
+// keyMadeSQL makes due now ($2) the rows of owner $1's activities (NULL: the instance actor's) that were never sent and
+// wait for a later time: what a send found without its owner's key and gave back for deliveryOwnWait. Only rows never
+// tried (attempts 0, the claim given back is not counted) and not held by a worker; a row waiting for its turn behind
+// another (comes_after) is only looked at again. Locked in the order of their ids, as every statement over several rows
+// of ap_deliveries is.
+const keyMadeSQL = `UPDATE ap_deliveries SET next_at = $2 WHERE id IN (SELECT d.id FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id
+	WHERE o.actor_id IS NOT DISTINCT FROM $1 AND o.signer IS NULL AND d.state = 'queued' AND d.attempts = 0 AND d.locked_until IS NULL AND d.next_at > $2
+	ORDER BY d.id FOR UPDATE OF d)`
+
+// keyMade hears from the key worker that owner's key was just made: the rows a send gave back for want of it go now,
+// not a minute later (deliveryOwnWait). A member who shares and acts at once (the federation suite: bob and cyd join,
+// share and follow within a second, while the key worker makes one key at a time, an RSA key taking from a few
+// milliseconds to seconds) would otherwise have their first activity wait that minute.
+func (q *deliveryQueue) keyMade(ctx context.Context, o keyOwner) {
+	n, err := q.exec(ctx, keyMadeSQL, o.arg(), q.now())
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("deliveries: after the key of %s was made: %v", o, err)
+		}
+		return
+	}
+	if n > 0 {
+		q.kick()
+	}
+}
 
 // kick wakes a worker, starting them on the first row.
 func (q *deliveryQueue) kick() {
