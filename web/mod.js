@@ -97,7 +97,7 @@ function pageMod(tab) {
 const REMOTE_HELP = {
   mute: 'Shown here only to members who follow it: its replies, mentions and profile text stay hidden from everyone else, and its follows of members here become requests to approve. Its follows stay.',
   suspend: 'Nothing it sends is taken and nothing is sent to it. What it wrote is hidden from everyone, nobody here can follow it, and its follows both ways end; members who followed it are told. The follows are not restored when the suspension ends.',
-  purge_remote: 'Removes what this server holds of it: its posts and their pictures, its replies (a reply someone here answered stays as an empty placeholder), its likes, its follows, the notifications it left and what it sent that waits. Its handle and its suspension stay, so it stays refused. This cannot be undone.'
+  purge_remote: 'Removes what this server holds of it: its posts and their pictures, with the comments and likes members here left on those posts, its replies (a reply someone here answered stays as an empty placeholder), its likes, its follows, the notifications it left and what it sent that waits. Its handle and its suspension stay, so it stays refused. This cannot be undone.'
 };
 // Longer choices for an account of another server, which has no session to wait out: up to a year, the server's bound.
 const REMOTE_DURATIONS = [...DURATIONS, ['90d', '90 days', 2160], ['365d', '1 year', 8760]];
@@ -110,7 +110,7 @@ function openAction(d) {
   const help = remote ? REMOTE_HELP[d.do] : { hide: 'Only its author and moderators will see it. The author is told why.', mute: 'They can read and like, but not post or comment, until the end time.', suspend: 'They are signed out at once and cannot sign in until the end time.' }[d.do];
   const durs = remote ? REMOTE_DURATIONS : DURATIONS;
   el.hidden = false;
-  el.innerHTML = `<form class="modal-box narrow" id="action-form" data-do="${d.do}" data-kind="${d.kind}" data-id="${d.id}" data-remote="${remote ? '1' : ''}" data-resolve="${esc(d.resolve || '')}" role="dialog" aria-modal="true" aria-labelledby="act-t">
+  el.innerHTML = `<form class="modal-box narrow" id="action-form" data-do="${d.do}" data-kind="${d.kind}" data-id="${d.id}" data-remote="${remote ? '1' : ''}" data-name="${esc(d.name || "")}" data-resolve="${esc(d.resolve || '')}" role="dialog" aria-modal="true" aria-labelledby="act-t">
     <div class="row"><h2 id="act-t" class="grow">${esc(title)}</h2><button type="button" class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
     <p class="small muted" style="margin-top:4px">${help}</p>
     ${timed ? `<div class="seg" role="radiogroup" aria-label="For how long" style="margin-top:12px;flex-wrap:wrap">${durs.map(([k, n], i) => `<label class="seg-r"><input type="radio" name="dur" value="${k}" ${i === (remote ? 4 : 1) ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>` : ''}
@@ -740,12 +740,17 @@ document.addEventListener('submit', async e => {
     if (f.dur) { const h = REMOTE_DURATIONS.find(x => x[0] === f.dur.value)[2]; body.until = new Date(Date.now() + h * 36e5).toISOString().replace(/\.\d+Z$/, 'Z'); }
     const btn = f.querySelector('[type=submit]');
     btn.disabled = true;
-    let r = await api('mod/actions', 'POST', body);
-    // A purge works in parts of about 10 seconds each, and says when more is left: it is asked again until done.
-    while (r.ok && r.data?.done === false) { say(r.data.note); r = await api('mod/actions', 'POST', body); }
+    // A purge works in parts of about 10 seconds each, and says when more is left: it is asked again until done, and
+    // what every part removed is added up for the last word.
+    const sum = {}, add = r => { for (const [k, v] of Object.entries(r.data?.removed || {})) sum[k] = (sum[k] || 0) + Number(v || 0); };
+    let r = await api('mod/actions', 'POST', body), parts = 1;
+    while (r.ok && r.data?.done === false) { add(r); say(r.data.note); r = await api('mod/actions', 'POST', body); parts++; }
     btn.disabled = false;
     if (!r.ok) { showErr('act-err', r.error, errFields(f, r.error, [[/\breason\b/i, ['reason']]])); return; }
-    closeModal(); toast(dd.remote ? r.data.note || 'Done.' : 'Done. They have been told.'); refreshAfterMod();
+    if (parts > 1) add(r);
+    const total = Object.values(sum).reduce((a, b) => a + b, 0), mc = sum["members' comments under its posts"] || 0, ml = sum["members' likes of its posts"] || 0;
+    const note = parts > 1 ? `Removed ${total.toLocaleString()} rows of what this server held of @${dd.name} in ${parts} parts. With its posts went ${mc.toLocaleString()} comments and ${ml.toLocaleString()} likes members here had left on them. Its handle and its suspension stay, so it stays refused.` : r.data.note;
+    closeModal(); toast(dd.remote ? note || 'Done.' : 'Done. They have been told.'); refreshAfterMod();
   } else if (f.id === 'inst-form') {
     e.preventDefault(); instSave(false);
   } else if (f.id === 'fed-domain-form') {

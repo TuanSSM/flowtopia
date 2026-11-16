@@ -6646,6 +6646,11 @@ type federation struct {
 
 	// policy is the domain policy as last read (loadPolicy): the allowlist or open, and the rows by domain.
 	policy atomic.Pointer[fedPolicy]
+	// policySeq numbers the reads of the policy, each taken before its read (loadPolicy), so a read that began earlier
+	// never replaces in memory one that began later; policyRead, when a test sets it, runs between a read and its store,
+	// and may fail the read.
+	policySeq  atomic.Uint64
+	policyRead func() error
 	// conns are the turns at the database federation's own work takes, one per statement or transaction and
 	// never across a fetch (dbTurn): at most fedConnsMax of the pool's 8 connections (section 12, 8.2).
 	conns chan struct{}
@@ -15443,8 +15448,13 @@ func (c *actorCache) store(ctx context.Context, doc *apActor, want string, keyDo
 	case known && doc.Suspended:
 		_, err = tx.ExecContext(ctx, `UPDATE ap_actors SET state = 'suspended', fetched_at = $2, expires_at = $3 WHERE user_id = $1`, uid, now, now.Add(actorTTL))
 	case known:
-		if _, err = tx.ExecContext(ctx, `UPDATE users SET display_name = $2 WHERE id = $1 AND domain <> ''`, uid, display); err == nil {
-			_, err = tx.ExecContext(ctx, `UPDATE ap_actors SET kind = $2, preferred_username = $3, summary = $4, url = $5, icon = $6, inbox = $7, shared_inbox = $8,
+		// An account a moderator suspended here keeps the name, bio and picture it has here (none, once purged): a fetch
+		// for a key, a lookup by handle or a lifted suspension on its server brings back its key and addresses, not what
+		// the suspension hides and the purge removed (FMD 2). The columns are asked in the statements themselves.
+		if _, err = tx.ExecContext(ctx, `UPDATE users SET display_name = $2 WHERE id = $1 AND domain <> '' AND (suspended_until IS NULL OR suspended_until <= now())`, uid, display); err == nil {
+			_, err = tx.ExecContext(ctx, `UPDATE ap_actors SET kind = $2, preferred_username = $3,
+				summary = CASE WHEN EXISTS (SELECT 1 FROM users WHERE id = $1 AND suspended_until > now()) THEN summary ELSE $4 END, url = $5,
+				icon = CASE WHEN EXISTS (SELECT 1 FROM users WHERE id = $1 AND suspended_until > now()) THEN icon ELSE $6 END, inbox = $7, shared_inbox = $8,
 				followers_url = $9, moved_to = $10, locked = $11, key_id = $12, public_key = $13, state = 'ok', fetched_at = $14, expires_at = $15, outbox = $16 WHERE user_id = $1`,
 				uid, doc.Kind, pref, summary, link, icon, doc.Inbox, doc.SharedInbox, doc.Followers, doc.MovedTo, doc.ManuallyApprovesFollowers, key.ID, key.PEM, now, now.Add(actorTTL), outbox)
 		}
@@ -20876,6 +20886,7 @@ type fedPolicy struct {
 	// policy was read ends (FMD 2; zero when none was): until then the same statements run with the look, which asks
 	// the account's row for its own limit and suspension (limitFree). Read with the rows, through users_remote_held.
 	heldUntil time.Time
+	seq       uint64                  // the number of the read that made it (federation.policySeq)
 	rows      map[string]domainPolicy // by domain
 	// suspended is every suspended domain, for the fetcher's refused list (refusedHosts' form: lower case,
 	// matched with its subdomains).
@@ -20989,8 +21000,14 @@ func (f *federation) policyNow() *fedPolicy {
 
 // loadPolicy reads the mode and the rows into memory. It runs at start and after each change an admin makes;
 // the rows are read and their connection given back before the new policy is put in place.
+//
+// Two reads can run at once (two admins' changes): each takes its number before it reads, and its result is put in
+// place only if no read numbered after it was put in place first. A read numbered later began after every change
+// committed before the earlier one began, so it holds at least as much; without this, a read begun before a
+// moderator's suspension committed could be stored over the read after it, and the statements would run without the
+// look at limits until some later change (FMD 2's review).
 func (f *federation) loadPolicy(ctx context.Context) error {
-	p := &fedPolicy{mode: policyAllowlist, rows: map[string]domainPolicy{}}
+	p := &fedPolicy{mode: policyAllowlist, rows: map[string]domainPolicy{}, seq: f.policySeq.Add(1)}
 	done, err := f.dbTurn(ctx)
 	if err != nil {
 		return err
@@ -21031,7 +21048,20 @@ func (f *federation) loadPolicy(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	f.policy.Store(p)
+	if f.policyRead != nil {
+		if err := f.policyRead(); err != nil {
+			return err
+		}
+	}
+	for {
+		cur := f.policy.Load()
+		if cur != nil && cur.seq > p.seq {
+			return nil // a read begun later is in place already, and holds at least what this one read
+		}
+		if f.policy.CompareAndSwap(cur, p) {
+			break
+		}
+	}
 	// An address refused under the old policy is not remembered as refused under the new one: allowing a
 	// domain lets its actors be fetched at once, not after the cache's 10 minutes.
 	if f.actors != nil {
@@ -21560,10 +21590,6 @@ func (a *app) remoteModAction(w http.ResponseWriter, r *http.Request, u *user, a
 			return true
 		}
 	}
-	w, ok := allowed(w, a.lim.remoteActs, u, "actions on accounts of other servers")
-	if !ok {
-		return true
-	}
 	if reason == "" && (action == "mute" || action == "suspend" || action == "purge_remote") {
 		fail(w, http.StatusBadRequest, "Give a reason. It is kept in the audit log for the moderators; the account and its server are not told.")
 		return true
@@ -21575,6 +21601,11 @@ func (a *app) remoteModAction(w http.ResponseWriter, r *http.Request, u *user, a
 			fail(w, http.StatusBadRequest, "Choose an end time between now and a year from now.")
 			return true
 		}
+	}
+	// Charged only for an action that can go ahead: a missing reason or a wrong end costs nothing.
+	w, ok := allowed(w, a.lim.remoteActs, u, "actions on accounts of other servers")
+	if !ok {
+		return true
 	}
 	if action == "purge_remote" {
 		a.purgeRemoteAccount(w, r, u, id, handle, inbox, reason)
@@ -21615,7 +21646,20 @@ func (a *app) remoteModAction(w http.ResponseWriter, r *http.Request, u *user, a
 		a.serverError(w, err)
 		return true
 	}
+	// The policy in memory learns when the last limit or suspension ends, so the statements carry the look while one
+	// holds (limitStatements). It is read again whatever became of the request, as fedPolicyChanged does, and on the
+	// way that changes nothing too: an earlier action whose read failed after its commit is put in place by the next.
+	reload := func() error {
+		ctx, cancel := own()
+		defer cancel()
+		return a.fed.loadPolicy(ctx)
+	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		tx.Rollback()
+		if err := reload(); err != nil {
+			a.serverError(w, err)
+			return true
+		}
 		fail(w, http.StatusConflict, "Nothing to change: it is already that way.")
 		return true
 	}
@@ -21627,17 +21671,20 @@ func (a *app) remoteModAction(w http.ResponseWriter, r *http.Request, u *user, a
 		a.serverError(w, err)
 		return true
 	}
-	// The policy in memory learns when the last limit or suspension ends, so the statements carry the look while one
-	// holds (limitStatements); read again whatever became of the request, as fedPolicyChanged does.
-	ctx, cancel := own()
-	defer cancel()
-	if err := a.fed.loadPolicy(ctx); err != nil {
-		a.serverError(w, err)
+	if err := reload(); err != nil {
+		// Committed, so the answer says so: the change holds in the database and is in the audit log, and the pages
+		// follow it once the policy is read again, which the same action asked again does at once.
+		log.Printf("error: federation: reading the policy after %s of account %d: %v", remoteActAudit[action], id, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": remoteSavedNotApplied, "saved": true})
 		return true
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "note": note})
 	return true
 }
+
+// remoteSavedNotApplied is the answer when an action on a remote account was saved but the policy in memory could not
+// be read again after it.
+const remoteSavedNotApplied = "Saved, and in the audit log, but this server could not apply it to its pages yet. Do the same again in a moment: that applies it."
 
 // plural is one or many, by n.
 func plural(n int64, one, many string) string {
@@ -21683,7 +21730,12 @@ func (a *app) suspendEnds(ctx context.Context, tx *sql.Tx, id int64, handle, inb
 // where the last one stopped, and on an account with nothing left each takes nothing.
 var remotePurgeSteps = []struct{ what, sql string }{
 	// Its posts, with their pictures' rows, and what hangs off them here (comments, likes, notifications, bookmarks).
-	{"posts", `WITH old AS (SELECT id FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL ORDER BY id LIMIT $2), ` + remoteGoneSQL},
+	// Members' comments and likes on them go with them (a comment has no meaning without its post), and are counted.
+	{"posts", `WITH old AS (SELECT id FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL ORDER BY id LIMIT $2),
+		mc AS (SELECT count(*) AS n FROM comments c WHERE c.post_id = ANY(ARRAY(SELECT id FROM old)) AND NOT c.deleted
+			AND EXISTS (SELECT 1 FROM users cu WHERE cu.id = c.user_id AND cu.domain = '' OFFSET 0)),
+		ml AS (SELECT count(*) AS n FROM likes l WHERE l.post_id = ANY(ARRAY(SELECT id FROM old))
+			AND EXISTS (SELECT 1 FROM users cu WHERE cu.id = l.user_id AND cu.domain = '' OFFSET 0)), ` + remoteGoneSQL + `, (SELECT n FROM mc), (SELECT n FROM ml)`},
 	// Its replies: each removed, or kept as a placeholder with no text where someone else answered it, so the answer
 	// stays (as when it deletes itself, remoteTalkGone); a placeholder already made is not taken again. The batch's ids
 	// are an array, so each row is found by the primary key (with IN, the planner read comments whole).
@@ -21693,17 +21745,17 @@ var remotePurgeSteps = []struct{ what, sql string }{
 			AND EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = k.id AND r.user_id <> $1 OFFSET 0) RETURNING k.id),
 		rd AS (DELETE FROM comments WHERE id = ANY((SELECT ids FROM rc)::bigint[]) AND NOT id = ANY(ARRAY(SELECT id FROM rk)) RETURNING 1),
 		rck AS (DELETE FROM comment_likes WHERE comment_id = ANY(ARRAY(SELECT id FROM rk)) RETURNING 1)
-		SELECT cardinality((SELECT ids FROM rc))::bigint, '{}'::text[]`},
+		SELECT cardinality((SELECT ids FROM rc))::bigint, '{}'::text[], 0::bigint, 0::bigint`},
 	// The rest through the account's own index, each batch's keys made into an array first (= ANY(ARRAY(...))): with
 	// IN and a subquery, the planner read likes, comment_likes and notifications whole (TestDBQueryPlans' "purge:").
-	{"likes", `WITH d AS (DELETE FROM likes WHERE user_id = $1 AND post_id = ANY(ARRAY(SELECT post_id FROM likes WHERE user_id = $1 ORDER BY post_id LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
-	{"likes of replies", `WITH d AS (DELETE FROM comment_likes WHERE user_id = $1 AND comment_id = ANY(ARRAY(SELECT comment_id FROM comment_likes WHERE user_id = $1 ORDER BY comment_id LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
-	{"follows it made", `WITH d AS (DELETE FROM follows WHERE follower_id = $1 AND followee_id = ANY(ARRAY(SELECT followee_id FROM follows WHERE follower_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
-	{"follows of it", `WITH d AS (DELETE FROM follows WHERE followee_id = $1 AND follower_id = ANY(ARRAY(SELECT follower_id FROM follows WHERE followee_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
-	{"notifications", `WITH d AS (DELETE FROM notifications WHERE id = ANY(ARRAY(SELECT id FROM notifications WHERE actor_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
-	{"remembered deletions", `WITH d AS (DELETE FROM ap_deleted WHERE user_id = $1 AND ap_id = ANY(ARRAY(SELECT ap_id FROM ap_deleted WHERE user_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	{"likes", `WITH d AS (DELETE FROM likes WHERE user_id = $1 AND post_id = ANY(ARRAY(SELECT post_id FROM likes WHERE user_id = $1 ORDER BY post_id LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[], 0::bigint, 0::bigint FROM d`},
+	{"likes of replies", `WITH d AS (DELETE FROM comment_likes WHERE user_id = $1 AND comment_id = ANY(ARRAY(SELECT comment_id FROM comment_likes WHERE user_id = $1 ORDER BY comment_id LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[], 0::bigint, 0::bigint FROM d`},
+	{"follows it made", `WITH d AS (DELETE FROM follows WHERE follower_id = $1 AND followee_id = ANY(ARRAY(SELECT followee_id FROM follows WHERE follower_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[], 0::bigint, 0::bigint FROM d`},
+	{"follows of it", `WITH d AS (DELETE FROM follows WHERE followee_id = $1 AND follower_id = ANY(ARRAY(SELECT follower_id FROM follows WHERE followee_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[], 0::bigint, 0::bigint FROM d`},
+	{"notifications", `WITH d AS (DELETE FROM notifications WHERE id = ANY(ARRAY(SELECT id FROM notifications WHERE actor_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[], 0::bigint, 0::bigint FROM d`},
+	{"remembered deletions", `WITH d AS (DELETE FROM ap_deleted WHERE user_id = $1 AND ap_id = ANY(ARRAY(SELECT ap_id FROM ap_deleted WHERE user_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[], 0::bigint, 0::bigint FROM d`},
 	// What it sent that waits in the inbox's queue or was handled (a row in flight finds none to finish, and is done).
-	{"inbox rows", `WITH d AS (DELETE FROM ap_inbox WHERE id = ANY(ARRAY(SELECT id FROM ap_inbox WHERE actor_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	{"inbox rows", `WITH d AS (DELETE FROM ap_inbox WHERE id = ANY(ARRAY(SELECT id FROM ap_inbox WHERE actor_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[], 0::bigint, 0::bigint FROM d`},
 }
 
 // remotePurgeLastSQL is a purge's last statement: the account's name, bio, picture and links here and the summary and
@@ -21743,13 +21795,17 @@ func (f *federation) purgeRemote(ctx context.Context, id int64, inbox string, de
 	// reaches the end: a page calling again and again always finishes.
 	for _, s := range remotePurgeSteps {
 		for {
-			var n int64
+			var n, comments, likes int64
 			var files []string
-			if err := f.fedRow(ctx, []any{&n, pq.Array(&files)}, s.sql, id, batch); err != nil {
+			if err := f.fedRow(ctx, []any{&n, pq.Array(&files), &comments, &likes}, s.sql, id, batch); err != nil {
 				return got, false, err
 			}
 			removeMedia(f.mediaDir(), files)
 			got[s.what] += n
+			if s.what == "posts" {
+				got[purgeMembersComments] += comments
+				got[purgeMembersLikes] += likes
+			}
 			if err := ran(s.what, n); err != nil {
 				return got, false, err
 			}
@@ -21799,12 +21855,21 @@ func (a *app) purgeRemoteAccount(w http.ResponseWriter, r *http.Request, u *user
 	for _, v := range got {
 		n += v
 	}
-	note := fmt.Sprintf("Removed %d %s of what this server held of @%s. Its handle and its suspension stay, so it stays refused.", n, plural(n, "row", "rows"), handle)
+	// Members' comments and likes under its posts went with the posts: the answer says how many, as the audit does.
+	mc, ml := got[purgeMembersComments], got[purgeMembersLikes]
+	members := fmt.Sprintf(" With its posts went %d %s and %d %s members here had left on them.", mc, plural(mc, "comment", "comments"), ml, plural(ml, "like", "likes"))
+	note := fmt.Sprintf("Removed %d %s of what this server held of @%s.%s Its handle and its suspension stay, so it stays refused.", n, plural(n, "row", "rows"), handle, members)
 	if !done {
-		note = fmt.Sprintf("Removed %d %s so far; more is left. It goes on.", n, plural(n, "row", "rows"))
+		note = fmt.Sprintf("Removed %d %s so far; more is left. It goes on.%s", n, plural(n, "row", "rows"), members)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "done": done, "removed": got, "note": note})
 }
+
+// The names under which a purge counts the members' comments and likes that went with the account's posts.
+const (
+	purgeMembersComments = "members' comments under its posts"
+	purgeMembersLikes    = "members' likes of its posts"
+)
 
 // remoteHeldSQL is a page of the accounts of other servers limited or suspended now, after id $1, $2 at most, through
 // users_remote_held in the order of its key.
@@ -26166,9 +26231,12 @@ var migrations = []string{schema, schemaSocial,
 	// 25: actions on remote accounts (docs/federation.md section 10, "As built (FMD 2)"; FMD 2). A limit and a suspension
 	// of one account of another server are its users.muted_until and users.suspended_until, the columns a member's mute
 	// and suspension already use, so no column is added. This partial index holds the accounts of other servers a
-	// moderator ever limited or suspended (a lift clears the column, so it leaves too): the policy's read asks when the
-	// last of those in force ends (remoteHeldUntilSQL), and the Federation tab lists them (remoteHeldSQL), each without
-	// reading every remote account. An index only: an older build after ./deploy.sh --rollback ignores it, and reads the
+	// moderator ever limited or suspended. A lift by hand clears the column, so the account leaves it; a limit or a
+	// suspension that ended by its time keeps its end in the column, so the account stays in the index (as the cache's
+	// bound, evictActorsSQL, keeps it), holding nothing: every statement compares the end with now(). At most one row a
+	// remote account ever held, so this is not swept. The policy's read asks when the last of those in force ends
+	// (remoteHeldUntilSQL), and the Federation tab lists those in force (remoteHeldSQL), each without reading every
+	// remote account. An index only: an older build after ./deploy.sh --rollback ignores it, and reads the
 	// two columns of a remote account as it always did (the cache's bound keeps such an account, nothing else asks).
 	`CREATE INDEX IF NOT EXISTS users_remote_held ON users (id) WHERE domain <> '' AND (muted_until IS NOT NULL OR suspended_until IS NOT NULL)`,
 }
@@ -29774,11 +29842,35 @@ func (a *app) localStatements(q string) string {
 // runs before the admin's answer), so a page read after a limit is set asks it. A limit or a suspension of one account
 // of another server (FMD 2) keeps the look until the last of them ends (fedPolicy.limiting): while none is in force and
 // no domain is limited, the statements are byte for byte those of before.
+//
+// While accounts are held and no domain is limited, the look asks the account's row alone (heldOnly): the walk through
+// domain_policies, which finds no limit then, is left out, so a long list of allowed and suspended domains costs nothing
+// per reply.
 func (a *app) limitStatements(q string) string {
-	if a.fed != nil && a.fed.policyNow().limiting(time.Now()) {
-		return q
+	if a.fed != nil {
+		switch p := a.fed.policyNow(); {
+		case p.anyLimit:
+			return q
+		case p.limiting(time.Now()):
+			return heldOnly(q)
+		}
 	}
 	return unlimited(q)
+}
+
+// limitHeldFree is limitFree without the walk: the account (id) is not limited here unless viewer follows it, and not
+// suspended here. One look in the primary key of users, and for a limited account one in follows.
+func limitHeldFree(id, viewer string) string {
+	return `NOT EXISTS (SELECT 1 FROM users lu WHERE lu.id = ` + id + ` AND lu.domain <> '' AND (lu.suspended_until > now() OR lu.muted_until > now()
+		AND NOT EXISTS (SELECT 1 FROM follows lf WHERE lf.follower_id = ` + viewer + ` AND lf.followee_id = lu.id AND lf.state = 'accepted')) OFFSET 0)`
+}
+
+// heldOnly is q with each limitFree fragment the statements carry (limitFragments) made limitHeldFree.
+func heldOnly(q string) string {
+	for i, f := range limitFragments {
+		q = strings.ReplaceAll(q, f, limitHeldFree(limitFragmentArgs[i][0], limitFragmentArgs[i][1]))
+	}
+	return q
 }
 
 // unlimited takes every limitFree fragment the statements are built with out of q, with the words that joined it, so
@@ -29794,8 +29886,16 @@ func unlimited(q string) string {
 }
 
 // limitFragments are the limitFree conditions written in this file (account, viewer), as the statements carry them.
-var limitFragments = []string{limitFree("c.user_id", "$1"), limitFree("pc.user_id", "$1"), limitFree("r.user_id", "$1"),
-	limitFree("n.actor_id", "$1"), limitFree("p.user_id", "$1"), limitFree("p.user_id", "$2")}
+var limitFragments = func() []string {
+	out := []string{}
+	for _, a := range limitFragmentArgs {
+		out = append(out, limitFree(a[0], a[1]))
+	}
+	return out
+}()
+
+// limitFragmentArgs are the (account, viewer) of each fragment of limitFragments, in its order.
+var limitFragmentArgs = [][2]string{{"c.user_id", "$1"}, {"pc.user_id", "$1"}, {"r.user_id", "$1"}, {"n.actor_id", "$1"}, {"p.user_id", "$1"}, {"p.user_id", "$2"}}
 
 // plainStatements takes out of q what FWR 6 added to the statements over posts and comments for rows of other servers:
 // the look at a reply's account in the counts and the lists (postCountShown, commentAccountShown, replyCountShown), and the

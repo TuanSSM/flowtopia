@@ -4255,7 +4255,7 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   (Mastodon sends no notice to another server for a moderator's action on its account, as remembered; Flowa sends
   nothing). Permissions: `user.mute` or `user.suspend` and the new `federation.accounts` (moderators and admins, in
   `fedPerms`, so listed only in a mode that federates); `federation.manage` (admins) to purge. Allowance:
-  `limits.remoteActs`, 300 an hour per moderator. Audit: `limit_remote`, `unlimit_remote`, `suspend_remote` (with the
+  `limits.remoteActs`, 300 an hour per moderator, charged only once the reason and the end are good. Audit: `limit_remote`, `unlimit_remote`, `suspend_remote` (with the
   follows ended, the members told and the deliveries given up), `unsuspend_remote`, `purge_remote` (with what each step
   removed and whether it is done), each in the action's transaction, the account's handle in the detail. A member
   here keeps every action they had, through the same code as before; `purge_remote` on a member is refused (400), and
@@ -4272,6 +4272,19 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   the rows by `remoteHeldUntilSQL` through `users_remote_held`, and after each action); `limitStatements` runs the
   look only while a domain is limited or that time has not passed (`fedPolicy.limiting`), so local mode and an instance
   that holds nobody run the statements of before byte for byte (`TestUnlimitedIsBefore` unedited; `testRemoteStatements`).
+  While accounts are held and no domain is limited, the statements carry the look at the account alone
+  (`limitHeldFree`, through `heldOnly`): no walk through `domain_policies`, so a long list of allowed and suspended
+  domains costs nothing per reply. **Two reads of the policy at once** (two moderators' actions, or a domain's change
+  beside one): each read takes a number before it reads, and is put in place only if no read numbered after it was put
+  in place first (`policySeq`), so a read begun before a suspension committed is never stored over the one after it
+  (`testRemotePolicyOrder`, a hook between a read and its store; found by the review). **A read that fails after the
+  commit**: the action holds and is audited, and the answer says so (503, "Saved, and in the audit log, but this server
+  could not apply it to its pages yet. Do the same again in a moment: that applies it."); the same action asked again
+  reads the policy, a lift that changes nothing too, before its 409 (`testRemoteSavedNotApplied`). **An end that
+  passed** keeps its time in the column: the account stays in `users_remote_held` and the cache's bound keeps it, holding
+  nothing, since every statement compares the end with now(); decided: not swept, as it is at most one row per remote
+  account ever held, and a lift by hand clears it. A remote account muted through the old path in an earlier build that
+  federated (`mute` on its row, which nothing asked then) counts as limited from this version until its end.
   A limit and a domain's limit are one rule: an account moving from one to the other, or under both, is hidden while
   either holds (`testRemoteDomainAndAccount`).
 - **Suspend.** In the suspension's transaction (`remoteSuspendEndsSQL`): its follows both ways and their requests end,
@@ -4296,7 +4309,9 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   decided: no deletion of its data by itself after 30 days, which Mastodon is remembered to do; the purge is the admin's.
   Its likes still count, as a limited account's do (a count names nobody); its notifications are hidden.
 - **Purge** (`purgeRemote`), only of an account suspended now (409 otherwise): its posts (with their pictures' rows,
-  the files after each statement's commit, and what hangs off them here), its replies (each removed, or kept as an empty
+  the files after each statement's commit, and what hangs off them here: **the comments and likes members here left on
+  them go too**, as a comment has no meaning without its post, counted as "members' comments under its posts" and
+  "members' likes of its posts" in the answer and the audit), its replies (each removed, or kept as an empty
   placeholder where someone else answered it), its likes of posts and of replies, its follows both ways, the
   notifications it left, its remembered deletions, its inbox rows, then its name, bio, picture and links here and its
   cached actor's summary and picture, and the deliveries waiting for its own inbox. **Kept**: the account's row with its
@@ -4308,19 +4323,25 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   while the answer says `done: false`. **Safe to repeat**: a step with nothing left takes nothing; an interrupted purge
   (a dropped connection, a stop) leaves the rest for the next call, which ends where an uninterrupted one would
   (`testRemotePurgeInterrupted`); a second purge removes nothing. A post, reply or like the inbox was handling as the
-  purge ran is hidden (the account is suspended) and goes with the next purge.
+  purge ran is hidden (the account is suspended) and goes with the next purge. **Stays purged**: while the account is
+  suspended, a later fetch of its actor (a member's search by its handle, a key fetched again for its Delete or Undo)
+  writes its key, addresses and times but not its name, summary or picture (`actorCache.store`), so a purged profile does
+  not come back; once lifted, the next fetch brings it (`testRemotePurgedStays`).
 - **The pages.** The account's profile here (`#/fed/{id}`) shows staff with `federation.accounts` a Moderation card:
   each action with the sentence that says what it does, its state, end and reason, and its button (Purge for admins,
   once suspended). The moderation queue marks an author of another server ("an account on another server", its
   profile here linked) and offers Limit and Suspend for it. The Federation tab lists the accounts limited or suspended
   now (`GET /api/admin/federation/accounts`, 100 a page through `users_remote_held`), each with its end and reason and
   Lift buttons. The Accounts page still lists members only.
-- **Bounds measured** (`TestDBQueryPlans`): with 20 of the accounts that wrote 3,000 remote replies held and no domain
-  limited, the timeline reads about 16,000 rows (about 5 a reply) and a page of its comments 229; when the last hold
-  ends, 21 rows; a page of the Federation tab's list, 40; a Follow in from a limited account, 426; a suspension of an
-  account with 300 followers and 1,500 notifications, about 4,500; a purge's batch of 500 posts about 9,500 rows, of
-  replies about 14,500 (its index holds the account's 3,000 replies unordered, so each batch reads them all), of likes
-  2,500, of likes of replies 3,000, of notifications 4,000; the rest under 310. Forms that read likes, comment_likes,
+- **Bounds measured** (`TestDBQueryPlans`, each budget about 1.3 times the rows measured): with 20 of the accounts
+  that wrote 3,000 remote replies held and no domain limited, the timeline reads 11,286 to 13,281 rows across runs (the
+  sample ANALYZE takes; about 4 a reply; budget 16,000) and the same with 300 domains suspended, which the look at the
+  account alone never reads; a page of its comments 174 to 194 (250); the bell 160 (210); when the last hold ends, 21
+  rows (30); a page of the Federation tab's list, 40 (55); a Follow in from a limited account, 426 (560), and 268 with 300
+  domains suspended (350); a suspension of an account with 300 followers and 1,500 notifications, 4,195 to 4,495
+  (5,500); a purge's batch of 500 posts 10,535 (with the members' comments and likes counted), of replies 14,510 (its
+  index holds the account's 3,000 replies unordered, so each batch reads them all), of likes 2,501, of likes of replies
+  3,001, of follows of it 1,501 to 1,801, of notifications 4,002; the rest under 10 (50). Forms that read likes, comment_likes,
   notifications and comments whole (the keys compared with IN and a subquery, and a correlated EXISTS the planner hashed)
   were caught by that test and written with arrays (= ANY(ARRAY(...))) and OFFSET 0 instead. A purge of an account
   with 2,600 posts and as many likes keeps every statement within its batch (`testRemotePurgeThousands`).
@@ -4331,7 +4352,8 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   account, a row stored before; who may act, the reason, the end, the allowance and a member's mute as before; a purge,
   interrupted and repeated, and of thousands; two admins at once; a Follow and a member's follow while suspending, both
   orders; an account between a limited domain and a limit of its own; a host with upper case and a trailing dot; the
-  statements with nobody held; the list and the queue), `TestDBRemoteActionsLocal`, `TestPermissionTable`,
+  statements with nobody held; the list and the queue; two reads of the policy at once; an action saved whose read
+  of the policy failed; a purged profile fetched again), `TestDBRemoteActionsLocal`, `TestPermissionTable`,
   `TestDBQueryPlans`, and 19 checks of the `federation` suite (115 planned) between two real instances: one's admin
   limits cyd of two, whose follow by dee stays and whose new Follow of dee waits for her approval; cyd's reply under
   dee's post is read by dee, who follows cyd, and neither
@@ -4353,7 +4375,12 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   `TestPermissionTable`); no allowance; a limit without a reason; a member here taken for a remote account; a lift not
   read into the policy in memory; a suspended account's bio shown; the queue not marking a remote author; a purge
   keeping the account's profile; the index of held accounts missing (`TestDBQueryPlans`); a purge leaving the files of
-  pictures. 28 in all.
+  pictures. 28 in all. After the review, 10 more, each caught: an older read of the policy stored over a newer one;
+  the purge not counting the members' comments and likes; the follower's row not read FOR SHARE (now waited for on the
+  transaction's own backend, caught in 5 runs of 5); a held account running the look with the walk; the look at the
+  account alone forgetting suspensions; a fetch of a suspended actor writing its name, or its summary, back; a lift that
+  changes nothing not reading the policy; a saved action whose read failed answering 500; the allowance charged before
+  the reason is checked.
 
 ## 11. The member's side
 

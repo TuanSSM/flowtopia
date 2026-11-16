@@ -710,10 +710,13 @@ the name exists, makes no difference to the answer.
     not restored**, as in Mastodon. What it wrote is kept while it is suspended, except what housekeeping removes from
     any server after 30 days untouched.
   - **Purge** (admins, for an account suspended now): removes what this server holds of it, its posts and their
-    pictures, its replies (one a member answered stays as an empty placeholder, so the answer stays), its likes, its
+    pictures, with the comments and likes members here left on those posts (a comment has no meaning without its post;
+    the answer and the audit log say how many), its replies (one a member answered stays as an empty placeholder, so the answer stays), its likes, its
     follows, the notifications it left, what it sent that waits, and its name and profile text. Its handle, key and
     suspension stay, so it stays refused and the audit log keeps its name. It works in batches of 500 rows, about 10
-    seconds a call (the page goes on by itself), and can be run again; it cannot be undone.
+    seconds a call (the page goes on by itself), and can be run again; it cannot be undone. A later fetch of the
+    account (a member's search by its handle, or its key fetched again) brings back its key, never its name or profile
+    text, while it is suspended.
   A member here keeps the actions they had (mute, suspend, badges, stats); purging is refused for them.
 - **What a delivery must pass**, in this order, cheapest first, and nothing a sender has not proven is charged
   to anyone but the address it came from:

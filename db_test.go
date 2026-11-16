@@ -4228,22 +4228,38 @@ func TestDBQueryPlans(t *testing.T) {
 		{"replies: records of comments gone, a batch", talkOrphansSQL, []any{remoteBatch, 0}, 5000 + 3*remoteBatch, "ap_comment_out"}, // its 5,000 rows read whole here, a small table; its primary key once it grows
 	})
 	// The same post when 20 of the accounts that wrote its 3,000 remote replies are limited or suspended here and no
-	// domain is (FMD 2): the look asks each reply's account row once (its own limit and suspension are on it), and the
-	// walk finds no policy; the policy's read of when the last of them ends, and the Federation tab's page of them, go
-	// through users_remote_held, never reading users whole.
+	// domain is (FMD 2): the statements carry the look at the account alone (heldOnly), each reply's account row asked
+	// once, no walk; the policy's read of when the last of them ends, and the Federation tab's page of them, go through
+	// users_remote_held, never reading users whole. Then the same with 300 domains suspended and none limited, which the
+	// look at the account alone never reads, and a Follow in, whose statement asks the stored walk always. The budgets
+	// are the rows measured here and about a third more (the review of FMD 2).
 	if _, err := rtx2.Exec(`UPDATE users SET muted_until = CASE WHEN id % 2 = 0 THEN now() + interval '1 day' END, suspended_until = CASE WHEN id % 2 = 1 THEN now() + interval '1 day' END
 		WHERE id BETWEEN 1000001 AND 1000020`); err != nil {
 		t.Fatal(err)
 	}
-	plans([]planCase{
-		{"limited: 20 accounts held, the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 40000, "domain_policies"}, // about 5 rows a remote reply; domain_policies, empty here, is read whole
-		{"limited: 20 accounts held, a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
-			[]any{viewer, false, flood, 0, commentPage + 1}, 3000, "domain_policies"},
-		{"limited: 20 accounts held, the bell", notificationsFedSQL, []any{viewer, maxNotifList}, 1000, "domain_policies"},
-		{"held: when the last limit or suspension ends", remoteHeldUntilSQL, nil, 100, ""},
-		{"held: a page of the Federation tab's accounts", remoteHeldSQL, []any{0, remoteHeldPage + 1}, 300, ""},
-		{"held: a Follow in from an account limited here", followInSQL, []any{1000002, 9, "https://h2.example/f/held", "h2.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, "domain_policies"},
-	})
+	held := func(policies string) []planCase {
+		return []planCase{
+			{"limited: 20 accounts held" + policies + ", the timeline, its newest post holding 3,000 remote replies", heldOnly(feedSQL), []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 16000, ""}, // measured 11,286 to 13,281 across runs (the sample ANALYZE takes): about 4 rows a remote reply
+			{"limited: 20 accounts held" + policies + ", a page of its comments", heldOnly(commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`)),
+				[]any{viewer, false, flood, 0, commentPage + 1}, 250, ""}, // measured 174 to 194
+			{"limited: 20 accounts held" + policies + ", the bell", heldOnly(notificationsFedSQL), []any{viewer, maxNotifList}, 210, ""}, // measured 160
+		}
+	}
+	plans(append(held(""),
+		planCase{"held: when the last limit or suspension ends", remoteHeldUntilSQL, nil, 30, ""},                                                                                                                                       // measured 21
+		planCase{"held: a page of the Federation tab's accounts", remoteHeldSQL, []any{0, remoteHeldPage + 1}, 55, ""},                                                                                                                  // measured 40
+		planCase{"held: a Follow in from an account limited here", followInSQL, []any{1000002, 9, "https://h2.example/f/held", "h2.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 560, "domain_policies"})) // measured 426; domain_policies, empty here, read whole
+	if _, err := rtx2.Exec(`INSERT INTO domain_policies (domain, policy) SELECT 's' || g || '.example', 'suspend' FROM generate_series(1, 300) g`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx2.Exec(`ANALYZE domain_policies`); err != nil {
+		t.Fatal(err)
+	}
+	plans(append(held(" and 300 domains suspended"),
+		planCase{"held: 300 domains suspended, a Follow in from an account limited here", followInSQL, []any{1000004, 9, "https://h4.example/f/held", "h4.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 350, "domain_policies"})) // measured 268: one statement, so the planner reads 300 rows whole rather than look 2 names up
+	if _, err := rtx2.Exec(`DELETE FROM domain_policies`); err != nil {
+		t.Fatal(err)
+	}
 	// The same post when the servers of its 3,000 remote replies are limited (FMD 1): each remote reply's account is
 	// looked up once more (users' primary key, the walk through domain_policies, the viewer's follow), in the lists and
 	// the counts alike; a member's comment is not asked. domain_policies, 25 rows here, is read whole.
@@ -4302,21 +4318,40 @@ func TestDBQueryPlans(t *testing.T) {
 		}
 	}
 	on = ptx
-	// A suspension reads the account's notifications (1,500 here) and follows (300, each with its member's row) once.
-	purgeCases := []planCase{{"purge: what a suspension ends", remoteSuspendEndsSQL, []any{target, "words", "https://h33.example/inbox", "h33.example", time.Now()}, 6000, ""}}
+	// A suspension reads the account's notifications (1,500 here) and follows (300, each with its member's row) once; it
+	// is asked in a savepoint rolled back, so the purge's steps below find the same rows. Each budget is the rows
+	// measured here and about a third more (the review of FMD 2); a step with a few rows has 50.
+	if _, err := ptx.Exec(`SAVEPOINT ends`); err != nil {
+		t.Fatal(err)
+	}
+	plans([]planCase{{"purge: what a suspension ends", remoteSuspendEndsSQL, []any{target, "words", "https://h33.example/inbox", "h33.example", time.Now()}, 5500, ""}}) // measured 4,195
+	if _, err := ptx.Exec(`ROLLBACK TO SAVEPOINT ends`); err != nil {
+		t.Fatal(err)
+	}
+	measured := map[string]float64{
+		"posts":                10535, // each post's pictures, its row and what is counted of the members', about 21 rows a post
+		"replies":              14510, // comments_user holds the account's 3,000 replies unordered: each batch reads them all and sorts
+		"likes":                2501,
+		"likes of replies":     3001,
+		"follows it made":      2,
+		"follows of it":        1801, // its 300 followers by follows_followee, each row then by the primary key
+		"notifications":        4002,
+		"remembered deletions": 6,
+		"inbox rows":           1,
+	}
+	var purgeCases []planCase
 	for _, s := range remotePurgeSteps {
-		most, whole := float64(10*remotePurgeBatch), ""
-		switch s.what {
-		case "posts":
-			most = 25 * remotePurgeBatch // each post's pictures and its row, about 19 rows a post
-		case "replies":
-			most = 3000 + 25*remotePurgeBatch // comments_user holds the account's replies unordered: each batch reads them all (at most its caps) and sorts
-		case "inbox rows":
+		whole := ""
+		if s.what == "inbox rows" {
 			whole = "ap_inbox" // empty here, so read whole; its (actor_id, activity_id) key once it holds rows
 		}
-		purgeCases = append(purgeCases, planCase{"purge: a batch of " + s.what, s.sql, []any{target, remotePurgeBatch}, most, whole})
+		m, ok := measured[s.what]
+		if !ok {
+			t.Errorf("no budget for the purge's step %q", s.what)
+		}
+		purgeCases = append(purgeCases, planCase{"purge: a batch of " + s.what, s.sql, []any{target, remotePurgeBatch}, max(m*1.3, 50), whole})
 	}
-	purgeCases = append(purgeCases, planCase{"purge: the last statement", remotePurgeLastSQL, []any{target, "https://h33.example/inbox", "h33.example", time.Now()}, 200, ""})
+	purgeCases = append(purgeCases, planCase{"purge: the last statement", remotePurgeLastSQL, []any{target, "https://h33.example/inbox", "h33.example", time.Now()}, 50, ""}) // measured 6
 	plans(purgeCases)
 	on = db
 	ptx.Rollback()

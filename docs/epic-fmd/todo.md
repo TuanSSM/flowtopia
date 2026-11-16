@@ -58,8 +58,9 @@ Every setting, table, route and test named below is new unless the design note s
   Built (federation.md section 10, "As built (FMD 2)"; migration 25, an index, with `flowa-schema24.dump`): through
   `POST /api/mod/actions` in a mode that federates, `mute`, `unmute`, `suspend` and `unsuspend` on an account of
   another server limit, suspend and lift it (its `muted_until` and `suspended_until`, an end within a year), and
-  `purge_remote` removes what this server holds of a suspended one in batches of 500 rows, about 10 s a call, safe to
-  run again; a new permission `federation.accounts` (moderators and admins) beside `user.mute` and `user.suspend`, and
+  `purge_remote` removes what this server holds of a suspended one (with the comments and likes members here left on
+  its posts, counted in the answer and the audit) in batches of 500 rows, about 10 s a call, safe to run again, and a
+  later fetch of its actor does not bring its profile back while it is suspended; a new permission `federation.accounts` (moderators and admins) beside `user.mute` and `user.suspend`, and
   `federation.manage` to purge; a reason for each but a lift, `limits.remoteActs` (300 an hour per moderator), each in
   the audit log (`limit_remote`, `unlimit_remote`, `suspend_remote`, `unsuspend_remote`, `purge_remote`). The limit is
   the domain limit's look (`limitFree`) asking the account's own row, so local mode and an instance that holds nobody
@@ -84,6 +85,15 @@ Every setting, table, route and test named below is new unless the design note s
   unverified); whether a suspended account's likes should stop counting (built: they count, as a limited one's do; its
   notifications are hidden); whether a purge should also forget the account's handle and suspension (built: no, so it
   stays refused, as Mastodon keeps "usernames").
+  **After the review** (each with a test that fails without it): two reads of the policy at once can no longer finish
+  in the wrong order (a number taken before each read); a held account with no domain limited runs the look without the
+  walk; a purge counts and says the members' comments and likes that went with its posts; a later fetch keeps a purged
+  profile empty; an action whose read of the policy failed after its commit says it was saved, and a repeat applies it;
+  the allowance is charged after the reason and the end are checked; the race test waits on the transaction's own
+  backend. Expired holds are not swept (the docs say why).
+  **After merging, for the owner:** a remote account muted through the old path in an earlier build that federated
+  (nothing asked that column for a remote account then) counts as limited from this version until its end; lift it under
+  its profile's Moderation card if that was not meant.
 - [ ] **Reports across servers.** Reporting remote content uses the existing reports; resolving can
   forward a Flag from the instance actor without the reporter's name (`reports.forwarded_at`), in
   Mastodon's shape (the account then the posts in `object`, the comment in `content`); a Flag in

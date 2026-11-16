@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -107,6 +109,9 @@ func TestDBRemoteAccountActions(t *testing.T) {
 	t.Run("odd host", testRemoteOddHost)
 	t.Run("statements", testRemoteStatements)
 	t.Run("the list and the queue", testRemoteListAndQueue)
+	t.Run("two reads of the policy at once", testRemotePolicyOrder)
+	t.Run("saved but not applied", testRemoteSavedNotApplied)
+	t.Run("a purged profile stays purged", testRemotePurgedStays)
 }
 
 // Limit: as a limited domain, for one account. Hidden from ana, who does not follow cat: its reply (listed and counted),
@@ -408,6 +413,13 @@ func testRemoteWhoMay(t *testing.T) {
 	}
 	// The allowance: a moderator acting on accounts of other servers is held to it.
 	e.a.lim.remoteActs = newLimiter(2, time.Hour)
+	// A missing reason and a wrong end cost nothing of it.
+	if code, _ := e.act(e.mod, "mute", e.catID, ""); code != 400 {
+		t.Errorf("a limit without a reason: %d", code)
+	}
+	if code, _ := e.do(e.mod, "POST", "/api/mod/actions", map[string]any{"action": "suspend", "kind": "user", "id": e.catID, "reason": "x", "until": "soon"}); code != 400 {
+		t.Errorf("a suspension with no end: %d", code)
+	}
 	e.mustAct(e.mod, "mute", e.catID, "one")
 	e.mustAct(e.mod, "unmute", e.catID, "")
 	if code, _ := e.act(e.mod, "mute", e.catID, "three"); code != http.StatusTooManyRequests {
@@ -421,6 +433,11 @@ func testRemoteWhoMay(t *testing.T) {
 func (e *heldEnv) purgeFixture(posts int) []string {
 	e.t.Helper()
 	e.mustExec(`INSERT INTO posts (user_id, body, ap_id, audience) SELECT $1, 'cat post ' || g, $2 || '/statuses/p' || g, 'public' FROM generate_series(1, $3::int) g`, e.catID, catID, posts)
+	// What members here left on cat's first post: two comments (and one deleted, a placeholder that is not counted) and
+	// two likes; they go with the post.
+	e.mustExec(`INSERT INTO comments (post_id, user_id, body) SELECT p.id, u, 'on cat post' FROM posts p, unnest($2::bigint[]) u WHERE p.ap_id = $1`, catID+"/statuses/p1", "{"+fmt.Sprint(e.anaID)+","+fmt.Sprint(e.deeID)+"}")
+	e.mustExec(`INSERT INTO comments (post_id, user_id, body, deleted) SELECT id, $2, '', true FROM posts WHERE ap_id = $1`, catID+"/statuses/p1", e.cyID)
+	e.mustExec(`INSERT INTO likes (post_id, user_id) SELECT p.id, u FROM posts p, unnest($2::bigint[]) u WHERE p.ap_id = $1`, catID+"/statuses/p1", "{"+fmt.Sprint(e.anaID)+","+fmt.Sprint(e.deeID)+"}")
 	dir := e.a.fed.mediaDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		e.t.Fatal(err)
@@ -495,6 +512,17 @@ func testRemotePurge(t *testing.T) {
 		t.Fatalf("the purge: %v", out)
 	}
 	nothingLeft(t, e.whatCatHas())
+	// The members' comments and likes on its posts went with them, counted in the answer and the audit, and said.
+	removed := out["removed"].(map[string]any)
+	if num(removed[purgeMembersComments]) != 2 || num(removed[purgeMembersLikes]) != 2 || !strings.Contains(fmt.Sprint(out["note"]), "2 comments and 2 likes members here had left") {
+		t.Errorf("the members' comments and likes the purge removed: %v, %v", removed, out["note"])
+	}
+	if e.count(`SELECT count(*) FROM comments WHERE body = 'on cat post'`) != 0 {
+		t.Error("a member's comment under a purged post is left")
+	}
+	if e.count(`SELECT count(*) FROM mod_actions WHERE action = 'purge_remote' AND (detail->'removed'->>$1)::int = 2 AND (detail->'removed'->>$2)::int = 2`, purgeMembersComments, purgeMembersLikes) != 1 {
+		t.Error("the purge's audit line does not count the members' comments and likes")
+	}
 	for _, f := range files {
 		if _, err := os.Stat(f); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("the picture %s is still on disk", f)
@@ -629,17 +657,35 @@ func testRemoteTwoAdmins(t *testing.T) {
 	}
 }
 
-// waitBlocked waits until a statement of this test's database waits for a lock. One that never waits is a failure,
-// and the test goes on (the transaction is committed after it), so what that statement did is checked too.
-func (e *heldEnv) waitBlocked() {
+// heldTx begins a transaction and runs stmt in it, and gives the transaction and its backend's pid.
+func (e *heldEnv) heldTx(stmt string, args ...any) (*sql.Tx, int) {
 	e.t.Helper()
-	for i := 0; i < 400; i++ {
-		if e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`) > 0 {
+	tx, err := e.a.db.Begin()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var pid int
+	if err := tx.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err := tx.Exec(stmt, args...); err != nil {
+		e.t.Fatal(err)
+	}
+	return tx, pid
+}
+
+// waitBlocked waits until a statement waits for the transaction of backend pid (pg_blocking_pids, as blockedBy in
+// public_test.go): the other side of the race has reached the account's row and waits on that transaction, not on
+// anything else. One that never waits is a failure, and the test goes on (the transaction is committed after it), so
+// what that statement did is checked too.
+func (e *heldEnv) waitBlocked(pid int) {
+	e.t.Helper()
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) { // the poll of a lock wait, which nothing announces
+		if e.count(`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, pid) > 0 {
 			return
 		}
-		time.Sleep(10 * time.Millisecond) // the poll of a lock wait, which nothing announces
 	}
-	e.t.Error("waited 4 s for a statement to wait on the account's row")
+	e.t.Errorf("waited 10 s for a statement to wait for the transaction of backend %d", pid)
 }
 
 // A Follow from cat handled while its suspension is being written, both ways round: no follow is left; and a member's
@@ -648,13 +694,7 @@ func testRemoteFollowRace(t *testing.T) {
 	e := newHeldEnv(t)
 	e.mustExec(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, e.catID, e.anaID)
 	// The suspension's first statement holds the account's row; the Follow, stored before, waits for it and then sees it.
-	tx, err := e.a.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, e.catID); err != nil {
-		t.Fatal(err)
-	}
+	tx, pid := e.heldTx(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, e.catID)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -666,7 +706,7 @@ func testRemoteFollowRace(t *testing.T) {
 			}
 		}
 	}()
-	e.waitBlocked()
+	e.waitBlocked(pid)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -677,19 +717,13 @@ func testRemoteFollowRace(t *testing.T) {
 	e.mustExec(`UPDATE users SET suspended_until = NULL WHERE id = $1`, e.catID)
 
 	// The other way: a Follow's statement holds the row (as followInSQL does) and the suspension waits, then ends it.
-	tx, err = e.a.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`SELECT 1 FROM users WHERE id = $1 FOR SHARE`, e.catID); err != nil {
-		t.Fatal(err)
-	}
+	tx, pid = e.heldTx(`SELECT 1 FROM users WHERE id = $1 FOR SHARE`, e.catID)
 	if _, err := tx.Exec(`INSERT INTO follows (follower_id, followee_id, state) VALUES ($1, $2, 'accepted')`, e.catID, e.anaID); err != nil {
 		t.Fatal(err)
 	}
 	codes := make(chan int, 1)
 	go func() { c, _ := e.act(e.admin, "suspend", e.catID, "race"); codes <- c }()
-	e.waitBlocked()
+	e.waitBlocked(pid)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -699,18 +733,12 @@ func testRemoteFollowRace(t *testing.T) {
 	e.mustAct(e.admin, "unsuspend", e.catID, "")
 
 	// A member's follow of it, while the suspension holds the row: refused once it commits.
-	tx, err = e.a.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, e.catID); err != nil {
-		t.Fatal(err)
-	}
+	tx, pid = e.heldTx(`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = $1`, e.catID)
 	go func() {
 		c, _ := e.do(e.ana, "PUT", fmt.Sprintf("/api/fed/accounts/%d/follow", e.catID), nil)
 		codes <- c
 	}()
-	e.waitBlocked()
+	e.waitBlocked(pid)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -775,9 +803,14 @@ func testRemoteStatements(t *testing.T) {
 		}
 	}
 	e.mustAct(e.mod, "mute", e.catID, "x")
-	if e.a.localStatements(feedSQL) != feedSQL {
-		t.Error("with an account limited, the statements run without the look")
+	if got := e.a.localStatements(feedSQL); got != heldOnly(feedSQL) || got == unlimited(feedSQL) || strings.Contains(got, "domain_policies") {
+		t.Error("with an account limited and no domain, the statements do not run the look at the account alone")
 	}
+	e.must(200, e.admin, "PUT", "/api/admin/federation/domains/loud.example", map[string]any{"policy": "limit"})
+	if e.a.localStatements(feedSQL) != feedSQL {
+		t.Error("with a domain limited too, the statements run without the walk")
+	}
+	e.must(200, e.admin, "DELETE", "/api/admin/federation/domains/loud.example", nil)
 	e.mustExec(`UPDATE users SET muted_until = now() - interval '1 second' WHERE id = $1`, e.catID)
 	if err := e.a.fed.loadPolicy(context.Background()); err != nil {
 		t.Fatal(err)
@@ -845,5 +878,110 @@ func TestDBRemoteActionsLocal(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(e.must(200, admin, "GET", "/api/me", nil)["perms"]), permFedAccounts) {
 		t.Error("local mode lists federation.accounts")
+	}
+}
+
+// Two reads of the policy at once, finishing in the wrong order: moderator A lifts the last limit and A's read finds no
+// hold, then B's suspension commits and B's read is put in place; A's older read must not be put over it, or the
+// suspended account's replies would show to everyone until some later change.
+func testRemotePolicyOrder(t *testing.T) {
+	e := newHeldEnv(t)
+	e.send(e.cat(), catID, "Create", reply(catID, 1, e.postID, "hi from cat"))
+	e.mustAct(e.mod, "mute", e.boUser, "the last limit")
+	f := e.a.fed
+	held, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	f.policyRead = func() error {
+		if calls.Add(1) == 1 {
+			close(held)
+			<-release
+		}
+		return nil
+	}
+	defer func() { f.policyRead = nil }()
+	codes := make(chan int, 1)
+	go func() { c, _ := e.act(e.mod, "unmute", e.boUser, ""); codes <- c }() // A: read with no hold, held before its store
+	<-held
+	e.mustAct(e.admin, "suspend", e.catID, "spam") // B: committed, read and put in place
+	close(release)
+	if c := <-codes; c != 200 {
+		t.Fatalf("the lift: %d", c)
+	}
+	if !f.policyNow().limiting(time.Now()) {
+		t.Error("the older read was put over the newer one: the statements run without the look while cat is suspended")
+	}
+	if got, _ := e.seen(e.ana); slices.Contains(got, "hi from cat") {
+		t.Errorf("cat's reply shows while cat is suspended: %v", got)
+	}
+}
+
+// An action saved whose read of the policy failed after the commit says so (503, saved), and the same action asked
+// again (here a second lift, which changes nothing) reads the policy and puts the change in place.
+func testRemoteSavedNotApplied(t *testing.T) {
+	e := newHeldEnv(t)
+	e.mustAct(e.mod, "mute", e.catID, "x")
+	f := e.a.fed
+	f.policyRead = func() error { return errors.New("the database went away") }
+	code, out := e.act(e.mod, "unmute", e.catID, "")
+	f.policyRead = nil
+	if code != http.StatusServiceUnavailable || out["error"] != remoteSavedNotApplied || out["saved"] != true {
+		t.Errorf("a lift whose read failed: %d %v", code, out)
+	}
+	if e.count(`SELECT count(*) FROM users WHERE id = $1 AND muted_until IS NULL`, e.catID) != 1 || !f.policyNow().limiting(time.Now()) {
+		t.Fatal("the lift was not saved, or the policy in memory was read anyway")
+	}
+	if code, _ := e.act(e.mod, "unmute", e.catID, ""); code != http.StatusConflict {
+		t.Errorf("the lift asked again: %d", code)
+	}
+	if f.policyNow().limiting(time.Now()) {
+		t.Error("the lift asked again did not put the change in place")
+	}
+}
+
+// A purged account's profile is not brought back by a later fetch of its actor: neither a lookup (its row past its
+// time, fetched again) nor the fetch of its key an Undo of it needs. Its key is fetched again all the same.
+func testRemotePurgedStays(t *testing.T) {
+	e := newHeldEnv(t)
+	e.mustAct(e.admin, "suspend", e.catID, "spam")
+	e.mustAct(e.admin, "purge_remote", e.catID, "spam")
+	profile := func() string {
+		var name, summary, icon string
+		if err := e.a.db.QueryRow(`SELECT u.display_name, a.summary, a.icon FROM users u JOIN ap_actors a ON a.user_id = u.id WHERE u.id = $1`, e.catID).Scan(&name, &summary, &icon); err != nil {
+			t.Fatal(err)
+		}
+		return name + summary + icon
+	}
+	fetched := func() time.Time {
+		var at time.Time
+		if err := e.a.db.QueryRow(`SELECT fetched_at FROM ap_actors WHERE user_id = $1`, e.catID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	e.w.put(catID, worldDoc{body: actorDoc(catID, "cat", "Cat Again", &e.other.PublicKey, map[string]any{"summary": "back", "icon": map[string]any{"type": "Image", "url": "https://social.example/cat.png"}})})
+	// A lookup: the row is past its time, so the cache fetches the actor again.
+	e.mustExec(`UPDATE ap_actors SET expires_at = now() - interval '1 hour', fetched_at = now() - interval '2 hours' WHERE user_id = $1`, e.catID)
+	before := fetched()
+	if _, err := e.a.fed.remoteActor(context.Background(), catID); err != nil {
+		t.Fatal(err)
+	}
+	if !fetched().After(before) || profile() != "" {
+		t.Errorf("after a lookup: fetched again %v, profile %q", fetched().After(before), profile())
+	}
+	// The key an Undo of it needs, fetched again: the profile stays empty, the key is kept.
+	e.mustExec(`UPDATE ap_actors SET expires_at = now() - interval '1 hour', fetched_at = now() - interval '2 hours' WHERE user_id = $1`, e.catID)
+	e.a.fed.actors.keys.drop(catID)
+	before = fetched()
+	if why := e.deliver(activity(catID, "Undo", map[string]any{"type": "Follow", "actor": catID, "object": "https://here.example/users/ana", "id": catID + "/f/1"}, nil), e.cat()); why != inAccepted {
+		t.Errorf("an Undo of the purged account: %v", why)
+	}
+	if !fetched().After(before) || profile() != "" || e.count(`SELECT count(*) FROM ap_actors WHERE user_id = $1 AND key_id <> ''`, e.catID) != 1 {
+		t.Errorf("after the fetch of its key: fetched again %v, profile %q", fetched().After(before), profile())
+	}
+	// Lifted, the next fetch brings the profile back.
+	e.mustAct(e.admin, "unsuspend", e.catID, "")
+	e.mustExec(`UPDATE ap_actors SET expires_at = now() - interval '1 hour' WHERE user_id = $1`, e.catID)
+	if _, err := e.a.fed.remoteActor(context.Background(), catID); err != nil || profile() == "" {
+		t.Errorf("after the suspension was lifted the profile stays empty: %v", err)
 	}
 }
