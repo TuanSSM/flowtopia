@@ -21684,7 +21684,7 @@ func (a *app) remoteModAction(w http.ResponseWriter, r *http.Request, u *user, a
 
 // remoteSavedNotApplied is the answer when an action on a remote account was saved but the policy in memory could not
 // be read again after it.
-const remoteSavedNotApplied = "Saved, and in the audit log, but this server could not apply it to its pages yet. Do the same again in a moment: that applies it."
+const remoteSavedNotApplied = "Saved, and in the audit log, but this server could not apply it to its pages yet. Do the same again in a moment: that applies it. A limit or a suspension done again is written to the audit log a second time."
 
 // plural is one or many, by n.
 func plural(n int64, one, many string) string {

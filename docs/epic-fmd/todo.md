@@ -6,8 +6,8 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)); item 1 is done, and item 2 is built and waits for its review. The first item shipped in two parts, the first with FWR's inbox, because the allowlist is how
-the experimental mode starts (F8). 1 of 8 items done. Every admin action below goes through `audit`.
+**Status:** in progress (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)); items 1 and 2 are done. The first item shipped in two parts, the first with FWR's inbox, because the allowlist is how
+the experimental mode starts (F8). 2 of 8 items done. Every admin action below goes through `audit`.
 Every setting, table, route and test named below is new unless the design note says it exists.
 
 - [x] **Domain policies and the allowlist.** `domain_policies` (allow, limit, suspend, reject media,
@@ -49,7 +49,7 @@ Every setting, table, route and test named below is new unless the design note s
   whether likes of limited accounts should stop counting (built: they count, as counts name nobody); whether lifting
   reject media should fetch the old pictures again (built: no, only an edited post brings them back); whether the
   about page should list the moderated servers by default (built: off until an admin ticks it).
-- [ ] **Actions on remote accounts.** `mute` and `suspend` in `handleModAction` act as limit and
+- [x] **Actions on remote accounts.** `mute` and `suspend` in `handleModAction` act as limit and
   suspend on a remote account (limit: hidden from all but its followers, its follows become
   requests; suspend: its follows removed and not restored on unsuspend, as in Mastodon); a new
   action `purge_remote` deletes its content; the queue and the

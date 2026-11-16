@@ -746,10 +746,12 @@ document.addEventListener('submit', async e => {
     let r = await api('mod/actions', 'POST', body), parts = 1;
     while (r.ok && r.data?.done === false) { add(r); say(r.data.note); r = await api('mod/actions', 'POST', body); parts++; }
     btn.disabled = false;
-    if (!r.ok) { showErr('act-err', r.error, errFields(f, r.error, [[/\breason\b/i, ['reason']]])); return; }
+    // An action that was saved but not yet applied (503, saved) changed what the lists show, so they are read again.
+    if (!r.ok) { if (r.data?.saved) refreshAfterMod(); showErr('act-err', r.error, errFields(f, r.error, [[/\breason\b/i, ['reason']]])); return; }
     if (parts > 1) add(r);
     const total = Object.values(sum).reduce((a, b) => a + b, 0), mc = sum["members' comments under its posts"] || 0, ml = sum["members' likes of its posts"] || 0;
-    const note = parts > 1 ? `Removed ${total.toLocaleString()} rows of what this server held of @${dd.name} in ${parts} parts. With its posts went ${mc.toLocaleString()} comments and ${ml.toLocaleString()} likes members here had left on them. Its handle and its suspension stay, so it stays refused.` : r.data.note;
+    const n = (v, one, many) => `${v.toLocaleString()} ${v === 1 ? one : many}`;
+    const note = parts > 1 ? `Removed ${n(total, 'row', 'rows')} of what this server held of @${dd.name} in ${parts} parts. With its posts went ${n(mc, 'comment', 'comments')} and ${n(ml, 'like', 'likes')} members here had left on them. Its handle and its suspension stay, so it stays refused.` : r.data.note;
     closeModal(); toast(dd.remote ? note || 'Done.' : 'Done. They have been told.'); refreshAfterMod();
   } else if (f.id === 'inst-form') {
     e.preventDefault(); instSave(false);

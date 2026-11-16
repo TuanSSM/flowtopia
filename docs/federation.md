@@ -4257,7 +4257,7 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   `fedPerms`, so listed only in a mode that federates); `federation.manage` (admins) to purge. Allowance:
   `limits.remoteActs`, 300 an hour per moderator, charged only once the reason and the end are good. Audit: `limit_remote`, `unlimit_remote`, `suspend_remote` (with the
   follows ended, the members told and the deliveries given up), `unsuspend_remote`, `purge_remote` (with what each step
-  removed and whether it is done), each in the action's transaction, the account's handle in the detail. A member
+  removed and whether it is done; a purge done in several calls writes one entry per call, to be added up), each in the action's transaction, the account's handle in the detail. A member
   here keeps every action they had, through the same code as before; `purge_remote` on a member is refused (400), and
   `revoke_badge`, `hide_stats` and `show_stats` on a remote account are refused (400: it has none). In local mode the
   hook is not asked: `purge_remote` is "Unknown action." and nothing else changed (`TestDBRemoteActionsLocal`,
@@ -4279,7 +4279,7 @@ hook `remoteModAction`), in a mode that federates only. Mastodon's moderation pa
   in place first (`policySeq`), so a read begun before a suspension committed is never stored over the one after it
   (`testRemotePolicyOrder`, a hook between a read and its store; found by the review). **A read that fails after the
   commit**: the action holds and is audited, and the answer says so (503, "Saved, and in the audit log, but this server
-  could not apply it to its pages yet. Do the same again in a moment: that applies it."); the same action asked again
+  could not apply it to its pages yet. Do the same again in a moment: that applies it. A limit or a suspension done again is written to the audit log a second time."); the same action asked again
   reads the policy, a lift that changes nothing too, before its 409 (`testRemoteSavedNotApplied`). **An end that
   passed** keeps its time in the column: the account stays in `users_remote_held` and the cache's bound keeps it, holding
   nothing, since every statement compares the end with now(); decided: not swept, as it is at most one row per remote
