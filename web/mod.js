@@ -50,13 +50,15 @@ function targetHTML(it) {
   if (it.kind === 'post') return `<div class="mq-target">${t.body ? `<p class="post-body" ${t.remote ? 'dir="auto"' : ''}>${text(t.body)}</p>` : ''}${t.image ? `<img class="post-img" src="${esc(t.image)}" alt="${t.alt ? esc(t.alt) : 'Picture in the reported post'}">${t.alt ? `<p class="small mq-alt">Description of the picture: ${esc(t.alt)}</p>` : ''}` : ''}<div class="row wrap" style="gap:6px"><a class="small" href="#/post/${it.id}">Open the post</a>${hidden}</div></div>`;
   if (it.kind === 'comment') return `<div class="mq-target"><p class="small" ${t.remote ? 'dir="auto"' : ''}>${text(t.body)}</p><div class="row wrap" style="gap:6px"><a class="small" href="#/post/${t.postId}/${it.id}">Open the comment</a>${hidden}</div></div>`;
   const a = it.author || {};
-  return `<div class="mq-target"><p class="small">${a.bio ? richText(a.bio) : '<span class="muted">No bio.</span>'}</p><a class="small" href="#/u/${esc(a.username)}">Open the profile</a></div>`;
+  return `<div class="mq-target"><p class="small">${a.bio ? richText(a.bio) : '<span class="muted">No bio.</span>'}</p><a class="small" href="${a.remote ? `#/fed/${a.id}` : `#/u/${esc(a.username)}`}">Open the profile</a></div>`;
 }
 function authorHTML(it) {
   const a = it.author;
   if (!a) return '';
-  const status = [a.mutedUntil && `Muted until ${fmtWhen(a.mutedUntil)}`, a.suspendedUntil && `Suspended until ${fmtWhen(a.suspendedUntil)}`, a.statsHidden && 'Stats hidden'].filter(Boolean);
-  return `<div class="mq-author">${avatarHTML(a, 'sm')}<span class="grow"><a href="#/u/${esc(a.username)}"><b>${esc(a.displayName || a.username)}</b></a> <span class="tiny">@${esc(a.username)} · ${esc((RANK_NAMES[a.role] || a.role).toLowerCase())} · ${a.posts} ${a.posts === 1 ? 'post' : 'posts'} · ${a.actions} earlier ${a.actions === 1 ? 'action' : 'actions'}</span>
+  // An account of another server (a.remote) is limited, not muted, and an end already past is not shown for it.
+  const now = Date.now(), live = t => t && (!a.remote || Date.parse(t) > now);
+  const status = [live(a.mutedUntil) && `${a.remote ? 'Limited' : 'Muted'} until ${fmtWhen(a.mutedUntil)}`, live(a.suspendedUntil) && `Suspended until ${fmtWhen(a.suspendedUntil)}`, a.statsHidden && 'Stats hidden'].filter(Boolean);
+  return `<div class="mq-author">${avatarHTML(a, 'sm')}<span class="grow"><a href="${a.remote ? `#/fed/${a.id}` : `#/u/${esc(a.username)}`}"><b>${esc(a.displayName || a.username)}</b></a> <span class="tiny">@${esc(a.username)} · ${a.remote ? 'an account on another server' : esc((RANK_NAMES[a.role] || a.role).toLowerCase())} · ${a.posts} ${a.posts === 1 ? 'post' : 'posts'} · ${a.actions} earlier ${a.actions === 1 ? 'action' : 'actions'}</span>
     ${status.length ? `<span class="row wrap" style="gap:4px;margin-top:4px">${status.map(s => `<span class="chip warn">${esc(s)}</span>`).join('')}</span>` : ''}
     ${it.history?.length ? `<span class="tiny mq-hist">${it.history.map(h => `${esc(fmtWhen(h.at))}: ${esc(h.action.replace('_', ' '))} by @${esc(h.actor)}${h.reason ? ` (${esc(h.reason)})` : ''}`).join('<br>')}</span>` : ''}</span></div>`;
 }
@@ -68,8 +70,10 @@ function queueItemHTML(it, resolved) {
   const t = it.target || {}, a = it.author || {}, k = it.kind, mine = a.id === me.id;
   const acts = resolved || t.gone || mine ? '' : `<div class="row wrap mq-acts">
     ${k !== 'user' && canDo('post.hide') ? (t.hidden ? `<button class="btn sm" data-act="mod-do" data-do="restore" data-kind="${k}" data-id="${it.id}">Restore</button>` : `<button class="btn sm" data-act="mod-open" data-do="hide" data-kind="${k}" data-id="${it.id}">Hide…</button>`) : ''}
-    ${canDo('user.mute') ? `<button class="btn sm" data-act="mod-open" data-do="mute" data-kind="user" data-id="${a.id}" data-name="${esc(a.username)}">Mute…</button>` : ''}
-    ${canDo('user.suspend') ? `<button class="btn sm" data-act="mod-open" data-do="suspend" data-kind="user" data-id="${a.id}" data-name="${esc(a.username)}">Suspend…</button>` : ''}
+    ${a.remote ? (canDo('user.mute') && canDo('federation.accounts') ? `<button class="btn sm" data-act="mod-open" data-do="mute" data-kind="user" data-id="${a.id}" data-name="${esc(a.username)}" data-remote="1">Limit…</button>` : '')
+      : canDo('user.mute') ? `<button class="btn sm" data-act="mod-open" data-do="mute" data-kind="user" data-id="${a.id}" data-name="${esc(a.username)}">Mute…</button>` : ''}
+    ${canDo('user.suspend') && (!a.remote || canDo('federation.accounts')) ? `<button class="btn sm" data-act="mod-open" data-do="suspend" data-kind="user" data-id="${a.id}" data-name="${esc(a.username)}"${a.remote ? ' data-remote="1"' : ''}>Suspend…</button>` : ''}
+    ${a.remote ? `<a class="btn sm" href="#/fed/${a.id}">Its profile here</a>` : ''}
     <span class="grow"></span>
     <button class="btn sm" data-act="mod-resolve" data-outcome="dismissed" data-kind="${k}" data-id="${it.id}">Dismiss</button>
     <button class="btn sm primary" data-act="mod-resolve" data-outcome="actioned" data-kind="${k}" data-id="${it.id}">${icon('check')}Resolve: action taken</button></div>`;
@@ -88,17 +92,29 @@ function pageMod(tab) {
   return `<div class="page-h"><div class="grow"><h1>Moderation</h1><p>Reports from members. Every action is logged, and the person affected is told.</p></div>
     <div class="seg" role="group" aria-label="Show"><a class="${mod.tab === 'queue' ? 'on' : ''}" href="#/mod" ${mod.tab === 'queue' ? 'aria-current="page"' : ''}>Queue${mod.count ? ` (${mod.count})` : ''}</a><a class="${mod.tab === 'history' ? 'on' : ''}" href="#/mod/history" ${mod.tab === 'history' ? 'aria-current="page"' : ''}>History</a></div></div>${body}`;
 }
-// The dialog for hiding content, muting or suspending: a reason, and an end time where needed.
+// What each action on an account of another server does (docs/federation.md section 10, FMD 2), in the words of the
+// dialog, the profile and the Federation tab. The account and its server are never told.
+const REMOTE_HELP = {
+  mute: 'Shown here only to members who follow it: its replies, mentions and profile text stay hidden from everyone else, and its follows of members here become requests to approve. Its follows stay.',
+  suspend: 'Nothing it sends is taken and nothing is sent to it. What it wrote is hidden from everyone, nobody here can follow it, and its follows both ways end; members who followed it are told. The follows are not restored when the suspension ends.',
+  purge_remote: 'Removes what this server holds of it: its posts and their pictures, with the comments and likes members here left on those posts, its replies (a reply someone here answered stays as an empty placeholder), its likes, its follows, the notifications it left and what it sent that waits. Its handle and its suspension stay, so it stays refused. This cannot be undone.'
+};
+// Longer choices for an account of another server, which has no session to wait out: up to a year, the server's bound.
+const REMOTE_DURATIONS = [...DURATIONS, ['90d', '90 days', 2160], ['365d', '1 year', 8760]];
+// The dialog for hiding content, muting or suspending: a reason, and an end time where needed. For an account of
+// another server (d.remote) mute is a limit and purge_remote a purge, and the reason is for the moderators only.
 function openAction(d) {
-  const el = $('#modal'), timed = d.do === 'mute' || d.do === 'suspend';
-  const title = { hide: `Hide this ${d.kind}`, mute: `Mute @${d.name}`, suspend: `Suspend @${d.name}` }[d.do];
-  const help = { hide: 'Only its author and moderators will see it. The author is told why.', mute: 'They can read and like, but not post or comment, until the end time.', suspend: 'They are signed out at once and cannot sign in until the end time.' }[d.do];
+  const el = $('#modal'), timed = d.do === 'mute' || d.do === 'suspend', remote = !!d.remote;
+  const title = remote ? { mute: `Limit @${d.name}`, suspend: `Suspend @${d.name}`, purge_remote: `Purge what this server holds of @${d.name}` }[d.do]
+    : { hide: `Hide this ${d.kind}`, mute: `Mute @${d.name}`, suspend: `Suspend @${d.name}` }[d.do];
+  const help = remote ? REMOTE_HELP[d.do] : { hide: 'Only its author and moderators will see it. The author is told why.', mute: 'They can read and like, but not post or comment, until the end time.', suspend: 'They are signed out at once and cannot sign in until the end time.' }[d.do];
+  const durs = remote ? REMOTE_DURATIONS : DURATIONS;
   el.hidden = false;
-  el.innerHTML = `<form class="modal-box narrow" id="action-form" data-do="${d.do}" data-kind="${d.kind}" data-id="${d.id}" data-resolve="${esc(d.resolve || '')}" role="dialog" aria-modal="true" aria-labelledby="act-t">
+  el.innerHTML = `<form class="modal-box narrow" id="action-form" data-do="${d.do}" data-kind="${d.kind}" data-id="${d.id}" data-remote="${remote ? '1' : ''}" data-name="${esc(d.name || "")}" data-resolve="${esc(d.resolve || '')}" role="dialog" aria-modal="true" aria-labelledby="act-t">
     <div class="row"><h2 id="act-t" class="grow">${esc(title)}</h2><button type="button" class="icon-btn" data-act="modal-close" aria-label="Close">${icon('x')}</button></div>
     <p class="small muted" style="margin-top:4px">${help}</p>
-    ${timed ? `<div class="seg" role="radiogroup" aria-label="For how long" style="margin-top:12px;flex-wrap:wrap">${DURATIONS.map(([k, n], i) => `<label class="seg-r"><input type="radio" name="dur" value="${k}" ${i === 1 ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>` : ''}
-    <label class="field" style="margin-top:12px">Reason, shown to them<textarea name="reason" ${countAttrs('act-count', '', 300)} rows="2" required></textarea></label>${countHTML('act-count', '', 300)}
+    ${timed ? `<div class="seg" role="radiogroup" aria-label="For how long" style="margin-top:12px;flex-wrap:wrap">${durs.map(([k, n], i) => `<label class="seg-r"><input type="radio" name="dur" value="${k}" ${i === (remote ? 4 : 1) ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>` : ''}
+    <label class="field" style="margin-top:12px">${remote ? 'Reason, kept for the moderators (the account is not told)' : 'Reason, shown to them'}<textarea name="reason" ${countAttrs('act-count', '', 300)} rows="2" required></textarea></label>${countHTML('act-count', '', 300)}
     <p class="form-err" id="act-err" role="alert"></p>
     <div class="row" style="margin-top:12px;justify-content:flex-end"><button type="button" class="btn" data-act="modal-close">Cancel</button><button class="btn primary" type="submit">${esc(title.split(' ')[0])}</button></div></form>`;
   $('#action-form textarea').focus();
@@ -108,7 +124,7 @@ async function modAction(body) {
   if (!r.ok) { toast(r.error); return false; }
   return r.data?.note || true; // a note the moderator should read (a restore in a mode that federates)
 }
-function refreshAfterMod() { mod.queue = null; mod.history = null; mod.dash = null; social.stale = true; for (const k in social.profile) delete social.profile[k]; render(); if (ui.users) loadUsers(); }
+function refreshAfterMod() { mod.queue = null; mod.history = null; mod.dash = null; social.stale = true; for (const k in social.profile) delete social.profile[k]; for (const k in social.fedAcc) delete social.fedAcc[k]; fedHeld.data = null; render(); if (ui.users) loadUsers(); }
 
 /* ---------- the admin area ---------- */
 function pageAdmin(tab) {
@@ -310,7 +326,7 @@ function adminAccounts() {
       <span class="sub tiny">${list.length} of ${ui.users.length}</span></div>
     <div class="table-wrap"><table class="table"><thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Last active</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="empty small">No accounts match.</td></tr>'}</tbody></table></div></div>`;
 }
-const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft', instance: 'Changed the instance information', approve_user: 'Approved the request to join of', decline_user: 'Declined a request to join', domain_policy: 'Set a domain policy', domain_policy_remove: 'Removed a domain policy', federation_policy: 'Chose whom to federate with', federation_publish: 'Chose whether to list moderated servers' };
+const ACTION_NAMES = { hide: 'Hid', restore: 'Restored', mute: 'Muted', unmute: 'Unmuted', suspend: 'Suspended', unsuspend: 'Lifted suspension of', revoke_badge: 'Revoked a badge of', hide_stats: 'Hid stats of', show_stats: 'Showed stats of', resolve: 'Resolved reports on', role: 'Changed role of', owner: 'Handed ownership to', flags: 'Changed features', delete_user: 'Deleted account', reset_password: 'Reset password of', delete_post: 'Deleted a post by', delete_comment: 'Deleted a comment by', catalog_publish: 'Published a skill map', catalog_restore: 'Restored a skill map', catalog_draft: 'Saved a skill map draft', instance: 'Changed the instance information', approve_user: 'Approved the request to join of', decline_user: 'Declined a request to join', domain_policy: 'Set a domain policy', domain_policy_remove: 'Removed a domain policy', federation_policy: 'Chose whom to federate with', federation_publish: 'Chose whether to list moderated servers', limit_remote: 'Limited the account of another server', unlimit_remote: 'Lifted the limit of the account of another server', suspend_remote: 'Suspended the account of another server', unsuspend_remote: 'Lifted the suspension of the account of another server', purge_remote: 'Purged what this server held of the account of another server' };
 async function loadAudit(more) {
   const f = mod.filter, before = more && mod.audit?.length ? mod.audit[mod.audit.length - 1].id : 0;
   const r = await api(`admin/audit?actor=${encodeURIComponent(f.actor)}&action=${encodeURIComponent(f.action)}&before=${before}`);
@@ -332,6 +348,11 @@ function adminAudit() {
     if (e.action === 'domain_policy_remove') return `${esc(d.domain)}, was ${esc(DOMAIN_POLICY[d.was] || d.was)}`;
     if (e.action === 'federation_policy') return d.policy === 'open' ? 'every server not suspended' : 'allowed servers only';
     if (e.action === 'resolve') return `${esc(d.outcome)}, ${d.reports} ${d.reports === 1 ? 'report' : 'reports'}`;
+    if (e.action === 'suspend_remote') return `until ${esc(fmtWhen(d.until))}; ${Number(d.followsEnded || 0).toLocaleString()} follows ended, ${Number(d.membersTold || 0).toLocaleString()} members told, ${Number(d.deliveriesDropped || 0).toLocaleString()} deliveries given up`;
+    if (e.action === 'purge_remote') {
+      const n = Object.values(d.removed || {}).reduce((s, v) => s + Number(v || 0), 0);
+      return `${n.toLocaleString()} rows removed${d.done ? '' : ', more left'}${d.error ? `; ${esc(d.error)}` : ''}`;
+    }
     if (d.until) return `until ${esc(fmtWhen(d.until))}`;
     if (d.key) return esc(d.key);
     if (d.prop) return `${esc(d.prop)}, revision ${d.rev}`;
@@ -357,7 +378,30 @@ const DOMAIN_POLICY_HELP = {
   limit: 'Let in, but its accounts are shown here only to members who follow them: their replies, mentions and profile text stay hidden from everyone else, and their follows of members here become requests to approve.',
   suspend: 'Nothing in or out. What its accounts left here is removed, and follows with them end and are not restored.'
 };
-window.addEventListener('hashchange', () => { fedAdm.data = null; fedAdm.edit = null; });
+window.addEventListener('hashchange', () => { fedAdm.data = null; fedAdm.edit = null; fedHeld.data = null; });
+// The accounts of other servers limited or suspended now (FMD 2), a page at a time, each linked to its profile here,
+// where a moderator acts on it.
+const fedHeld = { data: null, busy: false, rows: [], next: 0 };
+async function loadFedHeld(more) {
+  fedHeld.busy = true;
+  const r = await api('admin/federation/accounts' + (more && fedHeld.next ? '?after=' + fedHeld.next : ''));
+  fedHeld.busy = false;
+  if (!r.ok) { toast(r.error); return; }
+  fedHeld.rows = more ? fedHeld.rows.concat(r.data.accounts) : r.data.accounts;
+  fedHeld.next = r.data.next; fedHeld.data = r.data;
+  render();
+}
+function fedHeldHTML() {
+  if (!fedHeld.data) { if (!fedHeld.busy) loadFedHeld(false); return ''; }
+  const until = (t, why) => `until ${esc(fmtWhen(t))}${why ? `<br><span class="tiny plain-text">${esc(why)}</span>` : ''}`;
+  const rows = fedHeld.rows.map(x => `<tr><td><a href="#/fed/${x.id}">@${esc(x.handle)}</a></td>
+      <td class="small">${x.limitedUntil ? `<span class="chip warn">Limited</span> ${until(x.limitedUntil, x.limitReason)}` : ''}${x.limitedUntil && x.suspendedUntil ? '<br>' : ''}${x.suspendedUntil ? `<span class="chip warn">Suspended</span> ${until(x.suspendedUntil, x.suspendReason)}` : ''}</td>
+      <td>${canDo('federation.accounts') ? `<div class="row" style="gap:6px;flex-wrap:wrap">${x.limitedUntil && canDo('user.mute') ? `<button class="btn sm" data-act="mod-do" data-do="unmute" data-kind="user" data-id="${x.id}" aria-label="Lift the limit of @${esc(x.handle)}">Lift the limit</button>` : ''}${x.suspendedUntil && canDo('user.suspend') ? `<button class="btn sm" data-act="mod-do" data-do="unsuspend" data-kind="user" data-id="${x.id}" aria-label="Lift the suspension of @${esc(x.handle)}">Lift the suspension</button>` : ''}</div>` : ''}</td></tr>`).join('');
+  return `<section class="card fed-held" aria-labelledby="fed-held-h" style="margin-top:16px"><div class="card-h"><h2 class="grow" id="fed-held-h">Accounts of other servers</h2><span class="sub">Limited or suspended now</span></div>
+    <p class="small">One account is limited or suspended from its profile here, which a moderator opens from a report, a post or a search by handle. Limit: ${esc(REMOTE_HELP.mute)} Suspend: ${esc(REMOTE_HELP.suspend)} Neither the account nor its server is told.</p>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Account</th><th>How, until when and why</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="3" class="empty small">No account of another server is limited or suspended.</td></tr>'}</tbody></table></div>
+    ${fedHeld.next ? `<button class="btn sm" data-act="fed-held-more" style="margin-top:10px">Show ${fedHeld.data.pageSize} more</button>` : ''}</section>`;
+}
 async function loadFedAdmin(more) {
   fedAdm.busy = true;
   const p = new URLSearchParams();
@@ -423,7 +467,8 @@ ${fedOutHTML(D.deliveries)}
         <select name="kind" aria-label="Policy" style="width:auto"><option value="">Every policy</option>${Object.entries(DOMAIN_POLICY).map(([k, n]) => `<option value="${k}" ${fedAdm.kind === k ? 'selected' : ''}>${n}</option>`).join('')}</select><button class="btn sm" type="submit">Find</button>${filtered ? '<button class="btn sm" type="button" data-act="fed-search-clear">Show all</button>' : ''}</form>
       <p class="tiny" aria-live="polite">${filtered ? `${D.matched.toLocaleString()} ${D.matched === 1 ? 'domain matches' : 'domains match'}; ` : ''}${fedAdm.rows.length.toLocaleString()} shown.</p>
       <div class="table-wrap"><table class="table"><thead><tr><th>Domain</th><th>Policy</th><th>Public comment</th><th>Staff note</th><th>Since</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6" class="empty small">${filtered ? 'No domain matches.' : open ? 'No domain is listed.' : 'No domain is allowed yet, so no delivery is taken.'}</td></tr>`}</tbody></table></div>
-      ${fedAdm.next ? `<button class="btn sm" data-act="fed-more" style="margin-top:10px">Show ${D.pageSize} more</button>` : ''}</section>`;
+      ${fedAdm.next ? `<button class="btn sm" data-act="fed-more" style="margin-top:10px">Show ${D.pageSize} more</button>` : ''}</section>
+${fedHeldHTML()}`;
 }
 // The inbox's numbers (docs/federation.md 14.2): what waits, and how deliveries were answered over the last day
 // (or since the start, when that is sooner), each list as a small table with its counts.
@@ -592,6 +637,12 @@ document.addEventListener('click', async e => {
       document.querySelectorAll('#fed-dom-h ~ .table-wrap tbody tr')[n]?.querySelector('button')?.focus();
       break;
     }
+    case 'fed-held-more': {
+      const n = fedHeld.rows.length;
+      await loadFedHeld(true);
+      document.querySelectorAll('.fed-held tbody tr')[n]?.querySelector('a')?.focus();
+      break;
+    }
     case 'fed-search-clear': fedAdm.q = ''; fedAdm.kind = ''; document.activeElement?.blur(); await loadFedAdmin(false); $('#fed-search [name=q]')?.focus(); break;
     case 'user-del':
       // Where the server federates, the answer says which other servers are told (FWR 7); elsewhere it is as before.
@@ -686,10 +737,22 @@ document.addEventListener('submit', async e => {
   } else if (f.id === 'action-form') {
     e.preventDefault();
     const dd = f.dataset, body = { action: dd.do, kind: dd.kind, id: Number(dd.id), reason: f.reason.value };
-    if (f.dur) { const h = DURATIONS.find(x => x[0] === f.dur.value)[2]; body.until = new Date(Date.now() + h * 36e5).toISOString().replace(/\.\d+Z$/, 'Z'); }
-    const r = await api('mod/actions', 'POST', body);
-    if (!r.ok) { showErr('act-err', r.error, errFields(f, r.error, [[/\breason\b/i, ['reason']]])); return; }
-    closeModal(); toast('Done. They have been told.'); refreshAfterMod();
+    if (f.dur) { const h = REMOTE_DURATIONS.find(x => x[0] === f.dur.value)[2]; body.until = new Date(Date.now() + h * 36e5).toISOString().replace(/\.\d+Z$/, 'Z'); }
+    const btn = f.querySelector('[type=submit]');
+    btn.disabled = true;
+    // A purge works in parts of about 10 seconds each, and says when more is left: it is asked again until done, and
+    // what every part removed is added up for the last word.
+    const sum = {}, add = r => { for (const [k, v] of Object.entries(r.data?.removed || {})) sum[k] = (sum[k] || 0) + Number(v || 0); };
+    let r = await api('mod/actions', 'POST', body), parts = 1;
+    while (r.ok && r.data?.done === false) { add(r); say(r.data.note); r = await api('mod/actions', 'POST', body); parts++; }
+    btn.disabled = false;
+    // An action that was saved but not yet applied (503, saved) changed what the lists show, so they are read again.
+    if (!r.ok) { if (r.data?.saved) refreshAfterMod(); showErr('act-err', r.error, errFields(f, r.error, [[/\breason\b/i, ['reason']]])); return; }
+    if (parts > 1) add(r);
+    const total = Object.values(sum).reduce((a, b) => a + b, 0), mc = sum["members' comments under its posts"] || 0, ml = sum["members' likes of its posts"] || 0;
+    const n = (v, one, many) => `${v.toLocaleString()} ${v === 1 ? one : many}`;
+    const note = parts > 1 ? `Removed ${n(total, 'row', 'rows')} of what this server held of @${dd.name} in ${parts} parts. With its posts went ${n(mc, 'comment', 'comments')} and ${n(ml, 'like', 'likes')} members here had left on them. Its handle and its suspension stay, so it stays refused.` : r.data.note;
+    closeModal(); toast(dd.remote ? note || 'Done.' : 'Done. They have been told.'); refreshAfterMod();
   } else if (f.id === 'inst-form') {
     e.preventDefault(); instSave(false);
   } else if (f.id === 'fed-domain-form') {

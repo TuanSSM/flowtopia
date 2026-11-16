@@ -3922,6 +3922,11 @@ As built (FWR 7, migration 24, with `flowa-schema23.dump`): `ap_outbox` gains `s
 `signer_sealed TEXT` (the copy of a deleted account's key its Delete(Person) is signed with, cleared once no delivery
 waits) and `ap_outbox_signer (id) WHERE signer_sealed IS NOT NULL` (6.4, "Account deletion across servers, as built").
 
+As built (FMD 2, migration 25, with `flowa-schema24.dump`): no column; a limit and a suspension of one account of
+another server are its `users.muted_until` and `users.suspended_until` (with `mute_reason` and `suspend_reason`), and
+`users_remote_held (id) WHERE domain <> '' AND (muted_until IS NOT NULL OR suspended_until IS NOT NULL)` finds those
+accounts (section 10, "As built (FMD 2)").
+
 ### 9.2 Why remote content joins the existing tables (F5)
 
 Remote accounts become `users` rows with `domain` set, `username` of the form `bo@social.example`
@@ -4078,9 +4083,9 @@ keyword filters.
 | Domain allows | adopt | `policy = 'allow'`, the list in allowlist mode (FMD) |
 | Public and private comment on a block | adopt | the two text columns; the public one on the about page (FMD); not on the pages read (see above) |
 | Import and export of blocklists | later | CSV in the same format as Mastodon's when an operator asks (Mastodon imports and exports them as `.csv`; the columns are not given on its moderation page) |
-| Remote account: limit | adapt | `mute` in `handleModAction` on a remote row means limit (FMD): as Mastodon's account Limit, hidden from everyone but its followers, and its follows of local members become follow requests |
-| Remote account: suspend | adapt | `suspend` on a remote row: their content hidden, their follows removed, nothing delivered to them (FMD). Mastodon: suspending a remote account makes it unfollow every local account, and the follows are not restored on unsuspend |
-| Remote account: delete data | adopt | a new action `purge_remote` (**new**) (FMD) |
+| Remote account: limit | adapt | `mute` in `handleModAction` on a remote row means limit (FMD): as Mastodon's account Limit, hidden from everyone but its followers, and its follows of local members become follow requests. Built (FMD 2, below), with an end time of at most a year where Mastodon's has none |
+| Remote account: suspend | adapt | `suspend` on a remote row: their content hidden, their follows removed, nothing delivered to them (FMD). Mastodon: suspending a remote account makes it unfollow every local account, and the follows are not restored on unsuspend. Built (FMD 2, below): its content is kept and shown again when lifted; Mastodon deletes a suspended account's data after 30 days, which Flowa leaves to the admin's purge |
+| Remote account: delete data | adopt | a new action `purge_remote` (**new**) (FMD). Built (FMD 2, below): for a suspended account, its handle and suspension kept |
 | Reports about remote content | adopt | the existing reports and queue; remote targets are local rows (FMD) |
 | Forwarding a report (Flag) | adapt | a checkbox on resolve; sent by the instance actor without the reporter's name (FMD). In Mastodon the reporter chooses to forward, in the report dialog (user guide, "Reporting problematic content"); in Flowa a moderator decides, so a member's report never leaves the server without a moderator's look |
 | Receiving reports | adopt | Flag in, as a report from the remote instance (FMD) |
@@ -4231,6 +4236,151 @@ migration (migration 17 had every column), "federation: domain policies and the 
   the picture check; reject media ignored by the claim alone is not seen end to end (the keep already makes the
   picture a link, and the race the claim covers cannot be made between two real instances), and is
   `TestDBDomainPolicies`'s.
+
+As built (FMD 2, actions on remote accounts; migration 25, an index, with `flowa-schema24.dump`): "federation: actions on
+remote accounts" in `main.go`, through the moderators' one route, `POST /api/mod/actions` (`handleModAction`, its
+hook `remoteModAction`), in a mode that federates only. Mastodon's moderation page could not be reached from here
+(docs.joinmastodon.org did not resolve), so what this section says Mastodon does is from the table above and memory,
+**unverified** against Mastodon itself; the owner's trial (FWR 9) should confirm each.
+
+- **Where the state lives.** A limit is the account's `users.muted_until` with `mute_reason`, a suspension its
+  `users.suspended_until` with `suspend_reason`: the columns a member's mute and suspension use, never set on a remote
+  row before (the cache's bound already kept such an account, `evictActorsSQL`; the recipients of a post and the
+  mentions already left a suspended one out, `postRecipientsSQL`, `mentionLookupSQL`). Each is in force until its end;
+  an end that passed holds nothing, with no job to clear it. `users_remote_held` (migration 25) holds only the remote
+  accounts ever limited or suspended (a lift clears the column, so it leaves the index too).
+- **The actions.** `mute` limits, `unmute` lifts; `suspend` suspends, `unsuspend` lifts; `purge_remote` purges. An end
+  time between a minute and a year from now (`maxModUntil`), as for a member; a reason for all but a lift (at most 300
+  characters), kept for the moderators: unlike a member, **the account is not told, and neither is its server**
+  (Mastodon sends no notice to another server for a moderator's action on its account, as remembered; Flowa sends
+  nothing). Permissions: `user.mute` or `user.suspend` and the new `federation.accounts` (moderators and admins, in
+  `fedPerms`, so listed only in a mode that federates); `federation.manage` (admins) to purge. Allowance:
+  `limits.remoteActs`, 300 an hour per moderator, charged only once the reason and the end are good. Audit: `limit_remote`, `unlimit_remote`, `suspend_remote` (with the
+  follows ended, the members told and the deliveries given up), `unsuspend_remote`, `purge_remote` (with what each step
+  removed and whether it is done; a purge done in several calls writes one entry per call, to be added up), each in the action's transaction, the account's handle in the detail. A member
+  here keeps every action they had, through the same code as before; `purge_remote` on a member is refused (400), and
+  `revoke_badge`, `hide_stats` and `show_stats` on a remote account are refused (400: it has none). In local mode the
+  hook is not asked: `purge_remote` is "Unknown action." and nothing else changed (`TestDBRemoteActionsLocal`,
+  `TestDBModeration` unchanged).
+- **Limit.** The domain limit's one rule (`limitFree`) asks the account's own row beside the walk: `lu.muted_until >
+  now()` on the users row it already reads, so its cost is unchanged (one look in users' primary key, the walk, one
+  look in follows). Everything a limited domain hides is hidden for a limited account: its replies (listed and counted),
+  the notifications it left, a post that only names a member, its profile text (`handleFedAccount` and the search by
+  handle, `fedLimitedHere`, posts not read). A Follow from it is a request whatever the member's setting
+  (`followInSQL` asks the row as the statement runs). Follows stay, requests stay requests when lifted. **Cost while
+  nobody is held**: the policy in memory keeps when the last limit or suspension in force ends (`heldUntil`, read with
+  the rows by `remoteHeldUntilSQL` through `users_remote_held`, and after each action); `limitStatements` runs the
+  look only while a domain is limited or that time has not passed (`fedPolicy.limiting`), so local mode and an instance
+  that holds nobody run the statements of before byte for byte (`TestUnlimitedIsBefore` unedited; `testRemoteStatements`).
+  While accounts are held and no domain is limited, the statements carry the look at the account alone
+  (`limitHeldFree`, through `heldOnly`): no walk through `domain_policies`, so a long list of allowed and suspended
+  domains costs nothing per reply. **Two reads of the policy at once** (two moderators' actions, or a domain's change
+  beside one): each read takes a number before it reads, and is put in place only if no read numbered after it was put
+  in place first (`policySeq`), so a read begun before a suspension committed is never stored over the one after it
+  (`testRemotePolicyOrder`, a hook between a read and its store; found by the review). **A read that fails after the
+  commit**: the action holds and is audited, and the answer says so (503, "Saved, and in the audit log, but this server
+  could not apply it to its pages yet. Do the same again in a moment: that applies it. A limit or a suspension done again is written to the audit log a second time."); the same action asked again
+  reads the policy, a lift that changes nothing too, before its 409 (`testRemoteSavedNotApplied`). **An end that
+  passed** keeps its time in the column: the account stays in `users_remote_held` and the cache's bound keeps it, holding
+  nothing, since every statement compares the end with now(); decided: not swept, as it is at most one row per remote
+  account ever held, and a lift by hand clears it. A remote account muted through the old path in an earlier build that
+  federated (`mute` on its row, which nothing asked then) counts as limited from this version until its end.
+  A limit and a domain's limit are one rule: an account moving from one to the other, or under both, is hidden while
+  either holds (`testRemoteDomainAndAccount`).
+- **Suspend.** In the suspension's transaction (`remoteSuspendEndsSQL`): its follows both ways and their requests end,
+  each member here who followed it or asked to told by a notification ("A moderator here suspended @name@host, an
+  account on another server, so your follow of it ended. It is not restored if the suspension is lifted."; Mastodon 4.3
+  is remembered to send such a notice, unverified), its follow and request notifications go, and the deliveries waiting
+  for its own inbox are given up ("the account is suspended here"), locked in id order; one in flight finishes, and its
+  server's shared inbox keeps its rows, which are its server's. **Nothing taken**: the inbox answers 202 and stores
+  nothing it sends (`inboxEnqueueSQL`, one look in users' primary key; answered as any delivery not acted on, so its
+  server learns nothing), and the worker drops a row stored before (`remoteSuspendedDrop`), except what only takes away:
+  its own Delete, a Delete of what it wrote and an Undo (`remoteRemovalKinds`). Decided: dropped with 202, not refused
+  with 403 as a suspended domain is, since the account is known only after its signature is verified, and a 403 would
+  tell its server. **Nothing sent**: the recipients' statements leave it out, as before; its queued deliveries are given
+  up as above; members cannot follow it (`followViewOf`'s `cannot`, `handleFedFollow` refuses 403). **Hidden from
+  everyone**: `limitFree` holds a suspended account hidden whoever follows it, so its replies, notifications and posts
+  are hidden from its followers too, and Home no longer lists it once its follows end. **No follow left behind**:
+  the suspension's first statement updates the account's row, and both statements that write a follow with it read that
+  row FOR SHARE (`followInSQL`'s `sus`, `handleFedFollow`), so a Follow handled at the same moment either waits and is
+  then removed, or sees the suspension (`testRemoteFollowRace`, both orders and a member's follow). **Lifted**: what
+  it wrote and this server still holds shows again; **the follows are not restored**, as Mastodon does. Kept meanwhile:
+  its posts, replies and likes, except what housekeeping removes from any server after 30 days untouched (`remoteKeep`);
+  decided: no deletion of its data by itself after 30 days, which Mastodon is remembered to do; the purge is the admin's.
+  Its likes still count, as a limited account's do (a count names nobody); its notifications are hidden.
+- **Purge** (`purgeRemote`), only of an account suspended now (409 otherwise): its posts (with their pictures' rows,
+  the files after each statement's commit, and what hangs off them here: **the comments and likes members here left on
+  them go too**, as a comment has no meaning without its post, counted as "members' comments under its posts" and
+  "members' likes of its posts" in the answer and the audit), its replies (each removed, or kept as an empty
+  placeholder where someone else answered it), its likes of posts and of replies, its follows both ways, the
+  notifications it left, its remembered deletions, its inbox rows, then its name, bio, picture and links here and its
+  cached actor's summary and picture, and the deliveries waiting for its own inbox. **Kept**: the account's row with its
+  handle, key and suspension (so it stays refused, the audit log keeps its name, and a member's block of it stays;
+  Mastodon keeps "usernames" of a suspended server, as quoted above), and the reports about it. **Bounded**: each
+  statement removes at most `remotePurgeBatch` (500) rows through the account's own index, each with its own turn at
+  the database (the Pi has 8 connections; a purge uses one at a time); one call works at most `remotePurgeBudget` (10 s)
+  and stops only after a statement that removed something, so calls after calls always end, and the page calls again
+  while the answer says `done: false`. **Safe to repeat**: a step with nothing left takes nothing; an interrupted purge
+  (a dropped connection, a stop) leaves the rest for the next call, which ends where an uninterrupted one would
+  (`testRemotePurgeInterrupted`); a second purge removes nothing. A post, reply or like the inbox was handling as the
+  purge ran is hidden (the account is suspended) and goes with the next purge. **Stays purged**: while the account is
+  suspended, a later fetch of its actor (a member's search by its handle, a key fetched again for its Delete or Undo)
+  writes its key, addresses and times but not its name, summary or picture (`actorCache.store`), so a purged profile does
+  not come back; once lifted, the next fetch brings it (`testRemotePurgedStays`).
+- **The pages.** The account's profile here (`#/fed/{id}`) shows staff with `federation.accounts` a Moderation card:
+  each action with the sentence that says what it does, its state, end and reason, and its button (Purge for admins,
+  once suspended). The moderation queue marks an author of another server ("an account on another server", its
+  profile here linked) and offers Limit and Suspend for it. The Federation tab lists the accounts limited or suspended
+  now (`GET /api/admin/federation/accounts`, 100 a page through `users_remote_held`), each with its end and reason and
+  Lift buttons. The Accounts page still lists members only.
+- **Bounds measured** (`TestDBQueryPlans`, each budget about 1.3 times the rows measured): with 20 of the accounts
+  that wrote 3,000 remote replies held and no domain limited, the timeline reads 11,286 to 13,281 rows across runs (the
+  sample ANALYZE takes; about 4 a reply; budget 16,000) and the same with 300 domains suspended, which the look at the
+  account alone never reads; a page of its comments 174 to 194 (250); the bell 160 (210); when the last hold ends, 21
+  rows (30); a page of the Federation tab's list, 40 (55); a Follow in from a limited account, 426 (560), and 268 with 300
+  domains suspended (350); a suspension of an account with 300 followers and 1,500 notifications, 4,195 to 4,495
+  (5,500); a purge's batch of 500 posts 10,535 (with the members' comments and likes counted), of replies 14,510 (its
+  index holds the account's 3,000 replies unordered, so each batch reads them all), of likes 2,501, of likes of replies
+  3,001, of follows of it 1,501 to 1,801, of notifications 4,002; the rest under 10 (50). Forms that read likes, comment_likes,
+  notifications and comments whole (the keys compared with IN and a subquery, and a correlated EXISTS the planner hashed)
+  were caught by that test and written with arrays (= ANY(ARRAY(...))) and OFFSET 0 instead. A purge of an account
+  with 2,600 posts and as many likes keeps every statement within its batch (`testRemotePurgeThousands`).
+- **Open.** An activity that waited for room in a full queue (`fanOutDue`), its recipients chosen before the
+  suspension, can still reach the account's own inbox once; the Accounts page does not list remote accounts; Mastodon's
+  behaviour for each point above is unverified.
+- Tests: `TestDBRemoteAccountActions` (limit in and out; suspend in and out; each activity type from a suspended
+  account, a row stored before; who may act, the reason, the end, the allowance and a member's mute as before; a purge,
+  interrupted and repeated, and of thousands; two admins at once; a Follow and a member's follow while suspending, both
+  orders; an account between a limited domain and a limit of its own; a host with upper case and a trailing dot; the
+  statements with nobody held; the list and the queue; two reads of the policy at once; an action saved whose read
+  of the policy failed; a purged profile fetched again), `TestDBRemoteActionsLocal`, `TestPermissionTable`,
+  `TestDBQueryPlans`, and 19 checks of the `federation` suite (115 planned) between two real instances: one's admin
+  limits cyd of two, whose follow by dee stays and whose new Follow of dee waits for her approval; cyd's reply under
+  dee's post is read by dee, who follows cyd, and neither
+  read nor counted by eve, who does not, and whose Follow of eve waits for her approval; lifted, eve counts it and the
+  request still waits; suspended, every follow with cyd ends on one and dee is told, while two, told nothing, still
+  has cyd following dee; a post of cyd's that two delivers to one is answered and kept nowhere; cyd's reply is hidden
+  and dee cannot follow cyd; lifted, the reply shows again and the follows stay ended; suspended and purged, nothing
+  of cyd's is left on one but the suspended handle, a second purge removes nothing, and one's audit log holds each
+  action.
+- **Faults tried**, one at a time in a scratch build, each caught (by `TestDBRemoteAccountActions` unless named): the
+  account's limit left out of the look; a suspension hidden only from who does not follow; the statements ignoring a
+  held account; the policy's read forgetting when the last hold ends; a Follow from a limited account accepted at once;
+  a Follow from a suspended account written; the follower's row not read FOR SHARE (the race part; it first hung the
+  test, which now fails instead); the inbox storing what a suspended account sends; the worker handling a row stored
+  before the suspension; a suspended account's Undo dropped; a suspension leaving the follows of it, the deliveries for
+  its inbox, or the members who followed it untold; a member allowed to follow a suspended account; a purge of an
+  account not suspended; a purge call that stops before it removes anything (it made the page call for ever); a purge
+  removing an answered reply; a purge's likes compared with IN (`TestDBQueryPlans`); a moderator allowed to purge (and
+  `TestPermissionTable`); no allowance; a limit without a reason; a member here taken for a remote account; a lift not
+  read into the policy in memory; a suspended account's bio shown; the queue not marking a remote author; a purge
+  keeping the account's profile; the index of held accounts missing (`TestDBQueryPlans`); a purge leaving the files of
+  pictures. 28 in all. After the review, 10 more, each caught: an older read of the policy stored over a newer one;
+  the purge not counting the members' comments and likes; the follower's row not read FOR SHARE (now waited for on the
+  transaction's own backend, caught in 5 runs of 5); a held account running the look with the walk; the look at the
+  account alone forgetting suspensions; a fetch of a suspended actor writing its name, or its summary, back; a lift that
+  changes nothing not reading the policy; a saved action whose read failed answering 500; the allowance charged before
+  the reason is checked.
 
 ## 11. The member's side
 
@@ -4587,7 +4737,9 @@ changes no running instance.
   migration 24 adds columns an older build ignores, but it would sign a Delete(Person) that still waits with the
   instance actor's key, which other servers refuse: those deliveries are lost, nothing else. Let the queue drain first
   to keep them. An account deleted, or a member removed from other servers, is not brought back by a rollback, as
-  before.
+  before. As built (FMD 2): migration 25 adds an index only; an older build ignores a limit of a remote account, and of
+  a suspension keeps only that a post is not sent to it (it takes its deliveries, shows what it writes and lets members
+  follow it again); a purge already done is not brought back.
 - **Social facts cannot be rolled back.** Activities delivered stay delivered; an actor id announced
   stays announced (section 4.3). A rollback to a build without federation leaves remote servers
   retrying for their own horizon, then giving up.

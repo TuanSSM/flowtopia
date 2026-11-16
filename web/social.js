@@ -278,7 +278,24 @@ function pageFedAccount(id) {
         ${link ? `<p class="small">${outLink(link, `See the profile on its server ${icon('ext')}`)}</p>` : ''}
         ${v.asks ? `<div class="notice fed-asks"><p class="small">This account asked to follow you.</p>${reqButtons(p.id, p.handle || p.name)}</div>` : ''}</div>
       <div class="row wrap" style="gap:6px">${v.blocked ? '' : fedFollowBtn(p.id, v)}<button class="btn sm" data-act="${v.blocked ? 'fed-unblock' : 'fed-block'}" data-id="${p.id}">${icon('block')}${v.blocked ? 'Unblock' : 'Block'}</button></div></div></div>
+  ${d.moderation ? fedModHTML(p, d.moderation) : ''}
   <div class="grid g32 tl" style="margin-top:16px"><div class="stack"><div class="card-h" style="margin:0"><h2 class="grow">Posts</h2></div><div class="empty">${esc(d.notice)}</div></div></div>`;
+}
+// What a moderator may do to this account of another server (FMD 2), shown only to staff the server sent it to: each
+// action with the sentence that says what it does (REMOTE_HELP), its state, end and reason, and its button.
+function fedModHTML(p, m) {
+  const name = esc(p.handle || p.name), attrs = `data-kind="user" data-id="${p.id}" data-name="${name}" data-remote="1"`;
+  const held = (t, why) => `<p class="small notice warn">Until ${esc(fmtWhen(t))}.${why ? ` Reason: <span class="plain-text">${esc(why)}</span>` : ''}</p>`;
+  const part = (title, help, body) => `<div class="stack" style="gap:6px"><h3 class="small">${title}</h3><p class="tiny">${esc(help)}</p>${body}</div>`;
+  const limit = m.limitedUntil ? held(m.limitedUntil, m.limitReason) + (canDo('user.mute') ? `<div><button class="btn sm" data-act="mod-do" data-do="unmute" ${attrs}>Lift the limit</button></div>` : '')
+    : canDo('user.mute') ? `<div><button class="btn sm" data-act="mod-open" data-do="mute" ${attrs}>Limit…</button></div>` : '';
+  const susp = m.suspendedUntil ? held(m.suspendedUntil, m.suspendReason) + (canDo('user.suspend') ? `<div><button class="btn sm" data-act="mod-do" data-do="unsuspend" ${attrs}>Lift the suspension</button></div>` : '')
+    : canDo('user.suspend') ? `<div><button class="btn sm" data-act="mod-open" data-do="suspend" ${attrs}>Suspend…</button></div>` : '';
+  const purge = !canDo('federation.manage') ? '' : part('Purge', REMOTE_HELP.purge_remote, m.suspendedUntil
+    ? `<div><button class="btn sm danger" data-act="mod-open" data-do="purge_remote" ${attrs}>Purge…</button></div>` : '<p class="tiny">Suspend it first: a purge removes what a suspension hides.</p>');
+  return `<section class="card fed-mod" aria-labelledby="fed-mod-h" style="margin-top:16px"><div class="card-h"><h2 class="grow" id="fed-mod-h">Moderation</h2><span class="sub">Seen by moderators</span></div>
+    <div class="stack" style="gap:14px">${part(m.limitedUntil ? 'Limited' : 'Limit', REMOTE_HELP.mute, limit)}${part(m.suspendedUntil ? 'Suspended' : 'Suspend', REMOTE_HELP.suspend, susp)}${purge}
+    <p class="tiny">Neither the account nor its server is told of any of these. Every action is in the audit log.</p></div></section>`;
 }
 // A profile as the page keeps it, with whether follows were on when it was read: one read with the
 // flag in another state is read again, so turning follows on or off shows or hides its parts at once.
