@@ -2234,7 +2234,8 @@ mode lists exactly the flags it did):
   sent nowhere (refused at its host) writes no follow. The first version enqueued after the follow's commit, so a
   deploy that ended the workers' context there left a pending follow with no Follow (its clean-up ran on the same
   ended context), and the member saw "requested" for an account never asked; that window is gone, for a follow by hand
-  (`handleFedFollow`) too. Chosen over testing for the Follow in `ap_outbox` at the claim because it needs no new read
+  (`handleFedFollow`) too. A member who follows the most accounts there can be is still told so first, before the
+  queue or the host is asked (`followLimitSQL`, `TestDBFollowAtTheLimitSaysSo`, after the fifth review). Chosen over testing for the Follow in `ap_outbox` at the claim because it needs no new read
   and no new index, and the queue's lock order allows it. So a row "asked" that still holds a lease had no Follow made:
   what follows the send (putting the row back when the Follow could not be made) is written on a context of its own, so
   a deploy does not skip it; after a kill or a power cut the claim takes the row again once the lease has passed

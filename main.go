@@ -20842,6 +20842,16 @@ func (a *app) followRemote(ctx context.Context, u *user, ra *remoteActor, also f
 		}()
 		return inner
 	}
+	// The limit is read first, as before the follow and its Follow became one transaction: a member who follows the
+	// most accounts there can be is told so, not that the queue or the host cannot take the Follow now (PRT 2's fifth
+	// review). The count inside the transaction still holds the limit against follows written meanwhile.
+	var atMost bool
+	if err := f.fedRow(ctx, []any{&atMost}, followLimitSQL, u.ID, maxFollows, ra.UserID); err != nil {
+		return false, false, err
+	}
+	if atMost {
+		return false, true, nil
+	}
 	me := f.memberActor(u.Username)
 	err = f.sendThen(ctx, keyOwner(u.ID), outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}, ra, "", write)
 	switch {
@@ -20855,6 +20865,10 @@ func (a *app) followRemote(ctx context.Context, u *user, ra *remoteActor, also f
 	}
 	return true, false, nil
 }
+
+// followLimitSQL says whether member $1 follows $2 accounts or more and not yet account $3 (followRemote).
+const followLimitSQL = `SELECT (SELECT count(*) FROM follows WHERE follower_id = $1) >= $2
+	AND NOT EXISTS (SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = $3)`
 
 // errFollowNotMade is followRemote's own word to roll the Follow back when no follow was written (one exists, a block,
 // or the member follows the most accounts there can be).

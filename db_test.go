@@ -3824,6 +3824,7 @@ func TestDBQueryPlans(t *testing.T) {
 		{"Home of a member who follows nobody", homeSQL, []any{followed, 0, pageSize + 1, false, false}, 300, ""},
 		{"the 500 accounts a member follows", followingSQL, []any{viewer, maxFollowList}, 13000, "users"},
 		{"the followers of a member", followersSQL, []any{followed, maxFollowList}, 600, ""},
+		{"whether a member at 500 follows may follow one more", followLimitSQL, []any{viewer, maxFollows, followed}, 1300, ""},
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
 		{"the counts of a member who follows 500", followCountsSQL, []any{viewer}, 1500, ""},
 		// A member's own data (PRT 1): the size is read before every download and every check, and each list a page
