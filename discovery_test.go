@@ -349,7 +349,7 @@ func TestNodeInfo(t *testing.T) {
 	if hd := w.Result().Header; w.Code != 200 || hd.Get("Content-Type") != `application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"` || hd.Get("Access-Control-Allow-Origin") != "*" || hd.Get("Cache-Control") != discoveryKeep {
 		t.Fatalf("the document: %d %v", w.Code, hd)
 	}
-	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo","actors","notes","outbox","collections","lookup","inbox","follows","posts","home","replies","deletion"]}}`
+	want := `{"version":"2.1","software":{"name":"flowa","version":"","repository":"https://github.com/TuanSSM/flowtopia"},"protocols":["activitypub"],"services":{"inbound":[],"outbound":[]},"openRegistrations":true,"usage":{"users":{"total":12,"activeMonth":7,"activeHalfyear":10},"localPosts":340},"metadata":{"mode":"federated","federationBuilt":["webfinger","nodeinfo","actors","notes","outbox","collections","lookup","inbox","follows","posts","home","replies","deletion","move"]}}`
 	if w.Body.String() != want {
 		t.Errorf("the document:\n%s\nwant\n%s", w.Body, want)
 	}

@@ -643,6 +643,39 @@ try:
     picture('federated-remote-reply','Federated mode: a reply from another server under a post of this member, opened past its content warning, beside a member\'s comment, and a public post of another server with Like and Comment (answers supplied by the suite, no server asked)')
     js("localStorage.removeItem('fl-tl')")
     load(BASE)
+
+    # Moving to another server (PRT 2): with the moves flag on, the card offers a move to a member who shares, with the
+    # server's warning before the form and the handle to name on the new account, and a place to name the accounts the
+    # member moves here from. No other server answers here, so what is sent is a move to an account of this server: it
+    # is refused with its own words and nothing changes. The move itself is Go's (TestDBMoveOut) and the federation
+    # suite's.
+    api(op,'flags',{'flags':{'moves':True}},'PUT')
+    mv=lambda: get_json(op,'me').get('federation',{}).get('move') or {'cannot':'no move part'}
+    check('with the moves flag on, the server offers moving to a member who shares (once their key is made)',lambda: 'cannot' not in mv(),mv)
+    load(BASE);nav('#/settings')
+    check('the card offers a move with the server\'s warning before it, the handle to name on the new account, and a place to name old accounts',
+      lambda: js("return !!document.querySelector('#move-form [name=target]')&&!!document.querySelector('#alias-form [name=account]')") and '30 days after this one' in (txt('#move-hint') or '') and '@admin@flowa.test' in (txt('#move-first') or ''),lambda: txt('.fed-card'))
+    card_rules('the card, with moving')
+    js("document.querySelector('.fed-move').scrollIntoView({block:'center'})");frames()
+    picture('federated-move','Federated mode: Settings, moving the profile to an account on another server, and naming the accounts moved here from')
+    if tab_to('#move-form [name=target]','the new account'):
+        type_text('@admin@flowa.test');key(TAB);type_text('flowa-test-only');key(TAB)
+        check('the move button comes next by Tab',lambda: on('#move-form button[type=submit]'),active)
+        for t in ('dark','light'):
+            themed(t)
+            check(f'the move button shows a ring of 2 px or more at 3:1, {t}, and nothing covers it (keys.py)',not ring_ok(),ring_ok)
+        themed('dark')
+        js("window.__confirm=window.confirm;window.__asked=[];window.confirm=m=>{window.__asked.push(m);return true}")
+        key(ENTER)
+        check('Enter asks first with the warning; the server refuses a move to an account of this server with its words, and nothing changes',
+          lambda: js("return window.__asked.length===1&&window.__asked[0].includes('30 days after this one')") and 'Moving between two accounts here is not built' in (txt('#toast') or '') and not mv().get('moved'),
+          lambda: (js("return window.__asked"),txt('#toast'),mv()))
+        js("window.confirm=window.__confirm")
+    if tab_to('#alias-form [name=account]','the old account'):
+        type_text('@admin@flowa.test');key(ENTER)
+        check('naming an account of this server as an old one is refused with its words',lambda: 'Only an account on another server can move here' in (txt('#toast') or ''),lambda: txt('#toast'))
+    api(op,'flags',{'flags':{'moves':False}},'PUT')
+    load(BASE)
     api(op,'me',{'federates':False},'PUT');api(op,'flags',{'flags':{'follows':False}},'PUT')
     load(BASE)
 
@@ -703,7 +736,7 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==20)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==21)
     else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.

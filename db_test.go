@@ -3824,6 +3824,7 @@ func TestDBQueryPlans(t *testing.T) {
 		{"Home of a member who follows nobody", homeSQL, []any{followed, 0, pageSize + 1, false, false}, 300, ""},
 		{"the 500 accounts a member follows", followingSQL, []any{viewer, maxFollowList}, 13000, "users"},
 		{"the followers of a member", followersSQL, []any{followed, maxFollowList}, 600, ""},
+		{"whether a member at 500 follows may follow one more", followLimitSQL, []any{viewer, maxFollows, followed}, 1300, ""},
 		{"the counts on a profile", followCountsSQL, []any{followed}, 600, ""},
 		{"the counts of a member who follows 500", followCountsSQL, []any{viewer}, 1500, ""},
 		// A member's own data (PRT 1): the size is read before every download and every check, and each list a page
@@ -3941,10 +3942,10 @@ func TestDBQueryPlans(t *testing.T) {
 	}
 	on = tx
 	// It asks every table that references users (userRefs), each through its index for a table the size it
-	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox and domain_policies) the planner reads whole for
+	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox, domain_policies and move_followers) the planner reads whole for
 	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
 	// all for 200 removed, a few milliseconds, once for every 200 new actors.
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_comment_out ap_inbox ap_like_out ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_comment_out ap_inbox ap_like_out ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions move_followers reports"}})
 	on = db
 	tx.Rollback()
 	// The delivery queue (FWR 2) at its cap: 50,000 rows queued on 300 hosts, 50 activities, a host whose circuit is
@@ -4089,6 +4090,66 @@ func TestDBQueryPlans(t *testing.T) {
 		// 73,662 rows counted on the 2.1 GHz Xeon, where every list would be 320,302 (after the review of FWR 7).
 		{"deletion: the servers that know a member, 1,000 followers on 300 servers", personKnownSQL, []any{11, personDeleteHostsMax + 1, "", personKnownRecords}, 90000, "ap_comment_out ap_actors ap_like_out"},
 	})
+	// Moving to another server (PRT 2): member 11, with its 1,000 followers on 300 servers and 49 members here among its
+	// followers, names five accounts it moves here from and has moved to one; 200 other members have moved too, with 100
+	// followers here each in every state of their move (20,000 rows of move_followers). The members here who follow
+	// member 11 are written down through follows_followee and each follower's primary key (about four rows counted per
+	// follower, the remote ones passed over); a batch is claimed through move_followers_todo, the first member's rows
+	// alone; the room at a host is a count that stops at its bound; what Settings and a move read, where a member went
+	// and how their followers' move goes, through primary keys and ap_actors' unique index; the take-back of a Move
+	// through ap_outbox's unique id and the queue's (outbox_id, inbox) index.
+	for _, q := range []string{
+		`INSERT INTO follows (follower_id, followee_id, state) SELECT g, 11, 'accepted' FROM generate_series(12, 60) g ON CONFLICT DO NOTHING`,
+		`UPDATE users SET moved_to = 'https://p1.out.example/users/3000001', moved_at = now(),
+			also_known_as = ARRAY(SELECT 'https://' || domain || '/users/' || id FROM users WHERE id BETWEEN 3000002 AND 3000006 ORDER BY id) WHERE id = 11`,
+		`INSERT INTO move_followers (user_id, follower_id, target_id, state, why) SELECT u, f, 3000001, (ARRAY['todo', 'asked', 'moved', 'kept'])[1 + (u + f) % 4],
+			CASE WHEN (u + f) % 4 = 3 THEN 'notSharing' ELSE '' END FROM generate_series(200, 399) u, generate_series(1, 100) f`,
+		// Some asked followers left with a lease that has passed (a step stopped between "asked" and the send).
+		`UPDATE move_followers SET claimed_until = now() - interval '1 hour' WHERE state = 'asked' AND user_id < 210`,
+		`ANALYZE`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	plans([]planCase{
+		{"moves: what Settings and a move read of a member", moveStateSQL, []any{11, false}, 60, ""},
+		{"moves: where a member moved", movedSQL, []any{11}, 10, ""},
+		{"moves: how the move of a member's followers here goes", moveProgressSQL, []any{200}, 300, ""},
+		{"moves: the room at the new account's host, and whether it is down", moveHostQueuedSQL, []any{"p1.out.example", moveHostRoom + 1}, 2*(moveHostRoom+1) + 10, ""},
+		// The start reads the first entry of move_followers_todo; the wake-up, after a claim that found nothing, each row
+		// still to be moved (the 5,250 here, through a bitmap of move_followers_todo: 10,501 rows counted), as it did over
+		// the rows still to do alone before the third review.
+		{"moves: whether any wait, at the start", moveAtStartSQL, nil, 20, ""},
+		{"moves: when the next row comes free", moveWakeSQL, nil, 12000, ""},
+	})
+	if tx, err := db.Begin(); err == nil {
+		on = tx
+		plans([]planCase{
+			{"moves: a move recorded", moveSetSQL, []any{9, "https://p1.out.example/users/3000001", time.Now(), moveCooldown.Seconds(), false, "https://x.example/m"}, 10, ""},
+			{"moves: the members here who follow a member with 1,000 followers elsewhere, written down", moveFollowersSQL, []any{11, 3000001}, 6000, ""},
+			{"moves: a batch claimed", moveClaimSQL, []any{time.Now(), moveBatch, time.Now().Add(moveLease)}, 600, ""}, // measured 444
+			{"moves: what is still to do of a stopped move, dropped", moveStopSQL, []any{205}, 150, ""},
+			{"moves: a Move taken back", moveTakeBackSQL, []any{11, "https://x.example/none", time.Now()}, 10, ""},
+			{"moves: where one follower stands, written", moveRowSQL, []any{200, 4, "moved", "", time.Now(), "https://p1.out.example/users/3000001", false}, 20, ""},
+			{"moves: a follower's lease let go once the Follow is made", moveSentSQL, []any{200, 1, time.Now()}, 10, ""},
+			{"moves: an asked follower put back", moveAskedSQL, []any{200, 1, "todo", "", time.Now()}, 10, ""},
+			{"moves: a member's followers made to wait", moveWaitSQL, []any{200, time.Now().Add(time.Hour), 1, time.Now(), time.Now()}, 300, ""},
+			{"moves: a member's followers kept", moveGiveUpSQL, []any{200, "hostFull"}, 300, ""},
+			{"moves: a Follow written for no inbox", moveDroppedSQL, []any{1, "hostFull"}, 50, ""},
+		})
+		// With nobody waiting the start still reads one entry, not the table (EXISTS read all 20,000 rows).
+		if _, err := tx.Exec(`UPDATE move_followers SET state = 'kept', claimed_until = NULL WHERE state IN ('todo', 'asked')`); err != nil {
+			t.Fatal(err)
+		}
+		plans([]planCase{
+			{"moves: whether any wait, at the start, with none", moveAtStartSQL, nil, 20, ""},
+		})
+		on = db
+		tx.Rollback()
+	} else {
+		t.Fatal(err)
+	}
 	// "Remove me from other servers" writes: asked in a transaction rolled back.
 	if tx, err = db.Begin(); err != nil {
 		t.Fatal(err)
@@ -4310,6 +4371,7 @@ func TestDBQueryPlans(t *testing.T) {
 		`INSERT INTO likes (post_id, user_id) SELECT g, 1000033 FROM generate_series(1, 2000) g ON CONFLICT DO NOTHING`,
 		`INSERT INTO comment_likes (comment_id, user_id) SELECT g, 1000033 FROM generate_series(1, 2000) g ON CONFLICT DO NOTHING`,
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT g, 1000033, 'accepted' FROM generate_series(1, 300) g ON CONFLICT DO NOTHING`,
+		`INSERT INTO move_followers (user_id, follower_id, target_id, state) SELECT 400 + g % 3, g, 1000033, CASE WHEN g % 2 = 0 THEN 'asked' ELSE 'moved' END FROM generate_series(1, 300) g`,
 		`INSERT INTO notifications (user_id, actor_id, kind, fed) SELECT 1 + g % 500, 1000033, 'like', true FROM generate_series(1, 1500) g`,
 		`ANALYZE`,
 	} {
@@ -4318,13 +4380,14 @@ func TestDBQueryPlans(t *testing.T) {
 		}
 	}
 	on = ptx
-	// A suspension reads the account's notifications (1,500 here) and follows (300, each with its member's row) once; it
+	// A suspension reads the account's notifications (1,500 here), follows (300, each with its member's row) and the rows
+	// of members here moved to it (300, through move_followers_target) once; it
 	// is asked in a savepoint rolled back, so the purge's steps below find the same rows. Each budget is the rows
 	// measured here and about a third more (the review of FMD 2); a step with a few rows has 50.
 	if _, err := ptx.Exec(`SAVEPOINT ends`); err != nil {
 		t.Fatal(err)
 	}
-	plans([]planCase{{"purge: what a suspension ends", remoteSuspendEndsSQL, []any{target, "words", "https://h33.example/inbox", "h33.example", time.Now()}, 5500, ""}}) // measured 4,195
+	plans([]planCase{{"purge: what a suspension ends", remoteSuspendEndsSQL, []any{target, "words", "https://h33.example/inbox", "h33.example", time.Now()}, 6600, ""}}) // measured 4,945
 	if _, err := ptx.Exec(`ROLLBACK TO SAVEPOINT ends`); err != nil {
 		t.Fatal(err)
 	}

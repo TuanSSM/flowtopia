@@ -4,12 +4,15 @@
 # outboxes and the collections, 6.2 and 6.4; the search by handle a member makes, 5.3 and 11; the
 # federation page of the admin area with the domain policies and the about page's list of moderated servers, section 10 and FMD 1; the inboxes, section 7
 # and FWR 1; a remote account's profile, following it, blocking it and the follow requests, 6.4 and 11, FWR 3;
-# "Remove me from other servers", 11 and FWR 7.
+# "Remove me from other servers", 11 and FWR 7; moving to an account on another server and the accounts a
+# member moves here from, 6.4 and PRT 2.
 # TestDBFederatedRoutes holds the table to it.
 DELETE /api/admin/federation/domains/{domain}
 DELETE /api/fed/accounts/{id}/block
 DELETE /api/fed/accounts/{id}/follow
 DELETE /api/fed/requests/{id}
+DELETE /api/me/aliases
+DELETE /api/me/move
 GET /.well-known/nodeinfo
 GET /.well-known/webfinger
 GET /actor
@@ -35,6 +38,7 @@ GET /users/{name}/posts/{id}/picture.png
 POST /actor/inbox
 POST /api/fed/lookup
 POST /api/me/federation/leave
+POST /api/me/move
 POST /inbox
 POST /users/{name}/inbox
 PUT /api/admin/federation/domains/{domain}
@@ -43,3 +47,4 @@ PUT /api/admin/federation/publish
 PUT /api/fed/accounts/{id}/block
 PUT /api/fed/accounts/{id}/follow
 PUT /api/fed/requests/{id}
+PUT /api/me/aliases

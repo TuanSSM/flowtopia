@@ -14,6 +14,8 @@
 #     lets their requests reach the network's private addresses (still https, port 443 and a verified certificate);
 #   - every step through the apps' own APIs, over HTTPS through the proxies, as members and admins would, each step
 #     checked on the other instance: what a person would see there;
+#   - a member of one moves to an account on two (PRT 2): refused until that account names her, then her followers
+#     are told and her follower on one is moved to the new account by one, and two takes the Move;
 #   - near the end, one's admin limits, then rejects the media of, then suspends two's domain (FMD 1), and lifts each:
 #     a Follow from two waits for approval and a reply from two is hidden from who does not follow its author, a
 #     picture from two stays a link one never fetches, and a delivery either way is refused while two is suspended;
@@ -31,7 +33,7 @@ export PATH="$HOME/.local/go/bin:$PATH"
 
 # planned is the number of checks a whole run makes. A run that stops early counts the ones it never reached as skipped,
 # with the reason, so the count at the end always adds up to it; a whole run that does not is a failure of the script.
-planned=115
+planned=126
 # The whole run's deadline, below the CI job's 15 minutes and the step's 13, so that the logs are always written.
 limit=${FLOWA_FED_LIMIT:-660}
 pass=0 fail=0 skip=0 last=$(date +%s.%N)
@@ -281,11 +283,11 @@ s=""
 for n in "${names[@]}"; do
   api "$n" admin POST /api/signin '{"username":"admin","password":"flowa-test-only"}'; s+="$code "
   # The Federation switch (off by default, the pause) and follows across servers.
-  api "$n" admin PUT /api/flags '{"flags":{"federation":true,"follows":true}}'; s+="$code "
+  api "$n" admin PUT /api/flags '{"flags":{"federation":true,"follows":true,"moves":true}}'; s+="$code "
   # In allowlist mode, the default, only the servers an admin allowed are asked or listened to.
   api "$n" admin PUT "/api/admin/federation/domains/$(other "$n").flowa.test" '{"policy":"allow"}'; s+="$code "
 done
-all "each admin turns federation and follows on and allows the other server" "200 200 200 200 200 200 " "$s"
+all "each admin turns federation, follows and moves on and allows the other server" "200 200 200 200 200 200 " "$s"
 s=""
 for m in one:ana two:bob two:cyd; do
   api "${m%%:*}" "${m#*:}" POST /api/signup "{\"username\":\"${m#*:}\",\"password\":\"flowa-test-only\"}"; s+="$code "
@@ -531,6 +533,49 @@ api two cyd GET /api/home
 all "and her posts are gone from cyd's Home there" "200 0" "$code $(j '[.posts[] | select(.remote.link // "" | startswith("https://one.flowa.test/users/ana/"))] | length')"
 api two cyd GET "/api/fed/accounts/$ana2"
 all "and her account shows as gone on two" "200 gone" "$code $(j .account.state)"
+
+# ---- moving to an account on another server (PRT 2) ----
+# ivy of one moves to lea of two. jon follows her on one (and shares his profile), kai follows her from two. The
+# move is refused until lea names ivy as an account they move here from; then one tells two with an Update(Person)
+# naming movedTo and a Move, and moves jon itself: he follows lea and no longer ivy. Two takes the Move and, until
+# PRT 3, only counts it.
+s=""
+for m in one:ivy one:jon two:kai two:lea; do
+  api "${m%%:*}" "${m#*:}" POST /api/signup "{\"username\":\"${m#*:}\",\"password\":\"flowa-test-only\"}"; s+="$code "
+  api "${m%%:*}" "${m#*:}" PUT /api/me '{"federates":true}'; s+="$code$(j '.federation.optedIn') "
+done
+all "ivy and jon join one, kai and lea join two, and each shares their profile" "200 200true 200 200true 200 200true 200 200true " "$s"
+# A key is made in the background as a member starts sharing; until then the actor answers 503, so each side waits.
+keyed() { [ "$(curl -sS -m 10 --noproxy '*' --cacert "$work/ca.pem" --resolve "$1.flowa.test:${port[$1]}:127.0.0.1" -H 'Accept: application/activity+json' \
+  -o /dev/null -w '%{http_code}' "https://$1.flowa.test:${port[$1]}/users/$2" 2>/dev/null)" = 200 ]; }
+waitfor 30 keyed one ivy
+waitfor 30 keyed two lea
+api one jon PUT /api/users/ivy/follow; s="$code$(j .following) "
+if found two kai ivy@one.flowa.test; then ivy2=$(j .result.account); api two kai PUT "/api/fed/accounts/$ivy2/follow"; s+="$code $(j .view.follow)"; fi
+all "jon follows ivy on one, and kai asks to follow her from two" "200true 200 requested" "$s"
+ivyfollowed() { api one ivy GET /api/followers && ok200 '[.followers[] | (.user.remote.handle // .user.username)] | sort | join(",") == "jon,kai@two.flowa.test"'; }
+within 30 "ivy's followers on one are jon and kai of two" ivyfollowed || need "ivy's followers"
+api one ivy POST /api/me/move '{"target":"@lea@two.flowa.test","password":"flowa-test-only"}'
+all "before lea names her, ivy's move to lea is refused with what to do" "422 noAlias" "$code $(j .reason)"
+api two lea PUT /api/me/aliases '{"account":"@ivy@one.flowa.test"}'
+all "lea names ivy@one.flowa.test on two as an account they move here from" "200 @ivy@one.flowa.test" "$code $(j '.federation.move.aliases[0].handle')"
+api one ivy POST /api/me/move '{"target":"@lea@two.flowa.test","password":"flowa-test-only"}'
+told=$(j .told)
+if [ "$code" = 200 ] && [ "$(j '.federation.move.moved.handle')" = "@lea@two.flowa.test" ] && [[ "$told" == *"1 server."* ]] && [[ "$told" == *"1 member here who follows you is being asked"* ]]; then
+  ok "ivy moves to lea on one: $told"
+else bad "ivy moves to lea on one" "$code $(cut -c1-300 <<<"$body")"; need "the move"; fi
+: >"$work/ivy"
+got=$(curl -sS -m 20 --noproxy '*' --cacert "$work/ca.pem" --resolve "one.flowa.test:${port[one]}:127.0.0.1" -H 'Accept: application/activity+json' \
+  -o "$work/ivy" -w '%{http_code}' "https://one.flowa.test:${port[one]}/users/ivy" 2>/dev/null) || got=000
+all "her actor on one names movedTo, lea's actor id" "200 https://two.flowa.test/users/lea" "$got $(jq -r .movedTo "$work/ivy" 2>/dev/null)"
+leafollowed() { api two lea GET /api/followers && ok200 '[.followers[].user.remote.handle] | join(",") == "jon@one.flowa.test"'; }
+within 30 "jon, moved by one, follows lea on two" leafollowed
+ivyonly() { api one ivy GET /api/followers && ok200 '[.followers[] | (.user.remote.handle // .user.username)] | join(",") == "kai@two.flowa.test"' && api one ivy GET /api/me && ok200 '.federation.move.progress.moved == 1'; }
+within 30 "once two accepts jon's follow, on one ivy's followers are kai alone and her card counts jon as moved" ivyonly
+moved() { api two admin GET /api/admin/federation && ok200 '(.inbox.dropped.Move // 0) >= 1 and .inbox.failed == 0'; }
+within 30 "two takes the Move from one without an error (it is counted, and acted on from PRT 3)" moved
+api one ivy POST /api/me/move '{"target":"@lea@two.flowa.test","password":"flowa-test-only"}'
+all "a second move within 30 days is refused" "409" "$code"
 for n in "${names[@]}"; do within 30 "$n's queue is empty at the end, nothing failed" drained "$n"; done
 for n in "${names[@]}"; do
   if undropped "$n"; then ok "$n's Federation tab still counts nothing left unsent since its last start ($dropped)"
