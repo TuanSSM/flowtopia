@@ -221,14 +221,14 @@ func TestDBMoveOutHostRoom(t *testing.T) {
 	e.mustExec(`INSERT INTO ap_deliveries (outbox_id, inbox, host, next_at, created_at) SELECT o.id, 'https://social.example/u/' || g || '/inbox', 'social.example', now() + interval '1 day', now()
 		FROM ap_outbox o, generate_series(1, $1) g WHERE o.ap_id = 'https://here.example/activities/full'`, moveHostRoom)
 	e.a.fed.movesDue.Store(true)
-	if did, err := e.a.movesOut(context.Background()); err != nil || did {
-		t.Errorf("a batch with the host full: %v %v", did, err)
+	if _, err := e.a.movesOut(context.Background()); err != nil {
+		t.Errorf("a batch with the host full: %v", err)
 	}
 	if p := e.progress(); p != "todo 2, asked 0, moved 0, kept 0 []" {
 		t.Errorf("with the host full: %s", p)
 	}
 	e.mustExec(`DELETE FROM ap_deliveries WHERE outbox_id = (SELECT id FROM ap_outbox WHERE ap_id = 'https://here.example/activities/full')`)
-	e.clock.add(moveWait + time.Second)
+	e.clock.add(moveBackOff(1) + time.Second) // the member waits after a batch the host could not take
 	e.produce()
 	if p := e.progress(); p != "todo 0, asked 2, moved 0, kept 0 []" {
 		t.Errorf("once the host drained: %s", p)

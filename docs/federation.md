@@ -2197,14 +2197,28 @@ mode lists exactly the flags it did):
   batch of at most 50 (`moveBatch`) followers of one member at a time, with a lease of 2 minutes (`moveClaimSQL`, rows
   locked and skipped when another step holds them, so no follower is moved twice), and for each: one who may follow the
   new account (`followViewOf`: they share their profile, no block either way, the target's server allowed, and the
-  `community` and `follows` flags on, the gate of a follow by hand) sends it a Follow of theirs through the queue
-  (`followRemote`) and is "asked"; their old follow stays until the new account accepts (`followAnswered`: the Accept
-  ends the old follow in the same statement; a Reject keeps it, counted with the reason); one who follows the new
-  account already is moved at once, one who asked already is "asked"; the others are "kept" with the reason (they do
-  not share, a block, the server not let in, following off here, they follow the most accounts there can be, they moved
-  away themselves). Each batch waits while the new account's host has more than 950 rows queued (`moveHostRoom`: half
-  its cap of 2,000, less a batch), so the move's Follows never fill that host's cap and other activities still fit; a
-  batch whose Follow cannot be queued (a full queue) is given back and tried again a minute later. Between batches the
+  `community` and `follows` flags on, the gate of a follow by hand) is written "asked" and then sends it a Follow of
+  theirs through the queue (`followRemote`), so an Accept that comes at once finds them asked; their old follow stays
+  until the new account accepts (`followAnswered`: the Accept ends the old follow in the same statement; a Reject keeps
+  it, counted with the reason); one who follows the new account already is moved at once (the state and the end of the
+  old follow in one statement), one who asked already is "asked"; the others are "kept" with the reason (they do not
+  share, a block, the server not let in, following off here, they follow the most accounts there can be, they moved away
+  themselves, the new account gone, suspended or taking no follows). Each row is written only while the step still
+  holds it and the member still points to the new account (`moveRowSQL`), and the batch stops at the first row that is
+  not, so a redirect taken back, a row another process took after the lease ran out, or the account gone mid-batch
+  sends nothing more (after the second review). **This server's own trouble keeps nobody** (after the second review):
+  switches that cannot be read (`flagsKnown`), federation refused for a moment, a full queue or the database make the
+  member's followers wait a minute and be tried again, never "kept" for a reason that is not theirs, and never with no
+  reason. **A server that cannot take the Follows** (after the second review): before a batch, the new account's host must
+  have at most 950 rows queued (`moveHostRoom`: half its cap of 2,000, less a batch), so the move's Follows never fill
+  that host's cap, and must be neither unavailable nor behind an open circuit (no Follow is written that would be refused
+  and its follow removed again). When it cannot, the member's followers wait (`moveWaitSQL`: all their rows, so the claim
+  passes over the member and other members' moves go on), 1 minute after the first such batch, doubling each time up to
+  an hour (`moveBackOff`); after 12 such batches in a row (`moveTriesMax`, about 7 hours) the rest are kept with the true
+  reason (its server had too much waiting for too long, or could not be reached). A batch that goes starts the count
+  afresh, and a new move by another member wakes the step without shortening anyone's wait. A Follow that waited for room
+  in the queue and was then fanned out to no inbox (its host refused, unavailable or full by then) leaves no pending
+  follow behind, and the member moved with it is kept (`moveDroppedSQL`, in the fan-out's transaction). Between batches the
   workers go on with everything else, and each Follow takes the queue's lock for its own enqueue only. The start picks the
   move up again (`movesAtStart`), and rows a stopped step held are taken again when their lease ends. It stops (what is
   still to do is dropped) when the redirect is taken back or points elsewhere, or the member stops sharing, leaves or is
@@ -2263,9 +2277,11 @@ mode lists exactly the flags it did):
 - **Measured** (`TestDBQueryPlans`, 2.1 GHz Xeon): writing down the members here who follow a member with 1,000 followers
   on 300 servers and 49 here, 2,155 rows counted (about two a follower, through `follows_followee` and each follower's
   primary key; a plain join read `users` whole, 12,806 rows, and is not used); a batch claimed among 20,000 rows of
-  `move_followers`, 444; how a member's followers' move goes, 204 for 100 followers; the room at a host, 1 here (a count
+  `move_followers`, 444; how a member's followers' move goes, 204 for 100 followers; the room at a host and whether it is down, 2 here (a count
   that stops at 951); what Settings and a move read of a member with five aliases, 46; where a member moved, 5; the
-  move's own write, 3; a Move taken back, through `ap_outbox`'s unique id and the queue's index, 0 here.
+  move's own write, 3; a Move taken back, through `ap_outbox`'s unique id and the queue's index, 0 here; one follower's state
+  written with the end of the old follow, 4; an asked follower put back, 1; a member's 100 followers made to wait, 52, or
+  kept, 77; what a Follow fanned out to no inbox leaves, 2.
 - Tests: `TestDBMoveOut` (the definition of done on this side: the alias check refusing and then passing, a wrong
   password, nothing typed, the transaction's rows and their order, the bodies, the followers here written down and then
   moved by the background step, kept until the Accept, the deliveries in order, the actor, the public page and the profile
@@ -2285,7 +2301,12 @@ mode lists exactly the flags it did):
   `TestDBMoveOutHostRoom`, `TestDBFollowWhileQueueWaits`, `TestDBMoveOutOrdersUpdates` (a host down and back: the
   profile's Update, the move's and the take-back's in that order, the Move given up), `TestDBMoveOutFlagOffAfterMove`,
   `TestDBMoveOutReviewPoints` (a target that moved itself, the allowance, a moved member following here, a Reject keeping
-  the old follow, the key not made yet, the community flag off); the moves' plans in `TestDBQueryPlans`; the
+  the old follow, the key not made yet, the community flag off), and after the second review `TestDBMoveOutStuckMemberWaits`
+  (a member whose new account's server stays full waits, is passed over and is kept with the reason, while another
+  member's followers move, no follow churned), `TestDBMoveOutHostDown`, `TestDBMoveOutOwnTroubleKeepsNobody`,
+  `TestDBMoveOutBatchStops` (a take-back between two followers; rows another step took; the redirect changed with the
+  rows in place), `TestDBMoveOutAskedBeforeFollow`,
+  `TestDBMoveOutDroppedFollow`, `TestMoveBackLockOrder`; the moves' plans in `TestDBQueryPlans`; the
   `federation` suite (ivy of one moves to lea of two: refused before lea names her, then made, her actor naming
   `movedTo`, jon asked by one and following lea on two, his old follow ending once two accepts, two taking the Move
   without an error, a second move refused); the `federated` browser suite (the card, its names and contrast in both

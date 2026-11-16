@@ -59,7 +59,9 @@ table, route and test named below is new.
     the member's Update(Person) before it) and a Move to the followers on other servers, the Move held behind the Update
     at each inbox (`comes_after`), every rule of the queue applying to both, and writes down the members here who follow
     the member. A background step then asks them, in batches of 50 with leases, leaving room at the new account's host,
-    to follow the new account; each keeps the old follow until the new one is accepted. After it the profile is a
+    to follow the new account (written "asked" before the Follow is sent, each row only while the batch holds it and the
+    redirect stands); each keeps the old follow until the new one is accepted; this server's own trouble keeps nobody,
+    and a member whose new account's server cannot take the Follows waits without holding anyone else's move. After it the profile is a
     redirect: the actor, the public page, the visitor page of a single-profile instance and the profile in the app say
     where it went; it takes no new follower (here, or from another server: Reject), makes no Public post and follows
     nobody new, here or elsewhere; another move waits 30 days. Taking it back gives up the Move where it was not sent and
@@ -67,7 +69,9 @@ table, route and test named below is new.
     `TestDBMoveOutOrder`, `TestDBMoveOutPolicy`, `TestDBMoveOutMidway`, `TestDBMoveOutAtOnce`, `TestDBMoveOutTarget`,
     `TestDBMoveOutFollowIn`, `TestDBMoveOutFlagAndModes`, `TestDBMoveOutFollowersAfterAnswer`, `TestDBMoveOutResumes`,
     `TestDBMoveOutTwoSteps`, `TestDBMoveOutStopsWhenTakenBack`, `TestDBMoveOutHostRoom`, `TestDBFollowWhileQueueWaits`,
-    `TestDBMoveOutOrdersUpdates`, `TestDBMoveOutFlagOffAfterMove`, `TestDBMoveOutReviewPoints`, the moves' plans in
+    `TestDBMoveOutOrdersUpdates`, `TestDBMoveOutFlagOffAfterMove`, `TestDBMoveOutReviewPoints`,
+    `TestDBMoveOutStuckMemberWaits`, `TestDBMoveOutHostDown`, `TestDBMoveOutOwnTroubleKeepsNobody`, `TestDBMoveOutBatchStops`,
+    `TestDBMoveOutAskedBeforeFollow`, `TestDBMoveOutDroppedFollow`, `TestMoveBackLockOrder`, the moves' plans in
     `TestDBQueryPlans`; the `federation` suite (ivy of one moves to lea of two, refused until lea names her; her actor
     names `movedTo`; jon, her follower on one, follows lea on two and stops following her once two accepts; two takes
     the Move without an error); the `federated` browser suite (the card, its names, contrast and keyboard path, the
@@ -90,7 +94,9 @@ table, route and test named below is new.
     (only moves that passed every check count), the target's lookup in the search by handle's 30 an hour, 30 alias
     changes an hour, 5 aliases, 16 entries of a remote actor's `alsoKnownAs` kept (a target that lists more than 16
     accounts before this one is refused), 2,048 bytes an entry, batches of 50 members here with a lease of 2 minutes,
-    and at most 950 rows queued for the new account's host before the next batch (half its cap of 2,000, less a batch).
+    and at most 950 rows queued for the new account's host before the next batch (half its cap of 2,000, less a batch);
+    a member whose new account's server cannot take the Follows (full, unavailable or behind an open circuit) waits 1
+    minute, doubling to an hour, and after 12 such batches in a row (about 7 hours) the rest are kept with that reason.
 - [ ] **Move in.** A Move from a followed remote account whose target lists it in `alsoKnownAs`
   makes local followers follow the target and unfollow the old account; anything else is ignored.
   DoD: `TestDBMoveIn` with a recorded Mastodon Move fixture.

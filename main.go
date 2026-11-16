@@ -6662,6 +6662,8 @@ type federation struct {
 	movesDue  atomic.Bool
 	movesAt   atomic.Int64
 	movesHook func(n int)
+	// moveRowHook, when set (by a test), hears each follower of a batch before it is moved.
+	moveRowHook func(follower int64)
 	// lookupNow and lookupPause are the clock of lookupFloor; a test sets its own, so nothing waits in a test.
 	lookupNow   func() time.Time
 	lookupPause func(ctx context.Context, d time.Duration)
@@ -18837,8 +18839,16 @@ func (q *deliveryQueue) fanOutDue(ctx context.Context) error {
 			ins, hs = append(ins, in), append(hs, h)
 		}
 	}
-	if _, _, _, err := q.fanOut(ctx, tx, id, undo, ins, hs, now); err != nil {
+	n, _, _, err := q.fanOut(ctx, tx, id, undo, ins, hs, now)
+	if err != nil {
 		return err
+	}
+	// Written for no inbox (the host refused, unavailable or at its cap meanwhile): a Follow that waited is not sent
+	// after all, so the pending follow it made goes, and a member moved with it is kept (PRT 2, the second review).
+	if n == 0 {
+		if _, err := tx.ExecContext(ctx, moveDroppedSQL, id); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -23182,7 +23192,8 @@ const (
 	actorAliasesKept = 16                  // entries of a remote actor's alsoKnownAs kept (the first, in its order)
 	actorAliasMax    = 2048                // bytes of one entry kept; a longer one is left out
 	moveLease        = 2 * time.Minute     // a step's hold on the followers it claimed; another step takes them after it
-	moveWait         = time.Minute         // how long a batch waits for room at the target's host, or after this server's own trouble
+	moveWait         = time.Minute         // how long a member's followers wait after a batch could not go, doubled each time (moveBackOff)
+	moveTriesMax     = 12                  // batches in a row the new account's server could not take before the rest are kept with the reason
 	// moveHostRoom is how many rows may be queued for the new account's host before a batch of its Follows is made: half
 	// the host's cap (deliveryHostMax), less a batch, so the move's Follows never fill it and other activities still fit.
 	moveHostRoom = deliveryHostMax/2 - 50
@@ -23213,13 +23224,18 @@ const (
 // Why a member here who followed a member who moved does not follow the new account (move_followers.why), as Settings
 // says it to the member who moved. Fixed codes; anything not one of them is said as "could not follow it".
 var moveKeptWords = map[string]string{
-	"notSharing": "they do not share their profile beyond this server",
-	"blocked":    "there is a block between them and the new account",
-	"notAllowed": "this server does not talk to the new account's server",
-	"off":        "following people on other servers is off on this server",
-	"full":       "they follow the most accounts there can be",
-	"refused":    "the new account refused the follow",
-	"moved":      "they moved away themselves",
+	"notSharing":      "they do not share their profile beyond this server",
+	"blocked":         "there is a block between them and the new account",
+	"notAllowed":      "this server does not talk to the new account's server",
+	"off":             "following people on other servers is off on this server",
+	"full":            "they follow the most accounts there can be",
+	"refused":         "the new account refused the follow",
+	"moved":           "they moved away themselves",
+	"hostFull":        "the new account's server had too much waiting from this server for too long",
+	"unavailable":     "the new account's server could not be reached",
+	"targetGone":      "the new account was deleted",
+	"targetSuspended": "the new account is suspended on its server",
+	"noInbox":         "the new account cannot take follows",
 }
 
 // keptAliases is what is kept of a remote actor's alsoKnownAs: the first actorAliasesKept entries of at most
@@ -23697,24 +23713,59 @@ func (f *federation) movesWait() {
 	f.out.kick()
 }
 
-// moveClaimSQL takes, for one step, up to $2 followers still to be moved of the first member who has some ($1 the
-// queue's clock, $3 the lease's end): through move_followers_todo, the rows locked and skipped when another step holds
-// them, so two steps never take the same follower.
+// moveClaimSQL takes, for one step, up to $2 followers still to be moved of the first member who has some not held
+// ($1 the queue's clock, $3 the lease's end): through move_followers_todo, the rows locked and skipped when another
+// step holds them, so two steps never take the same follower. A member whose batch could not go waits (claimed_until
+// set for all their rows, moveWaitSQL), and the claim passes over them to the next member meanwhile.
 const moveClaimSQL = `UPDATE move_followers x SET claimed_until = $3 FROM (
 		SELECT user_id, follower_id FROM move_followers WHERE state = 'todo' AND (claimed_until IS NULL OR claimed_until < $1)
 			AND user_id = (SELECT min(user_id) FROM move_followers WHERE state = 'todo' AND (claimed_until IS NULL OR claimed_until < $1))
 		ORDER BY user_id, follower_id LIMIT $2 FOR UPDATE SKIP LOCKED) k
-	WHERE x.user_id = k.user_id AND x.follower_id = k.follower_id RETURNING x.user_id, x.follower_id, x.target_id`
+	WHERE x.user_id = k.user_id AND x.follower_id = k.follower_id RETURNING x.user_id, x.follower_id, x.target_id, x.tries`
 
-// moveHostQueuedSQL counts the rows queued for host $1, up to $2: the room check of a batch.
-const moveHostQueuedSQL = `SELECT count(*) FROM (SELECT 1 FROM ap_deliveries WHERE state = 'queued' AND host = $1 LIMIT $2) q`
+// moveHostQueuedSQL counts the rows queued for host $1, up to $2, and says whether the host is unavailable or its
+// circuit open: the room check of a batch.
+const moveHostQueuedSQL = `SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_deliveries WHERE state = 'queued' AND host = $1 LIMIT $2) q),
+	COALESCE((SELECT state IN ('open', 'unavailable') FROM ap_hosts WHERE host = $1), false)`
 
 // moveMemberSQL is what a batch asks of the member who moved ($1; $2 as publicMember's $2): still moved, to whom, and
 // still sharing with a key.
 const moveMemberSQL = `SELECT u.moved_to, COALESCE(` + publicMember + `, false) AND EXISTS (SELECT 1 FROM ap_keys k WHERE k.user_id = u.id) FROM users u WHERE u.id = $1`
 
-// moveRowSQL writes where one follower's move stands, only while the step still holds it ($5, its lease's end).
-const moveRowSQL = `UPDATE move_followers SET state = $3, why = $4, claimed_until = NULL WHERE user_id = $1 AND follower_id = $2 AND claimed_until = $5`
+// moveRowSQL writes where one follower's move stands ($3 state, $4 why), only while the step still holds the row ($5,
+// its lease's end) and the member still points to the new account ($6, its actor id): a redirect taken back, a row
+// another process took after the lease ran out, or one removed, changes nothing, and the step stops. A follower moved
+// stops following the member in the same statement. It says how many rows it changed (one or none).
+const moveRowSQL = `WITH s AS (UPDATE move_followers x SET state = $3, why = $4, claimed_until = NULL, tries = 0
+		WHERE x.user_id = $1 AND x.follower_id = $2 AND x.claimed_until = $5 AND x.state = 'todo'
+			AND EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.moved_to = $6) RETURNING x.user_id, x.follower_id),
+	o AS (DELETE FROM follows w USING s WHERE $3 = 'moved' AND w.follower_id = s.follower_id AND w.followee_id = s.user_id RETURNING 1)
+	SELECT (SELECT count(*) FROM s) + 0 * (SELECT count(*) FROM o)`
+
+// moveAskedSQL turns a follower who was asked back ($3 the new state, $4 why, $5 when they may be taken again): their
+// Follow could not be made after all. Only while they are still "asked" (an answer may have come meanwhile).
+const moveAskedSQL = `UPDATE move_followers SET state = $3, why = $4, claimed_until = $5 WHERE user_id = $1 AND follower_id = $2 AND state = 'asked'`
+
+// moveWaitSQL makes every follower of member $1 still to be moved wait until $2 ($3 adds to their tries: a batch that
+// could not go, for the new account's server; 0 for this server's own trouble), rows another step holds left alone.
+const moveWaitSQL = `UPDATE move_followers SET claimed_until = $2, tries = tries + $3 WHERE user_id = $1 AND state = 'todo' AND (claimed_until IS NULL OR claimed_until < $2 OR claimed_until = $4)`
+
+// moveGiveUpSQL keeps every follower of member $1 still to be moved, with the reason $2: the new account's server could
+// not take their Follows for moveTriesMax batches in a row.
+const moveGiveUpSQL = `UPDATE move_followers SET state = 'kept', why = $2, claimed_until = NULL WHERE user_id = $1 AND state = 'todo'`
+
+// moveBackOff is how long a member's followers wait after tries batches in a row could not go: moveWait doubled each
+// time, at most an hour.
+func moveBackOff(tries int) time.Duration {
+	d := moveWait
+	for i := 0; i < tries && d < time.Hour; i++ {
+		d *= 2
+	}
+	return min(d, time.Hour)
+}
+
+// errMoveStop is a batch that stops because a row is no longer its own or the redirect changed.
+var errMoveStop = errors.New("the move changed under the batch")
 
 // movesOut is a step of the move of the members here who follow a member who moved (the section's doc comment): one
 // batch of at most moveBatch followers of one member, claimed with a lease. It says whether it did any work.
@@ -23726,7 +23777,10 @@ func (a *app) movesOut(ctx context.Context) (bool, error) {
 	}
 	f.movesAt.Store(0)
 	until := now.Add(moveLease).Truncate(time.Microsecond)
-	type claimed struct{ member, follower, target int64 }
+	type claimed struct {
+		member, follower, target int64
+		tries                    int
+	}
 	var batch []claimed
 	done, err := f.dbTurn(ctx)
 	if err != nil {
@@ -23736,7 +23790,7 @@ func (a *app) movesOut(ctx context.Context) (bool, error) {
 	if err == nil {
 		for rows.Next() {
 			var c claimed
-			if err = rows.Scan(&c.member, &c.follower, &c.target); err != nil {
+			if err = rows.Scan(&c.member, &c.follower, &c.target, &c.tries); err != nil {
 				break
 			}
 			batch = append(batch, c)
@@ -23752,7 +23806,7 @@ func (a *app) movesOut(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if len(batch) == 0 {
-		// Nothing to take now; rows held by a step that stopped are taken once their lease ends.
+		// Nothing to take now: a member waiting, or rows held by a step that stopped, are taken when their time comes.
 		var held sql.NullTime
 		if err := f.fedRow(ctx, []any{&held}, `SELECT min(claimed_until) FROM move_followers WHERE state = 'todo'`); err == nil && held.Valid {
 			f.movesAt.Store(held.Time.UnixNano())
@@ -23763,117 +23817,191 @@ func (a *app) movesOut(ctx context.Context) (bool, error) {
 		f.movesHook(len(batch))
 	}
 	member, target := batch[0].member, batch[0].target
-	// Give the batch back (its lease ended at once) to be taken again after moveWait.
-	release := func() {
+	// wait makes the member's followers still to be moved wait: after a batch the new account's server could not take
+	// (counted: why, the reason they are kept with once moveTriesMax batches in a row could not go), or for this
+	// server's own trouble (why "", not counted), and the step moves on to the next member.
+	wait := func(why string) {
 		cctx, cancel := own()
 		defer cancel()
-		ids := make([]int64, len(batch))
-		for i, c := range batch {
-			ids[i] = c.follower
+		tries, add := batch[0].tries, 0
+		if why != "" {
+			add = 1
+			if tries+1 >= moveTriesMax {
+				if _, err := f.fedExec(cctx, moveGiveUpSQL, member, why); err != nil {
+					log.Printf("federation: the followers here of member %d could not be kept: %v", member, err)
+				}
+				log.Printf("federation: the move of member %d's followers here gave up after %d tries: %s", member, moveTriesMax, why)
+				f.movesDue.Store(true)
+				return
+			}
 		}
-		f.fedExec(cctx, `UPDATE move_followers SET claimed_until = NULL WHERE user_id = $1 AND follower_id = ANY($2) AND claimed_until = $3`, member, pq.Array(ids), until)
-		f.movesAt.Store(now.Add(moveWait).UnixNano())
+		next := now.Add(moveBackOff(tries + add)).Truncate(time.Microsecond)
+		if _, err := f.fedExec(cctx, moveWaitSQL, member, next, add, until); err != nil {
+			log.Printf("federation: the followers here of member %d could not be put back: %v", member, err)
+		}
+		f.movesDue.Store(true) // the next member, if any, goes on now
 	}
 	var movedTo string
 	var shares bool
 	if err := f.fedRow(ctx, []any{&movedTo, &shares}, moveMemberSQL, member, a.mode == modeSingle); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		release()
+		wait("")
 		return false, err
 	}
-	ra, err := scanActor(f.db.QueryRowContext(ctx, `SELECT `+actorCols+` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.user_id = $1`, target))
+	var ra *remoteActor
+	if done, err = f.dbTurn(ctx); err != nil {
+		wait("")
+		return false, err
+	}
+	ra, err = scanActor(f.db.QueryRowContext(ctx, `SELECT `+actorCols+` FROM ap_actors a JOIN users u ON u.id = a.user_id WHERE a.user_id = $1`, target))
+	done()
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		release()
+		wait("")
 		return false, err
 	}
 	// Stopped: the redirect taken back or pointing elsewhere, the member gone, no longer sharing. What is still to do is
 	// dropped; followers already asked keep their request, and its answer finishes or keeps them as any would.
 	if ra == nil || movedTo != ra.ID || !shares {
 		if _, err := f.fedExec(ctx, `DELETE FROM move_followers WHERE user_id = $1 AND state = 'todo'`, member); err != nil {
-			release()
+			wait("")
 			return false, err
 		}
 		log.Printf("federation: the move of member %d's followers here stopped (the redirect taken back, or the profile no longer shared)", member)
 		f.movesDue.Store(true)
 		return true, nil
 	}
-	// Room at the target's host: the move's Follows never fill its cap.
+	// The switches, read: a failed read is this server's trouble, never "following is off" for good.
+	flags, known := a.flagsKnown()
+	if !known {
+		wait("")
+		return true, nil
+	}
+	// Room at the new account's host, and the host reachable: the move's Follows never fill its cap, and none is written
+	// for a host that cannot take it (each would be refused, its follow written and removed again).
 	var queued int
-	if err := f.fedRow(ctx, []any{&queued}, moveHostQueuedSQL, ra.Domain, moveHostRoom+1); err != nil {
-		release()
+	var down bool
+	if err := f.fedRow(ctx, []any{&queued, &down}, moveHostQueuedSQL, ra.Domain, moveHostRoom+1); err != nil {
+		wait("")
 		return false, err
 	}
-	if queued+len(batch) > moveHostRoom {
-		release()
-		return false, nil
+	switch {
+	case down:
+		wait("unavailable")
+		return true, nil
+	case queued+len(batch) > moveHostRoom:
+		wait("hostFull")
+		return true, nil
 	}
-	on := a.flagsCached()
-	gate := on["community"] && on["follows"]
-	for _, c := range batch {
-		state, why, err := a.moveOne(ctx, c.follower, ra, gate)
-		if err != nil {
-			log.Printf("federation: member %d's move to the new account of member %d waits: %v", c.follower, member, err)
-			release()
-			return true, nil
-		}
-		if _, err := f.fedExec(ctx, moveRowSQL, member, c.follower, state, why, until); err != nil {
-			release()
+	gate := flags["community"] && flags["follows"]
+	// A batch that goes starts the member's count of batches that could not afresh.
+	if batch[0].tries > 0 {
+		if _, err := f.fedExec(ctx, `UPDATE move_followers SET tries = 0 WHERE user_id = $1 AND state = 'todo' AND tries > 0`, member); err != nil {
+			wait("")
 			return false, err
 		}
-		if state == "moved" {
-			if _, err := f.fedExec(ctx, `DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, c.follower, member); err != nil {
-				log.Printf("federation: member %d follows the new account of member %d but still the old one: %v", c.follower, member, err)
+	}
+	for _, c := range batch {
+		if err := a.moveOne(ctx, member, c.follower, ra, gate, until); err != nil {
+			if !errors.Is(err, errMoveStop) {
+				log.Printf("federation: member %d's move to the new account of member %d waits: %v", c.follower, member, err)
+				wait("")
+			} else {
+				f.movesDue.Store(true)
 			}
+			return true, nil
 		}
 	}
 	f.movesDue.Store(true)
 	return true, nil
 }
 
-// moveOne moves one member here (follower) to ra: "moved" when they follow it already, "asked" when their request waits
-// (sent now, or there already), "kept" with a reason code when they cannot follow it. An error is this server's own
-// trouble (a full queue, the database): the follower is tried again later.
-func (a *app) moveOne(ctx context.Context, follower int64, ra *remoteActor, gate bool) (state, why string, err error) {
+// moveOne moves one member here (follower) to ra, writing where they stand only while the step holds the row and the
+// member still points to ra (moveRowSQL; errMoveStop when not): "moved" when they follow it already (their follow of
+// the member ends in the same statement), "asked" when their request waits, "kept" with a reason code when they cannot
+// follow it. A Follow is sent only after the row says "asked", so an Accept that comes at once finds it; if the Follow
+// cannot be made the row goes back. An error is this server's own trouble: the follower is tried again later.
+func (a *app) moveOne(ctx context.Context, member, follower int64, ra *remoteActor, gate bool, until time.Time) error {
+	f := a.fed
+	write := func(state, why string) error {
+		var n int
+		if err := f.fedRow(ctx, []any{&n}, moveRowSQL, member, follower, state, why, until, ra.ID); err != nil {
+			return err
+		}
+		if n == 0 {
+			return errMoveStop
+		}
+		return nil
+	}
+	if f.moveRowHook != nil {
+		f.moveRowHook(follower)
+	}
 	if !gate {
-		return "kept", "off", nil
+		return write("kept", "off")
 	}
 	fu := &user{ID: follower}
-	if err := a.db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1`, follower).Scan(&fu.Username); err != nil {
-		return "", "", err
+	if err := f.fedRow(ctx, []any{&fu.Username}, `SELECT username FROM users WHERE id = $1`, follower); err != nil {
+		return err
 	}
 	v, err := a.followViewOf(ctx, fu, ra)
 	if err != nil {
-		return "", "", err
+		return err
 	}
 	switch {
 	case v.Follow == "following":
-		return "moved", "", nil
+		return write("moved", "")
 	case v.Follow == "requested":
-		return "asked", "", nil
+		return write("asked", "")
 	case v.Cannot != "":
-		switch v.Cannot {
-		case fedFollowOptIn:
-			return "kept", "notSharing", nil
-		case fedFollowBlocked:
-			return "kept", "blocked", nil
-		case lookupReasons[lookupNotAllowed].words:
-			return "kept", "notAllowed", nil
-		case moveFollowsNobody:
-			return "kept", "moved", nil
+		why, ok := moveCannot[v.Cannot]
+		if !ok {
+			// This server's own state (federation refused just now): tried again later, never kept with no reason.
+			return errors.New("the follow cannot be made just now: " + v.Cannot)
 		}
-		return "kept", "", nil
+		return write("kept", why)
+	}
+	if err := write("asked", ""); err != nil {
+		return err
 	}
 	made, full, err := a.followRemote(ctx, fu, ra)
+	back := func(state, why string, at any) error {
+		_, err := f.fedExec(ctx, moveAskedSQL, member, follower, state, why, at)
+		return err
+	}
 	switch {
 	case err != nil:
-		return "", "", err
+		// Not made (a full queue, or refused at the host meanwhile): back to the ones to do, after a wait.
+		if err2 := back("todo", "", f.out.now().Add(moveWait)); err2 != nil {
+			return err2
+		}
+		return err
 	case made:
-		return "asked", "", nil
+		return nil
 	case full:
-		return "kept", "full", nil
+		return back("kept", "full", nil)
 	}
-	// No follow made and none full: one was written meanwhile, asked again next time.
-	return "", "", errors.New("the follow changed meanwhile")
+	// No follow made and none full: one was written meanwhile, which counts as asked.
+	return nil
 }
+
+// moveCannot turns the reason followViewOf gives into the code a kept follower is written with. A reason not in it is
+// this server's passing state, not the follower's.
+var moveCannot = map[string]string{
+	fedFollowOptIn:                        "notSharing",
+	fedFollowBlocked:                      "blocked",
+	lookupReasons[lookupNotAllowed].words: "notAllowed",
+	moveFollowsNobody:                     "moved",
+	lookupReasons[lookupGone].words:       "targetGone",
+	lookupReasons[lookupSuspended].words:  "targetSuspended",
+	fedFollowNoInbox:                      "noInbox",
+	fedFollowForeign:                      "noInbox",
+}
+
+// moveDroppedSQL is what a Follow that waited for room in the queue and was then written for no inbox ($1, its
+// activity) leaves: the pending follow it made goes, and a member moved with it is kept, the new account's server
+// unavailable. Through the activity's own row, the actor its object names and follows_followee.
+const moveDroppedSQL = `WITH o AS (SELECT ap_id, body::jsonb AS b FROM ap_outbox WHERE id = $1),
+	t AS (SELECT a.user_id FROM o JOIN ap_actors a ON a.ap_id = o.b->>'object' WHERE o.b->>'type' = 'Follow'),
+	f AS (DELETE FROM follows w USING o, t WHERE w.followee_id = t.user_id AND w.ap_id = o.ap_id AND w.state = 'pending' RETURNING w.follower_id, w.followee_id)
+	UPDATE move_followers x SET state = 'kept', why = 'unavailable' FROM f WHERE x.follower_id = f.follower_id AND x.target_id = f.followee_id AND x.state = 'asked'`
 
 // sentence is what the member is told after a move.
 func (r moveResult) sentence(paused bool) string {
@@ -24070,11 +24198,13 @@ func (a *app) handleMoveBack(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	now := f.out.now()
+	// The queue's lock first, then the member's row, as every other path takes them (an enqueue holds the lock already,
+	// and a second take is free).
 	then := func(tx *sql.Tx) error {
-		if err := oneRow(tx.ExecContext(ctx, `UPDATE users SET moved_to = '' WHERE id = $1 AND moved_to <> ''`, u.ID)); err != nil {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
+		if err := oneRow(tx.ExecContext(ctx, `UPDATE users SET moved_to = '' WHERE id = $1 AND moved_to <> ''`, u.ID)); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, moveTakeBackSQL, u.ID, moveID, now); err != nil {
@@ -27553,8 +27683,8 @@ var migrations = []string{schema, schemaSocial,
 	// up where it was not sent; ap_person_out.last_id the member's last Update(Person) enqueued, which the next one
 	// comes after at each inbox. move_followers is the members here who follow a member who moved, each moved by a
 	// background step (todo, then asked once their Follow of the new account is sent, moved once it is accepted, or
-	// kept with why); claimed_until is a step's lease on a row. Columns with constant defaults or none and a new
-	// table: no row is rewritten, and an older build ignores them; after ./deploy.sh --rollback a moved member's actor
+	// kept with why); claimed_until is a step's lease on a row, or how long a member's rows wait after a batch could
+	// not go, and tries how many batches in a row could not. Columns with constant defaults or none and a new table: no row is rewritten, and an older build ignores them; after ./deploy.sh --rollback a moved member's actor
 	// would stop saying movedTo and their followers here would stop being moved until the build comes back, and
 	// nothing is lost (14.4).
 	`ALTER TABLE users ADD COLUMN IF NOT EXISTS moved_to TEXT NOT NULL DEFAULT '';
@@ -27570,6 +27700,7 @@ var migrations = []string{schema, schemaSocial,
 		state TEXT NOT NULL DEFAULT 'todo' CHECK (state IN ('todo', 'asked', 'moved', 'kept')),
 		why TEXT NOT NULL DEFAULT '',
 		claimed_until TIMESTAMPTZ,
+		tries INT NOT NULL DEFAULT 0,
 		PRIMARY KEY (user_id, follower_id)
 	);
 	CREATE INDEX IF NOT EXISTS move_followers_todo ON move_followers (user_id, follower_id) WHERE state = 'todo';

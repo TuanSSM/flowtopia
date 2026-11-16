@@ -4113,7 +4113,7 @@ func TestDBQueryPlans(t *testing.T) {
 		{"moves: what Settings and a move read of a member", moveStateSQL, []any{11, false}, 60, ""},
 		{"moves: where a member moved", movedSQL, []any{11}, 10, ""},
 		{"moves: how the move of a member's followers here goes", moveProgressSQL, []any{200}, 300, ""},
-		{"moves: the room at the new account's host", moveHostQueuedSQL, []any{"p1.out.example", moveHostRoom + 1}, 2 * (moveHostRoom + 1), ""},
+		{"moves: the room at the new account's host, and whether it is down", moveHostQueuedSQL, []any{"p1.out.example", moveHostRoom + 1}, 2*(moveHostRoom+1) + 10, ""},
 	})
 	if tx, err := db.Begin(); err == nil {
 		on = tx
@@ -4122,6 +4122,11 @@ func TestDBQueryPlans(t *testing.T) {
 			{"moves: the members here who follow a member with 1,000 followers elsewhere, written down", moveFollowersSQL, []any{11, 3000001}, 6000, ""},
 			{"moves: a batch claimed", moveClaimSQL, []any{time.Now(), moveBatch, time.Now().Add(moveLease)}, 2000, ""},
 			{"moves: a Move taken back", moveTakeBackSQL, []any{11, "https://x.example/none", time.Now()}, 10, ""},
+			{"moves: where one follower stands, written", moveRowSQL, []any{200, 4, "moved", "", time.Now(), "https://p1.out.example/users/3000001"}, 20, ""},
+			{"moves: an asked follower put back", moveAskedSQL, []any{200, 1, "todo", "", time.Now()}, 10, ""},
+			{"moves: a member's followers made to wait", moveWaitSQL, []any{200, time.Now().Add(time.Hour), 1, time.Now()}, 300, ""},
+			{"moves: a member's followers kept", moveGiveUpSQL, []any{200, "hostFull"}, 300, ""},
+			{"moves: a Follow written for no inbox", moveDroppedSQL, []any{1}, 50, ""},
 		})
 		on = db
 		tx.Rollback()
