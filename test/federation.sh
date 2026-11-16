@@ -16,7 +16,10 @@
 #     checked on the other instance: what a person would see there;
 #   - near the end, one's admin limits, then rejects the media of, then suspends two's domain (FMD 1), and lifts each:
 #     a Follow from two waits for approval and a reply from two is hidden from who does not follow its author, a
-#     picture from two stays a link one never fetches, and a delivery either way is refused while two is suspended.
+#     picture from two stays a link one never fetches, and a delivery either way is refused while two is suspended;
+#     then one's admin limits, suspends and purges one account of two (FMD 2): its follows stay under the limit (a new one
+#     waits for approval) and end under the suspension, its reply is hidden and shown again, two is told nothing, and the
+#     purge leaves its handle.
 # No fixed waits: each check polls what it needs with a deadline and says how long it took. Nothing here uses the
 # names or the port of the real service: every container, network and volume is named flowa-fed-<random>, the
 # proxies are published on free ports of 127.0.0.1 only, and everything is removed at the end, on a failure and on
@@ -28,7 +31,7 @@ export PATH="$HOME/.local/go/bin:$PATH"
 
 # planned is the number of checks a whole run makes. A run that stops early counts the ones it never reached as skipped,
 # with the reason, so the count at the end always adds up to it; a whole run that does not is a failure of the script.
-planned=96
+planned=115
 # The whole run's deadline, below the CI job's 15 minutes and the step's 13, so that the logs are always written.
 limit=${FLOWA_FED_LIMIT:-660}
 pass=0 fail=0 skip=0 last=$(date +%s.%N)
@@ -621,6 +624,84 @@ if found one dee cyd@two.flowa.test; then cyd1c=$(j .result.account); api one de
 all "the suspension lifted, dee follows cyd from one" "200 200" "$s"
 deefollows() { api one dee GET "/api/fed/accounts/$cyd1c" && ok200 '.view.follow == "following"'; }
 within 30 "and two accepts it: dee follows cyd" deefollows
+
+# ---- actions on one account of two (FMD 2): limit, suspend, purge ----
+# One's moderators act on cyd's account alone, as Mastodon's do on a remote account; two is never told. Here dee and one's
+# admin follow cyd, and cyd follows dee. eve joins one and shares her profile, following nobody.
+act() {   # act <action> [reason]: one's admin acts on cyd's account through the moderators' route; $code and $body
+  local until; until=$(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)
+  api one admin POST /api/mod/actions "{\"action\":\"$1\",\"kind\":\"user\",\"id\":$cyd1c,\"reason\":\"${2:-}\",\"until\":\"$until\"}"
+}
+s=""
+api one eve POST /api/signup '{"username":"eve","password":"flowa-test-only"}'; s+="$code "
+api one eve PUT /api/me '{"federates":true}'; s+="$code$(j '.federation.optedIn') "
+act mute "Testing a limit of one account."; s+="$code"
+all "eve joins one and shares her profile, and one's admin limits cyd's account alone" "200 200true 200" "$s"
+api one dee GET "/api/fed/accounts/$cyd1c"
+all "dee's follow of cyd stays, and cyd's profile on one says it is limited" "200 following true" "$code $(j .view.follow) $(j '.account.limited | length > 0')"
+# The domain's suspension above ended cyd's follow of dee on one (two was not told, so two still has it): cyd asks again.
+s=""
+api two cyd DELETE "/api/fed/accounts/$dee2/follow"; s+="$code "
+api two cyd PUT "/api/fed/accounts/$dee2/follow"; s+="$code $(j .view.follow)"
+all "cyd unfollows dee from two and asks to follow her again" "200 200 requested" "$s"
+within 30 "on one cyd's Follow waits for dee's approval though she approves nobody by hand: cyd is limited" deereq || need "a request from a limited account"
+api one dee PUT "/api/fed/requests/$(j '.requests[0].user.id')"
+within 30 "dee approves it, and cyd follows dee on two" cydfollows || need "cyd following dee"
+api one dee POST /api/posts '{"body":"A limit of one account, tested","audience":"public"}'
+pl=$(j '.posts[0].id')
+within 30 "dee's Public post reaches cyd's Home on two" inhome two cyd "https://one.flowa.test/users/dee/posts/$pl" || need "dee's post on two"
+api two cyd POST "/api/posts/$(jq -r .id <<<"$post")/comments" '{"body":"From a limited account"}'
+cl=$(j '.comment.id')
+limreply() { api one dee GET "/api/posts/$pl/comments" && ok200 '[.comments[] | select(.remote.link == "'"https://two.flowa.test/users/cyd/comments/$cl"'")] | length == 1'; }
+within 30 "cyd's reply reaches one, where dee, who follows cyd, reads it" limreply || need "cyd's reply on one"
+api one eve GET "/api/posts/$pl"; s="$code $(j '.posts[0].commentCount') "
+api one eve GET "/api/posts/$pl/comments"; s+="$code $(j '.comments | length')"
+all "eve, who does not follow cyd, neither reads cyd's reply nor counts it" "200 0 200 0" "$s"
+waitfor 30 actorup eve
+eve2=0
+if found two cyd eve@one.flowa.test; then eve2=$(j .result.account); api two cyd PUT "/api/fed/accounts/$eve2/follow"; fi
+evereq() { api one eve GET /api/fed/requests && ok200 '[.requests[].user.remote.handle] | join(",") == "cyd@two.flowa.test"'; }
+within 30 "cyd asks to follow eve from two: on one it waits for her approval though she approves nobody by hand" evereq
+act unmute; s="$code "
+api one eve GET "/api/posts/$pl"; s+="$code $(j '.posts[0].commentCount') "
+api one eve GET /api/fed/requests; s+="$code $(j '.requests | length')"
+all "the limit lifted, eve counts cyd's reply, and cyd's request still waits for her" "200 200 1 200 1" "$s"
+
+# Suspend: on one the follows end and dee is told; two is told nothing, so cyd still follows dee there, and a post of cyd's
+# that two delivers to one is answered 202 and kept nowhere.
+act suspend "Testing a suspension of one account."
+ended=$(j '.note')
+s="$code $(sql one "SELECT count(*) FROM follows WHERE follower_id = $cyd1c OR followee_id = $cyd1c") "
+s+="$(sql one "SELECT count(*) FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'dee' AND n.kind = 'moderation' AND n.text LIKE '%suspended @cyd@two.flowa.test%'")"
+all "one's admin suspends cyd's account: on one every follow with it ends and dee is told ($ended)" "200 0 1" "$s"
+api two cyd GET "/api/fed/accounts/$dee2"
+all "two is told nothing: on two cyd still follows dee" "200 following" "$code $(j .view.follow)"
+api two cyd POST /api/posts '{"body":"Two does not know cyd is suspended on one","audience":"public"}'
+ps=$(j '.posts[0].id')
+sentone() { [ "$(sql two "SELECT count(*) FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = 'https://two.flowa.test/users/cyd/posts/$ps/activity'")" = 0 ] &&
+  [ "$(sql two "SELECT count(*) FROM ap_outbox WHERE ap_id = 'https://two.flowa.test/users/cyd/posts/$ps/activity' AND fanned_out")" = 1 ]; }
+within 30 "two delivers cyd's post to one (its row delivered and gone on two)" sentone
+all "and one answered it and kept nothing of it: no post, no inbox row" "0 0" "$(sql one "SELECT count(*) FROM posts WHERE ap_id = 'https://two.flowa.test/users/cyd/posts/$ps'") $(sql one "SELECT count(*) FROM ap_inbox WHERE activity_id LIKE 'https://two.flowa.test/users/cyd/posts/$ps%'")"
+api one dee GET "/api/posts/$pl/comments"; s="$code $(j '.comments | length') "
+api one dee PUT "/api/fed/accounts/$cyd1c/follow"; s+="$code"
+all "on one cyd's reply is hidden from dee, and she cannot follow cyd" "200 0 403" "$s"
+act unsuspend; s="$code "
+api one eve GET "/api/posts/$pl/comments"; s+="$code $(j '.comments | length') "
+api one dee GET "/api/fed/accounts/$cyd1c"; s+="$code $(j .view.follow)"
+all "the suspension lifted, cyd's reply shows again on one, and the follows are not restored" "200 200 1 200 none" "$s"
+
+# Purge: suspended again, what one holds of cyd goes (the reply, the posts one's admin kept, the like), the handle stays,
+# and a second purge removes nothing.
+act suspend "Purging."; s="$code "
+act purge_remote "Purging."; s+="$code $(j .done) "
+api one eve GET "/api/posts/$pl/comments"; s+="$code $(j '.comments | length') "
+s+="$(sql one "SELECT count(*) FROM posts WHERE user_id = $cyd1c") $(sql one "SELECT count(*) FROM comments WHERE user_id = $cyd1c AND body <> ''") $(sql one "SELECT count(*) FROM users WHERE id = $cyd1c AND suspended_until > now()")"
+all "one's admin suspends and purges cyd: no post or reply of cyd's is left on one, the suspended handle is" "200 200 true 200 0 0 0 1" "$s"
+act purge_remote "Again."
+all "a second purge removes nothing" "200 true 0" "$code $(j .done) $(j '[.removed[]] | add')"
+api one admin GET '/api/admin/audit?action=&actor=&before=0'
+all "one's audit log holds each action on cyd's account" "200 limit_remote,unlimit_remote,suspend_remote,unsuspend_remote,suspend_remote,purge_remote,purge_remote" \
+  "$code $(j '[.items[] | select(.target == "cyd@two.flowa.test") | .action] | reverse | join(",")')"
 
 # ---- memory, and what is kept ----
 # docker stats shows the container's memory as the kernel counts it for the cgroup, without the page cache it can

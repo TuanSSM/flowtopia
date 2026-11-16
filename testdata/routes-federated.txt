@@ -16,6 +16,7 @@ GET /actor
 GET /actor/outbox
 GET /api/about/servers
 GET /api/admin/federation
+GET /api/admin/federation/accounts
 GET /api/fed/accounts/{id}
 GET /api/fed/media/{file}
 GET /api/fed/requests

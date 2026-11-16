@@ -488,15 +488,26 @@ func TestPermissionTable(t *testing.T) {
 			t.Errorf("moderator %s: got %v, want %v", p, can(&user{Role: "moderator"}, p), modHas[p])
 		}
 	}
-	// The two permissions of a mode that federates (docs/federation.md, section 10).
+	// The permissions of a mode that federates (docs/federation.md, section 10): reading and managing the policies, and
+	// acting on one account of another server (FMD 2), which moderators have, as Mastodon's moderators do.
 	for _, c := range []struct {
-		role string
-		read bool
-		mgmt bool
-	}{{"admin", true, true}, {"moderator", true, false}, {"user", false, false}} {
-		if can(&user{Role: c.role}, permFedRead) != c.read || can(&user{Role: c.role}, permFedManage) != c.mgmt {
-			t.Errorf("%s: federation.read %v, federation.manage %v", c.role, can(&user{Role: c.role}, permFedRead), can(&user{Role: c.role}, permFedManage))
+		role                string
+		read, mgmt, account bool
+	}{{"admin", true, true, true}, {"moderator", true, false, true}, {"user", false, false, false}} {
+		u := &user{Role: c.role}
+		if can(u, permFedRead) != c.read || can(u, permFedManage) != c.mgmt || can(u, permFedAccounts) != c.account {
+			t.Errorf("%s: federation.read %v, federation.manage %v, federation.accounts %v", c.role, can(u, permFedRead), can(u, permFedManage), can(u, permFedAccounts))
 		}
+	}
+	// Each action on an account of another server asks a permission of a mode that federates, so no role holds one in
+	// local mode, where permsOf lists none of them; and purging needs federation.manage, which moderators lack.
+	for action, perms := range remoteActPerms {
+		if !slices.ContainsFunc(perms, func(p string) bool { return p == permFedAccounts || p == permFedManage }) {
+			t.Errorf("%s asks no permission of federation: %v", action, perms)
+		}
+	}
+	if !slices.Equal(remoteActPerms["purge_remote"], []string{permFedManage}) {
+		t.Errorf("purge_remote asks %v", remoteActPerms["purge_remote"])
 	}
 	if can(nil, permDashboard) || can(&user{Role: "nobody"}, permDashboard) {
 		t.Error("no user or an unknown role must have no permissions")
@@ -4216,6 +4227,23 @@ func TestDBQueryPlans(t *testing.T) {
 		{"replies: the caps in all", talkCountSQL, []any{remoteRepliesMax, remoteLikesMax}, 120000, ""},
 		{"replies: records of comments gone, a batch", talkOrphansSQL, []any{remoteBatch, 0}, 5000 + 3*remoteBatch, "ap_comment_out"}, // its 5,000 rows read whole here, a small table; its primary key once it grows
 	})
+	// The same post when 20 of the accounts that wrote its 3,000 remote replies are limited or suspended here and no
+	// domain is (FMD 2): the look asks each reply's account row once (its own limit and suspension are on it), and the
+	// walk finds no policy; the policy's read of when the last of them ends, and the Federation tab's page of them, go
+	// through users_remote_held, never reading users whole.
+	if _, err := rtx2.Exec(`UPDATE users SET muted_until = CASE WHEN id % 2 = 0 THEN now() + interval '1 day' END, suspended_until = CASE WHEN id % 2 = 1 THEN now() + interval '1 day' END
+		WHERE id BETWEEN 1000001 AND 1000020`); err != nil {
+		t.Fatal(err)
+	}
+	plans([]planCase{
+		{"limited: 20 accounts held, the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 40000, "domain_policies"}, // about 5 rows a remote reply; domain_policies, empty here, is read whole
+		{"limited: 20 accounts held, a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
+			[]any{viewer, false, flood, 0, commentPage + 1}, 3000, "domain_policies"},
+		{"limited: 20 accounts held, the bell", notificationsFedSQL, []any{viewer, maxNotifList}, 1000, "domain_policies"},
+		{"held: when the last limit or suspension ends", remoteHeldUntilSQL, nil, 100, ""},
+		{"held: a page of the Federation tab's accounts", remoteHeldSQL, []any{0, remoteHeldPage + 1}, 300, ""},
+		{"held: a Follow in from an account limited here", followInSQL, []any{1000002, 9, "https://h2.example/f/held", "h2.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, "domain_policies"},
+	})
 	// The same post when the servers of its 3,000 remote replies are limited (FMD 1): each remote reply's account is
 	// looked up once more (users' primary key, the walk through domain_policies, the viewer's follow), in the lists and
 	// the counts alike; a member's comment is not asked. domain_policies, 25 rows here, is read whole.
@@ -4251,6 +4279,47 @@ func TestDBQueryPlans(t *testing.T) {
 	})
 	on = db
 	rtx2.Rollback()
+	// A purge of one account of another server with thousands of rows (FMD 2): each statement takes at most its batch
+	// through the account's own indexes, whatever the size of the tables, and a suspension's statement reads the
+	// account's follows and its own inbox's deliveries only. Written in a transaction that is rolled back.
+	ptx, perr := db.Begin()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	const target = 1000033
+	for _, q := range []string{
+		`UPDATE users SET suspended_until = now() + interval '1 day' WHERE id = 1000033`,
+		`INSERT INTO posts (user_id, body, ap_id) SELECT 1000033, 'remote post ' || g, 'https://h33.example/p/' || g FROM generate_series(1, 2500) g`,
+		`INSERT INTO comments (post_id, user_id, body, ap_id) SELECT 1 + g % 10000, 1000033, 'remote reply ' || g, 'https://h33.example/c/' || g FROM generate_series(1, 3000) g`,
+		`INSERT INTO likes (post_id, user_id) SELECT g, 1000033 FROM generate_series(1, 2000) g ON CONFLICT DO NOTHING`,
+		`INSERT INTO comment_likes (comment_id, user_id) SELECT g, 1000033 FROM generate_series(1, 2000) g ON CONFLICT DO NOTHING`,
+		`INSERT INTO follows (follower_id, followee_id, state) SELECT g, 1000033, 'accepted' FROM generate_series(1, 300) g ON CONFLICT DO NOTHING`,
+		`INSERT INTO notifications (user_id, actor_id, kind, fed) SELECT 1 + g % 500, 1000033, 'like', true FROM generate_series(1, 1500) g`,
+		`ANALYZE`,
+	} {
+		if _, err := ptx.Exec(q); err != nil {
+			t.Fatalf("%v\n%s", err, q)
+		}
+	}
+	on = ptx
+	// A suspension reads the account's notifications (1,500 here) and follows (300, each with its member's row) once.
+	purgeCases := []planCase{{"purge: what a suspension ends", remoteSuspendEndsSQL, []any{target, "words", "https://h33.example/inbox", "h33.example", time.Now()}, 6000, ""}}
+	for _, s := range remotePurgeSteps {
+		most, whole := float64(10*remotePurgeBatch), ""
+		switch s.what {
+		case "posts":
+			most = 25 * remotePurgeBatch // each post's pictures and its row, about 19 rows a post
+		case "replies":
+			most = 3000 + 25*remotePurgeBatch // comments_user holds the account's replies unordered: each batch reads them all (at most its caps) and sorts
+		case "inbox rows":
+			whole = "ap_inbox" // empty here, so read whole; its (actor_id, activity_id) key once it holds rows
+		}
+		purgeCases = append(purgeCases, planCase{"purge: a batch of " + s.what, s.sql, []any{target, remotePurgeBatch}, most, whole})
+	}
+	purgeCases = append(purgeCases, planCase{"purge: the last statement", remotePurgeLastSQL, []any{target, "https://h33.example/inbox", "h33.example", time.Now()}, 200, ""})
+	plans(purgeCases)
+	on = db
+	ptx.Rollback()
 	// The page's pictures, and the cache's weight: per post through the unique key, and the files kept through
 	// ap_media_used (the eviction runs once per picture fetched).
 	plans([]planCase{

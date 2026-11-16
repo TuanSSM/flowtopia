@@ -696,6 +696,25 @@ the name exists, makes no difference to the answer.
   - **A public comment** (500 characters) and **a note for staff** (500 characters). The about page lists the limited
     and suspended domains with their public comments only while an admin ticks "List the limited and suspended domains
     on the about page" (off unless turned on); the note is shown only on the admin page.
+- **What a moderator does to one account of another server** (its profile here, under "Moderation", or Limit and
+  Suspend on a report in the moderation queue; each with a reason kept for the moderators, an end time of up to a
+  year, in the audit log, at most 300 such actions an hour per moderator; the account and its server are never told,
+  as Mastodon tells them nothing). Admin, Federation lists the accounts limited or suspended now, 100 at a time.
+  - **Limit** (moderators and admins): as a limited domain, for that account alone. Follows stay; lifting it leaves
+    its follow requests waiting.
+  - **Suspend** (moderators and admins): nothing it sends is taken (answered 202 and dropped) except its own deletion,
+    a deletion of what it wrote and an Undo, which only take something away; nothing is sent to it (the deliveries
+    waiting for its own inbox are given up at once; its server's shared inbox is its server's and keeps its rows);
+    what it wrote is hidden from everyone, its followers too; nobody here can follow it; and its follows both ways
+    end, each member who followed it told so in a notification. Lifting it shows what it wrote again; **the follows are
+    not restored**, as in Mastodon. What it wrote is kept while it is suspended, except what housekeeping removes from
+    any server after 30 days untouched.
+  - **Purge** (admins, for an account suspended now): removes what this server holds of it, its posts and their
+    pictures, its replies (one a member answered stays as an empty placeholder, so the answer stays), its likes, its
+    follows, the notifications it left, what it sent that waits, and its name and profile text. Its handle, key and
+    suspension stay, so it stays refused and the audit log keeps its name. It works in batches of 500 rows, about 10
+    seconds a call (the page goes on by itself), and can be run again; it cannot be undone.
+  A member here keeps the actions they had (mute, suspend, badges, stats); purging is refused for them.
 - **What a delivery must pass**, in this order, cheapest first, and nothing a sender has not proven is charged
   to anyone but the address it came from:
   1. before the body is read: at most 3,600 deliveries an hour per address, an Activity Streams content type, a

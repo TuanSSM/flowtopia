@@ -564,6 +564,7 @@ type limits struct {
 	joins                                       *limiter // approvals and declines of requests to join, per admin
 	lookups                                     *limiter // searches by handle of people on other servers, per member, in a mode that federates
 	domains                                     *limiter // changes to domain policies, per admin, in a mode that federates
+	remoteActs                                  *limiter // limits, suspensions, their lifting and purges of accounts of other servers, per moderator, in a mode that federates (FMD 2)
 	fedFollows                                  *limiter // follows, unfollows, approvals and declines across servers, per member, in a mode that federates
 	fedLeave                                    *limiter // "Remove me from other servers", per member, in a mode that federates (FWR 7)
 	inbox                                       *limiter // verified deliveries per sender group (the last two labels of the key id's host), in a mode that federates
@@ -598,6 +599,9 @@ func newLimits() limits {
 		// An admin pasting a list of servers to allow or suspend, one at a time; more than that in an hour
 		// is a script, and a stolen session is held to it too.
 		domains: newLimiter(300, time.Hour),
+		// Limiting, suspending, lifting and purging one account of another server (FMD 2): a moderator going through
+		// a wave of spam accounts, one at a time. A purge of a large account is a few calls, each counted.
+		remoteActs: newLimiter(300, time.Hour),
 		// Each of these sends an activity to another server: 100 an hour is a member going through their
 		// requests or following the people they know, and a stolen session sends no more.
 		fedFollows: newLimiter(100, time.Hour),
@@ -1067,13 +1071,16 @@ var rolePerms = map[string][]string{
 // (permsOf); can asks both, which is harmless outside such a mode, since only its routes ask for these.
 const (
 	permFedRead   = "federation.read"   // the federation page: domain policies, the inbox's numbers
-	permFedManage = "federation.manage" // allow, limit and suspend domains, and choose allowlist or open
+	permFedManage = "federation.manage" // allow, limit and suspend domains, choose allowlist or open, and purge an account of another server
+	// permFedAccounts is limiting and suspending one account of another server (FMD 2), asked beside user.mute and
+	// user.suspend, which are about members here: moderators act on remote accounts, as Mastodon's do.
+	permFedAccounts = "federation.accounts"
 )
 
 var fedPerms = map[string][]string{
 	"user":      {},
-	"moderator": {permFedRead},
-	"admin":     {permFedRead, permFedManage},
+	"moderator": {permFedRead, permFedAccounts},
+	"admin":     {permFedRead, permFedManage, permFedAccounts},
 }
 
 func can(u *user, perm string) bool {
@@ -3314,6 +3321,17 @@ func (a *app) fillQueueItem(it *queueItem) error {
 	}
 	it.Author = map[string]any{"id": tu.ID, "username": tu.Username, "displayName": tu.DisplayName, "role": tu.Role, "avatar": tu.Avatar, "bio": tu.Bio,
 		"posts": posts, "actions": actions, "mutedUntil": tu.MutedUntil, "suspendedUntil": tu.SuspendedUntil, "statsHidden": tu.StatsHidden}
+	// An account of another server (FMD 2), in a mode that federates: the page offers limit and suspend for it, its
+	// username being its handle. Local mode answers as it always did.
+	if a.fed != nil {
+		var remote bool
+		if err := a.db.QueryRow(`SELECT domain <> '' FROM users WHERE id = $1`, author).Scan(&remote); err != nil {
+			return err
+		}
+		if remote {
+			it.Author["remote"] = true
+		}
+	}
 	hist, err := a.auditRows(`WHERE m.target_user_id = $1 ORDER BY m.id DESC LIMIT 5`, author)
 	it.History = hist
 	return err
@@ -3336,6 +3354,11 @@ func (a *app) handleModAction(w http.ResponseWriter, r *http.Request, u *user) {
 	reason := strings.TrimSpace(in.Reason)
 	if len([]rune(reason)) > maxModReason {
 		fail(w, http.StatusBadRequest, "Keep the reason under 300 characters.")
+		return
+	}
+	// An account of another server, in a mode that federates (FMD 2): mute and suspend limit and suspend it, and
+	// purge_remote removes what this server holds of it. Anything else, and every member here, goes on below as before.
+	if a.fed != nil && a.remoteModAction(w, r, u, in.Action, in.ID, reason, in.Until) {
 		return
 	}
 	perm := map[string]string{"hide": permPostHide, "restore": permPostHide, "mute": permUserMute, "unmute": permUserMute,
@@ -6694,6 +6717,11 @@ type federation struct {
 	commentHook  func(stage string)
 	// notifyHook, when set by a test, may fail the notification of a reply or a like (notifyFedTx).
 	notifyHook func() error
+	// purgeHook, when set by a test, is told of each statement a purge of a remote account runs (its step and the
+	// rows it took), and may stop the purge there with an error (FMD 2, purgeRemote); purgeBudget replaces
+	// remotePurgeBudget when it is not zero.
+	purgeHook   func(step string, took int64) error
+	purgeBudget time.Duration
 	// answersMu guards answers: when each (follower, followee) was last answered, so a repeat is answered at most
 	// once in followAnswerEvery (followAnswerDue).
 	answersMu sync.Mutex
@@ -16108,6 +16136,20 @@ func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupPro
 		p.Limited, p.PostsNote = fedLimitedNotice, fedLimitedPosts
 		return p, nil
 	}
+	// The account itself limited or suspended here (FMD 2): its profile answers with the notice, and its posts are not
+	// read from its server, as for a limited domain; a suspended one's bio is shown to nobody.
+	var limited, suspended bool
+	if err := f.fedRow(ctx, []any{&limited, &suspended}, `SELECT COALESCE(muted_until > now(), false), COALESCE(suspended_until > now(), false) FROM users WHERE id = $1`, a.UserID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	switch {
+	case suspended:
+		p.Limited, p.PostsNote, p.Bio = fedSuspendedHere, fedHeldPosts, ""
+		return p, nil
+	case limited:
+		p.Limited, p.PostsNote = fedLimitedHere, fedHeldPosts
+		return p, nil
+	}
 	p.Posts, p.PostsNote = r.posts(ctx, a, handle)
 	return p, nil
 }
@@ -17482,12 +17524,18 @@ func (a *app) takeDelivery(r *http.Request, body []byte, addr, host, group, keyI
 // second account of the same server could otherwise send its own activity under the first one's id (Mastodon
 // names an account's own Delete <actor>#delete) and have the real one refused as a repeat. Each count stops
 // at its cap, so it reads at most that many index entries.
-const inboxEnqueueSQL = `WITH c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_inbox WHERE state = 'queued' LIMIT $7) a) AS total,
+//
+// An activity of an account a moderator suspended here (FMD 2) is not stored (held), unless it only takes something
+// away (remoteRemovalKinds: a Delete of itself or of what it wrote, an Undo), which is acted on as from anyone: one look
+// in the primary key of users. The worker asks again when it handles a row (remoteSuspendedDrop), for rows stored
+// before the suspension.
+const inboxEnqueueSQL = `WITH s AS (SELECT EXISTS (SELECT 1 FROM users WHERE id = $2 AND suspended_until > now()) AND $4::text NOT IN ` + remoteRemovalKinds + ` AS held),
+	c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM ap_inbox WHERE state = 'queued' LIMIT $7) a) AS total,
 		(SELECT count(*) FROM (SELECT 1 FROM ap_inbox WHERE state = 'queued' AND host = $3 LIMIT $8) h) AS mine),
 	ins AS (INSERT INTO ap_inbox (activity_id, actor_id, host, kind, body, received_at, next_at)
-		SELECT $1, $2, $3, $4, $5, $6, $6 FROM c WHERE c.total < $7 AND c.mine < $8
+		SELECT $1, $2, $3, $4, $5, $6, $6 FROM c, s WHERE c.total < $7 AND c.mine < $8 AND NOT s.held
 		ON CONFLICT (actor_id, activity_id) DO NOTHING RETURNING id)
-	SELECT c.total, c.mine, (SELECT count(*) FROM ins) FROM c`
+	SELECT c.total, c.mine, (SELECT count(*) FROM ins), s.held FROM c, s`
 
 // queueDelivery writes the row and wakes a worker.
 func (a *app) queueDelivery(ctx context.Context, act *apActivity, held *keyHeld, kind, group string, body []byte) (inboxReason, string) {
@@ -17497,7 +17545,8 @@ func (a *app) queueDelivery(ctx context.Context, act *apActivity, held *keyHeld,
 		return inBusy, kind
 	}
 	var total, mine, made int
-	err = f.db.QueryRowContext(ctx, inboxEnqueueSQL, act.ID, held.user, group, act.Kind, string(body), q.now(), inboxQueueMax, inboxGroupQueued).Scan(&total, &mine, &made)
+	var suspended bool
+	err = f.db.QueryRowContext(ctx, inboxEnqueueSQL, act.ID, held.user, group, act.Kind, string(body), q.now(), inboxQueueMax, inboxGroupQueued).Scan(&total, &mine, &made, &suspended)
 	done()
 	var pqe *pq.Error
 	switch {
@@ -17509,6 +17558,10 @@ func (a *app) queueDelivery(ctx context.Context, act *apActivity, held *keyHeld,
 	case err != nil:
 		log.Printf("error: inbox: storing an activity: %v", err)
 		return inServer, kind
+	case suspended:
+		// The account is suspended here (FMD 2): answered as any delivery not acted on (202), so its server learns
+		// nothing of the suspension, as Mastodon tells it nothing; nothing is stored.
+		return inDropped, kind
 	case made == 1:
 		q.kick()
 		return inAccepted, kind
@@ -17697,6 +17750,17 @@ func (q *inboxQueue) handle(ctx context.Context, row, actor int64, kind string) 
 	// it is acted on (section 10), so the row is dropped and counted, not handled nor retried.
 	if f.policyNow().decide(actorHost(apID)) == policySuspended {
 		return " dropped (its domain is suspended)", nil
+	}
+	// The account suspended here since the row was stored (FMD 2): dropped as its domain's suspension drops it, unless
+	// the activity only takes something away (remoteRemovalKinds), as the inbox's own check lets it in.
+	if !slices.Contains(remoteRemovals, kind) {
+		var suspended bool
+		if err := f.fedRow(ctx, []any{&suspended}, `SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1`, actor); err != nil {
+			return "", &errRetry{"the database"}
+		}
+		if suspended {
+			return remoteSuspendedDrop, nil
+		}
 	}
 	// The stored activity, for every type that reads more than its actor: decoded again as the inbox decoded it.
 	var act *apActivity
@@ -19894,7 +19958,8 @@ func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, o
 	}
 	var was, made sql.NullString
 	var mine, hostPending, hostAll int
-	err = f.fedRow(ctx, []any{&was, &made, &mine, &hostPending, &hostAll}, followInSQL, s.UserID, uid, followID, s.Domain,
+	var held bool
+	err = f.fedRow(ctx, []any{&was, &made, &mine, &hostPending, &hostAll, &held}, followInSQL, s.UserID, uid, followID, s.Domain,
 		followRequestsMax, followRequestsPerHost, followsPerHost, locked)
 	var pqe *pq.Error
 	switch {
@@ -19902,6 +19967,8 @@ func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, o
 		return " not acted on (the account went meanwhile)", nil
 	case err != nil:
 		return "", &errRetry{"the database"}
+	case held:
+		return remoteSuspendedDrop, nil
 	case was.String == "accepted":
 		// A repeat while accepted: the other server may have lost the Accept, so it is sent again (6.3).
 		return f.answerOnce(ctx, s.UserID, uid, keyOwner(uid), name, s, follow, true, " (a repeat, answered again)")
@@ -19942,17 +20009,23 @@ func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, o
 // follows, each account of the host asked once (OFFSET 0 holds the planner to that rather than reading follows whole,
 // TestDBQueryPlans), its follows and requests counted among the first $7 rows: once those are $7 the Follow is
 // dropped whatever the requests are.
-var followInSQL = `WITH lk AS (SELECT $8::boolean OR ` + policyWalk("$4::text", "dw.policy = 'limit'") + ` AS byhand),
+//
+// FMD 2: a Follow from an account limited here (users.muted_until) is a request too, as from a limited domain; one from
+// an account suspended here is not written (held), whatever else holds. The follower's row is read FOR SHARE (sus),
+// so a suspension (whose first statement updates that row) either waits for this statement, and then removes the
+// follow it wrote, or is seen by it once it commits: no follow from a suspended account is left behind either way.
+var followInSQL = `WITH sus AS (SELECT suspended_until > now() AS held, muted_until > now() AS limited FROM users WHERE id = $1 FOR SHARE),
+	lk AS (SELECT $8::boolean OR COALESCE((SELECT limited FROM sus), false) OR ` + policyWalk("$4::text", "dw.policy = 'limit'") + ` AS byhand),
 	cur AS (SELECT state FROM follows WHERE follower_id = $1 AND followee_id = $2),
 	h AS (SELECT count(*) AS total, count(*) FILTER (WHERE x.state = 'pending') AS pend FROM (SELECT f.state FROM users u
 		CROSS JOIN LATERAL (SELECT state FROM follows f WHERE f.follower_id = u.id OFFSET 0) f WHERE u.domain = $4 LIMIT $7) x),
 	c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM follows f WHERE f.followee_id = $2 AND f.state = 'pending' LIMIT $5) x) AS mine, h.pend, h.total FROM h),
-	up AS (UPDATE follows SET ap_id = $3 WHERE follower_id = $1 AND followee_id = $2 RETURNING state),
+	up AS (UPDATE follows SET ap_id = $3 WHERE follower_id = $1 AND followee_id = $2 AND NOT COALESCE((SELECT held FROM sus), false) RETURNING state),
 	ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
 		SELECT $1, $2, CASE WHEN lk.byhand THEN 'pending' ELSE 'accepted' END, $3 FROM c, lk
-		WHERE NOT EXISTS (SELECT 1 FROM cur) AND c.total < $7 AND (NOT lk.byhand OR (c.mine < $5 AND c.pend < $6))
+		WHERE NOT EXISTS (SELECT 1 FROM cur) AND c.total < $7 AND (NOT lk.byhand OR (c.mine < $5 AND c.pend < $6)) AND NOT COALESCE((SELECT held FROM sus), false)
 		ON CONFLICT DO NOTHING RETURNING state)
-	SELECT (SELECT state FROM up), (SELECT state FROM ins), c.mine, c.pend, c.total FROM c`
+	SELECT (SELECT state FROM up), (SELECT state FROM ins), c.mine, c.pend, c.total, COALESCE((SELECT held FROM sus), false) FROM c`
 
 // answerFollow sends Accept (accept) or Reject of follow from a member (name; "" with instanceActor) to the
 // follower s, and returns outcome. A failure to queue it is this server's: the row is tried again, and a repeat
@@ -20312,12 +20385,13 @@ type followView struct {
 func (a *app) followViewOf(ctx context.Context, u *user, ra *remoteActor) (followView, error) {
 	v := followView{Follow: "none"}
 	var mine, theirs sql.NullString
-	var optedIn, blocked, blockedBy bool
+	var optedIn, blocked, blockedBy, suspended bool
 	err := a.db.QueryRowContext(ctx, `SELECT (SELECT state FROM follows WHERE follower_id = $1 AND followee_id = $3),
 		(SELECT state FROM follows WHERE follower_id = $3 AND followee_id = $1),
 		(SELECT `+publicMember+` FROM users u WHERE u.id = $1),
-		EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = $3), EXISTS (SELECT 1 FROM blocks WHERE user_id = $3 AND target_id = $1)`,
-		u.ID, a.mode == modeSingle, ra.UserID).Scan(&mine, &theirs, &optedIn, &blocked, &blockedBy)
+		EXISTS (SELECT 1 FROM blocks WHERE user_id = $1 AND target_id = $3), EXISTS (SELECT 1 FROM blocks WHERE user_id = $3 AND target_id = $1),
+		COALESCE((SELECT suspended_until > now() FROM users WHERE id = $3), false)`,
+		u.ID, a.mode == modeSingle, ra.UserID).Scan(&mine, &theirs, &optedIn, &blocked, &blockedBy, &suspended)
 	if err != nil {
 		return v, err
 	}
@@ -20328,12 +20402,13 @@ func (a *app) followViewOf(ctx context.Context, u *user, ra *remoteActor) (follo
 		v.Follow = "following"
 	}
 	v.FollowsYou, v.Asks, v.Blocked = theirs.String == "accepted", theirs.String == "pending", blocked
-	v.Cannot = a.cannotFollow(optedIn, blocked || blockedBy, ra)
+	v.Cannot = a.cannotFollow(optedIn, blocked || blockedBy, suspended, ra)
 	return v, nil
 }
 
-// cannotFollow is why a member cannot follow ra now, in the words the page shows, or "".
-func (a *app) cannotFollow(optedIn, blocked bool, ra *remoteActor) string {
+// cannotFollow is why a member cannot follow ra now, in the words the page shows, or "". suspendedHere is a
+// moderator's suspension of it on this server (FMD 2).
+func (a *app) cannotFollow(optedIn, blocked, suspendedHere bool, ra *remoteActor) string {
 	switch {
 	case !a.federating():
 		return lookupReasons[lookupUnavailable].words
@@ -20341,6 +20416,8 @@ func (a *app) cannotFollow(optedIn, blocked bool, ra *remoteActor) string {
 		return lookupReasons[lookupGone].words
 	case ra.State == "suspended":
 		return lookupReasons[lookupSuspended].words
+	case suspendedHere:
+		return fedFollowSuspendedHere
 	case !a.fed.admits(ra.Domain):
 		return lookupReasons[lookupNotAllowed].words
 	case blocked:
@@ -20408,7 +20485,27 @@ func (a *app) handleFedAccount(w http.ResponseWriter, r *http.Request, u *user) 
 			p.Bio = ""
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"account": p, "view": v, "notice": fedAccountNotice})
+	// A moderator's limit or suspension of this one account (FMD 2): a limit as its domain's, a suspension hiding the
+	// profile text from everyone. Staff who may act on it are shown what holds it, with the reasons and the ends.
+	h, err := a.remoteHeldOf(r.Context(), ra.UserID)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	switch {
+	case h.suspended():
+		p.Limited, p.Bio = fedSuspendedHere, ""
+	case h.limited():
+		p.Limited = fedLimitedHere
+		if v.Follow != "following" {
+			p.Bio = ""
+		}
+	}
+	out := map[string]any{"account": p, "view": v, "notice": fedAccountNotice}
+	if can(u, permFedAccounts) {
+		out["moderation"] = h
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleFedFollow is PUT /api/fed/accounts/{id}/follow: the member follows a remote account. The row is written
@@ -20447,6 +20544,22 @@ func (a *app) handleFedFollow(w http.ResponseWriter, r *http.Request, u *user) {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE`, u.ID); err != nil {
 		a.serverError(w, err)
+		return
+	}
+	// The account's row is read FOR SHARE (FMD 2): a moderator's suspension written meanwhile either waits for this
+	// transaction and then ends the follow it writes, or is seen here, so no follow of a suspended account is left.
+	var held bool
+	err = tx.QueryRow(`SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1 FOR SHARE`, ra.UserID).Scan(&held)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, http.StatusNotFound, "No such account.")
+		return
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if held {
+		fail(w, http.StatusForbidden, fedFollowSuspendedHere)
 		return
 	}
 	var made, full bool
@@ -20759,7 +20872,11 @@ type fedPolicy struct {
 	// anyLimit says some row limits a domain: the statements that hide what a limit hides are run only then
 	// (limitStatements).
 	anyLimit bool
-	rows     map[string]domainPolicy // by domain
+	// heldUntil is when the last limit or suspension of one account of another server that was in force when the
+	// policy was read ends (FMD 2; zero when none was): until then the same statements run with the look, which asks
+	// the account's row for its own limit and suspension (limitFree). Read with the rows, through users_remote_held.
+	heldUntil time.Time
+	rows      map[string]domainPolicy // by domain
 	// suspended is every suspended domain, for the fetcher's refused list (refusedHosts' form: lower case,
 	// matched with its subdomains).
 	suspended []string
@@ -20840,12 +20957,26 @@ func policyWalk(expr, cond string) string {
 }
 
 // limitFree is the SQL condition that the account id (an expression written in this file) is not one of a limited
-// domain, unless viewer (likewise) follows it: the one rule of what a limit hides (section 10). One look in the
-// primary key of users, and for an account of another server the walk and one look in follows.
+// domain, nor limited here itself, unless viewer (likewise) follows it, and is not suspended here: the one rule of
+// what a limit and a suspension of an account of another server hide (section 10; FMD 1 and 2). A limit of the
+// account is its users.muted_until, a suspension its users.suspended_until, both in force until that time, both on the
+// row already read: one look in the primary key of users, and for an account of another server the walk and one look
+// in follows. A suspension hides the account from its followers too (its follows end with it, and none can be made
+// while it lasts, so this holds only what arrives in the moment the suspension is written).
 func limitFree(id, viewer string) string {
-	return `NOT EXISTS (SELECT 1 FROM users lu WHERE lu.id = ` + id + ` AND lu.domain <> '' AND ` + policyWalk("lu.domain", "dw.policy = 'limit'") + `
-		AND NOT EXISTS (SELECT 1 FROM follows lf WHERE lf.follower_id = ` + viewer + ` AND lf.followee_id = lu.id AND lf.state = 'accepted') OFFSET 0)`
+	return `NOT EXISTS (SELECT 1 FROM users lu WHERE lu.id = ` + id + ` AND lu.domain <> '' AND (lu.suspended_until > now() OR (lu.muted_until > now() OR ` + policyWalk("lu.domain", "dw.policy = 'limit'") + `)
+		AND NOT EXISTS (SELECT 1 FROM follows lf WHERE lf.follower_id = ` + viewer + ` AND lf.followee_id = lu.id AND lf.state = 'accepted')) OFFSET 0)`
 }
+
+// remoteHeldUntilSQL is when the last limit or suspension of an account of another server in force now ends, or NULL:
+// through users_remote_held (migration 25), which holds only the accounts of other servers a moderator ever limited or
+// suspended, so it reads those few rows and never users whole.
+const remoteHeldUntilSQL = `SELECT max(GREATEST(muted_until, suspended_until)) FROM users WHERE domain <> '' AND (muted_until IS NOT NULL OR suspended_until IS NOT NULL)
+	AND (muted_until > now() OR suspended_until > now())`
+
+// limiting says whether the statements must carry the look at limits (limitFree): a domain is limited, or one account
+// of another server was limited or suspended when the policy was read, and that has not ended.
+func (p *fedPolicy) limiting(now time.Time) bool { return p.anyLimit || now.Before(p.heldUntil) }
 
 // policyNow is the policy in memory; before the first read, the allowlist with no row, so nothing is let in
 // that an admin has not allowed.
@@ -20867,8 +20998,9 @@ func (f *federation) loadPolicy(ctx context.Context) error {
 	defer done() // the two reads one after the other, the rows closed before it is given back
 	var mode string
 	var publish bool
+	var held sql.NullTime
 	err = f.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value #>> '{}' FROM instance_settings WHERE key = 'federation_policy'), ''),
-		COALESCE((SELECT value = 'true'::jsonb FROM instance_settings WHERE key = 'federation_publish_blocks'), false)`).Scan(&mode, &publish)
+		COALESCE((SELECT value = 'true'::jsonb FROM instance_settings WHERE key = 'federation_publish_blocks'), false), (`+remoteHeldUntilSQL+`)`).Scan(&mode, &publish, &held)
 	if err != nil {
 		return err
 	}
@@ -20876,6 +21008,9 @@ func (f *federation) loadPolicy(ctx context.Context) error {
 		p.mode = policyOpen
 	}
 	p.publish = publish
+	if held.Valid {
+		p.heldUntil = held.Time
+	}
 	rows, err := f.db.QueryContext(ctx, `SELECT d.domain, d.policy, d.reject_media, d.reject_reports, d.public_comment, d.private_note, COALESCE(u.username, ''), d.created_at
 		FROM domain_policies d LEFT JOIN users u ON u.id = d.created_by ORDER BY d.domain LIMIT $1`, domainPoliciesMax)
 	if err != nil {
@@ -21302,6 +21437,423 @@ func (a *app) fedPolicyChanged(w http.ResponseWriter, r *http.Request, u *user) 
 		return
 	}
 	a.handleFedAdmin(w, r, u)
+}
+
+/* ---------- federation: actions on remote accounts ----------
+
+What a Mastodon moderator does to one account of another server (docs/federation.md section 10, "As built (FMD 2)";
+FMD item 2), through the moderators' one route, POST /api/mod/actions (handleModAction), in a mode that federates:
+
+  - mute limits the account until a time (users.muted_until, the column a member's mute uses, with mute_reason):
+    shown only to members who follow it, as a limited domain's accounts are (limitFree asks the account's row beside
+    the walk), and a Follow from it is a request whatever the member's setting (followInSQL). Its follows stay.
+    unmute lifts it; requests stay requests.
+  - suspend suspends it until a time (users.suspended_until and suspend_reason): nothing it sends is stored or acted on
+    but what only takes something away (inboxEnqueueSQL and the worker, remoteRemovalKinds), nothing is sent to it (the
+    recipients' statements leave it out, and its own inbox's queued deliveries are given up now), what it wrote is
+    hidden from everyone (limitFree), nobody here can follow it (followViewOf, handleFedFollow), and its follows both
+    ways and their requests end, each member who followed it told so; they are not restored when it is lifted, as in
+    Mastodon. Its posts, replies and likes are kept and show again when the suspension ends or is lifted, unless an
+    admin purged them meanwhile, or housekeeping removed what nobody touched after remoteKeep (30 days), as for any.
+  - purge_remote, for an account suspended now, removes what this server holds of it (remotePurgeSteps), a batch of at
+    most remotePurgeBatch rows a statement, each statement with its own turn at the database, for at most
+    remotePurgeBudget a call; the answer says whether anything is left, and the page calls again. The account's row
+    stays, with its handle and its suspension, so it stays refused, its audit lines keep their account, and a block of
+    it stays (Mastodon: "No content from the server will be stored locally except for usernames").
+
+Each needs a permission (user.mute or user.suspend with federation.accounts; federation.manage to purge), a reason
+for all but a lift, an allowance (limits.remoteActs), and goes into the audit log in its own transaction
+(limit_remote, unlimit_remote, suspend_remote, unsuspend_remote, purge_remote). The account is never told, and
+neither is its server: Mastodon sends nothing for a moderator's action on a remote account, and neither does Flowa.
+A member here is refused purge_remote, and keeps every action they had (handleModAction's path below the hook);
+revoke_badge, hide_stats and show_stats are refused for a remote account, which has none of those. In local mode the
+hook is not asked, so handleModAction is what it was. */
+
+const (
+	remoteRemovalKinds  = `('Delete', 'Undo')`                       // what a suspended account still has acted on: only taking away
+	remoteSuspendedDrop = " dropped (the account is suspended here)" // the inbox worker's outcome
+	remotePurgeBatch    = 500                                        // rows one statement of a purge removes (a post with its replies counts one)
+	remotePurgeBudget   = 10 * time.Second                           // one call of a purge works at most this long; the page calls again
+	remoteHeldPage      = 100                                        // accounts of the Federation tab's list per page
+
+	fedLimitedHere         = "The moderators here limited this account: it is shown only to members who follow it. Its profile text, its replies and its mentions of you stay hidden from you until you follow it, and a follow from it waits for you to approve it."
+	fedSuspendedHere       = "The moderators here suspended this account: nothing it sends is taken, nothing is sent to it, what it wrote is hidden, and nobody here can follow it."
+	fedHeldPosts           = "Their posts are not read here: the moderators limited or suspended this account."
+	fedFollowSuspendedHere = "The moderators here suspended this account, so it cannot be followed from here."
+)
+
+// remoteRemovals is remoteRemovalKinds as the worker compares them.
+var remoteRemovals = []string{"Delete", "Undo"}
+
+// remoteHeld is how a moderator here holds an account of another server (FMD 2): the end and reason of a limit and
+// of a suspension still in force, as the profile shows them to staff.
+type remoteHeld struct {
+	LimitedUntil   *time.Time `json:"limitedUntil,omitempty"`
+	LimitReason    string     `json:"limitReason,omitempty"`
+	SuspendedUntil *time.Time `json:"suspendedUntil,omitempty"`
+	SuspendReason  string     `json:"suspendReason,omitempty"`
+}
+
+func (h remoteHeld) limited() bool   { return h.LimitedUntil != nil }
+func (h remoteHeld) suspended() bool { return h.SuspendedUntil != nil }
+
+// remoteHeldOf reads how account id is held, by the primary key of users; a limit or suspension that ended is none.
+func (a *app) remoteHeldOf(ctx context.Context, id int64) (remoteHeld, error) {
+	var h remoteHeld
+	var lu, su sql.NullTime
+	err := a.db.QueryRowContext(ctx, `SELECT CASE WHEN muted_until > now() THEN muted_until END, CASE WHEN muted_until > now() THEN mute_reason ELSE '' END,
+		CASE WHEN suspended_until > now() THEN suspended_until END, CASE WHEN suspended_until > now() THEN suspend_reason ELSE '' END
+		FROM users WHERE id = $1 AND domain <> ''`, id).Scan(&lu, &h.LimitReason, &su, &h.SuspendReason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return h, nil
+	}
+	if lu.Valid {
+		h.LimitedUntil = &lu.Time
+	}
+	if su.Valid {
+		h.SuspendedUntil = &su.Time
+	}
+	return h, err
+}
+
+// remoteActPerms are the permissions each action on an account of another server needs, all of them.
+var remoteActPerms = map[string][]string{
+	"mute": {permUserMute, permFedAccounts}, "unmute": {permUserMute, permFedAccounts},
+	"suspend": {permUserSuspend, permFedAccounts}, "unsuspend": {permUserSuspend, permFedAccounts},
+	"purge_remote": {permFedManage},
+}
+
+// remoteActAudit is the audit log's name of each action on an account of another server.
+var remoteActAudit = map[string]string{"mute": "limit_remote", "unmute": "unlimit_remote", "suspend": "suspend_remote", "unsuspend": "unsuspend_remote", "purge_remote": "purge_remote"}
+
+// remoteModAction is handleModAction for an account of another server (the section's comment). It says whether it
+// answered: false when the action is none of its own or the account is a member here, so the caller goes on as before.
+func (a *app) remoteModAction(w http.ResponseWriter, r *http.Request, u *user, action string, id int64, reason, untilText string) bool {
+	switch action {
+	case "mute", "unmute", "suspend", "unsuspend", "purge_remote", "revoke_badge", "hide_stats", "show_stats":
+	default:
+		return false
+	}
+	var domain, handle, inbox string
+	err := a.db.QueryRowContext(r.Context(), `SELECT u.domain, u.username, COALESCE(a.inbox, '') FROM users u LEFT JOIN ap_actors a ON a.user_id = u.id WHERE u.id = $1`, id).Scan(&domain, &handle, &inbox)
+	switch {
+	case errors.Is(err, sql.ErrNoRows) && action == "purge_remote":
+		fail(w, http.StatusNotFound, "That is gone already.")
+		return true
+	case errors.Is(err, sql.ErrNoRows):
+		return false // the local path answers it as it always did
+	case err != nil:
+		a.serverError(w, err)
+		return true
+	case domain == "" && action == "purge_remote":
+		fail(w, http.StatusBadRequest, "Purging is for an account of another server. A member here is deleted under Admin, Accounts.")
+		return true
+	case domain == "":
+		return false
+	case action == "revoke_badge" || action == "hide_stats" || action == "show_stats":
+		fail(w, http.StatusBadRequest, "That is for members here. An account of another server has no badges or stats here.")
+		return true
+	}
+	for _, p := range remoteActPerms[action] {
+		if !can(u, p) {
+			fail(w, http.StatusForbidden, "You do not have permission to do that.")
+			return true
+		}
+	}
+	w, ok := allowed(w, a.lim.remoteActs, u, "actions on accounts of other servers")
+	if !ok {
+		return true
+	}
+	if reason == "" && (action == "mute" || action == "suspend" || action == "purge_remote") {
+		fail(w, http.StatusBadRequest, "Give a reason. It is kept in the audit log for the moderators; the account and its server are not told.")
+		return true
+	}
+	var until time.Time
+	if action == "mute" || action == "suspend" {
+		until, err = time.Parse(time.RFC3339, untilText)
+		if err != nil || !until.After(time.Now().Add(time.Minute)) || until.After(time.Now().Add(maxModUntil)) {
+			fail(w, http.StatusBadRequest, "Choose an end time between now and a year from now.")
+			return true
+		}
+	}
+	if action == "purge_remote" {
+		a.purgeRemoteAccount(w, r, u, id, handle, inbox, reason)
+		return true
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	defer tx.Rollback()
+	var res sql.Result
+	detail := map[string]any{"handle": handle}
+	note := ""
+	switch action {
+	case "mute":
+		res, err = tx.Exec(`UPDATE users SET muted_until = $2, mute_reason = $3 WHERE id = $1 AND domain <> ''`, id, until, reason)
+		detail["until"] = until
+		note = "Limited until " + stamp(until) + ". It is shown only to members who follow it, and its follows of members here become requests to approve. Its server is not told."
+	case "unmute":
+		res, err = tx.Exec(`UPDATE users SET muted_until = NULL, mute_reason = '' WHERE id = $1 AND domain <> '' AND muted_until > now()`, id)
+		note = "The limit is lifted. Follow requests it made meanwhile still wait for an answer."
+	case "suspend":
+		res, err = tx.Exec(`UPDATE users SET suspended_until = $2, suspend_reason = $3 WHERE id = $1 AND domain <> ''`, id, until, reason)
+		if err == nil {
+			ended, told, dropped, e2 := a.suspendEnds(r.Context(), tx, id, handle, inbox)
+			err = e2
+			detail["followsEnded"], detail["membersTold"], detail["deliveriesDropped"] = ended, told, dropped
+			note = fmt.Sprintf("Suspended until %s. Nothing it sends is taken and nothing is sent to it; what it wrote is hidden. %d %s ended and %s not restored if the suspension is lifted. Its server is not told.",
+				stamp(until), ended, plural(ended, "follow", "follows"), map[bool]string{true: "is", false: "are"}[ended == 1])
+		}
+		detail["until"] = until
+	case "unsuspend":
+		res, err = tx.Exec(`UPDATE users SET suspended_until = NULL, suspend_reason = '' WHERE id = $1 AND domain <> '' AND suspended_until > now()`, id)
+		note = "The suspension is lifted. What it wrote and this server still holds shows again; the follows that ended are not restored."
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(w, http.StatusConflict, "Nothing to change: it is already that way.")
+		return true
+	}
+	if err := a.audit(tx, u.ID, remoteActAudit[action], "user", id, id, reason, detail); err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	// The policy in memory learns when the last limit or suspension ends, so the statements carry the look while one
+	// holds (limitStatements); read again whatever became of the request, as fedPolicyChanged does.
+	ctx, cancel := own()
+	defer cancel()
+	if err := a.fed.loadPolicy(ctx); err != nil {
+		a.serverError(w, err)
+		return true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "note": note})
+	return true
+}
+
+// plural is one or many, by n.
+func plural(n int64, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// remoteSuspendEndsSQL ends, in a suspension's transaction, what ties account $1 to this server: its follows both
+// ways and their requests, each member here who followed it or asked to told in words ($2), the follow and request
+// notifications it left, and the deliveries waiting for its own inbox ($3, in the queue's spelling, on host $4), given
+// up unless one is in flight ($5 the queue's clock), locked in the order of their ids as every statement over several
+// rows of the queue locks; its server's shared inbox and ap_hosts are its server's, and stay. No follow of it can be
+// written meanwhile: the suspension's first statement holds the account's row, which every statement that writes one
+// reads FOR SHARE (followInSQL, handleFedFollow). Through the primary key of follows and follows_followee, the primary
+// key of users, notifications_actor, and ap_deliveries by host and inbox.
+const remoteSuspendEndsSQL = `WITH t AS (INSERT INTO notifications (user_id, kind, text) SELECT f.follower_id, 'moderation', $2 FROM follows f
+		WHERE f.followee_id = $1 AND EXISTS (SELECT 1 FROM users m WHERE m.id = f.follower_id AND m.domain = '' OFFSET 0) RETURNING 1),
+	g1 AS (DELETE FROM follows WHERE follower_id = $1 RETURNING 1),
+	g2 AS (DELETE FROM follows WHERE followee_id = $1 RETURNING 1),
+	n AS (DELETE FROM notifications WHERE actor_id = $1 AND kind IN ('follow', 'follow_request', 'follow_rejected') RETURNING 1),
+	q AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $5, locked_until = NULL, last_error = 'the account is suspended here'
+		FROM (SELECT id FROM ap_deliveries WHERE host = $4 AND inbox = $3 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $5)
+			ORDER BY id FOR UPDATE) x
+		WHERE d.id = x.id AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $5) RETURNING 1)
+	SELECT (SELECT count(*) FROM g1) + (SELECT count(*) FROM g2), (SELECT count(*) FROM t), (SELECT count(*) FROM q)`
+
+// suspendEnds runs remoteSuspendEndsSQL for account id (handle, its own inbox) in tx, and says how many follows
+// ended, how many members were told, and how many deliveries were given up.
+func (a *app) suspendEnds(ctx context.Context, tx *sql.Tx, id int64, handle, inbox string) (ended, told, dropped int64, err error) {
+	addr, host, _ := inboxAddress(inbox) // "" when it has none: no delivery has it
+	words := "A moderator here suspended @" + handle + ", an account on another server, so your follow of it ended. It is not restored if the suspension is lifted."
+	err = tx.QueryRowContext(ctx, remoteSuspendEndsSQL, id, words, addr, host, a.fed.outNow()).Scan(&ended, &told, &dropped)
+	return
+}
+
+// remotePurgeSteps are the statements of a purge, in order, each removing at most $2 rows of account $1 and giving
+// how many it took and the files of the pictures that went with them (removed after its commit). A step is run
+// again until it takes fewer than its batch; then the next. Each goes through its own index: posts_user,
+// comments_user, likes_user, comment_likes_user, the primary key and follows_followee, notifications_actor,
+// ap_deleted_user, ap_inbox by actor, ap_deliveries by host and inbox. Run again after an interruption, each takes up
+// where the last one stopped, and on an account with nothing left each takes nothing.
+var remotePurgeSteps = []struct{ what, sql string }{
+	// Its posts, with their pictures' rows, and what hangs off them here (comments, likes, notifications, bookmarks).
+	{"posts", `WITH old AS (SELECT id FROM posts WHERE user_id = $1 AND ap_id IS NOT NULL ORDER BY id LIMIT $2), ` + remoteGoneSQL},
+	// Its replies: each removed, or kept as a placeholder with no text where someone else answered it, so the answer
+	// stays (as when it deletes itself, remoteTalkGone); a placeholder already made is not taken again. The batch's ids
+	// are an array, so each row is found by the primary key (with IN, the planner read comments whole).
+	{"replies", `WITH rc AS (SELECT ARRAY(SELECT c.id FROM comments c WHERE c.user_id = $1 AND c.ap_id IS NOT NULL
+			AND NOT (c.deleted AND c.body = '' AND EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = c.id AND r.user_id <> $1 OFFSET 0)) ORDER BY c.id LIMIT $2) AS ids),
+		rk AS (UPDATE comments k SET deleted = true, body = '', edited_at = NULL, ap_extra = '{}' WHERE k.id = ANY((SELECT ids FROM rc)::bigint[])
+			AND EXISTS (SELECT 1 FROM comments r WHERE r.parent_id = k.id AND r.user_id <> $1 OFFSET 0) RETURNING k.id),
+		rd AS (DELETE FROM comments WHERE id = ANY((SELECT ids FROM rc)::bigint[]) AND NOT id = ANY(ARRAY(SELECT id FROM rk)) RETURNING 1),
+		rck AS (DELETE FROM comment_likes WHERE comment_id = ANY(ARRAY(SELECT id FROM rk)) RETURNING 1)
+		SELECT cardinality((SELECT ids FROM rc))::bigint, '{}'::text[]`},
+	// The rest through the account's own index, each batch's keys made into an array first (= ANY(ARRAY(...))): with
+	// IN and a subquery, the planner read likes, comment_likes and notifications whole (TestDBQueryPlans' "purge:").
+	{"likes", `WITH d AS (DELETE FROM likes WHERE user_id = $1 AND post_id = ANY(ARRAY(SELECT post_id FROM likes WHERE user_id = $1 ORDER BY post_id LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	{"likes of replies", `WITH d AS (DELETE FROM comment_likes WHERE user_id = $1 AND comment_id = ANY(ARRAY(SELECT comment_id FROM comment_likes WHERE user_id = $1 ORDER BY comment_id LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	{"follows it made", `WITH d AS (DELETE FROM follows WHERE follower_id = $1 AND followee_id = ANY(ARRAY(SELECT followee_id FROM follows WHERE follower_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	{"follows of it", `WITH d AS (DELETE FROM follows WHERE followee_id = $1 AND follower_id = ANY(ARRAY(SELECT follower_id FROM follows WHERE followee_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	{"notifications", `WITH d AS (DELETE FROM notifications WHERE id = ANY(ARRAY(SELECT id FROM notifications WHERE actor_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	{"remembered deletions", `WITH d AS (DELETE FROM ap_deleted WHERE user_id = $1 AND ap_id = ANY(ARRAY(SELECT ap_id FROM ap_deleted WHERE user_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+	// What it sent that waits in the inbox's queue or was handled (a row in flight finds none to finish, and is done).
+	{"inbox rows", `WITH d AS (DELETE FROM ap_inbox WHERE id = ANY(ARRAY(SELECT id FROM ap_inbox WHERE actor_id = $1 LIMIT $2)) RETURNING 1) SELECT count(*), '{}'::text[] FROM d`},
+}
+
+// remotePurgeLastSQL is a purge's last statement: the account's name, bio, picture and links here and the summary and
+// picture of its cached actor go (its handle, its key and its suspension stay), and the deliveries waiting for its
+// own inbox ($2, on host $3; $4 the queue's clock) are given up, as a suspension gives them up.
+const remotePurgeLastSQL = `WITH u AS (UPDATE users SET display_name = '', bio = '', avatar = '', links = '{}' WHERE id = $1 AND domain <> '' RETURNING 1),
+	a AS (UPDATE ap_actors SET summary = '', icon = '' WHERE user_id = $1 RETURNING 1),
+	q AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $4, locked_until = NULL, last_error = 'the account is suspended here'
+		FROM (SELECT id FROM ap_deliveries WHERE host = $3 AND inbox = $2 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $4)
+			ORDER BY id FOR UPDATE) x
+		WHERE d.id = x.id AND d.state = 'queued' AND (d.locked_until IS NULL OR d.locked_until < $4) RETURNING 1)
+	SELECT (SELECT count(*) FROM q)`
+
+// errPurgeNotSuspended is a purge of an account not suspended now.
+var errPurgeNotSuspended = errors.New("the account is not suspended")
+
+// purgeRemote runs the purge of account id (its own inbox given) until it is done or deadline has passed, and says
+// what it removed by step, and whether it is done. A step's statement is the unit, and each call runs at least one,
+// so calls after calls always end: a stop between two leaves the rest for the next run, which starts again from the
+// first step (a step with nothing left takes nothing, through its index).
+func (f *federation) purgeRemote(ctx context.Context, id int64, inbox string, deadline time.Time, batch int) (map[string]int64, bool, error) {
+	got := map[string]int64{}
+	var suspended bool
+	if err := f.fedRow(ctx, []any{&suspended}, `SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1 AND domain <> ''`, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return got, false, err
+	}
+	if !suspended {
+		return got, false, errPurgeNotSuspended
+	}
+	ran := func(step string, n int64) error {
+		if f.purgeHook != nil {
+			return f.purgeHook(step, n)
+		}
+		return nil
+	}
+	// A call stops at the deadline only after a statement that removed something, so each call either removes rows or
+	// reaches the end: a page calling again and again always finishes.
+	for _, s := range remotePurgeSteps {
+		for {
+			var n int64
+			var files []string
+			if err := f.fedRow(ctx, []any{&n, pq.Array(&files)}, s.sql, id, batch); err != nil {
+				return got, false, err
+			}
+			removeMedia(f.mediaDir(), files)
+			got[s.what] += n
+			if err := ran(s.what, n); err != nil {
+				return got, false, err
+			}
+			if n > 0 && time.Now().After(deadline) {
+				return got, false, nil
+			}
+			if n < int64(batch) {
+				break
+			}
+		}
+	}
+	addr, host, _ := inboxAddress(inbox)
+	var dropped int64
+	if err := f.fedRow(ctx, []any{&dropped}, remotePurgeLastSQL, id, addr, host, f.outNow()); err != nil {
+		return got, false, err
+	}
+	got["deliveries given up"] = dropped
+	return got, true, ran("profile", dropped)
+}
+
+// purgeRemoteAccount answers purge_remote for account id (handle, its own inbox): refused unless it is suspended now,
+// then remotePurgeBudget of the purge, audited with what it removed and whether it is done. A page that is told
+// "more" calls again with the same reason; each call is one line of the audit log and one of the allowance.
+func (a *app) purgeRemoteAccount(w http.ResponseWriter, r *http.Request, u *user, id int64, handle, inbox, reason string) {
+	budget := remotePurgeBudget
+	if a.fed.purgeBudget != 0 {
+		budget = a.fed.purgeBudget
+	}
+	got, done, err := a.fed.purgeRemote(r.Context(), id, inbox, time.Now().Add(budget), remotePurgeBatch)
+	if errors.Is(err, errPurgeNotSuspended) {
+		fail(w, http.StatusConflict, "Suspend the account first. A purge removes what a suspension hides, so that nothing it sends meanwhile is taken.")
+		return
+	}
+	// What was removed before a failure is gone already, so it is recorded with the failure.
+	detail := map[string]any{"handle": handle, "done": done, "removed": got}
+	if err != nil {
+		detail["error"] = "stopped before the end; run it again"
+	}
+	if aerr := a.audit(a.db, u.ID, "purge_remote", "user", id, id, reason, detail); aerr != nil && err == nil {
+		err = aerr
+	}
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	var n int64
+	for _, v := range got {
+		n += v
+	}
+	note := fmt.Sprintf("Removed %d %s of what this server held of @%s. Its handle and its suspension stay, so it stays refused.", n, plural(n, "row", "rows"), handle)
+	if !done {
+		note = fmt.Sprintf("Removed %d %s so far; more is left. It goes on.", n, plural(n, "row", "rows"))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "done": done, "removed": got, "note": note})
+}
+
+// remoteHeldSQL is a page of the accounts of other servers limited or suspended now, after id $1, $2 at most, through
+// users_remote_held in the order of its key.
+const remoteHeldSQL = `SELECT u.id, u.username, CASE WHEN u.muted_until > now() THEN u.muted_until END, CASE WHEN u.muted_until > now() THEN u.mute_reason ELSE '' END,
+	CASE WHEN u.suspended_until > now() THEN u.suspended_until END, CASE WHEN u.suspended_until > now() THEN u.suspend_reason ELSE '' END
+	FROM users u WHERE u.domain <> '' AND (u.muted_until IS NOT NULL OR u.suspended_until IS NOT NULL) AND (u.muted_until > now() OR u.suspended_until > now())
+		AND u.id > $1 ORDER BY u.id LIMIT $2`
+
+// handleFedHeld answers GET /api/admin/federation/accounts: the accounts of other servers limited or suspended now, a
+// page at a time (?after= the last id), each with its handle, ends and reasons, for the Federation tab.
+func (a *app) handleFedHeld(w http.ResponseWriter, r *http.Request, u *user) {
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	rows, err := a.db.QueryContext(r.Context(), remoteHeldSQL, after, remoteHeldPage+1)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	type heldRow struct {
+		ID     int64  `json:"id"`
+		Handle string `json:"handle"`
+		remoteHeld
+	}
+	list := []heldRow{}
+	for rows.Next() {
+		var h heldRow
+		var lu, su sql.NullTime
+		if err := rows.Scan(&h.ID, &h.Handle, &lu, &h.LimitReason, &su, &h.SuspendReason); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if lu.Valid {
+			h.LimitedUntil = &lu.Time
+		}
+		if su.Valid {
+			h.SuspendedUntil = &su.Time
+		}
+		list = append(list, h)
+	}
+	if err := rows.Err(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	next := int64(0)
+	if len(list) > remoteHeldPage {
+		list = list[:remoteHeldPage]
+		next = list[len(list)-1].ID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accounts": list, "next": next, "pageSize": remoteHeldPage})
 }
 
 /* ---------- federation: public posts out ----------
@@ -25611,6 +26163,14 @@ var migrations = []string{schema, schemaSocial,
 	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS signer_key TEXT;
 	ALTER TABLE ap_outbox ADD COLUMN IF NOT EXISTS signer_sealed TEXT;
 	CREATE INDEX IF NOT EXISTS ap_outbox_signer ON ap_outbox (id) WHERE signer_sealed IS NOT NULL`,
+	// 25: actions on remote accounts (docs/federation.md section 10, "As built (FMD 2)"; FMD 2). A limit and a suspension
+	// of one account of another server are its users.muted_until and users.suspended_until, the columns a member's mute
+	// and suspension already use, so no column is added. This partial index holds the accounts of other servers a
+	// moderator ever limited or suspended (a lift clears the column, so it leaves too): the policy's read asks when the
+	// last of those in force ends (remoteHeldUntilSQL), and the Federation tab lists them (remoteHeldSQL), each without
+	// reading every remote account. An index only: an older build after ./deploy.sh --rollback ignores it, and reads the
+	// two columns of a remote account as it always did (the cache's bound keeps such an account, nothing else asks).
+	`CREATE INDEX IF NOT EXISTS users_remote_held ON users (id) WHERE domain <> '' AND (muted_until IS NOT NULL OR suspended_until IS NOT NULL)`,
 }
 
 // migrate brings the database up to the latest migration. An advisory lock keeps two starting
@@ -26410,6 +26970,7 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("POST /actor/inbox", a.handleInbox)
 		mux.HandleFunc("POST /users/{name}/inbox", a.handleInbox)
 		mux.HandleFunc("GET /api/admin/federation", a.authed(permFedRead, a.handleFedAdmin))
+		mux.HandleFunc("GET /api/admin/federation/accounts", a.authed(permFedRead, a.handleFedHeld))
 		mux.HandleFunc("PUT /api/admin/federation/policy", a.authed(permFedManage, a.handlePutFedPolicy))
 		mux.HandleFunc("PUT /api/admin/federation/publish", a.authed(permFedManage, a.handlePutFedPublish))
 		mux.HandleFunc("GET /api/about/servers", a.handleAboutServers)
@@ -29210,9 +29771,11 @@ func (a *app) localStatements(q string) string {
 // limitStatements is q with the look at a limited domain (limitFree) left out while the policy in memory limits no
 // domain, as on most instances: then it is true of every account, and asking it would cost a look in users and in
 // domain_policies for each reply a page lists. The policy in memory follows each change an admin makes (loadPolicy
-// runs before the admin's answer), so a page read after a limit is set asks it.
+// runs before the admin's answer), so a page read after a limit is set asks it. A limit or a suspension of one account
+// of another server (FMD 2) keeps the look until the last of them ends (fedPolicy.limiting): while none is in force and
+// no domain is limited, the statements are byte for byte those of before.
 func (a *app) limitStatements(q string) string {
-	if a.fed != nil && a.fed.policyNow().anyLimit {
+	if a.fed != nil && a.fed.policyNow().limiting(time.Now()) {
 		return q
 	}
 	return unlimited(q)

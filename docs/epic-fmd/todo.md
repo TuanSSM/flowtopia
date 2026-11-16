@@ -6,7 +6,7 @@ Category: feature. Size: M. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)); item 1 is done. The first item shipped in two parts, the first with FWR's inbox, because the allowlist is how
+**Status:** in progress (issue [#91](https://github.com/TuanSSM/flowtopia/issues/91)); item 1 is done, and item 2 is built and waits for its review. The first item shipped in two parts, the first with FWR's inbox, because the allowlist is how
 the experimental mode starts (F8). 1 of 8 items done. Every admin action below goes through `audit`.
 Every setting, table, route and test named below is new unless the design note says it exists.
 
@@ -55,6 +55,35 @@ Every setting, table, route and test named below is new unless the design note s
   action `purge_remote` deletes its content; the queue and the
   accounts page show remote accounts with their handle. DoD: `TestDBRemoteAccountActions`;
   `TestDBModeration` unchanged for local accounts.
+  Built (federation.md section 10, "As built (FMD 2)"; migration 25, an index, with `flowa-schema24.dump`): through
+  `POST /api/mod/actions` in a mode that federates, `mute`, `unmute`, `suspend` and `unsuspend` on an account of
+  another server limit, suspend and lift it (its `muted_until` and `suspended_until`, an end within a year), and
+  `purge_remote` removes what this server holds of a suspended one in batches of 500 rows, about 10 s a call, safe to
+  run again; a new permission `federation.accounts` (moderators and admins) beside `user.mute` and `user.suspend`, and
+  `federation.manage` to purge; a reason for each but a lift, `limits.remoteActs` (300 an hour per moderator), each in
+  the audit log (`limit_remote`, `unlimit_remote`, `suspend_remote`, `unsuspend_remote`, `purge_remote`). The limit is
+  the domain limit's look (`limitFree`) asking the account's own row, so local mode and an instance that holds nobody
+  run the statements of before byte for byte. A suspension ends the follows both ways (each member who followed told),
+  gives up the deliveries waiting for its own inbox, drops what it sends but a Delete or an Undo (202, nothing stored),
+  hides what it wrote from everyone and refuses a follow of it; lifting it shows its content again without the follows.
+  Nothing is sent to its server for any of these, as Mastodon sends nothing. The moderation queue marks an author of
+  another server and offers Limit and Suspend; the account's profile here has a Moderation card with each action and
+  its sentence; the Federation tab lists the accounts held now (`GET /api/admin/federation/accounts`, 100 a page).
+  DoD: `TestDBRemoteAccountActions` (13 parts), `TestDBRemoteActionsLocal`, `TestDBModeration` unchanged,
+  `TestPermissionTable` updated, `TestDBQueryPlans` ("held:", "purge:", "limited: 20 accounts held"), and 19 checks of
+  the `federation` suite between two real instances (115 planned).
+  **Open:** the Accounts page itself still lists members only (the list of remote accounts held is on the Federation
+  tab); an activity that waited for room in a full queue, with its recipients chosen before the suspension, can still
+  reach the account's own inbox once; Mastodon's behaviour for each case below is unverified against a live Mastodon
+  (its documentation pages could not be reached from here), and the owner's trial (FWR 9) should confirm it.
+  **For the owner (defaults built):** whether a limit should be able to have no end, as Mastodon's has none (built: an
+  end within a year, as a member's mute; lifting by hand ends it sooner); whether a suspended account's content should
+  be deleted by itself after 30 days, as Mastodon does (built: no, it is kept until lifted, purged, or removed by the
+  usual housekeeping of untouched posts after 30 days); whether members who followed a suspended account should be
+  told (built: yes, one notification each, as Mastodon 4.3's "severed relationships" notice is remembered to do,
+  unverified); whether a suspended account's likes should stop counting (built: they count, as a limited one's do; its
+  notifications are hidden); whether a purge should also forget the account's handle and suspension (built: no, so it
+  stays refused, as Mastodon keeps "usernames").
 - [ ] **Reports across servers.** Reporting remote content uses the existing reports; resolving can
   forward a Flag from the instance actor without the reporter's name (`reports.forwarded_at`), in
   Mastodon's shape (the account then the posts in `object`, the comment in `content`); a Flag in

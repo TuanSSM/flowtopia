@@ -529,6 +529,39 @@ try:
     click('[data-act=bell]')
     wide=lambda: js("const p=document.querySelector('.ntf-panel');return p&&p.innerText.includes('@long.example')?[p.scrollWidth,p.clientWidth]:null")
     check('a handle of 200 characters wraps in the bell: the panel does not scroll sideways',lambda: (lambda v: bool(v) and v[0]<=v[1])(wide()),wide)
+    # A moderator's view of a remote account's profile (FMD 2), drawn from an answer the suite supplies (no remote server
+    # can exist here): the Moderation card with each action, its sentence and its button; then the same account
+    # suspended, with its end, its reason, Lift and, for an admin, Purge.
+    MSTUB="""window.__mod=arguments[0];window.__realFetch=window.__realFetch||window.fetch;const real=window.__realFetch;
+      const json=(d,st=200)=>Promise.resolve(new Response(JSON.stringify(d),{status:st,headers:{'Content-Type':'application/json'}}));
+      window.fetch=(u,o)=>{const p=String(u).replace(/^.*?api[/]/,'');
+        if(p==='fed/accounts/7')return json({account:{id:7,name:'Bo',handle:'bo@social.example',host:'social.example',link:'https://social.example/@bo',state:'ok',limited:window.__mod.suspendedUntil?'The moderators here suspended this account.':undefined},view:{follow:'none'},notice:'Once you follow them, their new posts show in your Home.',moderation:window.__mod});
+        return real(u,o)};"""
+    load(BASE);js(MSTUB,{});nav('#/fed/7')
+    card=lambda: js("const c=document.querySelector('.fed-mod');return c&&[c.querySelector('h2').innerText,[...c.querySelectorAll('button')].map(b=>b.innerText.trim()),c.innerText.includes('its follows of members here become requests'),c.innerText.includes('The follows are not restored'),c.innerText.includes('Suspend it first')]")
+    check('a moderator sees a remote profile\'s Moderation card: Limit and Suspend, each with what it does, and why Purge waits for a suspension (answer supplied by the suite)',lambda: card()==['Moderation',['Limit…','Suspend…'],True,True,True],card)
+    if tab_to('.fed-mod [data-do=mute]','Limit'):
+        check('Limit shows a ring of 2 px or more at 3:1 in both themes (keys.py)',not ring_ok(),ring_ok)
+        key(ENTER)
+        dlg=lambda: js("const f=document.querySelector('#action-form');return f&&[f.querySelector('h2').innerText,f.dataset.remote,f.innerText.includes('kept for the moderators'),[...f.querySelectorAll('[name=dur]')].length,document.activeElement===f.querySelector('textarea')]")
+        check('Enter opens the dialog of a limit: its name, what it does, a reason kept for the moderators, ends up to a year, the reason box focused',lambda: dlg()==['Limit @bo@social.example','1',True,7,True],dlg)
+        n,d=js(A['NAMES'],'#action-form'),js(A['IDS'])
+        check('the dialog: every control has a name, and no id repeats (a11y.py)',n['n']>0 and not n['bad'] and not d['bad'],lambda: (n,d))
+        click('#action-form [data-act=modal-close]')
+    load(BASE);js(MSTUB,{'suspendedUntil':'2027-01-01T00:00:00Z','suspendReason':'spam waves'});nav('#/fed/7')
+    held=lambda: js("const c=document.querySelector('.fed-mod');return c&&[[...c.querySelectorAll('button')].map(b=>b.innerText.trim()),c.innerText.includes('spam waves')]")
+    check('suspended: its reason and end, Lift the suspension, and Purge for an admin',lambda: held()==[['Limit…','Lift the suspension','Purge…'],True],held)
+    for t in ('dark','light'):
+        themed(t)
+        n,d=js(A['NAMES'],'.fed-mod'),js(A['IDS'])
+        check(f'the Moderation card, {t}: every control has a name, and no id repeats (a11y.py)',n['n']>0 and not n['bad'] and not d['bad'],lambda: (n,d))
+        r=js(C['CHECK'],'.fed-mod',False,C['KNOWN'],'')
+        check(f'the Moderation card, {t}: text and the edges of controls stand out (contrast.py)',r['n']>0 and not r['bad'] and not r['unknown'],lambda: (r['n'],r['bad'][:4],r['unknown'][:4]))
+    themed('dark')
+    js("document.querySelector('.fed-mod').scrollIntoView()");frames()
+    picture('federated-remote-moderation','Federated mode: the Moderation card of a suspended remote account, drawn from an answer the suite supplies (no server asked)')
+    load(BASE);nav('#/admin/federation')
+    check('the Federation tab lists the accounts of other servers held now, with what each action does',lambda: (lambda t: 'Accounts of other servers' in t and 'No account of another server is limited or suspended.' in t)(txt('.fed-held') or ''),lambda: txt('.fed-held'))
     # A post of a followed account of another server in Home (FWR 5), drawn from an answer the suite supplies in the
     # page, since no remote server can exist here: a hostile name and text, a content warning, a picture the server
     # copied (here a picture of this origin standing for it) with its description, and a video only as a link.
@@ -670,7 +703,7 @@ try:
     if out:
         idx=f'{out}/index.json'
         kept=[m for m in json.load(open(idx)) if not m['file'].startswith('federated-')] if os.path.exists(idx) else []
-        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==19)
+        json.dump(kept+made,open(idx,'w'));check(f'the pictures are in {idx}',len(made)==20)
     else: print('SKIP the pictures in index.json: no directory for pictures was given',flush=True)
 
     # The start said once what this version does.
