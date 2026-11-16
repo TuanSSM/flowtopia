@@ -6,8 +6,7 @@ Category: feature. Size: S. Each item is one pull request or one commit of one, 
 Commits title of the category's type. An item is checked only when its DoD holds and the
 [roadmap's definition of done](../roadmap.md#definition-of-done-for-any-epic-item) is met.
 
-**Status:** in progress (issue [#92](https://github.com/TuanSSM/flowtopia/issues/92)). 1 of 4 items done: Export; Move out
-is built and waits for its pull request; Move in and the import follow, each in its own pull request. Every setting,
+**Status:** in progress (issue [#92](https://github.com/TuanSSM/flowtopia/issues/92)). 2 of 4 items done: Export and Move out; Move in and the import follow, each in its own pull request. Every setting,
 table, route and test named below is new.
 
 - [x] **Export.** A member downloads their profile, posts (with pictures), comments, follows and
@@ -43,7 +42,7 @@ table, route and test named below is new.
     the 1 minute stall. The size bound counts text at six times its bytes, so for
     text in scripts that take 3 or 4 bytes a character it refuses at roughly a fifth of 512 MB of real archive,
     which takes tens of thousands of long comments.
-- [ ] **Move out.** The member sets `alsoKnownAs` on the new account; on Flowa, "I moved" sets
+- [x] **Move out.** The member sets `alsoKnownAs` on the new account; on Flowa, "I moved" sets
   `movedTo` and sends Move to followers after checking that the target lists this account (Mastodon
   checks the same before it accepts a Move: its ActivityPub page, "Account migration"). DoD:
   `TestDBMoveOut`; the `federation` suite moves a member between its two instances and the followers
