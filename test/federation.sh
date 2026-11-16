@@ -561,7 +561,7 @@ api two lea PUT /api/me/aliases '{"account":"@ivy@one.flowa.test"}'
 all "lea names ivy@one.flowa.test on two as an account they move here from" "200 @ivy@one.flowa.test" "$code $(j '.federation.move.aliases[0].handle')"
 api one ivy POST /api/me/move '{"target":"@lea@two.flowa.test","password":"flowa-test-only"}'
 told=$(j .told)
-if [ "$code" = 200 ] && [ "$(j '.federation.move.moved.handle')" = "@lea@two.flowa.test" ] && [[ "$told" == *"1 server."* ]] && [[ "$told" == *"1 member here now follows"* ]]; then
+if [ "$code" = 200 ] && [ "$(j '.federation.move.moved.handle')" = "@lea@two.flowa.test" ] && [[ "$told" == *"1 server."* ]] && [[ "$told" == *"1 member here who follows you is being asked"* ]]; then
   ok "ivy moves to lea on one: $told"
 else bad "ivy moves to lea on one" "$code $(cut -c1-300 <<<"$body")"; need "the move"; fi
 : >"$work/ivy"
@@ -570,8 +570,8 @@ got=$(curl -sS -m 20 --noproxy '*' --cacert "$work/ca.pem" --resolve "one.flowa.
 all "her actor on one names movedTo, lea's actor id" "200 https://two.flowa.test/users/lea" "$got $(jq -r .movedTo "$work/ivy" 2>/dev/null)"
 leafollowed() { api two lea GET /api/followers && ok200 '[.followers[].user.remote.handle] | join(",") == "jon@one.flowa.test"'; }
 within 30 "jon, moved by one, follows lea on two" leafollowed
-api one ivy GET /api/followers
-all "and on one ivy's followers are kai alone" "200 kai@two.flowa.test" "$code $(j '[.followers[] | (.user.remote.handle // .user.username)] | join(",")')"
+ivyonly() { api one ivy GET /api/followers && ok200 '[.followers[] | (.user.remote.handle // .user.username)] | join(",") == "kai@two.flowa.test"' && api one ivy GET /api/me && ok200 '.federation.move.progress.moved == 1'; }
+within 30 "once two accepts jon's follow, on one ivy's followers are kai alone and her card counts jon as moved" ivyonly
 moved() { api two admin GET /api/admin/federation && ok200 '(.inbox.dropped.Move // 0) >= 1 and .inbox.failed == 0'; }
 within 30 "two takes the Move from one without an error (it is counted, and acted on from PRT 3)" moved
 api one ivy POST /api/me/move '{"target":"@lea@two.flowa.test","password":"flowa-test-only"}'

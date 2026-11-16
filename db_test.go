@@ -3941,10 +3941,10 @@ func TestDBQueryPlans(t *testing.T) {
 	}
 	on = tx
 	// It asks every table that references users (userRefs), each through its index for a table the size it
-	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox and domain_policies) the planner reads whole for
+	// is meant for; a table this small (the 200 reports, the empty achievements, ap_inbox, ap_outbox, domain_policies and move_followers) the planner reads whole for
 	// each candidate instead, which with the reports' two columns is 400 rows a candidate: 81,000 rows in
 	// all for 200 removed, a few milliseconds, once for every 200 new actors.
-	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_comment_out ap_inbox ap_like_out ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions reports"}})
+	plans([]planCase{{"remote: removing the 200 fetched longest ago", evictActorsSQL, []any{200, 0}, 90000, "achievements ap_comment_out ap_inbox ap_like_out ap_outbox ap_person_out ap_post_out badge_blocks catalog_revisions domain_policies instance_settings mod_actions move_followers reports"}})
 	on = db
 	tx.Rollback()
 	// The delivery queue (FWR 2) at its cap: 50,000 rows queued on 300 hosts, 50 activities, a host whose circuit is
@@ -4090,14 +4090,19 @@ func TestDBQueryPlans(t *testing.T) {
 		{"deletion: the servers that know a member, 1,000 followers on 300 servers", personKnownSQL, []any{11, personDeleteHostsMax + 1, "", personKnownRecords}, 90000, "ap_comment_out ap_actors ap_like_out"},
 	})
 	// Moving to another server (PRT 2): member 11, with its 1,000 followers on 300 servers and 49 members here among its
-	// followers, names five accounts it moves here from and has moved to one. The members here who follow it are read
-	// through follows_followee and each follower's primary key (about three rows counted per follower, the remote ones passed
-	// over); what Settings and a move read of it, and where it went, through the primary key of users and the unique
-	// index of ap_actors, a row or two per account named.
+	// followers, names five accounts it moves here from and has moved to one; 200 other members have moved too, with 100
+	// followers here each in every state of their move (20,000 rows of move_followers). The members here who follow
+	// member 11 are written down through follows_followee and each follower's primary key (about four rows counted per
+	// follower, the remote ones passed over); a batch is claimed through move_followers_todo, the first member's rows
+	// alone; the room at a host is a count that stops at its bound; what Settings and a move read, where a member went
+	// and how their followers' move goes, through primary keys and ap_actors' unique index; the take-back of a Move
+	// through ap_outbox's unique id and the queue's (outbox_id, inbox) index.
 	for _, q := range []string{
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT g, 11, 'accepted' FROM generate_series(12, 60) g ON CONFLICT DO NOTHING`,
 		`UPDATE users SET moved_to = 'https://p1.out.example/users/3000001', moved_at = now(),
 			also_known_as = ARRAY(SELECT 'https://' || domain || '/users/' || id FROM users WHERE id BETWEEN 3000002 AND 3000006 ORDER BY id) WHERE id = 11`,
+		`INSERT INTO move_followers (user_id, follower_id, target_id, state, why) SELECT u, f, 3000001, (ARRAY['todo', 'asked', 'moved', 'kept'])[1 + (u + f) % 4],
+			CASE WHEN (u + f) % 4 = 3 THEN 'notSharing' ELSE '' END FROM generate_series(200, 399) u, generate_series(1, 100) f`,
 		`ANALYZE`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -4105,13 +4110,19 @@ func TestDBQueryPlans(t *testing.T) {
 		}
 	}
 	plans([]planCase{
-		{"moves: the members here who follow a member with 1,000 followers elsewhere", moveFollowersSQL, []any{11, moveFollowersMax}, 4500, ""},
 		{"moves: what Settings and a move read of a member", moveStateSQL, []any{11, false}, 60, ""},
 		{"moves: where a member moved", movedSQL, []any{11}, 10, ""},
+		{"moves: how the move of a member's followers here goes", moveProgressSQL, []any{200}, 300, ""},
+		{"moves: the room at the new account's host", moveHostQueuedSQL, []any{"p1.out.example", moveHostRoom + 1}, 2 * (moveHostRoom + 1), ""},
 	})
 	if tx, err := db.Begin(); err == nil {
 		on = tx
-		plans([]planCase{{"moves: a move recorded", moveSetSQL, []any{9, "https://p1.out.example/users/3000001", time.Now(), moveCooldown.Seconds(), false}, 10, ""}})
+		plans([]planCase{
+			{"moves: a move recorded", moveSetSQL, []any{9, "https://p1.out.example/users/3000001", time.Now(), moveCooldown.Seconds(), false, "https://x.example/m"}, 10, ""},
+			{"moves: the members here who follow a member with 1,000 followers elsewhere, written down", moveFollowersSQL, []any{11, 3000001}, 6000, ""},
+			{"moves: a batch claimed", moveClaimSQL, []any{time.Now(), moveBatch, time.Now().Add(moveLease)}, 2000, ""},
+			{"moves: a Move taken back", moveTakeBackSQL, []any{11, "https://x.example/none", time.Now()}, 10, ""},
+		})
 		on = db
 		tx.Rollback()
 	} else {

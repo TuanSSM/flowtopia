@@ -1014,15 +1014,17 @@ In a mode that federates, other servers learn when an account is gone, both ways
   that federates), in Settings under "Beyond this server", for a member who shares their profile. First the new
   account names this one as an old account (on Mastodon: Preferences, Account, Moving from a different account);
   then the member types the new account's handle or address and their password. Flowa fetches the new account
-  again, through the domain policy, and moves only if it names this member; otherwise it says what to do. Then
-  the member's followers on other servers are sent an Update of the profile, which now points to the new account,
-  and a Move, in that order at each server (Mastodon's followers then follow the new account; another Flowa does so
-  from PRT 3). Members here who follow them and share their profile follow the new account and stop following the
-  old one; the others keep their follow and see where the member went. From then on the profile here points to the
-  new account: it takes no new followers, makes no Public posts and follows nobody new; posts, comments and
-  practice stay. The redirect can be stopped later with the password (followers who moved stay moved), and another
-  move is possible 30 days after the last one. At most 5 moves or stops an hour per member. The same card names
-  the accounts a member moves here from (up to 5), which their profile then lists as `alsoKnownAs`. On a
+  again, through the domain policy, and moves only if it names this member and has not moved itself; otherwise it
+  says what to do. Then the member's followers on other servers are sent an Update of the profile, which now points to
+  the new account, and a Move, in that order at each server (Mastodon's followers then follow the new account; another
+  Flowa does so from PRT 3). Members here who follow them and share their profile are asked to follow the new account
+  in the background, a batch at a time, and stop following the old one once the new account accepts; the others keep
+  their follow and see where the member went. Settings shows how that goes. From then on the profile here points to
+  the new account: it takes no new followers, makes no Public posts and follows nobody new, here or elsewhere; posts,
+  comments and practice stay. The redirect can be stopped later with the password, also after the flag is turned off
+  (followers who moved stay moved; a Move not sent yet is given up), and another move is possible 30 days after the
+  last one. At most 5 moves or stops an hour per member, counting only moves that passed every check. The same card
+  names the accounts a member moves here from (up to 5), which their profile then lists as `alsoKnownAs`. On a
   single-profile instance with `FLOWA_FEDERATE=on` the owner can move the one profile the same way, and the page at
   `/` says where it went. Local mode has none of this.
 - **An account of another server deletes itself:** its posts and their pictures, its follows and requests both ways,

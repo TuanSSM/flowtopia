@@ -90,7 +90,7 @@ const FLAGS = [
 // server lists them, so a server that does not federate shows exactly the switches it always did.
 const FED_FLAGS = [
   ['federation', 'Federation: take deliveries', 'Other servers can deliver to this Flowa\'s inboxes, from the domains the Federation tab lets in. It acts on follows and their answers, on posts of the accounts members follow, on replies and likes of members\' posts, and on an account deleting itself or changing its profile. When off, deliveries are answered "try again later", nothing waiting is handled, and nothing is sent.'],
-  ['moves', 'Moving to another server', 'Members can move their profile to an account on another server: their followers there are asked to follow the new account, and the profile here points to it. Members can also name the accounts they move here from. When off, Settings offers neither and the server takes neither.'],
+  ['moves', 'Moving to another server', 'Members can move their profile to an account on another server: their followers there are asked to follow the new account, and the profile here points to it. Members can also name the accounts they move here from. When off, Settings offers neither and the server takes neither; a member who moved before still sees where their profile points and can stop the redirect.'],
 ];
 let state = blank(), rev = 0, dirty = false, saving = false, saveTimer = null, syncState = 'ok', loaded = false;
 const ui = { graphView: localStorage.getItem('nf-view') || 'graph', draftFocus: [], palIdx: 0, prop: localStorage.getItem('fl-prop') || 'nunchaku', open: (localStorage.getItem('fl-groups') ?? localStorage.getItem('fl-prop') ?? 'nunchaku').split(',').filter(Boolean), users: null };
@@ -674,14 +674,15 @@ function fedCard() {
     ${fed.move ? moveParts(fed.move) : ''}</div></div>`;
 }
 // Moving to an account on another server, and the accounts the member moves here from (PRT 2), with the moves flag
-// on. What a move does is the server's words (m.warning), shown before the form; the password is asked again, and
+// on, or the redirect alone for a member who moved while the flag is off. What a move does is the server's words (m.warning), shown before the form; the password is asked again, and
 // the server checks that the new account names this one before anything is sent.
 const dayOf = t => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
 function moveParts(m) {
   const after = m.next ? `Another move is possible from ${esc(dayOf(m.next))}, 30 days after the last one.` : '';
   let move;
   if (m.moved) {
-    move = `<p class="notice" role="status">Your profile points to <a href="${esc(m.moved.link)}" target="_blank" rel="noopener noreferrer">${esc(m.moved.handle)}</a>${m.at ? ` since ${esc(dayOf(m.at))}` : ''}. It takes no new followers and makes no Public posts. ${after}</p>
+    move = `<p class="notice" role="status">Your profile points to <a href="${esc(m.moved.link)}" target="_blank" rel="noopener noreferrer">${esc(m.moved.handle)}</a>${m.at ? ` since ${esc(dayOf(m.at))}` : ''}. It takes no new followers, makes no Public posts and follows nobody new. ${after}</p>
+      ${moveProgressHTML(m.progress)}
       <form id="move-back-form" class="stack" style="gap:8px"><p class="small" id="move-back-hint">Stopping the redirect makes this profile your own again. Followers who moved stay with the new account.</p>
       <label class="field">Your password<input type="password" name="password" autocomplete="current-password" required aria-describedby="move-back-hint"></label>
       <div><button class="btn sm" type="submit">Stop the redirect</button></div></form>`;
@@ -696,12 +697,22 @@ function moveParts(m) {
       <label class="field">Your password<input type="password" name="password" autocomplete="current-password" required></label>
       <div><button class="btn danger sm" type="submit" aria-describedby="move-hint">Move my profile</button></div></form>`;
   }
+  // With the moves flag off only a redirect made before is shown, with the way to stop it.
+  if (!m.flag) return `<div class="fed-move stack" style="gap:8px"><h3>Moved to another server</h3>${move}</div>`;
   const aliases = m.aliases.length ? `<ul class="fed-aliases">${m.aliases.map(x => `<li class="row wrap"><span class="grow">${esc(x.handle)}</span><button class="btn sm" type="button" data-act="alias-rm" data-id="${esc(x.id)}" aria-label="Remove ${esc(x.handle)}">Remove</button></li>`).join('')}</ul>` : '';
   return `<div class="fed-move stack" style="gap:8px"><h3>Move to another server</h3>${move}</div>
     <div class="fed-move stack" style="gap:8px"><h3>Moving here from another account</h3>
       <p class="small" id="alias-hint">To bring your followers here from an account on another server, name it here first, then start the move there. You can name up to 5.</p>
       ${aliases}
       <form id="alias-form" class="row wrap" style="align-items:flex-end;gap:8px"><label class="field grow">Old account<input type="text" name="account" placeholder="@name@server.example" autocapitalize="none" spellcheck="false" maxlength="300" required aria-describedby="alias-hint"></label><button class="btn sm" type="submit">Add</button></form></div>`;
+}
+// How the move of the members here who followed the member goes, in the server's counts and reasons.
+function moveProgressHTML(p) {
+  if (!p) return '';
+  const all = p.moved + p.asked + p.todo + p.kept;
+  const parts = [p.moved && `${p.moved} now follow your new account`, p.asked && `${p.asked} asked to follow it and wait for its answer`,
+    p.todo && `${p.todo} still to be asked`, p.kept && `${p.kept} could not follow it${p.reasons?.length ? ` (${p.reasons.join('; ')})` : ''} and still follow you here`].filter(Boolean);
+  return `<p class="small" id="move-progress">Of the ${all} ${all === 1 ? 'member' : 'members'} here who followed you: ${esc(parts.join(', '))}.</p>`;
 }
 // The forms of moveParts: each asks the server and shows what it said; the card is drawn again from its answer.
 async function moveForm(f) {

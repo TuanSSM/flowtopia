@@ -224,7 +224,7 @@ func TestDBMoveOut(t *testing.T) {
 	e.target(novaID, "https://else.example/users/x", anaActor)
 	out = e.must(200, e.ana, "POST", "/api/me/move", map[string]any{"target": "nova@social.example", "password": movePW})
 	told := fmt.Sprint(out["told"])
-	if !strings.Contains(told, "2 servers") || !strings.Contains(told, "1 member here now follows your new account") || !strings.Contains(told, "1 member here could not") {
+	if !strings.Contains(told, "2 servers") || !strings.Contains(told, "2 members here who follow you are being asked to follow your new account") || strings.Contains(told, "now follow") {
 		t.Errorf("ana is told: %s", told)
 	}
 	if mv, _ := out["federation"].(map[string]any)["move"].(map[string]any); mv == nil || fmt.Sprint(mv["moved"].(map[string]any)["handle"]) != "@nova@social.example" || mv["next"] == nil {
@@ -256,18 +256,38 @@ func TestDBMoveOut(t *testing.T) {
 		t.Errorf("the Move: %v", mv.body)
 	}
 
-	// The members here: mo (who shares) asked to follow nova, and no longer follows ana; lu keeps her follow.
+	// The members here are written down in the move's transaction and moved after the answer: nothing of theirs is
+	// enqueued yet. Then the background step: mo (who shares) asks to follow nova and keeps following ana until nova
+	// accepts; lu, who does not share, keeps her follow, with that reason.
 	var novaUID int64
 	if err := e.a.db.QueryRow(`SELECT user_id FROM ap_actors WHERE ap_id = $1`, novaID).Scan(&novaUID); err != nil {
 		t.Fatal(err)
 	}
+	if e.count(`SELECT count(*) FROM move_followers WHERE user_id = $1 AND state = 'todo' AND target_id = $2`, e.anaID, novaUID) != 2 || len(e.rows(moID)) != 0 {
+		t.Fatal("the members here are not written down, or were moved inside the request")
+	}
+	e.produce()
 	if e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2 AND state = 'pending'`, moID, novaUID) != 1 ||
-		e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2`, moID, e.anaID) != 0 ||
+		e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2`, moID, e.anaID) != 1 ||
 		e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2`, luID, e.anaID) != 1 {
 		t.Error("the members here who follow ana were not moved as they should be")
 	}
-	if fs := e.rows(moID); len(fs) != 1 || fs[0].typ != "Follow" || fs[0].body["object"] != novaID || !slices.Equal(fs[0].inboxes, []string{"https://social.example/users/nova/inbox"}) {
-		t.Errorf("mo's Follow of nova: %+v", fs)
+	fs := e.rows(moID)
+	if len(fs) != 1 || fs[0].typ != "Follow" || fs[0].body["object"] != novaID || !slices.Equal(fs[0].inboxes, []string{"https://social.example/users/nova/inbox"}) {
+		t.Fatalf("mo's Follow of nova: %+v", fs)
+	}
+	if p := e.progress(); p != "todo 0, asked 1, moved 0, kept 1 [they do not share their profile beyond this server]" {
+		t.Errorf("the progress: %s", p)
+	}
+	// nova accepts mo's Follow: mo now follows nova and no longer ana.
+	e.novaKeyed()
+	e.deliver(activity(novaID, "Accept", fs[0].id, nil), e.nova())
+	if e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2 AND state = 'accepted'`, moID, novaUID) != 1 ||
+		e.count(`SELECT count(*) FROM follows WHERE follower_id = $1 AND followee_id = $2`, moID, e.anaID) != 0 {
+		t.Errorf("after nova's Accept: %s", e.outcome())
+	}
+	if p := e.progress(); p != "todo 0, asked 0, moved 1, kept 1 [they do not share their profile beyond this server]" {
+		t.Errorf("the progress after the Accept: %s", p)
 	}
 
 	// Sent: each server gets the Update and then the Move.
@@ -309,14 +329,17 @@ func TestDBMoveOut(t *testing.T) {
 		t.Errorf("a second move: %d %v", code, out["_raw"])
 	}
 
-	// Taking the redirect back: the password again, movedTo gone from the actor, an Update(Person) marked due, the 30
-	// days still counted.
+	// Taking the redirect back: the password again, movedTo gone from the actor, an Update(Person) without movedTo
+	// enqueued after the Move to the same inboxes (the Move went everywhere here, so nothing is given up), the 30 days
+	// still counted.
 	if code, _ := e.do(e.ana, "DELETE", "/api/me/move", map[string]any{"password": moveNoway}); code != 403 {
 		t.Errorf("taking it back with a wrong password: %d", code)
 	}
 	e.must(200, e.ana, "DELETE", "/api/me/move", map[string]any{"password": movePW})
-	if e.movedTo() != "" || e.count(`SELECT count(*) FROM ap_person_out WHERE user_id = $1 AND due_at IS NOT NULL`, e.anaID) != 1 {
-		t.Error("taking the redirect back did not clear it or mark the profile update")
+	rs = e.rows(e.anaID)
+	back := rs[len(rs)-1]
+	if e.movedTo() != "" || back.typ != "Update" || back.after != mv.id || back.body["object"].(map[string]any)["movedTo"] != nil || !slices.Equal(back.inboxes, want) {
+		t.Errorf("taking the redirect back: moved to %q, %+v", e.movedTo(), back)
 	}
 	if d := e.actorJSON(); d["movedTo"] != nil || contextNames(d)["movedTo"] != nil {
 		t.Errorf("the actor after taking it back: %v", d)
@@ -505,11 +528,9 @@ func TestDBMoveOutMidway(t *testing.T) {
 				}
 			}
 			code, out := e.move("@nova@social.example", movePW)
-			want := 409
-			if c.how == "delete" {
-				want = 409 // the session went with the account only after the handler took it
-			}
-			if code != want {
+			// In each case the move finds the member changed in its own transaction and writes nothing (the deleted
+			// account included: the request had its session before the deletion).
+			if code != 409 || out["error"] != moveChanged {
 				t.Errorf("the move: %d %v", code, out["_raw"])
 			}
 			if n := e.count(`SELECT count(*) FROM ap_outbox WHERE body LIKE '%"type":"Move"%' OR (body LIKE '%"type":"Update"%' AND body LIKE '%movedTo%')`); n != 0 {
@@ -668,7 +689,11 @@ func TestDBMoveOutFollowIn(t *testing.T) {
 func TestDBMoveOutFlagAndModes(t *testing.T) {
 	e := newMoveEnv(t)
 	e.setFlag("moves", false)
-	for _, c := range []struct{ method, path string }{{"POST", "/api/me/move"}, {"DELETE", "/api/me/move"}, {"PUT", "/api/me/aliases"}, {"DELETE", "/api/me/aliases"}} {
+	// Stopping a redirect stays reachable (TestDBMoveOutFlagOffAfterMove); a member who did not move is told so.
+	if code, out := e.do(e.ana, "DELETE", "/api/me/move", map[string]any{"password": movePW}); code != 400 || out["error"] != moveNotMoved {
+		t.Errorf("DELETE /api/me/move with the flag off, not moved: %d %v", code, out["_raw"])
+	}
+	for _, c := range []struct{ method, path string }{{"POST", "/api/me/move"}, {"PUT", "/api/me/aliases"}, {"DELETE", "/api/me/aliases"}} {
 		if code, _ := e.do(e.ana, c.method, c.path, map[string]any{}); code != 404 {
 			t.Errorf("%s %s with the flag off: %d", c.method, c.path, code)
 		}
