@@ -242,7 +242,10 @@ func TestDBMoveOutDroppedFollow(t *testing.T) {
 	}
 }
 
-// Taking a redirect back takes the queue's lock before the member's row, as every other path takes them.
+// Taking a redirect back takes the queue's lock before the member's row, as every other path takes them. What it guards:
+// only the order of the two statements inside handleMoveBack's transaction (the lock written before the update of the
+// member's row), read from main.go. It does not prove that no deadlock can happen; other paths that take both are held
+// by the queue's own rule (enqueueOrdered takes the lock first, and its then runs after) and by TestDBDeliveryLockOrder.
 func TestMoveBackLockOrder(t *testing.T) {
 	src, err := os.ReadFile("main.go")
 	if err != nil {

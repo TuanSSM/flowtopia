@@ -71,7 +71,8 @@ table, route and test named below is new.
     `TestDBMoveOutTwoSteps`, `TestDBMoveOutStopsWhenTakenBack`, `TestDBMoveOutHostRoom`, `TestDBFollowWhileQueueWaits`,
     `TestDBMoveOutOrdersUpdates`, `TestDBMoveOutFlagOffAfterMove`, `TestDBMoveOutReviewPoints`,
     `TestDBMoveOutStuckMemberWaits`, `TestDBMoveOutHostDown`, `TestDBMoveOutOwnTroubleKeepsNobody`, `TestDBMoveOutBatchStops`,
-    `TestDBMoveOutAskedBeforeFollow`, `TestDBMoveOutDroppedFollow`, `TestMoveBackLockOrder`, the moves' plans in
+    `TestDBMoveOutAskedBeforeFollow`, `TestDBMoveOutDroppedFollow`, `TestMoveBackLockOrder`, `TestDBMoveOutAskedButNotSent`,
+    `TestDBMoveOutTriesOfTheBatch`, `TestDBMoveOutWaitLeavesOthersLease`, the moves' plans in
     `TestDBQueryPlans`; the `federation` suite (ivy of one moves to lea of two, refused until lea names her; her actor
     names `movedTo`; jon, her follower on one, follows lea on two and stops following her once two accepts; two takes
     the Move without an error); the `federated` browser suite (the card, its names, contrast and keyboard path, the
@@ -95,8 +96,8 @@ table, route and test named below is new.
     changes an hour, 5 aliases, 16 entries of a remote actor's `alsoKnownAs` kept (a target that lists more than 16
     accounts before this one is refused), 2,048 bytes an entry, batches of 50 members here with a lease of 2 minutes,
     and at most 950 rows queued for the new account's host before the next batch (half its cap of 2,000, less a batch);
-    a member whose new account's server cannot take the Follows (full, unavailable or behind an open circuit) waits 1
-    minute, doubling to an hour, and after 12 such batches in a row (about 7 hours) the rest are kept with that reason.
+    a member whose new account's server cannot take the Follows (full, unavailable or behind an open circuit) waits 2
+    minutes, doubling each time to an hour, and after 12 such batches in a row (about 7 hours) the rest are kept with that reason.
 - [ ] **Move in.** A Move from a followed remote account whose target lists it in `alsoKnownAs`
   makes local followers follow the target and unfollow the old account; anything else is ignored.
   DoD: `TestDBMoveIn` with a recorded Mastodon Move fixture.

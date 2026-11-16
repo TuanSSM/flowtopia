@@ -4103,6 +4103,8 @@ func TestDBQueryPlans(t *testing.T) {
 			also_known_as = ARRAY(SELECT 'https://' || domain || '/users/' || id FROM users WHERE id BETWEEN 3000002 AND 3000006 ORDER BY id) WHERE id = 11`,
 		`INSERT INTO move_followers (user_id, follower_id, target_id, state, why) SELECT u, f, 3000001, (ARRAY['todo', 'asked', 'moved', 'kept'])[1 + (u + f) % 4],
 			CASE WHEN (u + f) % 4 = 3 THEN 'notSharing' ELSE '' END FROM generate_series(200, 399) u, generate_series(1, 100) f`,
+		// Some asked followers left with a lease that has passed (a step stopped between "asked" and the send).
+		`UPDATE move_followers SET claimed_until = now() - interval '1 hour' WHERE state = 'asked' AND user_id < 210`,
 		`ANALYZE`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -4122,11 +4124,12 @@ func TestDBQueryPlans(t *testing.T) {
 			{"moves: the members here who follow a member with 1,000 followers elsewhere, written down", moveFollowersSQL, []any{11, 3000001}, 6000, ""},
 			{"moves: a batch claimed", moveClaimSQL, []any{time.Now(), moveBatch, time.Now().Add(moveLease)}, 2000, ""},
 			{"moves: a Move taken back", moveTakeBackSQL, []any{11, "https://x.example/none", time.Now()}, 10, ""},
-			{"moves: where one follower stands, written", moveRowSQL, []any{200, 4, "moved", "", time.Now(), "https://p1.out.example/users/3000001"}, 20, ""},
+			{"moves: where one follower stands, written", moveRowSQL, []any{200, 4, "moved", "", time.Now(), "https://p1.out.example/users/3000001", false}, 20, ""},
+			{"moves: a follower's lease let go once the Follow is made", moveSentSQL, []any{200, 1, time.Now()}, 10, ""},
 			{"moves: an asked follower put back", moveAskedSQL, []any{200, 1, "todo", "", time.Now()}, 10, ""},
-			{"moves: a member's followers made to wait", moveWaitSQL, []any{200, time.Now().Add(time.Hour), 1, time.Now()}, 300, ""},
+			{"moves: a member's followers made to wait", moveWaitSQL, []any{200, time.Now().Add(time.Hour), 1, time.Now(), time.Now()}, 300, ""},
 			{"moves: a member's followers kept", moveGiveUpSQL, []any{200, "hostFull"}, 300, ""},
-			{"moves: a Follow written for no inbox", moveDroppedSQL, []any{1}, 50, ""},
+			{"moves: a Follow written for no inbox", moveDroppedSQL, []any{1, "hostFull"}, 50, ""},
 		})
 		on = db
 		tx.Rollback()

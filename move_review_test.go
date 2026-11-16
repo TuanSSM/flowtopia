@@ -66,6 +66,7 @@ func TestDBMoveOutFollowersAfterAnswer(t *testing.T) {
 		e.followers("f", n, false)
 		e.target(novaID, anaActor)
 		e.produce()
+		settleKeys(t, e.a.fed) // the key worker reads the pool too: it is idle before the pool is swapped for the count
 		db, c := stmtCountingDB(t, e.tenv)
 		was, wasFed := e.a.db, e.a.fed.db
 		e.a.db, e.a.fed.db = db, db
