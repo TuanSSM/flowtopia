@@ -1028,7 +1028,7 @@ var rolePerms = map[string][]string{
 // (permsOf); can asks both, which is harmless outside such a mode, since only its routes ask for these.
 const (
 	permFedRead   = "federation.read"   // the federation page: domain policies, the inbox's numbers
-	permFedManage = "federation.manage" // allow and suspend domains, and choose allowlist or open
+	permFedManage = "federation.manage" // allow, limit and suspend domains, and choose allowlist or open
 )
 
 var fedPerms = map[string][]string{
@@ -1576,6 +1576,20 @@ func (a *app) handleInstance(w http.ResponseWriter, _ *http.Request, _ *user) {
 		a.serverError(w, err)
 		return
 	}
+	a.writeAbout(w, info)
+}
+
+// writeAbout answers with the about page. In a mode that federates, while an admin publishes the list of limited and
+// suspended domains (section 10), it says so (moderatedServers), and the page reads the list from GET
+// /api/about/servers; otherwise the answer is the one it always was.
+func (a *app) writeAbout(w http.ResponseWriter, info instanceInfo) {
+	if a.fed != nil && a.fed.policyNow().publish {
+		writeJSON(w, http.StatusOK, struct {
+			instanceInfo
+			ModeratedServers bool `json:"moderatedServers"`
+		}{info, true})
+		return
+	}
 	writeJSON(w, http.StatusOK, info)
 }
 
@@ -1599,7 +1613,7 @@ func (a *app) handleAbout(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusTooManyRequests, "Too many requests from this address. Try again in an hour.")
 		return
 	}
-	writeJSON(w, http.StatusOK, info)
+	a.writeAbout(w, info)
 }
 
 /* ---------- accounts ---------- */
@@ -3072,13 +3086,13 @@ func (a *app) targetOwner(kind string, id int64, viewer *user) (int64, error) {
 	switch kind {
 	case "post":
 		// A post of another server only for who may read it (postOneSQL's rule), so a report cannot tell that one exists.
-		err = a.db.QueryRow(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`,
+		err = a.db.QueryRow(a.limitStatements(`SELECT p.user_id FROM posts p WHERE p.id = $1 AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3) AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`),
 			id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "comment":
 		// A comment under a post of another server only for who may read that post (FWR 6), as for the post.
-		err = a.db.QueryRow(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
+		err = a.db.QueryRow(a.limitStatements(`SELECT c.user_id FROM comments c JOIN posts p ON p.id = c.post_id WHERE c.id = $1 AND NOT c.deleted
 			AND (c.hidden_at IS NULL OR c.user_id = $2 OR $3) AND (p.hidden_at IS NULL OR p.user_id = $2 OR $3)
-			AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`, id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
+			AND (p.ap_id IS NULL OR $3 OR `+remoteSeen("$2")+`)`), id, viewer.ID, can(viewer, permPostHide)).Scan(&owner)
 	case "user":
 		err = a.db.QueryRow(`SELECT id FROM users WHERE id = $1`, id).Scan(&owner)
 	default:
@@ -5353,6 +5367,12 @@ func (f *fetcher) answer(ctx, parent context.Context, rule *fetchRule, limit int
 		return nil, tooLarge
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err == nil && ctx.Err() != nil {
+		// A body whose read ended at or after the deadline is not taken. When the deadline closes the connection, the
+		// TLS close tells the server first; a server that then ends its body cleanly (as Go's own does when its request's
+		// context ends) can have that end read as a plain end of the body, which the transport reports with no error.
+		err = ctx.Err()
+	}
 	if err != nil {
 		return nil, f.failure(ctx, parent, host, err)
 	}
@@ -7023,6 +7043,9 @@ func (f *federation) startWorker() {
 				case made:
 					log.Printf("keys: made the key of %s in %d ms", o, time.Since(began).Milliseconds())
 					f.dropActor(o) // a document is not kept without a key, but one may be on its way
+					if f.out != nil {
+						f.out.keyMade(f.ctx, o)
+					}
 				}
 				f.mu.Lock()
 				handled := f.handled
@@ -14550,13 +14573,16 @@ func (e *actorError) Error() string {
 
 func (e *actorError) Unwrap() error { return e.err }
 
-// actorHost is the host of an id for an error: lower case, at most 253 bytes, "" when it has none.
+// actorHost is the host of an id (for an error, the stored domain of an account, the inboxes compared): lower case,
+// at most 253 bytes, "" when it has none.
 func actorHost(id string) string {
 	u, err := url.Parse(id)
 	if err != nil {
 		return ""
 	}
-	h := strings.ToLower(u.Hostname())
+	// Lower case and without a trailing dot, as fedHost and the domain policy compare it (an actor whose id has one is
+	// not kept: actorCache.lead).
+	h := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if len(h) > 253 {
 		h = h[:253]
 	}
@@ -14994,6 +15020,12 @@ func (c *actorCache) lead(ctx context.Context, addr string, o lookupOpts) (*remo
 		return c.failure(ctx, addr, prev, actorUndecodable, err)
 	}
 	if !sameID(doc.ID, res.URL) {
+		return c.failure(ctx, addr, prev, actorWrongID, nil)
+	}
+	// An id whose host ends in a dot names the same server as without it (DNS reads both alike, and so do fedHost and
+	// the domain policy), but it is another id: kept, it would be a second account for the same person, stored under a
+	// domain the policy's statements could not match. It is refused as an id that is not where it came from.
+	if u, err := url.Parse(doc.ID); err != nil || strings.HasSuffix(u.Hostname(), ".") {
 		return c.failure(ctx, addr, prev, actorWrongID, nil)
 	}
 	keyDoc := o.keyDoc
@@ -15883,6 +15915,7 @@ type lookupProfile struct {
 	Posts     []lookupPost `json:"posts,omitempty"`
 	PostsNote string       `json:"postsNote,omitempty"` // why no posts are shown, when they could not be
 	Notice    string       `json:"notice,omitempty"`    // what this version cannot do with the account (lookupNotice)
+	Limited   string       `json:"limited,omitempty"`   // the account's domain is limited here (fedLimitedNotice)
 	// Account is the remote account's id here, for its profile page and Follow (FWR 3), and View where the member
 	// stands with it (followViewOf).
 	Account int64       `json:"account,omitempty"`
@@ -16028,6 +16061,13 @@ func (f *federation) findRemote(ctx context.Context, in lookupInput) (*lookupPro
 		Locked: a.Locked, Link: link, Notice: lookupNotice, Account: a.UserID}
 	if a.Stale {
 		p.Stale = a.FetchedAt.UTC().Format(time.RFC3339)
+	}
+	// An account of a limited domain is not shown in a search (section 10): its profile answers, so a member who knows
+	// the handle can follow it, but its posts are not read and its bio is shown only to a member who follows it
+	// (handleLookup), as here it is shown only to its followers.
+	if f.policyNow().limited(a.Domain) {
+		p.Limited, p.PostsNote = fedLimitedNotice, fedLimitedPosts
+		return p, nil
 	}
 	p.Posts, p.PostsNote = r.posts(ctx, a, handle)
 	return p, nil
@@ -16305,6 +16345,9 @@ func (a *app) handleLookup(w http.ResponseWriter, r *http.Request, u *user) {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		a.serverError(w, err)
 		return
+	}
+	if p.Limited != "" && (p.View == nil || p.View.Follow != "following") {
+		p.Bio = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": p})
 }
@@ -18564,6 +18607,32 @@ func (q *deliveryQueue) fanOutDue(ctx context.Context) error {
 
 /* The workers */
 
+// keyMadeSQL makes due now ($2) the rows of owner $1's activities (NULL: the instance actor's) that were never sent and
+// wait for a later time: what a send found without its owner's key and gave back for deliveryOwnWait. Only rows never
+// tried (attempts 0, the claim given back is not counted) and not held by a worker; a row waiting for its turn behind
+// another (comes_after) is only looked at again. Locked in the order of their ids, as every statement over several rows
+// of ap_deliveries is.
+const keyMadeSQL = `UPDATE ap_deliveries SET next_at = $2 WHERE id IN (SELECT d.id FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id
+	WHERE o.actor_id IS NOT DISTINCT FROM $1 AND o.signer IS NULL AND d.state = 'queued' AND d.attempts = 0 AND d.locked_until IS NULL AND d.next_at > $2
+	ORDER BY d.id FOR UPDATE OF d)`
+
+// keyMade hears from the key worker that owner's key was just made: the rows a send gave back for want of it go now,
+// not a minute later (deliveryOwnWait). A member who shares and acts at once (the federation suite: bob and cyd join,
+// share and follow within a second, while the key worker makes one key at a time, an RSA key taking from a few
+// milliseconds to seconds) would otherwise have their first activity wait that minute.
+func (q *deliveryQueue) keyMade(ctx context.Context, o keyOwner) {
+	n, err := q.exec(ctx, keyMadeSQL, o.arg(), q.now())
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("deliveries: after the key of %s was made: %v", o, err)
+		}
+		return
+	}
+	if n > 0 {
+		q.kick()
+	}
+}
+
 // kick wakes a worker, starting them on the first row.
 func (q *deliveryQueue) kick() {
 	if q.manual {
@@ -19503,6 +19572,10 @@ const (
 	fedFollowForeign = "That account cannot be followed: its server names an inbox on another server, which Flowa does not send to."
 	fedFollowFull    = "Flowa could not send this just now: too much waits to be sent to other servers. Try again later."
 	fedAccountNotice = "Once you follow them, their new posts show in your Home. Their older posts and their replies stay on their server: open the profile there to read them."
+	// fedLimitedNotice and fedLimitedPosts are what a member reads of an account whose domain the moderators here
+	// limited (section 10, FMD 1).
+	fedLimitedNotice = "The moderators here limited this account's server: its accounts are shown only to members who follow them. Their profile text, their replies and their mentions of you stay hidden from you until you follow them, and a follow from them waits for you to approve it."
+	fedLimitedPosts  = "Their posts are not read here: the moderators limited their server."
 )
 
 // inboxOwn says whether a remote actor's inbox is on the actor's own origin (sameOrigin: scheme, host and port
@@ -19821,20 +19894,24 @@ func (f *federation) followedBy(ctx context.Context, s *remoteActor, followID, o
 
 // followInSQL writes a Follow in: $1 the follower (remote), $2 the member, $3 the Follow's id, $4 the follower's
 // host, $5 to $7 the caps (requests for the member, requests from the host, follows from the host), $8 whether
-// the member approves by hand. A follow already there keeps its state and takes the new id (was); otherwise one is
+// the member approves by hand. A Follow from an account of a limited domain (the host or a domain above it, as the
+// stored policy says when the statement runs, so a limit set while the Follow waited in the inbox holds it) is a
+// request whatever $8 says, as Mastodon's domain Limit makes it (section 10); the caps on requests hold for it as for
+// any. A follow already there keeps its state and takes the new id (was); otherwise one is
 // written, accepted or pending, when the caps allow (made). Each count stops at its cap, so it reads at most that
 // many index entries: follows_pending for the member's; for the host's, users_remote_domain and the primary key of
 // follows, each account of the host asked once (OFFSET 0 holds the planner to that rather than reading follows whole,
 // TestDBQueryPlans), its follows and requests counted among the first $7 rows: once those are $7 the Follow is
 // dropped whatever the requests are.
-const followInSQL = `WITH cur AS (SELECT state FROM follows WHERE follower_id = $1 AND followee_id = $2),
+var followInSQL = `WITH lk AS (SELECT $8::boolean OR ` + policyWalk("$4::text", "dw.policy = 'limit'") + ` AS byhand),
+	cur AS (SELECT state FROM follows WHERE follower_id = $1 AND followee_id = $2),
 	h AS (SELECT count(*) AS total, count(*) FILTER (WHERE x.state = 'pending') AS pend FROM (SELECT f.state FROM users u
 		CROSS JOIN LATERAL (SELECT state FROM follows f WHERE f.follower_id = u.id OFFSET 0) f WHERE u.domain = $4 LIMIT $7) x),
 	c AS (SELECT (SELECT count(*) FROM (SELECT 1 FROM follows f WHERE f.followee_id = $2 AND f.state = 'pending' LIMIT $5) x) AS mine, h.pend, h.total FROM h),
 	up AS (UPDATE follows SET ap_id = $3 WHERE follower_id = $1 AND followee_id = $2 RETURNING state),
 	ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
-		SELECT $1, $2, CASE WHEN $8 THEN 'pending' ELSE 'accepted' END, $3 FROM c
-		WHERE NOT EXISTS (SELECT 1 FROM cur) AND c.total < $7 AND (NOT $8 OR (c.mine < $5 AND c.pend < $6))
+		SELECT $1, $2, CASE WHEN lk.byhand THEN 'pending' ELSE 'accepted' END, $3 FROM c, lk
+		WHERE NOT EXISTS (SELECT 1 FROM cur) AND c.total < $7 AND (NOT lk.byhand OR (c.mine < $5 AND c.pend < $6))
 		ON CONFLICT DO NOTHING RETURNING state)
 	SELECT (SELECT state FROM up), (SELECT state FROM ins), c.mine, c.pend, c.total FROM c`
 
@@ -20248,8 +20325,10 @@ type fedProfile struct {
 	Bio    string `json:"bio,omitempty"`
 	Link   string `json:"link,omitempty"` // the profile on its own server
 	Locked bool   `json:"locked,omitempty"`
-	State  string `json:"state"`           // ok, gone or suspended
-	Stale  string `json:"stale,omitempty"` // when it was last fetched, once that is past its 24 hours
+	// Limited is fedLimitedNotice when the account's domain is limited here; its bio is then shown only to a follower.
+	Limited string `json:"limited,omitempty"`
+	State   string `json:"state"`           // ok, gone or suspended
+	Stale   string `json:"stale,omitempty"` // when it was last fetched, once that is past its 24 hours
 }
 
 func profileOfActor(ra *remoteActor) fedProfile {
@@ -20283,7 +20362,14 @@ func (a *app) handleFedAccount(w http.ResponseWriter, r *http.Request, u *user) 
 		a.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"account": profileOfActor(ra), "view": v, "notice": fedAccountNotice})
+	p := profileOfActor(ra)
+	if a.fed.policyNow().limited(ra.Domain) {
+		p.Limited = fedLimitedNotice
+		if v.Follow != "following" {
+			p.Bio = ""
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": p, "view": v, "notice": fedAccountNotice})
 }
 
 // handleFedFollow is PUT /api/fed/accounts/{id}/follow: the member follows a remote account. The row is written
@@ -20572,51 +20658,69 @@ func (a *app) handleFedBlock(block bool) func(http.ResponseWriter, *http.Request
 
 /* ---------- federation: domain policies and the allowlist ----------
 
-What an admin decides about other servers (docs/federation.md, F8, section 10 and 7.7; FMD item 1, as far as
-the inbox needs it). One row of domain_policies per domain, matched with its subdomains: allow or suspend
-(Mastodon's domain allow and Suspend; the table also takes limit, whose effect on follows comes with FWR 3),
-with a note for staff saying why. The instance setting federation_policy says whether the instance takes
-deliveries from every server not suspended ("open") or only from those an admin allowed ("allowlist"); with
-nothing saved it is the allowlist, F8's recommendation while federated mode is marked experimental, so a
-federating instance accepts no delivery until an admin names a server.
+What an admin decides about other servers (docs/federation.md, F8, section 10 and 7.7; FMD item 1). One row of
+domain_policies per domain, matched with its subdomains: allow, limit or suspend (Mastodon's domain allow, Limit and
+Suspend), each with reject media and reject reports, a public comment and a note for staff saying why. The instance
+setting federation_policy says whether the instance takes deliveries from every server not suspended ("open") or
+only from those an admin allowed or limited ("allowlist"); with nothing saved it is the allowlist, F8's
+recommendation while federated mode is marked experimental, so a federating instance accepts no delivery until an
+admin names a server. The setting federation_publish_blocks says whether the about page lists the limited and
+suspended domains with their public comments; with nothing saved it does not.
 
-Where each is applied in this version:
+Where each is applied:
 
   - The inbox refuses, with 403 and before the body is read or any key fetched, a delivery signed by a key on
-    a suspended domain, and in allowlist mode one on a domain no row allows (or limits).
+    a suspended domain, and in allowlist mode one on a domain no row allows or limits.
   - The fetcher refuses every host the policy does not let in (fetchReq.admits, through the actor cache's
     admits hook, on the first URL and every redirect): in allowlist mode every unlisted host, in both modes
-    every suspended one (also fetchReq.refused). F8's allowlist is "talk only to servers an admin listed", and
-    7.6 reads it as sending to and accepting from only those, so on a fresh federating instance nothing reaches
-    another server, for a key, an actor or a member's search by handle (told lookupNotAllowed), until an admin
-    allows a domain or chooses open. Neither mode makes the public pages private (7.6): anyone can read them.
-  - Not yet (FMD's todo says so): limit's effect, reject media and reject reports, and the public comment on
-    the about page.
+    every suspended one (also fetchReq.refused). The delivery queue asks the same when it collects the inboxes,
+    again when an activity that waited for room fans out, and again at each send, so a policy changed while a
+    row waits holds it. Neither mode makes the public pages private (7.6): anyone can read them.
+  - Limit: the domain's accounts are let in both ways, but here they are shown only to the members who follow
+    them (limitFree): their replies under posts, their mentions and the notifications they leave, the posts that
+    only name a member, their bio on their profile and in a search by handle. A Follow from such an account
+    becomes a request the member answers, whether or not the member approves by hand (followInSQL). Follows that
+    exist stay, and lifting the limit leaves the requests waiting, as Mastodon does.
+  - Reject media: no picture of the domain's accounts is fetched or kept (the media cache's insert and claim
+    ask the stored policy); setting it turns the pictures it kept into links and removes their files.
+  - Reject reports is stored and shown; what it gates, a report from another server (Flag), is FMD item 3.
 
 The rows are read once at start and again after each change, into memory (fedPolicy), so a refusal costs no
-query. Only a mode that federates has the routes, the permissions and the memory; local mode has none. */
+query; the statements that keep work for later (a follow, a picture) ask the stored rows themselves
+(policyWalk), so a change takes effect for work already queued. Only a mode that federates has the routes, the
+permissions and the memory; local mode has none. */
 
 const (
 	domainPoliciesMax = 10000 // rows an instance keeps; an admin past it is refused, so the memory and every check stay bounded
 	domainNoteMax     = 500   // characters of the staff note on a row
+	domainCommentMax  = 500   // characters of the public comment on a row
+	domainPageSize    = 100   // rows of the admin page's list per request
+	aboutServersPage  = 200   // rows of the about page's list of moderated servers per request
 	policyAllowlist   = "allowlist"
 	policyOpen        = "open"
 )
 
 // domainPolicy is one row of domain_policies, as the admin page reads it.
 type domainPolicy struct {
-	Domain    string    `json:"domain"`
-	Policy    string    `json:"policy"` // allow, limit or suspend
-	Note      string    `json:"note"`   // private_note: why, for staff
-	CreatedBy string    `json:"createdBy"`
-	CreatedAt time.Time `json:"createdAt"`
+	Domain        string    `json:"domain"`
+	Policy        string    `json:"policy"` // allow, limit or suspend
+	RejectMedia   bool      `json:"rejectMedia"`
+	RejectReports bool      `json:"rejectReports"`
+	Comment       string    `json:"comment"` // public_comment: shown on the about page when the admin publishes the list
+	Note          string    `json:"note"`    // private_note: why, for staff
+	CreatedBy     string    `json:"createdBy"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 
 // fedPolicy is the domain policy as last read: the mode and the rows by domain. Each change replaces the whole
 // (federation.policy is atomic), so a reader never sees half of one.
 type fedPolicy struct {
-	mode string                  // policyAllowlist or policyOpen
-	rows map[string]domainPolicy // by domain
+	mode    string // policyAllowlist or policyOpen
+	publish bool   // the about page lists the limited and suspended domains
+	// anyLimit says some row limits a domain: the statements that hide what a limit hides are run only then
+	// (limitStatements).
+	anyLimit bool
+	rows     map[string]domainPolicy // by domain
 	// suspended is every suspended domain, for the fetcher's refused list (refusedHosts' form: lower case,
 	// matched with its subdomains).
 	suspended []string
@@ -20632,33 +20736,76 @@ const (
 	policyUnreadable               // not a host the fetcher would ask (fedHost), so never in
 )
 
-// decide is the verdict for a host, compared lower case and without a trailing dot, with each of its parent
-// domains: a.b.example.com is held to the rows for itself, b.example.com and example.com. A suspension anywhere
-// above wins over an allow, so suspending a subdomain of an allowed domain works and allowing a subdomain of a
-// suspended one does not.
-func (p *fedPolicy) decide(host string) policyVerdict {
+// walk calls see with each row that holds for host: its own and those of each domain above it, so a.b.example.com
+// is held to the rows for itself, b.example.com and example.com. It says false for a host the fetcher would not ask.
+func (p *fedPolicy) walk(host string, see func(domainPolicy)) bool {
 	h, why := fedHost(host)
 	if why != "" {
-		return policyUnreadable
+		return false
 	}
-	listed := false
 	for d := h; ; {
 		if r, ok := p.rows[d]; ok {
-			if r.Policy == "suspend" {
-				return policySuspended
-			}
-			listed = true
+			see(r)
 		}
 		i := strings.IndexByte(d, '.')
 		if i < 0 {
-			break
+			return true
 		}
 		d = d[i+1:]
 	}
-	if p.mode == policyAllowlist && !listed {
+}
+
+// decide is the verdict for a host, compared lower case and without a trailing dot, with each of its parent
+// domains. A suspension anywhere above wins over an allow, so suspending a subdomain of an allowed domain works and
+// allowing a subdomain of a suspended one does not.
+func (p *fedPolicy) decide(host string) policyVerdict {
+	listed, suspended := false, false
+	if !p.walk(host, func(r domainPolicy) { listed, suspended = true, suspended || r.Policy == "suspend" }) {
+		return policyUnreadable
+	}
+	switch {
+	case suspended:
+		return policySuspended
+	case p.mode == policyAllowlist && !listed:
 		return policyNotListed
 	}
 	return policyIn
+}
+
+// limited says whether a row for host or a domain above it limits it. As with a suspension, the strictest row on
+// the way up wins: allowing a subdomain of a limited domain leaves it limited.
+func (p *fedPolicy) limited(host string) bool {
+	l := false
+	p.walk(host, func(r domainPolicy) { l = l || r.Policy == "limit" })
+	return l
+}
+
+// rejectsMedia says whether a row for host or a domain above it rejects its media.
+func (p *fedPolicy) rejectsMedia(host string) bool {
+	m := false
+	p.walk(host, func(r domainPolicy) { m = m || r.RejectMedia })
+	return m
+}
+
+// policyWalk is the SQL condition that a row of domain_policies (dw) for the domain expr (an expression written in
+// this file, lower case as users.domain is) or a domain above it meets cond: the same walk as fedPolicy.walk, each
+// name looked up in the table's primary key. A statement that keeps work for later asks it, so a change of policy
+// holds what was queued before it. The names are made into an array first (= ANY(ARRAY(...))): compared with IN and
+// a subquery that refers to the outer row, the planner reads every row of domain_policies for each look instead of
+// its primary key (TestDBQueryPlans' "policies:" cases, with thousands of rows). A trailing dot on the domain is left
+// out (rtrim, on the name looked up, not on the index), as fedHost leaves it out: no account is stored with one
+// (actorHost, actorCache.lead), and one stored before would still be held to its domain's rows.
+func policyWalk(expr, cond string) string {
+	return `EXISTS (SELECT 1 FROM domain_policies dw WHERE dw.domain = ANY(ARRAY(SELECT array_to_string(w.l[i:], '.')
+		FROM (SELECT string_to_array(rtrim(` + expr + `, '.'), '.') AS l) w, generate_series(1, cardinality(w.l) - 1) i)) AND ` + cond + `)`
+}
+
+// limitFree is the SQL condition that the account id (an expression written in this file) is not one of a limited
+// domain, unless viewer (likewise) follows it: the one rule of what a limit hides (section 10). One look in the
+// primary key of users, and for an account of another server the walk and one look in follows.
+func limitFree(id, viewer string) string {
+	return `NOT EXISTS (SELECT 1 FROM users lu WHERE lu.id = ` + id + ` AND lu.domain <> '' AND ` + policyWalk("lu.domain", "dw.policy = 'limit'") + `
+		AND NOT EXISTS (SELECT 1 FROM follows lf WHERE lf.follower_id = ` + viewer + ` AND lf.followee_id = lu.id AND lf.state = 'accepted') OFFSET 0)`
 }
 
 // policyNow is the policy in memory; before the first read, the allowlist with no row, so nothing is let in
@@ -20680,28 +20827,32 @@ func (f *federation) loadPolicy(ctx context.Context) error {
 	}
 	defer done() // the two reads one after the other, the rows closed before it is given back
 	var mode string
-	err = f.db.QueryRowContext(ctx, `SELECT value #>> '{}' FROM instance_settings WHERE key = 'federation_policy'`).Scan(&mode)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var publish bool
+	err = f.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT value #>> '{}' FROM instance_settings WHERE key = 'federation_policy'), ''),
+		COALESCE((SELECT value = 'true'::jsonb FROM instance_settings WHERE key = 'federation_publish_blocks'), false)`).Scan(&mode, &publish)
+	if err != nil {
 		return err
 	}
 	if mode == policyOpen {
 		p.mode = policyOpen
 	}
-	rows, err := f.db.QueryContext(ctx, `SELECT d.domain, d.policy, d.private_note, COALESCE(u.username, ''), d.created_at FROM domain_policies d
-		LEFT JOIN users u ON u.id = d.created_by ORDER BY d.domain LIMIT $1`, domainPoliciesMax)
+	p.publish = publish
+	rows, err := f.db.QueryContext(ctx, `SELECT d.domain, d.policy, d.reject_media, d.reject_reports, d.public_comment, d.private_note, COALESCE(u.username, ''), d.created_at
+		FROM domain_policies d LEFT JOIN users u ON u.id = d.created_by ORDER BY d.domain LIMIT $1`, domainPoliciesMax)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var r domainPolicy
-		if err := rows.Scan(&r.Domain, &r.Policy, &r.Note, &r.CreatedBy, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.Domain, &r.Policy, &r.RejectMedia, &r.RejectReports, &r.Comment, &r.Note, &r.CreatedBy, &r.CreatedAt); err != nil {
 			return err
 		}
 		p.rows[r.Domain] = r
 		if r.Policy == "suspend" {
 			p.suspended = append(p.suspended, r.Domain)
 		}
+		p.anyLimit = p.anyLimit || r.Policy == "limit"
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -20758,14 +20909,33 @@ func cleanDomain(v, own string) (string, string) {
 	return d, ""
 }
 
-// handleFedAdmin answers GET /api/admin/federation: the policy, the rows and the inbox's numbers (fedNumbers).
+// handleFedAdmin answers GET /api/admin/federation: the policy, a page of the rows and the inbox's numbers
+// (fedNumbers). The rows come a page at a time (domainPageSize, after the domain ?after= names), narrowed by ?q= (a
+// part of the domain) and ?policy=, so a list of thousands of domains is neither one answer nor one drawing.
 func (a *app) handleFedAdmin(w http.ResponseWriter, r *http.Request, _ *user) {
 	p := a.fed.policyNow()
-	list := make([]domainPolicy, 0, len(p.rows))
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	kind, after := r.URL.Query().Get("policy"), r.URL.Query().Get("after")
+	counts := map[string]int{"allow": 0, "limit": 0, "suspend": 0}
+	list, matched, next := []domainPolicy{}, 0, ""
 	for _, d := range slices.Sorted(maps.Keys(p.rows)) {
-		list = append(list, p.rows[d])
+		row := p.rows[d]
+		counts[row.Policy]++
+		if (q != "" && !strings.Contains(d, q)) || (kind != "" && row.Policy != kind) {
+			continue
+		}
+		matched++
+		if after != "" && d <= after {
+			continue
+		}
+		if len(list) == domainPageSize {
+			next = list[len(list)-1].Domain
+			continue
+		}
+		list = append(list, row)
 	}
-	out := map[string]any{"policy": p.mode, "domains": list, "max": domainPoliciesMax, "noteMax": domainNoteMax}
+	out := map[string]any{"policy": p.mode, "publish": p.publish, "domains": list, "next": next, "matched": matched, "total": len(p.rows), "counts": counts,
+		"max": domainPoliciesMax, "noteMax": domainNoteMax, "commentMax": domainCommentMax, "pageSize": domainPageSize}
 	n, err := a.fedNumbers(r.Context())
 	if err != nil {
 		a.serverError(w, err)
@@ -20785,8 +20955,17 @@ func (a *app) handleFedAdmin(w http.ResponseWriter, r *http.Request, _ *user) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handlePutDomain answers PUT /api/admin/federation/domains/{domain}: allow or suspend a domain, with a note for
-// staff, audited in the same transaction. A row there already is replaced.
+// domainText reads a note or a public comment: trimmed, plain visible text (no direction override) of at most max
+// characters.
+func domainText(v string, max int) (string, bool) {
+	t := strings.TrimSpace(v)
+	out, ok := visibleText(t)
+	return out, ok && utf8.RuneCountInString(t) <= max
+}
+
+// handlePutDomain answers PUT /api/admin/federation/domains/{domain}: allow, limit or suspend a domain, with reject
+// media, reject reports, a public comment and a note for staff, audited in the same transaction. A row there already
+// is replaced. A suspension rejects everything, so its two switches are stored off.
 func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
 	if !ok {
@@ -20798,22 +20977,31 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	}
 	var in struct {
-		Policy string `json:"policy"`
-		Note   string `json:"note"`
+		Policy        string `json:"policy"`
+		Note          string `json:"note"`
+		Comment       string `json:"comment"`
+		RejectMedia   bool   `json:"rejectMedia"`
+		RejectReports bool   `json:"rejectReports"`
 	}
-	if !readJSON(w, r, 4096, &in) {
+	if !readJSON(w, r, 8192, &in) {
 		return
 	}
-	if in.Policy != "allow" && in.Policy != "suspend" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose allow or suspend.", "field": "policy"})
+	if in.Policy != "allow" && in.Policy != "limit" && in.Policy != "suspend" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Choose allow, limit or suspend.", "field": "policy"})
 		return
 	}
-	note := strings.TrimSpace(in.Note)
-	if v, ok := visibleText(note); !ok || utf8.RuneCountInString(note) > domainNoteMax {
+	note, ok := domainText(in.Note, domainNoteMax)
+	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("The note is plain text of at most %d characters.", domainNoteMax), "field": "note"})
 		return
-	} else {
-		note = v
+	}
+	comment, ok := domainText(in.Comment, domainCommentMax)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("The public comment is plain text of at most %d characters.", domainCommentMax), "field": "comment"})
+		return
+	}
+	if in.Policy == "suspend" {
+		in.RejectMedia, in.RejectReports = false, false
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -20838,9 +21026,10 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 		a.serverError(w, err)
 		return
 	}
-	if _, err := tx.Exec(`INSERT INTO domain_policies (domain, policy, private_note, created_by) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (domain) DO UPDATE SET policy = EXCLUDED.policy, private_note = EXCLUDED.private_note, created_by = EXCLUDED.created_by, created_at = now()`,
-		d, in.Policy, note, u.ID); err != nil {
+	if _, err := tx.Exec(`INSERT INTO domain_policies (domain, policy, reject_media, reject_reports, public_comment, private_note, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (domain) DO UPDATE SET policy = EXCLUDED.policy, reject_media = EXCLUDED.reject_media, reject_reports = EXCLUDED.reject_reports,
+			public_comment = EXCLUDED.public_comment, private_note = EXCLUDED.private_note, created_by = EXCLUDED.created_by, created_at = now()`,
+		d, in.Policy, in.RejectMedia, in.RejectReports, comment, note, u.ID); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -20866,10 +21055,30 @@ func (a *app) handlePutDomain(w http.ResponseWriter, r *http.Request, u *user) {
 			return
 		}
 	}
-	detail := map[string]any{"domain": d, "policy": in.Policy, "was": was}
+	// Reject media turns the pictures kept of the domain's accounts (and its subdomains') into links: their rows say
+	// so and their files go after the commit. Nothing is fetched again when it is lifted; a post edited after that
+	// brings its pictures again with the edit. The rows are locked first, so a picture the worker writes at the same
+	// moment is either seen here with its file, or finds its row turned and removes its own file (mediaCache.step).
+	pictures := 0
+	if in.RejectMedia {
+		var gone []string
+		if err := tx.QueryRow(`WITH s AS (SELECT id FROM users WHERE domain <> '' AND (domain = $1 OR right(domain, length($1) + 1) = '.' || $1)),
+			o AS (SELECT id, file FROM ap_media WHERE post_id IN (SELECT id FROM posts WHERE user_id IN (SELECT id FROM s) AND ap_id IS NOT NULL)
+				AND state IN ('wanted', 'ok', 'evicted') ORDER BY id FOR UPDATE),
+			m AS (UPDATE ap_media a SET state = 'link', file = '', bytes = 0, width = 0, height = 0, locked_until = NULL FROM o WHERE a.id = o.id RETURNING o.file)
+			SELECT count(*), COALESCE(array_agg(file) FILTER (WHERE file <> ''), '{}') FROM m`, d).Scan(&pictures, pq.Array(&gone)); err != nil {
+			a.serverError(w, err)
+			return
+		}
+		files = append(files, gone...)
+	}
+	detail := map[string]any{"domain": d, "policy": in.Policy, "was": was, "rejectMedia": in.RejectMedia, "rejectReports": in.RejectReports, "comment": comment}
 	if in.Policy == "suspend" {
 		detail["followsEnded"] = ended // the audit says what the suspension ended (FWR 3)
 		detail["postsRemoved"] = removed
+	}
+	if in.RejectMedia {
+		detail["picturesRemoved"] = pictures
 	}
 	if err := a.audit(tx, u.ID, "domain_policy", "domain", 0, 0, note, detail); err != nil {
 		a.serverError(w, err)
@@ -20953,9 +21162,103 @@ func (a *app) handlePutFedPolicy(w http.ResponseWriter, r *http.Request, u *user
 	a.fedPolicyChanged(w, r, u)
 }
 
+// handlePutFedPublish answers PUT /api/admin/federation/publish: whether the about page lists the limited and
+// suspended domains with their public comments (section 10), audited. Nothing saved means it does not, so an instance
+// says nothing of whom it moderates until an admin chooses to.
+func (a *app) handlePutFedPublish(w http.ResponseWriter, r *http.Request, u *user) {
+	w, ok := allowed(w, a.lim.domains, u, "changes to domain policies")
+	if !ok {
+		return
+	}
+	var in struct {
+		Publish *bool `json:"publish"`
+	}
+	if !readJSON(w, r, 1024, &in) {
+		return
+	}
+	if in.Publish == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Say whether to publish the list.", "field": "publish"})
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO instance_settings (key, value, updated_at, updated_by) VALUES ('federation_publish_blocks', to_jsonb($1::boolean), now(), $2)
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by`, *in.Publish, u.ID); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := a.audit(tx, u.ID, "federation_publish", "", 0, 0, "", map[string]any{"publish": *in.Publish}); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	a.fedPolicyChanged(w, r, u)
+}
+
+// moderatedServer is one limited or suspended domain as the about page lists it: no note for staff, no switch.
+type moderatedServer struct {
+	Domain  string `json:"domain"`
+	Policy  string `json:"policy"` // limit or suspend
+	Comment string `json:"comment,omitempty"`
+}
+
+// handleAboutServers answers GET /api/about/servers: the limited and suspended domains with their public comments,
+// a page at a time (aboutServersPage, after the domain ?after= names), only while an admin publishes the list. Who
+// may read it is who may read the about page: a member, or a visitor once a description is saved (counted as the
+// about page is). Only a mode that federates has the route.
+func (a *app) handleAboutServers(w http.ResponseWriter, r *http.Request) {
+	p := a.fed.policyNow()
+	if !p.publish {
+		http.NotFound(w, r)
+		return
+	}
+	if a.currentUser(r) == nil {
+		info, err := a.instanceCached()
+		if err != nil {
+			a.serverError(w, err)
+			return
+		}
+		if info.Description == "" {
+			http.NotFound(w, r)
+			return
+		}
+		from := limitKey(a.clientIP(r))
+		if !a.lim.about.add(from) {
+			logRefusal(w, "too many reads of the about page", "from "+from)
+			fail(w, http.StatusTooManyRequests, "Too many requests from this address. Try again in an hour.")
+			return
+		}
+	}
+	after := r.URL.Query().Get("after")
+	list, next := []moderatedServer{}, ""
+	for _, d := range slices.Sorted(maps.Keys(p.rows)) {
+		row := p.rows[d]
+		if row.Policy == "allow" || (after != "" && d <= after) {
+			continue
+		}
+		if len(list) == aboutServersPage {
+			next = list[len(list)-1].Domain
+			break
+		}
+		list = append(list, moderatedServer{Domain: d, Policy: row.Policy, Comment: row.Comment})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": list, "next": next})
+}
+
 // fedPolicyChanged reads the policy into memory again after a change, and answers with the admin page's data.
 func (a *app) fedPolicyChanged(w http.ResponseWriter, r *http.Request, u *user) {
-	if err := a.fed.loadPolicy(r.Context()); err != nil {
+	// The change is committed already, so the policy in memory is read again whatever became of the request: an admin
+	// whose connection dropped just now must not leave this server deciding by the policy of before.
+	ctx, cancel := own()
+	defer cancel()
+	if err := a.fed.loadPolicy(ctx); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -21559,7 +21862,10 @@ func (a *app) personOut(ctx context.Context) (did bool, err error) {
 	_, err = f.out.enqueueThen(ctx, keyOwner(uid), id, body, to, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE ap_person_out SET sent_at = $2, due_at = CASE WHEN gen = $3 THEN NULL ELSE GREATEST(due_at, $2::timestamptz + make_interval(secs => $4)) END
 			WHERE user_id = $1`, uid, now, gen, personUpdateEvery.Seconds())
-		return err
+		if err != nil {
+			return &outWriteError{err} // this server's own write, like the others here: no try of the update
+		}
+		return nil
 	})
 	if errors.Is(err, errDeliveryFull) {
 		if err := f.outWrite(ctx, `UPDATE ap_person_out SET due_at = NULL, sent_at = $2 WHERE user_id = $1 AND gen = $3`, uid, now, gen); err != nil {
@@ -22492,7 +22798,9 @@ func (f *federation) keepNote(ctx context.Context, s *remoteActor, id string, up
 			state = "wanted"
 			wanted++
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ap_media (post_id, n, kind, url, alt, state) VALUES ($1, $2, $3, $4, $5, $6)`, row, i, m.Kind, m.URL, m.Alt, state); err != nil {
+		// A domain whose media an admin rejects has its pictures kept as links, asked of the stored policy here so a
+		// change made while the post waited in the inbox holds (FMD 1).
+		if _, err := tx.ExecContext(ctx, mediaInsertSQL, row, i, m.Kind, m.URL, m.Alt, state, s.Domain); err != nil {
 			return "", 0, nil, err
 		}
 	}
@@ -22779,12 +23087,13 @@ func (f *federation) notifyFedTx(ctx context.Context, tx *sql.Tx, uid int64, s *
 
 // remoteSeen is the SQL condition that the viewer (an expression written in this file) may read the remote post p
 // outside Home: they follow its author (accepted), or its Mention tags and addressing name them (ap_to) and they
-// still share their profile (or own the instance) and are not suspended, and its author's server has not said the
-// account is suspended or gone (actorShown).
+// still share their profile (or own the instance) and are not suspended and its author is not of a domain limited here
+// (limitFree: such a post only naming a member reaches its followers alone, FMD 1), and its author's server has not
+// said the account is suspended or gone (actorShown).
 func remoteSeen(viewer string) string {
 	return `(EXISTS (SELECT 1 FROM follows rf WHERE rf.follower_id = ` + viewer + ` AND rf.followee_id = p.user_id AND rf.state = 'accepted')
 		OR ` + viewer + ` = ANY(p.ap_to) AND EXISTS (SELECT 1 FROM users mu WHERE mu.id = ` + viewer + ` AND (mu.federates OR mu.owner)
-			AND (mu.suspended_until IS NULL OR mu.suspended_until <= now())))
+			AND (mu.suspended_until IS NULL OR mu.suspended_until <= now())) AND ` + limitFree("p.user_id", viewer) + `)
 		AND ` + actorShown("p.user_id")
 }
 
@@ -23004,11 +23313,18 @@ func (m *mediaCache) loop() {
 	}
 }
 
-// mediaClaimSQL claims the next picture due ($1 the clock, $2 the lease in seconds), through ap_media_wanted.
-const mediaClaimSQL = `UPDATE ap_media SET locked_until = $1::timestamptz + make_interval(secs => $2), tries = tries + 1
+// mediaInsertSQL keeps one attachment of post $1 ($2 its place, $3 to $5 kind, address and description) in state $6,
+// or as a link when $6 is wanted and the domain of its author ($7) or one above it rejects media (FMD 1).
+var mediaInsertSQL = `INSERT INTO ap_media (post_id, n, kind, url, alt, state) VALUES ($1, $2, $3, $4, $5,
+	CASE WHEN $6 = 'wanted' AND ` + policyWalk("$7::text", "dw.reject_media") + ` THEN 'link' ELSE $6 END)`
+
+// mediaClaimSQL claims the next picture due ($1 the clock, $2 the lease in seconds), through ap_media_wanted, and says
+// whether the domain of its post's author rejects media now (the stored policy, so a picture wanted before an admin
+// set reject media is never fetched).
+var mediaClaimSQL = `UPDATE ap_media m SET locked_until = $1::timestamptz + make_interval(secs => $2), tries = tries + 1
 	WHERE id = (SELECT id FROM ap_media WHERE state = 'wanted' AND next_at <= $1 AND (locked_until IS NULL OR locked_until < $1)
 		ORDER BY next_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
-	RETURNING id, url, tries`
+	RETURNING id, url, tries, EXISTS (SELECT 1 FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = m.post_id AND ` + policyWalk("u.domain", "dw.reject_media") + `)`
 
 // step fetches one picture: claimed under a turn, fetched with no turn or connection held, decoded and written,
 // then recorded under a turn. A picture claimed as a stop came is given back (its lease cleared, its try not
@@ -23025,12 +23341,18 @@ func (m *mediaCache) step(ctx context.Context) (bool, error) {
 	var id int64
 	var u string
 	var tries int
-	err := m.f.fedRow(cctx, []any{&id, &u, &tries}, mediaClaimSQL, m.now(), mediaLease.Seconds())
+	var rejected bool
+	err := m.f.fedRow(cctx, []any{&id, &u, &tries, &rejected}, mediaClaimSQL, m.now(), mediaLease.Seconds())
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if rejected {
+		// Its domain's media is rejected: kept as the link it is, never fetched.
+		_, err := m.f.fedExec(cctx, `UPDATE ap_media SET state = 'link', locked_until = NULL WHERE id = $1 AND state = 'wanted'`, id)
+		return true, err
 	}
 	giveBack := func() error {
 		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -26050,6 +26372,8 @@ func (a *app) table(st *static) *routeMux {
 		mux.HandleFunc("POST /users/{name}/inbox", a.handleInbox)
 		mux.HandleFunc("GET /api/admin/federation", a.authed(permFedRead, a.handleFedAdmin))
 		mux.HandleFunc("PUT /api/admin/federation/policy", a.authed(permFedManage, a.handlePutFedPolicy))
+		mux.HandleFunc("PUT /api/admin/federation/publish", a.authed(permFedManage, a.handlePutFedPublish))
+		mux.HandleFunc("GET /api/about/servers", a.handleAboutServers)
 		mux.HandleFunc("PUT /api/admin/federation/domains/{domain}", a.authed(permFedManage, a.handlePutDomain))
 		mux.HandleFunc("DELETE /api/admin/federation/domains/{domain}", a.authed(permFedManage, a.handleDeleteDomain))
 		mux.HandleFunc("GET /actor/outbox", a.handleInstanceOutbox(st))
@@ -26768,7 +27092,7 @@ func (a *app) start(getenv func(string) string) error {
 	}
 	if rootsPresent() {
 		if getenv("SSL_CERT_FILE") != "" {
-			log.Print("TLS roots: present, from SSL_CERT_FILE") // Go reads it before the roots compiled in (the federation suite's own authority)
+			log.Print("TLS roots: present, from SSL_CERT_FILE") // Go uses that file instead of the system roots when it is set (here the federation suite's own authority)
 		} else {
 			log.Print("TLS roots: present")
 		}
@@ -27938,8 +28262,30 @@ var notificationsSQL = `SELECT n.id, n.kind, COALESCE(n.actor_id, 0), COALESCE(n
 
 var unreadSQL = `SELECT count(*) FROM notifications n WHERE n.user_id = $1 AND NOT n.read AND ` + notifShown
 
+// notifFedShown is what a mode that federates adds to notifShown (FMD 1): a notification an account of a limited
+// domain left (fed) is shown only while the member follows that account (limitFree), except a follow request, which
+// the member must see to answer, and a follow. It is asked only of the rows marked fed. Hidden ones stay and show
+// again when the limit is lifted, or once the member follows the account.
+var notifFedShown = ` AND (NOT n.fed OR n.kind IN ('follow', 'follow_request') OR ` + limitFree("n.actor_id", "$1") + `)`
+
+// notificationsFedSQL and unreadFedSQL are notificationsSQL and unreadSQL in a mode that federates; local mode runs
+// the two above, unchanged.
+var (
+	notificationsFedSQL = strings.Replace(notificationsSQL, notifShown, notifShown+notifFedShown, 1)
+	unreadFedSQL        = unreadSQL + notifFedShown
+)
+
+// notifStatements is the bell's two statements in this mode.
+func (a *app) notifStatements() (list, unread string) {
+	if a.fed != nil {
+		return a.limitStatements(notificationsFedSQL), a.limitStatements(unreadFedSQL)
+	}
+	return notificationsSQL, unreadSQL
+}
+
 func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *user) {
-	rows, err := a.db.Query(notificationsSQL, u.ID, maxNotifList)
+	listSQL, unreadQ := a.notifStatements()
+	rows, err := a.db.Query(listSQL, u.ID, maxNotifList)
 	if err != nil {
 		a.serverError(w, err)
 		return
@@ -27963,7 +28309,7 @@ func (a *app) handleNotifications(w http.ResponseWriter, _ *http.Request, u *use
 		return
 	}
 	var unread int
-	if err := a.db.QueryRow(unreadSQL, u.ID).Scan(&unread); err != nil {
+	if err := a.db.QueryRow(unreadQ, u.ID).Scan(&unread); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -28117,7 +28463,7 @@ func postCols(staff string) string {
 // is not counted, as it is not listed, nor an answer in a thread such a reply began (its thread is not listed; a
 // deleted one is, as a placeholder). plainLocal takes it out again.
 var postCountShown = `
-			AND (c.ap_id IS NULL OR ` + actorShown("c.user_id") + `) AND (pc.ap_id IS NULL OR pc.deleted OR ` + actorShown("pc.user_id") + `)`
+			AND (c.ap_id IS NULL OR ` + actorShown("c.user_id") + ` AND ` + limitFree("c.user_id", "$1") + `) AND (pc.ap_id IS NULL OR pc.deleted OR ` + actorShown("pc.user_id") + ` AND ` + limitFree("pc.user_id", "$1") + `)`
 
 // homeSQL is a page of Home: the posts of the accounts the viewer follows and the viewer's own, newest
 // first. $1 is the viewer, $2 "older than this post" (0 for the first page), $3 how many, $4 whether the
@@ -28810,16 +29156,44 @@ func (a *app) hidingRemote() bool { return a.fed == nil && a.remoteKept }
 func (a *app) plainLocal() bool { return a.fed == nil && !a.remoteKept }
 
 // localStatements is q as this mode runs it: hideRemote on a database that federated and runs in local mode,
-// plainStatements on one that never federated, q itself in a mode that federates.
+// plainStatements on one that never federated, q itself in a mode that federates. The look at a limited domain
+// (limitFree) is left out wherever no domain is limited (limitStatements).
 func (a *app) localStatements(q string) string {
 	switch {
 	case a.hidingRemote():
-		return hideRemote(q)
+		return unlimited(hideRemote(q))
 	case a.plainLocal():
-		return plainStatements(q)
+		return unlimited(plainStatements(q))
+	}
+	return a.limitStatements(q)
+}
+
+// limitStatements is q with the look at a limited domain (limitFree) left out while the policy in memory limits no
+// domain, as on most instances: then it is true of every account, and asking it would cost a look in users and in
+// domain_policies for each reply a page lists. The policy in memory follows each change an admin makes (loadPolicy
+// runs before the admin's answer), so a page read after a limit is set asks it.
+func (a *app) limitStatements(q string) string {
+	if a.fed != nil && a.fed.policyNow().anyLimit {
+		return q
+	}
+	return unlimited(q)
+}
+
+// unlimited takes every limitFree fragment the statements are built with out of q, with the words that joined it, so
+// what is left is byte for byte the statement as it was before FMD 1 (TestUnlimitedIsBefore); a fragment joined
+// otherwise (the bell's) becomes true.
+func unlimited(q string) string {
+	for _, f := range limitFragments {
+		q = strings.ReplaceAll(q, ` AND (c.ap_id IS NULL OR `+f+`)`, "")
+		q = strings.ReplaceAll(q, ` AND `+f, "")
+		q = strings.ReplaceAll(q, f, "true")
 	}
 	return q
 }
+
+// limitFragments are the limitFree conditions written in this file (account, viewer), as the statements carry them.
+var limitFragments = []string{limitFree("c.user_id", "$1"), limitFree("pc.user_id", "$1"), limitFree("r.user_id", "$1"),
+	limitFree("n.actor_id", "$1"), limitFree("p.user_id", "$1"), limitFree("p.user_id", "$2")}
 
 // plainStatements takes out of q what FWR 6 added to the statements over posts and comments for rows of other servers:
 // the look at a reply's account in the counts and the lists (postCountShown, commentAccountShown, replyCountShown), and the
@@ -29033,8 +29407,10 @@ func (a *app) handleBookmarks(w http.ResponseWriter, _ *http.Request, u *user) {
 var commentBlockFree = commentBlockFreeLocal + commentAccountShown
 
 // commentBlockFreeLocal is commentBlockFree as it was before FWR 6, and commentAccountShown what FWR 6 added to it.
+// Since FMD 1 commentAccountShown also leaves out the replies of an account of a limited domain the viewer does not
+// follow (limitFree, asked only for a reply of another server), as the counts do (postCountShown, replyCountShown).
 var commentBlockFreeLocal = blockFree("$1", "c.user_id", "$2")
-var commentAccountShown = ` AND (c.deleted OR ` + actorShown("c.user_id") + `)`
+var commentAccountShown = ` AND (c.deleted OR ` + actorShown("c.user_id") + ` AND (c.ap_id IS NULL OR ` + limitFree("c.user_id", "$1") + `))`
 
 var commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body, c.created_at, c.edited_at IS NOT NULL, c.deleted,
 	(SELECT count(*) FROM comment_likes l WHERE l.comment_id = c.id), EXISTS (SELECT 1 FROM comment_likes l WHERE l.comment_id = c.id AND l.user_id = $1),
@@ -29043,7 +29419,7 @@ var commentCols = `c.id, c.post_id, c.user_id, COALESCE(c.parent_id, 0), c.body,
 
 // replyCountShown is what FWR 6 added to commentCols' count of replies (plainLocal takes it out again).
 var replyCountShown = `
-		AND (r.ap_id IS NULL OR r.deleted OR ` + actorShown("r.user_id") + `)`
+		AND (r.ap_id IS NULL OR r.deleted OR ` + actorShown("r.user_id") + ` AND ` + limitFree("r.user_id", "$1") + `)`
 
 // commentPageSQL is a page of a post's top-level comments ($3 the post, $4 after this one, $5 how many), replyPageSQL a
 // page of a thread's replies ($3 the comment), both through queryComments.
@@ -29204,8 +29580,8 @@ func (a *app) commentRow(w http.ResponseWriter, id int64, viewer *user) (comment
 	var secs float64
 	// A comment is gone to the viewer when it, the comment it answers or its post is by someone on
 	// the other side of a block (blockFree), as it is when it was hidden.
-	err := a.db.QueryRow(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
-		FROM `+commentShown, id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
+	err := a.db.QueryRow(a.limitStatements(`SELECT c.post_id, c.user_id, COALESCE(c.parent_id, 0), p.user_id, c.deleted, extract(epoch FROM now() - c.created_at), c.body
+		FROM `+commentShown), id, viewer.ID, can(viewer, permPostHide)).Scan(&c.postID, &c.userID, &c.parentID, &c.postOwner, &c.deleted, &secs, &c.body)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "That comment is gone.")
 		return c, false
@@ -29662,7 +30038,7 @@ func (a *app) handleLikeComment(w http.ResponseWriter, r *http.Request, u *user)
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	// Taking one's own like back always works, as it does for posts (handleLike).
 	if done := a.unliked(w, `DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2`,
-		`SELECT (SELECT count(*) FROM comment_likes WHERE comment_id = $1) FROM `+commentShown, id, u); done {
+		a.limitStatements(`SELECT (SELECT count(*) FROM comment_likes WHERE comment_id = $1) FROM `+commentShown), id, u); done {
 		return
 	}
 	c, ok := a.commentRow(w, id, u)

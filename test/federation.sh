@@ -3,6 +3,8 @@
 # their own: the federation suite (docs/federation.md 13, "As built (FWR 8)").
 #   test/federation.sh                 the suite
 #   test/federation.sh --logs <dir>    and keep both apps' logs, both proxies' logs and both queues' state there
+#   FLOWA_FED_KEEP=on test/federation.sh   and, when a check failed, leave the containers running to be looked at
+# When a check failed, the last 200 lines of each app's log and both queues' state are printed at the end.
 # What runs:
 #   - the image, built once by build-image.sh --load as a release builds it, and the Postgres image compose.yml pins;
 #   - on one new network, for each of one.flowa.test and two.flowa.test: a Postgres, the app in federated mode with
@@ -11,7 +13,10 @@
 #     trust that authority through SSL_CERT_FILE, as any Go program on Linux does, and FLOWA_FEDERATION_ALLOW_PRIVATE
 #     lets their requests reach the network's private addresses (still https, port 443 and a verified certificate);
 #   - every step through the apps' own APIs, over HTTPS through the proxies, as members and admins would, each step
-#     checked on the other instance: what a person would see there.
+#     checked on the other instance: what a person would see there;
+#   - near the end, one's admin limits, then rejects the media of, then suspends two's domain (FMD 1), and lifts each:
+#     a Follow from two waits for approval and a reply from two is hidden from who does not follow its author, a
+#     picture from two stays a link one never fetches, and a delivery either way is refused while two is suspended.
 # No fixed waits: each check polls what it needs with a deadline and says how long it took. Nothing here uses the
 # names or the port of the real service: every container, network and volume is named flowa-fed-<random>, the
 # proxies are published on free ports of 127.0.0.1 only, and everything is removed at the end, on a failure and on
@@ -23,7 +28,7 @@ export PATH="$HOME/.local/go/bin:$PATH"
 
 # planned is the number of checks a whole run makes. A run that stops early counts the ones it never reached as skipped,
 # with the reason, so the count at the end always adds up to it; a whole run that does not is a failure of the script.
-planned=75
+planned=96
 # The whole run's deadline, below the CI job's 15 minutes and the step's 13, so that the logs are always written.
 limit=${FLOWA_FED_LIMIT:-660}
 pass=0 fail=0 skip=0 last=$(date +%s.%N)
@@ -31,12 +36,22 @@ took() { local now; now=$(date +%s.%N); echo "TIME $(awk -v a="$last" -v b="$now
 ok() { echo "PASS $1"; pass=$((pass + 1)); took "$1"; }
 bad() { echo "FAIL $1${2:+: $2}"; fail=$((fail + 1)); took "$1"; }
 finish() { echo "$pass passed, $fail failed, $skip skipped ($planned planned)"; [ "$fail" -eq 0 ]; }
-# stop <why>: the checks not reached are not run; one SKIP line says how many and why, and they count as skipped.
+# stop <why> [how many]: the checks not reached are not run; one SKIP line says how many and why, and they count as
+# skipped. How many is what the plan leaves unless the caller counted it before a FAIL of its own (overtime).
 stop() {
-  local rest=$((planned - pass - fail - skip))
+  local rest=${2:-$((planned - pass - fail - skip))}
   [ "$rest" -gt 0 ] || rest=0
   echo "SKIP $rest checks not run: $1"; skip=$((skip + rest)); took "$rest checks not run"
   finish; exit
+}
+# overtime: past the whole run's deadline, a counted FAIL and the rest not run (the logs are written on the way out).
+# What is left is counted before that FAIL, which is the deadline's own and no check of the plan, so every planned
+# check not reached is counted as skipped.
+overtime() {
+  [ "$SECONDS" -ge "$deadline" ] || return 0
+  local rest=$((planned - pass - fail - skip))
+  bad "the whole run finishes within $limit s" "$(since "$started_all") so far"
+  stop "the run is past its deadline" "$rest"
 }
 
 logs=""
@@ -105,6 +120,10 @@ collect() {   # the logs and the queues' state, into $work/logs, then into --log
       sql "$n" "SELECT d.id, d.state, d.attempts, d.next_at, d.inbox, d.last_error, o.ap_id FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id ORDER BY d.id"
       echo "-- inbox by kind, state and outcome"; sql "$n" "SELECT kind, state, outcome, count(*) FROM ap_inbox GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
       echo "-- hosts"; sql "$n" "SELECT host, state, failures, sig, delivered, dropped, last_success, last_failure, last_error FROM ap_hosts ORDER BY host"
+      echo "-- inbox rows (the body is dropped once handled)"
+      sql "$n" "SELECT i.id, u.username, i.kind, i.state, i.attempts, i.received_at, i.handled_at, i.outcome, i.activity_id FROM ap_inbox i JOIN users u ON u.id = i.actor_id ORDER BY i.id"
+      echo "-- follows"; sql "$n" "SELECT a.username, b.username, f.state, f.ap_id FROM follows f JOIN users a ON a.id = f.follower_id JOIN users b ON b.id = f.followee_id ORDER BY 1, 2"
+      echo "-- activities made (newest 60)"; sql "$n" "SELECT id, created_at, fanned_out, body::jsonb->>'type', ap_id FROM ap_outbox ORDER BY id DESC LIMIT 60"
       echo "-- health"; health "$n"
     } >"$work/logs/$n-queue.txt" 2>&1
   done
@@ -113,7 +132,23 @@ collect() {   # the logs and the queues' state, into $work/logs, then into --log
 cleanup() {
   [ -d "$work" ] || return
   docker inspect "$p-one-app" >/dev/null 2>&1 && collect
-  local c
+  local c n
+  # After a failed check, the last 200 lines of each app's log and both queues' state go to the output too, so a run in
+  # CI says why without its uploaded logs.
+  if [ "$fail" -gt 0 ] && [ -d "$work/logs" ]; then
+    for n in "${names[@]}"; do
+      [ -f "$work/logs/$n-app.log" ] || continue
+      echo "---- the last 200 lines of $n's app log"; tail -n 200 "$work/logs/$n-app.log"
+      echo "---- $n's queues and rows"; cat "$work/logs/$n-queue.txt" 2>/dev/null
+    done
+  fi
+  # FLOWA_FED_KEEP=on keeps the containers, network and volumes of a run that failed, to be looked at by hand (and
+  # removed by hand: docker rm -f the containers named $p-*, then the network and volumes).
+  if [ "$fail" -gt 0 ] && [ "${FLOWA_FED_KEEP:-}" = on ]; then
+    echo "kept for a look: the containers, network and volumes named $p-* (remove them by hand)"
+    rm -rf "$work"
+    return
+  fi
   for c in $(docker ps -aq --filter "name=^$p-"); do docker rm -f "$c" >/dev/null 2>&1; done
   docker network rm "$p" >/dev/null 2>&1
   docker volume rm "$p-one-data" "$p-two-data" >/dev/null 2>&1
@@ -132,6 +167,8 @@ else
   bad "the image builds as a release builds it" "$(tail -3 "$work/build.log" | paste -sd' ' | cut -c1-300)"
   stop "each needs it"
 fi
+# A build that took the whole run's time stops here with the deadline as its reason, before any step waits on it.
+overtime
 # A certificate authority for this run alone, and a certificate for each name signed by it. The keys stay in the
 # temporary folder and go with it.
 tls() {
@@ -226,17 +263,13 @@ within() {
   overtime
   return 1
 }
-# overtime: past the whole run's deadline, a counted FAIL and the rest not run (the logs are written on the way out).
-overtime() {
-  [ "$SECONDS" -ge "$deadline" ] || return 0
-  bad "the whole run finishes within $limit s" "$(since "$started_all") so far"
-  stop "the run is past its deadline"
-}
 # need <what>: after a failed check that every later one needs, they are not run, rather than each waiting out its time.
 need() { stop "each needs $1, which failed"; }
 # all <check> <wanted> <got>: one PASS or FAIL for several statuses at once.
 all() { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1" "got $3, wanted $2; last answer $(cut -c1-300 <<<"$body")"; fi; }
 other() { if [ "$1" = one ]; then echo two; else echo one; fi; }
+# The app keeps its queue's numbers for 5 s (fedHealthEvery), and Docker's own health check asks for them every 30 s,
+# so what queued reads can be up to 5 s old: a check that must see a row as it is now reads the database (removal).
 queued() { health "$1" | jq -r '.federation.queued // "none"'; }
 drained() { [ "$(queued "$1")" = 0 ]; }
 
@@ -439,6 +472,14 @@ all "and bob's posts are hidden from ana's Home on one" "200 0" "$code $(j '[.po
 # again is refused with that sentence, the address shows "Profile no longer shared", and an unlike stays on two. Once one
 # is back and two's queue is empty, the removal has reached one and bob may share again at once.
 docker stop -t 5 "$p-one-tls" "$p-one-app" >/dev/null
+# What follows is read row by row: bob's Delete(Person) to one in two's queue, the activities bob's account sends after
+# leaving (ap_outbox past this mark), and the Deletes one has handled from bob (its database runs while its app is away).
+outmark=$(sql two "SELECT COALESCE(max(id), 0) FROM ap_outbox")
+bobdeletes=$(sql one "SELECT count(*) FROM ap_inbox WHERE kind = 'Delete' AND actor_id = $bob1 AND state = 'done'")
+removal() {   # removal: the states of the rows of bob's Delete(Person) to one in two's queue (a delivered row is removed)
+  sql two "SELECT COALESCE(string_agg(d.state, ',' ORDER BY d.id), 'none') FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id
+    WHERE o.body::jsonb->>'type' = 'Delete' AND o.body::jsonb->>'object' = 'https://two.flowa.test/users/bob' AND d.host = 'one.flowa.test'"
+}
 api two bob POST /api/me/federation/leave '{"confirm":true}'
 all "with one stopped, bob asks to be removed from other servers on two, and one server is to be told" "200 false" "$code $(j .federation.optedIn)"
 api two bob GET /api/me
@@ -454,17 +495,24 @@ if [ "$got" = 410 ] && grep -q 'Profile no longer shared' "$work/page"; then ok 
 else bad "bob's address on two shows \"Profile no longer shared\"" "$got $(head -c 300 "$work/page")"; fi
 # Leaving cleared the ids of bob's likes, so his like of ana's post is a like of this server now: an unlike removes it
 # here and enqueues nothing (his removal takes it back on one): two's queue holds the removal alone.
+removalwaits() { [ "$(removal)" = queued ]; }
+within 30 "bob's removal waits in two's queue for one, as one queued row" removalwaits || need "bob's removal waiting for one"
 api two bob POST "/api/posts/$p1two/like"
 liked=$code$(j .liked)
 api two cyd GET "/api/posts/$p1two"
-all "bob's unlike after leaving removes his like on two and sends nothing" "200false 200 0 1" "$liked $code $(j '.posts[0].likes') $(queued two)"
+sent=$(sql two "SELECT count(*) FROM ap_outbox WHERE id > $outmark AND body::jsonb->>'actor' = 'https://two.flowa.test/users/bob' AND body::jsonb->>'type' IN ('Like', 'Undo')")
+all "bob's unlike after leaving removes his like on two and sends nothing (no Like or Undo of his queued since he left)" "200false 200 0 0" "$liked $code $(j '.posts[0].likes') $sent"
 docker start "$p-one-app" "$p-one-tls" >/dev/null
 port[one]=$(docker port "$p-one-tls" 443/tcp | head -1 | sed 's/.*://')
 within 60 "one comes back" healthy one || need "one running again"
 # The first retry is 1 minute after the failure, give or take 20% (federation.md 8.3).
-within 120 "two's queue sends the removal once one is back, and is empty" drained two
-bobgone() { api one ana GET "/api/fed/accounts/$bob1" && ok200 '.account.state == "gone"'; }
-within 30 "on one bob's account is gone" bobgone
+# Delivered, the row is removed; given up, it stays as failed: only the first passes.
+removed() { [ "$(removal)" = none ] && drained two; }
+within 120 "two's queue delivers the removal once one is back (its row gone, not given up) and is empty" removed
+# One took the Delete itself (its inbox handled one more Delete from bob), not only learned from a fetch that he is gone.
+bobgone() { [ "$(sql one "SELECT count(*) FROM ap_inbox WHERE kind = 'Delete' AND actor_id = $bob1 AND state = 'done'")" -gt "$bobdeletes" ] &&
+  api one ana GET "/api/fed/accounts/$bob1" && ok200 '.account.state == "gone"'; }
+within 30 "on one bob's Delete is handled and his account is gone" bobgone
 within 30 "and his like of ana's post is taken away there" likes 0
 api two bob GET /api/me
 all "with the removal sent, bob's card no longer says it is being sent" "200 none" "$code $(j '.federation.leaving // "none"')"
@@ -485,6 +533,94 @@ for n in "${names[@]}"; do
   if undropped "$n"; then ok "$n's Federation tab still counts nothing left unsent since its last start ($dropped)"
   else bad "$n's Federation tab still counts nothing left unsent since its last start" "$code ${dropped:-$(cut -c1-300 <<<"$body")}"; fi
 done
+
+# ---- domain policies between the two (FMD 1): limit, reject media, suspend ----
+# One's admin limits, then rejects the media of, then suspends two's domain, lifting each in turn; each step is checked
+# where a person would see it. dee joins one for this, and one's admin shares their profile to follow accounts of two.
+policy() { api one admin PUT /api/admin/federation/domains/two.flowa.test "$1"; }
+s=""
+api one dee POST /api/signup '{"username":"dee","password":"flowa-test-only"}'; s+="$code "
+api one dee PUT /api/me '{"federates":true}'; s+="$code$(j '.federation.optedIn') "
+policy '{"policy":"limit","comment":"Testing a limit."}'; s+="$code $(j '[.domains[] | select(.domain == "two.flowa.test") | .policy] | join(",")')"
+all "dee joins one and shares her profile, and one's admin limits two.flowa.test" "200 200true 200 limit" "$s"
+dee2=0
+# Her key is made in the background as she starts sharing; until then her actor answers 503, so the lookup waits for it.
+actorup() { [ "$(curl -sS -m 10 --noproxy '*' --cacert "$work/ca.pem" --resolve "one.flowa.test:${port[one]}:127.0.0.1" -H 'Accept: application/activity+json' \
+  -o /dev/null -w '%{http_code}' "https://one.flowa.test:${port[one]}/users/$1" 2>/dev/null)" = 200 ]; }
+waitfor 30 actorup dee
+if found two cyd dee@one.flowa.test; then dee2=$(j .result.account); api two cyd PUT "/api/fed/accounts/$dee2/follow"; fi
+all "cyd finds dee from two and asks to follow her (two says requested until an answer comes, whatever one decides)" "200 requested" "$code $(j .view.follow)"
+deereq() { api one dee GET /api/fed/requests && ok200 '[.requests[].user.remote.handle] | join(",") == "cyd@two.flowa.test"'; }
+within 30 "on one cyd's Follow waits for dee's approval though she approves nobody by hand: two's domain is limited" deereq || need "a request from a limited server"
+api one dee PUT "/api/fed/requests/$(j '.requests[0].user.id')"
+cydfollows() { api two cyd GET "/api/fed/accounts/$dee2" && ok200 '.view.follow == "following"'; }
+within 30 "dee approves it, and cyd follows dee on two" cydfollows || need "cyd following dee"
+# One's admin follows cyd, so a reply of cyd's has a reader on one and cyd's posts come to one (bob left above, so
+# one knows his account as gone).
+s="" cyd1=0
+api one admin PUT /api/me '{"federates":true}'; s+="$code$(j '.federation.optedIn') "
+waitfor 30 actorup admin
+if found one admin cyd@two.flowa.test; then cyd1=$(j .result.account); api one admin PUT "/api/fed/accounts/$cyd1/follow"; s+="$code"; fi
+all "one's admin shares their profile and follows cyd of two" "200true 200" "$s"
+adminfollows() { api one admin GET "/api/fed/accounts/$cyd1" && ok200 '.view.follow == "following"'; }
+within 30 "two accepts it at once: one's admin follows cyd" adminfollows || need "a follow of cyd from one"
+api one dee POST /api/posts '{"body":"A limit, tested","audience":"public"}'
+pd=$(j '.posts[0].id')
+within 30 "dee's Public post reaches cyd's Home on two" inhome two cyd "https://one.flowa.test/users/dee/posts/$pd" || need "dee's post on two"
+api two cyd POST "/api/posts/$(jq -r .id <<<"$post")/comments" '{"body":"From a limited server"}'
+cc=$(j '.comment.id')
+cydreply() { api one admin GET "/api/posts/$pd/comments" && ok200 '[.comments[] | select(.remote.link == "'"https://two.flowa.test/users/cyd/comments/$cc"'")] | length == 1'; }
+within 30 "cyd's reply reaches one: one's admin, who follows cyd, reads it under dee's post" cydreply || need "cyd's reply on one"
+api one dee GET "/api/posts/$pd"; s="$code $(j '.posts[0].commentCount') "
+api one dee GET "/api/posts/$pd/comments"; s+="$code $(j '.comments | length')"
+all "dee, who does not follow cyd, neither reads cyd's reply under her own post nor counts it" "200 0 200 0" "$s"
+policy '{"policy":"allow"}'; s="$code "
+api one dee GET "/api/posts/$pd"; s+="$code $(j '.posts[0].commentCount') "
+api one dee GET "/api/posts/$pd/comments"; s+="$code $(j '.comments | length')"
+all "the limit lifted, dee reads cyd's reply and counts it" "200 200 1 200 1" "$s"
+
+# Reject media: a new post of cyd's comes to one with its picture as a link to two, and one fetches nothing.
+policy '{"policy":"allow","rejectMedia":true}'; s="$code $(j '[.domains[] | select(.domain == "two.flowa.test") | .rejectMedia] | join(",")') "
+api two cyd POST /api/posts "{\"body\":\"A picture one will not keep\",\"audience\":\"public\",\"image\":\"data:image/png;base64,$png\",\"alt\":\"$alt\"}"
+pb=$(j '.posts[0].id'); s+="$code"
+all "one's admin rejects two's media, and cyd posts a picture on two" "200 true 200" "$s"
+aslink() { inhome one admin "https://two.flowa.test/users/cyd/posts/$pb" && [ "$(jq -r '.remote.media[0].src // "none"' <<<"$post")" = none ] &&
+  [ "$(jq -r '.remote.media[0].link' <<<"$post")" = "https://two.flowa.test/users/cyd/posts/$pb/picture.png" ]; }
+within 30 "cyd's post reaches one's admin's Home with its picture as a link to the original on two, no copy" aslink || need "cyd's post on one"
+kept=$(sql one "SELECT string_agg(state, ',') FROM ap_media m JOIN posts p ON p.id = m.post_id WHERE p.ap_id = 'https://two.flowa.test/users/cyd/posts/$pb'")
+asked=$(docker logs "$p-two-tls" 2>&1 | grep -c " GET /users/cyd/posts/$pb/picture")
+all "one keeps the picture as a link and its picture worker asked two for nothing (two's proxy)" "link 0" "$kept $asked"
+
+# Suspend: a delivery that waited in one's queue is refused at its send, two's deliveries are refused 403 at one's
+# inbox, and lifting the suspension lets a new follow through. Two's proxy stops first, so dee's next post waits.
+docker stop -t 2 "$p-two-tls" >/dev/null
+api one dee POST /api/posts '{"body":"Waiting for two","audience":"public"}'
+pw=$(j '.posts[0].id')
+towait() { [ "$(sql one "SELECT count(*) FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = 'https://one.flowa.test/users/dee/posts/$pw/activity' AND d.state = 'queued' AND d.attempts >= 1")" = 1 ]; }
+within 30 "with two's proxy stopped, dee's post waits in one's queue for cyd on two" towait || need "a delivery waiting for two"
+policy '{"policy":"suspend","comment":"Testing a suspension."}'; s="$code $(j '[.domains[] | select(.domain == "two.flowa.test") | .policy] | join(",")') "
+posts2=$(docker logs "$p-two-tls" 2>&1 | grep -c ' POST /')
+docker start "$p-two-tls" >/dev/null
+port[two]=$(docker port "$p-two-tls" 443/tcp | head -1 | sed 's/.*://')
+waitfor 30 healthy two; s+="$code"
+all "one's admin suspends two.flowa.test, and two's proxy is back" "200 suspend 200" "$s"
+# The row waits for its next try (a minute after the failure); it is made due now, as if that minute had passed.
+sql one "UPDATE ap_deliveries SET next_at = now() WHERE state = 'queued'" >/dev/null
+refusedsend() { [ "$(sql one "SELECT d.state || ':' || d.last_error FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = 'https://one.flowa.test/users/dee/posts/$pw/activity'")" = "failed:the domain policy refuses the host" ]; }
+within 30 "at its send one refuses the waiting delivery to the suspended server" refusedsend
+all "and two's proxy took nothing from one" "$posts2" "$(docker logs "$p-two-tls" 2>&1 | grep -c ' POST /')"
+api two cyd POST /api/posts '{"body":"Two does not know it is suspended","audience":"public"}'
+pc=$(j '.posts[0].id')
+# Two's own row for that post records one's answer, and one's Federation tab counts the refusal by its reason.
+refused403() { [ "$(sql two "SELECT d.state || ':' || d.last_error FROM ap_deliveries d JOIN ap_outbox o ON o.id = d.outbox_id WHERE o.ap_id = 'https://two.flowa.test/users/cyd/posts/$pc/activity'")" = "failed:one.flowa.test answered 403" ] &&
+  api one admin GET /api/admin/federation && ok200 '(.inbox.refused["this server'"'"'s domain is suspended here"] // 0) >= 1'; }
+within 30 "two delivers cyd's post to one, which refuses it with 403: its domain is suspended" refused403
+policy '{"policy":"allow"}'; s="$code "
+cyd1c=0
+if found one dee cyd@two.flowa.test; then cyd1c=$(j .result.account); api one dee PUT "/api/fed/accounts/$cyd1c/follow"; s+="$code"; fi
+all "the suspension lifted, dee follows cyd from one" "200 200" "$s"
+deefollows() { api one dee GET "/api/fed/accounts/$cyd1c" && ok200 '.view.follow == "following"'; }
+within 30 "and two accepts it: dee follows cyd" deefollows
 
 # ---- memory, and what is kept ----
 # docker stats shows the container's memory as the kernel counts it for the cgroup, without the page cache it can

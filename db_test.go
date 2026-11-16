@@ -3668,6 +3668,11 @@ func TestDBQueryPlans(t *testing.T) {
 	plans := func(cases []planCase) {
 		t.Helper()
 		for _, c := range cases {
+			// A statement runs without the look at a limited domain while no domain is limited (limitStatements), as on
+			// most instances; the cases named "limited:" read it as an instance with a limit runs it (FMD 1).
+			if !strings.HasPrefix(c.name, "limited:") {
+				c.sql = unlimited(c.sql)
+			}
 			var raw []byte
 			if err := on.QueryRow(`EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, BUFFERS OFF) `+c.sql, c.args...).Scan(&raw); err != nil {
 				t.Errorf("%s: %v", c.name, err)
@@ -3899,7 +3904,7 @@ func TestDBQueryPlans(t *testing.T) {
 	on = ftx
 	plans([]planCase{
 		{"follows: a Follow in, to a member who approves by hand", followInSQL, []any{1000003, 7, "https://h3.example/f/new", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, true}, 2000, ""},
-		{"follows: a Follow in, accepted at once", followInSQL, []any{1000003, 9, "https://h3.example/f/new2", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, ""},
+		{"follows: a Follow in, accepted at once", followInSQL, []any{1000003, 9, "https://h3.example/f/new2", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, "domain_policies"}, // the limit's walk (FMD 1): a table this small is read whole
 		// The trim after a notification from a remote account, once per one written:
 		// the member's own notifications through notifications_user, each one's account by its primary key.
 		{"follows: trimming a member's notifications from other servers", remoteNotesTrimSQL, []any{9, "h3.example", remoteNotesPerHost, remoteNotesMax}, 2500, ""},
@@ -4126,7 +4131,7 @@ func TestDBQueryPlans(t *testing.T) {
 		{"remote: a post alone, a local one", postOneSQL, []any{viewer, 4321, false, true}, 300, ""},
 		{"remote: whether an account is followed, and who is named", noteDecideSQL, []any{remoteFollowed, pq.Array([]string{"m1", "m2", "m3", "nobody"}), false}, 100, ""},
 		{"remote: the cap per account", notePastCapSQL, []any{remoteFollowed, remotePostsPerAccount}, 200, ""},
-		{"remote: the picture worker's claim", mediaClaimSQL, []any{time.Now(), 60.0}, 100, ""},
+		{"remote: the picture worker's claim", mediaClaimSQL, []any{time.Now(), 60.0}, 100, "domain_policies"}, // reject media's walk (FMD 1)
 		{"remote: retention, a batch of 1,000 past their time", remoteKeepSQL, []any{time.Now().Add(48 * time.Hour), remoteBatch}, 15000, ""},
 		// The cap in all reads posts_remote_followed (the posts not kept for a mention) up to its offset, and a batch.
 		{"remote: the cap in all, a batch", remoteCapSQL, []any{15000, remoteBatch}, 15000 + 3*remoteBatch, ""},
@@ -4201,6 +4206,39 @@ func TestDBQueryPlans(t *testing.T) {
 		{"replies: the record of a comment that waits", commentOutSQL, []any{false}, 100, ""},
 		{"replies: the caps in all", talkCountSQL, []any{remoteRepliesMax, remoteLikesMax}, 120000, ""},
 		{"replies: records of comments gone, a batch", talkOrphansSQL, []any{remoteBatch, 0}, 5000 + 3*remoteBatch, "ap_comment_out"}, // its 5,000 rows read whole here, a small table; its primary key once it grows
+	})
+	// The same post when the servers of its 3,000 remote replies are limited (FMD 1): each remote reply's account is
+	// looked up once more (users' primary key, the walk through domain_policies, the viewer's follow), in the lists and
+	// the counts alike; a member's comment is not asked. domain_policies, 25 rows here, is read whole.
+	if _, err := rtx2.Exec(`INSERT INTO domain_policies (domain, policy) SELECT 'h' || g || '.example', 'limit' FROM generate_series(0, 24) g`); err != nil {
+		t.Fatal(err)
+	}
+	plans([]planCase{
+		{"limited: the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 140000, "domain_policies"}, // about 40 rows a remote reply here, 25 of them domain_policies read whole; a tenth at the cap of 300
+		{"limited: that post alone", postOneSQL, []any{viewer, flood, false, true}, 140000, "domain_policies"},
+		{"limited: the preview of its comments", commentsSQL(feedCommentsSQL), []any{viewer, false, pq.Array([]int64{flood}), previewComments}, 12000, "domain_policies"},
+		{"limited: a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
+			[]any{viewer, false, flood, 0, commentPage + 1}, 8000, "domain_policies"},
+		{"limited: notifications", notificationsFedSQL, []any{viewer, maxNotifList}, 1000, "domain_policies"},
+		{"limited: the unread count of the bell", unreadFedSQL, []any{viewer}, 1000, "domain_policies"},
+	})
+	// With a list of thousands of policies (3,025 rows, analyzed), every walk looks its names up in the primary key of
+	// domain_policies, never reading the table: a statement that read it whole for each remote reply, Follow or picture
+	// (the IN form of policyWalk did) fails here by the scan and by its budget.
+	if _, err := rtx2.Exec(`INSERT INTO domain_policies (domain, policy) SELECT 'p' || g || '.example', CASE WHEN g % 3 = 0 THEN 'limit' ELSE 'allow' END FROM generate_series(1, 3000) g`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx2.Exec(`ANALYZE domain_policies`); err != nil {
+		t.Fatal(err)
+	}
+	plans([]planCase{
+		{"limited: 3,025 policies, the timeline, its newest post holding 3,000 remote replies", feedSQL, []any{viewer, 0, 0, 0, pageSize + 1, false, pq.Array(none)}, 30000, ""}, // about 8 rows a remote reply, the walk by the primary key
+		{"limited: 3,025 policies, a page of its comments", commentsSQL(`SELECT * FROM comments c WHERE c.post_id = $3 AND c.parent_id IS NULL AND c.id > $4 AND ` + commentBlockFree + ` ORDER BY c.id LIMIT $5`),
+			[]any{viewer, false, flood, 0, commentPage + 1}, 1000, ""},
+		{"limited: 3,025 policies, the bell", notificationsFedSQL, []any{viewer, maxNotifList}, 1000, ""},
+		{"policies: 3,025 of them, a Follow in", followInSQL, []any{1000003, 9, "https://h3.example/f/new3", "h3.example", followRequestsMax, followRequestsPerHost, followsPerHost, false}, 2000, ""},
+		{"policies: 3,025 of them, the picture worker's claim", mediaClaimSQL, []any{time.Now(), 60.0}, 100, ""},
+		{"policies: 3,025 of them, keeping a picture", mediaInsertSQL, []any{flood, 999, "picture", "https://h8.example/p.png", "", "wanted", "h8.example"}, 100, ""},
 	})
 	on = db
 	rtx2.Rollback()
