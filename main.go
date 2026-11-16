@@ -23221,6 +23221,7 @@ const (
 	moveSameServer       = "That account is on this server. Moving between two accounts here is not built: move to an account on another server."
 	moveNoAlias          = "That account does not name this one as an old account yet. On the new account, add %s as an alias (on Mastodon: Preferences, Account, Moving from a different account), then try again."
 	moveTargetMoved      = "That account has itself moved to another account. Move to the account it points to instead."
+	moveTargetSuspended  = "The moderators here suspended that account, so you cannot move to it from here."
 	moveChanged          = "Your profile changed while the move was being made (another move, or sharing turned off), so nothing was done. Look at Settings again and try once more."
 	moveFull             = "The queue to other servers is full just now, so nothing was changed. Try again in a few minutes."
 	moveNotMoved         = "Your profile does not point to another account."
@@ -23248,6 +23249,7 @@ var moveKeptWords = map[string]string{
 	"targetSuspended": "the new account is suspended on its server",
 	"noInbox":         "the new account cannot take follows",
 	"notSent":         "the follow could not be sent",
+	"suspendedHere":   "the moderators here suspended the new account",
 }
 
 // keptAliases is what is kept of a remote actor's alsoKnownAs: the first actorAliasesKept entries of at most
@@ -23599,6 +23601,14 @@ func (a *app) resolveFor(w http.ResponseWriter, r *http.Request, u *user, q stri
 		return nil, "", false
 	}
 	return ra, handle, true
+}
+
+// suspendedHere says whether a moderator here suspended the account uid now (FMD 2); a failed read says no, and the
+// follows the move makes are held to it by followRemote's own read in any case.
+func (a *app) suspendedHere(ctx context.Context, uid int64) bool {
+	var held bool
+	a.db.QueryRowContext(ctx, `SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1`, uid).Scan(&held)
+	return held
 }
 
 // errMoveChanged is the move's own write finding the member no longer in a state to move (another move made
@@ -24005,6 +24015,9 @@ func (a *app) moveOne(ctx context.Context, member, follower int64, ra *remoteAct
 		return err
 	}
 	switch {
+	case errors.Is(err, errFollowSuspended):
+		// A moderator here suspended the new account meanwhile (FMD 2): nobody here follows it.
+		return back("kept", "suspendedHere", nil)
 	case err != nil:
 		// Not made (a full queue, or refused at the host meanwhile): back to the ones to do, after a wait.
 		if err2 := back("todo", "", f.out.now().Add(moveWait)); err2 != nil {
@@ -24029,6 +24042,7 @@ var moveCannot = map[string]string{
 	lookupReasons[lookupGone].words:       "targetGone",
 	lookupReasons[lookupSuspended].words:  "targetSuspended",
 	fedFollowNoInbox:                      "noInbox",
+	fedFollowSuspendedHere:                "suspendedHere",
 	fedFollowForeign:                      "noInbox",
 }
 
@@ -24116,6 +24130,10 @@ func (a *app) handleMove(w http.ResponseWriter, r *http.Request, u *user) {
 		return
 	case ra.MovedTo != "":
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": moveTargetMoved, "reason": "targetMoved"})
+		return
+	case a.suspendedHere(r.Context(), ra.UserID):
+		// The moderators here suspended it (FMD 2): nobody here may follow it, so nobody is sent there from here.
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": moveTargetSuspended, "reason": "suspendedHere"})
 		return
 	case !inboxOwn(ra):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": lookupReasons[lookupNotAccount].words, "reason": lookupReasons[lookupNotAccount].code})

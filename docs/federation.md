@@ -2125,7 +2125,7 @@ Tombstone at a retired name's actor. What this item adds, in "federation: accoun
 
 What was there before this item: the decoder read `movedTo` and `alsoKnownAs` of remote actors (6.3) and the cache kept
 `movedTo` only; a Move received was counted and dropped at the inbox. What this item adds, in "portability: moving to an
-account on another server" in `main.go` (migration 25, with `flowa-schema24.dump` for the restore drill), only in a mode
+account on another server" in `main.go` (migration 26, with `flowa-schema25.dump` for the restore drill), only in a mode
 that federates and behind the `moves` flag (off by default; a flag of a mode that federates, `fedFlagDefaults`, so local
 mode lists exactly the flags it did):
 
@@ -2166,8 +2166,9 @@ mode lists exactly the flags it did):
   remembered within its 10 minutes and refuses a stale copy; a gone actor stays gone): the alias may have been added a
   minute ago; then its `alsoKnownAs` must hold this member's actor id exactly (422, `noAlias`, with the handle to add and
   where Mastodon keeps the setting), it must not have moved itself (422, `targetMoved`: a move to an account that points
-  elsewhere would send the followers to a redirect, and two accounts pointing at each other would loop), and its inbox
-  must be on its own origin (422). The cache now keeps a remote actor's `alsoKnownAs` (`ap_actors.also_known_as`): the
+  elsewhere would send the followers to a redirect, and two accounts pointing at each other would loop), it must not be
+  suspended by the moderators here (403, `suspendedHere`: nobody here may follow it, FMD 2), and its inbox must be on its
+  own origin (422). The cache now keeps a remote actor's `alsoKnownAs` (`ap_actors.also_known_as`): the
   first 16 entries (`actorAliasesKept`) of at most 2,048 bytes each, without repeats, and nothing of an actor that says it
   is suspended. So a target listing more than 16 accounts with this member's after them is refused; noted for the owner.
 - **One transaction** (`enqueueSeq`, which `enqueueOrdered` is now a case of): an Update(Person) whose object is the
@@ -2203,7 +2204,9 @@ mode lists exactly the flags it did):
   it, counted with the reason); one who follows the new account already is moved at once (the state and the end of the
   old follow in one statement), one who asked already is "asked"; the others are "kept" with the reason (they do not
   share, a block, the server not let in, following off here, they follow the most accounts there can be, they moved away
-  themselves, the new account gone, suspended or taking no follows). Each row is written only while the step still
+  themselves, the new account gone, suspended on its server or by the moderators here, or taking no follows; each Follow
+  goes through `followRemote`, which reads the new account's row FOR SHARE as a follow by hand does since FMD 2, so a
+  suspension written meanwhile is seen or waits). Each row is written only while the step still
   holds it and the member still points to the new account (`moveRowSQL`), and the batch stops at the first row that is
   not, so a redirect taken back, a row another process took after the lease ran out, or the account gone mid-batch
   sends nothing more (after the second review). **This server's own trouble keeps nobody** (after the second review):
@@ -2276,7 +2279,7 @@ mode lists exactly the flags it did):
   federates, a deployment that sets nothing new sees two changes, on purpose: the start log's and the dashboard's
   sentence (`fedBuilt`) now ends with the move, and NodeInfo's `metadata.federationBuilt` adds `move` (the one golden
   answer that holds it, in `TestNodeInfo`, was changed for it; no pinned header and no other golden file changed).
-- **Rollback (14.4).** Migration 25 adds four columns to `users`, one to `ap_actors` and one to `ap_person_out` with
+- **Rollback (14.4).** Migration 26 adds four columns to `users`, one to `ap_actors` and one to `ap_person_out` with
   constant defaults or none, and the table `move_followers`: no row is rewritten and an older build ignores them; after
   `./deploy.sh --rollback` a moved member's actor stops naming `movedTo`, takes followers again and their followers here
   stop being moved until this build is back. A Move already queued is sent by an older build as any activity (its

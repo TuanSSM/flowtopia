@@ -52,8 +52,8 @@ table, route and test named below is new.
     /api/me/move` (taking the redirect back, with the password), `PUT` and `DELETE /api/me/aliases` (the accounts a
     member moves here from, at most 5, named in the actor's `alsoKnownAs`), behind the `moves` flag (off by default, a
     flag of a mode that federates only; stopping a redirect stays open with it off), in "Beyond this server" in
-    Settings; migration 25 (`users.moved_to`, `moved_at`, `also_known_as`, `move_id`, `ap_actors.also_known_as`,
-    `ap_person_out.last_id`, the table `move_followers`) with `flowa-schema24.dump`. The target is fetched again whatever
+    Settings; migration 26 (`users.moved_to`, `moved_at`, `also_known_as`, `move_id`, `ap_actors.also_known_as`,
+    `ap_person_out.last_id`, the table `move_followers`) with `flowa-schema25.dump`. The target is fetched again whatever
     the cache holds, through the fetcher and the domain policy, and the move goes on only when its `alsoKnownAs` names
     this member's actor and it has not moved itself; then one transaction writes `movedTo`, an Update(Person) (after
     the member's Update(Person) before it) and a Move to the followers on other servers, the Move held behind the Update
@@ -90,7 +90,8 @@ table, route and test named below is new.
     export and delete the account (Mastodon disables posting on the old account; here only Public posts are refused,
     since posts to this server never claim to be the new account), and their likes and comments on posts of other
     servers still go out; they follow nobody new, here or elsewhere; moving to an account on this same server is refused
-    (not built); a target that moved itself is refused; a server under "limit" may be moved to; aliases ask no password
+    (not built); a target that moved itself is refused, and so is one the moderators here suspended (its followers here
+    are kept with that reason if the suspension comes after the move); a server under "limit" may be moved to; aliases ask no password
     (Mastodon calls them harmless); the numbers are constants in `main.go`: 5 moves or undoings an hour per member
     (only moves that passed every check count), the target's lookup in the search by handle's 30 an hour, 30 alias
     changes an hour, 5 aliases, 16 entries of a remote actor's `alsoKnownAs` kept (a target that lists more than 16

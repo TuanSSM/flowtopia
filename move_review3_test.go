@@ -107,3 +107,28 @@ func TestDBMoveOutWaitLeavesOthersLease(t *testing.T) {
 		t.Errorf("the batch's own row waits until %v (%v), want after %v", waits, err, held)
 	}
 }
+
+// An account the moderators here suspended (FMD 2) can be neither moved to nor followed by the members moved with a
+// member: the move is refused with words, and a suspension after the move keeps the followers, with that reason.
+func TestDBMoveOutSuspendedHere(t *testing.T) {
+	e := newMoveEnv(t)
+	e.target(novaID)
+	if code, _ := e.move("@nova@social.example", movePW); code != 422 { // caches nova: it names nobody yet
+		t.Fatalf("the first try: %d", code)
+	}
+	e.target(novaID, anaActor)
+	e.mustExec(`UPDATE users SET suspended_until = now() + interval '1 day' FROM ap_actors a WHERE a.user_id = users.id AND a.ap_id = $1`, novaID)
+	if code, out := e.move("@nova@social.example", movePW); code != 403 || out["reason"] != "suspendedHere" || out["error"] != moveTargetSuspended {
+		t.Errorf("a move to an account suspended here: %d %v", code, out["_raw"])
+	}
+
+	f := newMoveEnv(t)
+	f.followers("z", 2, true)
+	f.target(novaID, anaActor)
+	f.must(200, f.ana, "POST", "/api/me/move", map[string]any{"target": "@nova@social.example", "password": movePW})
+	f.mustExec(`UPDATE users SET suspended_until = now() + interval '1 day' FROM ap_actors a WHERE a.user_id = users.id AND a.ap_id = $1`, novaID)
+	f.produce()
+	if p := f.progress(); p != "todo 0, asked 0, moved 0, kept 2 [the moderators here suspended the new account]" || f.followsTo(novaID) != 0 {
+		t.Errorf("followers of a member whose new account was suspended here: %s, %d follows", p, f.followsTo(novaID))
+	}
+}
