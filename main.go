@@ -3,6 +3,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"cmp"
 	"compress/gzip"
@@ -102,7 +103,7 @@ const (
 // until an admin saves it (flags keeps a row only for a saved one), so a new flag that is off by
 // default is off on an instance that existed before it as on a new one. follows is the first: what
 // it adds must change nothing on an instance that sets nothing (docs/federation.md, 14.1).
-var flagDefaults = map[string]bool{"details": true, "demos": true, "references": true, "signups": true, "tour": true, "model3d": true, "community": true, "game": true, "moderation": true, "catalogEditor": true, "linkCards": true, "videoEmbeds": true, "suggest": true, "avatars": true, "bookmarks": true, "follows": false}
+var flagDefaults = map[string]bool{"details": true, "demos": true, "references": true, "signups": true, "tour": true, "model3d": true, "community": true, "game": true, "moderation": true, "catalogEditor": true, "linkCards": true, "videoEmbeds": true, "suggest": true, "avatars": true, "bookmarks": true, "follows": false, "export": false}
 
 // Props a user can track. The catalog for each prop lives in the web UI.
 var knownProps = []string{"nunchaku", "poi", "staff", "doublestaff", "buugeng"}
@@ -219,6 +220,18 @@ type app struct {
 	nodeAt       time.Time                 // when; zero until first asked
 	namesMu      sync.Mutex                // guards names
 	names        map[string]skillNameCache // skill names per prop for the public pages (skillNames)
+	// exportTime and exportMax are how long a download of a member's data may run and how large it may be
+	// (exportMaxTime and exportMaxBytes when zero); a test lowers them.
+	exportTime time.Duration
+	exportMax  int64
+	// exportSlots holds one token per download running now, at most exportsAtOnce across the server.
+	exportSlots chan struct{}
+	// exportHook, when set, is told of each step of a download ("write" before every write to the client, "page" after
+	// each page of rows is read and its connection given back, "flush" before the last bytes are pushed out), and an
+	// error from it stops the download as a failed write would. Tests only; nil in the server.
+	exportHook func(step string) error
+	// exportNow is the clock the slowest-download rule reads (time.Now when nil); a test moves it by hand.
+	exportNow func() time.Time
 }
 
 // buildVersion names the build. A release image has its tag compiled in (build-image.sh, with -X), and
@@ -228,7 +241,8 @@ var buildVersion = "dev"
 
 func newApp(db *sql.DB, dataDir string) *app {
 	p, _ := parseProxies(defaultProxies)
-	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: buildVersion, mode: modeLocal, sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard}}
+	return &app{db: db, dataDir: dataDir, lim: newLimits(), proxies: p, version: buildVersion, mode: modeLocal, sent: &onceStore{m: map[string]*onceEntry{}}, reqLog: &requestLog{out: io.Discard},
+		exportSlots: make(chan struct{}, exportsAtOnce)}
 }
 
 // instanceMode is how an instance runs (FLOWA_MODE; docs/federation.md, section 4). It is read once
@@ -498,6 +512,21 @@ func (l *limiter) addWeight(key string, w int) bool {
 	return true
 }
 
+// giveBack takes w tenths back from key's count in its current window and forgets the key once nothing is
+// left, so that the next event opens a window of its own instead of counting in one that began with an event
+// given back. Only the export's allowance uses it; addWeight with a negative weight keeps the window.
+func (l *limiter) giveBack(key string, w int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := l.m[key]
+	if f == nil || time.Now().After(f.reset) {
+		return
+	}
+	if f.n = max(f.n-w, 0); f.n == 0 {
+		delete(l.m, key)
+	}
+}
+
 // forget drops the count for key, as after a correct password.
 func (l *limiter) forget(key string) {
 	l.mu.Lock()
@@ -541,6 +570,9 @@ type limits struct {
 	inboxHost                                   *limiter // verified deliveries per host of the key id, in a mode that federates
 	inboxAddr                                   *limiter // deliveries per address, before a signature is read, in a mode that federates
 	commentEdits                                *limiter // edits of comments per member, in a mode that federates (each may go out as an Update)
+	export                                      *limiter // downloads of a member's own data that ran to the end, per member (PRT 1)
+	exportTries                                 *limiter // downloads of a member's own data begun, finished or not, per member
+	exportChecks                                *limiter // asks whether a download would start (?check), per member
 }
 
 func newLimits() limits {
@@ -580,6 +612,13 @@ func newLimits() limits {
 		// An edit of a comment that went out becomes an Update to the commenter's followers on other servers (FWR 6,
 		// after its third review): 120 an hour is a person fixing their words; local mode asks no allowance for an edit.
 		commentEdits: newLimiter(120, time.Hour),
+		// A member downloads their data at most once an hour (PRT 1). A download that fails or is cut off is given
+		// back, so a dropped connection does not cost the hour; exportTries still bounds how many the server begins.
+		export:      newLimiter(1, time.Hour),
+		exportTries: newLimiter(6, time.Hour),
+		// Each ask reads the size of the member's archive, a few thousand index lookups for a member with long lists;
+		// 60 an hour is a person pressing the button again and again, and a script gets no more.
+		exportChecks: newLimiter(60, time.Hour),
 	}
 }
 
@@ -30217,6 +30256,659 @@ func (a *app) handleBlocks(w http.ResponseWriter, _ *http.Request, u *user) {
 	writeJSON(w, http.StatusOK, map[string]any{"blocks": out, "total": total})
 }
 
+/* ---------- a member's own data as one archive (PRT 1) ----------
+
+GET /api/export sends the signed-in member a zip of what they wrote here: their profile, their posts with their
+pictures, their comments, who they follow and who follows them, and whom they block. Nothing of anyone else's is
+in it: another person appears only as a handle (and, for an account of another server, the address of that
+account), and a comment under someone else's post carries the post's number or address, never its text.
+Progress documents are not in it: each prop's progress already has its own export on the Settings page.
+
+The archive is made while it is sent. Rows are read a page at a time and each page's connection is given back
+before a byte of it is written; a picture is read alone, then written. So the server holds one page or one
+picture in memory, and one database connection only while it reads, never while a slow client takes the bytes.
+The zip's directory is written last, and manifest.json, the last file, says the archive is complete: a download
+that is cut off, runs out of time or grows past exportMaxBytes is aborted without the directory, so the browser
+reports a failed download and no zip program opens it as if it were whole. */
+
+const (
+	exportFormat   = 1                // the version of the archive's layout, in manifest.json and profile.json
+	exportMaxBytes = 512 << 20        // the most an archive may hold, 512 MB; a larger one is refused before it starts
+	exportMaxTime  = 30 * time.Minute // the longest a download may run, from the request to the last byte
+	exportPage     = 500              // rows read at a time
+	// exportsAtOnce is how many downloads the server makes at the same time, whoever asks: each holds a database
+	// connection while it reads a page (of 8 on the Pi) and a picture in memory (of 384 MB). Another waits its turn.
+	exportsAtOnce = 2
+	// A download must keep up an average of exportMinRate bytes a second once exportGrace has passed, and no single
+	// write may wait longer than exportStall. Two people reading slowly would otherwise hold both places for the
+	// whole half hour, six times an hour each. The rate is low enough for a phone on a poor connection to get a small
+	// archive (the half hour bounds a large one). What is counted is what was handed to the connection, which includes
+	// what still waits in its buffers, so a reader just under the rate can keep its place for some minutes before the
+	// count falls under it; a reader that stops lets it go once a write has waited exportStall. The archive is broken
+	// off as a failed one: the hour is given back, the try is counted.
+	exportMinRate = 8 << 10 // bytes a second, 8 KB/s
+	exportGrace   = time.Minute
+	exportStall   = time.Minute
+)
+
+var (
+	errExportTooBig = errors.New("the archive grew past its size cap while it was written")
+	errExportSlow   = errors.New("the download fell under the slowest rate a download may keep")
+)
+
+// exportSizeSQL is an upper bound, in bytes, of the archive of member $1 as sent, held against the same cap as
+// the writer counts: a picture at its decoded size (three quarters of its base64 text) and 512 bytes for its
+// file's place in the zip, every piece of text that is written six times its bytes (JSON writes <, > and & and each
+// control character as six bytes, \u003c; compression only makes it smaller), the addresses of other servers'
+// posts and accounts and their handles among them, and 512 bytes per row (1024 for an account, whose handle may
+// carry this server's host, at most 253 bytes of letters, digits, dots and hyphens) for the field names, the zip's
+// own records and the manifest's line. The profile's JSON fields count as text; profile.json is written indented,
+// which adds a line and its indent to each of their elements, and that is within the fixed 64 KB: validation keeps
+// the four together under 3 KB (three cleaned handles, three yes-or-no preferences, at most five prop names, avatar
+// settings of at most 2 KB). octet_length reads the size a value is kept at
+// without unpacking it, which matters for pictures: length would unpack each one to count its characters.
+var exportSizeSQL = `SELECT
+	(SELECT coalesce(sum(octet_length(image) / 4 * 3 + 6 * (octet_length(body) + octet_length(alt) + octet_length(data::text) + octet_length(prop) + octet_length(skill) + octet_length(hidden_reason)) + 1024), 0) FROM posts WHERE user_id = $1)
+	+ (SELECT coalesce(sum(6 * (octet_length(c.body) + octet_length(c.hidden_reason) + coalesce(octet_length(p.ap_id), 0) + coalesce(octet_length(pc.ap_id), 0)) + 512), 0)
+		FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments pc ON pc.id = c.parent_id WHERE c.user_id = $1 AND NOT c.deleted)
+	+ (SELECT coalesce(sum(` + exportAccountBytes("f.followee_id") + `), 0) FROM follows f WHERE f.follower_id = $1)
+	+ (SELECT coalesce(sum(` + exportAccountBytes("f.follower_id") + `), 0) FROM follows f WHERE f.followee_id = $1)
+	+ (SELECT coalesce(sum(` + exportAccountBytes("b.target_id") + `), 0) FROM blocks b WHERE b.user_id = $1)
+	+ (SELECT octet_length(avatar) / 4 * 3 + 6 * (octet_length(username) + octet_length(display_name) + octet_length(bio))
+		+ 6 * (octet_length(links::text) + octet_length(props::text) + octet_length(prefs::text) + octet_length(avatar_cfg::text)) + 65536 FROM users WHERE id = $1)`
+
+// exportAccountBytes is the most an account of a list writes, the account being the one the column id names: its
+// handle and the address of its profile at six times their bytes, and 1024 bytes for the rest. Each account is
+// looked up by its key, one at a time, so the size of a member with 5,000 blocks reads those rows and no table whole.
+func exportAccountBytes(id string) string {
+	return `6 * coalesce((SELECT octet_length(u.username) + coalesce((SELECT octet_length(ac.preferred_username) + octet_length(ac.ap_id)
+		FROM ap_actors ac WHERE ac.user_id = u.id), 0) FROM users u WHERE u.id = ` + id + `), 0) + 1024`
+}
+
+const (
+	exportAgain = "You downloaded your data less than an hour ago. Wait a while and try again."
+	exportTries = "You have started several downloads in the last hour that did not finish. Wait a while and try again."
+	exportBusy  = "Flowa is making other people's downloads right now. Try again in a minute."
+	// exportChecked is the refusal of the asks themselves, apart from the hour and the tries, which they never touch.
+	exportChecked = "You have asked about a download many times this hour. Wait a while and try again."
+)
+
+func (a *app) handleExport(w http.ResponseWriter, r *http.Request, u *user) {
+	key := strconv.FormatInt(u.ID, 10)
+	// The mux gives HEAD to the GET route. A HEAD would make the whole archive only for its body to be thrown away,
+	// and spend the hour, so it is refused before anything is read; its headers depend on making the archive.
+	if r.Method == http.MethodHead {
+		w.Header().Set("Allow", "GET")
+		fail(w, http.StatusMethodNotAllowed, "Download your data with GET.")
+		return
+	}
+	// The session cookie goes with a link followed from another site, so such a link could start a download the
+	// member did not ask for and spend their hour. A browser says where a request came from; a download from
+	// Flowa's own page is same-origin.
+	if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" && s != "none" {
+		logRefusal(w, "a download of data asked from another site", "by member "+key)
+		fail(w, http.StatusForbidden, "Download your data from the Settings page of this Flowa.")
+		return
+	}
+	// ?check says whether a download would start now, without starting one or counting it: the page asks first, so
+	// that a refusal is shown as words on the page rather than saved as a file. Both answer in the same order, the
+	// cheap refusals before the size is read.
+	check := r.URL.Query().Has("check")
+	if check && !a.lim.exportChecks.add(key) {
+		logRefusal(w, "too many asks about a download of data", "by member "+key)
+		fail(w, http.StatusTooManyRequests, exportChecked)
+		return
+	}
+	busy := func() {
+		w.Header().Set("Retry-After", "60")
+		fail(w, http.StatusServiceUnavailable, exportBusy)
+	}
+	switch {
+	case a.lim.export.over(key):
+		fail(w, http.StatusTooManyRequests, exportAgain)
+		return
+	case a.lim.exportTries.over(key):
+		fail(w, http.StatusTooManyRequests, exportTries)
+		return
+	case check && len(a.exportSlots) == cap(a.exportSlots):
+		busy()
+		return
+	}
+	if !check {
+		// A place among the downloads running now, given back on every way out, an abort included (the deferred
+		// receive runs while the panic below unwinds). Waiting for one is not counted against the member.
+		select {
+		case a.exportSlots <- struct{}{}:
+			defer func() { <-a.exportSlots }()
+		default:
+			logRefusal(w, "a download of data while others are made", "by member "+key)
+			busy()
+			return
+		}
+	}
+	if a.exportHook != nil {
+		a.exportHook("size") // a test counts the reads of the size
+	}
+	var size int64
+	if err := a.db.QueryRowContext(r.Context(), exportSizeSQL, u.ID).Scan(&size); err != nil {
+		a.serverError(w, err)
+		return
+	}
+	capB := cmp.Or(a.exportMax, exportMaxBytes)
+	if size > capB {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("Your data is larger than the %d MB this Flowa can put in one download. Ask an admin.", capB>>20))
+		return
+	}
+	if check {
+		writeJSON(w, http.StatusOK, map[string]any{"bytes": size})
+		return
+	}
+	if !a.lim.exportTries.add(key) {
+		logRefusal(w, "too many downloads of data begun", "by member "+key)
+		fail(w, http.StatusTooManyRequests, exportTries)
+		return
+	}
+	w, ok := allowed(w, a.lim.export, u, "downloads of your data")
+	if !ok {
+		return
+	}
+	limit := cmp.Or(a.exportTime, exportMaxTime)
+	ctx, cancel := context.WithTimeout(r.Context(), limit)
+	defer cancel()
+	// The server's write timeout is for ordinary answers; this one may run up to its own limit. A writer that cannot
+	// take a deadline (a test's recorder) is held to the context alone.
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(limit))
+	now := time.Now().UTC()
+	h := w.Header()
+	h.Set("Content-Type", "application/zip")
+	h.Set("Cache-Control", "no-store")
+	// A username is only letters, digits and . _ - (usernameRE), so the name needs no escaping.
+	h.Set("Content-Disposition", `attachment; filename="flowa-`+u.Username+`-`+now.Format("2006-01-02")+`.zip"`)
+	w.WriteHeader(http.StatusOK)
+	x := &exporter{a: a, ctx: ctx, uid: u.ID, now: now, counts: map[string]int{}}
+	// The size was checked above with an upper bound, so the writer's cap, the same number, is met only by an
+	// archive that grew while it was written.
+	clock := a.exportNow
+	if clock == nil {
+		clock = time.Now
+	}
+	x.out = &exportWriter{w: w, max: capB, hook: a.exportHook, now: clock, rc: http.NewResponseController(w), end: time.Now().Add(limit)}
+	x.out.start = x.out.now()
+	x.z = zip.NewWriter(x.out)
+	err := x.run()
+	if err == nil {
+		err = x.z.Close()
+	}
+	if err == nil {
+		// The end of the zip's directory may still sit in the server's buffer. Pushing it out proves only that every
+		// byte was handed to the connection; a failure here is a failed download, given back, but a client that goes
+		// once the bytes are in the connection's buffers is not seen, and the download counts.
+		err = x.out.flush()
+	}
+	if err != nil {
+		// Not counted: the member may try again at once, in a window of their own. The connection is dropped without
+		// the end of the answer, so the browser says the download failed, and the zip has no directory, so nothing
+		// opens it as whole. The request log has only the status, sent already as 200, so its line says why instead.
+		a.lim.export.giveBack(key, tenths)
+		noteRefusal(w, "download of data stopped")
+		log.Printf("export: member %d, stopped after %d bytes: %v", u.ID, x.out.n, err)
+		panic(http.ErrAbortHandler)
+	}
+	log.Printf("export: member %d, %d bytes in %d files", u.ID, x.out.n, len(x.files))
+}
+
+// exportWriter is the response under the zip: it counts what was sent, stops at the size cap, and tells the test
+// hook of each write, so a test can check that no connection is held while the client is written to.
+//
+// It also holds a download to the slowest rate it may keep (exportMinRate after exportGrace, by the clock now) and
+// gives each write at most exportStall before the connection's deadline, never past end, the download's own.
+// now and rc are nil in a writer made without them, which then keeps no rate and sets no deadline.
+type exportWriter struct {
+	w     io.Writer
+	n     int64
+	max   int64
+	hook  func(string) error
+	now   func() time.Time
+	start time.Time
+	rc    *http.ResponseController
+	end   time.Time
+}
+
+func (c *exportWriter) Write(b []byte) (int, error) {
+	if c.n+int64(len(b)) > c.max {
+		return 0, errExportTooBig
+	}
+	if c.hook != nil {
+		if err := c.hook("write"); err != nil {
+			return 0, err
+		}
+	}
+	if c.now != nil {
+		if took := c.now().Sub(c.start); took > exportGrace && float64(c.n) < exportMinRate*took.Seconds() {
+			return 0, errExportSlow
+		}
+	}
+	if c.rc != nil {
+		// A writer that cannot take a deadline (a test's recorder) is held by the rate rule and the context alone.
+		d := time.Now().Add(exportStall)
+		if d.After(c.end) {
+			d = c.end
+		}
+		c.rc.SetWriteDeadline(d)
+	}
+	n, err := c.w.Write(b)
+	c.n += int64(n)
+	return n, err
+}
+
+// flush pushes out what the server still holds of the answer, the end of the zip with it.
+func (c *exportWriter) flush() error {
+	if c.hook != nil {
+		if err := c.hook("flush"); err != nil {
+			return err
+		}
+	}
+	if c.rc == nil {
+		return nil
+	}
+	if err := c.rc.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
+}
+
+// exporter makes one archive. Every file name in it is made here from fixed words and row numbers, never from
+// anything a person typed, so no name can climb out of the folder it is unpacked into or meet another.
+type exporter struct {
+	a      *app
+	ctx    context.Context
+	uid    int64
+	now    time.Time
+	z      *zip.Writer
+	out    *exportWriter
+	files  []string
+	counts map[string]int
+}
+
+// The lists of accounts, each a page after the account $2, $3 at a time. A follow across a block is left out as
+// the pages leave it out (followShown): a follow kept from before a block is not a follow anyone sees. Requests
+// that wait (pending) are listed, marked, as they are the member's to answer or to take back.
+var (
+	exportFollowingSQL = `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), f.created_at, f.state = 'pending'
+		FROM follows f JOIN users u ON u.id = f.followee_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
+		WHERE f.follower_id = $1 AND u.id > $2 AND ` + followShown("f.followee_id") + ` ORDER BY u.id LIMIT $3`
+	exportFollowersSQL = `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), f.created_at, f.state = 'pending'
+		FROM follows f JOIN users u ON u.id = f.follower_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
+		WHERE f.followee_id = $1 AND u.id > $2 AND ` + followShown("f.follower_id") + ` ORDER BY u.id LIMIT $3`
+	exportBlocksSQL = `SELECT u.id, u.username, u.domain, coalesce(ac.preferred_username, ''), coalesce(ac.ap_id, ''), b.created_at, false
+		FROM blocks b JOIN users u ON u.id = b.target_id LEFT JOIN ap_actors ac ON ac.user_id = u.id
+		WHERE b.user_id = $1 AND u.id > $2 ORDER BY u.id LIMIT $3`
+	exportPostsSQL = `SELECT id, kind, body, prop, skill, data, audience, alt, created_at, hidden_at IS NOT NULL, hidden_reason, left(image, 32)
+		FROM posts WHERE user_id = $1 AND id > $2 ORDER BY id LIMIT $3`
+	exportCommentsSQL = `SELECT c.id, c.post_id, coalesce(p.ap_id, ''), c.parent_id, coalesce(pc.ap_id, ''), c.body, c.created_at, c.edited_at,
+			c.hidden_at IS NOT NULL, c.hidden_reason
+		FROM comments c JOIN posts p ON p.id = c.post_id LEFT JOIN comments pc ON pc.id = c.parent_id
+		WHERE c.user_id = $1 AND NOT c.deleted AND c.id > $2 ORDER BY c.id LIMIT $3`
+)
+
+// exportPic is a picture to write after posts.json: the post it is read from and the name it gets.
+type exportPic struct {
+	id   int64
+	name string
+}
+
+func (x *exporter) run() error {
+	if err := x.text("README.txt", exportReadme); err != nil {
+		return err
+	}
+	if err := x.profile(); err != nil {
+		return err
+	}
+	pics, err := x.posts()
+	if err != nil {
+		return err
+	}
+	x.counts["pictures"] = 0
+	for _, p := range pics {
+		var v string
+		err := x.a.db.QueryRowContext(x.ctx, `SELECT image FROM posts WHERE id = $1 AND user_id = $2`, p.id, x.uid).Scan(&v)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && picExt(v) == "" {
+			continue // the post was deleted or changed while the archive was made; manifest.json lists what is there
+		}
+		if err != nil {
+			return err
+		}
+		if err := x.picture(p.name, v); err != nil {
+			return err
+		}
+		x.counts["pictures"]++
+	}
+	if err := x.comments(); err != nil {
+		return err
+	}
+	for _, l := range []struct{ file, query string }{{"following.json", exportFollowingSQL}, {"followers.json", exportFollowersSQL}, {"blocks.json", exportBlocksSQL}} {
+		if err := x.accounts(l.file, l.query); err != nil {
+			return err
+		}
+	}
+	return x.manifest()
+}
+
+// create starts a file in the archive, compressed, or stored as it is (pictures are compressed already).
+func (x *exporter) create(name string, store bool) (io.Writer, error) {
+	if err := x.ctx.Err(); err != nil {
+		return nil, err
+	}
+	m := zip.Deflate
+	if store {
+		m = zip.Store
+	}
+	x.files = append(x.files, name)
+	return x.z.CreateHeader(&zip.FileHeader{Name: name, Method: m, Modified: x.now})
+}
+
+func (x *exporter) text(name, body string) error {
+	f, err := x.create(name, false)
+	if err == nil {
+		_, err = io.WriteString(f, body)
+	}
+	return err
+}
+
+func (x *exporter) put(name string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := x.create(name, false)
+	if err == nil {
+		_, err = f.Write(append(b, '\n'))
+	}
+	return err
+}
+
+// picture writes a picture kept as a data URL as the file it was.
+func (x *exporter) picture(name, v string) error {
+	comma := strings.IndexByte(v, ',')
+	raw, err := base64.StdEncoding.DecodeString(v[comma+1:])
+	if comma < 0 || err != nil {
+		return fmt.Errorf("picture %s cannot be read", name)
+	}
+	f, err := x.create(name, true)
+	if err == nil {
+		_, err = f.Write(raw)
+	}
+	return err
+}
+
+// picExt is the file ending of a picture from the start of its data URL, or "" for a kind cleanImage never keeps.
+func picExt(head string) string {
+	switch {
+	case strings.HasPrefix(head, "data:image/jpeg;base64,"):
+		return ".jpg"
+	case strings.HasPrefix(head, "data:image/png;base64,"):
+		return ".png"
+	}
+	return ""
+}
+
+// list writes a JSON array a page at a time: page reads the rows after the cursor and gives its connection back
+// before it returns, and only then is the page written. It returns how many items were written.
+func (x *exporter) list(name string, page func(after int64) ([]any, int64, error)) (int, error) {
+	f, err := x.create(name, false)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := io.WriteString(f, "["); err != nil {
+		return 0, err
+	}
+	n, after := 0, int64(0)
+	for {
+		items, last, err := page(after)
+		if err != nil {
+			return n, err
+		}
+		if x.a.exportHook != nil {
+			if err := x.a.exportHook("page"); err != nil {
+				return n, err
+			}
+		}
+		for _, it := range items {
+			b, err := json.Marshal(it)
+			if err != nil {
+				return n, err
+			}
+			sep := ",\n  "
+			if n == 0 {
+				sep = "\n  "
+			}
+			if _, err := io.WriteString(f, sep); err != nil {
+				return n, err
+			}
+			if _, err := f.Write(b); err != nil {
+				return n, err
+			}
+			n++
+		}
+		if len(items) < exportPage {
+			break
+		}
+		after = last
+	}
+	end := "]\n"
+	if n > 0 {
+		end = "\n]\n"
+	}
+	_, err = io.WriteString(f, end)
+	return n, err
+}
+
+func (x *exporter) profile() error {
+	var name, display, bio, role, head string
+	var links, props, prefs, avatarCfg json.RawMessage
+	var locked, federates bool
+	var joined time.Time
+	err := x.a.db.QueryRowContext(x.ctx, `SELECT username, display_name, bio, role, links, props, prefs, avatar_cfg, locked, federates, created_at, left(avatar, 32)
+		FROM users WHERE id = $1 AND domain = ''`, x.uid).Scan(&name, &display, &bio, &role, &links, &props, &prefs, &avatarCfg, &locked, &federates, &joined, &head)
+	if err != nil {
+		return err
+	}
+	pic := ""
+	if ext := picExt(head); ext != "" {
+		pic = "profile-picture" + ext
+	}
+	handle := name
+	if x.a.fedHost != "" {
+		handle = name + "@" + x.a.fedHost
+	}
+	out := map[string]any{"format": "flowa-export", "version": exportFormat, "username": name, "handle": handle, "displayName": display,
+		"bio": bio, "links": links, "props": props, "role": role, "joined": stamp(joined), "avatar": avatarCfg, "picture": nil,
+		"settings": map[string]any{"preferences": prefs, "locked": locked, "federates": federates}}
+	if pic != "" {
+		out["picture"] = pic
+	}
+	if err := x.put("profile.json", out); err != nil {
+		return err
+	}
+	x.counts["profilePicture"] = 0
+	if pic == "" {
+		return nil
+	}
+	var v string
+	if err := x.a.db.QueryRowContext(x.ctx, `SELECT avatar FROM users WHERE id = $1`, x.uid).Scan(&v); err != nil {
+		return err
+	}
+	if picExt(v) == "" {
+		return nil // removed while the archive was made; manifest.json lists what is there
+	}
+	if err := x.picture(pic, v); err != nil {
+		return err
+	}
+	x.counts["profilePicture"] = 1
+	return nil
+}
+
+// posts writes posts.json and returns the pictures to write after it.
+func (x *exporter) posts() ([]exportPic, error) {
+	var pics []exportPic
+	n, err := x.list("posts.json", func(after int64) ([]any, int64, error) {
+		rows, err := x.a.db.QueryContext(x.ctx, exportPostsSQL, x.uid, after, exportPage)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer rows.Close()
+		var items []any
+		var last int64
+		for rows.Next() {
+			var id int64
+			var kind, body, prop, skill, audience, alt, reason, head string
+			var data json.RawMessage
+			var made time.Time
+			var hidden bool
+			if err := rows.Scan(&id, &kind, &body, &prop, &skill, &data, &audience, &alt, &made, &hidden, &reason, &head); err != nil {
+				return nil, 0, err
+			}
+			it := map[string]any{"id": id, "kind": kind, "created": stamp(made), "audience": audience, "text": body, "prop": prop, "skill": skill, "data": data}
+			if ext := picExt(head); ext != "" {
+				name := "pictures/post-" + strconv.FormatInt(id, 10) + ext
+				it["picture"], it["alt"] = name, alt
+				pics = append(pics, exportPic{id, name})
+			}
+			if hidden {
+				it["hidden"], it["hiddenReason"] = true, reason
+			}
+			items, last = append(items, it), id
+		}
+		return items, last, rows.Err()
+	})
+	x.counts["posts"] = n
+	return pics, err
+}
+
+func (x *exporter) comments() error {
+	n, err := x.list("comments.json", func(after int64) ([]any, int64, error) {
+		rows, err := x.a.db.QueryContext(x.ctx, exportCommentsSQL, x.uid, after, exportPage)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer rows.Close()
+		var items []any
+		var last int64
+		for rows.Next() {
+			var id, post int64
+			var parent sql.NullInt64
+			var postAddr, parentAddr, body, reason string
+			var made time.Time
+			var edited sql.NullTime
+			var hidden bool
+			if err := rows.Scan(&id, &post, &postAddr, &parent, &parentAddr, &body, &made, &edited, &hidden, &reason); err != nil {
+				return nil, 0, err
+			}
+			it := map[string]any{"id": id, "postId": post, "created": stamp(made), "text": body}
+			if postAddr != "" {
+				it["postAddress"] = postAddr
+			}
+			if parent.Valid {
+				it["parentId"] = parent.Int64
+				if parentAddr != "" {
+					it["parentAddress"] = parentAddr
+				}
+			}
+			if edited.Valid {
+				it["edited"] = stamp(edited.Time)
+			}
+			if hidden {
+				it["hidden"], it["hiddenReason"] = true, reason
+			}
+			items, last = append(items, it), id
+		}
+		return items, last, rows.Err()
+	})
+	x.counts["comments"] = n
+	return err
+}
+
+// accounts writes one list of accounts by handle: an account of this server as its username (with this server's
+// host in a mode that federates), one of another server as name@host with the address of its profile.
+func (x *exporter) accounts(file, query string) error {
+	n, err := x.list(file, func(after int64) ([]any, int64, error) {
+		rows, err := x.a.db.QueryContext(x.ctx, query, x.uid, after, exportPage)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer rows.Close()
+		var items []any
+		var last int64
+		for rows.Next() {
+			var id int64
+			var name, domain, pref, addr string
+			var since time.Time
+			var pending bool
+			if err := rows.Scan(&id, &name, &domain, &pref, &addr, &since, &pending); err != nil {
+				return nil, 0, err
+			}
+			handle := name // a remote account's username is already name@host, with a mark when its name was not plain
+			switch {
+			case domain != "" && plainRemoteName(pref):
+				handle = pref + "@" + domain
+			case domain == "" && x.a.fedHost != "":
+				handle = name + "@" + x.a.fedHost
+			}
+			it := map[string]any{"handle": handle, "since": stamp(since)}
+			if domain != "" && addr != "" {
+				it["address"] = addr
+			}
+			if pending {
+				it["pending"] = true
+			}
+			items, last = append(items, it), id
+		}
+		return items, last, rows.Err()
+	})
+	x.counts[strings.TrimSuffix(file, ".json")] = n
+	return err
+}
+
+// manifest is the last file, written only when everything before it was, so that its presence says the archive
+// is whole. files lists the files before it, in order.
+func (x *exporter) manifest() error {
+	files := slices.Clone(x.files)
+	return x.put("manifest.json", map[string]any{"format": "flowa-export", "version": exportFormat, "exported": stamp(x.now),
+		"complete": true, "counts": x.counts, "files": files})
+}
+
+// exportReadme is README.txt, the first file of every archive.
+const exportReadme = `Your data from Flowa
+====================
+
+This archive holds what you wrote on Flowa: JSON files (UTF-8 text that any editor opens and other programs
+read) and your pictures as image files. Times are in UTC, written as RFC 3339 (2026-11-15T09:30:00Z).
+
+README.txt          This file.
+profile.json        Your profile: username, handle, display name, bio, links, props, role, when you joined,
+                    your avatar settings, your preferences, and the name of your profile picture file.
+profile-picture.*   Your profile picture, if you have one.
+posts.json          Your posts, oldest first: text, tags, combo, links, who could see each, and the file and
+                    description of its picture. A post a moderator hid is marked hidden, with the reason given.
+pictures/           The pictures of your posts, named post-<number of the post>.jpg or .png. A post deleted
+                    while the archive was made can be in posts.json with its picture's name but no file;
+                    manifest.json counts the pictures that are in the archive.
+comments.json       Your comments and replies, oldest first, each with the number of the post it is under (and
+                    its address, for a post of another server) and of the comment it answers. The text of other
+                    people's posts and comments is not included.
+following.json      The accounts you follow (or asked to follow: marked pending), by handle. An account of another
+                    server is name@host, with the address of its profile.
+followers.json      The accounts that follow you, the same way. A request to follow you from an account of
+                    another server that waits for your answer is listed too, marked pending.
+blocks.json         The accounts you block, the same way.
+manifest.json       Written last: the format version, when the archive was made, how many of each thing it holds,
+                    and the list of files. If manifest.json is missing, the download did not finish: download again.
+
+Not included: your practice progress (each prop has its own Export JSON on the Settings page), your likes and
+bookmarks, your notifications, your password and sessions, and anything of other people beyond their handles.
+Pictures were stripped of camera data (such as the location) when they were uploaded.
+`
+
 /* ---------- follows: members whose posts a member wants in Home ---------- */
 
 // maxFollows is how many accounts one member may follow. It is what bounds the rows a page of Home
@@ -30466,6 +31158,9 @@ func (a *app) socialRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/notifications", social(a.handleNotifications))
 	mux.HandleFunc("PUT /api/notifications/read", social(a.handleReadNotifications))
 	mux.HandleFunc("GET /api/blocks", social(a.handleBlocks))
+	// A member's own data as one archive (PRT 1), in every mode, behind its own flag rather than community's: a
+	// member who posted while the timeline was on keeps their posts after an admin turns it off.
+	mux.HandleFunc("GET /api/export", a.flagged("export", a.authed("", a.handleExport)))
 	mux.HandleFunc("PUT /api/users/{username}/block", social(a.handleBlock))
 	mux.HandleFunc("DELETE /api/users/{username}/block", social(a.handleUnblock))
 	// Follows and Home are behind their own flag too, off by default: with it off they are not there.

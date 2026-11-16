@@ -1126,6 +1126,36 @@ in the container's environment, when set, is shown instead.
   reads. An hourly job removes expired or unused
   sessions, notifications read more than 180 days ago, link previews no post uses, and requests to join
   that waited more than 30 days.
+- **A member's own data.** With the `export` flag on (off by default), Settings has a Your data card whose
+  Download my data link (`GET /api/export`) gives the signed-in member one zip file, in every mode: `profile.json`
+  (username, handle, display name, bio, links, props, role, when they joined, avatar settings and preferences),
+  their profile picture, `posts.json` with the pictures under `pictures/` and their descriptions (a post a moderator
+  hid is marked so, with the reason the member is shown), `comments.json` (with the number of the post each is
+  under, and its address for a post of another server, never the text of anyone else's post or comment),
+  `following.json`, `followers.json` and `blocks.json` by handle (`name@host` and the profile's address for an
+  account of another server), a `README.txt` that says what each file is, and `manifest.json`, written last, with
+  the format version, the counts and the list of files. Times are RFC 3339 in UTC. Likes, bookmarks,
+  notifications, the password, sessions and keys are not in it; practice progress keeps its own Export JSON on
+  the same page. A member may download once an hour; a download that fails or is cut off is not counted (and
+  leaves no hour running), and at most 6 may be begun in an hour. At most 2 downloads are made at once across the
+  server (`exportsAtOnce`); another is answered 503 with `Retry-After: 60`, and not counted. A HEAD request is
+  answered 405. The archive is made while it is sent, a page of 500 rows or one picture at a
+  time, with a database connection held only while a page is read; it may hold up to 512 MB and take up to
+  30 minutes (`exportMaxBytes` and `exportMaxTime` in `main.go`). Its size is reckoned first as an upper bound
+  in bytes, without unpacking a picture; a larger one is refused before it starts. The bound counts text at six
+  times its bytes, so for text in scripts that take 3 or 4 bytes a character it refuses at roughly a fifth of
+  512 MB of real archive, which takes tens of thousands of long comments. A download must keep up 8 KB a
+  second on average once its first minute has passed, and no write may wait longer than a minute
+  (`exportMinRate`, `exportGrace`, `exportStall`); the Settings card says so. A slower reader is broken off, the
+  hour given back and the try counted. What is counted is what was handed to the connection, including what
+  still waits in its buffers, so a reader just under the rate can keep its place for some minutes. The page's
+  question whether a download would start (`?check=1`) has its own allowance of 60 an hour, which touches neither
+  the hour nor the tries. One that runs out of time or is cut off, or whose last bytes cannot be handed to the
+  connection, is broken off without the zip's directory, so the browser reports a
+  failed download and no zip program opens it as whole. A request from another site is refused, the answer is
+  never cached, and the log gets one line per download with the member's number and the size, never content.
+  A suspended member cannot sign in, so cannot download until the suspension ends; there is no export by staff
+  of someone else's data. `TestDBExport` checks that the archive holds exactly the member's rows.
 
 The app is plain HTTP, so passwords cross the LAN unencrypted. Keep it LAN-only. Pages are served with a
 Content-Security-Policy of `'self'` only (plus youtube-nocookie.com frames while `videoEmbeds` is on); the only
@@ -1172,10 +1202,10 @@ is [docs/hardening-plan.md](docs/hardening-plan.md).
 ## Feature flags
 
 Several features are behind flags, stored in Postgres and changed at runtime by an admin
-on the Admin page. No restart is needed. Every flag but `follows` and `federation` is on by default
+on the Admin page. No restart is needed. Every flag but `follows`, `export` and `federation` is on by default
 (`federation` exists only in a mode that federates: it pauses the inbox, [above](#federation-the-inbox-and-domain-policies)); an admin turns off what
-gets in the way, and a flag an admin has set keeps that setting. `follows` is off by default, on an instance
-that ran before it as on a new one, so that adding it changes nothing until an admin turns it on. A flag that is off turns off the feature's API as
+gets in the way, and a flag an admin has set keeps that setting. `follows` and `export` are off by default, on an instance
+that ran before them as on a new one, so that adding them changes nothing until an admin turns them on. A flag that is off turns off the feature's API as
 well as its pages: with `community` off the timeline, comments, likes, people and notifications answer
 404, and with `game` off so do badges. `signups` opens or closes sign-up (how people join while it is
 open is the `registration` setting, [Sign-up by approval](#sign-up-by-approval)), `tour` runs the
@@ -1184,8 +1214,9 @@ levels, streak sharing, challenges, achievements and XP on the Plan's phases, `m
 mutes and suspensions, `catalogEditor` is the skill map editor, `linkCards` turns Instagram, TikTok and
 YouTube links into cards, `videoEmbeds` plays YouTube in place (it adds youtube-nocookie.com frames to
 the page security policy), `suggest` is next-trick suggestions, `avatars` is avatars, body presets
-and stickers, and `follows` is follows and the Home timeline (it needs `community` too; with it off
-their routes answer 404 and a profile carries no counts).
+and stickers, `follows` is follows and the Home timeline (it needs `community` too; with it off
+their routes answer 404 and a profile carries no counts), and `export` is Download my data in Settings
+([A member's own data](#data); with it off `GET /api/export` answers 404).
 
 | Flag | What it adds to a skill's panel |
 | --- | --- |

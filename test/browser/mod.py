@@ -147,7 +147,7 @@ try:
     check('the audit log filters by action',js("return document.querySelectorAll('tbody tr').length")==1)
     nav('#/admin/features')
     names=js("return [...document.querySelectorAll('[data-change=flag]')].map(i=>i.dataset.k)")
-    check('the Features page lists every switch the server has',sorted(names)==sorted(get(op,'me')['flags'].keys()) and len(names)==16 and 'moderation' in names and 'catalogEditor' in names and 'follows' in names,names)
+    check('the Features page lists every switch the server has',sorted(names)==sorted(get(op,'me')['flags'].keys()) and len(names)==17 and 'moderation' in names and 'catalogEditor' in names and 'follows' in names and 'export' in names,names)
     # The instance information: an admin saves a description and two rules in Admin, putting them in order
     # with the keys; the rules then show at sign-up, the about page opens, and it is all cleared again.
     nav('#/admin/instance')

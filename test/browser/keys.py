@@ -325,7 +325,7 @@ WIPES="const e=document.activeElement;return !!e&&/(^|-)(del|rm|remove)(-|$)/.te
 class Stop(Exception): pass  # a step the rest of the journey needs has failed: its failure is counted, the rest skipped
 try:
     # What the journey needs and a keyboard cannot make: a second member, her post and her comment under it.
-    op=admin();api(op,'flags',{'flags':{'moderation':True,'catalogEditor':True}},'PUT');api(op,'me',{'props':['nunchaku']},'PUT')
+    op=admin();api(op,'flags',{'flags':{'moderation':True,'catalogEditor':True,'export':True}},'PUT');api(op,'me',{'props':['nunchaku']},'PUT')
     rae=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     api(rae,'signup',{'username':'rae','password':'flowa-test-only'});api(rae,'me',{'props':['nunchaku']},'PUT')
     rp=api(rae,'posts',{'body':'First clean upspin today'})['posts'][0]['id']
@@ -574,6 +574,13 @@ try:
     if tab_to('#main button[data-act=file]','Import JSON'):
         key(ENTER);key(SPACE)
         check('settings: Enter and Space on Import JSON each open the file chooser',lambda: js("return window.__files")==2,lambda: js("return window.__files"),timeout=3)
+    # Download my data is a link Tab reaches and Enter follows. The hour is spent first, so Enter brings the
+    # refusal in words rather than a file the browser would save.
+    op.open(BASE+'api/export',timeout=60).read()
+    if tab_to('#data-card a[data-act=export-all]','Download my data'):
+        key(ENTER)
+        check('settings: Enter on Download my data asks the server first and says when the hour is not over',lambda: 'less than an hour ago' in (txt('#toast') or ''),lambda: txt('#toast'),timeout=5)
+        check('settings: the focus stays on Download my data',lambda: on('#data-card a[data-act=export-all]'),active,timeout=3)
     go('#/profile','Profile')
     page('profile')
     # A field that saves as it is left: Tab still arrives at the control after it, though the page was drawn again.

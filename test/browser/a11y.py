@@ -301,6 +301,10 @@ try:
     page('own profile, whom one follows','#/u/admin')
     api(op,'users/rae/follow',{},'DELETE');api(op,'flags',{'flags':{'follows':False}},'PUT');js("localStorage.removeItem('fl-tl')");load()
     page('settings','#/settings')
+    # Your data (PRT 1), whose flag is off by default: the card with its link, then off again.
+    api(op,'flags',{'flags':{'export':True}},'PUT');load()
+    page('settings, data download','#/settings')
+    api(op,'flags',{'flags':{'export':False}},'PUT');load()
     page('avatar editor','#/avatar')
     for t in js("return [...document.querySelectorAll('.av-tabs [role=tab]')].map(b=>b.dataset.v)"): page(f'avatar editor, {t}',act=f"document.querySelector('.av-tabs [data-v={t}]').click()")
     page('search',act="openPalette()")

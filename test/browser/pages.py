@@ -235,6 +235,11 @@ try:
     check('Home is open, with Community beside it, and shows the followed member',js("return document.querySelector('.tl-tabs .on')?.dataset.v")=='home' and 'Kai Loops' in txt('[data-tour=feed]'))
     page('home-phone','Home, phone','#/timeline',w=420,ht=900)
     page('profile-follows','Public profile with Follow and the counts','#/u/kai')
+    # Settings with Your data (PRT 1), whose flag is off by default, at desktop and phone width; then off again.
+    api(op,'flags',{'flags':{'export':True}},'PUT');load()
+    page('settings-data','Settings: download your data','#/settings')
+    page('settings-data-phone','Settings: download your data, phone','#/settings',w=420,ht=900)
+    api(op,'flags',{'flags':{'export':False}},'PUT');load()
     cmd('WebDriver:SetWindowRect',width=1440,height=1000)
     # Taken last but one, so the pictures before are as they were: then kai's post and the follow go,
     # with the flag and the remembered tab, before the first-run picture.
