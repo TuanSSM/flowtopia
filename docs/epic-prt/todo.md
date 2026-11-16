@@ -60,7 +60,8 @@ table, route and test named below is new.
     at each inbox (`comes_after`), every rule of the queue applying to both, and writes down the members here who follow
     the member. A background step then asks them, in batches of 50 with leases, leaving room at the new account's host,
     to follow the new account (written "asked" before the Follow is sent, each row only while the batch holds it and the
-    redirect stands); each keeps the old follow until the new one is accepted; this server's own trouble keeps nobody,
+    redirect stands; the follow and its Follow are one transaction, and a row a stop left asked is taken again after a
+    restart; a suspension here of the new account keeps those asked); each keeps the old follow until the new one is accepted; this server's own trouble keeps nobody,
     and a member whose new account's server cannot take the Follows waits without holding anyone else's move. After it the profile is a
     redirect: the actor, the public page, the visitor page of a single-profile instance and the profile in the app say
     where it went; it takes no new follower (here, or from another server: Reject), makes no Public post and follows
@@ -72,7 +73,8 @@ table, route and test named below is new.
     `TestDBMoveOutOrdersUpdates`, `TestDBMoveOutFlagOffAfterMove`, `TestDBMoveOutReviewPoints`,
     `TestDBMoveOutStuckMemberWaits`, `TestDBMoveOutHostDown`, `TestDBMoveOutOwnTroubleKeepsNobody`, `TestDBMoveOutBatchStops`,
     `TestDBMoveOutAskedBeforeFollow`, `TestDBMoveOutDroppedFollow`, `TestMoveBackLockOrder`, `TestDBMoveOutAskedButNotSent`,
-    `TestDBMoveOutTriesOfTheBatch`, `TestDBMoveOutWaitLeavesOthersLease`, the moves' plans in
+    `TestDBMoveOutTriesOfTheBatch`, `TestDBMoveOutWaitLeavesOthersLease`, `TestDBMoveOutSuspendedHere`,
+    `TestDBMoveOutSuspendedAfterAsked`, the moves' plans in
     `TestDBQueryPlans`; the `federation` suite (ivy of one moves to lea of two, refused until lea names her; her actor
     names `movedTo`; jon, her follower on one, follows lea on two and stops following her once two accepts; two takes
     the Move without an error); the `federated` browser suite (the card, its names, contrast and keyboard path, the

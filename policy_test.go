@@ -647,7 +647,7 @@ func TestDBPolicyBothWays(t *testing.T) {
 
 // Every way out passes the domain policy (FMD 1: "checked in the fetcher, the inbox and the fan-out"), read from the
 // code, path by path. An activity leaves only through the delivery queue: every producer named below calls one of its
-// enqueue functions, they all end in enqueueOrdered, which collects the inboxes through collect (asking admits) before
+// enqueue functions, they all end in enqueueItems (through enqueueOrdered), which collects the inboxes through collect (asking admits) before
 // the one statement that writes ap_outbox, and the rows of ap_deliveries are written by fanOut alone, called after
 // collect or, for an activity that waited for room, after asking admits again; each row asks admits once more at the
 // send (TestDBDeliveryPolicyAndPause) and the fetcher a last time. Every other request (keys, actors, WebFinger,
@@ -677,9 +677,9 @@ func TestFanOutPassesAdmits(t *testing.T) {
 		return src[i : i+1+j]
 	}
 	// The producers, each with the enqueue it must reach (the paths the item names).
-	enqueueRE := regexp.MustCompile(`\.(enqueue|enqueueThen|enqueueUndo|enqueueOrdered)\(`)
+	enqueueRE := regexp.MustCompile(`\.(enqueue|enqueueThen|enqueueUndo|enqueueOrdered|enqueueItems)\(`)
 	for _, p := range []struct{ path, fn string }{
-		{"a follow, its answers and its Undo", "(f *federation) sendTakingBack("},
+		{"a follow, its answers and its Undo", "(f *federation) sendThen("},
 		{"a post's Create and its Delete", "(a *app) postOut("},
 		{"Update(Person)", "(a *app) personOut("},
 		{"Delete(Person)", "(a *app) personGone("},
@@ -698,23 +698,24 @@ func TestFanOutPassesAdmits(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]string{
-		"(q *deliveryQueue) enqueue(":     "q.enqueueThen(",
-		"(q *deliveryQueue) enqueueThen(": "q.enqueueUndo(",
-		"(q *deliveryQueue) enqueueUndo(": "q.enqueueOrdered(",
+		"(q *deliveryQueue) enqueue(":        "q.enqueueThen(",
+		"(q *deliveryQueue) enqueueThen(":    "q.enqueueUndo(",
+		"(q *deliveryQueue) enqueueUndo(":    "q.enqueueOrdered(",
+		"(q *deliveryQueue) enqueueOrdered(": "q.enqueueItems(",
 	} {
 		if !strings.Contains(body(name), want) {
-			t.Errorf("%s does not end in enqueueOrdered (%s)", name, want)
+			t.Errorf("%s does not end in enqueueItems (%s)", name, want)
 		}
 	}
-	ordered := body("(q *deliveryQueue) enqueueOrdered(")
+	ordered := body("(q *deliveryQueue) enqueueItems(")
 	if c, w := strings.Index(ordered, "q.collect(to)"), strings.Index(ordered, "INSERT INTO ap_outbox"); c < 0 || w < c {
-		t.Error("enqueueOrdered writes ap_outbox without collecting its inboxes through collect first")
+		t.Error("enqueueItems writes ap_outbox without collecting its inboxes through collect first")
 	}
 	if !strings.Contains(body("(q *deliveryQueue) collect("), "!q.f.admits(h)") {
 		t.Error("collect does not ask the domain policy")
 	}
 	if n := strings.Count(src, "INSERT INTO ap_outbox"); n != 1 {
-		t.Errorf("%d statements write ap_outbox; only enqueueOrdered may", n)
+		t.Errorf("%d statements write ap_outbox; only enqueueItems may", n)
 	}
 	// The one statement that writes ap_deliveries (deliveryFanOutSQL) is run by fanOut alone.
 	if n := strings.Count(src, "INSERT INTO ap_deliveries"); n != 1 || !strings.Contains(src, "const deliveryFanOutSQL = `WITH") {

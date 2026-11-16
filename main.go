@@ -6663,9 +6663,10 @@ type federation struct {
 	movesAt   atomic.Int64
 	movesHook func(n int)
 	// moveRowHook, when set (by a test), hears each follower of a batch before it is moved; moveSendHook between a
-	// follower written "asked" and their Follow sent.
+	// follower written "asked" and their Follow sent; moveSentHook just after the Follow's transaction.
 	moveRowHook  func(follower int64)
 	moveSendHook func(follower int64)
+	moveSentHook func(follower int64)
 	// lookupNow and lookupPause are the clock of lookupFloor; a test sets its own, so nothing waits in a test.
 	lookupNow   func() time.Time
 	lookupPause func(ctx context.Context, d time.Duration)
@@ -18428,9 +18429,14 @@ type outOrder struct {
 // (PRT 2: a member's Update(Person) and then their Move): all of them and then's writes commit, or none does. They are
 // fanned out in that order, so the first has its rows at an inbox before the next, and an item whose order names the
 // one before it (after) is held at each inbox while that one is queued there (afterHeldSQL). Each of more with out set
-// has its own answer written there; the answer returned is the first activity's.
+// has its own answer written there, before then runs; the answer returned is the first activity's.
 func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID string, body []byte, to []deliveryTarget, o outOrder, then func(*sql.Tx) error, more ...seqItem) (first enqueued, err error) {
-	items := append([]seqItem{{apID: apID, body: body, order: o}}, more...)
+	return q.enqueueItems(ctx, actor, append([]seqItem{{apID: apID, body: body, order: o}}, more...), to, then)
+}
+
+// enqueueItems is enqueueOrdered with every activity, the first included, as a seqItem (at least one), so the first's
+// answer can be written where its out says too.
+func (q *deliveryQueue) enqueueItems(ctx context.Context, actor keyOwner, items []seqItem, to []deliveryTarget, then func(*sql.Tx) error) (first enqueued, err error) {
 	f := q.f
 	for _, it := range items {
 		switch {
@@ -18553,6 +18559,12 @@ func (q *deliveryQueue) enqueueOrdered(ctx context.Context, actor keyOwner, apID
 		for i, it := range items {
 			out, k, err := one(it.apID, it.body, it.order)
 			outs[i] = out
+			// Its answer is written before then runs, so then may act on it (followRemote: a Follow sent nowhere writes
+			// no follow).
+			if it.out != nil {
+				*it.out = out
+				it.out.Refused = refused
+			}
 			if err != nil {
 				return first, err
 			}
@@ -19925,6 +19937,13 @@ func (f *federation) sendFollow(ctx context.Context, from keyOwner, act outFollo
 // sendTakingBack is sendFollow for an activity that takes back the one of id undoes (an Undo its Follow): the queue
 // never lets it reach the inbox before that one's outcome there (8.8, "Taking back").
 func (f *federation) sendTakingBack(ctx context.Context, from keyOwner, act outFollow, to *remoteActor, undoes string) error {
+	return f.sendThen(ctx, from, act, to, undoes, nil)
+}
+
+// sendThen is sendTakingBack with then run in the enqueue's transaction once the activity is written (nil for none):
+// what then writes commits with the activity or neither does. A Follow sent nowhere (errInboxRefused) rolls back then's
+// writes too (followRemote: the follow row and its Follow are one commit, PRT 2's fourth review).
+func (f *federation) sendThen(ctx context.Context, from keyOwner, act outFollow, to *remoteActor, undoes string, then func(*sql.Tx) error) error {
 	switch {
 	case f.out == nil || to.Inbox == "":
 		return errNoInbox
@@ -19936,11 +19955,22 @@ func (f *federation) sendTakingBack(ctx context.Context, from keyOwner, act outF
 	if err != nil {
 		return err
 	}
-	out, err := f.out.enqueueUndo(ctx, from, act.ID, b, []deliveryTarget{{Actor: to.ID, Inbox: to.Inbox}}, undoes, nil)
 	// No row written and none to come is a refusal (the domain policy, the host's cap or the host unavailable). An
 	// activity that waits for room in the queue (Waiting) is fanned out later, so it is sent, not refused (PRT 2's
 	// review: a Follow that waited had its follow removed though the Follow still went out).
-	if err == nil && out.Queued == 0 && !out.Duplicate && !out.Waiting && undoes == "" {
+	var out enqueued
+	refused := func() bool { return out.Queued == 0 && !out.Duplicate && !out.Waiting && undoes == "" }
+	var also func(*sql.Tx) error
+	if then != nil {
+		also = func(tx *sql.Tx) error {
+			if refused() {
+				return errInboxRefused
+			}
+			return then(tx)
+		}
+	}
+	_, err = f.out.enqueueItems(ctx, from, []seqItem{{apID: act.ID, body: b, order: outOrder{undoes: undoes}, out: &out}}, []deliveryTarget{{Actor: to.ID, Inbox: to.Inbox}}, also)
+	if err == nil && refused() {
 		return errInboxRefused
 	}
 	return err
@@ -20692,8 +20722,8 @@ func (a *app) handleFedAccount(w http.ResponseWriter, r *http.Request, u *user) 
 }
 
 // handleFedFollow is PUT /api/fed/accounts/{id}/follow: the member follows a remote account. The row is written
-// pending with the Follow's id, in a short transaction that locks the member's row as handleFollow does (so
-// maxFollows holds), and the Follow is enqueued after the commit; if it cannot be, the row goes again and the
+// pending with the Follow's id and the Follow enqueued in one short transaction that locks the member's row as
+// handleFollow does (so maxFollows holds, followRemote); if the Follow cannot be queued nothing is written and the
 // member is told to try later. A follow already there is answered as it stands, nothing sent again.
 func (a *app) handleFedFollow(w http.ResponseWriter, r *http.Request, u *user) {
 	w, ok := allowed(w, a.lim.fedFollows, u, "follows of people on other servers")
@@ -20717,7 +20747,7 @@ func (a *app) handleFedFollow(w http.ResponseWriter, r *http.Request, u *user) {
 		fail(w, http.StatusForbidden, v.Cannot)
 		return
 	}
-	made, full, err := a.followRemote(r.Context(), u, ra)
+	made, full, err := a.followRemote(r.Context(), u, ra, nil)
 	switch {
 	case errors.Is(err, errFollowSuspended):
 		fail(w, http.StatusForbidden, fedFollowSuspendedHere)
@@ -20756,63 +20786,79 @@ var (
 	errFollowSuspended = errors.New("the account is suspended on this server")
 )
 
-// followRemote writes member u's follow of the remote account ra and sends the Follow: the row is written pending with
-// the Follow's id, in a short transaction that locks the member's row as handleFollow does (so maxFollows holds), and
-// the Follow is enqueued after the commit; if it cannot be, the row goes again (errFollowNotQueued). made says a
-// follow was written; full that none was because the member follows maxFollows accounts. The caller has asked
-// followViewOf first (handleFedFollow, and a move's followers, PRT 2).
-func (a *app) followRemote(ctx context.Context, u *user, ra *remoteActor) (made, full bool, err error) {
+// followRemote writes member u's follow of the remote account ra and its Follow in one transaction (enqueueItems' then,
+// under the queue's lock, which is taken before the member's row as on every other path): the row is written pending
+// with the Follow's id, the member's row locked as handleFollow does (so maxFollows holds), and either both commit or
+// neither does, so a follow that exists always has its Follow made, whatever stops the process (PRT 2's fourth review:
+// the Follow was enqueued after the follow's commit, and a stop between the two left a request never sent). also, when
+// set, writes in the same transaction once the follow is written (a move's follower let go, moveSentSQL). made says a
+// follow was written; full that none was because the member follows maxFollows accounts; errFollowNotQueued that the
+// Follow could not be queued (nothing was written). The caller has asked followViewOf first (handleFedFollow, and a
+// move's followers, PRT 2).
+func (a *app) followRemote(ctx context.Context, u *user, ra *remoteActor, also func(*sql.Tx) error) (made, full bool, err error) {
 	f := a.fed
 	followID := f.activityID(u.Username)
-	tx, err := a.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, false, err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE`, u.ID); err != nil {
-		return false, false, err
-	}
-	// The account's row is read FOR SHARE (FMD 2): a moderator's suspension written meanwhile either waits for this
-	// transaction and then ends the follow it writes, or is seen here, so no follow of a suspended account is left. The
-	// background step of a move (PRT 2) goes through here too.
-	var held bool
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1 FOR SHARE`, ra.UserID).Scan(&held)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, false, errFollowGone
-	}
-	if err != nil {
-		return false, false, err
-	}
-	if held {
-		return false, false, errFollowSuspended
-	}
-	err = tx.QueryRowContext(ctx, `WITH ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
-			SELECT $1, $2, 'pending', $3 WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $4 AND `+blockFree("$1::bigint", "$2::bigint", "false")+`
-			ON CONFLICT DO NOTHING RETURNING 1)
-		SELECT EXISTS (SELECT 1 FROM ins), (SELECT count(*) FROM follows WHERE follower_id = $1) >= $4`, u.ID, ra.UserID, followID, maxFollows).Scan(&made, &full)
-	var pqe *pq.Error
-	if errors.As(err, &pqe) && pqe.Code == "23503" {
-		return false, false, errFollowGone
-	}
-	if err != nil {
-		return false, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, false, err
-	}
-	if !made {
-		return false, full, nil
+	var inner error
+	write := func(tx *sql.Tx) error {
+		inner = func() error {
+			if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock('ap_outbox'::regclass::oid::bigint)`); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE`, u.ID); err != nil {
+				return err
+			}
+			// The account's row is read FOR SHARE (FMD 2): a moderator's suspension written meanwhile either waits for this
+			// transaction and then ends the follow it writes, or is seen here, so no follow of a suspended account is left.
+			// The background step of a move (PRT 2) goes through here too.
+			var held bool
+			err := tx.QueryRowContext(ctx, `SELECT COALESCE(suspended_until > now(), false) FROM users WHERE id = $1 FOR SHARE`, ra.UserID).Scan(&held)
+			if errors.Is(err, sql.ErrNoRows) {
+				return errFollowGone
+			}
+			if err != nil {
+				return err
+			}
+			if held {
+				return errFollowSuspended
+			}
+			err = tx.QueryRowContext(ctx, `WITH ins AS (INSERT INTO follows (follower_id, followee_id, state, ap_id)
+					SELECT $1, $2, 'pending', $3 WHERE (SELECT count(*) FROM follows WHERE follower_id = $1) < $4 AND `+blockFree("$1::bigint", "$2::bigint", "false")+`
+					ON CONFLICT DO NOTHING RETURNING 1)
+				SELECT EXISTS (SELECT 1 FROM ins), (SELECT count(*) FROM follows WHERE follower_id = $1) >= $4`, u.ID, ra.UserID, followID, maxFollows).Scan(&made, &full)
+			var pqe *pq.Error
+			if errors.As(err, &pqe) && pqe.Code == "23503" {
+				return errFollowGone
+			}
+			if err != nil {
+				return err
+			}
+			if !made {
+				return errFollowNotMade // the Follow goes with it
+			}
+			if also != nil {
+				return also(tx)
+			}
+			return nil
+		}()
+		return inner
 	}
 	me := f.memberActor(u.Username)
-	if err := f.sendFollow(ctx, keyOwner(u.ID), outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}, ra); err != nil {
-		if _, err2 := a.db.ExecContext(ctx, `DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2 AND ap_id = $3`, u.ID, ra.UserID, followID); err2 != nil {
-			return false, false, err2
-		}
+	err = f.sendThen(ctx, keyOwner(u.ID), outFollow{ID: followID, Type: "Follow", Actor: me, Object: ra.ID}, ra, "", write)
+	switch {
+	case errors.Is(err, errFollowNotMade):
+		return false, full, nil
+	case inner != nil:
+		return false, false, inner
+	case err != nil:
 		log.Printf("follows: a Follow for %s could not be queued: %v", ra.Domain, err)
 		return false, false, errFollowNotQueued
 	}
 	return true, false, nil
 }
+
+// errFollowNotMade is followRemote's own word to roll the Follow back when no follow was written (one exists, a block,
+// or the member follows the most accounts there can be).
+var errFollowNotMade = errors.New("no follow was written")
 
 // handleFedUnfollow is DELETE /api/fed/accounts/{id}/follow: the member's follow, or their request, goes, and an
 // Undo of the Follow is sent to the account's inbox (6.4). No follow is not an error.
@@ -21898,13 +21944,16 @@ func plural(n int64, one, many string) string {
 // up unless one is in flight ($5 the queue's clock), locked in the order of their ids as every statement over several
 // rows of the queue locks; its server's shared inbox and ap_hosts are its server's, and stay. No follow of it can be
 // written meanwhile: the suspension's first statement holds the account's row, which every statement that writes one
-// reads FOR SHARE (followInSQL, handleFedFollow). Through the primary key of follows and follows_followee, the primary
-// key of users, notifications_actor, and ap_deliveries by host and inbox.
+// reads FOR SHARE (followInSQL, followRemote). Members here asked to follow it by a move (PRT 2) are kept with the
+// reason suspendedHere, as their follows end, so none is left asked for an answer that cannot come (those still to do
+// are kept so by their step). Through the primary key of follows and follows_followee, the primary key of users,
+// notifications_actor, move_followers_target, and ap_deliveries by host and inbox.
 const remoteSuspendEndsSQL = `WITH t AS (INSERT INTO notifications (user_id, kind, text) SELECT f.follower_id, 'moderation', $2 FROM follows f
 		WHERE f.followee_id = $1 AND EXISTS (SELECT 1 FROM users m WHERE m.id = f.follower_id AND m.domain = '' OFFSET 0) RETURNING 1),
 	g1 AS (DELETE FROM follows WHERE follower_id = $1 RETURNING 1),
 	g2 AS (DELETE FROM follows WHERE followee_id = $1 RETURNING 1),
 	n AS (DELETE FROM notifications WHERE actor_id = $1 AND kind IN ('follow', 'follow_request', 'follow_rejected') RETURNING 1),
+	mk AS (UPDATE move_followers SET state = 'kept', why = 'suspendedHere', claimed_until = NULL WHERE target_id = $1 AND state = 'asked' RETURNING 1),
 	q AS (UPDATE ap_deliveries d SET state = 'failed', failed_at = $5, locked_until = NULL, last_error = 'the account is suspended here'
 		FROM (SELECT id FROM ap_deliveries WHERE host = $4 AND inbox = $3 AND state = 'queued' AND (locked_until IS NULL OR locked_until < $5)
 			ORDER BY id FOR UPDATE) x
@@ -23715,11 +23764,26 @@ func (a *app) moveOut(ctx context.Context, u *user, ra *remoteActor, now time.Ti
 	return res, nil
 }
 
+// moveAtStartSQL says whether any member here waits to be moved (moveWaking: still to do, or asked and still held by a
+// step that stopped before the Follow's transaction): the first entry of move_followers_todo, as the claim finds its
+// member (with EXISTS the planner read the table whole when none waits).
+const moveAtStartSQL = `SELECT (SELECT min(m.user_id) FROM move_followers m WHERE ` + moveWaking + `) IS NOT NULL`
+
+// moveWakeSQL is when the next row a step may take comes free (moveWaking): the end of the first lease or wait, or
+// NULL for none, through move_followers_todo.
+const moveWakeSQL = `SELECT min(m.claimed_until) FROM move_followers m WHERE ` + moveWaking
+
+// moveStopSQL drops what is still to do of member $1's move once it stopped (the redirect taken back or pointing
+// elsewhere, the member gone or no longer sharing): the rows still to do and the rows asked and still held, whose Follow
+// was never made (moveWaking), so no later wake-up claims them and stops again. Followers whose Follow went keep their
+// request. Through move_followers_todo.
+const moveStopSQL = `DELETE FROM move_followers m WHERE m.user_id = $1 AND ` + moveWaking
+
 // movesAtStart marks the move of members here who follow a member who moved due when some wait (a stop came
 // midway), and says whether any do: a row a stopped step held is taken again once its lease ends.
 func (a *app) movesAtStart() (bool, error) {
 	var moving bool
-	if err := a.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM move_followers WHERE state = 'todo')`).Scan(&moving); err != nil {
+	if err := a.db.QueryRow(moveAtStartSQL).Scan(&moving); err != nil {
 		return false, err
 	}
 	if moving {
@@ -23739,9 +23803,8 @@ func (f *federation) movesWait() {
 // ($1 the queue's clock, $3 the lease's end): through move_followers_todo, the rows locked and skipped when another
 // step holds them, so two steps never take the same follower. A member whose batch could not go waits (claimed_until
 // set for all their rows, moveWaitSQL), and the claim passes over them to the next member meanwhile. A follower left
-// "asked" with the lease still on (a step that stopped between writing "asked" and sending the Follow: a deploy, a power
-// cut) is taken again once the lease has passed, unless their follow of the new account exists (the Follow was made:
-// its answer finishes them), so no second Follow goes.
+// "asked" with the lease still on (a step that stopped between writing "asked" and the Follow's transaction: a deploy, a
+// power cut) is taken again once the lease has passed (moveClaimable).
 const moveClaimSQL = `UPDATE move_followers x SET claimed_until = $3 FROM (
 		SELECT user_id, follower_id FROM move_followers m WHERE ` + moveClaimable + `
 			AND user_id = (SELECT min(user_id) FROM move_followers m WHERE ` + moveClaimable + `)
@@ -23749,10 +23812,14 @@ const moveClaimSQL = `UPDATE move_followers x SET claimed_until = $3 FROM (
 	WHERE x.user_id = k.user_id AND x.follower_id = k.follower_id RETURNING x.user_id, x.follower_id, x.target_id, x.tries`
 
 // moveClaimable is a row of move_followers (m) a step may take at $1: still to do and not held, or asked and left with
-// a lease that has passed and no follow of the new account, asked through follows' primary key for each such row (OFFSET 0
-// keeps it a lookup per row, not a pass over follows). Both branches lie in move_followers_todo's predicate.
-const moveClaimable = `((m.state = 'todo' AND (m.claimed_until IS NULL OR m.claimed_until < $1))
-	OR (m.state = 'asked' AND m.claimed_until < $1 AND NOT EXISTS (SELECT 1 FROM follows w WHERE w.follower_id = m.follower_id AND w.followee_id = m.target_id OFFSET 0)))`
+// a lease that has passed (moveWaking). An asked row keeps its lease only until its Follow's transaction, which lets it
+// go (followRemote, moveSentSQL), so such a row had no Follow made; the one exception, a follow written by hand
+// meanwhile and a stop before the lease was let go, is found by moveOne (followViewOf says requested) and sent nothing.
+const moveClaimable = `(` + moveWaking + ` AND (m.claimed_until IS NULL OR m.claimed_until < $1))`
+
+// moveWaking is a row of move_followers (m) that is still to be moved, now or once its lease has passed: still to do,
+// or asked and still held. It is move_followers_todo's predicate, which the start, the wake-up and the claim go through.
+const moveWaking = `(m.state = 'todo' OR (m.state = 'asked' AND m.claimed_until IS NOT NULL))`
 
 // moveSentSQL lets go of the lease of a follower whose Follow was made ($3 the lease): their follow of the new account
 // exists now, and its answer finishes them.
@@ -23845,7 +23912,7 @@ func (a *app) movesOut(ctx context.Context) (bool, error) {
 	if len(batch) == 0 {
 		// Nothing to take now: a member waiting, or rows held by a step that stopped, are taken when their time comes.
 		var held sql.NullTime
-		if err := f.fedRow(ctx, []any{&held}, `SELECT min(claimed_until) FROM move_followers WHERE state = 'todo'`); err == nil && held.Valid {
+		if err := f.fedRow(ctx, []any{&held}, moveWakeSQL); err == nil && held.Valid {
 			f.movesAt.Store(held.Time.UnixNano())
 		}
 		return false, nil
@@ -23899,9 +23966,9 @@ func (a *app) movesOut(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	// Stopped: the redirect taken back or pointing elsewhere, the member gone, no longer sharing. What is still to do is
-	// dropped; followers already asked keep their request, and its answer finishes or keeps them as any would.
+	// dropped (moveStopSQL); followers already asked keep their request, and its answer finishes or keeps them as any would.
 	if ra == nil || movedTo != ra.ID || !shares {
-		if _, err := f.fedExec(ctx, `DELETE FROM move_followers WHERE user_id = $1 AND state = 'todo'`, member); err != nil {
+		if _, err := f.fedExec(ctx, moveStopSQL, member); err != nil {
 			wait("")
 			return false, err
 		}
@@ -24005,7 +24072,16 @@ func (a *app) moveOne(ctx context.Context, member, follower int64, ra *remoteAct
 	if f.moveSendHook != nil {
 		f.moveSendHook(follower)
 	}
-	_, full, err := a.followRemote(ctx, fu, ra)
+	// The lease is let go in the follow's own transaction (moveSentSQL), so a row asked and still held never has a
+	// Follow made: the claim takes it again once the lease has passed, and a follower who unfollows by hand meanwhile is
+	// not sent the Follow a second time.
+	made, full, err := a.followRemote(ctx, fu, ra, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, moveSentSQL, member, follower, until)
+		return err
+	})
+	if f.moveSentHook != nil {
+		f.moveSentHook(follower)
+	}
 	// What follows the send is written on a context of its own, so a stop (a deploy ends the workers' context) does
 	// not leave it undone; a harder stop leaves the row asked with its lease, which the claim takes again.
 	cctx, cancel := own()
@@ -24026,8 +24102,11 @@ func (a *app) moveOne(ctx context.Context, member, follower int64, ra *remoteAct
 		return err
 	case full:
 		return back("kept", "full", nil)
+	case made:
+		return nil
 	}
-	// Made, or one was written meanwhile: the follow exists, its answer finishes the follower.
+	// One was written meanwhile (by hand): the follow exists, its answer finishes the follower. A stop before this
+	// leaves the row held; the claim takes it again and finds the request (followViewOf), and sends nothing.
 	_, err = f.fedExec(cctx, moveSentSQL, member, follower, until)
 	return err
 }

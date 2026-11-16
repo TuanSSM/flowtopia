@@ -2199,12 +2199,15 @@ mode lists exactly the flags it did):
   locked and skipped when another step holds them, so no follower is moved twice), and for each: one who may follow the
   new account (`followViewOf`: they share their profile, no block either way, the target's server allowed, and the
   `community` and `follows` flags on, the gate of a follow by hand) is written "asked" and then sends it a Follow of
-  theirs through the queue (`followRemote`), so an Accept that comes at once finds them asked; their old follow stays
+  theirs through the queue (`followRemote`, which writes the follow row and its Follow in one transaction, below), so an
+  Accept that comes at once finds them asked; their old follow stays
   until the new account accepts (`followAnswered`: the Accept ends the old follow in the same statement; a Reject keeps
   it, counted with the reason); one who follows the new account already is moved at once (the state and the end of the
   old follow in one statement), one who asked already is "asked"; the others are "kept" with the reason (they do not
   share, a block, the server not let in, following off here, they follow the most accounts there can be, they moved away
-  themselves, the new account gone, suspended on its server or by the moderators here, or taking no follows; each Follow
+  themselves, the new account gone, suspended on its server or by the moderators here, or taking no follows; a
+  suspension here after they were asked keeps them with that reason in its own statement, `remoteSuspendEndsSQL`, as it
+  ends their follows, so none is left asked for an answer that cannot come; each Follow
   goes through `followRemote`, which reads the new account's row FOR SHARE as a follow by hand does since FMD 2, so a
   suspension written meanwhile is seen or waits). Each row is written only while the step still
   holds it and the member still points to the new account (`moveRowSQL`), and the batch stops at the first row that is
@@ -2224,14 +2227,25 @@ mode lists exactly the flags it did):
   follow behind, and the member moved with it is kept (`moveDroppedSQL`, in the fan-out's transaction) with the cause the
   fan-out knows (the server refused by the policy, unreachable, at its cap) or, when it cannot tell, "the follow could not
   be sent". **A follower written "asked" whose Follow was never sent** (after the third review: the step stopped between
-  the two) is tried again: what follows the send (putting the row back when the Follow could not be made) is written on
-  a context of its own, so a deploy that ends the workers' context does not skip it; and the row keeps its lease while
-  "asked" until the Follow is made (`moveSentSQL` lets it go then), so after a kill or a power cut the claim takes it
-  again once the lease has passed, but only when no follow of the new account by that follower exists, so a Follow that
-  did go is never sent twice (`moveClaimable`, through `move_followers_todo`, whose predicate now holds both kinds). Between batches the
+  the two) is tried again, and one whose Follow went is never sent a second (after the fourth review). The follow row,
+  its Follow in the queue and the end of the row's lease (`moveSentSQL`) are **one transaction** (`followRemote` writes
+  the follow as the enqueue's `then`, under the queue's lock, taken before the member's row as on every other path,
+  `TestMoveBackLockOrder`): a follow that exists always has its Follow made, whatever stops the process, and a Follow
+  sent nowhere (refused at its host) writes no follow. The first version enqueued after the follow's commit, so a
+  deploy that ended the workers' context there left a pending follow with no Follow (its clean-up ran on the same
+  ended context), and the member saw "requested" for an account never asked; that window is gone, for a follow by hand
+  (`handleFedFollow`) too. Chosen over testing for the Follow in `ap_outbox` at the claim because it needs no new read
+  and no new index, and the queue's lock order allows it. So a row "asked" that still holds a lease had no Follow made:
+  what follows the send (putting the row back when the Follow could not be made) is written on a context of its own, so
+  a deploy does not skip it; after a kill or a power cut the claim takes the row again once the lease has passed
+  (`moveClaimable`), and `followViewOf` decides as for any row (a follow written by hand meanwhile is found, and nothing
+  is sent). The start (`movesAtStart`), the wake-up after an empty claim (`moveWakeSQL`) and the claim all read rows
+  still to do and rows asked and still held (`moveWaking`, `move_followers_todo`'s predicate), so a member's last batch
+  stopped there comes back after a restart, within the lease or after it. A follower whose Follow went and who then
+  unfollows by hand is not asked again: the lease went with the Follow. Between batches the
   workers go on with everything else, and each Follow takes the queue's lock for its own enqueue only. The start picks the
   move up again (`movesAtStart`), and rows a stopped step held are taken again when their lease ends. It stops (what is
-  still to do is dropped) when the redirect is taken back or points elsewhere, or the member stops sharing, leaves or is
+  still to do is dropped, with the rows asked and still held, whose Follow was never made, `moveStopSQL`) when the redirect is taken back or points elsewhere, or the member stops sharing, leaves or is
   deleted. The answer says how many members here are being asked; Settings shows how it goes (still to ask, asked, moved,
   kept and why), from `move_followers`. Every follower is counted, whatever their number.
 - **A Follow that waits for room in the queue is sent** (after the review; the fault was older than this item): `sendFollow`

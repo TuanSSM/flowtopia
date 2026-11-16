@@ -4116,13 +4116,19 @@ func TestDBQueryPlans(t *testing.T) {
 		{"moves: where a member moved", movedSQL, []any{11}, 10, ""},
 		{"moves: how the move of a member's followers here goes", moveProgressSQL, []any{200}, 300, ""},
 		{"moves: the room at the new account's host, and whether it is down", moveHostQueuedSQL, []any{"p1.out.example", moveHostRoom + 1}, 2*(moveHostRoom+1) + 10, ""},
+		// The start reads the first entry of move_followers_todo; the wake-up, after a claim that found nothing, each row
+		// still to be moved (the 5,250 here, through a bitmap of move_followers_todo: 10,501 rows counted), as it did over
+		// the rows still to do alone before the third review.
+		{"moves: whether any wait, at the start", moveAtStartSQL, nil, 20, ""},
+		{"moves: when the next row comes free", moveWakeSQL, nil, 12000, ""},
 	})
 	if tx, err := db.Begin(); err == nil {
 		on = tx
 		plans([]planCase{
 			{"moves: a move recorded", moveSetSQL, []any{9, "https://p1.out.example/users/3000001", time.Now(), moveCooldown.Seconds(), false, "https://x.example/m"}, 10, ""},
 			{"moves: the members here who follow a member with 1,000 followers elsewhere, written down", moveFollowersSQL, []any{11, 3000001}, 6000, ""},
-			{"moves: a batch claimed", moveClaimSQL, []any{time.Now(), moveBatch, time.Now().Add(moveLease)}, 2000, ""},
+			{"moves: a batch claimed", moveClaimSQL, []any{time.Now(), moveBatch, time.Now().Add(moveLease)}, 600, ""}, // measured 444
+			{"moves: what is still to do of a stopped move, dropped", moveStopSQL, []any{205}, 150, ""},
 			{"moves: a Move taken back", moveTakeBackSQL, []any{11, "https://x.example/none", time.Now()}, 10, ""},
 			{"moves: where one follower stands, written", moveRowSQL, []any{200, 4, "moved", "", time.Now(), "https://p1.out.example/users/3000001", false}, 20, ""},
 			{"moves: a follower's lease let go once the Follow is made", moveSentSQL, []any{200, 1, time.Now()}, 10, ""},
@@ -4130,6 +4136,13 @@ func TestDBQueryPlans(t *testing.T) {
 			{"moves: a member's followers made to wait", moveWaitSQL, []any{200, time.Now().Add(time.Hour), 1, time.Now(), time.Now()}, 300, ""},
 			{"moves: a member's followers kept", moveGiveUpSQL, []any{200, "hostFull"}, 300, ""},
 			{"moves: a Follow written for no inbox", moveDroppedSQL, []any{1, "hostFull"}, 50, ""},
+		})
+		// With nobody waiting the start still reads one entry, not the table (EXISTS read all 20,000 rows).
+		if _, err := tx.Exec(`UPDATE move_followers SET state = 'kept', claimed_until = NULL WHERE state IN ('todo', 'asked')`); err != nil {
+			t.Fatal(err)
+		}
+		plans([]planCase{
+			{"moves: whether any wait, at the start, with none", moveAtStartSQL, nil, 20, ""},
 		})
 		on = db
 		tx.Rollback()
@@ -4357,6 +4370,7 @@ func TestDBQueryPlans(t *testing.T) {
 		`INSERT INTO likes (post_id, user_id) SELECT g, 1000033 FROM generate_series(1, 2000) g ON CONFLICT DO NOTHING`,
 		`INSERT INTO comment_likes (comment_id, user_id) SELECT g, 1000033 FROM generate_series(1, 2000) g ON CONFLICT DO NOTHING`,
 		`INSERT INTO follows (follower_id, followee_id, state) SELECT g, 1000033, 'accepted' FROM generate_series(1, 300) g ON CONFLICT DO NOTHING`,
+		`INSERT INTO move_followers (user_id, follower_id, target_id, state) SELECT 400 + g % 3, g, 1000033, CASE WHEN g % 2 = 0 THEN 'asked' ELSE 'moved' END FROM generate_series(1, 300) g`,
 		`INSERT INTO notifications (user_id, actor_id, kind, fed) SELECT 1 + g % 500, 1000033, 'like', true FROM generate_series(1, 1500) g`,
 		`ANALYZE`,
 	} {
@@ -4365,13 +4379,14 @@ func TestDBQueryPlans(t *testing.T) {
 		}
 	}
 	on = ptx
-	// A suspension reads the account's notifications (1,500 here) and follows (300, each with its member's row) once; it
+	// A suspension reads the account's notifications (1,500 here), follows (300, each with its member's row) and the rows
+	// of members here moved to it (300, through move_followers_target) once; it
 	// is asked in a savepoint rolled back, so the purge's steps below find the same rows. Each budget is the rows
 	// measured here and about a third more (the review of FMD 2); a step with a few rows has 50.
 	if _, err := ptx.Exec(`SAVEPOINT ends`); err != nil {
 		t.Fatal(err)
 	}
-	plans([]planCase{{"purge: what a suspension ends", remoteSuspendEndsSQL, []any{target, "words", "https://h33.example/inbox", "h33.example", time.Now()}, 5500, ""}}) // measured 4,195
+	plans([]planCase{{"purge: what a suspension ends", remoteSuspendEndsSQL, []any{target, "words", "https://h33.example/inbox", "h33.example", time.Now()}, 6600, ""}}) // measured 4,945
 	if _, err := ptx.Exec(`ROLLBACK TO SAVEPOINT ends`); err != nil {
 		t.Fatal(err)
 	}
